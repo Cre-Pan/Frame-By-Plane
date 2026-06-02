@@ -1,39 +1,24 @@
-# Frame by Plane v2.20.1
+# Frame by Plane
 
-Frame by Plane imports 2D image sequences as controllable animation planes inside Blender.
+Frame by Plane is a free and open-source Blender add-on for creating multiplane camera animations from image layers.
 
-## Main workflow
+## Main features
 
-- Import image folders as layers.
-- Organize layers in Blender Collections.
-- Use vertical 2D multiplane setups by default.
-- Fit planes to a 4:3 camera.
-- Build larger projects as separate Blender Scenes.
-- Render frame ranges through a clean background render launcher.
+- Import single image planes and animated image sequences.
+- Build multiplane setups from manually added layers or scanned project folders.
+- Organize layers with Collection View, Tree View and A-Z sorting.
+- Control layer depth, visibility, locks, solo state, opacity, timing and sequence order.
+- Create camera-ratio color, black, white and holdout planes.
+- Extend plane borders as edge-padding geometry without deforming the original image.
+- Use alpha-aware holdout tools for compositing masks.
+- Fit layers to camera by width, height, fill or fit-inside modes.
+- Use Shift+A > Frame By Plane quick popups for the main creation tools.
+- Review project imports in a collection-based, collapsed Multiplane Setup before generating.
 
-## Blender Extensions status
+## Blender Extensions
 
-This package includes:
+This add-on is designed for Blender 5.1+ and follows Blender Extensions packaging guidelines.
 
-- `blender_manifest.toml`
-- SPDX license declaration
-- `LICENSE.txt`
-- no third-party Python dependencies
-- no bundled fonts or binary assets
-- declared file-system permission
+## License
 
-## Developer structure
-
-```text
-__init__.py
-core.py
-constants.py
-path_utils.py
-profiling.py
-blender_manifest.toml
-README.md
-CHANGELOG.md
-LICENSE.txt
-```
-
-`core.py` is still the main module. Refactor is intentionally gradual to avoid breaking the addon.
+GPL-3.0-or-later.
