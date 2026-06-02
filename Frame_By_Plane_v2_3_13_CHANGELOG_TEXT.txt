@@ -1,0 +1,52 @@
+# Frame by Plane — Update v2.3.13
+
+## Summary
+
+This update focuses on reliability fixes for Color Plane orientation, native Blender duplication/deletion behavior, image-sequence import, and Holdout toggles in the Layer View.
+
+## Changed / Fixed
+
+### Color Plane Orientation
+
+- Added the **Vertical / Horizontal** orientation selector to **Color Plane** creation, matching the other plane types.
+- Added the same orientation selector to the **Color Plane from Hex** popup.
+
+### Native Duplicate — `Shift + D`
+
+- Improved native Blender duplication support for Frame by Plane rigs.
+- Selecting either the **rig** or the linked **image plane** now resolves back to the correct Frame by Plane layer.
+- If Blender duplicates only the rig, Frame by Plane now repairs the duplicated setup automatically by creating a linked copy of the associated image plane.
+- Copied rigs now receive their own linked image plane and copied material slots instead of pointing incorrectly to the original plane.
+
+### Native Delete — `X`
+
+- Added safer cleanup for native Blender delete actions.
+- If Blender deletes only a Frame by Plane rig, the addon now also removes the associated image plane.
+- Added a dedicated menu action:
+  - **Frame by Plane: Delete Rig + Image Plane**
+
+### Single Plane Image Sequence Import
+
+- Selecting multiple images in **Single Plane** import now creates one animated image sequence on a single plane.
+- Natural numeric sorting is preserved, so files are ordered correctly:
+  - `1, 2, 3 ... 10`
+  - instead of `1, 10, 2`
+
+### Holdout Toggle Fix
+
+- Fixed folder and layer **Holdout** toggles so repeated clicks no longer get stuck.
+- Clicking Holdout on a collection now removes Holdout from the whole collection if at least one child layer is already in Holdout mode.
+- Prevented temporary Holdout materials from being saved as the original material backup.
+- Added fallback recovery for older scenes affected by the previous Holdout material backup issue.
+- Replaced fragile Holdout UI property buttons with explicit toggle operators for more stable one-click behavior.
+
+## Updated Files
+
+- `__init__.py`
+- `blender_manifest.toml`
+- `core.py`
+- `CHANGELOG.md`
+
+## Version
+
+- `2.3.13`
