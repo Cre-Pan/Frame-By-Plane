@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Frame by Plane",
     "author": "Alessandro Pannoli",
-    "version": (2, 20, 1),
+    "version": (2, 3, 10),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > Frame by Plane",
     "description": "Import image sequences as controllable animation planes with folders, fast import, scene split and profiling.",

@@ -1,13 +1,13 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "2.20.1"
+version = "2.3.10"
 name = "Frame by Plane"
 tagline = "Import image sequences as controllable animation planes"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
 type = "add-on"
 
-tags = ["Animation", "Import-Export"]
+tags = ["3D View", "Animation"]
 blender_version_min = "5.1.0"
 
 license = [
