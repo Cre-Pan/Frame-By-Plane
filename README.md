@@ -1,24 +1,31 @@
-# Frame by Plane
+# Frame by Plane — Version 4.1.7
 
-Frame by Plane is a free and open-source Blender add-on for creating multiplane camera animations from image layers.
+Rigged image planes for multiplane animation in Blender 5.1+.
+
+## Version 4.1.7
+
+- Leaf folders containing exactly one image sequence or one static image no longer create a redundant Blender Collection.
+- The resulting layer is placed directly in the parent project Collection, regardless of whether the folder name matches the layer name.
+- Flattened layers keep independent automatically varied color tags instead of inheriting a collection color.
+- Parent Collections that receive flattened child layers remain neutral in the Multiplane Setup preview and in the Outliner.
+- Folders containing multiple layers, child folders, or a single video keep their Collection behavior.
 
 ## Main features
 
-- Import single image planes and animated image sequences.
-- Build multiplane setups from manually added layers or scanned project folders.
-- Organize layers with Collection View, Tree View and A-Z sorting.
-- Control layer depth, visibility, locks, solo state, opacity, timing and sequence order.
-- Create camera-ratio color, black, white and holdout planes.
-- Extend plane borders as edge-padding geometry without deforming the original image.
+- Import single images, native image sequences and videos as controllable planes.
+- Create procedural Color, Gradient and static Holdout planes.
+- Build multiplane scenes from folders and grouped sequences.
+- Edit timing, opacity, visibility, Crop, Extend and layer order from the UI.
+- Fit image planes to the camera using the real image bounds.
 - Use alpha-aware holdout tools for compositing masks.
-- Fit layers to camera by width, height, fill or fit-inside modes.
-- Use Shift+A > Frame By Plane quick popups for the main creation tools.
-- Review project imports in a collection-based, collapsed Multiplane Setup before generating.
+- Render in a separate Blender process with status and Stop Render controls.
 
-## Blender Extensions
+## Backend policy
 
-This add-on is designed for Blender 5.1+ and follows Blender Extensions packaging guidelines.
+```text
+Images / Image Sequences / Videos → Blender native nodes
+Color / Gradient → procedural materials
+Holdout Plane → static procedural mask
+```
 
-## License
-
-GPL-3.0-or-later.
+No Material Sequence backend and no automatic image cache copies are used.

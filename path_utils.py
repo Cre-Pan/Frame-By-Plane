@@ -6,9 +6,9 @@ import os
 import re
 
 try:
-    from .constants import FBP_SUPPORTED_IMAGE_EXT, FBP_TECHNICAL_MAP_SUFFIXES
-except Exception:
-    from constants import FBP_SUPPORTED_IMAGE_EXT, FBP_TECHNICAL_MAP_SUFFIXES
+    from .constants import FBP_SUPPORTED_VIDEO_EXT, FBP_SUPPORTED_MEDIA_EXT, FBP_TECHNICAL_MAP_SUFFIXES
+except ImportError:
+    from constants import FBP_SUPPORTED_VIDEO_EXT, FBP_SUPPORTED_MEDIA_EXT, FBP_TECHNICAL_MAP_SUFFIXES
 
 
 def natural_sort_key(s):
@@ -21,8 +21,12 @@ def natural_sort_key(s):
     return key
 
 
-def is_supported_image_file(name):
-    return os.path.splitext(str(name))[1].lower() in FBP_SUPPORTED_IMAGE_EXT
+def is_supported_video_file(name):
+    return os.path.splitext(str(name))[1].lower() in FBP_SUPPORTED_VIDEO_EXT
+
+
+def is_supported_media_file(name):
+    return os.path.splitext(str(name))[1].lower() in FBP_SUPPORTED_MEDIA_EXT
 
 
 def is_hidden_import_name(name):
@@ -40,6 +44,3 @@ def clean_layer_name_from_path(path):
     return stem if ext else base
 
 
-def ensure_folder(path):
-    os.makedirs(path, exist_ok=True)
-    return path

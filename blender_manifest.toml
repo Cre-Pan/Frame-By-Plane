@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "2.3.10"
+version = "4.1.7"
 name = "Frame by Plane"
-tagline = "Import image sequences as controllable animation planes"
+tagline = "Rigged image planes for multiplane animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
 type = "add-on"
 
@@ -19,7 +19,7 @@ copyright = [
 ]
 
 [permissions]
-files = "Import image sequences and save render frames on disk"
+files = "Import media, rename sequences, and save rendered frames"
 
 [build]
 paths_exclude_pattern = [

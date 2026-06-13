@@ -64,7 +64,6 @@ FBP_ICONS = {
     'MODIFIER': 'MODIFIER',  # Plane tools/repair actions. ### DUPLICATE
     'MOD_BOOLEAN': 'MOD_BOOLEAN',  # Crop tool icon. ### DUPLICATE
     'MOD_LENGTH': 'MOD_LENGTH',  # Match height / dimension tools.
-    'MOD_NOISE': 'MOD_NOISE',  # Wiggle/noise tools.
     'EMPTY_SINGLE_ARROW': 'EMPTY_SINGLE_ARROW',  # Direction/height fit tools.
     'NEWFOLDER': 'NEWFOLDER',
     'NODE_TEXTURE': 'NODE_TEXTURE',  # Gradient / texture-node plane icon.  # Pending folder without files.
@@ -110,6 +109,7 @@ FBP_ICONS = {
     'UV_SYNC_SELECT': 'UV_SYNC_SELECT',  # Ping-pong playback enum. ### DUPLICATE
     'UNLOCKED': 'UNLOCKED',  # Unlocked state for rigs/collections. ### DUPLICATE
     'VIEW_CAMERA': 'VIEW_CAMERA',  # Create/use camera icon. ### DUPLICATE
+    'CAMERA_DATA': 'CAMERA_DATA',  # Existing camera icon.
     'COLLECTION_COLOR_01': 'COLLECTION_COLOR_01',  # Outliner collection color icon 01. ### DUPLICATE
     'COLLECTION_COLOR_02': 'COLLECTION_COLOR_02',  # Outliner collection color icon 02. ### DUPLICATE
     'COLLECTION_COLOR_03': 'COLLECTION_COLOR_03',  # Outliner collection color icon 03. ### DUPLICATE
@@ -163,8 +163,22 @@ COLOR_ENUM_ITEMS = [
     ('COLOR_09', "Gray",    "", fbp_icon('STRIP_COLOR_09'), 9),
 ]
 
+COLLECTION_COLOR_ENUM_ITEMS = [
+    ('NONE', "None", "Do not assign a color tag to this collection", fbp_icon('OUTLINER_COLLECTION'), 0),
+    ('COLOR_01', "Color 01", "Collection color 01", fbp_icon('COLLECTION_COLOR_01'), 1),
+    ('COLOR_02', "Color 02", "Collection color 02", fbp_icon('COLLECTION_COLOR_02'), 2),
+    ('COLOR_03', "Color 03", "Collection color 03", fbp_icon('COLLECTION_COLOR_03'), 3),
+    ('COLOR_04', "Color 04", "Collection color 04", fbp_icon('COLLECTION_COLOR_04'), 4),
+    ('COLOR_05', "Color 05", "Collection color 05", fbp_icon('COLLECTION_COLOR_05'), 5),
+    ('COLOR_06', "Color 06", "Collection color 06", fbp_icon('COLLECTION_COLOR_06'), 6),
+    ('COLOR_07', "Color 07", "Collection color 07", fbp_icon('COLLECTION_COLOR_07'), 7),
+    ('COLOR_08', "Color 08", "Collection color 08", fbp_icon('COLLECTION_COLOR_08'), 8),
+]
+
 preview_collections = {}
-FBP_SUPPORTED_IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.exr', '.tif', '.tiff'}
+FBP_SUPPORTED_IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.exr', '.tif', '.tiff', '.bmp', '.gif', '.jp2', '.j2k', '.hdr', '.pic', '.sgi', '.rgb', '.rgba', '.dds'}
+FBP_SUPPORTED_VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm', '.mpeg', '.mpg', '.mxf', '.ogv'}
+FBP_SUPPORTED_MEDIA_EXT = FBP_SUPPORTED_IMAGE_EXT | FBP_SUPPORTED_VIDEO_EXT
 
 FBP_TECHNICAL_MAP_SUFFIXES = (
     '_normal', '_norm', '_nrm', '_displace', '_disp', '_height',
@@ -174,4 +188,3 @@ FBP_TECHNICAL_MAP_SUFFIXES = (
 
 FBP_PROJECT_COLLECTION_PREFIX = 'FBP - '
 
-FBP_SUPPORT_EMAIL = "pannoli312@gmail.com"
