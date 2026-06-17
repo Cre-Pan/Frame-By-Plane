@@ -1,10 +1,30 @@
 """Focused Frame by Plane operator module."""
 
-try:
-    from .operator_common import *
-except ImportError:
-    from operator_common import *
+import bpy
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+from bpy.types import Operator
 
+from .core import fbp_repair_all_render_state
+from .scene_sync import sync_layer_collection
+from .operator_common import (
+    FBP_BG_RENDER_STATE,
+    _fbp_bg_cleanup_temp_files,
+    _fbp_bg_clear_runtime_state,
+    _fbp_bg_process_running,
+    _fbp_bg_terminate_process,
+    _fbp_bg_update_scene_status,
+)
+
+
+
+
+
+_FBP_BG_RENDER_MODAL_TIMERS = globals().get("_FBP_BG_RENDER_MODAL_TIMERS", [])
 
 class FBP_OT_RepairRenderState(Operator):
     bl_idname      = "fbp.repair_render_state"
@@ -25,17 +45,32 @@ class FBP_OT_BackgroundRenderFrames(Operator):
     bl_options     = {'REGISTER'}
 
     _timer = None
+    _session_token = ""
+
+    def _owns_render_state(self):
+        token = str(getattr(self, "_session_token", "") or "")
+        return bool(token and token == str(FBP_BG_RENDER_STATE.get("session_token", "") or ""))
+
+    def _remove_modal_timer(self, context):
+        try:
+            if self._timer:
+                context.window_manager.event_timer_remove(self._timer)
+                try:
+                    _FBP_BG_RENDER_MODAL_TIMERS.remove(self._timer)
+                except ValueError:
+                    pass
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+            pass
+        self._timer = None
 
     def _finish_modal(self, context, status_message, result=None):
         if result is None:
             result = {'FINISHED'}
-        try:
-            if self._timer:
-                context.window_manager.event_timer_remove(self._timer)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-        self._timer = None
+        self._remove_modal_timer(context)
+        if not self._owns_render_state():
+            return result
         FBP_BG_RENDER_STATE["process"] = None
+        FBP_BG_RENDER_STATE["session_token"] = ""
         _fbp_bg_cleanup_temp_files()
         _fbp_bg_update_scene_status(context.scene, status_message)
         try:
@@ -45,11 +80,17 @@ class FBP_OT_BackgroundRenderFrames(Operator):
         return result
 
     def modal(self, context, event):
+        if not self._owns_render_state():
+            self._remove_modal_timer(context)
+            return {'CANCELLED'}
         if event.type == 'ESC':
             _fbp_bg_terminate_process(context.scene)
             return self._finish_modal(context, "Background render stopped", {'CANCELLED'})
 
         if event.type == 'TIMER':
+            event_timer = getattr(event, "timer", None)
+            if self._timer is not None and event_timer != self._timer:
+                return {'PASS_THROUGH'}
             proc = FBP_BG_RENDER_STATE.get("process")
             _fbp_bg_update_scene_status(context.scene)
             try:
@@ -80,20 +121,47 @@ class FBP_OT_BackgroundRenderFrames(Operator):
             self.report({'WARNING'}, "A background render is already running")
             return {'CANCELLED'}
 
+        # A lost modal/window may leave a completed Popen and temporary log in
+        # memory. Clear only completed stale state before starting a new session.
+        if any((
+            FBP_BG_RENDER_STATE.get("process") is not None,
+            FBP_BG_RENDER_STATE.get("log_handle") is not None,
+            bool(FBP_BG_RENDER_STATE.get("temp_dir")),
+            bool(FBP_BG_RENDER_STATE.get("session_token")),
+        )):
+            _fbp_bg_clear_runtime_state(sc)
+
         if not bpy.data.is_saved:
             self.report({'WARNING'}, "Save the .blend file first")
             return {'CANCELLED'}
 
-        start = int(sc.fbp_emergency_render_start) if sc.fbp_emergency_render_start > 0 else int(sc.frame_start)
-        end = int(sc.fbp_emergency_render_end) if sc.fbp_emergency_render_end > 0 else int(sc.frame_end)
+        # Always render the Scene timeline In/Out. Keeping one authoritative
+        # range avoids mismatches between the Timeline, Output properties and
+        # the background Blender process.
+        start = int(sc.frame_start)
+        end = int(sc.frame_end)
         if end < start:
-            self.report({'WARNING'}, "End frame must be after Start frame")
+            self.report({'WARNING'}, "Scene Out must be after Scene In")
             return {'CANCELLED'}
 
-        out_dir = os.path.join(os.path.dirname(bpy.data.filepath), "FBP_Render_Frames")
-        os.makedirs(out_dir, exist_ok=True)
+        configured_dir = str(getattr(sc, 'fbp_render_output_dir', '') or '').strip()
+        if configured_dir:
+            out_dir = bpy.path.abspath(configured_dir)
+        else:
+            out_dir = os.path.join(os.path.dirname(bpy.data.filepath), "FBP_Render_Frames")
+        out_dir = os.path.normpath(out_dir)
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError as exc:
+            self.report({'ERROR'}, f"Could not create render folder: {exc}")
+            return {'CANCELLED'}
+        if not os.path.isdir(out_dir):
+            self.report({'ERROR'}, "The selected render output path is not a folder")
+            return {'CANCELLED'}
 
-        prefix = sc.fbp_emergency_render_prefix or "frame_"
+        raw_prefix = str(getattr(sc, 'fbp_render_prefix', '') or 'frame_').strip()
+        prefix = os.path.basename(raw_prefix) or "frame_"
+        prefix = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', '_', prefix).strip(' .') or "frame_"
         blend_path = bpy.data.filepath
         blender_bin = bpy.app.binary_path
 
@@ -168,8 +236,10 @@ print("[FBP_BG] DONE", flush=True)
             self.report({'ERROR'}, f"Could not start background render: {exc}")
             return {'CANCELLED'}
 
+        self._session_token = f"{time.monotonic_ns()}:{id(self)}"
         FBP_BG_RENDER_STATE.update({
             "process": proc,
+            "session_token": self._session_token,
             "log_handle": log_handle,
             "log_path": log_path,
             "temp_dir": temp_dir,
@@ -184,6 +254,8 @@ print("[FBP_BG] DONE", flush=True)
 
         try:
             self._timer = context.window_manager.event_timer_add(0.75, window=context.window)
+            if self._timer not in _FBP_BG_RENDER_MODAL_TIMERS:
+                _FBP_BG_RENDER_MODAL_TIMERS.append(self._timer)
             context.window_manager.modal_handler_add(self)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
             self._timer = None
@@ -240,4 +312,22 @@ class FBP_OT_BackgroundRenderStatus(Operator):
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self, width=420)
 
-__all__ = ['FBP_OT_RepairRenderState', 'FBP_OT_BackgroundRenderFrames', 'FBP_OT_StopBackgroundRender', 'FBP_OT_BackgroundRenderStatus']
+
+def unregister():
+    """Do not leave child processes, modal timers or temporary files after unload."""
+    try:
+        wm = getattr(bpy.context, "window_manager", None)
+        for timer in list(_FBP_BG_RENDER_MODAL_TIMERS):
+            try:
+                if wm is not None:
+                    wm.event_timer_remove(timer)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        _FBP_BG_RENDER_MODAL_TIMERS.clear()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        _FBP_BG_RENDER_MODAL_TIMERS.clear()
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
+    if _fbp_bg_process_running():
+        _fbp_bg_terminate_process(scene)
+    else:
+        _fbp_bg_clear_runtime_state(scene)

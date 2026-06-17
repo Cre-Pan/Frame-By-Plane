@@ -6,204 +6,72 @@ Operator classes live in focused modules and depend on this module only.
 
 import bpy
 import json
-import math
-import mathutils
 import os
-import re
 import shutil
-import subprocess
-import tempfile
-import time
 
-from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
-from bpy.types import Operator
 
-try:
-    from . import safe_tasks as _safe_tasks
-except ImportError:
-    import safe_tasks as _safe_tasks
+from . import safe_tasks as _safe_tasks
 
-try:
-    from .core import (
-        FBP_PROJECT_COLLECTION_PREFIX,
-        _safe_layer_obj,
-        apply_camera_ratio_settings,
-        apply_fit_to_camera,
-        build_fbp_color_rig,
-        build_fbp_rig,
-        clean_layer_name_from_path,
-        collect_project_image_paths,
-        collection_has_fbp_content,
-        collection_is_hidden_in_view_layer,
-        copy_scene_preview_ramp_to_rig,
-        delete_fbp_rigs,
-        do_update_animation,
-        do_update_emission,
-        do_update_opacity,
-        do_update_track,
-        draw_scene_fbp_color_ramp,
-        ensure_object_in_active_collection,
-        fbp_apply_holdout_materials_to_rig,
-        fbp_apply_sequence_entries_to_rig,
-        fbp_auto_build_main_folders_as_scenes,
-        fbp_begin_fast_import,
-        fbp_build_project_folder,
-        fbp_child_entries,
-        fbp_clone_sequence_entry_material,
-        fbp_collect_mixed_folder_entries,
-        fbp_color_plane_can_have_frames,
-        fbp_create_procedural_frame_material_for_rig,
-        fbp_draw_color_plane_color_row,
-        fbp_draw_gradient_choice_rows,
-        fbp_end_fast_import,
-        fbp_fast_import_is_active,
-        fbp_folder_direct_dirs,
-        fbp_icon,
-        fbp_insert_sequence_entry,
-        fbp_is_native_holdout_plane,
-        fbp_load_active_procedural_frame_to_rig,
-        fbp_mark_layer_cache_dirty,
-        fbp_native_sequence_files_from_rig,
-        fbp_procedural_kind_from_material,
-        fbp_rebuild_sequence_backend_from_rig,
-        fbp_repair_all_render_state,
-        fbp_replace_sequence_backend,
-        fbp_resolve_rig_from_any_object,
-        fbp_rig_native_sequence_needs_rename,
-        fbp_scan_project_layers_for_setup,
-        fbp_scene_orientation_is_horizontal,
-        fbp_sequence_entries_from_rig,
-        fbp_set_rna_property_silent,
-        fbp_warn,
-        find_layer_collection,
-        get_or_create_child_collection,
-        get_or_create_fbp_gradient_preview_material,
-        get_primary_fbp_collection,
-        get_selected_fbp_roots,
-        get_selected_rigs,
-        is_fbp_layer_object,
-        is_supported_media_file,
-        is_supported_video_file,
-        is_technical_map_file,
-        iter_fbp_rigs_in_collection,
-        missing_project_images,
-        move_object_to_collection,
-        natural_sort_key,
-        object_in_view_layer,
-        pending_collection_is_open,
-        project_root_for_package,
-        relink_missing_images_from_root,
-        restore_original_materials_from_holdout,
-        rig_has_missing_images,
-        rig_holdout_is_active,
-        set_pending_collection_open,
-        set_collection_color_tag,
-        set_plane_mesh_extension,
-        set_viewport_object_color,
-        swap_layer_depth_only,
-        sync_collection_colors_to_rigs,
-        sync_layer_collection,
-        update_global_visibility,
-        update_object_padding_cb,
-        visible_layer_indices,
-    )
-except ImportError:
-    from core import (
-        FBP_PROJECT_COLLECTION_PREFIX,
-        _safe_layer_obj,
-        apply_camera_ratio_settings,
-        apply_fit_to_camera,
-        build_fbp_color_rig,
-        build_fbp_rig,
-        clean_layer_name_from_path,
-        collect_project_image_paths,
-        collection_has_fbp_content,
-        collection_is_hidden_in_view_layer,
-        copy_scene_preview_ramp_to_rig,
-        delete_fbp_rigs,
-        do_update_animation,
-        do_update_emission,
-        do_update_opacity,
-        do_update_track,
-        draw_scene_fbp_color_ramp,
-        ensure_object_in_active_collection,
-        fbp_apply_holdout_materials_to_rig,
-        fbp_apply_sequence_entries_to_rig,
-        fbp_auto_build_main_folders_as_scenes,
-        fbp_begin_fast_import,
-        fbp_build_project_folder,
-        fbp_child_entries,
-        fbp_clone_sequence_entry_material,
-        fbp_collect_mixed_folder_entries,
-        fbp_color_plane_can_have_frames,
-        fbp_create_procedural_frame_material_for_rig,
-        fbp_draw_color_plane_color_row,
-        fbp_draw_gradient_choice_rows,
-        fbp_end_fast_import,
-        fbp_fast_import_is_active,
-        fbp_folder_direct_dirs,
-        fbp_icon,
-        fbp_insert_sequence_entry,
-        fbp_is_native_holdout_plane,
-        fbp_load_active_procedural_frame_to_rig,
-        fbp_mark_layer_cache_dirty,
-        fbp_native_sequence_files_from_rig,
-        fbp_procedural_kind_from_material,
-        fbp_rebuild_sequence_backend_from_rig,
-        fbp_repair_all_render_state,
-        fbp_replace_sequence_backend,
-        fbp_resolve_rig_from_any_object,
-        fbp_rig_native_sequence_needs_rename,
-        fbp_scan_project_layers_for_setup,
-        fbp_scene_orientation_is_horizontal,
-        fbp_sequence_entries_from_rig,
-        fbp_set_rna_property_silent,
-        fbp_warn,
-        find_layer_collection,
-        get_or_create_child_collection,
-        get_or_create_fbp_gradient_preview_material,
-        get_primary_fbp_collection,
-        get_selected_fbp_roots,
-        get_selected_rigs,
-        is_fbp_layer_object,
-        is_supported_media_file,
-        is_supported_video_file,
-        is_technical_map_file,
-        iter_fbp_rigs_in_collection,
-        missing_project_images,
-        move_object_to_collection,
-        natural_sort_key,
-        object_in_view_layer,
-        pending_collection_is_open,
-        project_root_for_package,
-        relink_missing_images_from_root,
-        restore_original_materials_from_holdout,
-        rig_has_missing_images,
-        rig_holdout_is_active,
-        set_pending_collection_open,
-        set_collection_color_tag,
-        set_plane_mesh_extension,
-        set_viewport_object_color,
-        swap_layer_depth_only,
-        sync_collection_colors_to_rigs,
-        sync_layer_collection,
-        update_global_visibility,
-        update_object_padding_cb,
-        visible_layer_indices,
-    )
+from .core import (
+    fbp_native_sequence_files_from_rig,
+    fbp_rig_native_sequence_needs_rename,
+)
+from .layers import (
+    get_or_create_child_collection,
+    is_fbp_layer_object,
+    set_collection_color_tag,
+)
+from .runtime import fbp_warn
 
+
+
+
+def fbp_sequence_row_start_frame(rig, index):
+    """Return the first scene frame occupied by a logical sequence row.
+
+    The Frames UIList stores per-row durations. Timeline navigation always uses
+    the first forward occurrence, including when playback is set to Ping-Pong.
+    """
+    if not rig:
+        return None
+    try:
+        items = list(getattr(rig, "fbp_images", []))
+        index = int(index)
+        if not (0 <= index < len(items)):
+            return None
+        frame = int(getattr(rig, "fbp_start_frame", 1))
+        for item in items[:index]:
+            frame += max(1, int(getattr(item, "duration", 1) or 1))
+        return frame
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+        return None
+
+
+def fbp_jump_timeline_to_sequence_row(context, rig, index):
+    """Move the current scene timeline to the selected logical frame row."""
+    target = fbp_sequence_row_start_frame(rig, index)
+    if target is None:
+        return False
+    scene = getattr(context, "scene", None) if context else None
+    if scene is None:
+        scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        return False
+    try:
+        scene.frame_set(int(target))
+        return True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        try:
+            scene.frame_current = int(target)
+            return True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
 
 
 
 def _fbp_refresh_pending_tree(context):
     """Refresh virtual Multiplane Setup UIList rows after operators change setup data."""
-    try:
-        from .ui_layout import fbp_refresh_pending_tree_rows
-    except ImportError:
-        try:
-            from ui_layout import fbp_refresh_pending_tree_rows
-        except ImportError:
-            fbp_refresh_pending_tree_rows = None
+    from .ui_layout import fbp_refresh_pending_tree_rows
     if fbp_refresh_pending_tree_rows:
         try:
             fbp_refresh_pending_tree_rows(context)
@@ -258,6 +126,7 @@ FBP_GENERATION_OVERLAY = globals().get("FBP_GENERATION_OVERLAY", {})
 FBP_GENERATION_OVERLAY.setdefault("handle", None)
 FBP_GENERATION_OVERLAY.setdefault("active", False)
 FBP_GENERATION_OVERLAY.setdefault("text", "⌛  Generating Frame By Plane Sequence...")
+_FBP_GENERATION_TIMERS = globals().get("_FBP_GENERATION_TIMERS", [])
 
 def _fbp_tag_view3d_redraw():
     try:
@@ -348,7 +217,7 @@ def _fbp_hide_generation_overlay(context=None):
 def _fbp_show_generation_start_popup(context, title="Generating Frame By Plane Sequence"):
     """Show a temporary viewport overlay that can be removed programmatically."""
     _fbp_hide_generation_overlay(context)
-    FBP_GENERATION_OVERLAY["text"] = "⌛  Generating Frame By Plane Sequence..."
+    FBP_GENERATION_OVERLAY["text"] = f"⌛  {str(title or 'Generating Frame By Plane Sequence').rstrip('.')}..."
     FBP_GENERATION_OVERLAY["active"] = True
     try:
         FBP_GENERATION_OVERLAY["handle"] = bpy.types.SpaceView3D.draw_handler_add(
@@ -366,6 +235,8 @@ def _fbp_add_generation_timer(context, operator, delay=0.20):
     """Defer heavy generation by one UI tick so the start popup can draw first."""
     try:
         operator._fbp_generation_timer = context.window_manager.event_timer_add(delay, window=context.window)
+        if operator._fbp_generation_timer not in _FBP_GENERATION_TIMERS:
+            _FBP_GENERATION_TIMERS.append(operator._fbp_generation_timer)
         context.window_manager.modal_handler_add(operator)
         return {'RUNNING_MODAL'}
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
@@ -380,6 +251,10 @@ def _fbp_remove_generation_timer(context, operator):
         timer = getattr(operator, '_fbp_generation_timer', None)
         if timer is not None:
             context.window_manager.event_timer_remove(timer)
+            try:
+                _FBP_GENERATION_TIMERS.remove(timer)
+            except ValueError:
+                pass
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
     try:
@@ -509,12 +384,28 @@ def _fbp_finish_generation_ui(context, report=None, *, show_popup=True):
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
     if show_popup:
+        # Bind the delayed dialog to the Scene that owns the report. A rapid
+        # Scene switch must not open Scene A's result popup over Scene B.
+        scene = getattr(context, "scene", None) if context else None
+        try:
+            scene_pointer = int(scene.as_pointer()) if scene else None
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            scene_pointer = None
+        if scene_pointer is None:
+            return
+
         # Allow one redraw after removing the temporary overlay, then open the
         # native result dialog. This guarantees the two windows never overlap.
         def _show_report():
             try:
                 wm = bpy.context.window_manager
                 for window in wm.windows:
+                    target_scene = getattr(window, "scene", None)
+                    try:
+                        if not target_scene or int(target_scene.as_pointer()) != scene_pointer:
+                            continue
+                    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                        continue
                     screen = getattr(window, 'screen', None)
                     if not screen:
                         continue
@@ -524,15 +415,16 @@ def _fbp_finish_generation_ui(context, report=None, *, show_popup=True):
                         region = next((r for r in area.regions if r.type == 'WINDOW'), None)
                         if region is None:
                             continue
-                        with bpy.context.temp_override(window=window, screen=screen, area=area, region=region):
+                        with bpy.context.temp_override(
+                            window=window, screen=screen, area=area, region=region, scene=target_scene
+                        ):
                             bpy.ops.fbp.generation_report_popup('INVOKE_DEFAULT')
                         return None
-                bpy.ops.fbp.generation_report_popup('INVOKE_DEFAULT')
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
                 pass
             return None
         if not _safe_tasks.schedule_once(
-            'operators.generation_report_popup',
+            f'operators.generation_report_popup.{scene_pointer}',
             _show_report,
             first_interval=0.12,
         ):
@@ -651,6 +543,7 @@ for _key, _default in {
     "end": 0,
     "total": 0,
     "started_at": 0.0,
+    "session_token": "",
 }.items():
     FBP_BG_RENDER_STATE.setdefault(_key, _default)
 del _key, _default
@@ -669,6 +562,7 @@ def _fbp_bg_clear_runtime_state(scene=None):
         "end": 0,
         "total": 0,
         "started_at": 0.0,
+        "session_token": "",
     })
     if scene:
         try:
@@ -781,6 +675,7 @@ def _fbp_bg_terminate_process(scene=None):
         return False
     finally:
         FBP_BG_RENDER_STATE["process"] = None
+        FBP_BG_RENDER_STATE["session_token"] = ""
         _fbp_bg_cleanup_temp_files()
 
 def _fbp_select_pending_index(context, pending_index):
@@ -801,37 +696,11 @@ def _fbp_select_pending_index(context, pending_index):
 
 def _fbp_refresh_layer_tree(context):
     """Refresh virtual Layers UIList rows after operators change layer/collection state."""
-    try:
-        from .ui_layout import fbp_refresh_layer_tree_rows
-    except ImportError:
-        try:
-            from ui_layout import fbp_refresh_layer_tree_rows
-        except ImportError:
-            fbp_refresh_layer_tree_rows = None
+    from .ui_layout import fbp_refresh_layer_tree_rows
     if fbp_refresh_layer_tree_rows:
         try:
             fbp_refresh_layer_tree_rows(context)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-
-def _fbp_make_import_viewports_safe():
-    """Temporarily switch all View3D areas to Wireframe before heavy imports/builds."""
-    try:
-        from .handlers import fbp_make_viewports_undo_safe
-    except ImportError:
-        try:
-            from handlers import fbp_make_viewports_undo_safe
-        except ImportError:
-            fbp_make_viewports_undo_safe = None
-    if fbp_make_viewports_undo_safe:
-        try:
-            fbp_make_viewports_undo_safe(restore_after=1.25, release=False)
-        except TypeError:
-            try:
-                fbp_make_viewports_undo_safe()
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-        except (AttributeError, ReferenceError, RuntimeError, ValueError, KeyError, IndexError, OSError):
             pass
 
 def _fbp_color_tag_for_group(key, color_map):
@@ -870,4 +739,18 @@ def fbp_default_color_plane_name(kind, color):
         return "Holdout Plane"
     return f"Color Plane {fbp_hex_name_from_color(color)}"
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+
+def unregister():
+    """Remove transient overlays/timers when the extension is disabled or reloaded."""
+    _fbp_hide_generation_overlay(getattr(bpy, "context", None))
+    try:
+        wm = getattr(bpy.context, "window_manager", None)
+        for timer in list(_FBP_GENERATION_TIMERS):
+            try:
+                if wm is not None:
+                    wm.event_timer_remove(timer)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        _FBP_GENERATION_TIMERS.clear()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        _FBP_GENERATION_TIMERS.clear()

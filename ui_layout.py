@@ -2,28 +2,22 @@
 
 import bpy
 
-from .core import (
+from .constants import fbp_icon
+from .path_utils import natural_sort_key
+from .runtime import fbp_warn
+from .layers import (
     collection_has_fbp_content,
-    collection_is_hidden_in_view_layer,
-    draw_fbp_layer_row,
-    draw_scene_fbp_color_ramp,
-    fbp_collection_plane_icon,
-    fbp_collection_select_icon,
-    fbp_draw_color_plane_color_row,
-    fbp_draw_gradient_choice_rows,
-    fbp_icon,
-    fbp_mask_icon,
-    fbp_warn,
     get_child_fbp_collections,
     get_direct_fbp_rigs_in_collection,
     get_primary_fbp_collection,
     get_top_fbp_collections,
-    indent_row,
     is_fbp_layer_object,
-    iter_fbp_rigs_in_collection,
-    natural_sort_key,
+)
+from .core import (
+    draw_scene_fbp_color_ramp,
+    fbp_draw_color_plane_color_row,
+    fbp_draw_gradient_choice_rows,
     pending_collection_is_open,
-    sort_rigs_for_layer_view,
 )
 from .ui_icons import ui_icon
 from . import safe_tasks as _safe_tasks
@@ -35,56 +29,6 @@ from . import safe_tasks as _safe_tasks
 # ###ICON Panel Multiplane Setup, Function Remove: setup.remove
 # ###ICON Panel Multiplane Setup, Function Sequence/Image: setup.sequence / setup.image
 
-
-def draw_collection_layer_list(layout, context, collection, depth=0):
-    if not collection_has_fbp_content(collection, True):
-        return
-    hidden = collection_is_hidden_in_view_layer(context, collection)
-    collapsed = bool(getattr(collection, 'fbp_collapsed', True))
-
-    box = layout.box()
-    row = box.row(align=True)
-    indent_row(row, depth)
-
-    fold_icon=ui_icon("setup.collapsed") if collapsed else ui_icon("setup.expanded")
-    op = row.operator("fbp.toggle_collection_collapse", text="", icon=fold_icon, emboss=False)
-    op.collection_name = collection.name
-
-    # Same visual order as layer rows: Eye - tag - name/count - bulb - mask - select image/planes - lock - select rigs.
-    row.prop(collection, "fbp_collection_visible", text="", icon=(ui_icon("layer.visible_on") if collection.fbp_collection_visible else ui_icon("layer.visible_off")), emboss=False)
-    if hasattr(collection, 'color_tag'):
-        row.prop(collection, 'color_tag', text="", icon_only=True)
-    else:
-        row.label(text="", icon=ui_icon("setup.collection"))
-
-    op_sel = row.operator("fbp.select_collection_layers", text=collection.name, icon=(ui_icon("layer.visible_off") if hidden else ui_icon("generic.blank")), emboss=False)
-    op_sel.collection_name = collection.name
-    total_layers = sum(1 for _ in iter_fbp_rigs_in_collection(collection, True))
-    row.label(text=str(total_layers))
-
-    row.prop(collection, "fbp_collection_solo", text="", icon=(ui_icon("layer.solo_on") if collection.fbp_collection_solo else ui_icon("layer.solo_off")), emboss=False)
-    op_hold = row.operator("fbp.toggle_collection_holdout", text="", icon=fbp_mask_icon(collection.fbp_collection_holdout), emboss=False)
-    op_hold.collection_name = collection.name
-    op_planes = row.operator("fbp.select_collection_planes", text="", icon=fbp_collection_plane_icon(collection, context), emboss=False)
-    op_planes.collection_name = collection.name
-    row.prop(collection, "fbp_collection_locked", text="", icon=(ui_icon("layer.lock_on") if collection.fbp_collection_locked else ui_icon("layer.lock_off")), emboss=False)
-    op_rigs = row.operator("fbp.select_collection_layers", text="", icon=fbp_collection_select_icon(collection, context), emboss=False)
-    op_rigs.collection_name = collection.name
-
-    if collapsed:
-        return
-
-    direct_rigs = sort_rigs_for_layer_view(context, get_direct_fbp_rigs_in_collection(context, collection))
-    max_rows = max(4, int(getattr(context.scene, 'fbp_layer_list_rows', 12)))
-    if direct_rigs:
-        layer_col = box.column(align=True)
-        for rig in direct_rigs[:max_rows]:
-            draw_fbp_layer_row(layer_col, context, rig, depth=0)
-    else:
-        box.label(text="No direct layers in this collection", icon=ui_icon("generic.info"))
-
-    for child in get_child_fbp_collections(collection):
-        draw_collection_layer_list(box, context, child, depth + 1)
 
 def _fbp_pending_collection_parts(name):
     """Split a setup collection path into visual tree parts."""
@@ -165,76 +109,11 @@ def fbp_apply_pending_collection_color(scene, collection_path, color_tag):
     return changed
 
 
-def _fbp_draw_pending_indent(row, depth):
-    """Visible indentation for Multiplane Setup rows.
-
-    Blender's UIList indentation can be subtle, so this deliberately inserts
-    BLANK1 icons before the arrow/icon/text area.
-    """
-    for _ in range(max(0, min(10, int(depth)))):
-        row.label(text="", icon=ui_icon("generic.blank"))
-
-
-def _fbp_draw_pending_layer_row(layout, context, item, index, depth):
-    row = layout.row(align=True)
-    _fbp_draw_pending_indent(row, depth)
-
-    file_count = _fbp_pending_file_count(item)
-    is_sequence = file_count > 1
-    layer_icon = ui_icon("setup.animated") if is_sequence else ui_icon("setup.image")
-
-    # ###ICON Panel Multiplane Setup, Layer row: setup.sequence / setup.image
-    row.label(text="", icon=ui_icon("generic.blank"))
-    row.prop(item, "fbp_color_tag", text="", icon_only=True)
-    row.prop(item, "name", text="", icon=layer_icon, emboss=False)
-    row.label(text=f"F {file_count}")
-
-    edit = row.operator("fbp.edit_pending_plane", text="", icon=ui_icon("setup.edit"), emboss=False)
-    edit.index = index
-    rem = row.operator("fbp.remove_pending_plane_at_index", text="", icon=ui_icon("generic.delete"), emboss=False)
-    rem.index = index
-
-
-def _fbp_draw_pending_node(layout, context, node, depth=0):
-    scene = context.scene
-    children = node.get("children", {})
-    items = node.get("items", [])
-    sort_alpha = bool(getattr(scene, 'fbp_sort_layers_alpha', False))
-
-    child_nodes = list(children.values())
-    if sort_alpha:
-        child_nodes.sort(key=lambda n: natural_sort_key(n.get("name", "")))
-        items = sorted(items, key=lambda pair: natural_sort_key(getattr(pair[1], 'name', '')))
-
-    for child in child_nodes:
-        path = child.get("path", child.get("name", "")) or "Unsorted"
-        is_open = pending_collection_is_open(scene, path)
-        row = layout.row(align=True)
-        _fbp_draw_pending_indent(row, depth)
-
-        # ###ICON Panel Multiplane Setup, Function collapse: setup.collapsed / setup.expanded
-        fold_icon = ui_icon("setup.expanded") if is_open else ui_icon("setup.collapsed")
-        op = row.operator("fbp.toggle_pending_collection_collapse", text="", icon=fold_icon, emboss=False)
-        op.collection_name = path
-
-        # ###ICON Panel Multiplane Setup, Function Main Folders as Scenes: setup.scene
-        # ###ICON Panel Multiplane Setup, Function Folder: setup.folder
-        is_scene_row = bool(getattr(scene, 'fbp_import_main_folders_as_scenes', False)) and depth == 0
-        row_icon = ui_icon("setup.scene") if is_scene_row else ui_icon("setup.folder")
-        row.label(text=child.get("name", "Unsorted"), icon=row_icon)
-
-        if is_open:
-            _fbp_draw_pending_node(layout, context, child, depth + 1)
-
-    for index, item in items:
-        _fbp_draw_pending_layer_row(layout, context, item, index, depth)
-
-
 def fbp_rebuild_pending_tree_rows(scene):
     """Rebuild the virtual UIList rows for the Multiplane Setup tree.
 
     The actual import data stays in scene.fbp_pending_planes. This function only
-    creates visible rows for the UIList: folder/scene group rows + layer rows.
+    creates visible rows for the UIList: folder group rows + layer rows.
     Collapsed folders skip their children, exactly like a normal tree view.
     """
     rows = getattr(scene, 'fbp_pending_tree_rows', None)
@@ -250,7 +129,6 @@ def fbp_rebuild_pending_tree_rows(scene):
 
     tree = _fbp_pending_tree(scene)
     sort_alpha = bool(getattr(scene, 'fbp_sort_layers_alpha', False))
-    as_scenes = bool(getattr(scene, 'fbp_import_main_folders_as_scenes', False))
 
     def add_layer_row(index, item, depth):
         row = rows.add()
@@ -262,7 +140,6 @@ def fbp_rebuild_pending_tree_rows(scene):
         row.file_count = _fbp_pending_file_count(item)
         row.layer_count = 0
         row.child_count = 0
-        row.is_scene = False
 
     def add_node(node, depth=0):
         children = list(node.get('children', {}).values())
@@ -283,7 +160,6 @@ def fbp_rebuild_pending_tree_rows(scene):
             group.file_count = 0
             group.layer_count = len(child.get('items', []))
             group.child_count = len(child.get('children', {}))
-            group.is_scene = bool(as_scenes and depth == 0)
             group.collection_color_editable = _fbp_pending_collection_color_is_editable(child)
             group.collection_color_tag = _fbp_pending_collection_display_color(child)
 
@@ -323,9 +199,26 @@ def fbp_schedule_pending_tree_rebuild(scene):
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
 
+    try:
+        scene_pointer = int(scene.as_pointer())
+        scene_name = str(scene.name)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return
+
     def _timer():
+        target_scene = bpy.data.scenes.get(scene_name)
         try:
-            fbp_rebuild_pending_tree_rows(scene)
+            if not target_scene or int(target_scene.as_pointer()) != scene_pointer:
+                target_scene = next(
+                    (item for item in bpy.data.scenes if int(item.as_pointer()) == scene_pointer),
+                    None,
+                )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            target_scene = None
+        if not target_scene:
+            return None
+        try:
+            fbp_rebuild_pending_tree_rows(target_scene)
         except Exception as exc:
             try:
                 fbp_warn('Multiplane Setup tree rebuild failed', exc)
@@ -334,7 +227,7 @@ def fbp_schedule_pending_tree_rebuild(scene):
         return None
 
     _safe_tasks.schedule_once(
-        'ui.pending_tree_rebuild',
+        f'ui.pending_tree_rebuild.{scene_pointer}',
         _timer,
         first_interval=0.10,
     )
@@ -394,7 +287,10 @@ def fbp_layer_tree_signature(context):
             bits.append(f"C:{depth}:{coll.name}:{getattr(coll, 'color_tag', '')}:{bool(getattr(coll, 'fbp_collapsed', False))}:{bool(getattr(coll, 'fbp_collection_visible', True))}:{bool(getattr(coll, 'fbp_collection_locked', False))}:{bool(getattr(coll, 'fbp_collection_solo', False))}:{bool(getattr(coll, 'fbp_collection_holdout', False))}")
         except Exception:
             bits.append(f"C:{depth}:{getattr(coll, 'name', '')}")
-        if bool(getattr(coll, 'fbp_collapsed', False)) or collection_is_hidden_in_view_layer(context, coll):
+        # Visibility must not collapse the virtual tree: hidden folders still
+        # expose their children so local layer eyes and other controls remain
+        # reachable. Only the explicit disclosure state hides child rows.
+        if bool(getattr(coll, 'fbp_collapsed', False)):
             return
         for child in get_child_fbp_collections(coll):
             add_collection(child, depth + 1)
@@ -490,7 +386,10 @@ def fbp_rebuild_layer_tree_rows(context):
             row.layer_count = 0
             row.child_count = 0
 
-        if bool(getattr(coll, 'fbp_collapsed', False)) or collection_is_hidden_in_view_layer(context, coll):
+        # Visibility must not collapse the virtual tree: hidden folders still
+        # expose their children so local layer eyes and other controls remain
+        # reachable. Only the explicit disclosure state hides child rows.
+        if bool(getattr(coll, 'fbp_collapsed', False)):
             return
         for child in get_child_fbp_collections(coll):
             add_collection(child, depth + 1)
@@ -546,9 +445,23 @@ def fbp_schedule_layer_tree_rebuild(context):
     if not needs_rebuild:
         return
 
+    try:
+        scene_pointer = int(scene.as_pointer())
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return
+
     def _timer():
+        current_context = bpy.context
+        current_scene = getattr(current_context, 'scene', None)
         try:
-            fbp_rebuild_layer_tree_rows(bpy.context)
+            if (
+                not current_scene
+                or int(current_scene.as_pointer()) != scene_pointer
+            ):
+                # Do not rebuild rows for a different active Scene. The target
+                # panel will schedule itself again the next time it is drawn.
+                return None
+            fbp_rebuild_layer_tree_rows(current_context)
         except Exception as exc:
             try:
                 fbp_warn('Layer tree scheduled rebuild failed', exc)
@@ -557,7 +470,7 @@ def fbp_schedule_layer_tree_rebuild(context):
         return None
 
     _safe_tasks.schedule_once(
-        'ui.layer_tree_rebuild',
+        f'ui.layer_tree_rebuild.{scene_pointer}',
         _timer,
         first_interval=0.10,
     )
@@ -746,12 +659,10 @@ def draw_creation_ui(layout, context):
     layout.separator()
 
     row = layout.row(align=True)
-    row.prop(sc, "fbp_show_project_tools", text="Import Project", icon=(fbp_icon("DISCLOSURE_TRI_DOWN") if sc.fbp_show_project_tools else fbp_icon("DISCLOSURE_TRI_RIGHT")), toggle=True)
+    row.prop(sc, "fbp_show_project_tools", text="Import Project", icon=(fbp_icon("DOWNARROW_HLT") if sc.fbp_show_project_tools else fbp_icon("RIGHTARROW")))
     if sc.fbp_show_project_tools:
         box = layout.box()
         box.prop(sc, "fbp_project_path", text="")
-        row = box.row(align=True)
-        row.prop(sc, "fbp_import_main_folders_as_scenes", text="Main Folders as Separate Scenes", toggle=True)
         row = box.row(align=True)
         row.operator("fbp.scan_project_to_setup", icon=fbp_icon("IMPORT"), text="Import to Setup")
         row.operator("fbp.auto_scene_builder", icon=fbp_icon("OUTLINER_COLLECTION"), text="Build Direct")
@@ -765,6 +676,9 @@ def draw_creation_ui(layout, context):
     split = row.split(factor=0.67, align=True)
     left = split.row(align=True)
     right = split.row(align=True)
+    pending = bool(getattr(sc, "fbp_pending_planes", None) and len(sc.fbp_pending_planes) > 0)
+    left.enabled = pending
+    right.enabled = pending
     left.operator("fbp.generate_multiplane", text="Generate Multiplane", icon=fbp_icon("RENDERLAYERS"))
     right.operator("fbp.clear_pending_planes", icon=fbp_icon("TRASH"), text="Clear Setup")
 

@@ -1,9 +1,35 @@
 """Focused Frame by Plane operator module."""
 
-try:
-    from .operator_common import *
-except ImportError:
-    from operator_common import *
+import bpy
+from bpy.props import (
+    StringProperty,
+)
+from bpy.types import Operator
+
+from .constants import FBP_PROJECT_COLLECTION_PREFIX, fbp_icon
+from .builder import build_fbp_color_rig, set_plane_mesh_extension
+from .materials import (
+    copy_scene_preview_ramp_to_rig,
+    fbp_apply_holdout_materials_to_rig,
+    fbp_is_native_holdout_plane,
+    restore_original_materials_from_holdout,
+    rig_holdout_is_active,
+)
+from .layers import (
+    get_or_create_child_collection,
+    get_selected_rigs,
+    is_fbp_layer_object,
+    iter_fbp_rigs_in_collection,
+    object_in_view_layer,
+)
+from .scene_sync import sync_layer_collection
+from .runtime import fbp_set_rna_property_silent
+from .core import update_object_padding_cb
+from .operator_common import (
+    _fbp_refresh_layer_tree,
+    fbp_default_color_plane_name,
+)
+
 
 
 class FBP_OT_CreateColorPlane(Operator):
@@ -17,9 +43,13 @@ class FBP_OT_CreateColorPlane(Operator):
         kind = getattr(sc, "fbp_color_plane_type", 'CUSTOM')
         gradient_settings = None
         if kind == 'HOLDOUT':
-            color = (0.0, 0.0, 0.0, 1.0); name = fbp_default_color_plane_name('HOLDOUT', color); holdout = True
+            color = (0.0, 0.0, 0.0, 1.0)
+            name = fbp_default_color_plane_name('HOLDOUT', color)
+            holdout = True
         elif kind == 'GRADIENT':
-            color = tuple(sc.fbp_gradient_color_b); name = fbp_default_color_plane_name('GRADIENT', color); holdout = False
+            color = tuple(sc.fbp_gradient_color_b)
+            name = fbp_default_color_plane_name('GRADIENT', color)
+            holdout = False
             gradient_settings = {
                 'mode': sc.fbp_gradient_mode, 'kind': sc.fbp_gradient_kind,
                 'color_a': tuple(sc.fbp_gradient_color_a), 'color_b': tuple(sc.fbp_gradient_color_b),
@@ -31,7 +61,9 @@ class FBP_OT_CreateColorPlane(Operator):
                 'rotation': float(getattr(sc, 'fbp_gradient_rotation', 0.0)),
             }
         else:
-            color = tuple(sc.fbp_color_plane_color); name = fbp_default_color_plane_name('SOLID', color); holdout = False
+            color = tuple(sc.fbp_color_plane_color)
+            name = fbp_default_color_plane_name('SOLID', color)
+            holdout = False
         coll = get_or_create_child_collection(sc.collection, FBP_PROJECT_COLLECTION_PREFIX + "Color Planes", 'COLOR_09')
         rig = build_fbp_color_rig(context, name, color, sc.fbp_color_plane_emission, holdout, target_collection=coll, gradient_settings=gradient_settings)
         if gradient_settings:
@@ -39,7 +71,8 @@ class FBP_OT_CreateColorPlane(Operator):
         sync_layer_collection(context)
         bpy.ops.object.select_all(action='DESELECT')
         if object_in_view_layer(rig, context):
-            rig.select_set(True); context.view_layer.objects.active = rig
+            rig.select_set(True)
+            context.view_layer.objects.active = rig
         sc.fbp_show_create_tools = False
         self.report({'INFO'}, f"Created {rig.name}")
         return {'FINISHED'}
@@ -263,5 +296,3 @@ class FBP_OT_ToggleLayerHoldout(Operator):
             self.report({'INFO'}, f"Holdout enabled for {rig.name}")
             return {'FINISHED'}
         return {'CANCELLED'}
-
-__all__ = ['FBP_OT_CreateColorPlane', 'FBP_OT_ResetCrop', 'FBP_OT_ResetExtend', 'FBP_OT_PopupCrop', 'FBP_OT_PopupExtend', 'FBP_OT_SetSelectedHoldout', 'FBP_OT_HoldoutAllExceptSelected', 'FBP_OT_RestoreHoldoutMaterials', 'FBP_OT_ToggleCollectionHoldout', 'FBP_OT_ToggleLayerHoldout']

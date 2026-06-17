@@ -1,9 +1,52 @@
 """Focused Frame by Plane operator module."""
 
-try:
-    from .operator_common import *
-except ImportError:
-    from operator_common import *
+import bpy
+import os
+import gc
+import statistics
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+from bpy.props import (
+    BoolProperty,
+    IntProperty,
+)
+from bpy.types import Operator
+
+from .layers import (
+    collect_project_image_paths,
+    collection_has_fbp_content,
+    collection_is_hidden_in_view_layer,
+    get_primary_fbp_collection,
+    is_fbp_layer_object,
+    iter_fbp_rigs_in_collection,
+    missing_project_images,
+    object_in_view_layer,
+    project_root_for_package,
+    relink_missing_images_from_root,
+    rig_has_missing_images,
+    sync_collection_colors_to_rigs,
+)
+from .scene_sync import sync_layer_collection
+from .builder import build_fbp_color_rig
+from .native_backend import build_native_fbp_rig
+from .geometry_nodes import (
+    FBP_EFFECT_REGISTRY,
+    fbp_add_effect,
+    fbp_effect_definition,
+    fbp_effect_ids_for_rig,
+    fbp_effect_supported_for_rig,
+    fbp_update_geometry_effect,
+    fbp_update_shader_effect,
+)
+from .operator_common import (
+    _fbp_active_pending_index_and_collection,
+    _fbp_active_pending_tree_row,
+    _fbp_refresh_pending_tree,
+    _fbp_select_pending_index,
+)
+
 
 
 class FBP_OT_RemovePendingTreeSelection(Operator):
@@ -149,24 +192,467 @@ class FBP_OT_SyncCollectionColors(Operator):
         self.report({'INFO'}, "Collection colors synced")
         return {'FINISHED'}
 
-class FBP_OT_ShowImportProfile(Operator):
-    bl_idname      = "fbp.show_import_profile"
-    bl_label       = "Show Import Profile"
-    bl_description = "Open the last Frame by Plane import profiling report"
+class FBP_OT_ApplyPreferencesToScene(Operator):
+    bl_idname = "fbp.apply_preferences_to_scene"
+    bl_label = "Apply Frame by Plane Preferences"
+    bl_description = "Apply the configured Frame by Plane defaults to the current Scene"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        txt = bpy.data.texts.get("FBP_Last_Import_Profile")
-        if not txt:
-            txt = bpy.data.texts.new("FBP_Last_Import_Profile")
-            txt.write("No import profile yet. Run Auto Build Project or Generate Multi Plane first.")
+        from .properties import fbp_apply_preferences_to_scene
+        if fbp_apply_preferences_to_scene(context.scene, force=True, context=context):
+            self.report({'INFO'}, "Frame by Plane preferences applied to the current Scene")
+            return {'FINISHED'}
+        self.report({'WARNING'}, "Frame by Plane preferences are unavailable")
+        return {'CANCELLED'}
+
+
+def _fbp_process_rss_bytes():
+    """Return the current Blender process working set where the OS exposes it."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = (
+                    ('cb', wintypes.DWORD),
+                    ('PageFaultCount', wintypes.DWORD),
+                    ('PeakWorkingSetSize', ctypes.c_size_t),
+                    ('WorkingSetSize', ctypes.c_size_t),
+                    ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+                    ('PagefileUsage', ctypes.c_size_t),
+                    ('PeakPagefileUsage', ctypes.c_size_t),
+                )
+
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(counters)
+            process = ctypes.windll.kernel32.GetCurrentProcess()
+            success = ctypes.windll.psapi.GetProcessMemoryInfo(
+                process, ctypes.byref(counters), counters.cb
+            )
+            return int(counters.WorkingSetSize) if success else 0
+
+        statm = Path('/proc/self/statm')
+        if statm.is_file():
+            resident_pages = int(statm.read_text(encoding='utf-8').split()[1])
+            return resident_pages * int(os.sysconf('SC_PAGE_SIZE'))
+
+        import resource
+        usage = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # macOS reports bytes; most other Unix platforms report KiB.
+        return usage if os.uname().sysname == 'Darwin' else usage * 1024
+    except (AttributeError, IndexError, OSError, RuntimeError, TypeError, ValueError):
+        return 0
+
+
+class FBP_OT_ProfileEffects(Operator):
+    bl_idname = "fbp.profile_effects"
+    bl_label = "Profile Effects"
+    bl_description = "Measure real frame/depsgraph update time and Blender process memory for the current scene"
+
+    samples: IntProperty(
+        name="Samples",
+        description="Number of measured frame switches after one warm-up pass",
+        default=8,
+        min=3,
+        max=30,
+    )
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        scene = context.scene
+        view_layer = context.view_layer
+        original_frame = int(scene.frame_current)
+        if original_frame < int(scene.frame_end):
+            alternate_frame = original_frame + 1
+        elif original_frame > int(scene.frame_start):
+            alternate_frame = original_frame - 1
+        else:
+            alternate_frame = original_frame
+
+        rigs = [obj for obj in scene.objects if is_fbp_layer_object(obj)]
+        effect_ids = [effect_id for rig in rigs for effect_id in fbp_effect_ids_for_rig(rig)]
+        heavy_effects = sum(
+            1 for effect_id in effect_ids
+            if str(fbp_effect_definition(effect_id).get('performance', '') or '').upper()
+            in {'HEAVY', 'VERY_HEAVY'}
+        )
+
+        gc.collect()
+        memory_before = _fbp_process_rss_bytes()
+        measurements = []
         try:
-            for area in context.screen.areas:
-                if area.type == 'TEXT_EDITOR':
-                    area.spaces.active.text = txt
-                    break
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-        self.report({'INFO'}, "Opened FBP_Last_Import_Profile")
+            # Warm up lazy node compilation and image evaluation before timing.
+            scene.frame_set(alternate_frame)
+            view_layer.update()
+            scene.frame_set(original_frame)
+            view_layer.update()
+
+            for index in range(int(self.samples)):
+                target_frame = alternate_frame if index % 2 == 0 else original_frame
+                started = time.perf_counter_ns()
+                scene.frame_set(target_frame)
+                view_layer.update()
+                elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000.0
+                measurements.append(elapsed_ms)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            self.report({'ERROR'}, f"Effects profiler failed: {exc}")
+            return {'CANCELLED'}
+        finally:
+            try:
+                scene.frame_set(original_frame)
+                view_layer.update()
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+
+        gc.collect()
+        memory_after = _fbp_process_rss_bytes()
+        if not measurements:
+            self.report({'ERROR'}, "Effects profiler produced no timing samples")
+            return {'CANCELLED'}
+
+        average_ms = statistics.fmean(measurements)
+        median_ms = statistics.median(measurements)
+        minimum_ms = min(measurements)
+        maximum_ms = max(measurements)
+        rss_mb = memory_after / (1024.0 * 1024.0) if memory_after else 0.0
+        delta_mb = (
+            (memory_after - memory_before) / (1024.0 * 1024.0)
+            if memory_before and memory_after else 0.0
+        )
+        measured_at = datetime.now().isoformat(timespec='seconds')
+
+        scene['fbp_effect_profile_timestamp'] = measured_at
+        scene['fbp_effect_profile_samples'] = int(len(measurements))
+        scene['fbp_effect_profile_avg_ms'] = float(average_ms)
+        scene['fbp_effect_profile_median_ms'] = float(median_ms)
+        scene['fbp_effect_profile_min_ms'] = float(minimum_ms)
+        scene['fbp_effect_profile_max_ms'] = float(maximum_ms)
+        scene['fbp_effect_profile_rss_mb'] = float(rss_mb)
+        scene['fbp_effect_profile_delta_mb'] = float(delta_mb)
+
+        lines = [
+            "Frame by Plane Effects Profiler",
+            "================================",
+            f"Measured: {measured_at}",
+            f"Scene: {scene.name}",
+            f"Frame pair: {original_frame} / {alternate_frame}",
+            f"Samples: {len(measurements)} (plus warm-up)",
+            f"FBP layers: {len(rigs)}",
+            f"Effect instances: {len(effect_ids)}",
+            f"Heavy effect instances: {heavy_effects}",
+            "",
+            "Frame + depsgraph update timing:",
+            f"- Average: {average_ms:.3f} ms",
+            f"- Median: {median_ms:.3f} ms",
+            f"- Minimum: {minimum_ms:.3f} ms",
+            f"- Maximum: {maximum_ms:.3f} ms",
+            "",
+            "Blender process memory:",
+            f"- Working set after profile: {rss_mb:.2f} MiB" if memory_after else "- Working set: unavailable on this platform",
+            f"- Profile delta: {delta_mb:+.2f} MiB" if memory_before and memory_after else "- Profile delta: unavailable",
+            "",
+            "Per-sample timings:",
+        ]
+        lines.extend(f"- {index + 1:02d}: {value:.3f} ms" for index, value in enumerate(measurements))
+        text = bpy.data.texts.get("FBP_Effects_Profiler_Report") or bpy.data.texts.new("FBP_Effects_Profiler_Report")
+        text.clear()
+        text.write("\n".join(lines))
+
+        self.report({'INFO'}, f"Effects profile: {average_ms:.2f} ms average · {rss_mb:.1f} MiB")
         return {'FINISHED'}
 
-__all__ = ['FBP_OT_RemovePendingTreeSelection', 'FBP_OT_RemovePendingPlaneAtIndex', 'FBP_OT_ProjectHealthCheck', 'FBP_OT_RelinkFromProjectRoot', 'FBP_OT_SelectMissingLayers', 'FBP_OT_SyncCollectionColors', 'FBP_OT_ShowImportProfile']
+# SECTION - Effects Regression Scene #
+def _fbp_write_regression_image(filepath, phase=0.0, width=128, height=72):
+    """Write a deterministic alpha/color test pattern using Blender images."""
+    image = bpy.data.images.new(
+        f"FBP_Regression_Source_{phase:.2f}", width=width, height=height,
+        alpha=True, float_buffer=False,
+    )
+    pixels = [0.0] * (width * height * 4)
+    for y in range(height):
+        v = y / max(1, height - 1)
+        for x in range(width):
+            u = x / max(1, width - 1)
+            index = (y * width + x) * 4
+            checker = 1.0 if ((x // 12 + y // 12 + int(phase * 3)) % 2 == 0) else 0.2
+            pixels[index + 0] = max(0.0, min(1.0, u * 0.75 + phase * 0.25))
+            pixels[index + 1] = max(0.0, min(1.0, v * 0.75 + checker * 0.25))
+            pixels[index + 2] = max(0.0, min(1.0, (1.0 - u) * 0.55 + checker * 0.35))
+            dx = (u - 0.5) / 0.48
+            dy = (v - 0.5) / 0.48
+            radius_sq = dx * dx + dy * dy
+            if radius_sq <= 0.42:
+                alpha = 1.0
+            elif radius_sq <= 0.68:
+                alpha = 0.50
+            elif radius_sq <= 1.0:
+                alpha = 0.15
+            else:
+                alpha = 0.0
+            pixels[index + 3] = alpha
+    try:
+        image.pixels.foreach_set(pixels)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        image.pixels[:] = pixels
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.filepath_raw = str(path)
+    image.file_format = 'PNG'
+    image.update()
+    image.save()
+    bpy.data.images.remove(image)
+    return str(path)
+
+
+def _fbp_regression_safe_defaults(rig, _effect_id):
+    """Keep the generated test scene responsive while still evaluating effects."""
+    values = {
+        "fbp_text_matrix_quality": "CUSTOM",
+        "fbp_text_matrix_viewport_columns": 12,
+        "fbp_text_matrix_viewport_rows": 0,
+        "fbp_text_matrix_render_columns": 24,
+        "fbp_text_matrix_render_rows": 0,
+        "fbp_text_matrix_playback_columns": 8,
+        "fbp_text_matrix_playback_rows": 0,
+        "fbp_felt_render_density": 1000,
+        "fbp_felt_viewport_percentage": 1.0,
+        "fbp_felt_subdivisions": 0,
+        "fbp_felt_alpha_resolution": 16,
+        "fbp_thickness_alpha_resolution": 16,
+        "fbp_wind_subdivision": 2,
+        "fbp_mesh_wiggle_subdivisions": 2,
+        "fbp_stop_motion_resolution": 8,
+    }
+    for name, value in values.items():
+        if hasattr(rig, name):
+            try:
+                setattr(rig, name, value)
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+
+
+class FBP_OT_CreateEffectRegressionScene(Operator):
+    bl_idname = "fbp.create_effect_regression_scene"
+    bl_label = "Create Effects Regression Scene"
+    bl_description = "Generate a separate scene containing source-type samples and one test layer for every registered effect"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    replace_existing: BoolProperty(
+        name="Replace Existing",
+        description="Replace an existing FBP Effects Regression scene",
+        default=True,
+    )
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        window = getattr(context, "window", None)
+        if window is None:
+            self.report({'ERROR'}, "A Blender window is required to create the regression scene")
+            return {'CANCELLED'}
+
+        scene_name = "FBP Effects Regression"
+        old_scene = bpy.data.scenes.get(scene_name)
+        if old_scene is not None and not self.replace_existing:
+            self.report({'WARNING'}, "The FBP Effects Regression scene already exists")
+            return {'CANCELLED'}
+
+        previous_scene = window.scene
+        new_scene = bpy.data.scenes.new(scene_name + "__BUILD")
+        window.scene = new_scene
+        new_scene["fbp_regression_scene"] = True
+        new_scene.frame_start = 1
+        new_scene.frame_end = 48
+        new_scene.frame_set(1)
+        try:
+            new_scene.fbp_pre_duration = 6
+            new_scene.fbp_pre_loop_mode = 'LOOP'
+            new_scene.fbp_pre_shadeless = True
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+
+        # Clear orphaned data from a previous generated scene without touching user data.
+        for obj in tuple(bpy.data.objects):
+            try:
+                if bool(obj.get("fbp_regression_generated", False)) and obj.users == 0:
+                    bpy.data.objects.remove(obj)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        for collection in tuple(bpy.data.collections):
+            try:
+                if bool(collection.get("fbp_regression_generated", False)) and collection.users == 0:
+                    bpy.data.collections.remove(collection)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+
+        root = bpy.data.collections.new("FBP Regression")
+        root["fbp_regression_generated"] = True
+        new_scene.collection.children.link(root)
+        source_collection = bpy.data.collections.new("00 - Source Types")
+        image_collection = bpy.data.collections.new("01 - Image Effects")
+        mesh_collection = bpy.data.collections.new("02 - Mesh Effects")
+        for collection in (source_collection, image_collection, mesh_collection):
+            collection["fbp_regression_generated"] = True
+            root.children.link(collection)
+
+        temp_root = Path(tempfile.gettempdir()) / "frame_by_plane_regression"
+        paths = [
+            _fbp_write_regression_image(temp_root / f"fbp_regression_{index:04d}.png", phase=index / 3.0)
+            for index in range(1, 4)
+        ]
+        directory = str(temp_root)
+        filenames = [Path(path).name for path in paths]
+
+        built = []
+        source_rigs = []
+        try:
+            image_rig = build_native_fbp_rig(
+                context, "SOURCE - Image", directory, [filenames[0]],
+                (-5.25, 4.0, 0.0), target_collection=source_collection,
+            )
+            sequence_rig = build_native_fbp_rig(
+                context, "SOURCE - Sequence", directory, filenames,
+                (-1.75, 4.0, 0.0), target_collection=source_collection,
+            )
+            color_rig = build_fbp_color_rig(
+                context, "SOURCE - Color", (0.12, 0.48, 0.92, 1.0), True,
+                location=(1.75, 4.0, 0.0), target_collection=source_collection,
+            )
+            gradient_rig = build_fbp_color_rig(
+                context, "SOURCE - Gradient", (1.0, 0.45, 0.08, 1.0), True,
+                location=(5.25, 4.0, 0.0), target_collection=source_collection,
+                gradient_settings={
+                    "mode": "LINEAR", "kind": "COLOR",
+                    "color_a": (0.02, 0.02, 0.02, 1.0),
+                    "color_b": (1.0, 0.45, 0.08, 1.0),
+                },
+            )
+            source_rigs = [image_rig, sequence_rig, color_rig, gradient_rig]
+            for source in source_rigs:
+                source["fbp_regression_generated"] = True
+                plane = getattr(source, "fbp_plane_target", None)
+                if plane:
+                    plane["fbp_regression_generated"] = True
+            # Representative compatibility stacks exercise procedural sources.
+            for source, effects in (
+                (color_rig, ("HUE_SATURATION", "DOT_MATRIX")),
+                (gradient_rig, ("DUOTONE", "HALFTONE", "ASCII_MATRIX")),
+            ):
+                for source_effect in effects:
+                    if fbp_effect_supported_for_rig(source, source_effect):
+                        fbp_add_effect(source, source_effect)
+            built.extend(source_rigs)
+        except Exception as exc:
+            try:
+                if previous_scene is not None and previous_scene.name in bpy.data.scenes:
+                    window.scene = previous_scene
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+            try:
+                bpy.data.scenes.remove(new_scene)
+            except (ReferenceError, RuntimeError):
+                pass
+            self.report({'ERROR'}, f"Could not create regression sources: {exc}")
+            return {'CANCELLED'}
+
+        image_index = 0
+        mesh_index = 0
+        failures = []
+        for effect_id, definition in FBP_EFFECT_REGISTRY.items():
+            kind = str(definition.get("kind", "") or "")
+            category = str(definition.get("category", "") or "")
+            is_mesh = kind == "GEOMETRY" or category == "3D"
+            index = mesh_index if is_mesh else image_index
+            columns = 5
+            x = (index % columns) * 3.4 - 6.8
+            y = -(index // columns) * 3.2 - (2.0 if is_mesh else 7.0)
+            collection = mesh_collection if is_mesh else image_collection
+            if is_mesh:
+                mesh_index += 1
+            else:
+                image_index += 1
+            label = str(definition.get("label", effect_id) or effect_id)
+            try:
+                test_files = [filenames[0]] if index % 2 == 0 else filenames
+                source_tag = "IMG" if len(test_files) == 1 else "SEQ"
+                rig = build_native_fbp_rig(
+                    context, f"TEST {source_tag} - {label}", directory, test_files,
+                    (x, y, 0.0), target_collection=collection,
+                )
+                rig["fbp_regression_generated"] = True
+                plane = getattr(rig, "fbp_plane_target", None)
+                if plane:
+                    plane["fbp_regression_generated"] = True
+                _fbp_regression_safe_defaults(rig, effect_id)
+                if not fbp_effect_supported_for_rig(rig, effect_id):
+                    failures.append(f"{label}: unsupported by regression image source")
+                    continue
+                if not fbp_add_effect(rig, effect_id):
+                    failures.append(f"{label}: add returned false")
+                    continue
+                if kind == "GEOMETRY":
+                    fbp_update_geometry_effect(rig, effect_id)
+                elif kind == "SHADER":
+                    fbp_update_shader_effect(rig, effect_id)
+                built.append(rig)
+            except Exception as exc:
+                failures.append(f"{label}: {exc}")
+
+        # Camera points down the local -Z axis onto the XY layout.
+        camera_data = bpy.data.cameras.new("FBP Regression Camera")
+        camera = bpy.data.objects.new("FBP Regression Camera", camera_data)
+        root.objects.link(camera)
+        camera["fbp_regression_generated"] = True
+        camera.location = (0.0, -8.0, 35.0)
+        camera_data.type = 'ORTHO'
+        rows = max(1, (max(image_index, mesh_index) + 4) // 5)
+        camera_data.ortho_scale = max(24.0, rows * 7.0 + 12.0)
+        new_scene.camera = camera
+
+        for obj in new_scene.objects:
+            try:
+                obj.select_set(False)
+            except (AttributeError, RuntimeError):
+                pass
+        if built:
+            try:
+                built[0].select_set(True)
+                context.view_layer.objects.active = built[0]
+            except (AttributeError, RuntimeError):
+                pass
+        sync_layer_collection(context)
+
+        lines = [
+            "Frame by Plane Effects Regression Scene",
+            "=======================================",
+            f"Source rigs: {len(source_rigs)}",
+            f"Effect rigs: {max(0, len(built) - len(source_rigs))}",
+            f"Failures: {len(failures)}",
+            f"Temporary sources: {temp_root}",
+            "",
+        ]
+        lines.extend(f"- {item}" for item in failures)
+        text = bpy.data.texts.get("FBP_Effects_Regression_Report") or bpy.data.texts.new("FBP_Effects_Regression_Report")
+        text.clear()
+        text.write("\n".join(lines))
+        if old_scene is not None and self.replace_existing:
+            try:
+                bpy.data.scenes.remove(old_scene)
+            except (ReferenceError, RuntimeError):
+                pass
+        new_scene.name = scene_name
+
+        self.report(
+            {'WARNING' if failures else 'INFO'},
+            f"Regression scene: {len(built)} layers, {len(failures)} issue(s)",
+        )
+        return {'FINISHED'}
+

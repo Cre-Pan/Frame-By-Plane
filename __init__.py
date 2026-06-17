@@ -1,19 +1,22 @@
+import importlib
+
+
 bl_info = {
     "name": "Frame by Plane",
     "author": "Alessandro Pannoli",
-    "version": (4, 1, 7),
+    "version": (4, 8, 7),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > Frame by Plane",
-    "description": "Version 4.1.7: flatten single-sequence and single-static-image folders.",
+    "description": "Version 4.8.7: corrected Text Matrix image sampling and manual grid rows.",
     "category": "Animation",
 }
 
 
-import importlib
-
 _MODULE_NAMES = (
-    "constants", "path_utils", "profiling", "safe_tasks", "runtime",
-    "properties", "materials", "migrations", "layers", "scene_sync",
+    "constants", "matrix_presets", "path_utils", "safe_tasks", "runtime",
+    # Register Object properties before the Effects UI/handler. On unregister
+    # the reverse order removes the frame handler before deleting its RNA props.
+    "properties", "builtin_effects", "geometry_nodes", "materials", "layers", "scene_sync",
     "native_backend", "builder", "importer", "core", "handlers",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural",
@@ -22,9 +25,14 @@ _MODULE_NAMES = (
 
 _loaded_modules = []
 for _name in _MODULE_NAMES:
-    _module = importlib.import_module(f".{_name}", __package__)
-    if _name in globals():
-        _module = importlib.reload(_module)
+    # Check before importing. import_module() automatically exposes the
+    # submodule on this package, so checking globals afterwards caused every
+    # module to be imported and immediately reloaded even on the first enable.
+    _existing_module = globals().get(_name)
+    if _existing_module is None:
+        _module = importlib.import_module(f".{_name}", __package__)
+    else:
+        _module = importlib.reload(_existing_module)
     globals()[_name] = _module
     _loaded_modules.append(_module)
 
@@ -47,7 +55,7 @@ def register():
             if callable(unregister_fn):
                 try:
                     unregister_fn()
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as cleanup_exc:
+                except Exception as cleanup_exc:
                     _runtime_module.fbp_warn(f"Could not clean partial registration for {mod.__name__}", cleanup_exc)
             for previous in reversed(registered):
                 rollback_fn = getattr(previous, "unregister", None)
@@ -55,7 +63,7 @@ def register():
                     continue
                 try:
                     rollback_fn()
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as rollback_exc:
+                except Exception as rollback_exc:
                     _runtime_module.fbp_warn(f"Could not roll back {previous.__name__}", rollback_exc)
             raise
 
@@ -67,5 +75,5 @@ def unregister():
             continue
         try:
             unregister_fn()
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        except Exception as exc:
             _runtime_module.fbp_warn(f"Could not unregister {mod.__name__}", exc)

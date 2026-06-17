@@ -1,358 +1,126 @@
+"""Core sequence, procedural material and shared UI operations."""
+
 import bpy
-import os
 
-
-try:
-    from .constants import (
-        STRIP_COLORS_DICT,
-        COLOR_ENUM_ITEMS,
-        preview_collections,
-        FBP_SUPPORTED_IMAGE_EXT,
-        FBP_SUPPORTED_VIDEO_EXT,
-        FBP_SUPPORTED_MEDIA_EXT,
-        FBP_TECHNICAL_MAP_SUFFIXES,
-        FBP_PROJECT_COLLECTION_PREFIX,
-    )
-    from .path_utils import (
-        natural_sort_key,
-        is_supported_video_file,
-        is_supported_media_file,
-        is_hidden_import_name,
-        is_technical_map_file,
-        clean_layer_name_from_path,
-    )
-except ImportError:
-    from constants import (
-        STRIP_COLORS_DICT,
-        COLOR_ENUM_ITEMS,
-        preview_collections,
-        FBP_SUPPORTED_IMAGE_EXT,
-        FBP_SUPPORTED_VIDEO_EXT,
-        FBP_SUPPORTED_MEDIA_EXT,
-        FBP_TECHNICAL_MAP_SUFFIXES,
-        FBP_PROJECT_COLLECTION_PREFIX,
-    )
-    from path_utils import (
-        natural_sort_key,
-        is_supported_video_file,
-        is_supported_media_file,
-        is_hidden_import_name,
-        is_technical_map_file,
-        clean_layer_name_from_path,
-    )
-
-
-# MATERIALS / NODES IMPORT #
-############################
-# Material and shader helpers live in materials.py. These imports keep the shared core API stable.
-try:
-    from .materials import (
-        safe_get_socket,
-        iter_material_image_nodes,
-        fbp_images_from_material,
-        fbp_remove_unused_images,
-        fbp_remove_unused_materials_and_images,
-        fbp_copy_material_slots_unique,
-        rebuild_fbp_image_material,
-        do_update_emission,
-        set_fbp_material_transparency,
-        is_fbp_empty_material,
-        do_update_opacity,
-        configure_fbp_material_surface,
-        create_fbp_color_material,
-        create_fbp_gradient_material,
-        fbp_rebuild_color_plane_material,
-        fbp_holdout_material,
-        fbp_alpha_holdout_material_from_source,
-        fbp_material_is_holdout,
-        fbp_plane_uses_holdout_materials,
-        fbp_is_native_holdout_plane,
-        fbp_rebuild_original_materials_for_holdout_restore,
-        fbp_apply_holdout_materials_to_rig,
-        store_original_materials_for_holdout,
-        restore_original_materials_from_holdout,
-        fbp_find_node_by_type,
-        fbp_relink_node_input,
-        update_fbp_procedural_material_opacity,
-        fbp_rebuild_procedural_material_for_emission,
-        rig_holdout_is_active,
-        get_fbp_gradient_material_from_rig,
-        find_fbp_gradient_ramp_node,
-        get_fbp_gradient_mapping_node,
-        get_fbp_gradient_center_node,
-        update_fbp_gradient_viewport_color,
-        apply_fbp_gradient_mapping_to_material,
-        get_fbp_gradient_preview_material,
-        get_or_create_fbp_gradient_preview_material,
-        fbp_update_scene_gradient_preview_material,
-        fbp_capture_color_ramp_data,
-        fbp_restore_color_ramp_data,
-        fbp_apply_gradient_kind_to_ramp_node,
-        copy_color_ramp,
-        copy_scene_preview_ramp_to_rig,
-        fbp_get_active_frame_material,
-        fbp_material_color_value,
-        fbp_duplicate_procedural_material_for_frame,
-        fbp_create_procedural_frame_material_for_rig,
-    )
-except ImportError:
-    from materials import (
-        safe_get_socket, iter_material_image_nodes, fbp_images_from_material,
-        fbp_remove_unused_images, fbp_remove_unused_materials_and_images,
-        fbp_copy_material_slots_unique, rebuild_fbp_image_material, do_update_emission,
-        set_fbp_material_transparency, is_fbp_empty_material,
-        do_update_opacity, configure_fbp_material_surface,
-        create_fbp_color_material, create_fbp_gradient_material,
-        fbp_rebuild_color_plane_material, fbp_holdout_material,
-        fbp_alpha_holdout_material_from_source, fbp_material_is_holdout,
-        fbp_plane_uses_holdout_materials, fbp_is_native_holdout_plane,
-        fbp_rebuild_original_materials_for_holdout_restore,
-        fbp_apply_holdout_materials_to_rig, store_original_materials_for_holdout,
-        restore_original_materials_from_holdout, fbp_find_node_by_type,
-        fbp_relink_node_input, update_fbp_procedural_material_opacity,
-        fbp_rebuild_procedural_material_for_emission, rig_holdout_is_active,
-        get_fbp_gradient_material_from_rig, find_fbp_gradient_ramp_node,
-        get_fbp_gradient_mapping_node, get_fbp_gradient_center_node,
-        update_fbp_gradient_viewport_color,
-        apply_fbp_gradient_mapping_to_material, get_fbp_gradient_preview_material,
-        get_or_create_fbp_gradient_preview_material, fbp_update_scene_gradient_preview_material,
-        fbp_capture_color_ramp_data, fbp_restore_color_ramp_data,
-        fbp_apply_gradient_kind_to_ramp_node, copy_color_ramp, copy_scene_preview_ramp_to_rig,
-        fbp_get_active_frame_material, fbp_material_color_value,
-        fbp_duplicate_procedural_material_for_frame,
-        fbp_create_procedural_frame_material_for_rig,
-    )
-
-
-# BUILDER / SCENE GEOMETRY IMPORT #
-##################################
-# Rig creation, mesh construction and fit-to-camera helpers live in builder.py.
-try:
-    from .builder import (
-        camera_ratio_scale,
-        fbp_link_object,
-        fbp_create_rect_mesh,
-        fbp_update_rig_frame_mesh_to_bounds,
-        fbp_create_mesh_object,
-        fbp_scene_orientation_is_horizontal,
-        fbp_apply_creation_orientation,
-        build_fbp_color_rig,
-        set_plane_mesh_extension,
-        fbp_rig_base_image_size,
-        apply_fit_to_camera,
-        build_fbp_rig,
-    )
-except ImportError:
-    from builder import (
-        camera_ratio_scale, fbp_link_object, fbp_create_rect_mesh,
-        fbp_update_rig_frame_mesh_to_bounds, fbp_create_mesh_object,
-        fbp_scene_orientation_is_horizontal, fbp_apply_creation_orientation,
-        build_fbp_color_rig, set_plane_mesh_extension, fbp_rig_base_image_size,
-        build_fbp_rig,
-    )
-
-# ICON REGISTRY IMPORT FALLBACK #
-#################################
-# Keep icon access safe even when testing core.py against an older constants.py.
-# In the full add-on package, these functions are provided by constants.py.
-try:
-    from . import constants as _fbp_constants
-except ImportError:
-    try:
-        import constants as _fbp_constants
-    except ImportError:
-        _fbp_constants = None
-
-FBP_ICONS = getattr(_fbp_constants, "FBP_ICONS", {}) if _fbp_constants else {}
-
-
-def fbp_icon(name, fallback="BLANK1"):
-    """Return a Blender icon string from the centralized registry.
-
-    Edit constants.py > FBP_ICONS to change icons globally. This local fallback
-    prevents NameError when only core.py is replaced during live testing.
-    """
-    icon_func = getattr(_fbp_constants, "fbp_icon", None) if _fbp_constants else None
-    if callable(icon_func):
-        try:
-            return icon_func(name, fallback)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-    return FBP_ICONS.get(name, FBP_ICONS.get(fallback, name if name else fallback))
-
-
-def fbp_strip_icon(color_tag, fallback="STRIP_COLOR_09"):
-    """Return the strip icon for a Frame by Plane color tag."""
-    strip_func = getattr(_fbp_constants, "fbp_strip_icon", None) if _fbp_constants else None
-    if callable(strip_func):
-        try:
-            return strip_func(color_tag, fallback)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-    tag = str(color_tag or "COLOR_09")
-    return f"STRIP_{tag}" if tag.startswith("COLOR_") else fallback
-
-
-def fbp_collection_color_icon(color_tag, fallback="OUTLINER_COLLECTION"):
-    """Return the colored collection icon for a Blender collection color tag."""
-    collection_func = getattr(_fbp_constants, "fbp_collection_color_icon", None) if _fbp_constants else None
-    if callable(collection_func):
-        try:
-            return collection_func(color_tag, fallback)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-    tag = str(color_tag or "")
-    if tag.startswith("COLOR_"):
-        suffix = tag.split("_")[-1]
-        if suffix in {"01", "02", "03", "04", "05", "06", "07", "08"}:
-            return f"COLLECTION_COLOR_{suffix}"
-    return fallback
-
-try:
-    from .runtime import (
-        fbp_log, fbp_warn, fbp_runtime_get, fbp_runtime_set,
-        fbp_obj_runtime_key, fbp_is_silent_property_update,
-        fbp_set_rna_property_silent,
-    )
-except ImportError:
-    from runtime import (
-        fbp_log, fbp_warn, fbp_runtime_get, fbp_runtime_set,
-        fbp_obj_runtime_key, fbp_is_silent_property_update,
-        fbp_set_rna_property_silent,
-    )
+from .constants import STRIP_COLORS_DICT, fbp_icon
+from .path_utils import natural_sort_key
+from .materials import (
+    safe_get_socket,
+    fbp_remove_unused_materials_and_images,
+    do_update_emission,
+    do_update_opacity,
+    configure_fbp_material_surface,
+    fbp_rebuild_color_plane_material,
+    get_fbp_gradient_material_from_rig,
+    find_fbp_gradient_ramp_node,
+    update_fbp_gradient_viewport_color,
+    apply_fbp_gradient_mapping_to_material,
+    get_fbp_gradient_preview_material,
+    get_or_create_fbp_gradient_preview_material,
+    fbp_update_scene_gradient_preview_material,
+    fbp_get_active_frame_material,
+    fbp_material_color_value,
+    fbp_duplicate_procedural_material_for_frame,
+    ensure_fbp_plane_material_integrity,
+)
+from .builder import set_plane_mesh_extension
+from .runtime import (
+    fbp_warn,
+    fbp_warn_once,
+    fbp_runtime_get,
+    fbp_runtime_set,
+    fbp_obj_runtime_key,
+    fbp_is_silent_property_update,
+    fbp_set_rna_property_silent,
+)
+from .layers import (
+    _FBP_SYNCING_PROCEDURAL_PREVIEW_ITEMS,
+    apply_collection_color_to_layer,
+    fbp_cache_procedural_preview_on_item,
+    fbp_procedural_kind_for_item,
+    fbp_procedural_kind_from_material,
+    fbp_resolve_rig_from_any_object,
+    fbp_set_procedural_metadata,
+    get_primary_fbp_collection,
+    is_fbp_layer_object,
+    iter_fbp_rigs_in_collection,
+    iter_scene_fbp_rigs,
+    update_global_visibility,
+)
 
 _FBP_SYNCING_FRAME_MATERIAL_POINTERS = set()
 _FBP_SUPPRESS_IMAGE_DURATION_CB = False
 
 
-# ICON REGISTRY NOTE #
-######################
-# All Frame by Plane UI icons are centralized in constants.py under # ICON REGISTRY #.
-# Use fbp_icon("ICON_KEY") or fbp_strip_icon(color_tag) instead of hard-coded icon strings.
-
-
-# ── HELPERS ──────────────────────────────────────────────────────────────────
-
-try:
-    from .layers import *
-except ImportError:
-    from layers import *
-
-# ── PROPERTY GROUPS MOVED TO properties.py ─────────────────────────────────────
-
-# ── LAYER / SYNC HELPERS ──────────────────────────────────────────────────────
-
-# ── SCENE SYNC IMPORTS ───────────────────────────────────────────────────────
-# Native delete/duplicate repair, orphan cleanup and layer syncing live in scene_sync.py.
-# Imported here to keep the shared core API stable.
-try:
-    from .scene_sync import (
-        sync_layer_collection,
-        fbp_linked_planes_for_rig,
-        fbp_remove_plane_datablock,
-        fbp_snapshot_layer_plane_links,
-        fbp_cleanup_planes_for_deleted_rigs,
-        delete_fbp_rigs,
-        fbp_repair_default_duplicate_rig,
-        fbp_repair_default_duplicates,
-        cleanup_orphan_fbp_planes,
-        fbp_initial_sync_timer,
-        fbp_known_links_have_deleted_rig,
-        fbp_depsgraph_updated_fbp_rigs,
-        fbp_scene_has_broken_native_duplicate,
-        fbp_run_native_ops_sync,
-        fbp_depsgraph_native_ops_handler,
-        cleanup_orphan_fbp_planes_timer,
-    )
-except ImportError:
-    from scene_sync import (
-        sync_layer_collection, fbp_linked_planes_for_rig, fbp_remove_plane_datablock,
-        fbp_snapshot_layer_plane_links, fbp_cleanup_planes_for_deleted_rigs,
-        delete_fbp_rigs, fbp_repair_default_duplicate_rig, fbp_repair_default_duplicates,
-        cleanup_orphan_fbp_planes, fbp_initial_sync_timer, fbp_known_links_have_deleted_rig,
-        fbp_depsgraph_updated_fbp_rigs, fbp_scene_has_broken_native_duplicate,
-        fbp_run_native_ops_sync, fbp_depsgraph_native_ops_handler, cleanup_orphan_fbp_planes_timer,
-    )
-
-
-def sync_fbp_property(self, context, prop_name):
-    if getattr(context, "active_object", None) != self:
-        return
-    val = getattr(self, prop_name)
-    for obj in context.selected_objects:
-        if obj != self and getattr(obj, "is_fbp_control", False):
-            if getattr(obj, prop_name) != val:
-                setattr(obj, prop_name, val)
-
-
 # ── CORE OPERATIONS ───────────────────────────────────────────────────────────
 
 
-def fbp_sequence_backend_for_rig(rig):
-    """Return the concrete backend used by this rig.
-
-    Image layers are native-only. Color / Gradient / Holdout layers keep their
-    procedural material workflow.
-    """
-    if not rig:
-        return 'NATIVE_IMAGE_SEQUENCE'
-    try:
-        if bool(getattr(rig, 'fbp_is_color_plane', False)):
-            return 'PROCEDURAL_COLOR'
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    return 'NATIVE_IMAGE_SEQUENCE'
-
-
 def fbp_rig_uses_procedural_color(rig):
-    return fbp_sequence_backend_for_rig(rig) == 'PROCEDURAL_COLOR'
+    """Return whether the rig uses the current procedural color-plane workflow."""
+    try:
+        return bool(rig and getattr(rig, 'fbp_is_color_plane', False))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
 
 
 def fbp_sequence_index_at_frame(rig, frame=None):
-    """Evaluate the visible row index for per-row timing.
+    """Evaluate the visible procedural row without per-frame list rebuilding.
 
-    Used by procedural Color / Gradient / Holdout animation. Image sequences use
-    Blender ImageUser timing instead of swapping material slots.
+    Image layers use Blender ImageUser timing. Color, Gradient and Holdout rows
+    are evaluated here; keep the hot frame-change path compact because it runs
+    once per procedural layer on every evaluated frame.
     """
     if frame is None:
-        frame = getattr(bpy.context.scene, 'frame_current', 1)
+        scene = getattr(bpy.context, "scene", None)
+        frame = getattr(scene, "frame_current", 1)
     try:
-        start = int(getattr(rig, 'fbp_start_frame', 1))
+        start = int(getattr(rig, "fbp_start_frame", 1))
         rel = int(frame) - start
-    except Exception:
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         rel = 0
     if rel < 0:
         return -1
 
-    items = list(getattr(rig, 'fbp_images', []))
-    if not items:
+    items = getattr(rig, "fbp_images", ()) or ()
+    count = len(items)
+    if count <= 0:
         return -1
-    durations = [max(1, int(getattr(item, 'duration', getattr(rig, 'fbp_global_duration', 1)) or 1)) for item in items]
-    count = len(durations)
-    mode = str(getattr(rig, 'fbp_loop_mode', 'NONE') or 'NONE')
 
-    if mode == 'PINGPONG' and count > 1:
-        order = list(range(count)) + list(range(count - 2, 0, -1))
-    else:
-        order = list(range(count))
-    ordered_durations = [durations[i] for i in order]
-    total = max(1, sum(ordered_durations))
+    default_duration = max(1, int(getattr(rig, "fbp_global_duration", 1) or 1))
+    durations = tuple(
+        max(1, int(getattr(item, "duration", default_duration) or default_duration))
+        for item in items
+    )
+    mode = str(getattr(rig, "fbp_loop_mode", "NONE") or "NONE")
 
-    if mode in {'REPEAT', 'PINGPONG'}:
+    if mode == "PINGPONG" and count > 1:
+        # Ping-pong does not duplicate the first/last row at the turnarounds:
+        # 0, 1, 2, 1 for a three-row sequence.
+        total = max(1, sum(durations) + sum(durations[1:-1]))
         local = rel % total
-    else:
-        local = min(rel, total - 1)
+        accumulator = 0
+        for index, duration in enumerate(durations):
+            accumulator += duration
+            if local < accumulator:
+                return index
+        for index in range(count - 2, 0, -1):
+            accumulator += durations[index]
+            if local < accumulator:
+                return index
+        return 0
 
-    acc = 0
-    for src_index, dur in zip(order, ordered_durations):
-        acc += dur
-        if local < acc:
-            return max(0, min(count - 1, int(src_index)))
+    total = max(1, sum(durations))
+    local = rel % total if mode == "REPEAT" else min(rel, total - 1)
+    accumulator = 0
+    for index, duration in enumerate(durations):
+        accumulator += duration
+        if local < accumulator:
+            return index
     return count - 1
 
 
 def fbp_apply_procedural_color_frame(rig, frame=None):
-    """Apply legacy procedural Color/Gradient frame material safely.
+    """Apply a procedural Color/Gradient frame material safely.
 
     A color plane without frame rows is a static procedural plane and must stay
     visible with material slot 0. A color/gradient/holdout plane with rows uses
@@ -368,14 +136,26 @@ def fbp_apply_procedural_color_frame(rig, frame=None):
     try:
         if not mesh.uv_layers:
             mesh.uv_layers.new(name='UVMap')
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
+    except ReferenceError:
+        return False
+    except (AttributeError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError) as exc:
+        fbp_warn_once(
+            f"procedural_uv_setup:{getattr(rig, 'name', '<unknown>')}",
+            "Could not create the procedural plane UV map",
+            exc,
+        )
 
     try:
         if len(mesh.materials) == 0 or mesh.materials[0] is None:
             fbp_rebuild_color_plane_material(rig)
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
+    except ReferenceError:
+        return False
+    except (AttributeError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError) as exc:
+        fbp_warn_once(
+            f"procedural_material_rebuild:{getattr(rig, 'name', '<unknown>')}",
+            "Could not rebuild the procedural plane material",
+            exc,
+        )
 
     try:
         if len(mesh.materials) == 0:
@@ -439,35 +219,53 @@ def fbp_tag_view3d_ui_redraw():
         for window in getattr(wm, 'windows', []) or []:
             screen = getattr(window, 'screen', None)
             for area in getattr(screen, 'areas', []) or []:
-                if getattr(area, 'type', '') in {'VIEW_3D', 'TIMELINE', 'DOPESHEET_EDITOR'}:
+                # Frame by Plane panels and current-frame indicators live in
+                # the 3D View. Redrawing Timeline/Dopesheet areas every frame
+                # adds work without updating any FBP-owned interface.
+                if getattr(area, 'type', '') != 'VIEW_3D':
+                    continue
+                # Updating only the Sidebar avoids forcing a full 3D viewport
+                # redraw on every frame while keeping FBP frame indicators live.
+                ui_regions = [
+                    region for region in (getattr(area, 'regions', ()) or ())
+                    if getattr(region, 'type', '') == 'UI'
+                ]
+                if ui_regions:
+                    for region in ui_regions:
+                        region.tag_redraw()
+                else:
+                    # Defensive fallback for unusual/headless area layouts.
                     area.tag_redraw()
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
 
 
 def fbp_update_sequence_scene(scene=None, frame=None):
-    """Refresh procedural Color / Gradient / Holdout animated rows.
-
-    Native image sequences do not need a frame-change material-slot update.
-    """
+    """Refresh procedural rows and report whether any require frame UI redraw."""
     scene = scene or getattr(bpy.context, 'scene', None)
     if not scene:
-        return 0
+        return 0, False
     if frame is None:
         frame = getattr(scene, 'frame_current', 1)
     updated = 0
-    for obj in list(getattr(scene, 'objects', [])):
+    has_procedural_rigs = False
+    for obj in iter_scene_fbp_rigs(scene):
         try:
             if not getattr(obj, 'is_fbp_control', False):
                 continue
             if fbp_rig_uses_procedural_color(obj) and len(getattr(obj, 'fbp_images', [])) > 0:
+                has_procedural_rigs = True
                 if fbp_apply_procedural_color_frame(obj, frame):
                     updated += 1
         except ReferenceError:
             continue
         except Exception as exc:
-            fbp_warn("Sequence scene update skipped", exc)
-    return updated
+            fbp_warn_once(
+                f"procedural_sequence_frame:{getattr(obj, 'name', 'unknown')}",
+                "Sequence scene update skipped",
+                exc,
+            )
+    return updated, has_procedural_rigs
 
 
 def fbp_rebuild_sequence_backend_from_rig(rig):
@@ -509,26 +307,17 @@ def fbp_replace_sequence_backend(rig, directory, files):
 
 
 def fbp_native_sequence_files_from_rig(rig):
-    """Return (directory, filenames) for a native image rig, based on its frame rows."""
-    if not rig or getattr(rig, 'fbp_is_color_plane', False):
+    """Return the immutable source sequence used by a native image rig."""
+    if not rig or getattr(rig, "fbp_is_color_plane", False):
         return "", []
-    paths = []
-    for item in getattr(rig, 'fbp_images', []):
-        try:
-            if getattr(item, 'is_empty', False):
-                continue
-            path = getattr(item, 'filepath', '') or ''
-            if path:
-                paths.append(bpy.path.abspath(path))
-        except Exception:
-            continue
-    if not paths:
+    try:
+        from . import native_backend
+        directory, files = native_backend.fbp_native_source_sequence_from_rig(rig)
+        return (directory, list(files)) if directory and files else ("", [])
+    except Exception as exc:
+        fbp_warn("Could not read native source sequence metadata", exc)
         return "", []
-    directories = {os.path.normcase(os.path.abspath(os.path.dirname(path))) for path in paths}
-    if len(directories) != 1:
-        return "", []
-    directory = os.path.dirname(paths[0])
-    return directory, [os.path.basename(path) for path in paths]
+
 
 
 def fbp_rig_native_sequence_needs_rename(rig):
@@ -538,7 +327,7 @@ def fbp_rig_native_sequence_needs_rename(rig):
         return False
     try:
         from . import native_backend
-        return bool(native_backend.fbp_native_sequence_needs_rename(directory, files))
+        return bool(native_backend.fbp_rig_native_sequence_needs_rename(rig))
     except Exception as exc:
         fbp_warn("Could not check native sequence filenames", exc)
         return False
@@ -646,42 +435,51 @@ def fbp_refresh_active_procedural_preview(rig):
 
 
 
-def fbp_find_rig_for_procedural_frame_item(item, context=None):
-    """Return (rig, index) for a procedural frame UIList item."""
+def fbp_collection_item_owner_rig(item, procedural_only=False):
+    """Return the Object ID that owns an Object.fbp_images row.
+
+    CollectionProperty items inherit bpy_struct.id_data, so normal UI callbacks
+    can resolve their parent rig directly instead of scanning every scene object.
+    """
     if not item:
-        return None, -1
+        return None
+    try:
+        rig = getattr(item, 'id_data', None)
+    except ReferenceError:
+        return None
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    if not rig or not getattr(rig, 'is_fbp_control', False):
+        return None
+    if procedural_only and not getattr(rig, 'fbp_is_color_plane', False):
+        return None
+    return rig
+
+
+def fbp_collection_item_index(rig, item):
+    """Return an item's index inside its owning rig without global searches."""
+    if not rig or not item:
+        return -1
     try:
         target_ptr = item.as_pointer()
-    except Exception:
+        for index, row in enumerate(getattr(rig, 'fbp_images', [])):
+            if row.as_pointer() == target_ptr:
+                return index
+    except ReferenceError:
+        return -1
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return -1
+    return -1
+
+
+def fbp_find_rig_for_procedural_frame_item(item, context=None):
+    """Return ``(rig, index)`` for a procedural frame UIList item."""
+    if not item:
         return None, -1
-    scenes = []
-    if context and getattr(context, 'scene', None):
-        scenes.append(context.scene)
-    try:
-        scenes.extend(scene for scene in bpy.data.scenes if scene not in scenes)
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    seen_objects = set()
-    for scene in scenes:
-        try:
-            objects = list(scene.objects)
-        except Exception:
-            objects = []
-        for obj in objects:
-            try:
-                if obj.name in seen_objects:
-                    continue
-                seen_objects.add(obj.name)
-                if not getattr(obj, 'is_fbp_control', False) or not getattr(obj, 'fbp_is_color_plane', False):
-                    continue
-                for index, row in enumerate(getattr(obj, 'fbp_images', [])):
-                    if row.as_pointer() == target_ptr:
-                        return obj, index
-            except ReferenceError:
-                continue
-            except Exception:
-                continue
-    return None, -1
+    owner = fbp_collection_item_owner_rig(item, procedural_only=True)
+    owner_index = fbp_collection_item_index(owner, item)
+    return (owner, owner_index) if owner and owner_index >= 0 else (None, -1)
+
 
 
 def fbp_set_solid_material_color(mat, color):
@@ -797,13 +595,6 @@ def update_object_padding_cb(self, context):
         fbp_warn("Plane Crop / Extend update skipped", exc)
 
 
-def update_extend_plane_cb(self, context):
-    # Legacy scene-level callback. New Crop/Extend values are stored per rig.
-    rig = getattr(context, 'active_object', None) if context else None
-    if rig and is_fbp_layer_object(rig):
-        update_object_padding_cb(rig, context)
-
-
 def update_loop_mode_cb(self, context):
     if fbp_is_silent_property_update(self):
         return
@@ -813,7 +604,6 @@ def update_loop_mode_cb(self, context):
         if rig != self:
             fbp_set_rna_property_silent(rig, "fbp_loop_mode", value)
     for rig in targets:
-        fbp_refresh_sequence_backend_from_rig(rig)
         do_update_animation(rig)
 
 
@@ -826,32 +616,49 @@ def update_start_frame_cb(self, context):
         if rig != self:
             fbp_set_rna_property_silent(rig, "fbp_start_frame", value)
     for rig in targets:
-        fbp_refresh_sequence_backend_from_rig(rig)
         do_update_animation(rig)
 
 def update_emission_cb(self, context):
     if fbp_is_silent_property_update(self):
         return
-    sync_fbp_property(self, context, "fbp_use_emission")
-    do_update_emission(self)
+    targets = fbp_edit_targets(context, self)
+    value = bool(getattr(self, "fbp_use_emission", False))
+    for rig in targets:
+        if rig != self:
+            fbp_set_rna_property_silent(rig, "fbp_use_emission", value)
+    for rig in targets:
+        do_update_emission(rig)
+
 
 def update_opacity_cb(self, context):
     if fbp_is_silent_property_update(self):
         return
-    sync_fbp_property(self, context, "fbp_opacity")
-    do_update_opacity(self)
+    targets = fbp_edit_targets(context, self)
+    value = float(getattr(self, "fbp_opacity", 1.0))
+    for rig in targets:
+        if rig != self:
+            fbp_set_rna_property_silent(rig, "fbp_opacity", value)
+    for rig in targets:
+        do_update_opacity(rig)
+
 
 def update_track_cb(self, context):
     if fbp_is_silent_property_update(self):
         return
-    sync_fbp_property(self, context, "fbp_track_cam")
-    do_update_track(self, context)
+    targets = fbp_edit_targets(context, self)
+    value = bool(getattr(self, "fbp_track_cam", False))
+    for rig in targets:
+        if rig != self:
+            fbp_set_rna_property_silent(rig, "fbp_track_cam", value)
+    for rig in targets:
+        do_update_track(rig, context)
 
 def update_global_duration_cb(self, context):
     if fbp_is_silent_property_update(self):
         return
 
     global _FBP_SUPPRESS_IMAGE_DURATION_CB
+    previous_suppression = _FBP_SUPPRESS_IMAGE_DURATION_CB
     target_value = max(1, int(getattr(self, "fbp_global_duration", 1)))
     targets = fbp_edit_targets(context, self)
     multi_rig = len(targets) > 1
@@ -883,74 +690,29 @@ def update_global_duration_cb(self, context):
     except Exception as exc:
         fbp_warn("Could not apply FPS/duration to selected layers", exc)
     finally:
-        _FBP_SUPPRESS_IMAGE_DURATION_CB = False
+        _FBP_SUPPRESS_IMAGE_DURATION_CB = previous_suppression
 
     for rig in changed_rigs or targets or [self]:
-        fbp_refresh_sequence_backend_from_rig(rig)
         do_update_animation(rig)
 
 
 def fbp_find_rig_for_image_item(image_item, context=None):
-    """Find the owning FBP rig for a row in Object.fbp_images.
-
-    Blender update callbacks for items inside CollectionProperty do not receive
-    the parent Object, so we resolve it by pointer. Active/selected objects are
-    checked first to keep the common UI edit path fast.
-    """
+    """Return the owning FBP rig for a current ``Object.fbp_images`` row."""
     if image_item is None:
         return None
-    try:
-        target_ptr = image_item.as_pointer()
-    except Exception:
-        return None
+    owner = fbp_collection_item_owner_rig(image_item)
+    return owner if owner and fbp_collection_item_index(owner, image_item) >= 0 else None
 
-    candidates = []
-    try:
-        if context and getattr(context, 'object', None):
-            candidates.append(context.object)
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    try:
-        if context:
-            candidates.extend(list(getattr(context, 'selected_objects', []) or []))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    try:
-        candidates.extend([obj for obj in bpy.data.objects if getattr(obj, 'is_fbp_control', False)])
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-
-    seen = set()
-    for rig in candidates:
-        if not rig or not getattr(rig, 'is_fbp_control', False):
-            continue
-        try:
-            key = rig.as_pointer()
-            if key in seen:
-                continue
-            seen.add(key)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-        try:
-            for item in getattr(rig, 'fbp_images', []):
-                if item.as_pointer() == target_ptr:
-                    return rig
-        except ReferenceError:
-            continue
-        except Exception:
-            continue
-    return None
 
 
 def update_image_duration_cb(self, context):
-    """Live-update native/legacy timing when a single image row duration changes."""
-    if _FBP_SUPPRESS_IMAGE_DURATION_CB:
+    """Live-update sequence timing when a single image row duration changes."""
+    if _FBP_SUPPRESS_IMAGE_DURATION_CB or fbp_is_silent_property_update(self):
         return
     try:
         rig = fbp_find_rig_for_image_item(self, context)
         if not rig:
             return
-        fbp_refresh_sequence_backend_from_rig(rig)
         do_update_animation(rig)
     except Exception as exc:
         fbp_warn("Image row duration update skipped", exc)
@@ -959,7 +721,11 @@ def update_image_duration_cb(self, context):
 def update_visibility_cb(self, context):
     if fbp_is_silent_property_update(self):
         return
-    sync_fbp_property(self, context, "fbp_is_visible")
+    targets = fbp_edit_targets(context, self)
+    value = bool(getattr(self, "fbp_is_visible", True))
+    for rig in targets:
+        if rig != self:
+            fbp_set_rna_property_silent(rig, "fbp_is_visible", value)
     update_global_visibility(context)
 
 def fbp_color_targets_for_update(context, source_rig):
@@ -1011,7 +777,7 @@ def fbp_color_targets_for_update(context, source_rig):
     # the viewport/Outliner rather than the UIList.
     try:
         for obj in getattr(context, 'selected_objects', []):
-            add_rig(obj)
+            add_rig(fbp_resolve_rig_from_any_object(obj, context))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
 
@@ -1057,7 +823,6 @@ def fbp_apply_color_tag_to_targets(context, source_rig, color_tag):
 def update_color_tag_cb(self, context):
     if fbp_is_silent_property_update(self):
         return
-    sync_fbp_property(self, context, "fbp_color_tag")
     if is_fbp_layer_object(self):
         # Apply selected layer color changes to all selected layers or the selected collection.
         if fbp_apply_color_tag_to_targets(context, self, self.fbp_color_tag):
@@ -1088,8 +853,8 @@ def update_layer_stack_index_cb(self, context):
                     # Keep previous selections alive so the layer list can support multi-select painting.
                     obj.select_set(True)
                     context.view_layer.objects.active = obj
-    except Exception as e:
-        print(f"[FBP] Stack index error: {e}")
+    except Exception as exc:
+        fbp_warn("Layer stack selection update skipped", exc)
 
 def apply_camera_ratio_settings(scene):
     # Apply selected output ratio before camera or camera-ratio plane creation.
@@ -1106,13 +871,6 @@ def apply_camera_ratio_settings(scene):
     }
     if ratio in presets:
         scene.render.resolution_x, scene.render.resolution_y = presets[ratio]
-
-
-def update_cam_ratio_cb(self, context):
-    # Store the chosen camera/output ratio only.
-    # Do not change the current scene/camera frame just because the preset changes:
-    # Frame by Plane applies this ratio only when it creates a new camera.
-    return None
 
 
 # ── RENDER STABILITY HELPERS ─────────────────────────────────────────────────
@@ -1140,23 +898,16 @@ def fbp_ensure_plane_render_safe(rig, frame=None):
         return fbp_apply_procedural_color_frame(rig, frame)
 
     try:
-        if len(mesh.materials) == 0 or mesh.materials[0] is None:
+        if len(mesh.materials) == 0:
             return False
-        while len(mesh.materials) > 1:
-            mesh.materials.pop(index=len(mesh.materials) - 1)
-    except Exception:
+        if not ensure_fbp_plane_material_integrity(rig):
+            return False
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
 
     try:
         if not mesh.uv_layers:
             mesh.uv_layers.new(name="UVMap")
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-
-    try:
-        for poly in mesh.polygons:
-            poly.material_index = 0
-        mesh.update()
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
 
@@ -1171,7 +922,7 @@ def fbp_ensure_plane_render_safe(rig, frame=None):
 def fbp_repair_all_render_state(scene=None, frame=None):
     scene = scene or bpy.context.scene
     fixed = 0
-    for obj in list(scene.objects):
+    for obj in iter_scene_fbp_rigs(scene):
         try:
             if getattr(obj, "is_fbp_control", False):
                 if fbp_ensure_plane_render_safe(obj, frame):
@@ -1210,7 +961,10 @@ def fbp_render_visibility_guard(scene):
                     plane.hide_render = target_hide
                     changed += 1
                 if getattr(obj, 'fbp_is_color_plane', False):
-                    viewport_backup[plane.name] = bool(getattr(plane, 'hide_viewport', False))
+                    viewport_backup[plane.name] = {
+                        "object_key": fbp_obj_runtime_key(plane),
+                        "hide_viewport": bool(getattr(plane, 'hide_viewport', False)),
+                    }
                     if not plane.hide_viewport:
                         plane.hide_viewport = True
                         changed += 1
@@ -1225,7 +979,18 @@ def fbp_render_visibility_guard(scene):
 
 @bpy.app.handlers.persistent
 def fbp_render_guard_pre(scene):
+    # Some render paths can emit render_pre more than once before the matching
+    # post/cancel callback. Preserve the first backup instead of overwriting it
+    # with the already-hidden state from a nested notification.
+    if bool(fbp_runtime_get("fbp_render_guard_active", False)):
+        return
+    fbp_runtime_set('fbp_render_viewport_hidden_planes', {})
     fbp_runtime_set("fbp_render_guard_active", True)
+    try:
+        from .geometry_nodes import fbp_effect_render_guard_pre
+        fbp_runtime_set("fbp_effect_render_backup", fbp_effect_render_guard_pre())
+    except Exception as exc:
+        fbp_warn("Effect render visibility guard failed", exc)
     try:
         fbp_render_visibility_guard(scene)
     except Exception as e:
@@ -1236,13 +1001,27 @@ def fbp_render_guard_pre(scene):
 def fbp_render_guard_post(scene):
     try:
         backup = fbp_runtime_get('fbp_render_viewport_hidden_planes', {}) or {}
-        for name, was_hidden in list(backup.items()):
+        for name, stored in list(backup.items()):
             obj = bpy.data.objects.get(name)
-            if obj:
-                obj.hide_viewport = bool(was_hidden)
+            if not obj:
+                continue
+            if isinstance(stored, dict):
+                if fbp_obj_runtime_key(obj) != stored.get("object_key"):
+                    continue
+                was_hidden = bool(stored.get("hide_viewport", False))
+            else:
+                # Runtime compatibility with a guard started before module reload.
+                was_hidden = bool(stored)
+            obj.hide_viewport = was_hidden
         fbp_runtime_set('fbp_render_viewport_hidden_planes', {})
     except Exception as exc:
         fbp_warn('Could not restore viewport visibility after render', exc)
+    try:
+        from .geometry_nodes import fbp_effect_render_guard_post
+        fbp_effect_render_guard_post(fbp_runtime_get("fbp_effect_render_backup", []) or [])
+        fbp_runtime_set("fbp_effect_render_backup", [])
+    except Exception as exc:
+        fbp_warn("Could not restore effect viewport visibility after render", exc)
     fbp_runtime_set("fbp_render_guard_active", False)
 
 
@@ -1253,11 +1032,18 @@ def fbp_render_guard_post(scene):
 def fbp_frame_change_handler(scene):
     # Native ImageUser playback does not require Python work on each frame.
     # Procedural Color / Gradient / Holdout rows still need material-slot timing.
+    has_procedural_rigs = False
     try:
-        fbp_update_sequence_scene(scene, getattr(scene, 'frame_current', None))
+        _updated, has_procedural_rigs = fbp_update_sequence_scene(
+            scene, getattr(scene, 'frame_current', None)
+        )
     except Exception as exc:
-        fbp_warn("Procedural sequence frame handler skipped", exc)
-    if not fbp_is_rendering_now():
+        fbp_warn_once(
+            "procedural_sequence_frame_handler",
+            "Procedural sequence frame handler skipped",
+            exc,
+        )
+    if has_procedural_rigs and not fbp_is_rendering_now():
         fbp_tag_view3d_ui_redraw()
     return
 
@@ -1270,7 +1056,8 @@ FBP_COLOR_PLANE_PRESETS = {
     'BLUE': ((0.4, 0.592156862745098, 1.0, 1.0), 'Blue'),
     'PURPLE': ((0.5803921568627451, 0.3137254901960784, 0.9529411764705882, 1.0), 'Purple'),
     'ROSE': ((1.0, 0.25, 0.55, 1.0), 'Rose'),
-    'ORANGE': ((1.0, 0.7019607843137254, 0.0, 1.0), 'Yellow'),
+    'YELLOW': ((1.0, 0.7019607843137254, 0.0, 1.0), 'Yellow'),
+    'ORANGE': ((1.0, 0.4745098039215686, 0.0, 1.0), 'Orange'),
     'RED': ((1.0, 0.0, 0.0, 1.0), 'Red'),
 }
 
@@ -1478,49 +1265,7 @@ def set_pending_collection_open(scene, collection_name, is_open=True):
 # ── OPERATORS ─────────────────────────────────────────────────────────────────
 
 
-# ── IMPORTER BRIDGE ─────────────────────────────────────────────────────────
-# Import/scan/Fast Import functions now live in importer.py.
-# These wrappers keep the shared core.py API stable.
-
-def _fbp_importer():
-    try:
-        from . import importer
-        return importer
-    except Exception:
-        import importer
-        return importer
-
-
-def fbp_scan_project_layers_for_setup(root):
-    return _fbp_importer().fbp_scan_project_layers_for_setup(root)
-
-
-def fbp_folder_has_importable_content(path):
-    return _fbp_importer().fbp_folder_has_importable_content(path)
-
-
-def fbp_folder_direct_images(path):
-    return _fbp_importer().fbp_folder_direct_images(path)
-
-
-def fbp_folder_direct_dirs(path):
-    return _fbp_importer().fbp_folder_direct_dirs(path)
-
-
-def fbp_child_entries(path):
-    return _fbp_importer().fbp_child_entries(path)
-
-
-def fbp_collect_mixed_folder_entries(base):
-    return _fbp_importer().fbp_collect_mixed_folder_entries(base)
-
-
-def fbp_build_project_folder(context, folder_path, parent_collection, cursor_loc, depth_counter, color_seed=0, depth=0, color_state=None):
-    return _fbp_importer().fbp_build_project_folder(
-        context, folder_path, parent_collection, cursor_loc, depth_counter,
-        color_seed, depth, color_state,
-    )
-
+# ── PROCEDURAL SEQUENCE HELPERS ──────────────────────────────────────────────
 
 def fbp_color_plane_can_have_frames(rig):
     return bool(getattr(rig, "fbp_is_color_plane", False) and getattr(rig, "fbp_color_plane_mode", "SOLID") != 'HOLDOUT')
@@ -1571,162 +1316,84 @@ def fbp_load_active_procedural_frame_to_rig(rig):
             pass
 
 
-def fbp_sequence_snapshot(rig):
-    """Return sequence row data.
-
-    Native image planes use Object.fbp_images as the only source of truth.
-    Procedural Color/Gradient planes may still carry one material per frame.
-    """
-    plane = getattr(rig, 'fbp_plane_target', None)
-    image_data = [(item.name, item.duration, item.is_selected, getattr(item, 'is_empty', False), getattr(item, 'filepath', ''), getattr(item, 'procedural_kind', 'AUTO')) for item in rig.fbp_images]
-    material_data = []
-
-    if not getattr(rig, "fbp_is_color_plane", False):
-        return image_data, material_data
-
-    material_data = [
-        plane.data.materials[i] if plane and i < len(plane.data.materials) else None
-        for i in range(len(image_data))
-    ]
-    if not image_data and plane:
-        if not fbp_color_plane_can_have_frames(rig):
-            return [], []
-        source_mat = plane.data.materials[0] if len(plane.data.materials) else None
-        if not source_mat:
-            fbp_rebuild_color_plane_material(rig)
-            source_mat = plane.data.materials[0] if len(plane.data.materials) else None
-        label = "Gradient" if getattr(rig, "fbp_color_plane_mode", "SOLID") == 'GRADIENT' else "Color"
-        kind = fbp_procedural_kind_from_material(source_mat, getattr(rig, "fbp_color_plane_mode", "SOLID"))
-        image_data = [(label, max(1, int(getattr(rig, 'fbp_global_duration', 1))), True, False, "", kind)]
-        material_data = [source_mat]
-    return image_data, material_data
-
-
 def fbp_normalize_sequence_entry(entry, rig=None):
-    """Return a dict representation for both new and legacy sequence entries.
-
-    Beta 1.0.18 introduced procedural per-row metadata as dictionaries, but
-    several older operators still pass tuples like:
-
-        (name, duration, is_selected, is_empty, filepath, procedural_kind)
-
-    Keeping the normalization in one place prevents tuple/dict mismatches and
-    lets Color/Gradient rows stay mixed safely.
-    """
-    if isinstance(entry, dict):
-        data = dict(entry)
-    else:
-        try:
-            seq = list(entry)
-        except Exception:
-            seq = []
-        fallback_duration = max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1)) if rig else 1
-        data = {
-            "name": seq[0] if len(seq) > 0 else "Frame",
-            "duration": seq[1] if len(seq) > 1 else fallback_duration,
-            "is_selected": seq[2] if len(seq) > 2 else True,
-            "is_empty": seq[3] if len(seq) > 3 else False,
-            "filepath": seq[4] if len(seq) > 4 else "",
-            "procedural_kind": seq[5] if len(seq) > 5 else 'AUTO',
-        }
+    """Validate and normalize one current dictionary-based sequence entry."""
+    if not isinstance(entry, dict):
+        raise TypeError("Sequence entries must use the current dictionary format")
+    data = dict(entry)
     try:
-        data["duration"] = max(1, int(data.get("duration", getattr(rig, 'fbp_global_duration', 1) if rig else 1) or 1))
-    except Exception:
+        fallback_duration = getattr(rig, "fbp_global_duration", 1) if rig else 1
+        data["duration"] = max(1, int(data.get("duration", fallback_duration) or 1))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         data["duration"] = 1
     data["name"] = str(data.get("name", "Frame") or "Frame")
     data["is_selected"] = bool(data.get("is_selected", True))
     data["is_empty"] = bool(data.get("is_empty", False))
     data["filepath"] = str(data.get("filepath", "") or "")
-    data["procedural_kind"] = str(data.get("procedural_kind", 'AUTO') or 'AUTO')
+    data["procedural_kind"] = str(data.get("procedural_kind", "AUTO") or "AUTO")
     return data
 
 
-def fbp_sequence_entry_to_tuple(entry, rig=None):
-    data = fbp_normalize_sequence_entry(entry, rig)
-    return (
-        data["name"],
-        data["duration"],
-        data["is_selected"],
-        data["is_empty"],
-        data["filepath"],
-        data["procedural_kind"],
-    )
-
 
 def fbp_insert_sequence_entry(rig, entry, material, insert_at=None):
+    """Insert one normalized sequence entry and rebuild through the shared path."""
     plane = getattr(rig, 'fbp_plane_target', None)
     if not plane:
         return -1
-    entry_data = fbp_normalize_sequence_entry(entry, rig)
-    entry_tuple = fbp_sequence_entry_to_tuple(entry_data, rig)
-    image_data, material_data = fbp_sequence_snapshot(rig)
-    is_color_plane = getattr(rig, "fbp_is_color_plane", False)
+
+    is_color_plane = bool(getattr(rig, "fbp_is_color_plane", False))
     if is_color_plane and not fbp_color_plane_can_have_frames(rig):
         return -1
-    if not is_color_plane and bool(entry_data.get("is_empty", False)):
-        # Native image planes are backed by one ShaderNodeTexImage Image Sequence.
-        # Empty material rows are intentionally no longer supported here.
-        return -1
+
+    entry_data = fbp_normalize_sequence_entry(entry, rig)
+    # Native image planes keep transparent rows inside the same Image Sequence
+    # material. The native backend drives an alpha visibility mask for those
+    # logical frames, so no generated image file or extra material is required.
+    entry_data["material"] = material if is_color_plane else None
+
+    entries = fbp_sequence_entries_from_rig(rig)
+    if is_color_plane and not entries:
+        # Promote a static Color/Gradient plane to a one-frame procedural sequence
+        # before inserting the requested row.
+        source_mat = plane.data.materials[0] if len(plane.data.materials) else None
+        if not source_mat:
+            fbp_rebuild_color_plane_material(rig)
+            source_mat = plane.data.materials[0] if len(plane.data.materials) else None
+        label = "Gradient" if getattr(rig, "fbp_color_plane_mode", "SOLID") == 'GRADIENT' else "Color"
+        kind = fbp_procedural_kind_from_material(
+            source_mat,
+            getattr(rig, "fbp_color_plane_mode", "SOLID"),
+        )
+        entries = [{
+            "name": label,
+            "duration": max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1)),
+            "is_selected": True,
+            "is_empty": False,
+            "filepath": "",
+            "procedural_kind": kind,
+            "material": source_mat,
+        }]
+
     if insert_at is None:
-        checked = [i for i, data in enumerate(image_data) if data[2]]
+        checked = [i for i, data in enumerate(entries) if bool(data.get("is_selected", False))]
         if checked:
             insert_at = checked[-1] + 1
         else:
-            insert_at = min(max(getattr(rig, 'fbp_images_index', 0), 0), len(image_data) - 1) + 1 if image_data else 0
-    image_data.insert(insert_at, entry_tuple)
-    if is_color_plane:
-        material_data.insert(insert_at, material)
+            current = int(getattr(rig, 'fbp_images_index', 0) or 0)
+            insert_at = min(max(current, 0), len(entries) - 1) + 1 if entries else 0
+    insert_at = max(0, min(int(insert_at), len(entries)))
+    entries.insert(insert_at, entry_data)
 
-    rig.fbp_images.clear()
-    for data in image_data:
-        data = fbp_sequence_entry_to_tuple(data, rig)
-        item = rig.fbp_images.add()
-        item.name = data[0]
-        item.duration = data[1]
-        item.is_selected = data[2]
-        item.is_empty = bool(data[3])
-        item.filepath = data[4]
-        try:
-            item.procedural_kind = data[5] if len(data) > 5 else 'AUTO'
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-        if is_color_plane:
-            try:
-                mat = material_data[len(rig.fbp_images) - 1] if len(rig.fbp_images) - 1 < len(material_data) else None
-                fbp_cache_procedural_preview_on_item(item, mat, getattr(item, 'procedural_kind', 'SOLID'))
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-
-    if is_color_plane:
-        plane.data.materials.clear()
-        for index, mat in enumerate(material_data):
-            if mat:
-                kind = 'AUTO'
-                try:
-                    if index < len(image_data):
-                        kind = fbp_sequence_entry_to_tuple(image_data[index], rig)[5]
-                except Exception:
-                    kind = entry_data.get("procedural_kind", 'AUTO')
-                if kind == 'AUTO':
-                    kind = fbp_procedural_kind_from_material(mat, getattr(rig, 'fbp_color_plane_mode', 'SOLID'))
-                fbp_set_procedural_metadata(mat, kind)
-                plane.data.materials.append(mat)
-
-    rig.fbp_images_index = max(0, min(insert_at, len(rig.fbp_images) - 1)) if rig.fbp_images else 0
     try:
-        if not is_color_plane:
-            if not fbp_rebuild_sequence_backend_from_rig(rig):
-                return -1
-        else:
-            fbp_refresh_sequence_backend_from_rig(rig)
+        if not fbp_apply_sequence_entries_to_rig(rig, entries):
+            return -1
+        rig.fbp_images_index = max(0, min(insert_at, len(rig.fbp_images) - 1)) if rig.fbp_images else 0
+        if is_color_plane:
+            fbp_load_active_procedural_frame_to_rig(rig)
+        return insert_at
     except Exception as exc:
         fbp_warn("Could not update sequence after inserting row", exc)
-        if not is_color_plane:
-            return -1
-    do_update_animation(rig)
-    do_update_emission(rig)
-    do_update_opacity(rig)
-    return insert_at
+        return -1
 
 
 def fbp_sequence_entries_from_rig(rig):
@@ -1761,144 +1428,163 @@ def fbp_clone_sequence_entry_material(entry, rig=None, suffix="Copy"):
 
 
 def fbp_apply_sequence_entries_to_rig(rig, entries):
+    """Apply logical sequence rows without leaving UI/backend state half-updated."""
     plane = getattr(rig, "fbp_plane_target", None)
     if not plane:
         return False
     is_color_plane = getattr(rig, "fbp_is_color_plane", False)
-    rig.fbp_images.clear()
-    if is_color_plane:
-        plane.data.materials.clear()
-    for entry in entries:
+    normalized_entries = []
+    try:
+        for raw_entry in entries:
+            data = fbp_normalize_sequence_entry(raw_entry, rig)
+            data["material"] = raw_entry.get("material")
+            normalized_entries.append(data)
+    except (TypeError, ValueError) as exc:
+        fbp_warn("Rejected invalid sequence entry", exc)
+        return False
+    if is_color_plane and any(entry.get("material") is None for entry in normalized_entries):
+        fbp_warn("Rejected procedural sequence with missing frame material")
+        return False
+
+    old_entries = fbp_sequence_entries_from_rig(rig)
+    old_index = int(getattr(rig, 'fbp_images_index', 0) or 0)
+    old_preview = str(getattr(rig, 'fbp_preview_path', '') or '')
+    old_material_slots = list(getattr(plane.data, 'materials', [])) if is_color_plane else []
+    candidate_materials = [
+        entry.get("material") for entry in normalized_entries
+        if entry.get("material") is not None
+    ]
+
+    def populate_state(values):
+        rig.fbp_images.clear()
         if is_color_plane:
-            mat = entry.get("material")
-            if mat:
-                fbp_set_procedural_metadata(mat, entry.get("procedural_kind", fbp_procedural_kind_from_material(mat, getattr(rig, 'fbp_color_plane_mode', 'SOLID'))))
-                plane.data.materials.append(mat)
-        item = rig.fbp_images.add()
-        item.name = entry.get("name", "Image")
-        item.duration = int(entry.get("duration", getattr(rig, "fbp_global_duration", 1)) or 1)
-        item.is_selected = bool(entry.get("is_selected", True))
-        item.is_empty = bool(entry.get("is_empty", False))
-        item.filepath = entry.get("filepath", "")
+            plane.data.materials.clear()
+        for entry in values:
+            material = entry.get("material")
+            if is_color_plane and material:
+                fbp_set_procedural_metadata(
+                    material,
+                    entry.get(
+                        "procedural_kind",
+                        fbp_procedural_kind_from_material(
+                            material,
+                            getattr(rig, 'fbp_color_plane_mode', 'SOLID'),
+                        ),
+                    ),
+                )
+                plane.data.materials.append(material)
+
+            item = rig.fbp_images.add()
+            item.name = entry.get("name", "Image")
+            fbp_set_rna_property_silent(
+                item,
+                "duration",
+                max(
+                    1,
+                    int(entry.get("duration", getattr(rig, "fbp_global_duration", 1)) or 1),
+                ),
+            )
+            item.is_selected = bool(entry.get("is_selected", True))
+            item.is_empty = bool(entry.get("is_empty", False))
+            item.filepath = str(entry.get("filepath", "") or "")
+            try:
+                item.procedural_kind = entry.get("procedural_kind", 'AUTO')
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+                pass
+            if is_color_plane:
+                try:
+                    fbp_cache_procedural_preview_on_item(
+                        item,
+                        material,
+                        getattr(item, 'procedural_kind', 'SOLID'),
+                    )
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+                    pass
+
+    def restore_previous_state():
+        populate_state(old_entries)
+        rig.fbp_images_index = max(
+            0,
+            min(old_index, max(0, len(rig.fbp_images) - 1)),
+        )
         try:
-            item.procedural_kind = entry.get("procedural_kind", 'AUTO')
+            rig.fbp_preview_path = old_preview
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
         if is_color_plane:
             try:
-                fbp_cache_procedural_preview_on_item(item, entry.get("material"), getattr(item, 'procedural_kind', 'SOLID'))
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-    rig.fbp_images_index = min(max(0, rig.fbp_images_index), max(0, len(rig.fbp_images) - 1))
-    if entries:
-        first_path = entries[0].get("filepath", "")
+                plane.data.materials.clear()
+                for material in old_material_slots:
+                    if material:
+                        plane.data.materials.append(material)
+            except Exception as exc:
+                fbp_warn("Could not restore procedural material slots", exc)
+            try:
+                fbp_refresh_sequence_backend_from_rig(rig)
+            except Exception as exc:
+                fbp_warn("Could not refresh restored procedural sequence", exc)
+            try:
+                old_materials = [material for material in old_material_slots if material]
+                fbp_remove_unused_materials_and_images([
+                    mat for mat in candidate_materials
+                    if mat
+                    and not any(mat == old for old in old_materials)
+                    and getattr(mat, 'users', 0) == 0
+                ])
+            except Exception as exc:
+                fbp_warn("Could not clean rolled-back procedural materials", exc)
+
+    populate_state(normalized_entries)
+    rig.fbp_images_index = min(
+        max(0, int(getattr(rig, 'fbp_images_index', 0) or 0)),
+        max(0, len(rig.fbp_images) - 1),
+    )
+    if normalized_entries:
+        first_path = next(
+            (entry.get("filepath", "") for entry in normalized_entries if entry.get("filepath", "")),
+            "",
+        )
         if first_path:
             rig.fbp_preview_path = first_path
     try:
         if is_color_plane and not str(rig.get('fbp_procedural_layer_type', '') or ''):
-            rig['fbp_procedural_layer_type'] = str(getattr(rig, 'fbp_color_plane_mode', 'SOLID') or 'SOLID')
+            rig['fbp_procedural_layer_type'] = str(
+                getattr(rig, 'fbp_color_plane_mode', 'SOLID') or 'SOLID'
+            )
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
+
     try:
-        if not is_color_plane:
-            fbp_rebuild_sequence_backend_from_rig(rig)
+        if is_color_plane:
+            rebuilt = fbp_refresh_sequence_backend_from_rig(rig)
         else:
-            fbp_refresh_sequence_backend_from_rig(rig)
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
+            rebuilt = fbp_rebuild_sequence_backend_from_rig(rig)
+        if not rebuilt:
+            restore_previous_state()
+            return False
+    except Exception as exc:
+        restore_previous_state()
+        fbp_warn("Could not apply sequence entries", exc)
+        return False
+
     do_update_animation(rig)
     do_update_emission(rig)
     do_update_opacity(rig)
+    if is_color_plane:
+        try:
+            current_materials = [material for material in plane.data.materials if material]
+            fbp_remove_unused_materials_and_images([
+                material for material in old_material_slots
+                if material
+                and not any(material == current for current in current_materials)
+                and getattr(material, 'users', 0) == 0
+            ])
+        except Exception as exc:
+            fbp_warn("Could not clean replaced procedural materials", exc)
     return True
 
-
-# ── FAST IMPORT / SCENE SPLIT BRIDGE ─────────────────────────────────────────
-
-def fbp_fast_import_wm(context=None):
-    return _fbp_importer().fbp_fast_import_wm(context)
-
-
-def fbp_fast_import_depth(context=None):
-    return _fbp_importer().fbp_fast_import_depth(context)
-
-
-def fbp_set_fast_import_depth(value, context=None):
-    return _fbp_importer().fbp_set_fast_import_depth(value, context)
-
-
-def fbp_fast_import_is_active():
-    return _fbp_importer().fbp_fast_import_is_active()
-
-
-def fbp_fast_import_queued_names(context=None):
-    return _fbp_importer().fbp_fast_import_queued_names(context)
-
-
-def fbp_set_fast_import_queued_names(names, context=None):
-    return _fbp_importer().fbp_set_fast_import_queued_names(names, context)
-
-
-def fbp_fast_import_queue_rig(rig):
-    return _fbp_importer().fbp_fast_import_queue_rig(rig)
-
-
-def fbp_preserve_current_frame(context, func, *args, **kwargs):
-    return _fbp_importer().fbp_preserve_current_frame(context, func, *args, **kwargs)
-
-
-def fbp_current_profile():
-    return _fbp_importer().fbp_current_profile()
-
-
-def fbp_profiled_section(label):
-    return _fbp_importer().fbp_profiled_section(label)
-
-
-def fbp_capture_viewport_state():
-    return _fbp_importer().fbp_capture_viewport_state()
-
-
-def fbp_set_viewports_solid(saved):
-    return _fbp_importer().fbp_set_viewports_solid(saved)
-
-
-def fbp_restore_viewport_state(saved):
-    return _fbp_importer().fbp_restore_viewport_state(saved)
-
-
-def fbp_begin_fast_import(context):
-    return _fbp_importer().fbp_begin_fast_import(context)
-
-
-def fbp_end_fast_import(context):
-    return _fbp_importer().fbp_end_fast_import(context)
-
-
-def fbp_folder_has_images_recursive(path):
-    return _fbp_importer().fbp_folder_has_images_recursive(path)
-
-
-def fbp_unique_scene_name(base_name):
-    return _fbp_importer().fbp_unique_scene_name(base_name)
-
-
-def fbp_apply_scene_defaults(scene):
-    return _fbp_importer().fbp_apply_scene_defaults(scene)
-
-
-def fbp_auto_build_main_folders_as_scenes(operator, context):
-    return _fbp_importer().fbp_auto_build_main_folders_as_scenes(operator, context)
 
 
 # Fast Import is invoked directly inside the operator execute methods.
 # Avoid monkey-patching operator methods at module load.
 
-
-# UI compatibility proxy.
-def draw_creation_ui(layout, context):
-    """Compatibility proxy for the creation UI layout."""
-    try:
-        from .ui_layout import draw_creation_ui as _fbp_draw_creation_ui
-    except ImportError:
-        from ui_layout import draw_creation_ui as _fbp_draw_creation_ui
-    return _fbp_draw_creation_ui(layout, context)

@@ -11,38 +11,22 @@ import bpy
 import bpy.utils.previews
 import mathutils
 
-try:
-    from .constants import (
-        STRIP_COLORS_DICT, preview_collections, fbp_icon, fbp_strip_icon,
-        fbp_collection_color_icon,
-    )
-    from .path_utils import (
-        natural_sort_key, is_supported_video_file, is_supported_media_file,
-        is_technical_map_file,
-    )
-    from .materials import (
-        iter_material_image_nodes, find_fbp_gradient_ramp_node,
-        fbp_apply_holdout_materials_to_rig, restore_original_materials_from_holdout,
-        rig_holdout_is_active,
-    )
-    from .runtime import (
-        fbp_runtime_set, fbp_warn, fbp_set_rna_property_silent,
-    )
-except ImportError:
-    from constants import (
-        STRIP_COLORS_DICT, preview_collections, fbp_icon, fbp_strip_icon,
-        fbp_collection_color_icon,
-    )
-    from path_utils import (
-        natural_sort_key, is_supported_video_file, is_supported_media_file,
-        is_technical_map_file,
-    )
-    from materials import (
-        iter_material_image_nodes, find_fbp_gradient_ramp_node,
-        fbp_apply_holdout_materials_to_rig, restore_original_materials_from_holdout,
-        rig_holdout_is_active,
-    )
-    from runtime import fbp_runtime_set, fbp_warn, fbp_set_rna_property_silent
+from .constants import (
+    STRIP_COLORS_DICT, preview_collections, fbp_icon, fbp_strip_icon,
+    fbp_collection_color_icon,
+)
+from .path_utils import (
+    natural_sort_key, is_supported_video_file, is_supported_media_file,
+    is_technical_map_file,
+)
+from .materials import (
+    iter_material_image_nodes, find_fbp_gradient_ramp_node,
+    fbp_apply_holdout_materials_to_rig, restore_original_materials_from_holdout,
+    rig_holdout_is_active,
+)
+from .runtime import (
+    fbp_runtime_set, fbp_warn, fbp_set_rna_property_silent,
+)
 
 
 _FBP_SYNCING_PROCEDURAL_PREVIEW_ITEMS = set()
@@ -52,10 +36,7 @@ _COLLECTION_COLOR_TAGS = {f"COLOR_{index:02d}" for index in range(1, 9)}
 
 def sync_layer_collection(context):
     """Lazy scene-sync bridge without a module-import cycle."""
-    try:
-        from .scene_sync import sync_layer_collection as _sync
-    except ImportError:
-        from scene_sync import sync_layer_collection as _sync
+    from .scene_sync import sync_layer_collection as _sync
     return _sync(context)
 
 
@@ -672,14 +653,6 @@ def fbp_layer_row_type_icon(rig, context):
         return fbp_icon("STRIP_COLOR_09"), None
 
 
-def fbp_add_tree_indent(row, depth):
-    """Add one fixed BLANK1 icon for each nested collection level."""
-    for _ in range(max(0, depth)):
-        cell = row.row(align=True)
-        fbp_set_ui_units_x(cell, 1.05)
-        cell.label(text="", icon=fbp_icon("BLANK1"))
-
-
 def fbp_set_ui_units_x(ui_layout, units):
     """Best-effort fixed UI width helper for compact icon blocks.
 
@@ -690,11 +663,6 @@ def fbp_set_ui_units_x(ui_layout, units):
         ui_layout.ui_units_x = units
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
-
-
-def indent_row(row, depth):
-    """Backward-compatible compact indentation helper for older UI sections."""
-    fbp_add_tree_indent(row, depth)
 
 
 def fbp_collection_rows_are_disabled(collection, context):
@@ -926,17 +894,54 @@ def swap_layer_depth_only(context, rig_a, rig_b):
     rig_b.location = loc_b
 
 
+def iter_scene_fbp_rigs(scene, *, fallback=True):
+    """Yield synchronized FBP rigs without rescanning the Scene on hot paths."""
+    if not scene:
+        return
+    seen = set()
+    yielded = False
+    try:
+        for item in list(getattr(scene, "fbp_layers", ()) or ()):
+            rig = getattr(item, "obj", None)
+            if not rig or not is_fbp_layer_object(rig):
+                continue
+            try:
+                key = int(rig.as_pointer())
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                key = str(getattr(rig, "name", "") or "")
+            if key in seen or not object_in_scene(rig, scene):
+                continue
+            seen.add(key)
+            yielded = True
+            yield rig
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+    # The cache is populated by initial/import/depsgraph synchronization. A full
+    # fallback is needed only during the very first tick of an unsynchronized file.
+    if yielded or not fallback:
+        return
+    try:
+        for obj in scene.objects:
+            if is_fbp_layer_object(obj):
+                yield obj
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return
+
+
 def object_in_scene(obj, scene=None):
+    """Return membership without linearly scanning every object in the Scene."""
     if not obj:
         return False
     try:
-        if bpy.data.objects.get(obj.name) != obj:
+        name = str(obj.name)
+        if bpy.data.objects.get(name) != obj:
             return False
         scene = scene or (bpy.context.scene if bpy.context else None)
         if not scene:
             return True
-        return any(scene_obj == obj for scene_obj in scene.objects)
-    except ReferenceError:
+        return scene.objects.get(name) == obj
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
 
 
@@ -947,8 +952,8 @@ def object_in_view_layer(obj, context=None):
     try:
         if not object_in_scene(obj, context.scene):
             return False
-        return any(view_obj == obj for view_obj in context.view_layer.objects)
-    except ReferenceError:
+        return context.view_layer.objects.get(str(obj.name)) == obj
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
 
 
@@ -973,35 +978,23 @@ def get_selected_rigs(context):
 
 
 def fbp_resolve_rig_from_any_object(obj, context=None):
-    """Return the FBP rig represented by either a rig or its linked image plane."""
+    """Return the current FBP rig represented by a rig or its linked plane."""
     if not obj:
         return None
     try:
         if getattr(obj, "is_fbp_control", False):
             return obj
+        if not getattr(obj, "is_fbp_plane", False):
+            return None
+        parent = getattr(obj, "parent", None)
+        if parent and getattr(parent, "is_fbp_control", False):
+            return parent
+        rig_name = str(obj.get("fbp_parent_rig_name", "") or "")
+        rig = bpy.data.objects.get(rig_name) if rig_name else None
+        return rig if rig and getattr(rig, "is_fbp_control", False) else None
     except ReferenceError:
         return None
-    try:
-        if getattr(obj, "is_fbp_plane", False):
-            parent = getattr(obj, "parent", None)
-            if parent and getattr(parent, "is_fbp_control", False):
-                return parent
-            rig_name = obj.get("fbp_parent_rig_name", "")
-            rig = bpy.data.objects.get(rig_name) if rig_name else None
-            if rig and getattr(rig, "is_fbp_control", False):
-                return rig
-            # Last fallback for old files: find the rig whose pointer still targets this plane.
-            scene = getattr(context, "scene", None) if context else None
-            candidates = list(scene.objects) if scene else list(bpy.data.objects)
-            for maybe_rig in candidates:
-                try:
-                    if getattr(maybe_rig, "is_fbp_control", False) and getattr(maybe_rig, "fbp_plane_target", None) == obj:
-                        return maybe_rig
-                except ReferenceError:
-                    continue
-    except ReferenceError:
-        return None
-    return None
+
 
 
 def get_selected_fbp_roots(context):
@@ -1286,29 +1279,8 @@ def set_layer_holdout(self, value):
         else:
             restore_original_materials_from_holdout(obj)
     except Exception as exc:
-        print(f"[FBP] Holdout toggle skipped: {exc}")
+        fbp_warn("Holdout toggle skipped", exc)
 
-
-def fbp_begin_safe_bulk_viewport_operation(reason="Bulk Operation", restore_after=0.85):
-    """Temporarily switch to Wireframe before operations that touch many FBP objects.
-
-    Collection toggles can change selection/visibility/material state for dozens of
-    textured planes at once. If the viewport is in Material Preview/Workbench
-    texture mode, Blender may try to upload many textures in the same redraw.
-    This lightweight guard avoids that without permanently forcing Wireframe.
-    """
-    try:
-        from .handlers import fbp_make_viewports_undo_safe
-    except ImportError:
-        try:
-            from handlers import fbp_make_viewports_undo_safe
-        except ImportError:
-            fbp_make_viewports_undo_safe = None
-    if fbp_make_viewports_undo_safe:
-        try:
-            fbp_make_viewports_undo_safe(restore_after=restore_after, release=False)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
 
 def _collection_rigs_for_ui(collection):
     try:
@@ -1326,7 +1298,6 @@ def get_collection_selected(self):
 
 
 def set_collection_selected(self, value):
-    fbp_begin_safe_bulk_viewport_operation("set_collection_selected")
     for rig in _collection_rigs_for_ui(self):
         item = get_layer_item_for_rig(bpy.context, rig)
         if item:
@@ -1342,7 +1313,6 @@ def get_collection_solo(self):
 
 
 def set_collection_solo(self, value):
-    fbp_begin_safe_bulk_viewport_operation("set_collection_solo")
     for rig in _collection_rigs_for_ui(self):
         item = get_layer_item_for_rig(bpy.context, rig)
         if item:
@@ -1358,7 +1328,6 @@ def get_collection_locked(self):
 
 
 def set_collection_locked(self, value):
-    fbp_begin_safe_bulk_viewport_operation("set_collection_locked")
     for rig in _collection_rigs_for_ui(self):
         rig.hide_select = bool(value)
 
@@ -1373,7 +1342,6 @@ def get_collection_plane_locked(self):
 
 
 def set_collection_plane_locked(self, value):
-    fbp_begin_safe_bulk_viewport_operation("set_collection_plane_locked")
     for rig in _collection_rigs_for_ui(self):
         plane = getattr(rig, 'fbp_plane_target', None)
         if not plane:
@@ -1396,7 +1364,6 @@ def get_collection_visible(self):
 
 
 def set_collection_visible(self, value):
-    fbp_begin_safe_bulk_viewport_operation("set_collection_visible")
     hidden = not bool(value)
     try:
         self.hide_viewport = hidden
@@ -1412,6 +1379,17 @@ def set_collection_visible(self, value):
         update_global_visibility(bpy.context)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
+    # The UIList is a virtual tree. Force its signature to rebuild immediately
+    # after parent visibility changes so stale child-eye states are never shown.
+    try:
+        scene = getattr(bpy.context, "scene", None)
+        if scene:
+            scene.fbp_layer_tree_signature = ""
+        for area in getattr(getattr(bpy.context, "screen", None), "areas", ()):
+            if getattr(area, "type", "") == 'VIEW_3D':
+                area.tag_redraw()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def get_collection_holdout(self):
@@ -1424,7 +1402,6 @@ def get_collection_holdout(self):
 
 
 def set_collection_holdout(self, value):
-    fbp_begin_safe_bulk_viewport_operation("set_collection_holdout")
     for rig in _collection_rigs_for_ui(self):
         try:
             if value:
@@ -1433,5 +1410,3 @@ def set_collection_holdout(self, value):
                 restore_original_materials_from_holdout(rig)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
-
-__all__ = ['is_fbp_image_rig', 'is_fbp_layer_object', 'safe_collection_color_tag', 'set_collection_color_tag', 'make_color_variant', 'get_or_create_child_collection', 'move_object_to_collection', 'get_primary_fbp_collection', 'is_layer_item_visible_in_collections', 'visible_layer_indices', 'apply_collection_color_to_layer', 'apply_collection_color_to_rig', 'sync_collection_colors_to_rigs', 'find_layer_collection', 'collection_is_hidden_in_view_layer', 'fbp_rebuild_layer_view_cache', 'fbp_mark_layer_cache_dirty', 'collection_has_fbp_content', 'get_direct_fbp_rigs_in_collection', 'iter_fbp_rigs_in_collection', 'get_child_fbp_collections', 'get_top_fbp_collections', 'get_layer_item_for_rig', 'fbp_procedural_layer_type', 'fbp_color_plane_type_icon', 'fbp_procedural_kind_from_material', 'fbp_procedural_kind_for_item', 'fbp_set_procedural_metadata', 'fbp_procedural_preview_from_material', 'fbp_cache_procedural_preview_on_item', 'fbp_mask_icon', 'fbp_select_rig_icon', 'fbp_select_plane_icon', 'fbp_collection_select_icon', 'fbp_collection_plane_icon', 'fbp_collection_icon', 'fbp_layer_row_type_icon', 'fbp_add_tree_indent', 'fbp_set_ui_units_x', 'indent_row', 'fbp_collection_rows_are_disabled', 'draw_fbp_layer_row', 'draw_fbp_collection_row', 'collect_project_image_paths', 'missing_project_images', 'build_project_file_index', 'relink_missing_images_from_root', 'project_root_for_package', 'rig_has_missing_images', 'swap_layer_depth_only', 'object_in_scene', 'object_in_view_layer', 'ensure_object_in_active_collection', 'get_selected_rigs', 'fbp_resolve_rig_from_any_object', 'get_selected_fbp_roots', 'clear_previews', 'update_global_visibility', 'update_mute_cb', 'get_preview_collection', 'load_preview', 'get_layer_thumbnail', 'set_viewport_object_color', 'fbp_make_depth_context_cache', 'fbp_layer_depth_value_from_cache', 'sort_rigs_for_layer_view', 'sort_rigs_by_depth_for_layer_view', 'sort_collections_for_layer_view', '_safe_layer_obj', 'get_layer_selected', 'set_layer_selected', 'get_layer_rig_locked', 'set_layer_rig_locked', 'get_layer_plane_locked', 'set_layer_plane_locked', 'get_layer_solo_view', 'set_layer_solo_view', 'get_layer_holdout', 'set_layer_holdout', 'fbp_begin_safe_bulk_viewport_operation', '_collection_rigs_for_ui', 'get_collection_selected', 'set_collection_selected', 'get_collection_solo', 'set_collection_solo', 'get_collection_locked', 'set_collection_locked', 'get_collection_plane_locked', 'set_collection_plane_locked', 'get_collection_visible', 'set_collection_visible', 'get_collection_holdout', 'set_collection_holdout', '_FBP_SYNCING_PROCEDURAL_PREVIEW_ITEMS']

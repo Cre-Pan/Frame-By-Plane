@@ -1,9 +1,44 @@
 """Focused Frame by Plane operator module."""
 
-try:
-    from .operator_common import *
-except ImportError:
-    from operator_common import *
+import bpy
+from bpy.props import (
+    BoolProperty,
+    IntProperty,
+    StringProperty,
+)
+from bpy.types import Operator
+
+from .constants import fbp_icon
+from .builder import apply_fit_to_camera
+from .layers import (
+    _safe_layer_obj,
+    collection_is_hidden_in_view_layer,
+    ensure_object_in_active_collection,
+    find_layer_collection,
+    get_selected_fbp_roots,
+    get_selected_rigs,
+    is_fbp_layer_object,
+    iter_fbp_rigs_in_collection,
+    object_in_view_layer,
+    swap_layer_depth_only,
+    update_global_visibility,
+    visible_layer_indices,
+)
+from .scene_sync import delete_fbp_rigs, sync_layer_collection
+from .runtime import fbp_warn
+from .core import (
+    do_update_animation,
+    fbp_load_active_procedural_frame_to_rig,
+    pending_collection_is_open,
+    set_pending_collection_open,
+)
+from .operator_common import (
+    _fbp_refresh_layer_tree,
+    _fbp_refresh_pending_tree,
+    _fbp_select_pending_index,
+    fbp_jump_timeline_to_sequence_row,
+)
+
 
 
 class FBP_OT_SaveFile(Operator):
@@ -32,31 +67,61 @@ class FBP_OT_OpenCreateRig(Operator):
 
 class FBP_OT_SelectLinkedPlane(Operator):
     bl_idname = "fbp.select_linked_plane"
-    bl_label = "Toggle Linked Plane Selectability"
-    bl_description = "Allow or prevent direct viewport selection of the linked image/color plane. Planes are locked by default"
+    bl_label = "Select Linked Plane"
+    bl_description = "Unlock and select all mesh planes belonging to this rig; click again to lock them"
     bl_options = {'UNDO'}
 
-    rig_name: StringProperty(name="Rig", description="Frame by Plane rig whose linked plane selectability should be toggled")
+    rig_name: StringProperty(name="Rig", description="Frame by Plane rig whose child planes should be selected")
 
     def execute(self, context):
         rig = bpy.data.objects.get(self.rig_name)
-        plane = getattr(rig, 'fbp_plane_target', None) if rig else None
-        if not plane:
-            self.report({'WARNING'}, "This layer has no linked plane")
+        if not rig:
             return {'CANCELLED'}
+
+        planes = []
+        linked = getattr(rig, 'fbp_plane_target', None)
+        if linked and getattr(linked, 'type', '') == 'MESH':
+            planes.append(linked)
         try:
-            plane.hide_select = not bool(plane.hide_select)
-            if plane.hide_select and plane.select_get():
-                plane.select_set(False)
-                if rig and object_in_view_layer(rig, context):
+            descendants = list(rig.children_recursive)
+        except (AttributeError, ReferenceError):
+            descendants = list(getattr(rig, 'children', ()) or ())
+        for child in descendants:
+            if getattr(child, 'type', '') != 'MESH' or child in planes:
+                continue
+            if bool(getattr(child, 'is_fbp_plane', False)) or child.parent == rig:
+                planes.append(child)
+        planes = [plane for plane in planes if object_in_view_layer(plane, context)]
+
+        if not planes:
+            self.report({'WARNING'}, "This layer has no linked mesh plane")
+            return {'CANCELLED'}
+
+        # Locked is the default state. Clicking Select Plane unlocks and selects
+        # every child mesh. Clicking again restores the lock and the rig selection.
+        unlock_and_select = all(bool(getattr(plane, 'hide_select', True)) for plane in planes)
+        try:
+            if unlock_and_select:
+                bpy.ops.object.select_all(action='DESELECT')
+                for plane in planes:
+                    plane.hide_select = False
+                    plane.select_set(True)
+                context.view_layer.objects.active = planes[0]
+            else:
+                for plane in planes:
+                    plane.select_set(False)
+                    plane.hide_select = True
+                if object_in_view_layer(rig, context):
+                    rig.hide_select = False
                     rig.select_set(True)
                     context.view_layer.objects.active = rig
         except ReferenceError:
             return {'CANCELLED'}
         except Exception as exc:
-            fbp_warn("Could not toggle linked plane selectability", exc)
+            fbp_warn("Could not select linked planes", exc)
             return {'CANCELLED'}
         return {'FINISHED'}
+
 
 class FBP_OT_SelectCollectionPlanes(Operator):
     bl_idname = "fbp.select_collection_planes"
@@ -112,7 +177,7 @@ class FBP_OT_AddColorPlaneVariant(Operator):
 class FBP_OT_UIListNameAction(Operator):
     bl_idname = "fbp.ui_list_name_action"
     bl_label = "Select or Rename Item"
-    bl_description = "Click to select this row; double-click to rename it"
+    bl_description = "Click to select this row and show its frame on the timeline; double-click to rename it"
     bl_options = {'REGISTER', 'UNDO'}
 
     target_type: StringProperty(default="")
@@ -144,6 +209,8 @@ class FBP_OT_UIListNameAction(Operator):
 
     def invoke(self, context, event):
         if getattr(event, 'value', '') == 'DOUBLE_CLICK':
+            if self.target_type == 'FRAME':
+                self._select(context)
             self.rename_mode = True
             self.new_name = self._current_name(context)
             return context.window_manager.invoke_props_dialog(self, width=360)
@@ -237,6 +304,7 @@ class FBP_OT_UIListNameAction(Operator):
             for i, item in enumerate(rig.fbp_images):
                 item.is_selected = (i == self.index)
             rig.fbp_images_index = self.index
+            fbp_jump_timeline_to_sequence_row(context, rig, self.index)
             if object_in_view_layer(rig, context):
                 bpy.ops.object.select_all(action='DESELECT')
                 rig.select_set(True)
@@ -505,11 +573,23 @@ class FBP_OT_PopupGenerateCamera(Operator):
         box = layout.box()
         box.label(text="Camera Generation", icon=fbp_icon("VIEW_CAMERA"))
         box.prop(sc, "fbp_gen_camera", text="Generate Camera", toggle=True)
+        box.prop(sc, "fbp_camera_projection", text="Projection")
+        if sc.fbp_camera_projection == 'ORTHO':
+            box.prop(sc, "fbp_camera_ortho_scale", text="Orthographic Scale")
+        else:
+            box.prop(sc, "fbp_camera_lens", text="Lens (mm)")
+        row = box.row(align=True)
+        row.prop(sc, "fbp_camera_clip_start", text="Clip Start")
+        row.prop(sc, "fbp_camera_clip_end", text="Clip End")
         box.prop(sc, "fbp_cam_ratio", text="Camera Ratio")
+        if sc.fbp_cam_ratio == 'CUSTOM':
+            row = box.row(align=True)
+            row.prop(sc.render, "resolution_x", text="Width")
+            row.prop(sc.render, "resolution_y", text="Height")
         row = box.row(align=True)
         row.prop(sc, "fbp_cam_pivot", text="3D Cursor on Camera", toggle=True, icon=fbp_icon("PIVOT_CURSOR"))
         row.prop(sc, "fbp_auto_scale", text="Fit Layers", toggle=True, icon=fbp_icon("FULLSCREEN_ENTER"))
-        layout.label(text="The selected ratio is also stored as the default.", icon=fbp_icon("INFO"))
+        layout.label(text="Defaults can be changed in Add-on Preferences.", icon=fbp_icon("INFO"))
 
     def execute(self, context):
         context.scene.fbp_gen_camera = True
@@ -707,5 +787,3 @@ class FBP_OT_DeleteCollectionLayers(Operator):
         deleted = delete_fbp_rigs(context, rigs)
         self.report({'INFO'}, f"Deleted {deleted} layer(s) from {coll.name}")
         return {'FINISHED'} if deleted else {'CANCELLED'}
-
-__all__ = ['FBP_OT_SaveFile', 'FBP_OT_OpenCreateRig', 'FBP_OT_SelectLinkedPlane', 'FBP_OT_SelectCollectionPlanes', 'FBP_OT_AddColorPlaneVariant', 'FBP_OT_UIListNameAction', 'FBP_OT_SelectLayerExclusive', 'FBP_OT_DuplicateOrDefault', 'FBP_OT_SelectAllLayers', 'FBP_OT_ToggleLock', 'FBP_OT_ToggleSelectLayer', 'FBP_OT_ToggleSolo', 'FBP_OT_MoveLayerStack', 'FBP_OT_IsolateLayer', 'FBP_OT_PopupGenerateCamera', 'FBP_OT_FitToCamera', 'FBP_OT_MultiFitCamera', 'FBP_OT_SetCurrentFrame', 'FBP_OT_ToggleCollectionCollapse', 'FBP_OT_TogglePendingCollectionCollapse', 'FBP_OT_SelectCollectionLayers', 'FBP_OT_ToggleCollectionVisibility', 'FBP_OT_ToggleCollectionLock', 'FBP_OT_DeleteCollectionLayers']

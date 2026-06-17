@@ -5,10 +5,7 @@ from __future__ import annotations
 import os
 import re
 
-try:
-    from .constants import FBP_SUPPORTED_VIDEO_EXT, FBP_SUPPORTED_MEDIA_EXT, FBP_TECHNICAL_MAP_SUFFIXES
-except ImportError:
-    from constants import FBP_SUPPORTED_VIDEO_EXT, FBP_SUPPORTED_MEDIA_EXT, FBP_TECHNICAL_MAP_SUFFIXES
+from .constants import FBP_SUPPORTED_VIDEO_EXT, FBP_SUPPORTED_MEDIA_EXT, FBP_TECHNICAL_MAP_SUFFIXES
 
 
 def natural_sort_key(s):

@@ -1,9 +1,55 @@
 """Focused Frame by Plane operator module."""
 
-try:
-    from .operator_common import *
-except ImportError:
-    from operator_common import *
+import bpy
+import math
+import mathutils
+import os
+from bpy.props import (
+    CollectionProperty,
+    EnumProperty,
+    IntProperty,
+    StringProperty,
+)
+from bpy.types import Operator
+
+from .constants import fbp_icon
+from .path_utils import is_supported_media_file, natural_sort_key
+from .materials import (
+    do_update_emission,
+    do_update_opacity,
+    fbp_create_procedural_frame_material_for_rig,
+)
+from .layers import (
+    _safe_layer_obj,
+    ensure_object_in_active_collection,
+    fbp_procedural_kind_from_material,
+    get_primary_fbp_collection,
+    get_selected_fbp_roots,
+    get_selected_rigs,
+    is_fbp_layer_object,
+    object_in_view_layer,
+)
+from .scene_sync import (
+    delete_fbp_rigs,
+    fbp_remove_plane_datablock,
+    sync_layer_collection,
+)
+from .runtime import fbp_set_rna_property_silent, fbp_warn
+from .core import (
+    do_update_animation,
+    do_update_track,
+    fbp_apply_sequence_entries_to_rig,
+    fbp_clone_sequence_entry_material,
+    fbp_color_plane_can_have_frames,
+    fbp_insert_sequence_entry,
+    fbp_load_active_procedural_frame_to_rig,
+    fbp_rebuild_sequence_backend_from_rig,
+    fbp_sequence_entries_from_rig,
+)
+from .operator_common import (
+    fbp_jump_timeline_to_sequence_row,
+)
+
 
 
 class FBP_OT_UpdateAnimation(Operator):
@@ -109,7 +155,7 @@ class FBP_OT_UpdateTrack(Operator):
 class FBP_OT_SelectImageExclusive(Operator):
     bl_idname = "fbp.select_image_exclusive"
     bl_label = "Select Frame"
-    bl_description = "Select only this frame. Use the checkbox for additive multi-selection"
+    bl_description = "Select this frame and move the timeline to its first scene frame. Use the checkbox for additive multi-selection"
     bl_options = {'UNDO'}
 
     rig_name: StringProperty(default="")
@@ -125,6 +171,7 @@ class FBP_OT_SelectImageExclusive(Operator):
         for i, item in enumerate(rig.fbp_images):
             item.is_selected = (i == self.index)
         rig.fbp_images_index = self.index
+        fbp_jump_timeline_to_sequence_row(context, rig, self.index)
 
         if object_in_view_layer(rig, context):
             bpy.ops.object.select_all(action='DESELECT')
@@ -177,21 +224,33 @@ class FBP_OT_InsertImagesAfterSelected(Operator):
         old_mode = getattr(rig, 'fbp_color_plane_mode', 'SOLID')
         if requested_kind:
             # Silent assignment avoids rebuilding the active frame just because
-            # the user chooses which kind of new frame to insert.
-            try:
-                fbp_set_rna_property_silent(rig, 'fbp_color_plane_mode', requested_kind)
-            except Exception:
-                rig['fbp_pending_insert_kind'] = requested_kind
+            # the user chooses which kind of new frame to insert. Abort instead
+            # of creating a material with the wrong type if the RNA write fails.
+            if not fbp_set_rna_property_silent(rig, 'fbp_color_plane_mode', requested_kind):
+                self.report({'ERROR'}, "Could not change the procedural frame type")
+                return {'CANCELLED'}
 
-        mat, label, is_empty = fbp_create_procedural_frame_material_for_rig(rig, len(rig.fbp_images) + 1)
+        try:
+            mat, label, is_empty = fbp_create_procedural_frame_material_for_rig(
+                rig, len(rig.fbp_images) + 1
+            )
+        except Exception as exc:
+            fbp_warn("Could not create procedural frame material", exc)
+            self.report({'ERROR'}, "Could not create the procedural frame material")
+            return {'CANCELLED'}
+        finally:
+            if requested_kind and not fbp_set_rna_property_silent(
+                rig, 'fbp_color_plane_mode', old_mode
+            ):
+                self.report({'WARNING'}, "The previous procedural plane type could not be restored")
 
-        if requested_kind:
-            try:
-                fbp_set_rna_property_silent(rig, 'fbp_color_plane_mode', old_mode)
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
+        if not mat:
+            self.report({'ERROR'}, "Could not create the procedural frame material")
+            return {'CANCELLED'}
 
-        kind = requested_kind or (fbp_procedural_kind_from_material(mat, getattr(rig, 'fbp_color_plane_mode', 'SOLID')) if mat else 'AUTO')
+        kind = requested_kind or fbp_procedural_kind_from_material(
+            mat, getattr(rig, 'fbp_color_plane_mode', 'SOLID')
+        )
         entry = {
             "name": label,
             "duration": max(1, int(getattr(rig, 'fbp_global_duration', 1))),
@@ -268,6 +327,40 @@ class FBP_OT_InsertLinkedImageAfterSelected(Operator):
             rig.fbp_preview_path = img_path
         self.report({'INFO'}, f"Imported {chosen}")
         return {'FINISHED'}
+
+class FBP_OT_InsertTransparentFrame(Operator):
+    bl_idname = "fbp.insert_transparent_frame"
+    bl_label = "Add Transparent Frame"
+    bl_description = "Insert a transparent logical frame without creating or renaming an image file"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        if not rig:
+            rigs = get_selected_rigs(context)
+            rig = rigs[0] if rigs else None
+        if not rig or not getattr(rig, "fbp_plane_target", None):
+            self.report({'WARNING'}, "Select one Frame by Plane layer first")
+            return {'CANCELLED'}
+        if getattr(rig, "fbp_is_color_plane", False):
+            self.report({'WARNING'}, "Transparent logical frames are available for native image sequences")
+            return {'CANCELLED'}
+
+        entry = {
+            "name": "Transparent Frame",
+            "duration": max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1)),
+            "is_selected": True,
+            "is_empty": True,
+            "filepath": "",
+            "procedural_kind": "AUTO",
+        }
+        insert_at = fbp_insert_sequence_entry(rig, entry, None)
+        if insert_at < 0:
+            self.report({'WARNING'}, "Could not insert transparent frame")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Transparent frame added")
+        return {'FINISHED'}
+
 
 class FBP_OT_LinkImageFrame(Operator):
     bl_idname      = "fbp.link_image_frame"
@@ -362,9 +455,12 @@ class FBP_OT_SelectAll(Operator):
                     item.is_selected = target
                 continue
             for item in items:
-                if   self.action == 'ALL':    item.is_selected = True
-                elif self.action == 'NONE':   item.is_selected = False
-                elif self.action == 'INVERT': item.is_selected = not item.is_selected
+                if self.action == 'ALL':
+                    item.is_selected = True
+                elif self.action == 'NONE':
+                    item.is_selected = False
+                elif self.action == 'INVERT':
+                    item.is_selected = not item.is_selected
         return {'FINISHED'}
 
 class FBP_OT_ListAction(Operator):
@@ -374,6 +470,19 @@ class FBP_OT_ListAction(Operator):
     bl_options     = {'UNDO'}
 
     action: StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        descriptions = {
+            'MOVE_TOP': "Move the checked frames to the top of the sequence",
+            'MOVE_UP': "Move all checked frames up by one position",
+            'MOVE_DOWN': "Move all checked frames down by one position",
+            'MOVE_BOTTOM': "Move the checked frames to the bottom of the sequence",
+            'DUPLICATE_SELECTED': "Duplicate the checked frames without modifying the original image files",
+            'REVERSE_SELECTED': "Reverse the order of the checked frames while leaving all other frames in place",
+            'REMOVE': "Delete the checked frames from the logical sequence",
+        }
+        return descriptions.get(getattr(properties, 'action', ''), cls.bl_description)
 
     def _snapshot_item(self, item):
         return {
@@ -386,51 +495,86 @@ class FBP_OT_ListAction(Operator):
         }
 
     def _apply_items(self, rig, items, new_index=None):
-        if getattr(rig, "fbp_is_color_plane", False):
-            try:
-                if not fbp_apply_sequence_entries_to_rig(rig, items):
-                    self.report({'WARNING'}, "Procedural frame update failed")
-                    return False
-                if len(rig.fbp_images) > 0:
-                    rig.fbp_images_index = max(0, min(int(new_index or 0), len(rig.fbp_images) - 1))
-                    fbp_load_active_procedural_frame_to_rig(rig)
-                return True
-            except Exception as exc:
-                fbp_warn("Procedural list action failed", exc)
-                self.report({'WARNING'}, "Procedural frame update failed")
-                return False
-
-        rig.fbp_images.clear()
-        for data in items:
-            item = rig.fbp_images.add()
-            item.name = data.get("name", "Image")
-            item.duration = max(1, int(data.get("duration", getattr(rig, "fbp_global_duration", 1)) or 1))
-            item.is_selected = bool(data.get("is_selected", True))
-            item.is_empty = bool(data.get("is_empty", False))
-            item.filepath = str(data.get("filepath", "") or "")
-
-        if len(rig.fbp_images) > 0:
-            if new_index is None:
-                new_index = min(getattr(rig, "fbp_images_index", 0), len(rig.fbp_images) - 1)
-            rig.fbp_images_index = max(0, min(int(new_index), len(rig.fbp_images) - 1))
-        else:
-            rig.fbp_images_index = 0
-
-        # Image planes now rebuild from the collection data only. No per-frame
-        # material slots are reordered, copied, inserted or deleted here.
+        """Apply list edits through the shared transactional sequence path."""
+        is_procedural = bool(getattr(rig, "fbp_is_color_plane", False))
         try:
-            if not fbp_rebuild_sequence_backend_from_rig(rig):
-                self.report({'WARNING'}, "Sequence backend rebuild failed")
+            if not fbp_apply_sequence_entries_to_rig(rig, items):
+                label = "Procedural frame" if is_procedural else "Sequence backend"
+                self.report({'WARNING'}, f"{label} update failed; the previous frame list was restored")
                 return False
+            if len(rig.fbp_images) > 0:
+                if new_index is None:
+                    new_index = min(
+                        int(getattr(rig, "fbp_images_index", 0) or 0),
+                        len(rig.fbp_images) - 1,
+                    )
+                rig.fbp_images_index = max(0, min(int(new_index), len(rig.fbp_images) - 1))
+                if is_procedural:
+                    fbp_load_active_procedural_frame_to_rig(rig)
+            else:
+                rig.fbp_images_index = 0
+            return True
         except Exception as exc:
-            fbp_warn("List action backend rebuild failed", exc)
-            self.report({'WARNING'}, "Sequence backend rebuild failed")
+            fbp_warn("Transactional list action failed", exc)
+            self.report({'WARNING'}, "Sequence update failed; the previous frame list was restored")
             return False
-        do_update_animation(rig)
-        return True
 
     def _selected_indices(self, items):
         return [i for i, data in enumerate(items) if bool(data.get("is_selected", False))]
+
+    def _action_indices(self, items, active_index):
+        """Return checked rows, falling back to the active row for move actions."""
+        selected = self._selected_indices(items)
+        if selected:
+            return selected
+        if 0 <= active_index < len(items):
+            return [active_index]
+        return []
+
+    def _active_index_after_reorder(self, items, active_entry, fallback=0):
+        if active_entry is not None:
+            for index, entry in enumerate(items):
+                if entry is active_entry:
+                    return index
+        if not items:
+            return 0
+        return max(0, min(int(fallback), len(items) - 1))
+
+    def _move_indices_top(self, items, indices):
+        selected_set = set(indices)
+        selected = [entry for index, entry in enumerate(items) if index in selected_set]
+        remaining = [entry for index, entry in enumerate(items) if index not in selected_set]
+        items[:] = selected + remaining
+
+    def _move_indices_bottom(self, items, indices):
+        selected_set = set(indices)
+        remaining = [entry for index, entry in enumerate(items) if index not in selected_set]
+        selected = [entry for index, entry in enumerate(items) if index in selected_set]
+        items[:] = remaining + selected
+
+    def _move_indices_up(self, items, indices):
+        selected_set = set(indices)
+        for index in range(1, len(items)):
+            if index in selected_set and (index - 1) not in selected_set:
+                items[index - 1], items[index] = items[index], items[index - 1]
+                selected_set.remove(index)
+                selected_set.add(index - 1)
+
+    def _move_indices_down(self, items, indices):
+        selected_set = set(indices)
+        for index in range(len(items) - 2, -1, -1):
+            if index in selected_set and (index + 1) not in selected_set:
+                items[index + 1], items[index] = items[index], items[index + 1]
+                selected_set.remove(index)
+                selected_set.add(index + 1)
+
+    def _reverse_indices(self, items, indices):
+        if len(indices) <= 1:
+            return False
+        reversed_entries = [items[index] for index in reversed(indices)]
+        for index, entry in zip(indices, reversed_entries, strict=True):
+            items[index] = entry
+        return True
 
     def execute(self, context):
         for rig in get_selected_rigs(context):
@@ -467,17 +611,34 @@ class FBP_OT_ListAction(Operator):
                         del image_data[i]
                 self._apply_items(rig, image_data, min(idx, len(image_data) - 1) if image_data else 0)
 
-            elif self.action == 'MOVE_UP':
-                if idx <= 0:
+            elif self.action in {'MOVE_TOP', 'MOVE_UP', 'MOVE_DOWN', 'MOVE_BOTTOM'}:
+                action_indices = self._action_indices(image_data, idx)
+                if not action_indices:
                     continue
-                image_data[idx - 1], image_data[idx] = image_data[idx], image_data[idx - 1]
-                self._apply_items(rig, image_data, idx - 1)
+                active_entry = image_data[idx] if 0 <= idx < len(image_data) else None
 
-            elif self.action == 'MOVE_DOWN':
-                if idx >= len(image_data) - 1:
-                    continue
-                image_data[idx + 1], image_data[idx] = image_data[idx], image_data[idx + 1]
-                self._apply_items(rig, image_data, idx + 1)
+                if self.action == 'MOVE_TOP':
+                    if action_indices == list(range(len(action_indices))):
+                        continue
+                    self._move_indices_top(image_data, action_indices)
+                elif self.action == 'MOVE_UP':
+                    before = list(image_data)
+                    self._move_indices_up(image_data, action_indices)
+                    if all(left is right for left, right in zip(before, image_data, strict=True)):
+                        continue
+                elif self.action == 'MOVE_DOWN':
+                    before = list(image_data)
+                    self._move_indices_down(image_data, action_indices)
+                    if all(left is right for left, right in zip(before, image_data, strict=True)):
+                        continue
+                else:
+                    trailing_start = len(image_data) - len(action_indices)
+                    if action_indices == list(range(trailing_start, len(image_data))):
+                        continue
+                    self._move_indices_bottom(image_data, action_indices)
+
+                new_index = self._active_index_after_reorder(image_data, active_entry, idx)
+                self._apply_items(rig, image_data, new_index)
 
             elif self.action == 'DUPLICATE_SELECTED':
                 selected_indices = self._selected_indices(image_data)
@@ -497,9 +658,16 @@ class FBP_OT_ListAction(Operator):
                 image_data[insert_at:insert_at] = duplicates
                 self._apply_items(rig, image_data, insert_at)
 
-            elif self.action == 'SORT_NATURAL':
-                image_data.sort(key=lambda data: natural_sort_key(data.get("name", "")))
-                self._apply_items(rig, image_data, 0)
+            elif self.action == 'REVERSE_SELECTED':
+                selected_indices = self._selected_indices(image_data)
+                if len(selected_indices) <= 1:
+                    self.report({'WARNING'}, "Select at least two frames to reverse")
+                    continue
+                active_entry = image_data[idx] if 0 <= idx < len(image_data) else None
+                self._reverse_indices(image_data, selected_indices)
+                new_index = self._active_index_after_reorder(image_data, active_entry, idx)
+                self._apply_items(rig, image_data, new_index)
+
 
         return {'FINISHED'}
 
@@ -510,47 +678,39 @@ class FBP_OT_ReverseSequence(Operator):
     bl_options     = {'UNDO'}
 
     def execute(self, context):
+        changed = 0
+        failed = 0
         for rig in get_selected_rigs(context):
             if not getattr(rig, "fbp_plane_target", None):
                 continue
-            if len(getattr(rig, "fbp_images", [])) <= 1:
+            entries = fbp_sequence_entries_from_rig(rig)
+            if len(entries) <= 1:
                 continue
 
-            if getattr(rig, "fbp_is_color_plane", False):
-                entries = fbp_sequence_entries_from_rig(rig)
-                entries.reverse()
-                fbp_apply_sequence_entries_to_rig(rig, entries)
-                continue
-
-            data = [
-                (
-                    item.name,
-                    int(getattr(item, "duration", 1) or 1),
-                    bool(getattr(item, "is_selected", False)),
-                    bool(getattr(item, "is_empty", False)),
-                    str(getattr(item, "filepath", "") or ""),
-                )
-                for item in rig.fbp_images
-            ]
-            data.reverse()
-
-            rig.fbp_images.clear()
-            for name, duration, is_selected, is_empty, filepath in data:
-                item = rig.fbp_images.add()
-                item.name = name
-                item.duration = max(1, int(duration))
-                item.is_selected = is_selected
-                item.is_empty = is_empty
-                item.filepath = filepath
-            rig.fbp_images_index = 0
-
+            entries.reverse()
             try:
-                if fbp_rebuild_sequence_backend_from_rig(rig):
+                if not fbp_apply_sequence_entries_to_rig(rig, entries):
+                    failed += 1
                     continue
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-            do_update_animation(rig)
-        return {'FINISHED'}
+                rig.fbp_images_index = 0
+                if getattr(rig, "fbp_is_color_plane", False):
+                    fbp_load_active_procedural_frame_to_rig(rig)
+                changed += 1
+            except Exception as exc:
+                failed += 1
+                fbp_warn("Could not reverse sequence", exc)
+
+        if failed:
+            self.report(
+                {'WARNING'},
+                f"Reversed {changed} sequence(s); {failed} sequence(s) were restored after rebuild failure",
+            )
+        if changed:
+            return {'FINISHED'}
+        if failed:
+            return {'CANCELLED'}
+        self.report({'WARNING'}, "Select a sequence with at least two frames")
+        return {'CANCELLED'}
 
 class FBP_OT_PopupSequenceSettings(Operator):
     bl_idname = "fbp.popup_sequence_settings"
@@ -574,7 +734,6 @@ class FBP_OT_PopupSequenceSettings(Operator):
         layout.prop(rig, "fbp_loop_mode", text="Playback")
         row = layout.row(align=True)
         row.operator("fbp.reverse_sequence", text="Reverse", icon=fbp_icon("ARROW_LEFTRIGHT"))
-        row.operator("fbp.list_action", text="Sort A-Z", icon=fbp_icon("SORTALPHA")).action = 'SORT_NATURAL'
         row = layout.row(align=True)
         row.prop(rig, "fbp_global_duration", text="Duration")
 
@@ -592,7 +751,7 @@ class FBP_OT_DuplicateSelectedLayers(Operator):
         for src_item in src_rig.fbp_images:
             dst_item = dst_rig.fbp_images.add()
             dst_item.name = src_item.name
-            dst_item.duration = src_item.duration
+            fbp_set_rna_property_silent(dst_item, 'duration', src_item.duration)
             dst_item.is_selected = src_item.is_selected
             dst_item.is_empty = getattr(src_item, 'is_empty', False)
             dst_item.filepath = getattr(src_item, 'filepath', '')
@@ -670,6 +829,26 @@ class FBP_OT_DuplicateSelectedLayers(Operator):
             new_rig.fbp_plane_target = new_plane
             new_rig.fbp_preview_path = rig.fbp_preview_path
 
+            # Preserve the copied effect stack but regenerate persistent per-layer
+            # seeds so Unique per Layer remains unique on the duplicate.
+            try:
+                from .geometry_nodes import (
+                    fbp_assign_effect_layer_seed,
+                    fbp_assign_mesh_wiggle_layer_seed,
+                    fbp_effect_ids_for_rig,
+                    fbp_reapply_all_effects,
+                    fbp_sync_effect_items,
+                    fbp_update_mesh_wiggle_modifier,
+                )
+                fbp_assign_mesh_wiggle_layer_seed(new_rig, force=True)
+                for effect_id in fbp_effect_ids_for_rig(new_rig):
+                    fbp_assign_effect_layer_seed(new_rig, effect_id, force=True)
+                fbp_update_mesh_wiggle_modifier(new_rig)
+                fbp_reapply_all_effects(new_rig)
+                fbp_sync_effect_items(new_rig)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+
             do_update_animation(new_rig)
             do_update_emission(new_rig)
             do_update_opacity(new_rig)
@@ -723,13 +902,57 @@ class FBP_OT_MergeSelectedToActiveSequence(Operator):
         if len(rigs) < 2:
             self.report({'WARNING'}, "Select at least two Frame by Plane layers")
             return {'CANCELLED'}
+        active_is_color = bool(getattr(active, "fbp_is_color_plane", False))
+        incompatible = [
+            rig for rig in rigs
+            if bool(getattr(rig, "fbp_is_color_plane", False)) != active_is_color
+        ]
+        if incompatible:
+            self.report({'WARNING'}, "Merge image layers separately from Color/Gradient layers")
+            return {'CANCELLED'}
+        if active_is_color and not fbp_color_plane_can_have_frames(active):
+            self.report({'WARNING'}, "Static Holdout planes cannot become animated sequences")
+            return {'CANCELLED'}
+
         entries = []
         for rig in rigs:
-            entries.extend(fbp_sequence_entries_from_rig(rig))
-        if not entries:
+            rig_entries = fbp_sequence_entries_from_rig(rig)
+            if not rig_entries and active_is_color:
+                plane = getattr(rig, "fbp_plane_target", None)
+                material = plane.data.materials[0] if plane and len(plane.data.materials) else None
+                if not material or not fbp_color_plane_can_have_frames(rig):
+                    self.report({'WARNING'}, f"{rig.name} cannot be converted to an animated procedural frame")
+                    return {'CANCELLED'}
+                mode = getattr(rig, "fbp_color_plane_mode", "SOLID")
+                rig_entries = [{
+                    "name": "Gradient" if mode == 'GRADIENT' else "Color",
+                    "duration": max(1, int(getattr(rig, "fbp_global_duration", 1) or 1)),
+                    "is_selected": True,
+                    "is_empty": False,
+                    "filepath": "",
+                    "procedural_kind": fbp_procedural_kind_from_material(material, mode),
+                    "material": material,
+                }]
+            if not rig_entries:
+                self.report({'WARNING'}, f"{rig.name} has no valid sequence frames to merge")
+                return {'CANCELLED'}
+            entries.extend(rig_entries)
+        try:
+            if not fbp_apply_sequence_entries_to_rig(active, entries):
+                self.report({'WARNING'}, "Merge cancelled: the target sequence could not be rebuilt")
+                return {'CANCELLED'}
+        except Exception as exc:
+            fbp_warn("Could not merge selected sequences", exc)
+            self.report({'WARNING'}, "Merge cancelled: the target sequence could not be rebuilt")
             return {'CANCELLED'}
-        fbp_apply_sequence_entries_to_rig(active, entries)
-        delete_fbp_rigs(context, [rig for rig in rigs if rig != active])
+
+        source_rigs = [rig for rig in rigs if rig != active]
+        deleted = delete_fbp_rigs(context, source_rigs)
+        if deleted != len(source_rigs):
+            self.report(
+                {'WARNING'},
+                f"Sequence merged, but only {deleted} of {len(source_rigs)} source layer(s) were deleted",
+            )
         bpy.ops.object.select_all(action='DESELECT')
         if object_in_view_layer(active, context):
             active.select_set(True)
@@ -743,6 +966,22 @@ class FBP_OT_SplitSelectedImagesToNewPlane(Operator):
     bl_label = "Split Sequence"
     bl_description = "Move selected images from the active sequence to a new plane in the same position"
     bl_options = {'REGISTER', 'UNDO'}
+
+    def _cleanup_partial_layer(self, context, new_rig, new_plane):
+        """Remove only datablocks created by this split attempt."""
+        try:
+            if new_plane and bpy.data.objects.get(getattr(new_plane, 'name', '')) == new_plane:
+                fbp_remove_plane_datablock(new_plane)
+        except Exception as exc:
+            fbp_warn("Could not remove partial split plane", exc)
+        try:
+            if new_rig and bpy.data.objects.get(getattr(new_rig, 'name', '')) == new_rig:
+                rig_mesh = getattr(new_rig, 'data', None)
+                bpy.data.objects.remove(new_rig, do_unlink=True)
+                if rig_mesh and getattr(rig_mesh, 'users', 0) == 0:
+                    bpy.data.meshes.remove(rig_mesh)
+        except Exception as exc:
+            fbp_warn("Could not remove partial split rig", exc)
 
     def execute(self, context):
         rig = context.object if context.object and is_fbp_layer_object(context.object) else None
@@ -758,35 +997,47 @@ class FBP_OT_SplitSelectedImagesToNewPlane(Operator):
         if not selected_indices:
             self.report({'WARNING'}, "Select images in the sequence list first")
             return {'CANCELLED'}
+        selected_index_set = set(selected_indices)
         selected_entries = [entries[i] for i in selected_indices]
-        remaining_entries = [entry for i, entry in enumerate(entries) if i not in set(selected_indices)]
+        remaining_entries = [entry for i, entry in enumerate(entries) if i not in selected_index_set]
         if not selected_entries or not remaining_entries:
             self.report({'WARNING'}, "Leave at least one image in the original plane")
             return {'CANCELLED'}
 
         source_collection = get_primary_fbp_collection(rig) or context.collection or context.scene.collection
-        new_rig = rig.copy()
-        if rig.data:
-            new_rig.data = rig.data.copy()
-        new_rig.name = rig.name + "_Split"
-        new_rig.is_fbp_control = True
-        source_collection.objects.link(new_rig)
+        new_rig = None
+        new_plane = None
+        try:
+            new_rig = rig.copy()
+            if rig.data:
+                new_rig.data = rig.data.copy()
+            new_rig.name = rig.name + "_Split"
+            new_rig.is_fbp_control = True
+            source_collection.objects.link(new_rig)
 
-        new_plane = plane.copy()
-        if plane.data:
-            new_plane.data = plane.data.copy()
-        new_plane.name = plane.name + "_Split"
-        new_plane.is_fbp_plane = True
-        source_collection.objects.link(new_plane)
-        new_plane.parent = new_rig
-        new_plane.matrix_world = plane.matrix_world.copy()
-        new_plane.hide_select = plane.hide_select
-        new_rig.fbp_plane_target = new_plane
-        new_rig.fbp_collection_name = getattr(rig, "fbp_collection_name", "")
-        new_plane.fbp_collection_name = getattr(plane, "fbp_collection_name", "")
+            new_plane = plane.copy()
+            if plane.data:
+                new_plane.data = plane.data.copy()
+            new_plane.name = plane.name + "_Split"
+            new_plane.is_fbp_plane = True
+            source_collection.objects.link(new_plane)
+            new_plane.parent = new_rig
+            new_plane.matrix_world = plane.matrix_world.copy()
+            new_plane.hide_select = plane.hide_select
+            new_rig.fbp_plane_target = new_plane
+            new_rig.fbp_collection_name = getattr(rig, "fbp_collection_name", "")
+            new_plane.fbp_collection_name = getattr(plane, "fbp_collection_name", "")
 
-        fbp_apply_sequence_entries_to_rig(new_rig, selected_entries)
-        fbp_apply_sequence_entries_to_rig(rig, remaining_entries)
+            if not fbp_apply_sequence_entries_to_rig(new_rig, selected_entries):
+                raise RuntimeError("the new split sequence could not be rebuilt")
+            if not fbp_apply_sequence_entries_to_rig(rig, remaining_entries):
+                raise RuntimeError("the original sequence could not be rebuilt")
+        except Exception as exc:
+            self._cleanup_partial_layer(context, new_rig, new_plane)
+            fbp_warn("Could not split selected sequence frames", exc)
+            self.report({'WARNING'}, "Split cancelled; the original sequence was restored")
+            sync_layer_collection(context)
+            return {'CANCELLED'}
 
         bpy.ops.object.select_all(action='DESELECT')
         if object_in_view_layer(new_rig, context):
@@ -836,5 +1087,3 @@ class FBP_OT_DeleteOrDefault(Operator):
                 return {'FINISHED'}
             return {'CANCELLED'}
         return bpy.ops.object.delete('INVOKE_DEFAULT')
-
-__all__ = ['FBP_OT_UpdateAnimation', 'FBP_OT_Transform', 'FBP_OT_PopupTransform', 'FBP_OT_UpdateEmission', 'FBP_OT_UpdateOpacity', 'FBP_OT_UpdateTrack', 'FBP_OT_SelectImageExclusive', 'FBP_OT_InsertImagesAfterSelected', 'FBP_OT_InsertLinkedImageAfterSelected', 'FBP_OT_LinkImageFrame', 'FBP_OT_SelectAll', 'FBP_OT_ListAction', 'FBP_OT_ReverseSequence', 'FBP_OT_PopupSequenceSettings', 'FBP_OT_DuplicateSelectedLayers', 'FBP_OT_MergeSelectedToActiveSequence', 'FBP_OT_SplitSelectedImagesToNewPlane', 'FBP_OT_DeleteSequence', 'FBP_OT_DeleteOrDefault']

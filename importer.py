@@ -1,52 +1,32 @@
-"""Folder scanning, sequence detection, Fast Import and scene-split helpers."""
+"""Folder scanning, sequence detection and Fast Import helpers."""
 
 import bpy
 import os
 import re
 
-try:
-    from . import profiling as fbp_profiling
-except ImportError:
-    import profiling as fbp_profiling
-
-try:
-    from .path_utils import (
-        natural_sort_key,
-        clean_layer_name_from_path,
-        is_hidden_import_name,
-        is_supported_video_file,
-        is_supported_media_file,
-        is_technical_map_file,
-    )
-except ImportError:
-    from path_utils import (
-        natural_sort_key,
-        clean_layer_name_from_path,
-        is_hidden_import_name,
-        is_supported_video_file,
-        is_supported_media_file,
-        is_technical_map_file,
-    )
+from .path_utils import (
+    natural_sort_key,
+    clean_layer_name_from_path,
+    is_hidden_import_name,
+    is_supported_video_file,
+    is_supported_media_file,
+    is_technical_map_file,
+)
+from .runtime import fbp_runtime_get, fbp_runtime_set, fbp_warn
+from .materials import do_update_emission, do_update_opacity
+from .builder import build_fbp_rig
+from .layers import (
+    get_or_create_child_collection,
+    set_collection_color_tag,
+    sync_collection_colors_to_rigs,
+    sync_layer_collection,
+)
 
 
-def _core():
-    try:
-        from . import core
-        return core
-    except Exception:
-        import core
-        return core
-
-
-def _core_attr(name, default=None):
-    return getattr(_core(), name, default)
-
-
-def _call_core(name, *args, **kwargs):
-    func = _core_attr(name)
-    if callable(func):
-        return func(*args, **kwargs)
-    return None
+def _update_animation(rig):
+    # core imports importer, so keep this one dependency lazy and explicit.
+    from .core import do_update_animation
+    return do_update_animation(rig)
 
 
 def fbp_scene_orientation_is_horizontal(scene):
@@ -91,16 +71,18 @@ _SEQUENCE_NOISE_WORDS = {"frame", "frames", "frm", "fr", "f", "image", "img", "s
 
 def _clean_sequence_prefix(prefix, fallback=""):
     prefix = str(prefix or "").strip(" ._-\t")
+    fallback = str(fallback or "").strip(" ._-\t")
     if not prefix:
-        prefix = str(fallback or "").strip(" ._-\t")
-    if not prefix:
-        prefix = "Sequence"
-    parts = [p for p in re.split(r"[\s_.-]+", prefix) if p]
+        prefix = fallback or "Sequence"
+    parts = [part for part in re.split(r"[\s_.-]+", prefix) if part]
     while parts and parts[-1].lower() in _SEQUENCE_NOISE_WORDS:
         parts.pop()
     while parts and parts[0].lower() in _SEQUENCE_NOISE_WORDS:
         parts.pop(0)
-    return " ".join(parts) if parts else prefix
+    # A filename made only of noise words (frame_0001, img-02, …) should
+    # inherit its folder name instead of producing a layer literally named
+    # "frame" or "img".
+    return " ".join(parts) if parts else (fallback or "Sequence")
 
 
 def _sequence_group_key(prefix, ext):
@@ -111,7 +93,7 @@ def _sequence_group_key(prefix, ext):
 
 def fbp_sequence_key_from_filename(name, folder_name=""):
     """Return (prefix, frame_index) when a filename looks like a sequence frame."""
-    stem, ext = os.path.splitext(os.path.basename(str(name)))
+    stem, _ext = os.path.splitext(os.path.basename(str(name)))
     stem = stem.strip()
     if not stem:
         return None
@@ -195,7 +177,7 @@ def fbp_group_direct_media_into_layers(files, folder_name=""):
     return result
 
 
-# Compatibility name for existing call sites; also supports video.
+# Shared import name for image sequences and video.
 def fbp_group_direct_images_into_layers(files, folder_name=""):
     return fbp_group_direct_media_into_layers(files, folder_name)
 
@@ -235,32 +217,9 @@ def fbp_scan_project_layers_for_setup(root):
     if not root or not os.path.isdir(root):
         return rows
 
-    def direct_images(path):
-        try:
-            return sorted(
-                [name for name in os.listdir(path)
-                 if os.path.isfile(os.path.join(path, name))
-                 and not is_hidden_import_name(name)
-                 and is_supported_media_file(name)
-                 and (is_supported_video_file(name) or not is_technical_map_file(name))],
-                key=natural_sort_key)
-        except Exception:
-            return []
-
-    def direct_dirs(path):
-        try:
-            return sorted(
-                [name for name in os.listdir(path)
-                 if os.path.isdir(os.path.join(path, name))
-                 and not is_hidden_import_name(name)
-                 and fbp_folder_has_images_recursive(os.path.join(path, name))],
-                key=natural_sort_key)
-        except Exception:
-            return []
-
     def visit(path, collection_name=""):
-        imgs = direct_images(path)
-        dirs = direct_dirs(path)
+        imgs = fbp_folder_direct_images(path)
+        dirs = fbp_folder_direct_dirs(path)
         folder_name = clean_layer_name_from_path(path)
         grouped_layers = fbp_group_direct_images_into_layers(imgs, folder_name)
 
@@ -289,18 +248,14 @@ def fbp_scan_project_layers_for_setup(root):
 
 # SECTION 02 - Fast Import runtime #
 
-_FBP_FAST_IMPORT_RUNTIME = {
-    # Runtime-only data. Nothing here is stored as IDProperties, so undo/reload
-    # never has to free transient Fast Import state from Blender datablocks.
-    "view_shading": [],
-    "profile": None,
-    "depth": 0,
-}
-
-
-def fbp_fast_import_wm(context=None):
-    # Fast Import depth is runtime-only.
-    return getattr(context, "window_manager", None) if context else getattr(bpy.context, "window_manager", None)
+_FBP_FAST_IMPORT_RUNTIME = globals().get(
+    "_FBP_FAST_IMPORT_RUNTIME",
+    {
+        # Runtime-only data. Nothing here is stored as IDProperties, so undo/reload
+        # never has to free transient Fast Import state from Blender datablocks.
+        "depth": 0,
+    },
+)
 
 
 def fbp_fast_import_depth(context=None):
@@ -314,7 +269,7 @@ def fbp_set_fast_import_depth(value, context=None):
     try:
         _FBP_FAST_IMPORT_RUNTIME["depth"] = max(0, int(value))
     except Exception as exc:
-        _call_core("fbp_warn", "Could not store Fast Import depth", exc)
+        fbp_warn("Could not store Fast Import depth", exc)
 
 
 def fbp_fast_import_is_active():
@@ -322,7 +277,7 @@ def fbp_fast_import_is_active():
 
 
 def fbp_fast_import_queued_names(context=None):
-    value = str(_call_core("fbp_runtime_get", "fbp_fast_import_queued_rigs", "", context) or "")
+    value = str(fbp_runtime_get("fbp_fast_import_queued_rigs", "", context) or "")
     return [name for name in value.split("|") if name]
 
 
@@ -333,98 +288,7 @@ def fbp_set_fast_import_queued_names(names, context=None):
         if name and name not in seen:
             unique.append(name)
             seen.add(name)
-    _call_core("fbp_runtime_set", "fbp_fast_import_queued_rigs", "|".join(unique), context)
-
-
-def fbp_fast_import_queue_rig(rig):
-    if not rig:
-        return
-    names = fbp_fast_import_queued_names()
-    if rig.name not in names:
-        names.append(rig.name)
-        fbp_set_fast_import_queued_names(names)
-
-
-def fbp_preserve_current_frame(context, func, *args, **kwargs):
-    scene = context.scene if context else bpy.context.scene
-    current_frame = None
-    current_subframe = 0.0
-    if scene:
-        try:
-            current_frame = int(scene.frame_current)
-            current_subframe = float(getattr(scene, "frame_subframe", 0.0))
-        except Exception:
-            current_frame = None
-
-    result = None
-    error = None
-    try:
-        result = func(*args, **kwargs)
-    except Exception as exc:
-        error = exc
-    finally:
-        if scene and current_frame is not None:
-            try:
-                scene.frame_set(current_frame, subframe=current_subframe)
-            except Exception:
-                try:
-                    scene.frame_current = current_frame
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                    pass
-    if error:
-        raise error
-    return result
-
-
-def fbp_current_profile():
-    return _FBP_FAST_IMPORT_RUNTIME.get("profile")
-
-
-def fbp_profiled_section(label):
-    return fbp_profiling.section(fbp_current_profile(), label)
-
-
-def fbp_capture_viewport_state():
-    saved = []
-    wm = getattr(bpy.context, "window_manager", None)
-    if not wm:
-        return saved
-    try:
-        for window in wm.windows:
-            screen = window.screen
-            if not screen:
-                continue
-            for area in screen.areas:
-                if area.type != 'VIEW_3D':
-                    continue
-                for space in area.spaces:
-                    if getattr(space, "type", None) == 'VIEW_3D':
-                        saved.append((space, getattr(space.shading, "type", 'SOLID')))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    return saved
-
-
-def fbp_set_viewports_wireframe(saved):
-    """Temporarily use Wireframe during heavy import/build operations.
-
-    Directly apply Wireframe during heavy operations.
-
-    This function must never call itself.
-    """
-    for space, _old in saved:
-        try:
-            space.shading.type = 'WIREFRAME'
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-
-
-def fbp_restore_viewport_state(saved):
-    for space, old in saved:
-        try:
-            space.shading.type = old
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
+    fbp_runtime_set("fbp_fast_import_queued_rigs", "|".join(unique), context)
 
 
 def fbp_begin_fast_import(context):
@@ -434,23 +298,50 @@ def fbp_begin_fast_import(context):
         return
 
     fbp_set_fast_import_queued_names([], context)
-    _FBP_FAST_IMPORT_RUNTIME["profile"] = fbp_profiling.begin_profile("Fast Import")
 
-    with fbp_profiled_section("Prepare fast import"):
-        prefs_edit = getattr(getattr(bpy.context, "preferences", None), "edit", None)
-        if prefs_edit:
-            try:
-                _call_core("fbp_runtime_set", "fbp_fast_import_undo_state", 1 if prefs_edit.use_global_undo else 0, context)
-                prefs_edit.use_global_undo = False
-            except Exception:
-                _call_core("fbp_runtime_set", "fbp_fast_import_undo_state", -1, context)
-
-        saved = fbp_capture_viewport_state()
-        _FBP_FAST_IMPORT_RUNTIME["view_shading"] = saved
-        fbp_set_viewports_wireframe(saved)
+    prefs_edit = getattr(getattr(bpy.context, "preferences", None), "edit", None)
+    if prefs_edit:
+        try:
+            fbp_runtime_set("fbp_fast_import_undo_state", 1 if prefs_edit.use_global_undo else 0, context)
+            prefs_edit.use_global_undo = False
+        except Exception:
+            fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
 
     try:
         bpy.context.window_manager.progress_begin(0, 100)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+        pass
+
+
+def _fbp_restore_fast_import_runtime(context):
+    """Always restore temporary Fast Import state, even after finalization errors."""
+    try:
+        prefs_edit = getattr(getattr(bpy.context, "preferences", None), "edit", None)
+        stored_undo_state = fbp_runtime_get(
+            "fbp_fast_import_undo_state", -1, context
+        )
+        undo_state = int(
+            -1 if stored_undo_state is None else stored_undo_state
+        )
+        if prefs_edit and undo_state >= 0:
+            try:
+                prefs_edit.use_global_undo = bool(undo_state)
+            except Exception as exc:
+                fbp_warn("Could not restore global undo", exc)
+    finally:
+        fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
+        fbp_set_fast_import_queued_names([], context)
+
+    try:
+        bpy.context.window_manager.progress_update(100)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+        pass
+    try:
+        bpy.context.window_manager.progress_end()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+        pass
+    try:
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
 
@@ -464,17 +355,25 @@ def fbp_end_fast_import(context):
     if depth != 0:
         return
 
-    scene = context.scene if context else bpy.context.scene
-    current_frame = None
-    current_subframe = 0.0
-    if scene:
+    try:
         try:
-            current_frame = int(scene.frame_current)
-            current_subframe = float(getattr(scene, "frame_subframe", 0.0))
-        except Exception:
-            current_frame = None
+            scene = (
+                getattr(context, "scene", None)
+                if context
+                else getattr(bpy.context, "scene", None)
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            scene = None
 
-    with fbp_profiled_section("Finalize generated rigs"):
+        current_frame = None
+        current_subframe = 0.0
+        if scene:
+            try:
+                current_frame = int(scene.frame_current)
+                current_subframe = float(getattr(scene, "frame_subframe", 0.0))
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                current_frame = None
+
         seen = set()
         for rig_name in fbp_fast_import_queued_names(context):
             if rig_name in seen:
@@ -484,211 +383,54 @@ def fbp_end_fast_import(context):
             if not rig:
                 continue
             try:
-                _call_core("do_update_animation", rig)
-                _call_core("do_update_emission", rig)
-                _call_core("do_update_opacity", rig)
+                _update_animation(rig)
+                do_update_emission(rig)
+                do_update_opacity(rig)
             except Exception as exc:
-                _call_core("fbp_warn", "Could not finalize queued rig", exc)
+                fbp_warn("Could not finalize queued rig", exc)
 
-    with fbp_profiled_section("Sync UI and collections"):
         try:
-            _call_core("sync_layer_collection", context)
-            _call_core("sync_collection_colors_to_rigs", context)
+            sync_layer_collection(context)
+            sync_collection_colors_to_rigs(context)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
 
-    with fbp_profiled_section("Final view layer update"):
         try:
             if context and getattr(context, "view_layer", None):
                 context.view_layer.update()
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
 
-    if scene and current_frame is not None:
-        try:
-            scene.frame_set(current_frame, subframe=current_subframe)
-        except Exception:
+        if scene and current_frame is not None:
             try:
-                scene.frame_current = current_frame
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-
-    fbp_restore_viewport_state(_FBP_FAST_IMPORT_RUNTIME["view_shading"])
-    _FBP_FAST_IMPORT_RUNTIME["view_shading"] = []
-
-    prefs_edit = getattr(getattr(bpy.context, "preferences", None), "edit", None)
-    undo_state = int(_call_core("fbp_runtime_get", "fbp_fast_import_undo_state", -1, context) or -1)
-    if prefs_edit and undo_state >= 0:
-        try:
-            prefs_edit.use_global_undo = bool(undo_state)
-        except Exception as exc:
-            _call_core("fbp_warn", "Could not restore global undo", exc)
-    _call_core("fbp_runtime_set", "fbp_fast_import_undo_state", -1, context)
-
-    profile = _FBP_FAST_IMPORT_RUNTIME.get("profile")
-    if profile:
-        try:
-            fbp_profiling.finish_profile(profile)
-            fbp_profiling.write_profile_text(bpy, profile)
-            print(fbp_profiling.format_profile(profile))
-        except Exception as exc:
-            print(f"[FBP] Profile report error: {exc}")
-    _FBP_FAST_IMPORT_RUNTIME["profile"] = None
-    fbp_set_fast_import_queued_names([], context)
-
-    try:
-        bpy.context.window_manager.progress_update(100)
-        bpy.context.window_manager.progress_end()
-        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-
-
-def fbp_folder_has_images_recursive(path):
-    try:
-        for dirpath, dirnames, filenames in os.walk(path):
-            dirnames[:] = [d for d in dirnames if not is_hidden_import_name(d)]
-            for filename in filenames:
-                if not is_hidden_import_name(filename) and is_supported_media_file(filename) and (is_supported_video_file(filename) or not is_technical_map_file(filename)):
-                    return True
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    return False
-
-
-def fbp_unique_scene_name(base_name):
-    clean = clean_layer_name_from_path(base_name) or "Scene"
-    clean = clean[:55]
-    if clean not in bpy.data.scenes:
-        return clean
-    i = 2
-    while f"{clean}.{i:03d}" in bpy.data.scenes:
-        i += 1
-    return f"{clean}.{i:03d}"
-
-
-def fbp_apply_scene_defaults(scene):
-    try:
-        scene.fbp_pre_orientation = 'VERT'
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    try:
-        scene.fbp_auto_scale = True
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    try:
-        scene.fbp_cam_ratio = '4_3'
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    try:
-        scene.render.resolution_x = 1920
-        scene.render.resolution_y = 1440
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-    try:
-        scene.fbp_gen_camera = True
-        scene.fbp_cam_pivot = True
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-        pass
-
-
-def fbp_auto_build_main_folders_as_scenes(operator, context):
-    """Build each valid top-level project folder in its own Blender scene.
-
-    Scene switching alone is not enough while an operator is running: object
-    operators also need a context whose Scene and ViewLayer belong together.
-    """
-    original_scene = context.scene
-    window = getattr(context, 'window', None)
-    if window is None:
-        operator.report({'ERROR'}, "Main Folders as Separate Scenes requires a Blender window")
-        return {'CANCELLED'}
-
-    original_window_scene = getattr(window, 'scene', original_scene)
-    original_view_layer = getattr(window, 'view_layer', None)
-
-    base = bpy.path.abspath(getattr(original_scene, "fbp_project_path", "") or "")
-    if not base or not os.path.isdir(base):
-        operator.report({'ERROR'}, "Set a valid Project Folder first")
-        return {'CANCELLED'}
-
-    top_folders = []
-    for name in sorted(os.listdir(base), key=natural_sort_key):
-        if is_hidden_import_name(name):
-            continue
-        full = os.path.join(base, name)
-        if os.path.isdir(full) and fbp_folder_has_images_recursive(full):
-            top_folders.append((name, full))
-
-    if not top_folders:
-        operator.report({'WARNING'}, "No valid main folders found")
-        return {'CANCELLED'}
-
-    made = 0
-    errors = []
-    try:
-        for name, full in top_folders:
-            scene = bpy.data.scenes.new(fbp_unique_scene_name(name))
-
-            try:
-                scene.render.fps = original_scene.render.fps
-                scene.frame_start = original_scene.frame_start
-                scene.frame_end = original_scene.frame_end
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-
-            fbp_apply_scene_defaults(scene)
-
-            try:
-                scene.fbp_project_path = full
-                scene.fbp_parent_import_path = full
-                scene.fbp_import_main_folders_as_scenes = False
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-
-            try:
-                target_view_layer = scene.view_layers[0]
-                window.scene = scene
+                scene.frame_set(current_frame, subframe=current_subframe)
+            except Exception:
                 try:
-                    window.view_layer = target_view_layer
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError):
+                    scene.frame_current = current_frame
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
                     pass
-
-                # A temporary override refreshes context.scene, view_layer,
-                # active_object and bpy.ops for the newly-created scene.
-                with context.temp_override(
-                    window=window,
-                    scene=scene,
-                    view_layer=target_view_layer,
-                ):
-                    result = operator._execute_impl(context)
-                if 'CANCELLED' in result:
-                    errors.append(f"{name}: build cancelled")
-                else:
-                    made += 1
-            except Exception as exc:
-                errors.append(f"{name}: {exc}")
     finally:
-        try:
-            window.scene = original_window_scene
-            if original_view_layer and original_view_layer.name in original_window_scene.view_layers:
-                window.view_layer = original_window_scene.view_layers[original_view_layer.name]
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-
-    if errors:
-        print("Frame by Plane scene split issues:")
-        for err in errors:
-            print(" -", err)
-        operator.report({'WARNING'}, f"Imported {made} scene(s), with {len(errors)} issue(s). Check console.")
-    else:
-        operator.report({'INFO'}, f"Imported {made} scene(s) from main folders")
-    return {'FINISHED'} if made else {'CANCELLED'}
+        _fbp_restore_fast_import_runtime(context)
 
 
 # Fast Import is invoked directly inside the operator execute methods.
 # Avoid monkey-patching operator methods at module load: it makes debugging harder
 # and is less suitable for Blender Extensions review.
+
+
+def unregister():
+    """Restore Global Undo if the extension is disabled during Fast Import."""
+    try:
+        stored_state = fbp_runtime_get("fbp_fast_import_undo_state", -1)
+        has_saved_state = int(-1 if stored_state is None else stored_state) >= 0
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        has_saved_state = False
+    if fbp_fast_import_depth() > 0 or has_saved_state:
+        try:
+            _fbp_restore_fast_import_runtime(getattr(bpy, "context", None))
+        except Exception as exc:
+            fbp_warn("Could not restore Fast Import runtime during unregister", exc)
+    fbp_set_fast_import_depth(0)
 
 
 # SECTION 03 - Auto Build Project helpers #
@@ -803,7 +545,6 @@ def fbp_build_project_folder(
     if color_state is None:
         color_state = {'next': max(0, int(color_seed or 0))}
 
-    core = _core()
     direct_images = fbp_folder_direct_images(folder_path)
     direct_dirs = fbp_folder_direct_dirs(folder_path)
     grouped_layers = fbp_group_direct_images_into_layers(direct_images, folder_name)
@@ -824,8 +565,8 @@ def fbp_build_project_folder(
         else:
             collection_color = f"COLOR_{(color_index % 8) + 1:02d}"
             color_state['next'] = color_index + 1
-        coll = core.get_or_create_child_collection(parent_collection, folder_name)
-        core.set_collection_color_tag(coll, collection_color)
+        coll = get_or_create_child_collection(parent_collection, folder_name)
+        set_collection_color_tag(coll, collection_color)
         follows_collection = not has_children
         layer_color = collection_color if follows_collection else 'COLOR_09'
         base_variant = 0
@@ -840,7 +581,7 @@ def fbp_build_project_folder(
             rig_loc.z -= offset
         else:
             rig_loc.y += offset
-        rig = core.build_fbp_rig(
+        rig = build_fbp_rig(
             context,
             layer_name,
             folder_path,

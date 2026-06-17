@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "4.1.7"
+version = "4.8.7"
 name = "Frame by Plane"
 tagline = "Rigged image planes for multiplane animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
@@ -29,4 +29,7 @@ paths_exclude_pattern = [
   "*.blend1",
   "*.bak",
   "_fbp_update_backups/",
+  "RELEASE_NOTES_*.md",
+  "CHANGELOG*.md",
+  "AUDIT_REPORT*.md",
 ]

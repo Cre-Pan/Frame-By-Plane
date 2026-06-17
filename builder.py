@@ -4,21 +4,13 @@ import bpy
 import math
 import mathutils
 
-try:
-    from .materials import (
-        fbp_rebuild_color_plane_material,
-    )
-except ImportError:
-    from materials import (
-        fbp_rebuild_color_plane_material,
-    )
+from .materials import (
+    fbp_rebuild_color_plane_material,
+)
 
 
 # SECTION 01 - Shared runtime helpers #
-try:
-    from .runtime import fbp_warn as _fbp_warn, fbp_set_rna_property_silent
-except ImportError:
-    from runtime import fbp_warn as _fbp_warn, fbp_set_rna_property_silent
+from .runtime import fbp_warn as _fbp_warn, fbp_set_rna_property_silent
 
 
 # SECTION 02 - Mesh / Object creation #
@@ -79,7 +71,7 @@ def fbp_create_rect_mesh(name, size=2.0, with_face=True):
         uv_layer = mesh.uv_layers.new(name="UVMap")
         coords = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
         if mesh.polygons:
-            for loop_index, uv in zip(mesh.polygons[0].loop_indices, coords):
+            for loop_index, uv in zip(mesh.polygons[0].loop_indices, coords, strict=True):
                 uv_layer.data[loop_index].uv = uv
     return mesh
 
@@ -123,7 +115,7 @@ def _fbp_aspect_from_plane_image(rig):
 def fbp_native_aspect_half_extents(rig):
     """Return normalized half-extents for native image planes.
 
-    Legacy FBP layers keep their image aspect in the rig scale. Native layers
+    Procedural FBP layers keep their image aspect in the rig scale. Native layers
     bake the aspect into the generated plane/frame mesh instead, so crop and
     extend operate on the real visible rectangle and the controller does not
     appear square while the material is correct.
@@ -141,19 +133,31 @@ def fbp_native_aspect_half_extents(rig):
         ay = float(rig.get("fbp_native_aspect_y", 0.0))
         src_w = float(rig.get("fbp_source_width", 0.0))
         src_h = float(rig.get("fbp_source_height", 0.0))
-        # Prefer the real image datablock when available. This repairs old Alpha
-        # rigs that accidentally baked 1:1 before the image dimensions were ready.
-        if material_aspect and (src_w <= 0.0 or src_h <= 0.0 or abs(ax - ay) < 1e-6):
-            ax, ay, width, height = material_aspect
-            try:
-                rig["fbp_source_width"] = int(width)
-                rig["fbp_source_height"] = int(height)
-                rig["fbp_native_aspect_x"] = float(ax)
-                rig["fbp_native_aspect_y"] = float(ay)
-                rig["fbp_native_aspect_baked"] = True
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-            return ax, ay
+        # Keep cached dimensions consistent with the current source image.
+        # Comparing the actual aspect avoids rewriting valid square-image data
+        # every time Crop, Extend or Fit queries the plane bounds.
+        if material_aspect:
+            real_ax, real_ay, width, height = material_aspect
+            cache_mismatch = (
+                src_w <= 0.0
+                or src_h <= 0.0
+                or ax <= 0.0
+                or ay <= 0.0
+                or abs(ax - real_ax) > 1e-6
+                or abs(ay - real_ay) > 1e-6
+                or abs(src_w - float(width)) > 0.5
+                or abs(src_h - float(height)) > 0.5
+            )
+            if cache_mismatch:
+                ax, ay = real_ax, real_ay
+                try:
+                    rig["fbp_source_width"] = int(width)
+                    rig["fbp_source_height"] = int(height)
+                    rig["fbp_native_aspect_x"] = float(ax)
+                    rig["fbp_native_aspect_y"] = float(ay)
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+                    pass
+                return ax, ay
         if ax > 0.0 and ay > 0.0:
             return ax, ay
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
@@ -212,9 +216,11 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
     rig.fbp_loop_mode = 'NONE'
     rig.fbp_global_duration = 1
     rig.fbp_start_frame = sc.frame_current
+    rig.fbp_track_cam = bool(getattr(sc, 'fbp_pre_track_cam', False))
     rig.scale = camera_ratio_scale(context)
     rig.fbp_base_scale_vec = rig.scale
-    rig.fbp_color_tag = 'COLOR_01'
+    # Creation-time initialization must not invoke the interactive bulk-color callback.
+    fbp_set_rna_property_silent(rig, 'fbp_color_tag', 'COLOR_01')
     rig.fbp_is_color_plane = True
     rig.fbp_color_plane_color = color
     rig.fbp_color_plane_mode = 'GRADIENT' if gradient_settings else ('HOLDOUT' if holdout else 'SOLID')
@@ -324,7 +330,7 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
         current_material_index = 0
 
     base_x, base_y = fbp_native_aspect_half_extents(rig)
-    # Crop values remain compatible with the old UI: 0..2 means 0..100% of
+    # Crop values use the current 0..2 range, corresponding to 0..100% of
     # the local width/height. Native layers apply that percentage to the real
     # image-aspect half extents instead of rebuilding a square plane.
     x0 = -base_x + (crop_left * base_x)
@@ -348,7 +354,7 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
         uv_layer = mesh.uv_layers.new(name="UVMap") if not mesh.uv_layers else mesh.uv_layers.active
         if mesh.polygons:
             coords = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
-            for loop_index, uv in zip(mesh.polygons[0].loop_indices, coords):
+            for loop_index, uv in zip(mesh.polygons[0].loop_indices, coords, strict=True):
                 uv_layer.data[loop_index].uv = uv
             mesh.polygons[0].material_index = current_material_index
 
@@ -390,9 +396,9 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
             uy = [v0, v0, v1, v1]
 
         # Blender's primitive plane UV orientation is local XY. Assign per face loop.
-        for poly, (ix, iy) in zip(mesh.polygons, face_cells):
+        for poly, (ix, iy) in zip(mesh.polygons, face_cells, strict=True):
             coords = ((ux[ix], uy[iy]), (ux[ix + 1], uy[iy]), (ux[ix + 1], uy[iy + 1]), (ux[ix], uy[iy + 1]))
-            for loop_index, uv in zip(poly.loop_indices, coords):
+            for loop_index, uv in zip(poly.loop_indices, coords, strict=True):
                 uv_layer.data[loop_index].uv = uv
             poly.material_index = current_material_index
 
@@ -478,7 +484,7 @@ def apply_fit_to_camera(context, rig, cam):
         native_geometry = False
     if native_geometry:
         # Native planes carry image aspect in mesh geometry, so fit-to-camera
-        # must scale uniformly. Legacy layers still carry aspect in rig.scale.
+        # must scale uniformly. Procedural layers carry aspect in rig.scale.
         base_x = base_y = base_z = 1.0
     else:
         base_x = max(float(base_vec[0]), 0.0001)
@@ -495,10 +501,7 @@ def apply_fit_to_camera(context, rig, cam):
 def build_fbp_rig(context, rig_name, directory, files_list, location, color_tag='COLOR_01', target_collection=None, color_variant_index=0, follow_collection_color=True):
     """Create an FBP image layer using Blender's native Image Sequence backend only."""
     files_list = [str(f) for f in (files_list or []) if f]
-    try:
-        from .native_backend import build_native_fbp_rig
-    except ImportError:
-        from native_backend import build_native_fbp_rig
+    from .native_backend import build_native_fbp_rig
     try:
         return build_native_fbp_rig(
             context, rig_name, directory, files_list, location,
@@ -510,11 +513,3 @@ def build_fbp_rig(context, rig_name, directory, files_list, location, color_tag=
     except Exception as exc:
         _fbp_warn("Native Image Sequence import failed", exc)
         raise RuntimeError(f"Frame by Plane native Image Sequence import failed: {exc}") from exc
-
-# SECTION 99 - Register hooks #
-def register():
-    return None
-
-
-def unregister():
-    return None

@@ -1,9 +1,114 @@
 """Focused Frame by Plane operator module."""
 
-try:
-    from .operator_common import *
-except ImportError:
-    from operator_common import *
+import bpy
+import math
+import os
+import re
+import tempfile
+import time
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    IntProperty,
+    StringProperty,
+)
+from bpy.types import Operator
+
+from .constants import FBP_PROJECT_COLLECTION_PREFIX, fbp_icon
+from .path_utils import (
+    clean_layer_name_from_path,
+    is_supported_media_file,
+    is_supported_video_file,
+    is_technical_map_file,
+    natural_sort_key,
+)
+from .builder import (
+    apply_fit_to_camera,
+    build_fbp_rig,
+    fbp_scene_orientation_is_horizontal,
+)
+from .materials import (
+    do_update_emission,
+    do_update_opacity,
+    get_or_create_fbp_gradient_preview_material,
+)
+from .importer import (
+    fbp_begin_fast_import,
+    fbp_build_project_folder,
+    fbp_child_entries,
+    fbp_collect_mixed_folder_entries,
+    fbp_end_fast_import,
+    fbp_fast_import_is_active,
+    fbp_folder_direct_dirs,
+    fbp_scan_project_layers_for_setup,
+)
+from .layers import (
+    fbp_mark_layer_cache_dirty,
+    fbp_resolve_rig_from_any_object,
+    get_or_create_child_collection,
+    get_selected_fbp_roots,
+    move_object_to_collection,
+    object_in_view_layer,
+    set_collection_color_tag,
+    set_viewport_object_color,
+    sync_collection_colors_to_rigs,
+)
+from .scene_sync import fbp_remove_plane_datablock, sync_layer_collection
+from .runtime import fbp_set_rna_property_silent, fbp_warn
+from .core import (
+    apply_camera_ratio_settings,
+    do_update_animation,
+    draw_scene_fbp_color_ramp,
+    fbp_draw_color_plane_color_row,
+    fbp_draw_gradient_choice_rows,
+    fbp_native_sequence_files_from_rig,
+    fbp_rebuild_sequence_backend_from_rig,
+    fbp_replace_sequence_backend,
+    fbp_rig_native_sequence_needs_rename,
+)
+from .operator_common import (
+    _fbp_active_generation_rename_item,
+    _fbp_active_pending_index_and_collection,
+    _fbp_add_generation_timer,
+    _fbp_build_issue,
+    _fbp_clear_generation_report,
+    _fbp_color_tag_for_group,
+    _fbp_find_insert_index_for_pending,
+    _fbp_finish_generation_ui,
+    _fbp_generation_report,
+    _fbp_get_or_create_collection_path,
+    _fbp_mark_generation_sequence_renamed,
+    _fbp_refresh_pending_tree,
+    _fbp_remove_generation_timer,
+    _fbp_rigs_from_report,
+    _fbp_select_pending_index,
+    _fbp_show_generation_start_popup,
+    _fbp_store_generation_report,
+    _fbp_sync_generation_rename_items,
+)
+
+
+
+def _fbp_configure_generated_camera(scene, camera_object):
+    """Apply the Scene camera settings to a newly generated camera."""
+    camera_data = getattr(camera_object, 'data', None)
+    if not camera_data:
+        return False
+    projection = str(getattr(scene, 'fbp_camera_projection', 'PERSP') or 'PERSP')
+    try:
+        camera_data.type = 'ORTHO' if projection == 'ORTHO' else 'PERSP'
+        if camera_data.type == 'ORTHO':
+            camera_data.ortho_scale = max(0.001, float(getattr(scene, 'fbp_camera_ortho_scale', 10.0) or 10.0))
+        else:
+            camera_data.lens = max(1.0, float(getattr(scene, 'fbp_camera_lens', 50.0) or 50.0))
+        clip_start = max(0.001, float(getattr(scene, 'fbp_camera_clip_start', 0.1) or 0.1))
+        clip_end = max(clip_start + 0.001, float(getattr(scene, 'fbp_camera_clip_end', 1000.0) or 1000.0))
+        camera_data.clip_start = clip_start
+        camera_data.clip_end = clip_end
+        return True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
 
 
 class FBP_OT_ImportFolderHierarchy(Operator):
@@ -23,7 +128,7 @@ class FBP_OT_ImportFolderHierarchy(Operator):
         sc.fbp_pending_planes.clear()
 
         color_map = {}
-        for index, (name, directory, files, kind) in enumerate(entries):
+        for name, directory, files, _kind in entries:
             item = sc.fbp_pending_planes.add()
             item.name = name
             item.directory = directory
@@ -156,7 +261,6 @@ class FBP_OT_ScanProjectToSetup(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        _fbp_make_import_viewports_safe()
         sc = context.scene
         base = bpy.path.abspath(getattr(sc, "fbp_project_path", "") or "")
         if not base or not os.path.isdir(base):
@@ -165,7 +269,7 @@ class FBP_OT_ScanProjectToSetup(Operator):
         rows = fbp_scan_project_layers_for_setup(base)
         sc.fbp_pending_planes.clear()
         color_map = {}
-        for index, (name, collection_name, directory, files, follow_collection_color) in enumerate(rows):
+        for name, collection_name, directory, files, follow_collection_color in rows:
             item = sc.fbp_pending_planes.add()
             item.name = name
             item.collection_name = collection_name
@@ -229,16 +333,11 @@ class FBP_OT_AutoSceneBuilder(Operator):
     bl_options     = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        _fbp_make_import_viewports_safe()
-        # Fast import is now entered directly here instead of monkey-patching the class at module load.
+        # Fast import is entered directly here instead of monkey-patching the class.
         if fbp_fast_import_is_active():
-            if getattr(context.scene, "fbp_import_main_folders_as_scenes", False):
-                return fbp_auto_build_main_folders_as_scenes(self, context)
             return self._execute_impl(context)
         fbp_begin_fast_import(context)
         try:
-            if getattr(context.scene, "fbp_import_main_folders_as_scenes", False):
-                return fbp_auto_build_main_folders_as_scenes(self, context)
             return self._execute_impl(context)
         finally:
             fbp_end_fast_import(context)
@@ -273,18 +372,17 @@ class FBP_OT_AutoSceneBuilder(Operator):
                 cam_loc.y -= cam_dist
                 bpy.ops.object.camera_add(location=cam_loc, rotation=(math.radians(90), 0, 0))
             sc.camera = context.active_object
+            _fbp_configure_generated_camera(sc, sc.camera)
             move_object_to_collection(sc.camera, root_coll)
             if sc.fbp_cam_pivot:
                 sc.cursor.location = cam_loc
                 context.scene.tool_settings.transform_pivot_point = 'CURSOR'
-            sc.fbp_gen_camera = False
-            sc.fbp_cam_pivot = False
 
         generated = []
 
         top_entries = fbp_child_entries(base)
         collection_color_state = {'next': 0}
-        for i, (kind, name, full) in enumerate(top_entries):
+        for kind, name, full in top_entries:
             before_count = len(generated)
             if kind == 'DIR':
                 generated.extend(fbp_build_project_folder(
@@ -359,7 +457,6 @@ class FBP_OT_GenerateMultiplane(Operator):
     bl_options     = {'REGISTER', 'UNDO'}
 
     def invoke(self, context, event):
-        _fbp_make_import_viewports_safe()
         _fbp_show_generation_start_popup(context, "Generating Frame By Plane Sequence")
         deferred = _fbp_add_generation_timer(context, self, delay=0.20)
         if deferred:
@@ -374,6 +471,10 @@ class FBP_OT_GenerateMultiplane(Operator):
             return {'CANCELLED'}
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
+        # Blender 5.1 does not reliably expose/compare the originating Timer
+        # through the modal Event. Filtering on event.timer can therefore keep
+        # this operator alive forever and prevent generation from starting.
+        # As in 4.5.7, the first TIMER event starts the deferred generation.
         _fbp_remove_generation_timer(context, self)
         return self._run_generation(context)
 
@@ -381,7 +482,6 @@ class FBP_OT_GenerateMultiplane(Operator):
         # Some UI entry points, especially Shift+A popup buttons, call execute()
         # directly instead of invoke(). Defer from here too so the generation
         # popup can appear before the heavy Python import starts.
-        _fbp_make_import_viewports_safe()
         _fbp_show_generation_start_popup(context, "Generating Frame By Plane Sequence")
         deferred = _fbp_add_generation_timer(context, self, delay=0.20)
         if deferred:
@@ -389,22 +489,32 @@ class FBP_OT_GenerateMultiplane(Operator):
         return self._run_generation(context)
 
     def _run_generation(self, context):
-        # Fast import is now entered directly here instead of monkey-patching the class at module load.
-        if fbp_fast_import_is_active():
-            result = self._execute_impl(context)
-            if result != {'FINISHED'}:
-                _fbp_store_generation_report(context, mode="Multiplane", generated_rigs=[], cancelled=True, message="Multiplane generation did not complete.")
-                _fbp_finish_generation_ui(context)
-            return result
-        fbp_begin_fast_import(context)
+        # Fast import is entered directly here instead of monkey-patching the class.
+        owns_fast_import = not fbp_fast_import_is_active()
+        if owns_fast_import:
+            fbp_begin_fast_import(context)
         try:
-            result = self._execute_impl(context)
+            try:
+                result = self._execute_impl(context)
+            except Exception as exc:
+                fbp_warn("Unexpected Multiplane generation failure", exc)
+                _fbp_store_generation_report(
+                    context,
+                    mode="Multiplane",
+                    generated_rigs=[],
+                    cancelled=True,
+                    message=f"Multiplane generation failed: {exc}",
+                )
+                _fbp_finish_generation_ui(context)
+                self.report({'ERROR'}, f"Multiplane generation failed: {exc}")
+                return {'CANCELLED'}
             if result != {'FINISHED'}:
                 _fbp_store_generation_report(context, mode="Multiplane", generated_rigs=[], cancelled=True, message="Multiplane generation did not complete.")
                 _fbp_finish_generation_ui(context)
             return result
         finally:
-            fbp_end_fast_import(context)
+            if owns_fast_import:
+                fbp_end_fast_import(context)
 
     def _execute_impl(self, context):
         sc = context.scene
@@ -441,12 +551,11 @@ class FBP_OT_GenerateMultiplane(Operator):
                 bpy.ops.object.camera_add(
                     location=cam_loc, rotation=(math.radians(90), 0, 0))
             sc.camera = context.active_object
+            _fbp_configure_generated_camera(sc, sc.camera)
             move_object_to_collection(sc.camera, target_collection)
             if sc.fbp_cam_pivot:
                 sc.cursor.location = cam_loc
                 context.scene.tool_settings.transform_pivot_point = 'CURSOR'
-            sc.fbp_gen_camera = False
-            sc.fbp_cam_pivot = False
 
         cam = sc.camera
         last_rig = None
@@ -465,7 +574,7 @@ class FBP_OT_GenerateMultiplane(Operator):
             path for path in collection_paths
             if any(other.startswith(path + " / ") for other in collection_paths)
         }
-        for i, p_item in enumerate(sc.fbp_pending_planes):
+        for p_item in sc.fbp_pending_planes:
             f_list = sorted([f for f in p_item.files_str.split("|") if f], key=natural_sort_key)
             collection_name = getattr(p_item, "collection_name", "") or ""
             if collection_name and last_collection_name is not None and collection_name != last_collection_name:
@@ -594,26 +703,40 @@ class FBP_OT_ImportSequence(Operator):
             return {'CANCELLED'}
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
+        # Blender 5.1 does not reliably expose/compare the originating Timer
+        # through the modal Event. Filtering on event.timer can therefore keep
+        # this operator alive forever and prevent generation from starting.
+        # As in 4.5.7, the first TIMER event starts the deferred generation.
         _fbp_remove_generation_timer(context, self)
         return self._run_generation(context)
 
     def _run_generation(self, context):
         # Fast import is now entered directly here instead of monkey-patching the class at module load.
-        if fbp_fast_import_is_active():
-            result = self._execute_impl(context)
-            if result != {'FINISHED'}:
-                _fbp_store_generation_report(context, mode="Image Sequence", generated_rigs=[], cancelled=True, message="Image sequence generation did not complete.")
-                _fbp_finish_generation_ui(context)
-            return result
-        fbp_begin_fast_import(context)
+        owns_fast_import = not fbp_fast_import_is_active()
+        if owns_fast_import:
+            fbp_begin_fast_import(context)
         try:
-            result = self._execute_impl(context)
+            try:
+                result = self._execute_impl(context)
+            except Exception as exc:
+                fbp_warn("Unexpected Image Sequence generation failure", exc)
+                _fbp_store_generation_report(
+                    context,
+                    mode="Image Sequence",
+                    generated_rigs=[],
+                    cancelled=True,
+                    message=f"Image sequence generation failed: {exc}",
+                )
+                _fbp_finish_generation_ui(context)
+                self.report({'ERROR'}, f"Image sequence generation failed: {exc}")
+                return {'CANCELLED'}
             if result != {'FINISHED'}:
                 _fbp_store_generation_report(context, mode="Image Sequence", generated_rigs=[], cancelled=True, message="Image sequence generation did not complete.")
                 _fbp_finish_generation_ui(context)
             return result
         finally:
-            fbp_end_fast_import(context)
+            if owns_fast_import:
+                fbp_end_fast_import(context)
 
     def _execute_impl(self, context):
         filenames = [f.name for f in self.files] if self.files else []
@@ -689,25 +812,30 @@ class FBP_OT_ReplaceSequence(Operator):
             return {'CANCELLED'}
         context.scene.fbp_last_directory = self.directory
 
-        rig = context.object
-        plane = rig.fbp_plane_target
-        if not plane:
+        rig = fbp_resolve_rig_from_any_object(getattr(context, 'object', None), context)
+        if not rig:
+            self.report({'WARNING'}, "Select a Frame by Plane layer")
+            return {'CANCELLED'}
+        original_plane = getattr(rig, 'fbp_plane_target', None)
+        if not original_plane:
             return {'CANCELLED'}
 
-        if plane.parent != rig:
-            new_mesh = plane.data.copy()
-            new_plane = plane.copy()
-            new_plane.data = new_mesh
-            context.collection.objects.link(new_plane)
-            new_plane.parent = rig
-            new_plane.matrix_local = plane.matrix_local
-            rig.fbp_plane_target = new_plane
-            plane = new_plane
-            if plane.data.animation_data:
-                plane.data.animation_data_clear()
-
-        sorted_files = sorted([f.name for f in self.files], key=natural_sort_key)
+        plane = original_plane
+        created_plane = None
         try:
+            if plane.parent != rig:
+                new_mesh = plane.data.copy()
+                created_plane = plane.copy()
+                created_plane.data = new_mesh
+                context.collection.objects.link(created_plane)
+                created_plane.parent = rig
+                created_plane.matrix_local = plane.matrix_local
+                rig.fbp_plane_target = created_plane
+                plane = created_plane
+                if plane.data.animation_data:
+                    plane.data.animation_data_clear()
+
+            sorted_files = sorted([f.name for f in self.files], key=natural_sort_key)
             if fbp_replace_sequence_backend(rig, self.directory, sorted_files):
                 do_update_animation(rig)
                 do_update_emission(rig)
@@ -716,7 +844,17 @@ class FBP_OT_ReplaceSequence(Operator):
         except Exception as exc:
             fbp_warn("Could not replace image sequence backend", exc)
 
-        self.report({'WARNING'}, "Could not replace image sequence backend")
+        if created_plane:
+            try:
+                rig.fbp_plane_target = original_plane
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+                pass
+            try:
+                fbp_remove_plane_datablock(created_plane)
+            except Exception as exc:
+                fbp_warn("Could not remove partial replacement plane", exc)
+
+        self.report({'WARNING'}, "Could not replace image sequence backend; previous sequence restored")
         return {'CANCELLED'}
 
 class FBP_OT_RenameSequenceForBlender(Operator):
@@ -805,9 +943,25 @@ class FBP_OT_RenameSequenceForBlender(Operator):
         if not directory or len(files) <= 1:
             return False, "No image sequence found"
 
-        abs_sources = [os.path.join(directory, f) for f in files]
+        abs_sources = []
+        for filename in files:
+            raw_path = str(filename or "")
+            path = raw_path if os.path.isabs(raw_path) else os.path.join(directory, raw_path)
+            abs_sources.append(os.path.abspath(bpy.path.abspath(path)))
         if not all(os.path.isfile(path) for path in abs_sources):
             return False, "Some source files are missing"
+        normalized_sources = [self._normalized_path(path) for path in abs_sources]
+        if len(set(normalized_sources)) != len(normalized_sources):
+            return False, "The source sequence contains duplicate file references"
+        source_directories = {
+            os.path.normcase(os.path.dirname(path))
+            for path in abs_sources
+        }
+        if len(source_directories) != 1:
+            return False, "Frames from multiple folders cannot be renamed as one disk sequence"
+        # Always derive the target folder from the validated files. Source
+        # metadata may contain an outdated or relative directory value.
+        directory = os.path.dirname(abs_sources[0])
 
         exts = {os.path.splitext(path)[1].lower() for path in abs_sources}
         if len(exts) != 1:
@@ -832,7 +986,7 @@ class FBP_OT_RenameSequenceForBlender(Operator):
 
         rename_map = {
             self._normalized_path(source): target
-            for source, target in zip(abs_sources, targets)
+            for source, target in zip(abs_sources, targets, strict=True)
         }
 
         # Find every FBP rig that references these source files before changing
@@ -850,16 +1004,77 @@ class FBP_OT_RenameSequenceForBlender(Operator):
         if rig not in affected_rigs:
             affected_rigs.append(rig)
 
+        snapshots = []
+        for affected in affected_rigs:
+            snapshots.append((
+                affected,
+                [
+                    {
+                        'name': str(getattr(item, 'name', 'Image') or 'Image'),
+                        'duration': max(1, int(getattr(item, 'duration', 1) or 1)),
+                        'is_selected': bool(getattr(item, 'is_selected', False)),
+                        'is_empty': bool(getattr(item, 'is_empty', False)),
+                        'filepath': str(getattr(item, 'filepath', '') or ''),
+                        'procedural_kind': str(getattr(item, 'procedural_kind', 'AUTO') or 'AUTO'),
+                    }
+                    for item in affected.fbp_images
+                ],
+                int(getattr(affected, 'fbp_images_index', 0) or 0),
+                str(getattr(affected, 'fbp_preview_path', '') or ''),
+            ))
+
+        def restore_rig_snapshot(affected, rows, active_index, preview_path):
+            affected.fbp_images.clear()
+            for data in rows:
+                item = affected.fbp_images.add()
+                item.name = data['name']
+                fbp_set_rna_property_silent(item, 'duration', data['duration'])
+                item.is_selected = data['is_selected']
+                item.is_empty = data['is_empty']
+                item.filepath = data['filepath']
+                try:
+                    item.procedural_kind = data['procedural_kind']
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+                    pass
+            affected.fbp_images_index = max(
+                0,
+                min(active_index, max(0, len(affected.fbp_images) - 1)),
+            )
+            affected.fbp_preview_path = preview_path
+
+        def rollback_disk_names():
+            rollback_errors = []
+            rollback_stamp = str(int(time.time() * 1000))
+            rollback_pairs = []
+            for index, (target, source) in enumerate(zip(targets, abs_sources, strict=True)):
+                tmp = os.path.join(
+                    directory,
+                    f".fbp_rollback_{rollback_stamp}_{index}_{os.path.basename(target)}",
+                )
+                try:
+                    if not os.path.exists(target):
+                        raise FileNotFoundError(target)
+                    os.rename(target, tmp)
+                    rollback_pairs.append((tmp, source))
+                except Exception as exc:
+                    rollback_errors.append(f"{os.path.basename(target)}: {exc}")
+            for tmp, source in rollback_pairs:
+                try:
+                    os.rename(tmp, source)
+                except Exception as exc:
+                    rollback_errors.append(f"{os.path.basename(source)}: {exc}")
+            return rollback_errors
+
         stamp = str(int(time.time() * 1000))
         temps = [os.path.join(directory, f".fbp_tmp_{stamp}_{i}_{os.path.basename(src)}") for i, src in enumerate(abs_sources)]
 
         moved_to_temp = []
         moved_to_target = []
         try:
-            for src, tmp in zip(abs_sources, temps):
+            for src, tmp in zip(abs_sources, temps, strict=True):
                 os.rename(src, tmp)
                 moved_to_temp.append((tmp, src))
-            for tmp, target in zip(temps, targets):
+            for tmp, target in zip(temps, targets, strict=True):
                 os.rename(tmp, target)
                 moved_to_target.append((target, tmp))
         except Exception as exc:
@@ -894,25 +1109,52 @@ class FBP_OT_RenameSequenceForBlender(Operator):
                 elif affected == rig:
                     affected.fbp_preview_path = targets[0]
 
-                fbp_rebuild_sequence_backend_from_rig(affected)
+                if not fbp_rebuild_sequence_backend_from_rig(affected):
+                    raise RuntimeError('native sequence rebuild returned False')
                 do_update_animation(affected)
                 do_update_emission(affected)
                 do_update_opacity(affected)
-                _fbp_mark_generation_sequence_renamed(
-                    context,
-                    getattr(affected, 'name', ''),
-                    files=[os.path.basename(path) for path in targets],
-                )
             except Exception as exc:
                 refresh_errors.append(f"{getattr(affected, 'name', 'Rig')}: {exc}")
+                break
+
+        if refresh_errors:
+            disk_rollback_errors = rollback_disk_names()
+            rig_rollback_errors = []
+            for affected, rows, active_index, preview_path in snapshots:
+                try:
+                    restore_rig_snapshot(affected, rows, active_index, preview_path)
+                    if not fbp_rebuild_sequence_backend_from_rig(affected):
+                        raise RuntimeError('restored native sequence rebuild returned False')
+                    do_update_animation(affected)
+                    do_update_emission(affected)
+                    do_update_opacity(affected)
+                except Exception as exc:
+                    rig_rollback_errors.append(f"{getattr(affected, 'name', 'Rig')}: {exc}")
+            try:
+                fbp_mark_layer_cache_dirty(context)
+            except Exception as exc:
+                fbp_warn("Could not refresh the layer cache after rename rollback", exc)
+
+            details = refresh_errors[:1]
+            if disk_rollback_errors:
+                details.append("Disk rollback errors: " + "; ".join(disk_rollback_errors[:2]))
+            if rig_rollback_errors:
+                details.append("Rig rollback errors: " + "; ".join(rig_rollback_errors[:2]))
+            return False, "Rename cancelled and previous names restored. " + " | ".join(details)
+
+        for affected in affected_rigs:
+            _fbp_mark_generation_sequence_renamed(
+                context,
+                getattr(affected, 'name', ''),
+                files=[os.path.basename(path) for path in targets],
+            )
 
         try:
             fbp_mark_layer_cache_dirty(context)
         except Exception as exc:
             fbp_warn("Could not refresh the layer cache after renaming", exc)
 
-        if refresh_errors:
-            return False, "Files renamed, but some shared rigs could not refresh: " + "; ".join(refresh_errors[:2])
         shared_count = max(0, len(affected_rigs) - 1)
         suffix = f" and updated {shared_count} shared rig(s)" if shared_count else ""
         return True, f"Renamed {len(targets)} files{suffix}"
@@ -949,7 +1191,7 @@ class FBP_OT_RenameSequenceForBlender(Operator):
 class FBP_UL_GenerationRenameList(bpy.types.UIList):
     bl_idname = "FBP_UL_generation_rename_list"
 
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index=0, flt_flag=0):
+    def draw_item(self, context, layout, data, item, icon, _active_data, _active_propname, index=0, _flt_flag=0):
         # Keep every row compact and selectable: one status icon + one sequence name.
         # Details for the selected row are shown once below the list.
         status_icon = 'CHECKMARK' if getattr(item, 'is_renamed', False) else 'ERROR'
@@ -1081,10 +1323,7 @@ class FBP_OT_RemoveCorruptedGeneratedPlanes(Operator):
             return {'CANCELLED'}
         rig_names = [getattr(rig, 'name', '') for rig in rigs if rig]
         _fbp_clear_generation_report(context)
-        try:
-            from .scene_sync import schedule_delete_fbp_rigs
-        except ImportError:
-            from scene_sync import schedule_delete_fbp_rigs
+        from .scene_sync import schedule_delete_fbp_rigs
         scheduled = schedule_delete_fbp_rigs(rig_names, first_interval=0.35)
         if not scheduled:
             self.report({'WARNING'}, "Could not schedule safe corrupted-plane removal")
@@ -1261,7 +1500,7 @@ class FBP_OT_ImportFolderMultiplane(Operator):
         sc.fbp_parent_import_path = base
         sc.fbp_pending_planes.clear()
         color_map = {}
-        for index, (name, collection_name, directory, files, follow_collection_color) in enumerate(rows):
+        for name, collection_name, directory, files, follow_collection_color in rows:
             item = sc.fbp_pending_planes.add()
             item.name = name
             item.collection_name = collection_name
@@ -1370,7 +1609,7 @@ class FBP_OT_PopupMultiplane(Operator):
             rows = [(name, coll, directory, files[:1], follow) for name, coll, directory, files, follow in rows if files]
         sc.fbp_pending_planes.clear()
         color_map = {}
-        for index, (name, collection_name, directory, files, follow_collection_color) in enumerate(rows):
+        for name, collection_name, directory, files, follow_collection_color in rows:
             item = sc.fbp_pending_planes.add()
             item.name = name
             item.collection_name = collection_name
@@ -1484,33 +1723,238 @@ class FBP_OT_CreateColorPlaneFromHex(Operator):
         sc.fbp_color_plane_color = (r, g, b, a)
         return bpy.ops.fbp.create_color_plane()
 
+def _fbp_clipboard_image_from_native_operator(context):
+    """Paste an OS clipboard image with Blender's native image operator.
+
+    ``image.clipboard_paste`` is an Image Editor operator. Shift+A invokes this
+    code from the 3D View, so use an existing Image Editor when available or
+    temporarily turn the current area into one. The original editor is always
+    restored before returning.
+    """
+    before = {image.as_pointer() for image in bpy.data.images}
+    pasted = None
+
+    def pasted_candidate(area):
+        try:
+            space = area.spaces.active
+            image = getattr(space, 'image', None)
+            if image and image.as_pointer() not in before:
+                return image
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        return None
+
+    def invoke_in_area(window, screen, area):
+        region = next((item for item in area.regions if item.type == 'WINDOW'), None)
+        if region is None:
+            return None
+        try:
+            with context.temp_override(
+                window=window,
+                screen=screen,
+                area=area,
+                region=region,
+                space_data=area.spaces.active,
+            ):
+                result = bpy.ops.image.clipboard_paste()
+            if 'FINISHED' not in result:
+                return None
+            return pasted_candidate(area)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return None
+
+    # Prefer a real Image Editor so no visible editor has to change type.
+    try:
+        for window in context.window_manager.windows:
+            screen = getattr(window, 'screen', None)
+            if screen is None:
+                continue
+            for area in screen.areas:
+                if area.type != 'IMAGE_EDITOR':
+                    continue
+                pasted = invoke_in_area(window, screen, area)
+                if pasted is not None:
+                    return pasted
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+    # Shift+A normally runs in a 3D View. Temporarily reuse that area so the
+    # native operator gets the exact editor context it expects.
+    area = getattr(context, 'area', None)
+    window = getattr(context, 'window', None)
+    screen = getattr(context, 'screen', None)
+    if area is not None and window is not None and screen is not None:
+        original_type = area.type
+        try:
+            area.type = 'IMAGE_EDITOR'
+            pasted = invoke_in_area(window, screen, area)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pasted = None
+        finally:
+            try:
+                area.type = original_type
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+
+    if pasted is not None:
+        return pasted
+
+    # Defensive fallback in case Blender created the datablock without making
+    # it the active Image Editor image.
+    for image in reversed(list(bpy.data.images)):
+        try:
+            if image.as_pointer() not in before:
+                return image
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _fbp_clipboard_storage_directory(context):
+    """Return a writable persistent folder for clipboard-created PNG files."""
+    candidates = []
+    scene = context.scene
+    project_path = bpy.path.abspath(getattr(scene, 'fbp_project_path', '') or '')
+    if project_path and os.path.isdir(project_path):
+        candidates.append(os.path.join(project_path, 'Clipboard'))
+
+    try:
+        user_directory = bpy.utils.user_resource(
+            'DATAFILES',
+            path=os.path.join('frame_by_plane', 'clipboard'),
+            create=True,
+        )
+        if user_directory:
+            candidates.append(user_directory)
+    except (AttributeError, RuntimeError, TypeError, ValueError, OSError):
+        pass
+
+    candidates.append(os.path.join(tempfile.gettempdir(), 'frame_by_plane_clipboard'))
+
+    for directory in candidates:
+        try:
+            os.makedirs(directory, exist_ok=True)
+            test_path = os.path.join(directory, '.fbp_write_test')
+            with open(test_path, 'w', encoding='utf-8') as handle:
+                handle.write('ok')
+            os.remove(test_path)
+            return os.path.abspath(directory)
+        except OSError:
+            continue
+
+    raise OSError("No writable directory is available for clipboard images")
+
+
+def _fbp_save_clipboard_image(context, image):
+    """Persist a native clipboard image as PNG for the file-based FBP backend."""
+    if image is None:
+        return ''
+    try:
+        width, height = image.size
+        if int(width) <= 0 or int(height) <= 0:
+            return ''
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ''
+
+    directory = _fbp_clipboard_storage_directory(context)
+    raw_name = str(getattr(image, 'name', '') or 'Clipboard Image')
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', raw_name).strip('._-') or 'Clipboard_Image'
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    suffix = str(time.time_ns())[-6:]
+    filepath = os.path.join(directory, f'{safe_name}_{stamp}_{suffix}.png')
+
+    old_filepath = str(getattr(image, 'filepath_raw', '') or '')
+    old_format = str(getattr(image, 'file_format', 'PNG') or 'PNG')
+    try:
+        image.filepath_raw = filepath
+        image.file_format = 'PNG'
+        image.save()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
+        try:
+            image.save_render(filepath, scene=context.scene)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
+            return ''
+    finally:
+        # The native clipboard datablock is only an intermediate source. Keep
+        # its original metadata intact until it can be removed safely.
+        try:
+            image.filepath_raw = old_filepath
+            image.file_format = old_format
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+    return filepath if os.path.isfile(filepath) else ''
+
+
+def _fbp_create_single_rig_from_path(context, path):
+    """Create and select one standard Frame by Plane rig from a media path."""
+    directory = os.path.dirname(path)
+    filename = os.path.basename(path)
+    context.scene.fbp_last_directory = directory
+    target_collection = context.collection if context.collection else context.scene.collection
+    rig = build_fbp_rig(
+        context,
+        clean_layer_name_from_path(filename),
+        directory,
+        [filename],
+        context.scene.cursor.location.copy(),
+        target_collection=target_collection,
+    )
+    bpy.ops.object.select_all(action='DESELECT')
+    if object_in_view_layer(rig, context):
+        rig.select_set(True)
+        context.view_layer.objects.active = rig
+    set_viewport_object_color(context)
+    return rig
+
+
 class FBP_OT_ImportSingleImageFromClipboard(Operator):
     bl_idname = "fbp.import_single_image_from_clipboard"
     bl_label = "Single Plane from Clipboard"
-    bl_description = "Create an Image Plane from an image file path copied to the clipboard. If the clipboard is not a valid image path, open the file picker"
+    bl_description = "Create a Frame by Plane rig from an image copied to the operating system clipboard, or from a copied media file path"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        # Preserve the old and useful workflow for paths copied from Explorer,
+        # Finder or another file manager.
         raw = getattr(context.window_manager, 'clipboard', '') or ''
         path = raw.strip().strip('"').strip("'")
         if path.startswith('file://'):
             path = path[7:]
         path = os.path.expanduser(path)
-        if os.path.isfile(path) and is_supported_media_file(path) and (is_supported_video_file(path) or not is_technical_map_file(path)):
-            directory = os.path.dirname(path)
-            filename = os.path.basename(path)
-            context.scene.fbp_last_directory = directory
-            target_collection = context.collection if context.collection else context.scene.collection
-            rig = build_fbp_rig(
-                context, clean_layer_name_from_path(filename), directory, [filename],
-                context.scene.cursor.location.copy(), target_collection=target_collection)
-            bpy.ops.object.select_all(action='DESELECT')
-            if object_in_view_layer(rig, context):
-                rig.select_set(True)
-                context.view_layer.objects.active = rig
-            set_viewport_object_color(context)
+        if (
+            os.path.isfile(path)
+            and is_supported_media_file(path)
+            and (is_supported_video_file(path) or not is_technical_map_file(path))
+        ):
+            _fbp_create_single_rig_from_path(context, path)
             return {'FINISHED'}
-        self.report({'INFO'}, "Clipboard does not contain a valid image/video path. Choose a media file")
-        return bpy.ops.fbp.import_single_image('INVOKE_DEFAULT')
 
-__all__ = ['FBP_OT_ImportFolderHierarchy', 'FBP_OT_AddPendingPlane', 'FBP_OT_EditPendingPlane', 'FBP_OT_MovePendingPlane', 'FBP_OT_RemovePendingPlane', 'FBP_OT_ClearPendingPlanes', 'FBP_OT_ScanProjectToSetup', 'FBP_OT_AddPendingCollection', 'FBP_OT_AutoSceneBuilder', 'FBP_OT_GenerateMultiplane', 'FBP_OT_ImportSequence', 'FBP_OT_ReplaceSequence', 'FBP_OT_RenameSequenceForBlender', 'FBP_UL_GenerationRenameList', 'FBP_OT_GenerationReportPopup', 'FBP_OT_RemoveCorruptedGeneratedPlanes', 'FBP_OT_RenameGenerationProblemSequence', 'FBP_OT_ClearGenerationReport', 'FBP_OT_ImportSingleImage', 'FBP_OT_ImportFolderMultiplane', 'FBP_OT_PopupSinglePlane', 'FBP_OT_PopupSinglePlaneAnimation', 'FBP_OT_PopupMultiplane', 'FBP_OT_PopupColorPlane', 'FBP_OT_CreateColorPlaneFromHex', 'FBP_OT_ImportSingleImageFromClipboard']
+        # For screenshots, browser images and copied pixels, use the exact
+        # native Blender clipboard operator, save the result as a persistent PNG
+        # and pass that PNG through the normal FBP rig builder.
+        pasted_image = _fbp_clipboard_image_from_native_operator(context)
+        if pasted_image is None:
+            self.report({'WARNING'}, "Clipboard does not contain a supported image")
+            return {'CANCELLED'}
+
+        saved_path = _fbp_save_clipboard_image(context, pasted_image)
+        if not saved_path:
+            self.report({'ERROR'}, "The clipboard image could not be saved as PNG")
+            return {'CANCELLED'}
+
+        try:
+            _fbp_create_single_rig_from_path(context, saved_path)
+        except Exception:
+            # Keep the pasted image datablock available for inspection if rig
+            # creation fails; only successful imports clean the temporary block.
+            raise
+        else:
+            try:
+                if pasted_image.users == 0:
+                    bpy.data.images.remove(pasted_image)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+
+        self.report({'INFO'}, "Created Frame by Plane rig from clipboard image")
+        return {'FINISHED'}
