@@ -1,6 +1,7 @@
 """Scene, Object, Collection and add-on preference properties."""
 
 import bpy
+from types import SimpleNamespace
 from bpy.props import (
     StringProperty, IntProperty, BoolProperty, FloatProperty, FloatVectorProperty,
     CollectionProperty, PointerProperty, EnumProperty
@@ -10,7 +11,13 @@ from bpy.types import PropertyGroup, AddonPreferences
 from .constants import COLOR_ENUM_ITEMS, COLLECTION_COLOR_ENUM_ITEMS, fbp_icon
 from .matrix_presets import ASCII_ATLAS_COLUMNS, ASCII_TEXT_GLYPH_LIMIT, ascii_enum_items
 
-from .runtime import fbp_undo_guard_active, fbp_set_rna_property_silent, fbp_warn
+from .runtime import (
+    fbp_undo_guard_active,
+    fbp_set_rna_property_silent,
+    fbp_warn,
+    fbp_obj_runtime_token,
+    fbp_obj_matches_runtime_token,
+)
 
 
 CAMERA_RATIO_ITEMS = [
@@ -128,20 +135,70 @@ def _call_layers(name, *args, default=None):
         return default
 
 
-def update_settings_section_cb(self, context):
-    """Keep Settings tabs compact and visually stable when switching category."""
+def get_fbp_layer_name(self):
+    """Expose the live Object name through a rename-safe UI property."""
     try:
-        self.fbp_settings_primary_open = False
-        self.fbp_settings_secondary_open = False
+        return str(getattr(self, "name", "") or "")
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        pass
+        return ""
+
+
+def set_fbp_layer_name(self, value):
+    """Rename an FBP rig and retarget its runtime UI references immediately."""
+    if fbp_undo_guard_active():
+        return
+    requested = str(value or "").strip()
+    if not requested:
+        return
+    try:
+        current_name = str(getattr(self, "name", "") or "")
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return
+    if requested == current_name:
+        return
+    try:
+        if bool(getattr(self, "is_fbp_control", False)):
+            from .scene_sync import fbp_rename_layer_rig
+            fbp_rename_layer_rig(self, requested, getattr(bpy, "context", None))
+        else:
+            self.name = requested
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not rename Frame by Plane layer", exc)
+
+
+def update_show_previews_cb(self, context):
+    """Release thumbnail previews when no scene still needs them."""
+    if bool(getattr(self, "fbp_show_previews", False)):
+        return
+    try:
+        for scene in getattr(bpy.data, "scenes", ()):
+            if scene is not self and bool(getattr(scene, "fbp_show_previews", False)):
+                return
+        _fbp_layers_func("clear_previews")()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not clear Frame by Plane thumbnail previews", exc)
+
+
+def update_collection_color_variants_cb(self, context):
+    """Apply the current variant mode immediately to this Scene's layers."""
+    if self is None:
+        return
+    target_context = context
+    try:
+        if not target_context or getattr(target_context, "scene", None) is not self:
+            target_context = SimpleNamespace(scene=self)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        target_context = SimpleNamespace(scene=self)
+    _call_layers("sync_collection_colors_to_rigs", target_context)
+
 
 
 def update_effects_view_cb(self, context):
     """Select the first visible effect when switching between the 2D and 3D stacks."""
     try:
         from .layers import get_selected_rigs
-        from .geometry_nodes import fbp_effect_definition, fbp_sync_effect_items
+        from .effects_registry import fbp_effect_definition
+        from .geometry_nodes import fbp_sync_effect_items
 
         rigs = get_selected_rigs(context)
         if not rigs:
@@ -348,18 +405,18 @@ class FBP_AddonPreferences(AddonPreferences):
         sequence.prop(self, "default_playback")
         sequence.prop(self, "default_interpolation")
         row = sequence.row(align=True)
-        row.prop(self, "default_emission", toggle=True)
+        row.prop(self, "default_emission")
         row.prop(self, "default_orientation")
         row = sequence.row(align=True)
         row.prop(self, "default_layer_offset")
-        row.prop(self, "default_fit_to_camera", toggle=True)
-        sequence.prop(self, "default_track_camera", toggle=True)
+        row.prop(self, "default_fit_to_camera")
+        sequence.prop(self, "default_track_camera")
 
         camera = layout.box()
         camera.label(text="Camera Defaults", icon='VIEW_CAMERA_UNSELECTED')
         row = camera.row(align=True)
-        row.prop(self, "default_generate_camera", toggle=True)
-        row.prop(self, "default_camera_pivot", toggle=True)
+        row.prop(self, "default_generate_camera")
+        row.prop(self, "default_camera_pivot")
         camera.prop(self, "default_camera_projection")
         if self.default_camera_projection == 'ORTHO':
             camera.prop(self, "default_camera_ortho_scale")
@@ -375,19 +432,21 @@ class FBP_AddonPreferences(AddonPreferences):
             row.prop(self, "default_resolution_y")
 
         display = layout.box()
-        display.label(text="Interface and Maintenance Defaults", icon='PREFERENCES')
+        display.label(text="Interface Defaults for New Scenes", icon='PREFERENCES')
         row = display.row(align=True)
-        row.prop(self, "default_show_previews", toggle=True)
-        row.prop(self, "default_show_color_previews", toggle=True)
+        row.prop(self, "default_show_previews")
+        row.prop(self, "default_show_color_previews")
         row = display.row(align=True)
-        row.prop(self, "default_sort_layers_alpha", toggle=True)
-        row.prop(self, "default_show_project_tools", toggle=True)
+        row.prop(self, "default_sort_layers_alpha")
+        row.prop(self, "default_show_project_tools")
         row = display.row(align=True)
-        row.prop(self, "default_show_gradient_ramp", toggle=True)
-        row.prop(self, "default_show_gradient_transform", toggle=True)
-        row = display.row(align=True)
-        row.prop(self, "default_color_variants", toggle=True)
-        row.prop(self, "default_auto_clean_orphans", toggle=True)
+        row.prop(self, "default_show_gradient_ramp")
+        row.prop(self, "default_show_gradient_transform")
+        display.prop(self, "default_color_variants")
+
+        maintenance = layout.box()
+        maintenance.label(text="Maintenance Default for New Scenes", icon='MODIFIER')
+        maintenance.prop(self, "default_auto_clean_orphans")
 
         render = layout.box()
         render.label(text="Background Render Defaults", icon='RENDER_ANIMATION')
@@ -400,14 +459,14 @@ class FBP_AddonPreferences(AddonPreferences):
         procedural.prop(self, "default_color_plane_preset")
         if self.default_color_plane_preset == 'CUSTOM':
             procedural.prop(self, "default_color_plane_color")
-        procedural.prop(self, "default_color_plane_emission", toggle=True)
+        procedural.prop(self, "default_color_plane_emission")
         row = procedural.row(align=True)
         row.prop(self, "default_gradient_mode")
         row.prop(self, "default_gradient_kind")
         row = procedural.row(align=True)
         row.prop(self, "default_gradient_color_a")
         row.prop(self, "default_gradient_color_b")
-        procedural.prop(self, "default_gradient_reverse", toggle=True)
+        procedural.prop(self, "default_gradient_reverse")
         transform = procedural.column(align=True)
         row = transform.row(align=True)
         row.prop(self, "default_gradient_offset_x")
@@ -421,8 +480,7 @@ class FBP_AddonPreferences(AddonPreferences):
         row = layout.row()
         row.scale_y = 1.2
         row.operator("fbp.apply_preferences_to_scene", icon='CHECKMARK', text="Apply Defaults to Current Scene")
-        layout.label(text="Defaults are applied automatically to newly created scenes.", icon='INFO')
-
+        
 
 def fbp_get_addon_preferences(context=None):
     context = context or getattr(bpy, "context", None)
@@ -578,6 +636,13 @@ def update_gradient_mapping_cb(self, context):
 
 def update_image_index_cb(self, context):
     return _call_core('update_image_index_cb', self, context)
+
+def update_interpolation_cb(self, context):
+    del context
+    if not bool(getattr(self, "fbp_is_drawing_plane", False)):
+        return None
+    return _call_core('do_update_animation', self)
+
 
 def update_frame_preview_color_cb(self, context):
     return _call_core('update_frame_preview_color_cb', self, context)
@@ -736,7 +801,6 @@ update_ascii_charset_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_asci
 update_ascii_character_count_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_character_count')
 update_ascii_edge_boost_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_edge_boost')
 update_ascii_dither_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_dither')
-update_text_matrix_columns_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_columns')
 update_text_matrix_character_count_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_character_count')
 update_text_matrix_character_aspect_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_character_aspect')
 update_text_matrix_glyph_scale_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_glyph_scale')
@@ -791,6 +855,49 @@ update_wind_gust_strength_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_
 update_wind_direction_space_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_direction_space')
 update_wind_direction_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_direction')
 update_wind_preview_falloff_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_preview_falloff')
+update_mesh_ripple_viewport_subdivision_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_viewport_subdivision')
+update_mesh_ripple_playback_subdivision_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_playback_subdivision')
+update_mesh_ripple_render_subdivision_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_render_subdivision')
+update_mesh_ripple_direction_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_direction')
+update_mesh_ripple_amplitude_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_amplitude')
+update_mesh_ripple_frequency_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_frequency')
+update_mesh_ripple_speed_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_speed')
+update_mesh_ripple_phase_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_phase')
+update_mesh_ripple_stepped_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_stepped')
+update_mesh_ripple_pin_borders_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_pin_borders')
+update_mesh_ripple_border_falloff_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_border_falloff')
+update_paper_curl_viewport_subdivision_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_viewport_subdivision')
+update_paper_curl_playback_subdivision_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_playback_subdivision')
+update_paper_curl_render_subdivision_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_render_subdivision')
+update_paper_curl_edge_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_edge')
+update_paper_curl_progress_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_progress')
+update_paper_curl_angle_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_angle')
+update_paper_curl_radius_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_radius')
+update_paper_curl_width_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_width')
+update_paper_curl_lift_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_lift')
+update_paper_curl_reverse_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_reverse')
+update_cutout_outline_viewport_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_viewport_resolution')
+update_cutout_outline_playback_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_playback_resolution')
+update_cutout_outline_render_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_render_resolution')
+update_cutout_outline_alpha_threshold_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_alpha_threshold')
+update_cutout_outline_width_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_width')
+update_cutout_outline_offset_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_offset')
+update_cutout_outline_color_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_color')
+update_extruded_cutout_viewport_resolution_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_viewport_resolution')
+update_extruded_cutout_playback_resolution_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_playback_resolution')
+update_extruded_cutout_render_resolution_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_render_resolution')
+update_extruded_cutout_alpha_threshold_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_alpha_threshold')
+update_extruded_cutout_thickness_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_thickness')
+update_extruded_cutout_direction_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_direction')
+update_extruded_cutout_side_material_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_side_material')
+update_extruded_cutout_side_color_cb = _make_effect_update_callback('EXTRUDED_CUTOUT', 'fbp_extruded_cutout_side_color')
+update_camera_scale_lock_reference_distance_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_distance')
+update_camera_scale_lock_reference_lens_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_lens')
+update_camera_scale_lock_reference_sensor_width_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_sensor_width')
+update_camera_scale_lock_influence_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_influence')
+update_camera_billboard_mode_cb = _make_effect_update_callback('CAMERA_BILLBOARD', 'fbp_camera_billboard_mode')
+update_camera_billboard_flip_cb = _make_effect_update_callback('CAMERA_BILLBOARD', 'fbp_camera_billboard_flip')
+update_camera_billboard_offset_cb = _make_effect_update_callback('CAMERA_BILLBOARD', 'fbp_camera_billboard_offset')
 update_thickness_amount_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_amount')
 update_thickness_alpha_threshold_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_alpha_threshold')
 update_thickness_alpha_resolution_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_alpha_resolution')
@@ -1010,23 +1117,46 @@ def set_layer_solo_view(self, value):
 # SECTION 01 - PropertyGroup: Layer / Image / Pending Setup #
 
 class FBP_LayerItem(PropertyGroup):
-    # Runtime layer row: store only the object name, never an Object PointerProperty.
-    # Blender 5.1 can crash while freeing undo/depsgraph IDProperties if a
-    # Scene CollectionProperty contains live Object pointers. A string lookup is
-    # slightly less direct but far safer for Undo, scene switching and add-on reload.
+    # Runtime layer row: never keep an Object PointerProperty inside the Scene
+    # collection. Blender 5.1 can become unstable while Undo frees such nested
+    # pointers. Store the readable name plus the current runtime pointer token.
+    # The token keeps the row resolvable during the short interval between an
+    # Outliner rename and the deferred scene-sync repair.
     obj_name: StringProperty(name="Object Name", default="", options={'SKIP_SAVE'})
+    obj_runtime_key: StringProperty(name="Runtime Object Key", default="", options={'SKIP_SAVE'})
 
     @property
     def obj(self):
-        name = getattr(self, "obj_name", "")
-        return bpy.data.objects.get(name) if name else None
+        name = str(getattr(self, "obj_name", "") or "")
+        runtime_key = str(getattr(self, "obj_runtime_key", "") or "")
+        candidate = bpy.data.objects.get(name) if name else None
+        if candidate:
+            try:
+                if (
+                    bool(getattr(candidate, "is_fbp_control", False))
+                    and (not runtime_key or fbp_obj_matches_runtime_token(candidate, runtime_key))
+                ):
+                    return candidate
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                candidate = None
+        if not runtime_key:
+            return None
+        try:
+            for obj in bpy.data.objects:
+                if fbp_obj_matches_runtime_token(obj, runtime_key):
+                    return obj if bool(getattr(obj, "is_fbp_control", False)) else None
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return None
+        return None
 
     @obj.setter
     def obj(self, value):
         try:
-            self.obj_name = getattr(value, "name", "") if value else ""
-        except Exception:
+            self.obj_name = str(getattr(value, "name", "") or "") if value else ""
+            self.obj_runtime_key = fbp_obj_runtime_token(value) if value else ""
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             self.obj_name = ""
+            self.obj_runtime_key = ""
 
     solo:   BoolProperty(default=False)
     mute:   BoolProperty(default=False, update=update_mute_cb)
@@ -1123,6 +1253,12 @@ class FBP_EffectItem(PropertyGroup):
     changes so stale interface data is never retained.
     """
     effect_id: StringProperty(name="Effect ID", default="", options={'SKIP_SAVE'})
+    instance_id: StringProperty(
+        name="Effect Instance ID",
+        description="Persistent identity reserved for future duplicate effect instances",
+        default="",
+        options={'SKIP_SAVE'},
+    )
     label: StringProperty(name="Effect", default="Effect", options={'SKIP_SAVE'})
     visible: BoolProperty(
         name="Viewport",
@@ -1146,6 +1282,12 @@ class FBP_ImageItem(PropertyGroup):
     is_selected: BoolProperty(name="Select", description="Include this frame in frame-list actions such as duplicate, split, sort or delete", default=True)
     is_empty:    BoolProperty(name="Empty", description="Marks this row as a transparent placeholder frame", default=False)
     filepath:    StringProperty(name="File", description="Image or video file used by this frame", subtype='FILE_PATH', default="")
+    image:        PointerProperty(name="Image", description="Persistent Blender Image used by Cutout Plane entries", type=bpy.types.Image)
+    image_name:   StringProperty(name="Image Datablock", description="Fallback datablock name for Cutout Plane compatibility", default="")
+    managed_image: BoolProperty(name="Managed Buffer", description="Allow Frame by Plane to release inactive CPU/GPU buffers for this external Cutout image", default=False)
+    source_width: IntProperty(name="Source Width", description="Cached source width used without decoding the image again", default=0, min=0)
+    source_height: IntProperty(name="Source Height", description="Cached source height used without decoding the image again", default=0, min=0)
+    stable_id:    StringProperty(name="Stable ID", description="Persistent Cutout Plane entry identifier", default="")
     procedural_kind: EnumProperty(
         name="Frame Type",
         description="Internal type for procedural color/gradient frame rows",
@@ -1280,7 +1422,23 @@ def register_properties():
     bpy.types.Scene.fbp_camera_clip_end = FloatProperty(
         name="Clip End", description="Far clipping distance for newly generated cameras",
         default=1000.0, min=1.0, soft_max=10000.0, unit='LENGTH')
-    bpy.types.Scene.fbp_show_previews = BoolProperty(name="Show Thumbnails", description="Show image thumbnails for imported image/video layers", default=False)
+    bpy.types.Scene.fbp_show_previews = BoolProperty(
+        name="Show Thumbnails",
+        description="Show image thumbnails for imported image/video layers; disabling releases the preview cache",
+        default=False,
+        update=update_show_previews_cb,
+    )
+    bpy.types.Scene.fbp_thumbnail_background_enabled = BoolProperty(
+        name="Thumbnail Background",
+        description="Place all Frame by Plane image thumbnails over the selected background color",
+        default=False,
+    )
+    bpy.types.Scene.fbp_thumbnail_background_color = FloatVectorProperty(
+        name="Thumbnail Background Color",
+        description="Color shown behind transparent pixels in all Frame by Plane image thumbnails",
+        subtype='COLOR', size=3, min=0.0, max=1.0,
+        default=(1.0, 1.0, 1.0),
+    )
     bpy.types.Scene.fbp_show_color_previews = BoolProperty(name="Show Color Preview", description="Show color/gradient chips in Layer and Frame lists instead of generic procedural icons", default=True)
     bpy.types.Scene.fbp_sort_layers_alpha = BoolProperty(
         name="A-Z",
@@ -1288,7 +1446,7 @@ def register_properties():
         default=False)
     bpy.types.Scene.fbp_auto_clean_orphans = BoolProperty(
         name="Auto-clean orphan Frame by Plane objects",
-        description="After normal deletion, remove FBP planes left without their rig and purge unused FBP datablocks. Image files on disk are never deleted",
+        description="After normal deletion, remove orphan FBP planes and safely purge unused FBP mesh/material datablocks. Image datablocks and files on disk are never deleted automatically",
         default=True)
     bpy.types.Scene.fbp_show_create_tools = BoolProperty(name="Show Create Tools", description="Show additional creation tools in the sidebar", default=False)
     bpy.types.Scene.fbp_render_output_dir = StringProperty(
@@ -1307,7 +1465,12 @@ def register_properties():
     bpy.types.Scene.fbp_background_render_output_dir = StringProperty(name="Output Folder", default="", subtype='DIR_PATH', options={'SKIP_SAVE'})
     bpy.types.Scene.fbp_generation_rename_items = CollectionProperty(type=FBP_GenerationRenameItem, options={'SKIP_SAVE'})
     bpy.types.Scene.fbp_generation_rename_index = IntProperty(name="Rename Sequence Index", description="Active problematic sequence in the generation rename list", default=0, min=0, options={'SKIP_SAVE'})
-    bpy.types.Scene.fbp_auto_collection_color_variants = BoolProperty(name="Collection Color Variants", description="Give layers small viewport color variations based on their collection color", default=True)
+    bpy.types.Scene.fbp_auto_collection_color_variants = BoolProperty(
+        name="Collection Color Variants",
+        description="Give layers small viewport color variations based on their collection color",
+        default=True,
+        update=update_collection_color_variants_cb,
+    )
     bpy.types.Scene.fbp_layers = CollectionProperty(type=FBP_LayerItem, options={'SKIP_SAVE'})
     bpy.types.Scene.fbp_layer_stack_index = IntProperty(
         name="Layer Index", description="Active layer row in the Frame by Plane layer list", default=0, update=update_layer_stack_index_cb)
@@ -1355,29 +1518,17 @@ def register_properties():
     bpy.types.Scene.fbp_layer_offset = FloatProperty(name="Plane Distance (m)", description="Distance between generated layers; imported top-level collections use a larger gap", default=0.2, min=0.001)
     bpy.types.Scene.fbp_auto_scale   = BoolProperty(name="Auto-Scale (Fit to Cam)", description="Scale generated planes to the camera frame using the image aspect ratio", default=True)
     bpy.types.Scene.fbp_pre_track_cam = BoolProperty(name="Track Camera on New Layers", description="Add camera tracking to newly generated Frame by Plane layers", default=False)
-    bpy.types.Scene.fbp_settings_primary_open = BoolProperty(
-        name="Primary Settings Section",
-        description="Expand the first group in the active Settings category",
-        default=False,
-        options={'SKIP_SAVE'},
-    )
-    bpy.types.Scene.fbp_settings_secondary_open = BoolProperty(
-        name="Secondary Settings Section",
-        description="Expand the second group in the active Settings category",
-        default=False,
-        options={'SKIP_SAVE'},
-    )
     bpy.types.Scene.fbp_settings_section = EnumProperty(
         name="Settings Section",
         description="Choose which Frame by Plane settings group to display",
         items=[
             ('PROJECT', "Project", "Project folder and file settings"),
+            ('DISPLAY', "Display", "Layer-list thumbnails, sorting and scene workflow options"),
             ('CAMERA', "Camera", "Camera projection and frame ratio"),
             ('RENDER', "Render", "Background render controls"),
-            ('MAINTENANCE', "Maintenance", "Repair, relink, diagnostics and project statistics"),
+            ('MAINTENANCE', "Tools", "Repair, relink and diagnostics"),
         ],
         default='PROJECT',
-        update=update_settings_section_cb,
     )
     bpy.types.Scene.fbp_show_project_tools = BoolProperty(name="Project Import", description="Show advanced project and folder import controls", default=True)
     bpy.types.Scene.fbp_color_plane_type = EnumProperty(
@@ -1421,6 +1572,24 @@ def register_properties():
 
     bpy.types.Object.is_fbp_control     = BoolProperty(default=False)
     bpy.types.Object.is_fbp_plane       = BoolProperty(default=False)
+    bpy.types.Object.fbp_is_drawing_plane = BoolProperty(
+        name="Is Cutout Plane",
+        description="Internal flag for manually selected Cutout Plane image libraries",
+        default=False,
+    )
+    bpy.types.Object.fbp_drawing_auto_key = BoolProperty(
+        name="Auto Key Drawing",
+        description="Insert or update a Constant keyframe when the drawing slider changes",
+        default=True,
+    )
+    # Legacy per-Cutout preview properties were replaced by Scene-wide thumbnail settings in 5.1.2.
+    bpy.types.Object.fbp_layer_name = StringProperty(
+        name="Layer Name",
+        description="Rename this Frame by Plane layer and update all linked UI references immediately",
+        get=get_fbp_layer_name,
+        set=set_fbp_layer_name,
+        options={'SKIP_SAVE'},
+    )
     bpy.types.Object.fbp_collection_name = StringProperty(name="FBP Collection", description="Internal name of the collection this Frame by Plane layer belongs to", default="")
     bpy.types.Object.fbp_follow_collection_color = BoolProperty(name="Follow Collection Color", description="Use the parent collection color tag as the rig viewport color", default=True)
     bpy.types.Object.fbp_color_variant_index = IntProperty(name="Color Variant", description="Internal color variation index used to make layers readable", default=0)
@@ -1446,10 +1615,10 @@ def register_properties():
     bpy.types.Object.fbp_interpolation  = EnumProperty(
         name="Filter",
         items=[
-            ('Closest', "Pixel",  "Use nearest-neighbor filtering for sharp pixel edges", fbp_icon("SNAP_GRID"), 0),
-            ('Linear',  "Smooth", "Use linear filtering for smoother image scaling", fbp_icon("IMAGE_RGB"), 1),
+            ('Closest', "Pixel",  "Use nearest-neighbor filtering for sharp pixel edges", fbp_icon("ALIASED"), 0),
+            ('Linear',  "Smooth", "Use linear filtering for smoother image scaling", fbp_icon("ANTIALIASED"), 1),
         ],
-        default='Closest')
+        default='Closest', update=update_interpolation_cb)
     bpy.types.Object.fbp_plane_target    = PointerProperty(name="Linked Plane", description="Image plane controlled by this Frame by Plane rig", type=bpy.types.Object)
     bpy.types.Object.fbp_global_duration = IntProperty(
         name="Global Duration", description="Set the duration in frames for all frames in this sequence", default=2, min=1, update=update_global_duration_cb)
@@ -1653,6 +1822,176 @@ def register_properties():
     bpy.types.Object.fbp_wind_subdivision = IntProperty(name="Subdivision", default=4, min=0, max=6, update=update_wind_subdivision_cb)
     bpy.types.Object.fbp_wind_stepped = IntProperty(name="Stepped", default=1, min=1, soft_max=24, update=update_wind_stepped_cb)
 
+    # 4.9 Geometry effect quality contract reference implementation.
+    bpy.types.Object.fbp_mesh_ripple_viewport_subdivision = IntProperty(
+        name="Viewport Subdivision", description="Mesh detail used while editing",
+        default=4, min=0, max=7, update=update_mesh_ripple_viewport_subdivision_cb)
+    bpy.types.Object.fbp_mesh_ripple_playback_subdivision = IntProperty(
+        name="Playback Subdivision", description="Temporary mesh detail used during timeline playback",
+        default=2, min=0, max=7, update=update_mesh_ripple_playback_subdivision_cb)
+    bpy.types.Object.fbp_mesh_ripple_render_subdivision = IntProperty(
+        name="Render Subdivision", description="Mesh detail temporarily used for final rendering",
+        default=5, min=0, max=7, update=update_mesh_ripple_render_subdivision_cb)
+    bpy.types.Object.fbp_mesh_ripple_direction = EnumProperty(
+        name="Direction", items=(('X', "Horizontal", "Waves travel along local X"),
+                                  ('Y', "Vertical", "Waves travel along local Y"),
+                                  ('RADIAL', "Radial", "Waves expand from the plane center")),
+        default='X', update=update_mesh_ripple_direction_cb)
+    bpy.types.Object.fbp_mesh_ripple_amplitude = FloatProperty(
+        name="Amplitude", default=0.08, min=0.0, soft_max=1.0, max=10.0,
+        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_mesh_ripple_amplitude_cb)
+    bpy.types.Object.fbp_mesh_ripple_frequency = FloatProperty(
+        name="Frequency", default=3.0, min=0.0, soft_max=20.0, max=100.0,
+        precision=3, options={'ANIMATABLE'}, update=update_mesh_ripple_frequency_cb)
+    bpy.types.Object.fbp_mesh_ripple_speed = FloatProperty(
+        name="Speed", default=1.0, soft_min=-10.0, soft_max=10.0, precision=3,
+        options={'ANIMATABLE'}, update=update_mesh_ripple_speed_cb)
+    bpy.types.Object.fbp_mesh_ripple_phase = FloatProperty(
+        name="Phase", default=0.0, soft_min=-6.283185, soft_max=6.283185,
+        subtype='ANGLE', options={'ANIMATABLE'}, update=update_mesh_ripple_phase_cb)
+    bpy.types.Object.fbp_mesh_ripple_stepped = IntProperty(
+        name="Stepped", description="Hold each deformation pose for this many frames",
+        default=1, min=1, soft_max=24, max=1000, options={'ANIMATABLE'}, update=update_mesh_ripple_stepped_cb)
+    bpy.types.Object.fbp_mesh_ripple_pin_borders = FloatProperty(
+        name="Pin Borders", description="Keep the plane borders fixed",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_mesh_ripple_pin_borders_cb)
+    bpy.types.Object.fbp_mesh_ripple_border_falloff = FloatProperty(
+        name="Border Falloff", description="Width of the pinned border transition",
+        default=0.15, min=0.001, soft_max=0.5, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_mesh_ripple_border_falloff_cb)
+
+    # 4.9.2 Paper Curl uses the shared Geometry Nodes quality contract.
+    bpy.types.Object.fbp_paper_curl_viewport_subdivision = IntProperty(
+        name="Viewport Subdivision", description="Mesh detail used while editing",
+        default=4, min=0, max=7, update=update_paper_curl_viewport_subdivision_cb)
+    bpy.types.Object.fbp_paper_curl_playback_subdivision = IntProperty(
+        name="Playback Subdivision", description="Temporary mesh detail used during timeline playback",
+        default=2, min=0, max=7, update=update_paper_curl_playback_subdivision_cb)
+    bpy.types.Object.fbp_paper_curl_render_subdivision = IntProperty(
+        name="Render Subdivision", description="Mesh detail temporarily used for final rendering",
+        default=5, min=0, max=7, update=update_paper_curl_render_subdivision_cb)
+    bpy.types.Object.fbp_paper_curl_edge = EnumProperty(
+        name="Curl Edge", items=(('LEFT', "Left", "Curl inward from the left edge"),
+                                  ('RIGHT', "Right", "Curl inward from the right edge"),
+                                  ('BOTTOM', "Bottom", "Curl inward from the bottom edge"),
+                                  ('TOP', "Top", "Curl inward from the top edge")),
+        default='TOP', update=update_paper_curl_edge_cb)
+    bpy.types.Object.fbp_paper_curl_progress = FloatProperty(
+        name="Progress", description="How far the curled region travels across the plane",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_paper_curl_progress_cb)
+    bpy.types.Object.fbp_paper_curl_angle = FloatProperty(
+        name="Curl Angle", default=2.35619449, min=0.0, max=6.28318531, subtype='ANGLE',
+        options={'ANIMATABLE'}, update=update_paper_curl_angle_cb)
+    bpy.types.Object.fbp_paper_curl_radius = FloatProperty(
+        name="Curl Radius", default=0.15, min=0.0, soft_max=1.0, max=10.0,
+        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_paper_curl_radius_cb)
+    bpy.types.Object.fbp_paper_curl_width = FloatProperty(
+        name="Curl Width", description="Width of the transition from flat paper to the curled edge",
+        default=0.28, min=0.001, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_paper_curl_width_cb)
+    bpy.types.Object.fbp_paper_curl_lift = FloatProperty(
+        name="Lift", description="Additional lift applied to the curled edge",
+        default=0.02, soft_min=-0.5, soft_max=0.5, max=10.0, min=-10.0,
+        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_paper_curl_lift_cb)
+    bpy.types.Object.fbp_paper_curl_reverse = BoolProperty(
+        name="Reverse Curl", description="Curl behind the plane instead of toward its local front",
+        default=False, options={'ANIMATABLE'}, update=update_paper_curl_reverse_cb)
+
+    # 4.9.4 reusable alpha-to-geometry contract reference effect.
+    bpy.types.Object.fbp_cutout_outline_viewport_resolution = IntProperty(
+        name="Viewport Alpha Detail", description="Subdivision level used to trace the alpha silhouette while editing",
+        default=4, min=0, max=8, update=update_cutout_outline_viewport_resolution_cb)
+    bpy.types.Object.fbp_cutout_outline_playback_resolution = IntProperty(
+        name="Playback Alpha Detail", description="Temporary alpha tracing detail used during timeline playback",
+        default=2, min=0, max=8, update=update_cutout_outline_playback_resolution_cb)
+    bpy.types.Object.fbp_cutout_outline_render_resolution = IntProperty(
+        name="Render Alpha Detail", description="Temporary alpha tracing detail used for final rendering",
+        default=6, min=0, max=8, update=update_cutout_outline_render_resolution_cb)
+    bpy.types.Object.fbp_cutout_outline_alpha_threshold = FloatProperty(
+        name="Alpha Threshold", description="Pixels below this alpha value are excluded from the cutout silhouette",
+        default=0.05, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_cutout_outline_alpha_threshold_cb)
+    bpy.types.Object.fbp_cutout_outline_width = FloatProperty(
+        name="Outline Width", description="Radius of the generated outline geometry",
+        default=0.012, min=0.00001, soft_max=0.1, max=10.0, subtype='DISTANCE', precision=5,
+        options={'ANIMATABLE'}, update=update_cutout_outline_width_cb)
+    bpy.types.Object.fbp_cutout_outline_offset = FloatProperty(
+        name="Offset", description="Move the outline along the plane local Z axis",
+        default=0.001, min=-10.0, max=10.0, soft_min=-0.1, soft_max=0.1,
+        subtype='DISTANCE', precision=5, options={'ANIMATABLE'}, update=update_cutout_outline_offset_cb)
+    bpy.types.Object.fbp_cutout_outline_color = FloatVectorProperty(
+        name="Outline Color", subtype='COLOR', size=4, min=0.0, max=1.0,
+        default=(0.02, 0.02, 0.02, 1.0), update=update_cutout_outline_color_cb)
+
+    # 4.9.5 reusable cut-out extrusion reference effect.
+    bpy.types.Object.fbp_extruded_cutout_viewport_resolution = IntProperty(
+        name="Viewport Alpha Detail", default=4, min=0, max=8,
+        update=update_extruded_cutout_viewport_resolution_cb)
+    bpy.types.Object.fbp_extruded_cutout_playback_resolution = IntProperty(
+        name="Playback Alpha Detail", default=2, min=0, max=8,
+        update=update_extruded_cutout_playback_resolution_cb)
+    bpy.types.Object.fbp_extruded_cutout_render_resolution = IntProperty(
+        name="Render Alpha Detail", default=6, min=0, max=8,
+        update=update_extruded_cutout_render_resolution_cb)
+    bpy.types.Object.fbp_extruded_cutout_alpha_threshold = FloatProperty(
+        name="Alpha Threshold", default=0.05, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_extruded_cutout_alpha_threshold_cb)
+    bpy.types.Object.fbp_extruded_cutout_thickness = FloatProperty(
+        name="Thickness", default=0.04, min=0.0, soft_max=0.25, max=10.0,
+        subtype='DISTANCE', precision=4, options={'ANIMATABLE'},
+        update=update_extruded_cutout_thickness_cb)
+    bpy.types.Object.fbp_extruded_cutout_direction = FloatProperty(
+        name="Direction", description="-1 extrudes behind the plane; +1 extrudes toward local front",
+        default=-1.0, min=-1.0, max=1.0, options={'ANIMATABLE'},
+        update=update_extruded_cutout_direction_cb)
+    bpy.types.Object.fbp_extruded_cutout_side_material = PointerProperty(
+        name="Side / Back Material", type=bpy.types.Material,
+        update=update_extruded_cutout_side_material_cb)
+    bpy.types.Object.fbp_extruded_cutout_side_color = FloatVectorProperty(
+        name="Side / Back Color", subtype='COLOR', size=4, min=0.0, max=1.0,
+        default=(0.18, 0.12, 0.08, 1.0), update=update_extruded_cutout_side_color_cb)
+
+    # Camera-space foundation reference effect.
+    bpy.types.Object.fbp_camera_scale_lock_reference_distance = FloatProperty(
+        name="Reference Distance",
+        description="Camera-space depth at which the plane keeps its current apparent size",
+        default=10.0, min=0.0001, soft_max=1000.0, max=1000000.0,
+        precision=4, subtype='DISTANCE', options={'ANIMATABLE'},
+        update=update_camera_scale_lock_reference_distance_cb)
+    bpy.types.Object.fbp_camera_scale_lock_reference_lens = FloatProperty(
+        name="Reference Lens",
+        description="Focal length captured with the reference camera depth",
+        default=50.0, min=0.1, soft_max=300.0, max=10000.0,
+        precision=2, options={'ANIMATABLE'},
+        update=update_camera_scale_lock_reference_lens_cb)
+    bpy.types.Object.fbp_camera_scale_lock_reference_sensor_width = FloatProperty(
+        name="Reference Sensor Width",
+        description="Camera sensor width captured with the reference camera depth",
+        default=36.0, min=0.1, soft_max=70.0, max=1000.0,
+        precision=2, options={'ANIMATABLE'},
+        update=update_camera_scale_lock_reference_sensor_width_cb)
+    bpy.types.Object.fbp_camera_scale_lock_influence = FloatProperty(
+        name="Influence",
+        description="Blend between the original size and full projection-aware compensation",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_camera_scale_lock_influence_cb)
+
+    # 4.9.7 stabilized camera-space vector contract reference effect.
+    bpy.types.Object.fbp_camera_billboard_mode = EnumProperty(
+        name="Facing Mode",
+        items=(('FULL', "Full", "Face the camera on both local axes"),
+               ('HORIZONTAL', "Horizontal", "Rotate only across the local horizontal axis"),
+               ('VERTICAL', "Vertical", "Rotate only across the local vertical axis")),
+        default='FULL', update=update_camera_billboard_mode_cb)
+    bpy.types.Object.fbp_camera_billboard_flip = BoolProperty(
+        name="Flip", description="Reverse the generated facing direction",
+        default=False, options={'ANIMATABLE'}, update=update_camera_billboard_flip_cb)
+    bpy.types.Object.fbp_camera_billboard_offset = FloatProperty(
+        name="Camera Offset", description="Move generated geometry toward or away from the camera",
+        default=0.0, min=-10000.0, max=10000.0, soft_min=-1.0, soft_max=1.0,
+        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_camera_billboard_offset_cb)
+
     bpy.types.Object.fbp_thickness_amount = FloatProperty(name="Thickness", default=0.02, min=0.0, soft_max=0.25, precision=4, subtype='DISTANCE', update=update_thickness_amount_cb)
     bpy.types.Object.fbp_thickness_side_material = PointerProperty(name="Side / Back Material", type=bpy.types.Material, update=update_thickness_side_material_cb)
     bpy.types.Object.fbp_thickness_side_color = FloatVectorProperty(name="Side / Back Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.18, 0.12, 0.08, 1.0), update=update_thickness_side_color_cb)
@@ -1836,9 +2175,6 @@ def register_properties():
         name="Dither", description="Add ordered cell variation to preserve gradients",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_ascii_dither_cb)
 
-    bpy.types.Object.fbp_text_matrix_columns = IntProperty(
-        name="Columns (Legacy)", description="Legacy Text Matrix column value",
-        default=24, min=2, soft_max=96, max=256, update=update_text_matrix_columns_cb)
     bpy.types.Object.fbp_text_matrix_quality = EnumProperty(
         name="Quality", description="Quick viewport/render column presets; rows return to Auto",
         items=(("DRAFT", "Draft", "24 viewport / 48 render columns"),
@@ -1959,7 +2295,7 @@ def register_properties():
 # SECTION 03 - Unregister properties #
 def unregister_properties():
     _unregister_effect_animation_properties()
-    for attr in ['fbp_last_directory', 'fbp_project_path', 'fbp_parent_import_path', 'fbp_cam_ratio', 'fbp_camera_projection', 'fbp_camera_lens', 'fbp_camera_ortho_scale', 'fbp_camera_clip_start', 'fbp_camera_clip_end', 'fbp_show_previews', 'fbp_show_color_previews', 'fbp_sort_layers_alpha', 'fbp_auto_clean_orphans', 'fbp_show_create_tools', 'fbp_render_output_dir', 'fbp_render_prefix', 'fbp_background_render_running', 'fbp_background_render_status', 'fbp_background_render_progress', 'fbp_background_render_total', 'fbp_background_render_output_dir', 'fbp_generation_rename_items', 'fbp_generation_rename_index', 'fbp_auto_collection_color_variants', 'fbp_layers', 'fbp_layer_stack_index', 'fbp_layer_tree_rows', 'fbp_layer_tree_rows_idx', 'fbp_layer_tree_signature', 'fbp_pending_open_collections', 'fbp_gradient_preview_material_name', 'fbp_creation_mode', 'fbp_effects_view', 'fbp_pending_planes', 'fbp_pending_planes_idx', 'fbp_pending_tree_rows', 'fbp_pending_tree_rows_idx', 'fbp_pending_collection_name', 'fbp_pre_duration', 'fbp_pre_shadeless', 'fbp_pre_loop_mode', 'fbp_pre_interpolation', 'fbp_pre_orientation', 'fbp_gen_camera', 'fbp_cam_pivot', 'fbp_layer_offset', 'fbp_auto_scale', 'fbp_pre_track_cam', 'fbp_settings_primary_open', 'fbp_settings_secondary_open', 'fbp_settings_section', 'fbp_show_project_tools', 'fbp_color_plane_type', 'fbp_color_plane_color', 'fbp_color_plane_preset', 'fbp_color_plane_emission', 'fbp_gradient_mode', 'fbp_gradient_kind', 'fbp_gradient_color_a', 'fbp_gradient_color_b', 'fbp_gradient_reverse', 'fbp_gradient_offset_x', 'fbp_gradient_offset_y', 'fbp_gradient_scale_x', 'fbp_gradient_scale_y', 'fbp_gradient_rotation', 'fbp_show_gradient_ramp', 'fbp_show_gradient_transform']:
+    for attr in ['fbp_last_directory', 'fbp_project_path', 'fbp_parent_import_path', 'fbp_cam_ratio', 'fbp_camera_projection', 'fbp_camera_lens', 'fbp_camera_ortho_scale', 'fbp_camera_clip_start', 'fbp_camera_clip_end', 'fbp_show_previews', 'fbp_thumbnail_background_enabled', 'fbp_thumbnail_background_color', 'fbp_show_color_previews', 'fbp_sort_layers_alpha', 'fbp_auto_clean_orphans', 'fbp_show_create_tools', 'fbp_render_output_dir', 'fbp_render_prefix', 'fbp_background_render_running', 'fbp_background_render_status', 'fbp_background_render_progress', 'fbp_background_render_total', 'fbp_background_render_output_dir', 'fbp_generation_rename_items', 'fbp_generation_rename_index', 'fbp_auto_collection_color_variants', 'fbp_layers', 'fbp_layer_stack_index', 'fbp_layer_tree_rows', 'fbp_layer_tree_rows_idx', 'fbp_layer_tree_signature', 'fbp_pending_open_collections', 'fbp_gradient_preview_material_name', 'fbp_creation_mode', 'fbp_effects_view', 'fbp_pending_planes', 'fbp_pending_planes_idx', 'fbp_pending_tree_rows', 'fbp_pending_tree_rows_idx', 'fbp_pending_collection_name', 'fbp_pre_duration', 'fbp_pre_shadeless', 'fbp_pre_loop_mode', 'fbp_pre_interpolation', 'fbp_pre_orientation', 'fbp_gen_camera', 'fbp_cam_pivot', 'fbp_layer_offset', 'fbp_auto_scale', 'fbp_pre_track_cam', 'fbp_settings_section', 'fbp_show_project_tools', 'fbp_color_plane_type', 'fbp_color_plane_color', 'fbp_color_plane_preset', 'fbp_color_plane_emission', 'fbp_gradient_mode', 'fbp_gradient_kind', 'fbp_gradient_color_a', 'fbp_gradient_color_b', 'fbp_gradient_reverse', 'fbp_gradient_offset_x', 'fbp_gradient_offset_y', 'fbp_gradient_scale_x', 'fbp_gradient_scale_y', 'fbp_gradient_rotation', 'fbp_show_gradient_ramp', 'fbp_show_gradient_transform']:
         if hasattr(bpy.types.Scene, attr):
             try:
                 delattr(bpy.types.Scene, attr)
@@ -1971,7 +2307,7 @@ def unregister_properties():
                 delattr(bpy.types.Collection, attr)
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
                 pass
-    for attr in ['is_fbp_control', 'is_fbp_plane', 'fbp_collection_name', 'fbp_follow_collection_color', 'fbp_color_variant_index', 'fbp_base_scale_vec', 'fbp_preview_path', 'fbp_is_vertical', 'fbp_images', 'fbp_images_index', 'fbp_color_tag', 'fbp_depth_order', 'fbp_loop_mode', 'fbp_use_emission', 'fbp_interpolation', 'fbp_plane_target', 'fbp_global_duration', 'fbp_start_frame', 'fbp_opacity', 'fbp_track_cam', 'fbp_is_visible', 'fbp_is_color_plane', 'fbp_color_plane_mode', 'fbp_color_plane_color', 'fbp_color_plane_emission', 'fbp_gradient_mode', 'fbp_gradient_kind', 'fbp_gradient_color_a', 'fbp_gradient_color_b', 'fbp_gradient_reverse', 'fbp_gradient_offset_x', 'fbp_gradient_offset_y', 'fbp_gradient_scale_x', 'fbp_gradient_scale_y', 'fbp_gradient_rotation', 'fbp_show_gradient_ramp', 'fbp_show_gradient_transform', 'fbp_extend_mode', 'fbp_extend_left', 'fbp_extend_right', 'fbp_extend_top', 'fbp_extend_bottom', 'fbp_crop_left', 'fbp_crop_right', 'fbp_crop_top', 'fbp_crop_bottom', 'fbp_effects', 'fbp_effects_index', 'fbp_effects_signature', 'fbp_mesh_wiggle_enabled', 'fbp_mesh_wiggle_shade_smooth', 'fbp_mesh_wiggle_strength', 'fbp_mesh_wiggle_speed', 'fbp_mesh_wiggle_hold', 'fbp_mesh_wiggle_w', 'fbp_mesh_wiggle_seed', 'fbp_mesh_wiggle_unique_seed', 'fbp_mesh_wiggle_layer_seed', 'fbp_mesh_wiggle_noise_scale', 'fbp_mesh_wiggle_detail', 'fbp_mesh_wiggle_subdivisions', 'fbp_uv_distortion_scale', 'fbp_uv_distortion_amount', 'fbp_pixelate_resolution', 'fbp_pixelate_square_pixels', 'fbp_grain_strength', 'fbp_grain_scale', 'fbp_grain_seed', 'fbp_digital_noise_luma', 'fbp_digital_noise_chroma', 'fbp_digital_noise_scale', 'fbp_digital_noise_shadow_bias', 'fbp_digital_noise_seed', 'fbp_chroma_key_color', 'fbp_chroma_key_tolerance', 'fbp_chroma_key_softness', 'fbp_chroma_key_despill', 'fbp_chroma_key_invert', 'fbp_halftone_scale', 'fbp_halftone_dot_size', 'fbp_halftone_rotation', 'fbp_halftone_contrast', 'fbp_halftone_invert', 'fbp_dot_matrix_scale', 'fbp_dot_matrix_dot_size', 'fbp_dot_matrix_spacing', 'fbp_dot_matrix_contrast', 'fbp_dot_matrix_response', 'fbp_dot_matrix_invert', 'fbp_dot_matrix_random_size', 'fbp_dot_matrix_random_brightness', 'fbp_dot_matrix_seed', 'fbp_dot_matrix_glow', 'fbp_dot_matrix_use_source_color', 'fbp_dot_matrix_foreground', 'fbp_dot_matrix_background', 'fbp_dot_matrix_transparent_background', 'fbp_ascii_scale', 'fbp_ascii_contrast', 'fbp_ascii_invert', 'fbp_ascii_colorize', 'fbp_ascii_foreground', 'fbp_ascii_background', 'fbp_ascii_transparent_background', 'fbp_ascii_variation', 'fbp_ascii_random_seed', 'fbp_ascii_seed', 'fbp_ascii_charset', 'fbp_ascii_character_count', 'fbp_text_matrix_columns', 'fbp_text_matrix_character_count', 'fbp_text_matrix_character_aspect', 'fbp_text_matrix_glyph_scale', 'fbp_text_matrix_contrast', 'fbp_text_matrix_invert', 'fbp_text_matrix_variation', 'fbp_text_matrix_seed', 'fbp_text_matrix_alpha_threshold', 'fbp_text_matrix_transparent_background', 'fbp_text_matrix_realize', 'fbp_text_matrix_charset', 'fbp_text_matrix_custom_charset', 'fbp_text_matrix_font', 'fbp_text_matrix_use_source_color', 'fbp_text_matrix_text_color', 'fbp_text_matrix_background_color', 'fbp_text_matrix_quality', 'fbp_text_matrix_viewport_columns', 'fbp_text_matrix_viewport_rows', 'fbp_text_matrix_render_columns', 'fbp_text_matrix_render_rows', 'fbp_text_matrix_auto_playback_limit', 'fbp_text_matrix_playback_columns', 'fbp_text_matrix_playback_rows', 'fbp_ascii_edge_boost', 'fbp_ascii_dither', 'fbp_dot_matrix_shape', 'fbp_dot_matrix_min_size', 'fbp_dot_matrix_max_size', 'fbp_dot_matrix_dead_pixels', 'fbp_dot_matrix_flicker', 'fbp_halftone_shape', 'fbp_halftone_use_source_color', 'fbp_halftone_foreground', 'fbp_halftone_background', 'fbp_halftone_transparent_background', 'fbp_wind_falloff', 'fbp_wind_noise_scale', 'fbp_wind_gust_strength', 'fbp_wind_direction_space', 'fbp_wind_direction', 'fbp_wind_preview_falloff', 'fbp_posterize_steps', 'fbp_solid_mask_color', 'fbp_solid_mask_factor', 'fbp_stop_motion_resolution', 'fbp_stop_motion_strength', 'fbp_stop_motion_step_frames', 'fbp_wind_bend_amount', 'fbp_wind_speed', 'fbp_wind_pin_edge', 'fbp_wind_motion_mode', 'fbp_wind_wave_count', 'fbp_wind_wave_amplitude', 'fbp_wind_wave_speed', 'fbp_wind_phase', 'fbp_wind_turbulence', 'fbp_wind_reverse', 'fbp_felt_render_density', 'fbp_felt_viewport_percentage', 'fbp_felt_fuzz_length', 'fbp_felt_subdivisions', 'fbp_felt_curl_amount', 'fbp_felt_alpha_threshold', 'fbp_felt_alpha_resolution', 'fbp_color_isolate_target', 'fbp_color_isolate_tolerance', 'fbp_color_isolate_falloff', 'fbp_duotone_shadows', 'fbp_duotone_highlights', 'fbp_paper_fiber_scale', 'fbp_paper_fiber_intensity', 'fbp_gradient_light_angle', 'fbp_gradient_shadow_position', 'fbp_gradient_softness', 'fbp_gradient_shadow_color', 'fbp_gobo_pattern_scale', 'fbp_gobo_rotation', 'fbp_gobo_sharpness', 'fbp_crt_line_count', 'fbp_crt_opacity', 'fbp_vignette_radius', 'fbp_vignette_smoothness', 'fbp_vignette_strength', 'fbp_wind_subdivision', 'fbp_wind_stepped', 'fbp_thickness_amount', 'fbp_thickness_side_material', 'fbp_thickness_side_color', 'fbp_thickness_alpha_threshold', 'fbp_thickness_alpha_resolution', 'fbp_infinite_rotation_speed', 'fbp_infinite_rotation_direction', 'fbp_infinite_rotation_stepped', 'fbp_infinite_rotation_offset', 'fbp_felt_fuzz_radius', 'fbp_felt_seed', 'fbp_hue_saturation_hue', 'fbp_hue_saturation_saturation', 'fbp_hue_saturation_value', 'fbp_brightness_contrast_brightness', 'fbp_brightness_contrast_contrast', 'fbp_invert_factor', 'fbp_threshold_value', 'fbp_paper_fiber_phase']:
+    for attr in ['is_fbp_control', 'is_fbp_plane', 'fbp_is_drawing_plane', 'fbp_drawing_auto_key', 'fbp_drawing_preview_background', 'fbp_drawing_preview_color', 'fbp_layer_name', 'fbp_collection_name', 'fbp_follow_collection_color', 'fbp_color_variant_index', 'fbp_base_scale_vec', 'fbp_preview_path', 'fbp_is_vertical', 'fbp_images', 'fbp_images_index', 'fbp_color_tag', 'fbp_depth_order', 'fbp_loop_mode', 'fbp_use_emission', 'fbp_interpolation', 'fbp_plane_target', 'fbp_global_duration', 'fbp_start_frame', 'fbp_opacity', 'fbp_track_cam', 'fbp_is_visible', 'fbp_is_color_plane', 'fbp_color_plane_mode', 'fbp_color_plane_color', 'fbp_color_plane_emission', 'fbp_gradient_mode', 'fbp_gradient_kind', 'fbp_gradient_color_a', 'fbp_gradient_color_b', 'fbp_gradient_reverse', 'fbp_gradient_offset_x', 'fbp_gradient_offset_y', 'fbp_gradient_scale_x', 'fbp_gradient_scale_y', 'fbp_gradient_rotation', 'fbp_show_gradient_ramp', 'fbp_show_gradient_transform', 'fbp_extend_mode', 'fbp_extend_left', 'fbp_extend_right', 'fbp_extend_top', 'fbp_extend_bottom', 'fbp_crop_left', 'fbp_crop_right', 'fbp_crop_top', 'fbp_crop_bottom', 'fbp_effects', 'fbp_effects_index', 'fbp_effects_signature', 'fbp_mesh_wiggle_enabled', 'fbp_mesh_wiggle_shade_smooth', 'fbp_mesh_wiggle_strength', 'fbp_mesh_wiggle_speed', 'fbp_mesh_wiggle_hold', 'fbp_mesh_wiggle_w', 'fbp_mesh_wiggle_seed', 'fbp_mesh_wiggle_unique_seed', 'fbp_mesh_wiggle_layer_seed', 'fbp_mesh_wiggle_noise_scale', 'fbp_mesh_wiggle_detail', 'fbp_mesh_wiggle_subdivisions', 'fbp_uv_distortion_scale', 'fbp_uv_distortion_amount', 'fbp_pixelate_resolution', 'fbp_pixelate_square_pixels', 'fbp_grain_strength', 'fbp_grain_scale', 'fbp_grain_seed', 'fbp_digital_noise_luma', 'fbp_digital_noise_chroma', 'fbp_digital_noise_scale', 'fbp_digital_noise_shadow_bias', 'fbp_digital_noise_seed', 'fbp_chroma_key_color', 'fbp_chroma_key_tolerance', 'fbp_chroma_key_softness', 'fbp_chroma_key_despill', 'fbp_chroma_key_invert', 'fbp_halftone_scale', 'fbp_halftone_dot_size', 'fbp_halftone_rotation', 'fbp_halftone_contrast', 'fbp_halftone_invert', 'fbp_dot_matrix_scale', 'fbp_dot_matrix_dot_size', 'fbp_dot_matrix_spacing', 'fbp_dot_matrix_contrast', 'fbp_dot_matrix_response', 'fbp_dot_matrix_invert', 'fbp_dot_matrix_random_size', 'fbp_dot_matrix_random_brightness', 'fbp_dot_matrix_seed', 'fbp_dot_matrix_glow', 'fbp_dot_matrix_use_source_color', 'fbp_dot_matrix_foreground', 'fbp_dot_matrix_background', 'fbp_dot_matrix_transparent_background', 'fbp_ascii_scale', 'fbp_ascii_contrast', 'fbp_ascii_invert', 'fbp_ascii_colorize', 'fbp_ascii_foreground', 'fbp_ascii_background', 'fbp_ascii_transparent_background', 'fbp_ascii_variation', 'fbp_ascii_random_seed', 'fbp_ascii_charset', 'fbp_ascii_character_count', 'fbp_text_matrix_character_count', 'fbp_text_matrix_character_aspect', 'fbp_text_matrix_glyph_scale', 'fbp_text_matrix_contrast', 'fbp_text_matrix_invert', 'fbp_text_matrix_variation', 'fbp_text_matrix_seed', 'fbp_text_matrix_alpha_threshold', 'fbp_text_matrix_transparent_background', 'fbp_text_matrix_realize', 'fbp_text_matrix_charset', 'fbp_text_matrix_custom_charset', 'fbp_text_matrix_font', 'fbp_text_matrix_use_source_color', 'fbp_text_matrix_text_color', 'fbp_text_matrix_background_color', 'fbp_text_matrix_quality', 'fbp_text_matrix_viewport_columns', 'fbp_text_matrix_viewport_rows', 'fbp_text_matrix_render_columns', 'fbp_text_matrix_render_rows', 'fbp_text_matrix_auto_playback_limit', 'fbp_text_matrix_playback_columns', 'fbp_text_matrix_playback_rows', 'fbp_ascii_edge_boost', 'fbp_ascii_dither', 'fbp_dot_matrix_shape', 'fbp_dot_matrix_min_size', 'fbp_dot_matrix_max_size', 'fbp_dot_matrix_dead_pixels', 'fbp_dot_matrix_flicker', 'fbp_halftone_shape', 'fbp_halftone_use_source_color', 'fbp_halftone_foreground', 'fbp_halftone_background', 'fbp_halftone_transparent_background', 'fbp_wind_falloff', 'fbp_wind_noise_scale', 'fbp_wind_gust_strength', 'fbp_wind_direction_space', 'fbp_wind_direction', 'fbp_wind_preview_falloff', 'fbp_posterize_steps', 'fbp_solid_mask_color', 'fbp_solid_mask_factor', 'fbp_stop_motion_resolution', 'fbp_stop_motion_strength', 'fbp_stop_motion_step_frames', 'fbp_wind_bend_amount', 'fbp_wind_speed', 'fbp_wind_pin_edge', 'fbp_wind_motion_mode', 'fbp_wind_wave_count', 'fbp_wind_wave_amplitude', 'fbp_wind_wave_speed', 'fbp_wind_phase', 'fbp_wind_turbulence', 'fbp_wind_reverse', 'fbp_felt_render_density', 'fbp_felt_viewport_percentage', 'fbp_felt_fuzz_length', 'fbp_felt_subdivisions', 'fbp_felt_curl_amount', 'fbp_felt_alpha_threshold', 'fbp_felt_alpha_resolution', 'fbp_color_isolate_target', 'fbp_color_isolate_tolerance', 'fbp_color_isolate_falloff', 'fbp_duotone_shadows', 'fbp_duotone_highlights', 'fbp_paper_fiber_scale', 'fbp_paper_fiber_intensity', 'fbp_gradient_light_angle', 'fbp_gradient_shadow_position', 'fbp_gradient_softness', 'fbp_gradient_shadow_color', 'fbp_gobo_pattern_scale', 'fbp_gobo_rotation', 'fbp_gobo_sharpness', 'fbp_crt_line_count', 'fbp_crt_opacity', 'fbp_vignette_radius', 'fbp_vignette_smoothness', 'fbp_vignette_strength', 'fbp_wind_subdivision', 'fbp_wind_stepped', 'fbp_mesh_ripple_viewport_subdivision', 'fbp_mesh_ripple_playback_subdivision', 'fbp_mesh_ripple_render_subdivision', 'fbp_mesh_ripple_direction', 'fbp_mesh_ripple_amplitude', 'fbp_mesh_ripple_frequency', 'fbp_mesh_ripple_speed', 'fbp_mesh_ripple_phase', 'fbp_mesh_ripple_stepped', 'fbp_mesh_ripple_pin_borders', 'fbp_mesh_ripple_border_falloff', 'fbp_paper_curl_viewport_subdivision', 'fbp_paper_curl_playback_subdivision', 'fbp_paper_curl_render_subdivision', 'fbp_paper_curl_edge', 'fbp_paper_curl_progress', 'fbp_paper_curl_angle', 'fbp_paper_curl_radius', 'fbp_paper_curl_width', 'fbp_paper_curl_lift', 'fbp_paper_curl_reverse', 'fbp_cutout_outline_viewport_resolution', 'fbp_cutout_outline_playback_resolution', 'fbp_cutout_outline_render_resolution', 'fbp_cutout_outline_alpha_threshold', 'fbp_cutout_outline_width', 'fbp_cutout_outline_offset', 'fbp_cutout_outline_color', 'fbp_extruded_cutout_viewport_resolution', 'fbp_extruded_cutout_playback_resolution', 'fbp_extruded_cutout_render_resolution', 'fbp_extruded_cutout_alpha_threshold', 'fbp_extruded_cutout_thickness', 'fbp_extruded_cutout_direction', 'fbp_extruded_cutout_side_material', 'fbp_extruded_cutout_side_color', 'fbp_camera_scale_lock_reference_distance', 'fbp_camera_scale_lock_reference_lens', 'fbp_camera_scale_lock_reference_sensor_width', 'fbp_camera_scale_lock_influence', 'fbp_camera_billboard_mode', 'fbp_camera_billboard_flip', 'fbp_camera_billboard_offset', 'fbp_thickness_amount', 'fbp_thickness_side_material', 'fbp_thickness_side_color', 'fbp_thickness_alpha_threshold', 'fbp_thickness_alpha_resolution', 'fbp_infinite_rotation_speed', 'fbp_infinite_rotation_direction', 'fbp_infinite_rotation_stepped', 'fbp_infinite_rotation_offset', 'fbp_felt_fuzz_radius', 'fbp_felt_seed', 'fbp_hue_saturation_hue', 'fbp_hue_saturation_saturation', 'fbp_hue_saturation_value', 'fbp_brightness_contrast_brightness', 'fbp_brightness_contrast_contrast', 'fbp_invert_factor', 'fbp_threshold_value', 'fbp_paper_fiber_phase']:
         if hasattr(bpy.types.Object, attr):
             try:
                 delattr(bpy.types.Object, attr)

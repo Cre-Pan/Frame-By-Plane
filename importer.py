@@ -31,7 +31,7 @@ def _update_animation(rig):
 
 def fbp_scene_orientation_is_horizontal(scene):
     value = str(getattr(scene, 'fbp_pre_orientation', 'VERT') or 'VERT').upper()
-    return value in {'HORIZ', 'HORIZONTAL'}
+    return value == 'HORIZ'
 
 
 # SECTION 00B - Smart Sequence Detection #
@@ -134,7 +134,15 @@ def fbp_group_direct_media_into_layers(files, folder_name=""):
     Videos are intentionally kept as one-file animated layers. Image files are
     grouped into separate sequences when at least two files share a smart prefix.
     """
-    ordered = sorted([f for f in files if f], key=natural_sort_key)
+    ordered = []
+    seen_files = set()
+    for filename in sorted([f for f in files if f], key=natural_sort_key):
+        key = os.path.normcase(os.path.normpath(str(filename)))
+        if key in seen_files:
+            continue
+        seen_files.add(key)
+        ordered.append(filename)
+
     buckets = {}
     order_keys = []
 
@@ -202,12 +210,78 @@ def fbp_should_flatten_leaf_folder(grouped_layers, child_dirs):
 
 
 # SECTION 01 - File system / Project scan #
+def _fbp_scan_project_tree(root):
+    """Return a one-pass importable directory snapshot.
+
+    The previous project scanner repeatedly called ``os.listdir`` and recursively
+    rechecked every child folder just to decide whether it contained supported
+    media. Large Toon Boom/animation exports could therefore traverse the same
+    directories many times. This snapshot visits each real directory once,
+    ignores directory symlinks to avoid cycles, and keeps only importable
+    branches.
+    """
+    root = os.path.abspath(root)
+    visited = set()
+
+    def scan(path):
+        try:
+            real_path = os.path.normcase(os.path.realpath(path))
+        except Exception:
+            real_path = os.path.normcase(os.path.abspath(path))
+        if real_path in visited:
+            return None
+        visited.add(real_path)
+
+        media = []
+        children = []
+        try:
+            entries = list(os.scandir(path))
+        except (OSError, PermissionError):
+            return None
+
+        entries.sort(key=lambda entry: natural_sort_key(entry.name))
+        for entry in entries:
+            name = entry.name
+            if is_hidden_import_name(name):
+                continue
+            try:
+                # Do not recurse through directory symlinks/junction-like links:
+                # project exports occasionally contain circular references.
+                if entry.is_dir(follow_symlinks=False):
+                    child = scan(entry.path)
+                    if child:
+                        children.append(child)
+                    continue
+                if not entry.is_file(follow_symlinks=True):
+                    continue
+            except OSError:
+                continue
+            if not is_supported_media_file(name):
+                continue
+            if not is_supported_video_file(name) and is_technical_map_file(name):
+                continue
+            media.append(name)
+
+        if not media and not children:
+            return None
+        return {
+            "path": path,
+            "media": media,
+            "children": children,
+        }
+
+    return scan(root)
+
+
 def fbp_scan_project_layers_for_setup(root):
     """Return pending setup rows from a project folder.
 
     A leaf filesystem folder containing exactly one image sequence or one static
     image is flattened into its parent Blender collection. The resulting layer
     keeps an independent color. Folder and layer names are intentionally ignored.
+
+    The filesystem is scanned once and represented by a lightweight snapshot,
+    avoiding repeated recursive directory checks on large projects.
 
     Rows are returned as:
         (layer_name, collection_name, directory, files, follow_collection_color)
@@ -217,32 +291,40 @@ def fbp_scan_project_layers_for_setup(root):
     if not root or not os.path.isdir(root):
         return rows
 
-    def visit(path, collection_name=""):
-        imgs = fbp_folder_direct_images(path)
-        dirs = fbp_folder_direct_dirs(path)
+    tree = _fbp_scan_project_tree(root)
+    if not tree:
+        return rows
+
+    root_key = os.path.normcase(os.path.abspath(root))
+
+    def visit(node, collection_name=""):
+        path = node["path"]
+        imgs = node.get("media", ())
+        child_nodes = node.get("children", ())
         folder_name = clean_layer_name_from_path(path)
         grouped_layers = fbp_group_direct_images_into_layers(imgs, folder_name)
 
+        is_root = os.path.normcase(os.path.abspath(path)) == root_key
         flatten_single_layer = (
-            path != root
-            and fbp_should_flatten_leaf_folder(grouped_layers, dirs)
+            not is_root
+            and fbp_should_flatten_leaf_folder(grouped_layers, child_nodes)
         )
 
         current_collection = collection_name
-        if path != root and not flatten_single_layer:
+        if not is_root and not flatten_single_layer:
             current_collection = f"{collection_name} / {folder_name}" if collection_name else folder_name
 
         # Collections that contain child folders remain neutral. A flattened
         # sequence/static-image folder produces an independently colored layer.
-        follows_collection = bool(current_collection) and not dirs and not flatten_single_layer
+        follows_collection = bool(current_collection) and not child_nodes and not flatten_single_layer
 
         for layer_name, files, _is_sequence in grouped_layers:
             rows.append((layer_name, current_collection, path, files, follows_collection))
 
-        for d in dirs:
-            visit(os.path.join(path, d), current_collection)
+        for child in child_nodes:
+            visit(child, current_collection)
 
-    visit(root, "")
+    visit(tree, "")
     return rows
 
 

@@ -6,6 +6,8 @@ layer API instead of the monolithic core module.
 
 import colorsys
 import os
+import time
+from collections import deque
 
 import bpy
 import bpy.utils.previews
@@ -30,6 +32,17 @@ from .runtime import (
 
 
 _FBP_SYNCING_PROCEDURAL_PREVIEW_ITEMS = set()
+_FBP_PREVIEW_MISS_CACHE = {}
+_FBP_PREVIEW_MISS_TTL = 2.0
+_FBP_COMPOSITE_PREVIEW_COLLECTION = "fbp_thumbnail_composites"
+_FBP_COMPOSITE_PREVIEW_LIMIT = 256
+_FBP_COMPOSITE_PREVIEW_KEYS = deque()
+_FBP_RAW_PREVIEW_LIMIT = 512
+_FBP_RAW_PREVIEW_KEYS = deque()
+_FBP_LAYER_VIEW_TAGGED_COLLECTIONS = set()
+_FBP_LAYER_VIEW_DIRECT_COLLECTIONS = set()
+_FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS = set()
+_FBP_LAYER_VIEW_CACHE_INITIALIZED = False
 _COLLECTION_COLOR_TAGS = {f"COLOR_{index:02d}" for index in range(1, 9)}
 
 
@@ -41,7 +54,10 @@ def sync_layer_collection(context):
 
 
 def is_fbp_image_rig(obj):
-    return bool(obj and getattr(obj, 'is_fbp_control', False))
+    try:
+        return obj is not None and bool(getattr(obj, 'is_fbp_control', False))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
 
 
 def is_fbp_layer_object(obj):
@@ -293,6 +309,26 @@ def collection_is_hidden_in_view_layer(context, collection):
     return False
 
 
+def fbp_reset_layer_view_cache_state():
+    """Forget Python-side collection cache ownership before loading a new Main."""
+    global _FBP_LAYER_VIEW_CACHE_INITIALIZED
+    _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.clear()
+    _FBP_LAYER_VIEW_DIRECT_COLLECTIONS.clear()
+    _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS.clear()
+    _FBP_LAYER_VIEW_CACHE_INITIALIZED = False
+
+
+def _clear_layer_view_collection_flags(collection):
+    if collection is None:
+        return
+    for key in ("fbp_has_fbp_content", "fbp_has_fbp_content_recursive"):
+        try:
+            if key in collection:
+                del collection[key]
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+            pass
+
+
 def fbp_rebuild_layer_view_cache(context):
     """Pre-compute which collections contain Frame by Plane rigs.
 
@@ -301,17 +337,58 @@ def fbp_rebuild_layer_view_cache(context):
     """
     if not context or not getattr(context, "scene", None):
         return
+    global _FBP_LAYER_VIEW_CACHE_INITIALIZED
     sc = context.scene
-    parent_map = {}
+
+    # The old implementation rewrote two ID properties on every collection on
+    # every sync. Besides scaling poorly, those writes can trigger unnecessary
+    # depsgraph/notifier work. Clear all stale properties once per loaded Main,
+    # then touch only collections tagged by the previous active-scene rebuild.
     try:
-        for coll in bpy.data.collections:
-            coll["fbp_has_fbp_content"] = False
-            coll["fbp_has_fbp_content_recursive"] = False
-            for child in coll.children:
-                parent_map.setdefault(child.name, []).append(coll)
-    except Exception as exc:
+        if not _FBP_LAYER_VIEW_CACHE_INITIALIZED:
+            collections_to_clear = tuple(bpy.data.collections)
+        else:
+            collections_to_clear = tuple(
+                collection
+                for name in tuple(_FBP_LAYER_VIEW_TAGGED_COLLECTIONS)
+                if (collection := bpy.data.collections.get(name)) is not None
+            )
+        for collection in collections_to_clear:
+            _clear_layer_view_collection_flags(collection)
+        # Scene master collections are not guaranteed to resolve through
+        # bpy.data.collections on every Blender version. There are normally only
+        # a handful of Scenes, so clear those roots explicitly as well.
+        for scene in getattr(bpy.data, "scenes", ()):
+            _clear_layer_view_collection_flags(getattr(scene, "collection", None))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not reset layer view cache", exc)
         return
+
+    _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.clear()
+    _FBP_LAYER_VIEW_DIRECT_COLLECTIONS.clear()
+    _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS.clear()
+    _FBP_LAYER_VIEW_CACHE_INITIALIZED = True
+
+    parent_map = {}
+    try:
+        stack = [sc.collection]
+        seen = set()
+        while stack:
+            parent = stack.pop()
+            if parent is None:
+                continue
+            parent_name = str(getattr(parent, "name", "") or "")
+            if parent_name in seen:
+                continue
+            seen.add(parent_name)
+            for child in getattr(parent, "children", ()):
+                child_name = str(getattr(child, "name", "") or "")
+                if child_name:
+                    parent_map.setdefault(child_name, []).append(parent)
+                stack.append(child)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not map layer collection hierarchy", exc)
+        parent_map = {}
 
     def mark_collection(coll):
         stack = [coll]
@@ -323,6 +400,8 @@ def fbp_rebuild_layer_view_cache(context):
             seen.add(current.name)
             try:
                 current["fbp_has_fbp_content_recursive"] = True
+                _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.add(current.name)
+                _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS.add(current.name)
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
                 pass
             for parent in parent_map.get(current.name, []):
@@ -335,6 +414,8 @@ def fbp_rebuild_layer_view_cache(context):
                 continue
             for coll in getattr(rig, "users_collection", []):
                 coll["fbp_has_fbp_content"] = True
+                _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.add(coll.name)
+                _FBP_LAYER_VIEW_DIRECT_COLLECTIONS.add(coll.name)
                 mark_collection(coll)
         except ReferenceError:
             continue
@@ -351,6 +432,16 @@ def fbp_mark_layer_cache_dirty(context=None):
 def collection_has_fbp_content(collection, recursive=True):
     if not collection:
         return False
+    if _FBP_LAYER_VIEW_CACHE_INITIALIZED:
+        try:
+            name = str(getattr(collection, "name", "") or "")
+            cache = (
+                _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS
+                if recursive else _FBP_LAYER_VIEW_DIRECT_COLLECTIONS
+            )
+            return name in cache
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
     key = "fbp_has_fbp_content_recursive" if recursive else "fbp_has_fbp_content"
     try:
         if key in collection:
@@ -644,7 +735,7 @@ def fbp_collection_icon(collection):
 def fbp_layer_row_type_icon(rig, context):
     """Return a thumbnail when enabled, otherwise the rig Color Tag icon."""
     if bool(getattr(context.scene, 'fbp_show_previews', False)) and not bool(getattr(rig, 'fbp_is_color_plane', False)):
-        preview = get_layer_thumbnail(rig)
+        preview = get_layer_thumbnail(rig, scene=getattr(context, "scene", None))
         if preview:
             return None, preview.icon_id
     try:
@@ -901,7 +992,7 @@ def iter_scene_fbp_rigs(scene, *, fallback=True):
     seen = set()
     yielded = False
     try:
-        for item in list(getattr(scene, "fbp_layers", ()) or ()):
+        for item in getattr(scene, "fbp_layers", ()) or ():
             rig = getattr(item, "obj", None)
             if not rig or not is_fbp_layer_object(rig):
                 continue
@@ -931,7 +1022,7 @@ def iter_scene_fbp_rigs(scene, *, fallback=True):
 
 def object_in_scene(obj, scene=None):
     """Return membership without linearly scanning every object in the Scene."""
-    if not obj:
+    if obj is None:
         return False
     try:
         name = str(obj.name)
@@ -947,7 +1038,7 @@ def object_in_scene(obj, scene=None):
 
 def object_in_view_layer(obj, context=None):
     context = context or bpy.context
-    if not obj or not context:
+    if obj is None or context is None:
         return False
     try:
         if not object_in_scene(obj, context.scene):
@@ -959,7 +1050,7 @@ def object_in_view_layer(obj, context=None):
 
 def ensure_object_in_active_collection(obj, context=None):
     context = context or bpy.context
-    if not obj or not context:
+    if obj is None or context is None:
         return False
     try:
         if object_in_view_layer(obj, context):
@@ -979,7 +1070,7 @@ def get_selected_rigs(context):
 
 def fbp_resolve_rig_from_any_object(obj, context=None):
     """Return the current FBP rig represented by a rig or its linked plane."""
-    if not obj:
+    if obj is None:
         return None
     try:
         if getattr(obj, "is_fbp_control", False):
@@ -1010,10 +1101,64 @@ def get_selected_fbp_roots(context):
     return roots
 
 
+def invalidate_preview_path(image_path):
+    """Invalidate one media thumbnail without flushing unrelated previews."""
+    if not image_path:
+        return False
+    try:
+        abs_path = os.path.normcase(os.path.abspath(bpy.path.abspath(image_path)))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
+        return False
+    changed = False
+    raw = preview_collections.get("fbp_previews")
+    if raw is not None:
+        try:
+            if abs_path in raw:
+                del raw[abs_path]
+                changed = True
+        except (KeyError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+    try:
+        _FBP_RAW_PREVIEW_KEYS.remove(abs_path)
+    except ValueError:
+        pass
+    composite = preview_collections.get(_FBP_COMPOSITE_PREVIEW_COLLECTION)
+    if composite is not None:
+        prefix = f"{abs_path}|"
+        try:
+            stale = [key for key in composite.keys() if str(key).startswith(prefix)]
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            stale = []
+        for key in stale:
+            try:
+                del composite[key]
+                changed = True
+            except (KeyError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        if stale:
+            stale_set = set(stale)
+            retained = [key for key in _FBP_COMPOSITE_PREVIEW_KEYS if key not in stale_set]
+            _FBP_COMPOSITE_PREVIEW_KEYS.clear()
+            _FBP_COMPOSITE_PREVIEW_KEYS.extend(retained)
+    _FBP_PREVIEW_MISS_CACHE.pop(abs_path, None)
+    return changed
+
+
 def clear_previews():
+    _FBP_COMPOSITE_PREVIEW_KEYS.clear()
+    _FBP_RAW_PREVIEW_KEYS.clear()
     for pcoll in preview_collections.values():
-        bpy.utils.previews.remove(pcoll)
+        try:
+            bpy.utils.previews.remove(pcoll)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
     preview_collections.clear()
+    _FBP_PREVIEW_MISS_CACHE.clear()
+    try:
+        from .drawing_plane import clear_drawing_preview_runtime_state
+        clear_drawing_preview_runtime_state()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def update_global_visibility(context=None):
@@ -1046,23 +1191,204 @@ def get_preview_collection():
     return pcoll
 
 
-def load_preview(image_path):
-    pcoll = get_preview_collection()
-    abs_path = bpy.path.abspath(image_path)
-    if abs_path in pcoll:
-        return pcoll[abs_path]
-    if os.path.exists(abs_path):
+def _get_composite_preview_collection():
+    pcoll = preview_collections.get(_FBP_COMPOSITE_PREVIEW_COLLECTION)
+    if pcoll is None:
+        pcoll = bpy.utils.previews.new()
+        preview_collections[_FBP_COMPOSITE_PREVIEW_COLLECTION] = pcoll
+    return pcoll
+
+
+def thumbnail_background_state(scene=None):
+    """Return ``(enabled, rgba)`` for the active Scene thumbnail background."""
+    if scene is None:
         try:
-            return pcoll.load(abs_path, abs_path, 'IMAGE')
+            scene = bpy.context.scene
+        except (AttributeError, ReferenceError, RuntimeError):
+            scene = None
+    enabled = bool(getattr(scene, "fbp_thumbnail_background_enabled", False)) if scene else False
+    try:
+        color = tuple(float(value) for value in scene.fbp_thumbnail_background_color) if scene else (1.0, 1.0, 1.0)
+        rgba = (color[0], color[1], color[2], 1.0)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, IndexError):
+        rgba = (1.0, 1.0, 1.0, 1.0)
+    return enabled, rgba
+
+
+def _remember_composite_preview(pcoll, cache_key):
+    _FBP_COMPOSITE_PREVIEW_KEYS.append(cache_key)
+    while len(_FBP_COMPOSITE_PREVIEW_KEYS) > _FBP_COMPOSITE_PREVIEW_LIMIT:
+        oldest = _FBP_COMPOSITE_PREVIEW_KEYS.popleft()
+        if oldest == cache_key:
+            continue
+        try:
+            del pcoll[oldest]
+        except (KeyError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+
+def _remember_raw_preview(pcoll, cache_key):
+    """Maintain a bounded LRU for source thumbnails.
+
+    Blender preview collections retain native thumbnail buffers. Large Cutout
+    and multiplane libraries previously accumulated one entry per visited file
+    for the whole session, even after the UI moved on to other projects.
+    """
+    try:
+        _FBP_RAW_PREVIEW_KEYS.remove(cache_key)
+    except ValueError:
+        pass
+    _FBP_RAW_PREVIEW_KEYS.append(cache_key)
+    while len(_FBP_RAW_PREVIEW_KEYS) > _FBP_RAW_PREVIEW_LIMIT:
+        oldest = _FBP_RAW_PREVIEW_KEYS.popleft()
+        try:
+            if oldest in pcoll:
+                del pcoll[oldest]
+        except (KeyError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+
+def _load_raw_preview(image_path):
+    """Load Blender's source thumbnail and throttle repeated filesystem misses."""
+    pcoll = get_preview_collection()
+    abs_path = os.path.normcase(os.path.abspath(bpy.path.abspath(image_path)))
+    if abs_path in pcoll:
+        _FBP_PREVIEW_MISS_CACHE.pop(abs_path, None)
+        _remember_raw_preview(pcoll, abs_path)
+        return pcoll[abs_path], abs_path
+    now = time.monotonic()
+    last_miss = float(_FBP_PREVIEW_MISS_CACHE.get(abs_path, 0.0) or 0.0)
+    if last_miss and now - last_miss < _FBP_PREVIEW_MISS_TTL:
+        return None, abs_path
+    if os.path.isfile(abs_path):
+        try:
+            preview = pcoll.load(abs_path, abs_path, 'IMAGE')
+            _FBP_PREVIEW_MISS_CACHE.pop(abs_path, None)
+            _remember_raw_preview(pcoll, abs_path)
+            return preview, abs_path
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
-    return None
+    _FBP_PREVIEW_MISS_CACHE[abs_path] = now
+    if len(_FBP_PREVIEW_MISS_CACHE) > 2048:
+        cutoff = now - _FBP_PREVIEW_MISS_TTL
+        for path, timestamp in list(_FBP_PREVIEW_MISS_CACHE.items()):
+            if float(timestamp or 0.0) < cutoff:
+                _FBP_PREVIEW_MISS_CACHE.pop(path, None)
+        while len(_FBP_PREVIEW_MISS_CACHE) > 2048:
+            oldest = next(iter(_FBP_PREVIEW_MISS_CACHE), None)
+            if oldest is None:
+                break
+            _FBP_PREVIEW_MISS_CACHE.pop(oldest, None)
+    return None, abs_path
 
 
-def get_layer_thumbnail(obj):
-    if not obj or not hasattr(obj, "fbp_preview_path") or not obj.fbp_preview_path:
+def _square_preview_pixels(width, height, pixels, *, background_enabled, background):
+    """Letterbox a small Blender thumbnail without touching source Image pixels."""
+    width = max(1, int(width))
+    height = max(1, int(height))
+    side = max(width, height)
+    output = [0.0] * (side * side * 4)
+    br, bg, bb = background[:3]
+    if background_enabled:
+        for offset in range(0, len(output), 4):
+            output[offset:offset + 4] = (br, bg, bb, 1.0)
+
+    x_offset = (side - width) // 2
+    y_offset = (side - height) // 2
+    for y in range(height):
+        source_row = y * width * 4
+        target_row = (y + y_offset) * side * 4
+        for x in range(width):
+            source = source_row + x * 4
+            target = target_row + (x + x_offset) * 4
+            red, green, blue, alpha = pixels[source:source + 4]
+            alpha = max(0.0, min(1.0, float(alpha)))
+            if background_enabled:
+                output[target] = float(red) * alpha + br * (1.0 - alpha)
+                output[target + 1] = float(green) * alpha + bg * (1.0 - alpha)
+                output[target + 2] = float(blue) * alpha + bb * (1.0 - alpha)
+                output[target + 3] = 1.0
+            else:
+                output[target:target + 4] = (float(red), float(green), float(blue), alpha)
+    return side, output
+
+
+def load_preview(image_path, scene=None, *, force_square=False):
+    """Return a cached thumbnail with optional global background and letterboxing.
+
+    Full-resolution Image pixels are never read. Compositing operates only on
+    Blender's small preview buffer and is cached independently from the source
+    thumbnail, keeping normal UI redraws cheap.
+    """
+    if not image_path:
         return None
-    return load_preview(obj.fbp_preview_path)
+    base, abs_path = _load_raw_preview(image_path)
+    if base is None:
+        return None
+    background_enabled, background = thumbnail_background_state(scene)
+    if not background_enabled and not force_square:
+        return base
+
+    try:
+        width, height = (int(value) for value in base.image_size)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return base
+    if width <= 0 or height <= 0:
+        return base
+    # A square source already fits a square custom icon. Without a background
+    # there is nothing to composite, so avoid copying its preview pixels.
+    if force_square and not background_enabled and width == height:
+        return base
+
+    color_key = tuple(round(value, 4) for value in background[:3])
+    square_output = bool(background_enabled or force_square)
+    cache_key = f"{abs_path}|{int(getattr(base, 'icon_id', 0) or 0)}|bg{int(background_enabled)}|{color_key}|square{int(square_output)}|v3"
+    pcoll = _get_composite_preview_collection()
+    if cache_key in pcoll:
+        return pcoll[cache_key]
+    try:
+        pixels = list(base.image_pixels_float)
+        if len(pixels) != width * height * 4:
+            return base
+        side, output = _square_preview_pixels(
+            width,
+            height,
+            pixels,
+            background_enabled=background_enabled,
+            background=background,
+        )
+        preview = pcoll.new(cache_key)
+        preview.image_size = (side, side)
+        preview.image_pixels_float = output
+        _remember_composite_preview(pcoll, cache_key)
+        return preview
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError):
+        try:
+            del pcoll[cache_key]
+        except (KeyError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        return base
+
+
+def get_layer_thumbnail(obj, scene=None):
+    if not obj:
+        return None
+    if bool(getattr(obj, "fbp_is_drawing_plane", False)):
+        try:
+            from .drawing_plane import (
+                fbp_drawing_index,
+                load_drawing_preview,
+                load_empty_drawing_preview,
+            )
+            if fbp_drawing_index(obj) == 0:
+                return load_empty_drawing_preview(obj, scene=scene)
+            path = str(getattr(obj, "fbp_preview_path", "") or "")
+            return load_drawing_preview(obj, path, scene=scene) if path else None
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+    if not hasattr(obj, "fbp_preview_path") or not obj.fbp_preview_path:
+        return None
+    return load_preview(obj.fbp_preview_path, scene=scene)
 
 
 def set_viewport_object_color(context):

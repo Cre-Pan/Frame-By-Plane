@@ -1,10 +1,8 @@
 """Material, shader-node, opacity, emission, gradient and holdout helpers."""
 
 import bpy
-import os
 import math
 
-from .constants import FBP_SUPPORTED_VIDEO_EXT
 
 # SECTION 00B - Shared runtime helpers #
 from .runtime import (
@@ -14,10 +12,25 @@ from .runtime import (
 
 from . import safe_tasks as _safe_tasks
 
-_PENDING_UNUSED_IMAGES = globals().get('_PENDING_UNUSED_IMAGES', {})
-if not isinstance(_PENDING_UNUSED_IMAGES, dict):
-    _PENDING_UNUSED_IMAGES = {}
+# ``importlib.reload`` preserves names not redefined by the new source. Remove
+# the obsolete image-cleanup queue API from previous 5.1 builds so hot reloads
+# cannot expose dead callbacks or retain Image references.
+for _legacy_cleanup_symbol in (
+    '_PENDING_UNUSED_IMAGES',
+    'fbp_images_from_material',
+    'fbp_image_is_owned',
+    'fbp_remove_unused_images',
+    '_fbp_run_deferred_unused_image_cleanup',
+):
+    globals().pop(_legacy_cleanup_symbol, None)
+del _legacy_cleanup_symbol
+
 _PENDING_PROXY_CACHE_ROOTS = globals().get('_PENDING_PROXY_CACHE_ROOTS', set())
+if not isinstance(_PENDING_PROXY_CACHE_ROOTS, set):
+    _PENDING_PROXY_CACHE_ROOTS = set()
+_PENDING_GRADIENT_PREVIEW_SYNC = globals().get('_PENDING_GRADIENT_PREVIEW_SYNC', {})
+if not isinstance(_PENDING_GRADIENT_PREVIEW_SYNC, dict):
+    _PENDING_GRADIENT_PREVIEW_SYNC = {}
 
 
 def fbp_primary_plane_material_index(rig):
@@ -117,133 +130,31 @@ def safe_get_socket(node, contains, excludes=()):
     return None
 
 
-def fbp_images_from_material(mat):
-    """Return unique image datablocks referenced by one material."""
-    images = []
-    seen_image_keys = set()
-    if not mat:
-        return images
-    try:
-        nodes = getattr(getattr(mat, "node_tree", None), "nodes", ()) or ()
-        for node in nodes:
-            image = getattr(node, "image", None)
-            image_key = fbp_obj_runtime_key(image)
-            if image_key is None or image_key in seen_image_keys:
-                continue
-            seen_image_keys.add(image_key)
-            images.append(image)
-    except ReferenceError:
-        pass
-    except (AttributeError, TypeError, RuntimeError) as exc:
-        fbp_warn("Could not inspect FBP material images", exc)
-    return images
+def _fbp_run_deferred_proxy_cache_cleanup():
+    """Clean generated proxy folders after Blender references have disappeared.
 
-
-def _fbp_run_deferred_unused_image_cleanup():
-    """Remove safe, unused image datablocks outside UI/operator callbacks.
-
-    Blender 5.1 can still be decoding a native sequence/movie when a report popup
-    closes. Freeing those cached buffers synchronously can enter Blender's movie
-    cache teardown and crash the process. Sequence/movie datablocks are therefore
-    deliberately left for Blender's orphan purge; simple FILE/GENERATED images are
-    removed later from a timer with UI users unlinked.
+    Image datablocks are deliberately left to Blender's explicit orphan purge.
+    This task only releases add-on-owned Python state and generated proxy files.
     """
-    processed = 0
-    for name, expected_key in list(_PENDING_UNUSED_IMAGES.items()):
-        img = bpy.data.images.get(name)
-        if img is None:
-            _PENDING_UNUSED_IMAGES.pop(name, None)
-            continue
-        try:
-            if fbp_obj_runtime_key(img) != expected_key:
-                # The original datablock was removed and its name was reused.
-                # Never delete the replacement based only on a stale name.
-                _PENDING_UNUSED_IMAGES.pop(name, None)
-                continue
-            if (
-                not fbp_image_is_owned(img)
-                or img.users != 0
-                or getattr(img, 'use_fake_user', False)
-            ):
-                _PENDING_UNUSED_IMAGES.pop(name, None)
-                continue
-            source = str(getattr(img, 'source', 'FILE') or 'FILE').upper()
-            if source in {'SEQUENCE', 'MOVIE'}:
-                # Avoid Blender 5.1 movie-cache teardown crashes. These remain
-                # harmless zero-user datablocks and can be purged explicitly.
-                _PENDING_UNUSED_IMAGES.pop(name, None)
-                continue
-            bpy.data.images.remove(
-                img,
-                do_unlink=True,
-                do_id_user=True,
-                do_ui_user=True,
-            )
-            processed += 1
-            _PENDING_UNUSED_IMAGES.pop(name, None)
-        except ReferenceError:
-            _PENDING_UNUSED_IMAGES.pop(name, None)
-        except (AttributeError, TypeError, RuntimeError, ValueError) as exc:
-            _PENDING_UNUSED_IMAGES.pop(name, None)
-            fbp_warn('Could not remove deferred unused FBP image datablock', exc)
-        if processed >= 8:
-            break
-    if not _PENDING_UNUSED_IMAGES and _PENDING_PROXY_CACHE_ROOTS:
+    if _PENDING_PROXY_CACHE_ROOTS:
         from .native_backend import fbp_cleanup_unused_proxy_caches
         try:
             fbp_cleanup_unused_proxy_caches(list(_PENDING_PROXY_CACHE_ROOTS))
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError) as exc:
             fbp_warn('Could not clean unused Frame by Plane proxy cache', exc)
         _PENDING_PROXY_CACHE_ROOTS.clear()
-    return 0.15 if _PENDING_UNUSED_IMAGES else None
+    _PENDING_GRADIENT_PREVIEW_SYNC.clear()
+    return None
 
 
-def fbp_image_is_owned(img):
-    """Return True only for Image datablocks created privately by FBP."""
-    if not img:
-        return False
-    try:
-        return bool(img.get("fbp_owned", False) or img.get("fbp_temporary", False))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        return False
+def fbp_prepare_for_main_replacement():
+    """Drop pure-Python cleanup state before Blender replaces Main.
 
-
-def fbp_remove_unused_images(images):
-    """Queue unused FBP-owned image datablocks for safe deferred cleanup.
-
-    Never deletes image files from disk. Images that already existed before an
-    FBP layer reused them are not owned by the extension and are left untouched.
-    Native SEQUENCE/MOVIE datablocks are not auto-freed because Blender may still
-    own active decode/cache state.
+    This function intentionally does not touch ``bpy.data.images``. At load time
+    Blender must remain the sole owner of image/movie cache destruction.
     """
-    queued = 0
-    for img in list(images or []):
-        try:
-            if (
-                img
-                and fbp_image_is_owned(img)
-                and img.users == 0
-                and not getattr(img, 'use_fake_user', False)
-            ):
-                name = str(getattr(img, 'name', '') or '')
-                image_key = fbp_obj_runtime_key(img)
-                if name and image_key is not None:
-                    if _PENDING_UNUSED_IMAGES.get(name) != image_key:
-                        queued += 1
-                    _PENDING_UNUSED_IMAGES[name] = image_key
-        except ReferenceError:
-            continue
-        except (AttributeError, TypeError, RuntimeError) as exc:
-            fbp_warn('Could not queue unused FBP image datablock', exc)
-    if _PENDING_UNUSED_IMAGES:
-        _safe_tasks.schedule_once(
-            'materials.unused_image_cleanup',
-            _fbp_run_deferred_unused_image_cleanup,
-            first_interval=1.25,
-        )
-    return queued
-
-
+    _PENDING_PROXY_CACHE_ROOTS.clear()
+    _PENDING_GRADIENT_PREVIEW_SYNC.clear()
 
 
 def fbp_material_is_owned(mat):
@@ -257,39 +168,35 @@ def fbp_material_is_owned(mat):
 
 
 def fbp_remove_unused_materials_and_images(materials):
-    """Remove private unused FBP materials and their now-unused image datablocks."""
+    """Remove zero-user FBP materials without freeing Blender Image datablocks.
+
+    The public name is retained for compatibility with existing internal callers.
+    Image IDs and their sequence/movie caches remain owned by Blender and can be
+    removed explicitly through Orphan Purge.
+    """
     materials = list(materials or [])
     from .native_backend import fbp_proxy_cache_roots_from_materials
     try:
         _PENDING_PROXY_CACHE_ROOTS.update(fbp_proxy_cache_roots_from_materials(materials))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError) as exc:
         fbp_warn('Could not inspect Frame by Plane proxy cache roots', exc)
-    images = []
-    seen_image_keys = set()
+
     for mat in materials:
         try:
-            if not mat or not fbp_material_is_owned(mat):
-                continue
-            for image in fbp_images_from_material(mat):
-                image_key = fbp_obj_runtime_key(image)
-                if image_key is None or image_key in seen_image_keys:
-                    continue
-                seen_image_keys.add(image_key)
-                images.append(image)
-            if mat.users == 0:
+            if mat and fbp_material_is_owned(mat) and mat.users == 0:
                 bpy.data.materials.remove(mat)
         except ReferenceError:
             continue
         except (AttributeError, TypeError, RuntimeError) as exc:
             fbp_warn("Could not remove unused FBP material datablock", exc)
-    queued = fbp_remove_unused_images(images)
-    if not _PENDING_UNUSED_IMAGES and _PENDING_PROXY_CACHE_ROOTS:
+
+    if _PENDING_PROXY_CACHE_ROOTS:
         _safe_tasks.schedule_once(
             'materials.unused_proxy_cache_cleanup',
-            _fbp_run_deferred_unused_image_cleanup,
+            _fbp_run_deferred_proxy_cache_cleanup,
             first_interval=1.25,
         )
-    return queued
+    return 0
 
 
 def fbp_copy_material_slots_unique(src_plane, dst_plane):
@@ -316,37 +223,50 @@ def fbp_copy_material_slots_unique(src_plane, dst_plane):
 # SECTION 03 - Image materials, emission and opacity #
 
 def rebuild_fbp_image_material(mat, use_emission=None, opacity=None):
+    """Rebuild only current-contract native image materials.
+
+    Generic or outdated image-node materials are deliberately unsupported;
+    they must be recreated through the native backend instead of being silently
+    converted into a second material implementation.
+    """
     if not mat:
-        return mat
+        return None
+    if bool(mat.get("fbp_drawing_material", False)):
+        try:
+            from .drawing_plane import fbp_rebuild_drawing_material
+            return fbp_rebuild_drawing_material(
+                mat, use_emission=use_emission, opacity=opacity
+            )
+        except (
+            AttributeError, ReferenceError, RuntimeError, TypeError, ValueError,
+            ImportError, FileNotFoundError,
+        ) as exc:
+            fbp_warn("Could not rebuild Cutout Plane material", exc)
+            return None
+    if not bool(mat.get("fbp_native_sequence", False)):
+        return None
     try:
-        if bool(mat.get("fbp_native_sequence", False)):
-            from .native_backend import rebuild_native_sequence_material
-            return rebuild_native_sequence_material(mat, use_emission=use_emission, opacity=opacity)
-    except Exception as exc:
-        fbp_warn("Could not rebuild native sequence material", exc)
-    try:
-        image_path = mat.get("fbp_image_path", "")
-    except Exception:
-        image_path = ""
-    if not image_path:
-        return mat
-    interp = mat.get("fbp_interpolation", "Closest") if hasattr(mat, 'get') else "Closest"
-    if use_emission is None:
-        use_emission = bool(mat.get("fbp_use_emission", True)) if hasattr(mat, 'get') else True
-    if opacity is None:
-        opacity = float(mat.get("fbp_opacity", 1.0)) if hasattr(mat, 'get') else 1.0
-    return create_fbp_material(mat.name, image_path, interp=interp, opacity=opacity, use_emission=use_emission)
+        from .native_backend import rebuild_native_sequence_material
+        return rebuild_native_sequence_material(
+            mat, use_emission=use_emission, opacity=opacity
+        )
+    except (
+        AttributeError, ReferenceError, RuntimeError, TypeError, ValueError,
+        ImportError, FileNotFoundError,
+    ) as exc:
+        fbp_warn("Could not rebuild current native image material", exc)
+        return None
 
 
 
 
-def _fbp_reapply_registered_effects(rig):
+def _fbp_reapply_registered_effects(rig, custom_states=None):
     """Restore tagged shader effects and refresh alpha-aware geometry."""
     if not rig:
         return
     try:
         from .geometry_nodes import fbp_reapply_all_effects
-        fbp_reapply_all_effects(rig)
+        fbp_reapply_all_effects(rig, custom_states=custom_states)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, ImportError) as exc:
         fbp_warn("Could not reapply Frame by Plane effects", exc)
 
@@ -361,6 +281,12 @@ def do_update_emission(rig):
         fbp_set_rna_property_silent(rig, 'fbp_color_plane_emission', use_emission)
     plane.visible_shadow = not use_emission
     opacity = max(0.0, min(1.0, float(getattr(rig, 'fbp_opacity', 1.0))))
+    custom_states = {}
+    try:
+        from .geometry_nodes import fbp_capture_custom_shader_effect_states
+        custom_states = fbp_capture_custom_shader_effect_states(rig)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not capture custom shader values before material rebuild", exc)
     for i, mat in enumerate(list(plane.data.materials)):
         if (
             not mat
@@ -376,7 +302,7 @@ def do_update_emission(rig):
             plane.data.materials[i] = new_mat
             if new_mat != mat:
                 fbp_remove_unused_materials_and_images([mat])
-    _fbp_reapply_registered_effects(rig)
+    _fbp_reapply_registered_effects(rig, custom_states=custom_states)
 
 
 def set_fbp_material_transparency(mat, opacity=1.0):
@@ -453,115 +379,6 @@ def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True):
                     setattr(mat, attr, value)
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
                 pass
-
-
-def create_fbp_material(mat_name, image_path, interp='Closest', opacity=1.0, use_emission=True):
-    """Create the lightest node tree needed for this image plane.
-
-    - Shadeless uses Image Texture -> Emission -> Output.
-    - Lit uses Image Texture -> Principled BSDF -> Output.
-    - Opacity Multiply is created only when opacity is below 100%.
-    """
-    mat = bpy.data.materials.get(mat_name)
-    if not mat:
-        mat = bpy.data.materials.new(name=mat_name)
-    mat["fbp_owned"] = True
-
-    opacity = max(0.0, min(1.0, float(opacity)))
-    mat.use_nodes = True
-    configure_fbp_material_surface(mat, opacity, has_alpha=True)
-    mat["fbp_image_path"] = image_path or ""
-    mat["fbp_interpolation"] = interp
-    mat["fbp_use_emission"] = bool(use_emission)
-    mat["fbp_opacity"] = opacity
-
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    nodes.clear()
-
-    out = nodes.new(type='ShaderNodeOutputMaterial')
-    out.location = (520, 0)
-
-    tex = nodes.new(type='ShaderNodeTexImage')
-    tex.location = (-420, 70)
-    tex.interpolation = interp
-    try:
-        existing_image_keys = {
-            fbp_obj_runtime_key(image) for image in bpy.data.images
-        }
-        img = bpy.data.images.load(image_path, check_existing=True)
-        if fbp_obj_runtime_key(img) not in existing_image_keys:
-            try:
-                img["fbp_owned"] = True
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
-                pass
-        tex.image = img
-        try:
-            if os.path.splitext(str(image_path))[1].lower() in FBP_SUPPORTED_VIDEO_EXT:
-                img.source = 'MOVIE'
-                tex.image_user.use_auto_refresh = True
-                tex.image_user.frame_start = 1
-                tex.image_user.frame_duration = max(1, int(getattr(img, 'frame_duration', 250) or 250))
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-    except Exception as exc:
-        fbp_warn("Image/video load error", exc)
-
-    if use_emission:
-        shader = nodes.new(type='ShaderNodeEmission')
-        shader.location = (120, 80)
-        color_sock = safe_get_socket(shader, ['color']) or shader.inputs[0]
-        links.new(tex.outputs['Color'], color_sock)
-        try:
-            shader.inputs['Strength'].default_value = 1.0
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            pass
-    else:
-        shader = nodes.new(type='ShaderNodeBsdfPrincipled')
-        shader.location = (120, 80)
-        base_color = safe_get_socket(shader, ['base', 'color']) or shader.inputs[0]
-        links.new(tex.outputs['Color'], base_color)
-        # Make lit image planes inexpensive by default.
-        for socket_names, value in ((['specular'], 0.0), (['specular', 'ior', 'level'], 0.0), (['roughness'], 1.0)):
-            sock = safe_get_socket(shader, socket_names)
-            if sock:
-                try:
-                    sock.default_value = value
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                    pass
-
-    if opacity < 0.999:
-        math_node = nodes.new(type='ShaderNodeMath')
-        math_node.operation = 'MULTIPLY'
-        math_node.name = "FBP_Opacity"
-        math_node.label = "Layer Opacity"
-        math_node["fbp_internal_opacity_node"] = True
-        math_node.location = (-120, -170)
-        math_node.inputs[1].default_value = opacity
-        links.new(tex.outputs['Alpha'], math_node.inputs[0])
-        alpha_source = math_node.outputs['Value']
-    else:
-        alpha_source = tex.outputs['Alpha']
-
-    if use_emission:
-        transparent = nodes.new(type='ShaderNodeBsdfTransparent')
-        transparent.name = 'FBP_Transparent'
-        transparent.location = (110, -160)
-        mix = nodes.new(type='ShaderNodeMixShader')
-        mix.name = 'FBP_Alpha_Mix'
-        mix.location = (330, 0)
-        # factor 0 = shader1, 1 = shader2. Use alpha for visible emission over transparent.
-        links.new(alpha_source, mix.inputs[0])
-        links.new(transparent.outputs[0], mix.inputs[1])
-        links.new(shader.outputs[0], mix.inputs[2])
-        links.new(mix.outputs[0], out.inputs[0])
-    else:
-        alpha_sock = safe_get_socket(shader, ['alpha'])
-        if alpha_sock:
-            links.new(alpha_source, alpha_sock)
-        links.new(shader.outputs[0], out.inputs[0])
-
-    return mat
 
 
 def create_fbp_color_material(name, color=(1.0, 1.0, 1.0, 1.0), use_emission=True, holdout=False):
@@ -755,6 +572,12 @@ def fbp_rebuild_color_plane_material(rig):
     plane = getattr(rig, 'fbp_plane_target', None)
     if not plane or not getattr(plane, 'data', None):
         return False
+    custom_states = {}
+    try:
+        from .geometry_nodes import fbp_capture_custom_shader_effect_states
+        custom_states = fbp_capture_custom_shader_effect_states(rig)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not capture custom shader values before procedural rebuild", exc)
     mode = getattr(rig, 'fbp_color_plane_mode', 'SOLID')
     use_emission = bool(getattr(rig, 'fbp_color_plane_emission', getattr(rig, 'fbp_use_emission', True)))
 
@@ -823,7 +646,9 @@ def fbp_rebuild_color_plane_material(rig):
     if mode != 'HOLDOUT':
         try:
             from .geometry_nodes import fbp_restore_enabled_shader_effects
-            fbp_restore_enabled_shader_effects(rig)
+            fbp_restore_enabled_shader_effects(
+                rig, custom_states=custom_states
+            )
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
             fbp_warn("Could not restore effects after rebuilding procedural material", exc)
     return True
@@ -1505,8 +1330,75 @@ def get_or_create_fbp_gradient_preview_material(scene):
 
 def fbp_update_scene_gradient_preview_material(scene):
     mat = get_or_create_fbp_gradient_preview_material(scene)
-    fbp_apply_gradient_kind_to_ramp_node(find_fbp_gradient_ramp_node(mat), getattr(scene, 'fbp_gradient_kind', 'COLOR'))
+    fbp_apply_gradient_kind_to_ramp_node(
+        find_fbp_gradient_ramp_node(mat),
+        getattr(scene, 'fbp_gradient_kind', 'COLOR'),
+    )
     return mat
+
+
+def fbp_schedule_gradient_preview_material_sync(scene, *, first_interval=0.03):
+    """Create/update the hidden gradient preview from Blender's idle timer.
+
+    Scene property callbacks and panel ``draw()`` can run while Blender is
+    rebuilding RNA/Undo state. They therefore only enqueue a serializable scene
+    identity; the timer resolves the current Scene again before touching any
+    Material or node datablock. Repeated slider/dropdown updates collapse into
+    one task that reads the newest Scene values.
+    """
+    if scene is None:
+        return False
+    scene_key = fbp_obj_runtime_key(scene)
+    if scene_key is None:
+        return False
+    try:
+        scene_name = str(getattr(scene, "name", "") or "")
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+    token = str(scene_key)
+    _PENDING_GRADIENT_PREVIEW_SYNC[token] = scene_name
+
+    def _sync_latest():
+        stored_name = _PENDING_GRADIENT_PREVIEW_SYNC.pop(token, None)
+        if stored_name is None:
+            return None
+        target = bpy.data.scenes.get(stored_name) if stored_name else None
+        if target is None or str(fbp_obj_runtime_key(target)) != token:
+            try:
+                target = next(
+                    (
+                        item for item in bpy.data.scenes
+                        if str(fbp_obj_runtime_key(item)) == token
+                    ),
+                    None,
+                )
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                target = None
+        if target is None:
+            return None
+        try:
+            fbp_update_scene_gradient_preview_material(target)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Could not update gradient preview material", exc)
+            return None
+        try:
+            from .core import fbp_tag_view3d_ui_redraw
+            fbp_tag_view3d_ui_redraw()
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        return None
+
+    scheduled = _safe_tasks.schedule_once(
+        f"materials.gradient_preview_sync:{token}",
+        _sync_latest,
+        first_interval=max(0.0, float(first_interval)),
+    )
+    if not scheduled:
+        # A task with this key may already be pending. Its callback will consume
+        # the freshly replaced payload above, so this is still a successful
+        # coalesced request.
+        return token in _PENDING_GRADIENT_PREVIEW_SYNC
+    return True
 
 
 def fbp_capture_color_ramp_data(ramp_node):
@@ -1770,6 +1662,6 @@ def fbp_create_procedural_frame_material_for_rig(rig, suffix="Frame"):
 
 
 def unregister():
-    _PENDING_UNUSED_IMAGES.clear()
     _PENDING_PROXY_CACHE_ROOTS.clear()
+    _PENDING_GRADIENT_PREVIEW_SYNC.clear()
     return None

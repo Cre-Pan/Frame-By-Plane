@@ -3,6 +3,8 @@
 # depsgraph handlers, undo callbacks or UI draw code. This module gives the rest
 # of Frame by Plane one place to schedule those mutations for Blender timers.
 
+import time
+
 import bpy
 
 _SCHEDULED_KEYS = globals().get("_SCHEDULED_KEYS", set())
@@ -25,6 +27,8 @@ if _PREVIOUS_SCHEDULER_GENERATION > 0:
     _SCHEDULED_GENERATIONS.clear()
 
 _SCHEDULER_GENERATION = _PREVIOUS_SCHEDULER_GENERATION + 1
+_UNKNOWN_GUARD_RETRY_SECONDS = 15.0
+_UNKNOWN_GUARD_RETRY_INTERVAL = 0.25
 
 
 def _task_key(name, callback):
@@ -36,6 +40,8 @@ def schedule_once(name, callback, *, first_interval=0.03):
 
     The callback may return a number to reschedule itself, or None to finish.
     The scheduler clears its dedupe key only when the task actually finishes.
+    Datablock tasks pause for the complete render session and resume only after
+    Blender and the Frame by Plane render guard both report an idle state.
     """
     if not callable(callback):
         return False
@@ -64,20 +70,63 @@ def schedule_once(name, callback, *, first_interval=0.03):
 
     _SCHEDULED_KEYS.add(key)
     runner_generation = _SCHEDULER_GENERATION
+    unknown_guard_since = 0.0
 
     def _runner():
+        nonlocal unknown_guard_since
         repeat_interval = None
         try:
             # A timer queued before Ctrl+Z or file loading must not mutate Blender
             # datablocks while Main is being decoded/replaced. Keep the same
             # deduplicated task pending and retry after the runtime guard releases.
             try:
-                from .runtime import fbp_undo_guard_active
+                from .runtime import (
+                    FBP_RENDER_BUSY,
+                    FBP_RENDER_UNKNOWN,
+                    fbp_render_state,
+                    fbp_undo_guard_active,
+                )
                 if fbp_undo_guard_active():
+                    unknown_guard_since = 0.0
                     repeat_interval = 0.10
                     return repeat_interval
-            except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
-                pass
+                render_state = fbp_render_state()
+                if render_state == FBP_RENDER_BUSY:
+                    unknown_guard_since = 0.0
+                    repeat_interval = 0.10
+                    return repeat_interval
+                if render_state == FBP_RENDER_UNKNOWN:
+                    # A transient UNKNOWN sample can occur while Blender is
+                    # replacing Main or reloading modules. Never mutate IDs, but
+                    # keep the deduplicated task alive briefly instead of losing
+                    # a required repair forever. Unregister/load cleanup still
+                    # retires this closure immediately.
+                    now = time.monotonic()
+                    if unknown_guard_since <= 0.0:
+                        unknown_guard_since = now
+                    if now - unknown_guard_since < _UNKNOWN_GUARD_RETRY_SECONDS:
+                        repeat_interval = _UNKNOWN_GUARD_RETRY_INTERVAL
+                        return repeat_interval
+                    try:
+                        from .runtime import fbp_warn_once
+                        fbp_warn_once(
+                            f"safe_task_unknown_guard:{key}",
+                            f"Deferred task '{key}' was cancelled because Blender's render state stayed unknown",
+                        )
+                    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                        pass
+                    return None
+                unknown_guard_since = 0.0
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                # Treat guard-query failures like UNKNOWN: wait for a bounded
+                # period, but never guess that Blender is idle.
+                now = time.monotonic()
+                if unknown_guard_since <= 0.0:
+                    unknown_guard_since = now
+                if now - unknown_guard_since < _UNKNOWN_GUARD_RETRY_SECONDS:
+                    repeat_interval = _UNKNOWN_GUARD_RETRY_INTERVAL
+                    return repeat_interval
+                return None
 
             result = callback()
             if (

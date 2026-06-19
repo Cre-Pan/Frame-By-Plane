@@ -1,13 +1,20 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "4.8.7"
-name = "Frame by Plane"
-tagline = "Rigged image planes for multiplane animation"
+version = "5.2.1"
+name = "Frame By Plane"
+tagline = "A better Image as Planes workflow for animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
 type = "add-on"
 
 tags = ["3D View", "Animation"]
+platforms = [
+  "windows-x64",
+  "windows-arm64",
+  "macos-x64",
+  "macos-arm64",
+  "linux-x64",
+]
 blender_version_min = "5.1.0"
 
 license = [
@@ -20,6 +27,7 @@ copyright = [
 
 [permissions]
 files = "Import media, rename sequences, and save rendered frames"
+clipboard = "Import images and media paths from the clipboard"
 
 [build]
 paths_exclude_pattern = [
@@ -32,4 +40,8 @@ paths_exclude_pattern = [
   "RELEASE_NOTES_*.md",
   "CHANGELOG*.md",
   "AUDIT_REPORT*.md",
+  "ARCHITECTURE_*.md",
+  "EFFECT_ICONS.md",
+  "PRESETS_AND_SETTINGS.md",
+  "ROADMAP_STATUS.md",
 ]

@@ -1,13 +1,14 @@
 """Programmatically generated shader groups for Frame by Plane effects.
 
-These groups are kept in Python rather than the bundled .blend library so their
-interfaces can evolve together with the add-on and remain available when an
-older asset library is present in an existing Blender file.
+These groups are generated from the current Python contracts instead of being
+reused from node groups embedded by previous add-on releases.
 """
 
 from pathlib import Path
 
 import bpy
+
+from .effect_schema import FBP_EFFECT_SCHEMA_VERSION
 
 from .matrix_presets import (
     ASCII_ATLAS_CELL_HEIGHT,
@@ -28,6 +29,12 @@ BUILTIN_EFFECT_IDS = {
     "ASCII_MATRIX",
     "TEXT_MATRIX",
     "WIND_BENDER",
+    "MESH_RIPPLE",
+    "PAPER_CURL",
+    "CUTOUT_OUTLINE",
+    "EXTRUDED_CUTOUT",
+    "CAMERA_SCALE_LOCK",
+    "CAMERA_BILLBOARD",
 }
 
 
@@ -122,6 +129,49 @@ def _group_io(group):
     return inp, out
 
 
+def _alpha_geometry_mask(group, group_input, *, prefix="Alpha", x=-1500, y=240):
+    """Build the shared image-alpha to temporary mesh contract.
+
+    The returned mesh is a subdivided copy with transparent faces removed. The
+    source geometry is never modified, so callers can join generated geometry
+    back to the animated plane without replacing its material or topology.
+    """
+    links = group.links
+    subdivide = _node(group, "GeometryNodeSubdivideMesh", f"{prefix} Detail", x, y)
+    named_uv = _node(group, "GeometryNodeInputNamedAttribute", f"{prefix} UVMap", x, y - 360)
+    try:
+        named_uv.data_type = "FLOAT_VECTOR"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    name_socket = _input(named_uv, "Name")
+    if name_socket is not None:
+        name_socket.default_value = "UVMap"
+
+    image_texture = _node(group, "GeometryNodeImageTexture", f"{prefix} Image", x + 240, y - 400)
+    image_texture["fbp_alpha_image_node"] = True
+    try:
+        image_texture.extension = "EXTEND"
+        image_texture.interpolation = "Linear"
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    transparent = _math(group, "LESS_THAN", f"{prefix} Transparent", x + 490, y - 360)
+    delete = _node(group, "GeometryNodeDeleteGeometry", f"{prefix} Delete Transparent", x + 740, y)
+    try:
+        delete.domain = "FACE"
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    links.new(group_input.outputs["Geometry"], subdivide.inputs["Mesh"])
+    links.new(group_input.outputs["Alpha Resolution"], subdivide.inputs["Level"])
+    links.new(_output(named_uv, "Attribute", 0), _input(image_texture, "Vector"))
+    links.new(_output(image_texture, "Alpha"), transparent.inputs[0])
+    links.new(group_input.outputs["Alpha Threshold"], transparent.inputs[1])
+    links.new(subdivide.outputs["Mesh"], delete.inputs["Geometry"])
+    links.new(transparent.outputs[0], delete.inputs["Selection"])
+    return delete.outputs["Geometry"], image_texture
+
+
 def _tag(group, effect_id, definition):
     group.use_fake_user = True
     group["fbp_effect_id"] = effect_id
@@ -131,7 +181,8 @@ def _tag(group, effect_id, definition):
     else:
         group["fbp_shader_effect_id"] = str(definition.get("asset_id", "") or "")
     group["fbp_builtin_effect"] = True
-    group["fbp_builtin_effect_version"] = 5
+    group["fbp_builtin_effect_version"] = 8
+    group["fbp_effect_schema_version"] = FBP_EFFECT_SCHEMA_VERSION
     return group
 
 
@@ -923,14 +974,17 @@ def _load_ascii_atlas(asset_dir):
         image = bpy.data.images.load(str(path), check_existing=False)
         actual_size = tuple(int(value) for value in image.size[:2])
         if actual_size != expected_size:
+            # Do not free image buffers here; Blender 5.1 can still have cache
+            # users attached during UI updates/file replacement.
             try:
-                bpy.data.images.remove(image)
+                image.use_fake_user = False
+                image["fbp_invalid_asset"] = True
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
             raise RuntimeError(
                 f"Invalid Textellation atlas size {actual_size}; expected {expected_size}"
             )
-        image.name = "FBP Textellation Atlas 4.8.5"
+        image.name = "FBP Textellation Atlas"
         image["fbp_ascii_atlas_version"] = atlas_version
         image["fbp_ascii_atlas_revision"] = atlas_revision
         image["fbp_ascii_atlas_layout"] = f"{ASCII_ATLAS_COLUMNS}x{len(ASCII_PRESETS)}"
@@ -1537,6 +1591,444 @@ def _create_text_matrix(name):
     return group
 
 
+
+def _create_mesh_ripple(name):
+    """Create a directional/radial ripple Geometry Nodes group."""
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Subdivision", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=7)
+    _socket(group, "Direction", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
+    _socket(group, "Amplitude", "INPUT", "NodeSocketFloat", default=0.08, minimum=-10.0, maximum=10.0)
+    _socket(group, "Frequency", "INPUT", "NodeSocketFloat", default=3.0, minimum=0.0, maximum=100.0)
+    _socket(group, "Speed", "INPUT", "NodeSocketFloat", default=1.0, minimum=-100.0, maximum=100.0)
+    _socket(group, "Phase", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1000.0, maximum=1000.0)
+    _socket(group, "Stepped", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=240)
+    _socket(group, "Pin Borders", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Border Falloff", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.001, maximum=1.0)
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    links = group.links
+
+    subdivide = _node(group, "GeometryNodeSubdivideMesh", "Ripple Subdivision", -1500, 320)
+    bounds = _node(group, "GeometryNodeBoundBox", "Ripple Bounds", -1300, 80)
+    position = _node(group, "GeometryNodeInputPosition", "Ripple Position", -1300, -160)
+    pos_xyz = _node(group, "ShaderNodeSeparateXYZ", "Ripple Position Axes", -1110, -160)
+    min_xyz = _node(group, "ShaderNodeSeparateXYZ", "Ripple Minimum Axes", -1110, 40)
+    max_xyz = _node(group, "ShaderNodeSeparateXYZ", "Ripple Maximum Axes", -1110, 220)
+    links.new(inp.outputs["Geometry"], subdivide.inputs["Mesh"])
+    links.new(inp.outputs["Subdivision"], subdivide.inputs["Level"])
+    links.new(subdivide.outputs["Mesh"], bounds.inputs["Geometry"])
+    links.new(position.outputs["Position"], pos_xyz.inputs[0])
+    links.new(bounds.outputs["Min"], min_xyz.inputs[0])
+    links.new(bounds.outputs["Max"], max_xyz.inputs[0])
+
+    def normalized_axis(axis, y):
+        size = _math(group, "SUBTRACT", f"Ripple {axis} Size", -910, y)
+        safe = _math(group, "MAXIMUM", f"Ripple Safe {axis}", -740, y, value_2=0.000001)
+        relative = _math(group, "SUBTRACT", f"Ripple {axis} Relative", -910, y - 90)
+        normalized = _math(group, "DIVIDE", f"Ripple Normalized {axis}", -560, y - 40)
+        links.new(max_xyz.outputs[axis], size.inputs[0])
+        links.new(min_xyz.outputs[axis], size.inputs[1])
+        links.new(size.outputs[0], safe.inputs[0])
+        links.new(pos_xyz.outputs[axis], relative.inputs[0])
+        links.new(min_xyz.outputs[axis], relative.inputs[1])
+        links.new(relative.outputs[0], normalized.inputs[0])
+        links.new(safe.outputs[0], normalized.inputs[1])
+        return normalized.outputs[0]
+
+    norm_x = normalized_axis("X", 210)
+    norm_y = normalized_axis("Y", -20)
+    centered_x = _math(group, "SUBTRACT", "Ripple Centered X", -360, 90, value_2=0.5)
+    centered_y = _math(group, "SUBTRACT", "Ripple Centered Y", -360, -40, value_2=0.5)
+    center_vec = _node(group, "ShaderNodeCombineXYZ", "Ripple Center Vector", -170, 20)
+    radial = _vector_math(group, "LENGTH", "Ripple Radius", 20, 20)
+    links.new(norm_x, centered_x.inputs[0])
+    links.new(norm_y, centered_y.inputs[0])
+    links.new(centered_x.outputs[0], center_vec.inputs["X"])
+    links.new(centered_y.outputs[0], center_vec.inputs["Y"])
+    links.new(center_vec.outputs[0], radial.inputs[0])
+
+    use_y = _math(group, "GREATER_THAN", "Ripple Use Y", 10, 250, value_2=0.5)
+    xy_switch = _node(group, "GeometryNodeSwitch", "Ripple X or Y", 210, 240)
+    xy_switch.input_type = "FLOAT"
+    use_radial = _math(group, "GREATER_THAN", "Ripple Use Radial", 210, 90, value_2=1.5)
+    direction_switch = _node(group, "GeometryNodeSwitch", "Ripple Direction", 410, 180)
+    direction_switch.input_type = "FLOAT"
+    links.new(inp.outputs["Direction"], use_y.inputs[0])
+    links.new(use_y.outputs[0], xy_switch.inputs["Switch"])
+    links.new(norm_x, xy_switch.inputs["False"])
+    links.new(norm_y, xy_switch.inputs["True"])
+    links.new(inp.outputs["Direction"], use_radial.inputs[0])
+    links.new(use_radial.outputs[0], direction_switch.inputs["Switch"])
+    links.new(xy_switch.outputs["Output"], direction_switch.inputs["False"])
+    links.new(_output(radial, "Value", 1), direction_switch.inputs["True"])
+
+    coord_freq = _math(group, "MULTIPLY", "Ripple Coordinate Frequency", 610, 180)
+    coord_cycles = _math(group, "MULTIPLY", "Ripple Coordinate Cycles", 790, 180, value_2=6.283185307179586)
+    scene_time = _node(group, "GeometryNodeInputSceneTime", "Ripple Scene Time", 180, -250)
+    safe_step = _math(group, "MAXIMUM", "Ripple Safe Step", 180, -390, value_2=1.0)
+    frame_div = _math(group, "DIVIDE", "Ripple Frame Divide", 370, -250)
+    frame_floor = _math(group, "FLOOR", "Ripple Frame Floor", 550, -250)
+    stepped_frame = _math(group, "MULTIPLY", "Ripple Stepped Frame", 730, -250)
+    time_scale = _math(group, "MULTIPLY", "Ripple Time Scale", 910, -250, value_2=0.1)
+    time_speed = _math(group, "MULTIPLY", "Ripple Time Speed", 1090, -250)
+    moving_phase = _math(group, "ADD", "Ripple Moving Phase", 1090, 80)
+    user_phase = _math(group, "ADD", "Ripple User Phase", 1270, 80)
+    sine = _math(group, "SINE", "Ripple Sine", 1450, 80)
+    amplitude = _math(group, "MULTIPLY", "Ripple Amplitude", 1630, 80)
+    links.new(direction_switch.outputs["Output"], coord_freq.inputs[0])
+    links.new(inp.outputs["Frequency"], coord_freq.inputs[1])
+    links.new(coord_freq.outputs[0], coord_cycles.inputs[0])
+    links.new(inp.outputs["Stepped"], safe_step.inputs[0])
+    links.new(scene_time.outputs["Frame"], frame_div.inputs[0])
+    links.new(safe_step.outputs[0], frame_div.inputs[1])
+    links.new(frame_div.outputs[0], frame_floor.inputs[0])
+    links.new(frame_floor.outputs[0], stepped_frame.inputs[0])
+    links.new(safe_step.outputs[0], stepped_frame.inputs[1])
+    links.new(stepped_frame.outputs[0], time_scale.inputs[0])
+    links.new(time_scale.outputs[0], time_speed.inputs[0])
+    links.new(inp.outputs["Speed"], time_speed.inputs[1])
+    links.new(coord_cycles.outputs[0], moving_phase.inputs[0])
+    links.new(time_speed.outputs[0], moving_phase.inputs[1])
+    links.new(moving_phase.outputs[0], user_phase.inputs[0])
+    links.new(inp.outputs["Phase"], user_phase.inputs[1])
+    links.new(user_phase.outputs[0], sine.inputs[0])
+    links.new(sine.outputs[0], amplitude.inputs[0])
+    links.new(inp.outputs["Amplitude"], amplitude.inputs[1])
+
+    inv_x = _math(group, "SUBTRACT", "Ripple Inverse X", 720, -520, value_1=1.0)
+    inv_y = _math(group, "SUBTRACT", "Ripple Inverse Y", 720, -650, value_1=1.0)
+    edge_x = _math(group, "MINIMUM", "Ripple X Edge Distance", 900, -520)
+    edge_y = _math(group, "MINIMUM", "Ripple Y Edge Distance", 900, -650)
+    edge_min = _math(group, "MINIMUM", "Ripple Border Distance", 1080, -585)
+    safe_falloff = _math(group, "MAXIMUM", "Ripple Safe Border Falloff", 1260, -650, value_2=0.001)
+    edge_normalized = _math(group, "DIVIDE", "Ripple Border Normalize", 1440, -585)
+    edge_clamp = _math(group, "MINIMUM", "Ripple Border Clamp", 1620, -585, value_2=1.0)
+    pin_inverse = _math(group, "SUBTRACT", "Ripple Unpinned Weight", 1440, -410, value_1=1.0)
+    pin_edge = _math(group, "MULTIPLY", "Ripple Pinned Edge", 1800, -520)
+    pin_free = _math(group, "MULTIPLY", "Ripple Free Surface", 1800, -390)
+    pin_mix = _math(group, "ADD", "Ripple Pin Mix", 1980, -455)
+    masked = _math(group, "MULTIPLY", "Ripple Masked Amount", 1980, 60)
+    links.new(norm_x, inv_x.inputs[1])
+    links.new(norm_y, inv_y.inputs[1])
+    links.new(norm_x, edge_x.inputs[0])
+    links.new(inv_x.outputs[0], edge_x.inputs[1])
+    links.new(norm_y, edge_y.inputs[0])
+    links.new(inv_y.outputs[0], edge_y.inputs[1])
+    links.new(edge_x.outputs[0], edge_min.inputs[0])
+    links.new(edge_y.outputs[0], edge_min.inputs[1])
+    links.new(inp.outputs["Border Falloff"], safe_falloff.inputs[0])
+    links.new(edge_min.outputs[0], edge_normalized.inputs[0])
+    links.new(safe_falloff.outputs[0], edge_normalized.inputs[1])
+    links.new(edge_normalized.outputs[0], edge_clamp.inputs[0])
+    links.new(inp.outputs["Pin Borders"], pin_inverse.inputs[1])
+    links.new(edge_clamp.outputs[0], pin_edge.inputs[0])
+    links.new(inp.outputs["Pin Borders"], pin_edge.inputs[1])
+    pin_free.inputs[0].default_value = 1.0
+    links.new(pin_inverse.outputs[0], pin_free.inputs[1])
+    links.new(pin_edge.outputs[0], pin_mix.inputs[0])
+    links.new(pin_free.outputs[0], pin_mix.inputs[1])
+    links.new(amplitude.outputs[0], masked.inputs[0])
+    links.new(pin_mix.outputs[0], masked.inputs[1])
+
+    offset = _node(group, "ShaderNodeCombineXYZ", "Ripple Offset", 2170, 60)
+    set_position = _node(group, "GeometryNodeSetPosition", "Mesh Ripple", 2370, 260)
+    links.new(masked.outputs[0], offset.inputs["Z"])
+    links.new(subdivide.outputs["Mesh"], set_position.inputs["Geometry"])
+    links.new(offset.outputs[0], set_position.inputs["Offset"])
+    links.new(set_position.outputs["Geometry"], out.inputs["Geometry"])
+    group["fbp_quality_contract_version"] = 1
+    return group
+
+
+def _create_paper_curl(name):
+    """Create a lightweight edge-curl deformation for paper and cut-out planes."""
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Subdivision", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=7)
+    _socket(group, "Edge", "INPUT", "NodeSocketFloat", default=3.0, minimum=0.0, maximum=3.0)
+    _socket(group, "Progress", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Curl Angle", "INPUT", "NodeSocketFloat", default=2.35619449, minimum=0.0, maximum=6.28318531)
+    _socket(group, "Curl Radius", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=10.0)
+    _socket(group, "Curl Width", "INPUT", "NodeSocketFloat", default=0.28, minimum=0.001, maximum=1.0)
+    _socket(group, "Lift", "INPUT", "NodeSocketFloat", default=0.02, minimum=-10.0, maximum=10.0)
+    _socket(group, "Reverse", "INPUT", "NodeSocketBool", default=False)
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    links = group.links
+
+    subdivide = _node(group, "GeometryNodeSubdivideMesh", "Paper Curl Subdivision", -1540, 300)
+    bounds = _node(group, "GeometryNodeBoundBox", "Paper Bounds", -1340, 40)
+    position = _node(group, "GeometryNodeInputPosition", "Paper Position", -1340, -180)
+    pos_xyz = _node(group, "ShaderNodeSeparateXYZ", "Paper Position Axes", -1150, -180)
+    min_xyz = _node(group, "ShaderNodeSeparateXYZ", "Paper Minimum Axes", -1150, 120)
+    max_xyz = _node(group, "ShaderNodeSeparateXYZ", "Paper Maximum Axes", -1150, 260)
+    links.new(inp.outputs["Geometry"], subdivide.inputs["Mesh"])
+    links.new(inp.outputs["Subdivision"], subdivide.inputs["Level"])
+    links.new(subdivide.outputs["Mesh"], bounds.inputs["Geometry"])
+    links.new(position.outputs["Position"], pos_xyz.inputs[0])
+    links.new(bounds.outputs["Min"], min_xyz.inputs[0])
+    links.new(bounds.outputs["Max"], max_xyz.inputs[0])
+
+    def normalized_axis(axis, y):
+        size = _math(group, "SUBTRACT", f"Paper {axis} Size", -960, y)
+        safe = _math(group, "MAXIMUM", f"Paper Safe {axis}", -790, y, value_2=0.000001)
+        relative = _math(group, "SUBTRACT", f"Paper {axis} Relative", -960, y - 90)
+        normalized = _math(group, "DIVIDE", f"Paper Normalized {axis}", -610, y - 40)
+        links.new(max_xyz.outputs[axis], size.inputs[0])
+        links.new(min_xyz.outputs[axis], size.inputs[1])
+        links.new(size.outputs[0], safe.inputs[0])
+        links.new(pos_xyz.outputs[axis], relative.inputs[0])
+        links.new(min_xyz.outputs[axis], relative.inputs[1])
+        links.new(relative.outputs[0], normalized.inputs[0])
+        links.new(safe.outputs[0], normalized.inputs[1])
+        return normalized.outputs[0]
+
+    norm_x = normalized_axis("X", 230)
+    norm_y = normalized_axis("Y", -40)
+    inv_x = _math(group, "SUBTRACT", "Paper Inverse X", -420, 180, value_1=1.0)
+    inv_y = _math(group, "SUBTRACT", "Paper Inverse Y", -420, -40, value_1=1.0)
+    links.new(norm_x, inv_x.inputs[1])
+    links.new(norm_y, inv_y.inputs[1])
+
+    after_left = _math(group, "GREATER_THAN", "Paper Edge After Left", -520, 470, value_2=0.5)
+    before_bottom = _math(group, "LESS_THAN", "Paper Edge Before Bottom", -520, 390, value_2=1.5)
+    is_right = _math(group, "MULTIPLY", "Paper Right Edge", -330, 450)
+    is_vertical = _math(group, "GREATER_THAN", "Paper Vertical Edge", -420, 320, value_2=1.5)
+    is_top = _math(group, "GREATER_THAN", "Paper Top Edge", -420, 250, value_2=2.5)
+    negative_edge = _math(group, "ADD", "Paper Negative Edge", -180, 360)
+    links.new(inp.outputs["Edge"], after_left.inputs[0])
+    links.new(inp.outputs["Edge"], before_bottom.inputs[0])
+    links.new(after_left.outputs[0], is_right.inputs[0])
+    links.new(before_bottom.outputs[0], is_right.inputs[1])
+    links.new(inp.outputs["Edge"], is_vertical.inputs[0])
+    links.new(inp.outputs["Edge"], is_top.inputs[0])
+    links.new(is_right.outputs[0], negative_edge.inputs[0])
+    links.new(is_top.outputs[0], negative_edge.inputs[1])
+
+    horizontal_distance = _node(group, "GeometryNodeSwitch", "Paper Horizontal Distance", -190, 200)
+    horizontal_distance.input_type = "FLOAT"
+    vertical_distance = _node(group, "GeometryNodeSwitch", "Paper Vertical Distance", -190, -20)
+    vertical_distance.input_type = "FLOAT"
+    edge_distance = _node(group, "GeometryNodeSwitch", "Paper Edge Distance", 40, 100)
+    edge_distance.input_type = "FLOAT"
+    links.new(is_right.outputs[0], horizontal_distance.inputs["Switch"])
+    links.new(norm_x, horizontal_distance.inputs["False"])
+    links.new(inv_x.outputs[0], horizontal_distance.inputs["True"])
+    links.new(is_top.outputs[0], vertical_distance.inputs["Switch"])
+    links.new(norm_y, vertical_distance.inputs["False"])
+    links.new(inv_y.outputs[0], vertical_distance.inputs["True"])
+    links.new(is_vertical.outputs[0], edge_distance.inputs["Switch"])
+    links.new(horizontal_distance.outputs["Output"], edge_distance.inputs["False"])
+    links.new(vertical_distance.outputs["Output"], edge_distance.inputs["True"])
+
+    safe_width = _math(group, "MAXIMUM", "Paper Safe Curl Width", 40, -180, value_2=0.001)
+    reveal = _math(group, "SUBTRACT", "Paper Curl Reveal", 240, 100)
+    normalized_reveal = _math(group, "DIVIDE", "Paper Curl Normalize", 420, 100)
+    clamp_low = _math(group, "MAXIMUM", "Paper Curl Clamp Low", 600, 100, value_2=0.0)
+    clamp_high = _math(group, "MINIMUM", "Paper Curl Clamp High", 780, 100, value_2=1.0)
+    half_pi = _math(group, "MULTIPLY", "Paper Curl Half Pi", 960, 100, value_2=1.5707963267948966)
+    profile = _math(group, "SINE", "Paper Curl Profile", 1140, 100)
+    links.new(inp.outputs["Curl Width"], safe_width.inputs[0])
+    links.new(inp.outputs["Progress"], reveal.inputs[0])
+    links.new(edge_distance.outputs["Output"], reveal.inputs[1])
+    links.new(reveal.outputs[0], normalized_reveal.inputs[0])
+    links.new(safe_width.outputs[0], normalized_reveal.inputs[1])
+    links.new(normalized_reveal.outputs[0], clamp_low.inputs[0])
+    links.new(clamp_low.outputs[0], clamp_high.inputs[0])
+    links.new(clamp_high.outputs[0], half_pi.inputs[0])
+    links.new(half_pi.outputs[0], profile.inputs[0])
+
+    angle = _math(group, "MULTIPLY", "Paper Curl Angle", 1320, 100)
+    sine = _math(group, "SINE", "Paper Curl Sine", 1500, 180)
+    cosine = _math(group, "COSINE", "Paper Curl Cosine", 1500, 20)
+    one_minus_cos = _math(group, "SUBTRACT", "Paper Curl Height Profile", 1680, 20, value_1=1.0)
+    axis_amount = _math(group, "MULTIPLY", "Paper Curl Axis Radius", 1680, 180)
+    axis_scale = _math(group, "MULTIPLY", "Paper Curl Axis Scale", 1860, 180, value_2=0.35)
+    height = _math(group, "MULTIPLY", "Paper Curl Height", 1860, 20)
+    lift = _math(group, "MULTIPLY", "Paper Curl Lift", 1680, -140)
+    height_lift = _math(group, "ADD", "Paper Curl Height and Lift", 2040, -20)
+    links.new(profile.outputs[0], angle.inputs[0])
+    links.new(inp.outputs["Curl Angle"], angle.inputs[1])
+    links.new(angle.outputs[0], sine.inputs[0])
+    links.new(angle.outputs[0], cosine.inputs[0])
+    links.new(cosine.outputs[0], one_minus_cos.inputs[1])
+    links.new(sine.outputs[0], axis_amount.inputs[0])
+    links.new(inp.outputs["Curl Radius"], axis_amount.inputs[1])
+    links.new(axis_amount.outputs[0], axis_scale.inputs[0])
+    links.new(one_minus_cos.outputs[0], height.inputs[0])
+    links.new(inp.outputs["Curl Radius"], height.inputs[1])
+    links.new(profile.outputs[0], lift.inputs[0])
+    links.new(inp.outputs["Lift"], lift.inputs[1])
+    links.new(height.outputs[0], height_lift.inputs[0])
+    links.new(lift.outputs[0], height_lift.inputs[1])
+
+    reverse_double = _math(group, "MULTIPLY", "Paper Reverse Double", 1680, -300, value_2=2.0)
+    surface_sign = _math(group, "SUBTRACT", "Paper Surface Sign", 1860, -300, value_1=1.0)
+    signed_height = _math(group, "MULTIPLY", "Paper Signed Height", 2220, -20)
+    links.new(inp.outputs["Reverse"], reverse_double.inputs[0])
+    links.new(reverse_double.outputs[0], surface_sign.inputs[1])
+    links.new(height_lift.outputs[0], signed_height.inputs[0])
+    links.new(surface_sign.outputs[0], signed_height.inputs[1])
+
+    axis_sign = _node(group, "GeometryNodeSwitch", "Paper Edge Direction", 1500, 360)
+    axis_sign.input_type = "FLOAT"
+    axis_sign.inputs["False"].default_value = 1.0
+    axis_sign.inputs["True"].default_value = -1.0
+    links.new(negative_edge.outputs[0], axis_sign.inputs["Switch"])
+    signed_axis = _math(group, "MULTIPLY", "Paper Signed Axis", 2040, 180)
+    links.new(axis_scale.outputs[0], signed_axis.inputs[0])
+    links.new(axis_sign.outputs["Output"], signed_axis.inputs[1])
+
+    horizontal_mask = _math(group, "SUBTRACT", "Paper Horizontal Mask", 1680, 500, value_1=1.0)
+    x_offset = _math(group, "MULTIPLY", "Paper X Offset", 2220, 220)
+    y_offset = _math(group, "MULTIPLY", "Paper Y Offset", 2220, 120)
+    links.new(is_vertical.outputs[0], horizontal_mask.inputs[1])
+    links.new(signed_axis.outputs[0], x_offset.inputs[0])
+    links.new(horizontal_mask.outputs[0], x_offset.inputs[1])
+    links.new(signed_axis.outputs[0], y_offset.inputs[0])
+    links.new(is_vertical.outputs[0], y_offset.inputs[1])
+
+    offset = _node(group, "ShaderNodeCombineXYZ", "Paper Curl Offset", 2420, 100)
+    set_position = _node(group, "GeometryNodeSetPosition", "Paper Curl", 2620, 260)
+    links.new(x_offset.outputs[0], offset.inputs["X"])
+    links.new(y_offset.outputs[0], offset.inputs["Y"])
+    links.new(signed_height.outputs[0], offset.inputs["Z"])
+    links.new(subdivide.outputs["Mesh"], set_position.inputs["Geometry"])
+    links.new(offset.outputs[0], set_position.inputs["Offset"])
+    links.new(set_position.outputs["Geometry"], out.inputs["Geometry"])
+    group["fbp_quality_contract_version"] = 1
+    group["fbp_paper_curl_version"] = 1
+    return group
+
+
+def _create_cutout_outline(name):
+    """Generate an alpha-derived outline while preserving the source plane."""
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Alpha Resolution", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=8)
+    _socket(group, "Alpha Threshold", "INPUT", "NodeSocketFloat", default=0.05, minimum=0.0, maximum=1.0)
+    _socket(group, "Outline Width", "INPUT", "NodeSocketFloat", default=0.012, minimum=0.00001, maximum=10.0)
+    _socket(group, "Offset", "INPUT", "NodeSocketFloat", default=0.001, minimum=-10.0, maximum=10.0)
+    _socket(group, "Outline Material", "INPUT", "NodeSocketMaterial")
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    links = group.links
+
+    masked_geometry, _image_texture = _alpha_geometry_mask(
+        group, inp, prefix="Cutout Alpha", x=-1500, y=280
+    )
+    edge_neighbors = _node(group, "GeometryNodeInputMeshEdgeNeighbors", "Cutout Edge Neighbors", -500, -40)
+    boundary = _math(group, "EQUAL", "Cutout Boundary Edges", -280, -20, value_2=1.0)
+    mesh_to_curve = _node(group, "GeometryNodeMeshToCurve", "Cutout Boundary Curve", -60, 240)
+    set_radius = _node(group, "GeometryNodeSetCurveRadius", "Cutout Outline Width", 180, 240)
+
+    profile = _node(group, "GeometryNodeCurvePrimitiveCircle", "Cutout Outline Profile", 140, -180)
+    try:
+        profile.mode = "RADIUS"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    profile_resolution = _input(profile, "Resolution")
+    if profile_resolution is not None:
+        profile_resolution.default_value = 6
+    profile_radius = _input(profile, "Radius")
+    if profile_radius is not None:
+        profile_radius.default_value = 1.0
+
+    curve_to_mesh = _node(group, "GeometryNodeCurveToMesh", "Cutout Outline Mesh", 440, 220)
+    set_material = _node(group, "GeometryNodeSetMaterial", "Cutout Outline Material", 680, 220)
+    offset_vector = _node(group, "ShaderNodeCombineXYZ", "Cutout Outline Offset", 680, -60)
+    set_position = _node(group, "GeometryNodeSetPosition", "Offset Cutout Outline", 920, 220)
+    join = _node(group, "GeometryNodeJoinGeometry", "Join Plane and Outline", 1180, 240)
+
+    links.new(_output(edge_neighbors, "Face Count", 0), boundary.inputs[0])
+    links.new(masked_geometry, mesh_to_curve.inputs["Mesh"])
+    links.new(boundary.outputs[0], mesh_to_curve.inputs["Selection"])
+    links.new(mesh_to_curve.outputs["Curve"], set_radius.inputs["Curve"])
+    links.new(inp.outputs["Outline Width"], set_radius.inputs["Radius"])
+    links.new(set_radius.outputs["Curve"], curve_to_mesh.inputs["Curve"])
+    links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
+    links.new(curve_to_mesh.outputs["Mesh"], set_material.inputs["Geometry"])
+    links.new(inp.outputs["Outline Material"], set_material.inputs["Material"])
+    links.new(inp.outputs["Offset"], offset_vector.inputs["Z"])
+    links.new(set_material.outputs["Geometry"], set_position.inputs["Geometry"])
+    links.new(offset_vector.outputs[0], set_position.inputs["Offset"])
+    links.new(inp.outputs["Geometry"], join.inputs["Geometry"])
+    links.new(set_position.outputs["Geometry"], join.inputs["Geometry"])
+    links.new(join.outputs["Geometry"], out.inputs["Geometry"])
+
+    group["fbp_quality_contract_version"] = 1
+    group["fbp_alpha_geometry_contract_version"] = 1
+    group["fbp_cutout_outline_version"] = 1
+    return group
+
+
+def _create_extruded_cutout(name):
+    """Extrude an animated alpha silhouette while preserving the source plane."""
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Alpha Resolution", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=8)
+    _socket(group, "Alpha Threshold", "INPUT", "NodeSocketFloat", default=0.05, minimum=0.0, maximum=1.0)
+    _socket(group, "Thickness", "INPUT", "NodeSocketFloat", default=0.04, minimum=0.0, maximum=10.0)
+    _socket(group, "Direction", "INPUT", "NodeSocketFloat", default=-1.0, minimum=-1.0, maximum=1.0)
+    _socket(group, "Side Material", "INPUT", "NodeSocketMaterial")
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    links = group.links
+
+    masked_geometry, _image_texture = _alpha_geometry_mask(
+        group, inp, prefix="Extruded Cutout Alpha", x=-1600, y=300
+    )
+    signed_thickness = _math(group, "MULTIPLY", "Signed Thickness", -520, -120)
+    offset = _node(group, "ShaderNodeCombineXYZ", "Extrusion Offset", -280, -80)
+    extrude = _node(group, "GeometryNodeExtrudeMesh", "Extrude Cutout", -40, 280)
+    try:
+        extrude.mode = "FACES"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    individual = _input(extrude, "Individual")
+    if individual is not None:
+        individual.default_value = False
+
+    side_or_top = _node(group, "FunctionNodeBooleanMath", "Keep Sides and Back", 200, 20)
+    try:
+        side_or_top.operation = "OR"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    invert_keep = _node(group, "FunctionNodeBooleanMath", "Delete Front Duplicate", 430, 20)
+    try:
+        invert_keep.operation = "NOT"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    delete_front = _node(group, "GeometryNodeDeleteGeometry", "Remove Duplicate Front", 650, 260)
+    try:
+        delete_front.domain = "FACE"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    set_material = _node(group, "GeometryNodeSetMaterial", "Cutout Side Material", 890, 260)
+    join = _node(group, "GeometryNodeJoinGeometry", "Join Plane and Extrusion", 1140, 280)
+
+    links.new(inp.outputs["Thickness"], signed_thickness.inputs[0])
+    links.new(inp.outputs["Direction"], signed_thickness.inputs[1])
+    links.new(signed_thickness.outputs[0], offset.inputs["Z"])
+    links.new(masked_geometry, extrude.inputs["Mesh"])
+    links.new(offset.outputs[0], extrude.inputs["Offset"])
+    links.new(extrude.outputs["Side"], side_or_top.inputs[0])
+    links.new(extrude.outputs["Top"], side_or_top.inputs[1])
+    links.new(side_or_top.outputs[0], invert_keep.inputs[0])
+    links.new(extrude.outputs["Mesh"], delete_front.inputs["Geometry"])
+    links.new(invert_keep.outputs[0], delete_front.inputs["Selection"])
+    links.new(delete_front.outputs["Geometry"], set_material.inputs["Geometry"])
+    links.new(inp.outputs["Side Material"], set_material.inputs["Material"])
+    links.new(inp.outputs["Geometry"], join.inputs["Geometry"])
+    links.new(set_material.outputs["Geometry"], join.inputs["Geometry"])
+    links.new(join.outputs["Geometry"], out.inputs["Geometry"])
+
+    group["fbp_quality_contract_version"] = 1
+    group["fbp_alpha_geometry_contract_version"] = 1
+    group["fbp_extruded_cutout_version"] = 1
+    return group
+
 def _create_wind_bender(name):
     """Create a pin-aware flag/paper deformation Geometry Nodes group."""
     group = bpy.data.node_groups.new(name, "GeometryNodeTree")
@@ -1767,6 +2259,211 @@ def _create_wind_bender(name):
     links.new(set_position.outputs["Geometry"], out.inputs["Geometry"])
     return group
 
+
+
+def _camera_space_vectors(group, camera_socket, *, prefix="Camera Space", x=-900, y=200):
+    """Return camera location and normalized view direction in modifier-object space.
+
+    Object Info in RELATIVE space makes the result independent from the plane
+    object's world transform and provides a reusable contract for camera-aware
+    Geometry Nodes effects.
+    """
+    camera_info = _node(group, "GeometryNodeObjectInfo", f"{prefix} Transform", x, y)
+    try:
+        camera_info.transform_space = "RELATIVE"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    group.links.new(camera_socket, camera_info.inputs["Object"])
+    direction = _vector_math(group, "NORMALIZE", f"{prefix} Direction", x + 220, y)
+    group.links.new(camera_info.outputs["Location"], direction.inputs[0])
+    return camera_info.outputs["Location"], direction.outputs[0]
+
+
+def _create_camera_billboard(name):
+    """Rotate plane geometry toward the active camera without rotating its rig."""
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Camera", "INPUT", "NodeSocketObject")
+    _socket(group, "Facing Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
+    _socket(group, "Flip", "INPUT", "NodeSocketBool", default=False)
+    _socket(group, "Offset", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10000.0, maximum=10000.0)
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    links = group.links
+
+    camera_location, full_direction = _camera_space_vectors(
+        group, inp.outputs["Camera"], prefix="Billboard Camera", x=-1100, y=260
+    )
+    separate = _node(group, "ShaderNodeSeparateXYZ", "Billboard Direction Components", -820, 40)
+    links.new(camera_location, separate.inputs[0])
+
+    horizontal = _node(group, "ShaderNodeCombineXYZ", "Horizontal Facing Vector", -600, 80)
+    links.new(separate.outputs["X"], horizontal.inputs["X"])
+    horizontal.inputs["Y"].default_value = 0.0
+    links.new(separate.outputs["Z"], horizontal.inputs["Z"])
+    horizontal_normalize = _vector_math(group, "NORMALIZE", "Normalized Horizontal Facing", -380, 80)
+    links.new(horizontal.outputs[0], horizontal_normalize.inputs[0])
+
+    vertical = _node(group, "ShaderNodeCombineXYZ", "Vertical Facing Vector", -600, -100)
+    vertical.inputs["X"].default_value = 0.0
+    links.new(separate.outputs["Y"], vertical.inputs["Y"])
+    links.new(separate.outputs["Z"], vertical.inputs["Z"])
+    vertical_normalize = _vector_math(group, "NORMALIZE", "Normalized Vertical Facing", -380, -100)
+    links.new(vertical.outputs[0], vertical_normalize.inputs[0])
+
+    mode_horizontal = _math(group, "COMPARE", "Billboard Horizontal Mode", -380, -280, value_2=1.0)
+    mode_vertical = _math(group, "COMPARE", "Billboard Vertical Mode", -380, -400, value_2=2.0)
+    try:
+        mode_horizontal.inputs[2].default_value = 0.1
+        mode_vertical.inputs[2].default_value = 0.1
+    except (AttributeError, IndexError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Facing Mode"], mode_horizontal.inputs[0])
+    links.new(inp.outputs["Facing Mode"], mode_vertical.inputs[0])
+
+    horizontal_switch = _node(group, "GeometryNodeSwitch", "Choose Horizontal Facing", -120, 120)
+    horizontal_switch.input_type = "VECTOR"
+    links.new(mode_horizontal.outputs[0], horizontal_switch.inputs["Switch"])
+    links.new(full_direction, horizontal_switch.inputs["False"])
+    links.new(horizontal_normalize.outputs[0], horizontal_switch.inputs["True"])
+    vertical_switch = _node(group, "GeometryNodeSwitch", "Choose Vertical Facing", 100, 120)
+    vertical_switch.input_type = "VECTOR"
+    links.new(mode_vertical.outputs[0], vertical_switch.inputs["Switch"])
+    links.new(horizontal_switch.outputs["Output"], vertical_switch.inputs["False"])
+    links.new(vertical_normalize.outputs[0], vertical_switch.inputs["True"])
+
+    flip_scale = _math(group, "MULTIPLY", "Billboard Flip Double", 100, -120, value_2=2.0)
+    flip_sign = _math(group, "SUBTRACT", "Billboard Flip Sign", 300, -120, value_1=1.0)
+    links.new(inp.outputs["Flip"], flip_scale.inputs[0])
+    links.new(flip_scale.outputs[0], flip_sign.inputs[1])
+    signed_direction = _vector_math(group, "SCALE", "Signed Billboard Direction", 340, 120)
+    links.new(vertical_switch.outputs["Output"], signed_direction.inputs[0])
+    links.new(flip_sign.outputs[0], signed_direction.inputs[3])
+
+    # A camera can temporarily overlap the plane origin while editing, during
+    # Undo or while switching cameras. Feeding a zero vector to Align Euler can
+    # produce undefined rotations or sudden flips, so keep the current plane
+    # orientation with a stable local +Z fallback until a valid direction exists.
+    direction_length = _vector_math(group, "LENGTH", "Billboard Direction Length", 520, -180)
+    links.new(signed_direction.outputs[0], direction_length.inputs[0])
+    valid_direction = _math(group, "GREATER_THAN", "Valid Billboard Direction", 700, -180, value_2=0.000001)
+    links.new(direction_length.outputs[1] if len(direction_length.outputs) > 1 else direction_length.outputs[0], valid_direction.inputs[0])
+    stable_direction = _node(group, "GeometryNodeSwitch", "Stable Billboard Direction", 760, 100)
+    stable_direction.input_type = "VECTOR"
+    stable_direction.inputs["False"].default_value = (0.0, 0.0, 1.0)
+    links.new(valid_direction.outputs[0], stable_direction.inputs["Switch"])
+    links.new(signed_direction.outputs[0], stable_direction.inputs["True"])
+
+    align = _node(group, "FunctionNodeAlignEulerToVector", "Align Plane Z to Camera", 980, 180)
+    try:
+        align.axis = "Z"
+        # Y is the visual up axis of FBP planes. Using an explicit pivot avoids
+        # the roll ambiguity of AUTO for most camera moves and horizontal mode.
+        align.pivot_axis = "Y"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(stable_direction.outputs["Output"], align.inputs["Vector"])
+
+    offset_vector = _vector_math(group, "SCALE", "Billboard Camera Offset", 980, -40)
+    links.new(stable_direction.outputs["Output"], offset_vector.inputs[0])
+    links.new(inp.outputs["Offset"], offset_vector.inputs[3])
+    set_position = _node(group, "GeometryNodeSetPosition", "Billboard Offset", 1220, 60)
+    links.new(inp.outputs["Geometry"], set_position.inputs["Geometry"])
+    links.new(offset_vector.outputs[0], set_position.inputs["Offset"])
+    transform = _node(group, "GeometryNodeTransform", "Camera Billboard", 1460, 160)
+    links.new(set_position.outputs["Geometry"], transform.inputs["Geometry"])
+    links.new(align.outputs["Rotation"], transform.inputs["Rotation"])
+    links.new(transform.outputs["Geometry"], out.inputs["Geometry"])
+
+    group["fbp_camera_contract_version"] = 3
+    group["fbp_camera_space_contract_version"] = 1
+    group["fbp_camera_billboard_version"] = 2
+    return group
+
+def _create_camera_scale_lock(name):
+    """Keep a plane's apparent size stable as camera projection changes."""
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Camera", "INPUT", "NodeSocketObject")
+    _socket(group, "Camera Lens", "INPUT", "NodeSocketFloat", default=50.0, minimum=0.1, maximum=10000.0)
+    _socket(group, "Camera Sensor Width", "INPUT", "NodeSocketFloat", default=36.0, minimum=0.1, maximum=1000.0)
+    _socket(group, "Camera Ortho Scale", "INPUT", "NodeSocketFloat", default=6.0, minimum=0.0001, maximum=100000.0)
+    _socket(group, "Perspective", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Camera Shift X", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0)
+    _socket(group, "Camera Shift Y", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0)
+    _socket(group, "Reference Distance", "INPUT", "NodeSocketFloat", default=10.0, minimum=0.0001, maximum=1000000.0)
+    _socket(group, "Reference Lens", "INPUT", "NodeSocketFloat", default=50.0, minimum=0.1, maximum=10000.0)
+    _socket(group, "Reference Sensor Width", "INPUT", "NodeSocketFloat", default=36.0, minimum=0.1, maximum=1000.0)
+    _socket(group, "Influence", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    links = group.links
+
+    camera_info = _node(group, "GeometryNodeObjectInfo", "Camera Transform", -760, 160)
+    self_object = _node(group, "GeometryNodeSelfObject", "Effect Object", -760, -40)
+    self_info = _node(group, "GeometryNodeObjectInfo", "Effect Object Transform", -560, -40)
+    camera_vector = _vector_math(group, "SUBTRACT", "Camera to Plane", -360, 180)
+    camera_forward = _node(group, "ShaderNodeVectorRotate", "Camera Forward", -360, -20)
+    camera_forward.rotation_type = "EULER_XYZ"
+    camera_forward.invert = False
+    camera_forward.inputs["Vector"].default_value = (0.0, 0.0, -1.0)
+    camera_forward.inputs["Center"].default_value = (0.0, 0.0, 0.0)
+    camera_depth = _vector_math(group, "DOT_PRODUCT", "Camera Space Depth", -160, 160)
+    safe_depth = _math(group, "MAXIMUM", "Safe Camera Depth", 20, 160, value_2=0.0001)
+    safe_reference = _math(group, "MAXIMUM", "Safe Reference Depth", 20, -40, value_2=0.0001)
+    distance_ratio = _math(group, "DIVIDE", "Depth Ratio", 220, 160)
+    safe_lens = _math(group, "MAXIMUM", "Safe Camera Lens", 40, 20, value_2=0.001)
+    lens_ratio = _math(group, "DIVIDE", "Lens Ratio", 220, 20)
+    safe_reference_sensor = _math(group, "MAXIMUM", "Safe Reference Sensor", 40, -140, value_2=0.001)
+    sensor_ratio = _math(group, "DIVIDE", "Sensor Ratio", 220, -140)
+    distance_lens = _math(group, "MULTIPLY", "Distance and Lens", 400, 120)
+    projection_ratio = _math(group, "MULTIPLY", "Projection Ratio", 580, 120)
+    ratio_delta = _math(group, "SUBTRACT", "Scale Delta", 760, 120, value_2=1.0)
+    influence = _math(group, "MULTIPLY", "Influence", 940, 120)
+    perspective = _math(group, "MULTIPLY", "Perspective Only", 1120, 120)
+    factor = _math(group, "ADD", "Camera Scale Factor", 1300, 120, value_1=1.0)
+    safe_factor = _math(group, "MAXIMUM", "Safe Camera Scale", 1480, 120, value_2=0.001)
+    scale = _node(group, "ShaderNodeCombineXYZ", "Camera Scale", 1660, 120)
+    transform = _node(group, "GeometryNodeTransform", "Camera Scale Lock", 1850, 220)
+
+    links.new(inp.outputs["Camera"], camera_info.inputs["Object"])
+    links.new(self_object.outputs[0], self_info.inputs["Object"])
+    links.new(self_info.outputs["Location"], camera_vector.inputs[0])
+    links.new(camera_info.outputs["Location"], camera_vector.inputs[1])
+    links.new(camera_info.outputs["Rotation"], camera_forward.inputs["Rotation"])
+    links.new(camera_vector.outputs[0], camera_depth.inputs[0])
+    links.new(camera_forward.outputs["Vector"], camera_depth.inputs[1])
+    links.new(_output(camera_depth, "Value", 1), safe_depth.inputs[0])
+    links.new(inp.outputs["Reference Distance"], safe_reference.inputs[0])
+    links.new(safe_depth.outputs[0], distance_ratio.inputs[0])
+    links.new(safe_reference.outputs[0], distance_ratio.inputs[1])
+    links.new(inp.outputs["Camera Lens"], safe_lens.inputs[0])
+    links.new(inp.outputs["Reference Lens"], lens_ratio.inputs[0])
+    links.new(safe_lens.outputs[0], lens_ratio.inputs[1])
+    links.new(inp.outputs["Reference Sensor Width"], safe_reference_sensor.inputs[0])
+    links.new(inp.outputs["Camera Sensor Width"], sensor_ratio.inputs[0])
+    links.new(safe_reference_sensor.outputs[0], sensor_ratio.inputs[1])
+    links.new(distance_ratio.outputs[0], distance_lens.inputs[0])
+    links.new(lens_ratio.outputs[0], distance_lens.inputs[1])
+    links.new(distance_lens.outputs[0], projection_ratio.inputs[0])
+    links.new(sensor_ratio.outputs[0], projection_ratio.inputs[1])
+    links.new(projection_ratio.outputs[0], ratio_delta.inputs[0])
+    links.new(ratio_delta.outputs[0], influence.inputs[0])
+    links.new(inp.outputs["Influence"], influence.inputs[1])
+    links.new(influence.outputs[0], perspective.inputs[0])
+    links.new(inp.outputs["Perspective"], perspective.inputs[1])
+    links.new(perspective.outputs[0], factor.inputs[1])
+    links.new(factor.outputs[0], safe_factor.inputs[0])
+    links.new(safe_factor.outputs[0], scale.inputs["X"])
+    links.new(safe_factor.outputs[0], scale.inputs["Y"])
+    scale.inputs["Z"].default_value = 1.0
+    links.new(inp.outputs["Geometry"], transform.inputs["Geometry"])
+    links.new(scale.outputs[0], transform.inputs["Scale"])
+    links.new(transform.outputs["Geometry"], out.inputs["Geometry"])
+
+    group["fbp_camera_contract_version"] = 2
+    return group
+
 def _interface_socket_names(group, in_out):
     """Return interface socket names without depending on one Blender API layout."""
     names = set()
@@ -1795,10 +2492,23 @@ def _builtin_group_is_complete(group, definition):
         str(socket_name or "")
         for socket_name in dict(definition.get("property_map", {})).values()
     )
+    required_inputs.update(
+        str(socket_name or "") for socket_name in definition.get("required_input_sockets", ())
+    )
     uv_input = str(definition.get("uv_input_socket", "") or "")
     alpha_input = str(definition.get("alpha_input_socket", "") or "")
     alpha_output = str(definition.get("alpha_output_socket", "") or "")
     debug_input = str(definition.get("debug_socket", "") or "")
+    if definition.get("camera_aware"):
+        camera_contract = definition.get("camera_contract", {}) or {}
+        for socket_key in (
+            "object_socket", "lens_socket", "sensor_width_socket",
+            "ortho_scale_socket", "perspective_socket",
+            "shift_x_socket", "shift_y_socket",
+        ):
+            socket_name = str(camera_contract.get(socket_key, "") or "")
+            if socket_name:
+                required_inputs.add(socket_name)
     if debug_input:
         required_inputs.add(debug_input)
     if uv_input:
@@ -1826,6 +2536,14 @@ def _builtin_group_is_complete(group, definition):
     for socket_name in required_outputs:
         socket = _input(output_node, socket_name)
         if socket is None or not bool(getattr(socket, "is_linked", False)):
+            return False
+    if bool(definition.get("requires_alpha_geometry_contract")):
+        try:
+            if int(group.get("fbp_alpha_geometry_contract_version", 0) or 0) < 1:
+                return False
+            if not any(bool(node.get("fbp_alpha_image_node", False)) for node in group.nodes):
+                return False
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             return False
     if bool(definition.get("image_aware")):
         try:
@@ -1898,6 +2616,12 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
         "ASCII_MATRIX": lambda: _create_ascii_matrix(canonical_name, asset_dir),
         "TEXT_MATRIX": lambda: _create_text_matrix(canonical_name),
         "WIND_BENDER": lambda: _create_wind_bender(canonical_name),
+        "MESH_RIPPLE": lambda: _create_mesh_ripple(canonical_name),
+        "PAPER_CURL": lambda: _create_paper_curl(canonical_name),
+        "CUTOUT_OUTLINE": lambda: _create_cutout_outline(canonical_name),
+        "EXTRUDED_CUTOUT": lambda: _create_extruded_cutout(canonical_name),
+        "CAMERA_SCALE_LOCK": lambda: _create_camera_scale_lock(canonical_name),
+        "CAMERA_BILLBOARD": lambda: _create_camera_billboard(canonical_name),
     }
     builder = builders.get(effect_id)
     if builder is None:

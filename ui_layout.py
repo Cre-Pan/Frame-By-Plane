@@ -125,6 +125,31 @@ def fbp_rebuild_pending_tree_rows(scene):
     except Exception:
         previous_active = 0
 
+    # Preserve the logical row instead of only its visual index. Collapsing,
+    # renaming or reordering a collection can insert/remove virtual rows before
+    # the active item; keeping only the old integer made selection jump to an
+    # unrelated layer.
+    previous_key = None
+    try:
+        if 0 <= previous_active < len(rows):
+            active_row = rows[previous_active]
+            if getattr(active_row, 'row_type', 'LAYER') == 'GROUP':
+                previous_key = ('GROUP', str(getattr(active_row, 'collection_path', '') or ''))
+            else:
+                pending_index = int(getattr(active_row, 'pending_index', -1))
+                pending = getattr(scene, 'fbp_pending_planes', ())
+                if 0 <= pending_index < len(pending):
+                    active_item = pending[pending_index]
+                    previous_key = (
+                        'LAYER',
+                        str(getattr(active_item, 'name', '') or ''),
+                        str(getattr(active_item, 'collection_name', '') or ''),
+                        str(getattr(active_item, 'directory', '') or ''),
+                        str(getattr(active_item, 'files_str', '') or ''),
+                    )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError):
+        previous_key = None
+
     rows.clear()
 
     tree = _fbp_pending_tree(scene)
@@ -172,8 +197,31 @@ def fbp_rebuild_pending_tree_rows(scene):
     add_node(tree, 0)
 
     try:
+        restored_index = -1
+        if previous_key:
+            for row_index, row in enumerate(rows):
+                if previous_key[0] == 'GROUP':
+                    candidate = ('GROUP', str(getattr(row, 'collection_path', '') or ''))
+                else:
+                    pending_index = int(getattr(row, 'pending_index', -1))
+                    pending = getattr(scene, 'fbp_pending_planes', ())
+                    if not (0 <= pending_index < len(pending)):
+                        continue
+                    pending_item = pending[pending_index]
+                    candidate = (
+                        'LAYER',
+                        str(getattr(pending_item, 'name', '') or ''),
+                        str(getattr(pending_item, 'collection_name', '') or ''),
+                        str(getattr(pending_item, 'directory', '') or ''),
+                        str(getattr(pending_item, 'files_str', '') or ''),
+                    )
+                if candidate == previous_key:
+                    restored_index = row_index
+                    break
         if len(rows):
-            scene.fbp_pending_tree_rows_idx = min(max(0, previous_active), len(rows) - 1)
+            if restored_index < 0:
+                restored_index = min(max(0, previous_active), len(rows) - 1)
+            scene.fbp_pending_tree_rows_idx = restored_index
         else:
             scene.fbp_pending_tree_rows_idx = 0
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
@@ -551,6 +599,21 @@ def draw_pending_setup_grouped(layout, context):
     tree_box = layout.box()
     header = tree_box.row(align=True)
     header.label(text='Import Tree', icon=ui_icon('setup.collection'))
+    header.separator_spacer()
+    expand = header.operator(
+        'fbp.set_pending_collections_open',
+        text='',
+        icon=ui_icon('setup.expanded'),
+        emboss=False,
+    )
+    expand.open_all = True
+    collapse = header.operator(
+        'fbp.set_pending_collections_open',
+        text='',
+        icon=ui_icon('setup.collapsed'),
+        emboss=False,
+    )
+    collapse.open_all = False
 
     visible_row_count = len(getattr(sc, 'fbp_pending_tree_rows', []))
     if visible_row_count == 0:
@@ -631,9 +694,10 @@ def draw_creation_ui(layout, context):
         box.prop(sc, "fbp_pre_interpolation", expand=False)
         box.prop(sc, "fbp_pre_orientation", expand=False)
         layout.separator()
-        row = layout.row()
+        row = layout.row(align=True)
         row.scale_y = 1.2
-        row.operator("fbp.import_sequence", text="Generate Single Plane", icon=fbp_icon("FILE_IMAGE"))
+        row.operator("fbp.import_sequence", text="Image Plane", icon=fbp_icon("FILE_IMAGE"))
+        row.operator("fbp.import_drawing_plane", text="Cutout Plane", icon="OUTLINER_OB_ARMATURE")
         return
 
     # MULTI

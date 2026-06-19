@@ -27,7 +27,14 @@ def is_supported_media_file(name):
 
 
 def is_hidden_import_name(name):
-    return os.path.basename(str(name)).startswith('_')
+    """Ignore private/export-helper entries before project scanning.
+
+    Underscore-prefixed folders are intentionally skipped by Frame by Plane.
+    Dot-prefixed files also include macOS ``._`` resource forks and common
+    hidden project folders, which must never become image layers.
+    """
+    base = os.path.basename(str(name))
+    return base.startswith(('_', '.'))
 
 
 def is_technical_map_file(name):

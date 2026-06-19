@@ -54,6 +54,7 @@ FBP_UI_ICON_KEYS = {
     # Settings / Project / Render
     "settings.header": "PREFERENCES",
     "settings.project": "OUTLINER",
+    "settings.display": "IMAGE_DATA",
     "settings.camera_tab": "CAMERA_DATA",
     "settings.projection": "CAMERA_STEREO",
     "settings.camera_frame": "IMAGE_BACKGROUND",

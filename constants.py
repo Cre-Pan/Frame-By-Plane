@@ -61,6 +61,22 @@ FBP_ICONS = {
     'MATERIAL': 'MATERIAL',  # Material/color plane panels. ### DUPLICATE
     'MESH_PLANE': 'MESH_PLANE',  # Plane creation menu icon. ### DUPLICATE
     'MODIFIER': 'MODIFIER',  # Plane tools/repair actions. ### DUPLICATE
+    'NODETREE': 'NODETREE',  # User-defined node effects.
+    'MOD_DISPLACE': 'MOD_DISPLACE',
+    'MOD_WAVE': 'MOD_WAVE',
+    'MOD_SIMPLEDEFORM': 'MOD_SIMPLEDEFORM',
+    'MOD_SOLIDIFY': 'MOD_SOLIDIFY',
+    'SHADING_RENDERED': 'SHADING_RENDERED',
+    'RNDCURVE': 'RNDCURVE',
+    'FORCE_WIND': 'FORCE_WIND',
+    'PARTICLES': 'PARTICLES',
+    'WORLD': 'WORLD',
+    'MESH_GRID': 'MESH_GRID',
+    'MESH_CIRCLE': 'MESH_CIRCLE',
+    'MESH_CUBE': 'MESH_CUBE',
+    'FONT_DATA': 'FONT_DATA',
+    'BRUSH_DATA': 'BRUSH_DATA',
+    'SPARKLES': 'SPARKLES',
     'MOD_BOOLEAN': 'MOD_BOOLEAN',  # Crop tool icon. ### DUPLICATE
     'NODE_TEXTURE': 'NODE_TEXTURE',  # Gradient / texture-node plane icon.  # Pending folder without files.
     'OPTIONS': 'OPTIONS',  # Create/pre-settings section icon. ### DUPLICATE

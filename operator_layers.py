@@ -9,6 +9,7 @@ from bpy.props import (
 from bpy.types import Operator
 
 from .constants import fbp_icon
+from .path_utils import natural_sort_key
 from .builder import apply_fit_to_camera
 from .layers import (
     _safe_layer_obj,
@@ -24,7 +25,7 @@ from .layers import (
     update_global_visibility,
     visible_layer_indices,
 )
-from .scene_sync import delete_fbp_rigs, sync_layer_collection
+from .scene_sync import delete_fbp_rigs, fbp_rename_layer_rig, sync_layer_collection
 from .runtime import fbp_warn
 from .core import (
     do_update_animation,
@@ -111,8 +112,7 @@ class FBP_OT_SelectLinkedPlane(Operator):
                 for plane in planes:
                     plane.select_set(False)
                     plane.hide_select = True
-                if object_in_view_layer(rig, context):
-                    rig.hide_select = False
+                if object_in_view_layer(rig, context) and not bool(getattr(rig, 'hide_select', False)):
                     rig.select_set(True)
                     context.view_layer.objects.active = rig
         except ReferenceError:
@@ -177,7 +177,7 @@ class FBP_OT_AddColorPlaneVariant(Operator):
 class FBP_OT_UIListNameAction(Operator):
     bl_idname = "fbp.ui_list_name_action"
     bl_label = "Select or Rename Item"
-    bl_description = "Click to select this row and show its frame on the timeline; double-click to rename it"
+    bl_description = "Click to select this layer or item; double-click its name to rename it"
     bl_options = {'REGISTER', 'UNDO'}
 
     target_type: StringProperty(default="")
@@ -209,7 +209,10 @@ class FBP_OT_UIListNameAction(Operator):
 
     def invoke(self, context, event):
         if getattr(event, 'value', '') == 'DOUBLE_CLICK':
-            if self.target_type == 'FRAME':
+            # Keep the row/object selection in sync before opening the rename
+            # field. This is especially important for layers: the user can
+            # double-click an unselected row and immediately edit that layer.
+            if self.target_type in {'LAYER', 'FRAME', 'COLLECTION', 'PENDING'}:
                 self._select(context)
             self.rename_mode = True
             self.new_name = self._current_name(context)
@@ -228,10 +231,13 @@ class FBP_OT_UIListNameAction(Operator):
 
         if self.target_type == 'LAYER':
             rig = bpy.data.objects.get(self.rig_name)
-            if not rig:
+            if not rig or not is_fbp_layer_object(rig):
                 return {'CANCELLED'}
-            rig.name = new_name
-            _fbp_refresh_layer_tree(context)
+            actual_name = fbp_rename_layer_rig(rig, new_name, context)
+            if not actual_name:
+                return {'CANCELLED'}
+            if actual_name != new_name:
+                self.report({'INFO'}, f"Layer renamed to {actual_name}")
             return {'FINISHED'}
 
         if self.target_type == 'FRAME':
@@ -676,6 +682,34 @@ class FBP_OT_TogglePendingCollectionCollapse(Operator):
         sc = context.scene
         name = self.collection_name or 'Unsorted'
         set_pending_collection_open(sc, name, not pending_collection_is_open(sc, name))
+        _fbp_refresh_pending_tree(context)
+        return {'FINISHED'}
+
+
+class FBP_OT_SetPendingCollectionsOpen(Operator):
+    bl_idname = "fbp.set_pending_collections_open"
+    bl_label = "Expand or Collapse Setup Collections"
+    bl_description = "Expand or collapse every collection in the Multiplane Setup tree"
+    bl_options = {'UNDO'}
+
+    open_all: BoolProperty(default=False)
+
+    def execute(self, context):
+        scene = context.scene
+        if not self.open_all:
+            scene.fbp_pending_open_collections = ""
+            _fbp_refresh_pending_tree(context)
+            return {'FINISHED'}
+
+        paths = set()
+        for item in getattr(scene, 'fbp_pending_planes', ()):
+            raw = str(getattr(item, 'collection_name', '') or '').strip()
+            if not raw:
+                continue
+            parts = [part.strip() for part in raw.split('/') if part.strip()]
+            for depth in range(1, len(parts) + 1):
+                paths.add(' / '.join(parts[:depth]))
+        scene.fbp_pending_open_collections = '|'.join(sorted(paths, key=natural_sort_key))
         _fbp_refresh_pending_tree(context)
         return {'FINISHED'}
 

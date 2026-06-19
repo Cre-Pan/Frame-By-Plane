@@ -474,7 +474,7 @@ class FBP_OT_GenerateMultiplane(Operator):
         # Blender 5.1 does not reliably expose/compare the originating Timer
         # through the modal Event. Filtering on event.timer can therefore keep
         # this operator alive forever and prevent generation from starting.
-        # As in 4.5.7, the first TIMER event starts the deferred generation.
+        # The first TIMER event starts the deferred generation.
         _fbp_remove_generation_timer(context, self)
         return self._run_generation(context)
 
@@ -706,7 +706,7 @@ class FBP_OT_ImportSequence(Operator):
         # Blender 5.1 does not reliably expose/compare the originating Timer
         # through the modal Event. Filtering on event.timer can therefore keep
         # this operator alive forever and prevent generation from starting.
-        # As in 4.5.7, the first TIMER event starts the deferred generation.
+        # The first TIMER event starts the deferred generation.
         _fbp_remove_generation_timer(context, self)
         return self._run_generation(context)
 
@@ -1950,9 +1950,11 @@ class FBP_OT_ImportSingleImageFromClipboard(Operator):
             # creation fails; only successful imports clean the temporary block.
             raise
         else:
+            # Do not free the clipboard Image datablock synchronously. Blender 5.1
+            # may still own clipboard/image-cache state when the popup closes or a
+            # new file is opened. Explicit orphan purge can remove it later.
             try:
-                if pasted_image.users == 0:
-                    bpy.data.images.remove(pasted_image)
+                pasted_image["fbp_temporary"] = True
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
 

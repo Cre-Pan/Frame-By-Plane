@@ -3,6 +3,7 @@
 import bpy
 import os
 import gc
+import json
 import statistics
 import tempfile
 import time
@@ -30,15 +31,27 @@ from .layers import (
 )
 from .scene_sync import sync_layer_collection
 from .builder import build_fbp_color_rig
-from .native_backend import build_native_fbp_rig
+from .native_backend import (
+    FBP_NATIVE_RENDER_CONTRACT_REVISION,
+    build_native_fbp_rig,
+    fbp_native_rig_contract_issues,
+)
 from .geometry_nodes import (
-    FBP_EFFECT_REGISTRY,
     fbp_add_effect,
-    fbp_effect_definition,
     fbp_effect_ids_for_rig,
-    fbp_effect_supported_for_rig,
+    fbp_effect_instance_id_for_rig,
+    fbp_find_effect_modifier,
+    fbp_refresh_effect_instance_ids,
+    fbp_reapply_all_effects,
+    fbp_sync_scene_camera_bindings,
     fbp_update_geometry_effect,
     fbp_update_shader_effect,
+)
+from .effects_registry import (
+    FBP_EFFECT_REGISTRY,
+    FBP_EFFECT_REGISTRY_ISSUES,
+    fbp_effect_definition,
+    fbp_effect_supported_for_rig,
 )
 from .operator_common import (
     _fbp_active_pending_index_and_collection,
@@ -107,7 +120,6 @@ class FBP_OT_ProjectHealthCheck(Operator):
         image_paths = collect_project_image_paths()
         missing = missing_project_images()
         empty_fbp_colls = [coll.name for coll in fbp_colls if not any(True for _ in iter_fbp_rigs_in_collection(coll, True))]
-
         lines = [
             "Frame by Plane - Project Health",
             "================================",
@@ -125,11 +137,246 @@ class FBP_OT_ProjectHealthCheck(Operator):
                 lines.append(f"...and {len(missing) - 200} more")
         else:
             lines.append("No missing files found.")
-
         txt = bpy.data.texts.get("FBP_Project_Health") or bpy.data.texts.new("FBP_Project_Health")
         txt.clear()
         txt.write("\n".join(lines))
-        self.report({'INFO'}, f"Health: {len(rigs)} layers, {len(missing)} missing image(s)")
+        level = {'INFO'} if not missing else {'WARNING'}
+        self.report(level, f"Health: {len(rigs)} layers, {len(missing)} missing image(s)")
+        return {'FINISHED'}
+
+
+class FBP_OT_DeepAddonAudit(Operator):
+    bl_idname = "fbp.deep_addon_audit"
+    bl_label = "Run Deep Add-on Audit"
+    bl_description = "Validate effects, native media bindings, camera links and generated datablocks"
+
+    repair: BoolProperty(
+        name="Repair Safe Issues",
+        description="Reapply effect contracts and camera bindings without deleting user datablocks",
+        default=False,
+    )
+
+    def execute(self, context):
+        scene = context.scene
+        sync_layer_collection(context)
+        rigs = [obj for obj in scene.objects if is_fbp_layer_object(obj)]
+        issues = list(FBP_EFFECT_REGISTRY_ISSUES)
+        warnings = []
+        stats = {
+            "rigs": len(rigs), "effects": 0, "geometry": 0, "shader": 0,
+            "missing_modifiers": 0, "missing_groups": 0, "duplicate_modifiers": 0,
+            "duplicate_instance_ids": 0, "camera_unbound": 0,
+            "orphan_groups": 0, "orphan_materials": 0,
+            "unsupported_native_contracts": 0,
+            "native_contract_failures": 0,
+            "native_duration_mismatch": 0, "native_timing_drivers": 0,
+            "duplicate_file_wrappers": 0,
+            "repaired": 0,
+        }
+        instance_owners = {}
+
+        if self.repair:
+            for rig in rigs:
+                try:
+                    if fbp_refresh_effect_instance_ids(rig):
+                        stats["repaired"] += 1
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                    issues.append(
+                        f"{getattr(rig, 'name', '<rig>')}: instance identity repair failed: {exc}"
+                    )
+
+        for rig in rigs:
+            rig_name = getattr(rig, "name", "<unnamed rig>")
+            plane = getattr(rig, "fbp_plane_target", None)
+            if plane is None:
+                issues.append(f"{rig_name}: missing linked plane")
+                continue
+            if not bool(getattr(rig, "fbp_is_color_plane", False)):
+                native_issues = fbp_native_rig_contract_issues(rig)
+                if native_issues:
+                    stats["native_contract_failures"] += 1
+                    issues.extend(
+                        f"{rig_name}: {message}" for message in native_issues
+                    )
+            effect_ids = tuple(fbp_effect_ids_for_rig(rig))
+            stats["effects"] += len(effect_ids)
+            for effect_id in effect_ids:
+                definition = fbp_effect_definition(effect_id)
+                kind = str(definition.get("kind", ""))
+                if kind == "GEOMETRY":
+                    stats["geometry"] += 1
+                    modifier = fbp_find_effect_modifier(rig, effect_id)
+                    if modifier is None:
+                        stats["missing_modifiers"] += 1
+                        issues.append(f"{rig_name}: {effect_id} is active but its modifier is missing")
+                        continue
+                    node_group = getattr(modifier, "node_group", None)
+                    if node_group is None:
+                        stats["missing_groups"] += 1
+                        issues.append(f"{rig_name}: {effect_id} modifier has no node group")
+                    instance_id = str(
+                        fbp_effect_instance_id_for_rig(
+                            rig, effect_id, ensure=False
+                        ) or ""
+                    )
+                    if not instance_id:
+                        warnings.append(f"{rig_name}: {effect_id} has no persistent instance id")
+                    else:
+                        instance_owners.setdefault(instance_id, []).append(f"{rig_name}/{effect_id}")
+                    matches = []
+                    try:
+                        for candidate in plane.modifiers:
+                            if getattr(candidate, "type", "") != "NODES":
+                                continue
+                            tagged = str(candidate.get("fbp_effect_id", "") or "")
+                            if tagged == effect_id:
+                                matches.append(candidate)
+                    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                        pass
+                    if len(matches) > 1:
+                        stats["duplicate_modifiers"] += len(matches) - 1
+                        issues.append(f"{rig_name}: {effect_id} has {len(matches)} tagged modifiers")
+                    if definition.get("camera_aware"):
+                        camera = getattr(scene, "camera", None)
+                        if camera is None:
+                            stats["camera_unbound"] += 1
+                            warnings.append(f"{rig_name}: {effect_id} has no active scene camera")
+                elif kind == "SHADER":
+                    stats["shader"] += 1
+                    instance_id = str(
+                        fbp_effect_instance_id_for_rig(
+                            rig, effect_id, ensure=False
+                        ) or ""
+                    )
+                    if not instance_id:
+                        warnings.append(
+                            f"{rig_name}: {effect_id} has no persistent instance id"
+                        )
+                    else:
+                        instance_owners.setdefault(instance_id, []).append(
+                            f"{rig_name}/{effect_id}"
+                        )
+
+        for instance_id, owners in sorted(instance_owners.items()):
+            if len(owners) > 1:
+                stats["duplicate_instance_ids"] += len(owners) - 1
+                issues.append(f"Duplicate effect instance id {instance_id}: {', '.join(owners)}")
+
+        for group in bpy.data.node_groups:
+            try:
+                private = bool(group.get("fbp_private_effect_group", False))
+                generated = bool(group.get("fbp_generated_effect_group", False)) or private
+                if generated and group.users == 0:
+                    stats["orphan_groups"] += 1
+                    warnings.append(f"Unused generated node group: {group.name}")
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        for material in bpy.data.materials:
+            try:
+                generated = bool(material.get("fbp_generated_effect_material", False)) or bool(material.get("fbp_effect_material", False))
+                if generated and material.users == 0:
+                    stats["orphan_materials"] += 1
+                    warnings.append(f"Unused generated material: {material.name}")
+                if bool(material.get("fbp_native_sequence", False)):
+                    contract_revision = int(material.get("fbp_native_render_contract", 0) or 0)
+                    if contract_revision != FBP_NATIVE_RENDER_CONTRACT_REVISION:
+                        stats["unsupported_native_contracts"] += 1
+                        issues.append(
+                            f"Unsupported native render contract: {material.name} "
+                            f"({contract_revision}; rebuild this layer with {FBP_NATIVE_RENDER_CONTRACT_REVISION})"
+                        )
+                    expected_source_count = 1
+                    try:
+                        runtime_payload = json.loads(str(material.get("fbp_native_runtime_sequence_json", "") or "{}"))
+                        runtime_files = runtime_payload.get("files", []) if isinstance(runtime_payload, dict) else []
+                        expected_source_count = max(1, len(runtime_files))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        expected_source_count = 1
+                    for node in getattr(getattr(material, "node_tree", None), "nodes", ()) or ():
+                        if not bool(node.get("fbp_native_sequence_node", False)):
+                            continue
+                        image = getattr(node, "image", None)
+                        if image is None or str(getattr(image, "source", "FILE") or "FILE") not in {"SEQUENCE", "MOVIE"}:
+                            continue
+                        if str(getattr(image, "source", "FILE") or "FILE") == "SEQUENCE":
+                            image_user = getattr(node, "image_user", None)
+                            actual_duration = int(getattr(image_user, "frame_duration", 0) or 0) if image_user else 0
+                            if actual_duration != expected_source_count:
+                                stats["native_duration_mismatch"] += 1
+                                warnings.append(
+                                    f"Native source-count mismatch: {material.name} uses "
+                                    f"frame_duration={actual_duration}, expected {expected_source_count}"
+                                )
+                            try:
+                                data_path = image_user.path_from_id("frame_offset") if image_user else ""
+                                animation_data = getattr(material.node_tree, "animation_data", None)
+                                if any(
+                                    str(getattr(curve, "data_path", "") or "") == data_path
+                                    for curve in (getattr(animation_data, "drivers", ()) or ())
+                                ):
+                                    stats["native_timing_drivers"] += 1
+                                    warnings.append(
+                                        f"Unsupported scripted native timing driver: {material.name}"
+                                    )
+                            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                                pass
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+
+        native_paths = {}
+        for image in bpy.data.images:
+            try:
+                path = os.path.normcase(os.path.abspath(bpy.path.abspath(str(getattr(image, "filepath", "") or ""))))
+                source = str(getattr(image, "source", "FILE") or "FILE")
+                if path:
+                    native_paths.setdefault(path, {}).setdefault(source, []).append(image)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
+                continue
+        for path, by_source in native_paths.items():
+            if by_source.get("SEQUENCE") and by_source.get("FILE"):
+                unused_files = [image for image in by_source["FILE"] if int(getattr(image, "users", 0) or 0) == 0]
+                if unused_files:
+                    stats["duplicate_file_wrappers"] += len(unused_files)
+                    warnings.append(
+                        f"Unused FILE wrapper beside native sequence: {path} "
+                        f"({len(unused_files)} datablock(s); purge manually when safe)"
+                    )
+
+        if self.repair:
+            for rig in rigs:
+                try:
+                    if fbp_reapply_all_effects(rig):
+                        stats["repaired"] += 1
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                    issues.append(f"{getattr(rig, 'name', '<rig>')}: repair failed: {exc}")
+            try:
+                fbp_sync_scene_camera_bindings(scene, force=True)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                issues.append(f"Camera binding repair failed: {exc}")
+
+        lines = [
+            "Frame By Plane — Deep Add-on Audit",
+            "===================================",
+            f"Generated: {datetime.now().isoformat(timespec='seconds')}",
+            f"Scene: {scene.name}",
+            f"Repair requested: {'Yes' if self.repair else 'No'}",
+            "",
+            "Summary",
+            "-------",
+        ]
+        lines.extend(f"{key.replace('_', ' ').title()}: {value}" for key, value in stats.items())
+        lines.extend(("", "Errors / structural issues", "--------------------------"))
+        lines.extend(f"- {item}" for item in issues) if issues else lines.append("- None")
+        lines.extend(("", "Warnings", "--------"))
+        lines.extend(f"- {item}" for item in warnings) if warnings else lines.append("- None")
+        lines.extend(("", "Result", "------"))
+        lines.append("PASS" if not issues else "REVIEW REQUIRED")
+
+        text = bpy.data.texts.get("FBP_Deep_Addon_Audit") or bpy.data.texts.new("FBP_Deep_Addon_Audit")
+        text.clear()
+        text.write("\n".join(lines))
+        level = {'INFO'} if not issues else {'WARNING'}
+        self.report(level, f"Audit: {len(issues)} issue(s), {len(warnings)} warning(s); report saved in Text Editor")
         return {'FINISHED'}
 
 class FBP_OT_RelinkFromProjectRoot(Operator):
@@ -371,10 +618,17 @@ class FBP_OT_ProfileEffects(Operator):
 # SECTION - Effects Regression Scene #
 def _fbp_write_regression_image(filepath, phase=0.0, width=128, height=72):
     """Write a deterministic alpha/color test pattern using Blender images."""
-    image = bpy.data.images.new(
-        f"FBP_Regression_Source_{phase:.2f}", width=width, height=height,
-        alpha=True, float_buffer=False,
-    )
+    image_name = f"FBP_Regression_Source_{phase:.2f}"
+    image = bpy.data.images.get(image_name)
+    if image is None or tuple(int(v) for v in image.size[:2]) != (width, height):
+        image = bpy.data.images.new(
+            image_name, width=width, height=height,
+            alpha=True, float_buffer=False,
+        )
+    try:
+        image["fbp_temporary"] = True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     pixels = [0.0] * (width * height * 4)
     for y in range(height):
         v = y / max(1, height - 1)
@@ -407,7 +661,8 @@ def _fbp_write_regression_image(filepath, phase=0.0, width=128, height=72):
     image.file_format = 'PNG'
     image.update()
     image.save()
-    bpy.data.images.remove(image)
+    # Keep the generated datablock until Blender's explicit orphan purge. Removing
+    # image buffers synchronously can race Blender 5.1's cache teardown.
     return str(path)
 
 
@@ -425,7 +680,10 @@ def _fbp_regression_safe_defaults(rig, _effect_id):
         "fbp_felt_viewport_percentage": 1.0,
         "fbp_felt_subdivisions": 0,
         "fbp_felt_alpha_resolution": 16,
-        "fbp_thickness_alpha_resolution": 16,
+        "fbp_thickness_alpha_resolution": 6,
+        "fbp_cutout_outline_viewport_resolution": 3,
+        "fbp_cutout_outline_playback_resolution": 2,
+        "fbp_cutout_outline_render_resolution": 4,
         "fbp_wind_subdivision": 2,
         "fbp_mesh_wiggle_subdivisions": 2,
         "fbp_stop_motion_resolution": 8,

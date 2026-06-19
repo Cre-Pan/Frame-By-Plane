@@ -10,6 +10,7 @@ current image/sequence and ImageUser timing never leak between layers.
 """
 
 from pathlib import Path
+import copy
 import json
 import math
 import time
@@ -19,8 +20,13 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.app.handlers import persistent
 from bpy.types import Menu, Operator, UIList
+from mathutils import Vector
 
 from .builtin_effects import create_builtin_effect_group, _builtin_group_is_complete
+from .custom_effects import (
+    find_custom_effect_group,
+    refresh_one_custom_effect_definition,
+)
 from .matrix_presets import (
     ASCII_ATLAS_COLUMNS,
     ASCII_PRESET_ROWS,
@@ -28,7 +34,56 @@ from .matrix_presets import (
     ascii_level_gradient,
 )
 
+from .effect_schema import (
+    FBP_EFFECT_SCHEMA_VERSION,
+    FBP_EFFECT_INSTANCE_KEY,
+    FBP_EFFECT_INSTANCE_OWNER_KEY,
+    FBP_EFFECT_INSTANCE_VERSION,
+    FBP_EFFECT_INSTANCE_VERSION_KEY,
+    assign_effect_instance_id,
+    ensure_effect_instance_id,
+    effect_instance_id,
+    finalize_effect_registry,
+    new_effect_instance_id,
+)
+
+from .effects_registry import (
+    FBP_EFFECT_MESH_WIGGLE,
+    FBP_EFFECT_WIND_BENDER,
+    FBP_EFFECT_MESH_RIPPLE,
+    FBP_EFFECT_PAPER_CURL,
+    FBP_EFFECT_CUTOUT_OUTLINE,
+    FBP_EFFECT_EXTRUDED_CUTOUT,
+    FBP_EFFECT_CAMERA_SCALE_LOCK,
+    FBP_EFFECT_CAMERA_BILLBOARD,
+    FBP_EFFECT_THICKNESS,
+    FBP_EFFECT_FELT_FUZZ,
+    FBP_EFFECT_PIXELATE,
+    FBP_EFFECT_CRT_SCANLINES,
+    FBP_EFFECT_DIGITAL_NOISE,
+    FBP_EFFECT_CHROMA_KEY,
+    FBP_EFFECT_HALFTONE,
+    FBP_EFFECT_DOT_MATRIX,
+    FBP_EFFECT_ASCII_MATRIX,
+    FBP_EFFECT_TEXT_MATRIX,
+    FBP_EFFECT_REGISTRY,
+    FBP_EFFECT_REGISTRY_ISSUES,
+    fbp_refresh_custom_effect_registry,
+    FBP_SHADER_STAGE_ORDER,
+    FBP_BASE_EFFECT_MENU_ORDER,
+    FBP_3D_EFFECT_MENU_ORDER,
+    FBP_IMAGE_EFFECT_MENU_SECTIONS,
+    FBP_MESH_EFFECT_MENU_SECTIONS,
+    fbp_effect_definition,
+    fbp_effect_supported_for_rig,
+    fbp_effect_tooltip,
+    fbp_normalize_effect_id,
+    fbp_rig_media_type,
+)
+
 from .runtime import (
+    fbp_runtime_get,
+    fbp_render_mutation_blocked,
     fbp_is_silent_property_update,
     fbp_undo_guard_active,
     fbp_set_rna_property_silent,
@@ -47,525 +102,38 @@ _FBP_EFFECT_GROUP_CACHE = globals().get("_FBP_EFFECT_GROUP_CACHE", {})
 _FBP_INTERFACE_INPUT_CACHE = globals().get("_FBP_INTERFACE_INPUT_CACHE", {})
 _FBP_MATRIX_IMAGE_NODE_CACHE = globals().get("_FBP_MATRIX_IMAGE_NODE_CACHE", {})
 _FBP_EFFECT_IDS_CACHE = globals().get("_FBP_EFFECT_IDS_CACHE", {})
+_FBP_EFFECT_IDS_CACHE_TIME = globals().get("_FBP_EFFECT_IDS_CACHE_TIME", {})
+if not isinstance(_FBP_EFFECT_IDS_CACHE_TIME, dict):
+    _FBP_EFFECT_IDS_CACHE_TIME = {}
+_FBP_EFFECT_IDS_CACHE_SECONDS = 4.0
+_FBP_EFFECT_RUNTIME_PROFILE_CACHE = globals().get("_FBP_EFFECT_RUNTIME_PROFILE_CACHE", {})
+_FBP_EFFECT_SCENE_RIG_CACHE = globals().get("_FBP_EFFECT_SCENE_RIG_CACHE", {})
+_FBP_EFFECT_SCENE_CACHE_SECONDS = 2.0
+_FBP_EFFECT_PROFILE_CACHE_SECONDS = 4.0
+_FBP_EFFECT_HEALTH_CACHE_SECONDS = 2.0
+_FBP_CAMERA_BINDING_CACHE = globals().get("_FBP_CAMERA_BINDING_CACHE", {})
+_FBP_CUSTOM_SHADER_SYNC_PENDING = globals().get("_FBP_CUSTOM_SHADER_SYNC_PENDING", {})
+_FBP_CUSTOM_GEOMETRY_INIT_PENDING = globals().get("_FBP_CUSTOM_GEOMETRY_INIT_PENDING", {})
+_FBP_CUSTOM_GEOMETRY_SOCKET_CACHE = globals().get("_FBP_CUSTOM_GEOMETRY_SOCKET_CACHE", {})
+_FBP_CUSTOM_SHADER_SOCKET_CACHE = globals().get("_FBP_CUSTOM_SHADER_SOCKET_CACHE", {})
+_FBP_CUSTOM_SHADER_SYNC_STATE_CACHE = globals().get("_FBP_CUSTOM_SHADER_SYNC_STATE_CACHE", {})
+_FBP_EFFECT_STACK_OWNER_CACHE = globals().get("_FBP_EFFECT_STACK_OWNER_CACHE", {})
+_FBP_EFFECT_INSTANCE_OWNER_CACHE = globals().get("_FBP_EFFECT_INSTANCE_OWNER_CACHE", {})
+_FBP_CUSTOM_SOCKET_CACHE_SECONDS = 0.25
+_FBP_CUSTOM_SHADER_SYNC_CACHE_SECONDS = 0.75
+_FBP_USER_PRESET_CACHE = globals().get("_FBP_USER_PRESET_CACHE", {"stamp": None, "data": {}})
+if not isinstance(_FBP_USER_PRESET_CACHE, dict):
+    _FBP_USER_PRESET_CACHE = {"stamp": None, "data": {}}
 _FBP_DEFAULT_FONT_CACHE = globals().get("_FBP_DEFAULT_FONT_CACHE", None)
-
-FBP_EFFECT_MESH_WIGGLE = "MESH_WIGGLE"
-FBP_EFFECT_STOP_MOTION_CRUMPLE = "STOP_MOTION_CRUMPLE"
-FBP_EFFECT_WIND_BENDER = "WIND_BENDER"
-FBP_EFFECT_THICKNESS = "THICKNESS"
-FBP_EFFECT_INFINITE_ROTATION = "INFINITE_ROTATION"
-FBP_EFFECT_FELT_FUZZ = "FELT_FUZZ"
-
-FBP_EFFECT_UV_DISTORTION = "UV_DISTORTION"
-FBP_EFFECT_PIXELATE = "PIXELATE"
-FBP_EFFECT_SOLID_MASK = "SOLID_MASK"
-FBP_EFFECT_HUE_SATURATION = "HUE_SATURATION"
-FBP_EFFECT_BRIGHTNESS_CONTRAST = "BRIGHTNESS_CONTRAST"
-FBP_EFFECT_INVERT = "INVERT"
-FBP_EFFECT_THRESHOLD = "THRESHOLD"
-FBP_EFFECT_COLOR_ISOLATE = "COLOR_ISOLATE"
-FBP_EFFECT_DUOTONE = "DUOTONE"
-FBP_EFFECT_GRAIN = "GRAIN"
-FBP_EFFECT_PAPER_FIBERS = "PAPER_FIBERS"
-FBP_EFFECT_GRADIENT_LIGHT = "GRADIENT_LIGHT"
-FBP_EFFECT_GOBO_SHADOWS = "GOBO_SHADOWS"
-FBP_EFFECT_CRT_SCANLINES = "CRT_SCANLINES"
-FBP_EFFECT_VIGNETTE = "VIGNETTE"
-FBP_EFFECT_POSTERIZE = "POSTERIZE"
-FBP_EFFECT_CROP = "CROP"
-FBP_EFFECT_EXTEND = "EXTEND"
-FBP_EFFECT_DIGITAL_NOISE = "DIGITAL_NOISE"
-FBP_EFFECT_CHROMA_KEY = "CHROMA_KEY"
-FBP_EFFECT_HALFTONE = "HALFTONE"
-FBP_EFFECT_DOT_MATRIX = "DOT_MATRIX"
-FBP_EFFECT_ASCII_MATRIX = "ASCII_MATRIX"
-FBP_EFFECT_TEXT_MATRIX = "TEXT_MATRIX"
-FBP_EFFECT_REGISTRY = {
-    FBP_EFFECT_CROP: {
-        "label": "Crop", "icon": "MOD_BOOLEAN", "kind": "BASE",
-        "enabled_key": "fbp_effect_crop",
-        "property_map": {
-            "fbp_crop_top": "Top", "fbp_crop_left": "Left",
-            "fbp_crop_right": "Right", "fbp_crop_bottom": "Bottom",
-        },
-    },
-    FBP_EFFECT_EXTEND: {
-        "label": "Extend", "icon": "FULLSCREEN_ENTER", "kind": "BASE",
-        "enabled_key": "fbp_effect_extend",
-        "property_map": {
-            "fbp_extend_mode": "Extend Mode", "fbp_extend_top": "Top",
-            "fbp_extend_left": "Left", "fbp_extend_right": "Right",
-            "fbp_extend_bottom": "Bottom",
-        },
-    },
-    FBP_EFFECT_MESH_WIGGLE: {
-        "label": "Wiggle", "icon": "MOD_NOISE", "kind": "GEOMETRY",
-        "source_names": ("FBP_Wiggle",),
-        "canonical_name": "FBP_GN_Wiggle_450", "modifier_name": "FBP • Wiggle",
-        "asset_id": "frame_by_plane.wiggle.450", "enabled_key": "fbp_effect_mesh_wiggle",
-        "alpha_aware": False,
-        "property_map": {
-            "fbp_mesh_wiggle_subdivisions": "Subdivision", "fbp_mesh_wiggle_shade_smooth": "Shade Smooth",
-            "fbp_mesh_wiggle_hold": "Stepped", "fbp_mesh_wiggle_strength": "Strength",
-            "fbp_mesh_wiggle_speed": "Speed", "fbp_mesh_wiggle_w": "W",
-            "fbp_mesh_wiggle_noise_scale": "Noise Scale", "fbp_mesh_wiggle_detail": "Noise Detail",
-        },
-        "supports_seed": True,
-    },
-    FBP_EFFECT_STOP_MOTION_CRUMPLE: {
-        "label": "Stop Motion Crumple", "icon": "MOD_DISPLACE", "kind": "GEOMETRY",
-        "source_names": ("FBP_StopMotion_Crumple",), "canonical_name": "FBP_GN_StopMotion_Crumple_450",
-        "modifier_name": "FBP • Stop Motion Crumple", "asset_id": "frame_by_plane.stop_motion_crumple.450",
-        "enabled_key": "fbp_effect_stop_motion_crumple", "alpha_aware": False,
-        "property_map": {"fbp_stop_motion_resolution": "Resolution", "fbp_stop_motion_strength": "Strength", "fbp_stop_motion_step_frames": "Step Frames"},
-    },
-    FBP_EFFECT_WIND_BENDER: {
-        "label": "Wind Bender", "icon": "FORCE_WIND", "kind": "GEOMETRY",
-        "source_names": (), "canonical_name": "FBP_GN_Wind_Bender_483",
-        "modifier_name": "FBP • Wind Bender", "asset_id": "frame_by_plane.wind_bender.483",
-        "enabled_key": "fbp_effect_wind_bender", "alpha_aware": False,
-        "property_map": {
-            "fbp_wind_subdivision": "Subdivision", "fbp_wind_bend_amount": "Bend Amount",
-            "fbp_wind_speed": "Wind Speed", "fbp_wind_stepped": "Stepped",
-            "fbp_wind_pin_edge": "Pin Edge", "fbp_wind_motion_mode": "Motion Mode",
-            "fbp_wind_wave_count": "Wave Count", "fbp_wind_wave_amplitude": "Wave Amplitude",
-            "fbp_wind_wave_speed": "Wave Speed", "fbp_wind_phase": "Phase",
-            "fbp_wind_turbulence": "Turbulence", "fbp_wind_reverse": "Reverse Direction",
-            "fbp_wind_falloff": "Falloff", "fbp_wind_noise_scale": "Noise Scale",
-            "fbp_wind_gust_strength": "Gust Strength",
-            "fbp_wind_direction_space": "Direction Space",
-            "fbp_wind_direction": "Wind Direction",
-            "fbp_wind_preview_falloff": "Preview Falloff",
-        },
-        "builtin": True,
-    },
-    FBP_EFFECT_THICKNESS: {
-        "label": "Thickness", "icon": "MOD_SOLIDIFY", "kind": "GEOMETRY",
-        "source_names": ("FBP_Thickness",), "canonical_name": "FBP_GN_Thickness_450",
-        "modifier_name": "FBP • Thickness", "asset_id": "frame_by_plane.thickness.450",
-        "enabled_key": "fbp_effect_thickness", "alpha_aware": True,
-        "property_map": {
-            "fbp_thickness_amount": "Thickness", "fbp_thickness_alpha_threshold": "Alpha Threshold",
-            "fbp_thickness_alpha_resolution": "Alpha Resolution",
-        },
-        "extra_properties": ("fbp_thickness_side_material", "fbp_thickness_side_color"),
-    },
-    FBP_EFFECT_INFINITE_ROTATION: {
-        "label": "Infinite Rotation", "icon": "DRIVER_ROTATIONAL_DIFFERENCE", "kind": "GEOMETRY",
-        "source_names": ("FBP_Infinite_Rotation",), "canonical_name": "FBP_GN_Infinite_Rotation_450",
-        "modifier_name": "FBP • Infinite Rotation", "asset_id": "frame_by_plane.infinite_rotation.450",
-        "enabled_key": "fbp_effect_infinite_rotation", "alpha_aware": False,
-        "property_map": {
-            "fbp_infinite_rotation_speed": "Speed", "fbp_infinite_rotation_direction": "Direction",
-            "fbp_infinite_rotation_stepped": "Stepped", "fbp_infinite_rotation_offset": "Offset",
-        },
-    },
-    FBP_EFFECT_FELT_FUZZ: {
-        "label": "Felt Fuzz", "icon": "MOD_NOISE", "kind": "GEOMETRY",
-        "source_names": ("FBP_Felt_Fuzz",), "canonical_name": "FBP_GN_Felt_Fuzz_453",
-        "modifier_name": "FBP • Felt Fuzz", "asset_id": "frame_by_plane.felt_fuzz.453",
-        "enabled_key": "fbp_effect_felt_fuzz", "alpha_aware": True,
-        "property_map": {
-            "fbp_felt_render_density": "Render Density", "fbp_felt_viewport_percentage": "Viewport %",
-            "fbp_felt_fuzz_length": "Fuzz Length", "fbp_felt_subdivisions": "Subdivisions",
-            "fbp_felt_fuzz_radius": "Fuzz Radius", "fbp_felt_curl_amount": "Curl Amount",
-            "fbp_felt_seed": "Seed", "fbp_felt_alpha_threshold": "Alpha Threshold",
-            "fbp_felt_alpha_resolution": "Alpha Resolution",
-        },
-        "evolve_property": "fbp_felt_seed", "evolve_amount": 1.0,
-        "evolve_mode": "SEED_STEP", "supports_seed": False,
-    },
-    FBP_EFFECT_UV_DISTORTION: {
-        "label": "Turbulence", "icon": "FORCE_TURBULENCE", "kind": "SHADER", "stage": "UV",
-        "source_names": ("FBP_Turbolence",), "canonical_name": "FBP_SH_Turbolence_445",
-        "asset_id": "frame_by_plane.shader.turbolence.445", "enabled_key": "fbp_effect_uv_distortion",
-        "input_socket": "Vector", "output_socket": "Vector Out",
-        "property_map": {"fbp_uv_distortion_scale": "Noise Scale", "fbp_uv_distortion_amount": "Distortion Amount"},
-        "evolve_property": "fbp_uv_distortion_amount", "evolve_amount": 0.05, "supports_seed": True,
-    },
-    FBP_EFFECT_PIXELATE: {
-        "label": "Pixelate", "icon": "ALIASED", "kind": "SHADER", "stage": "UV",
-        "source_names": (), "canonical_name": "FBP_SH_Pixelate_461",
-        "asset_id": "frame_by_plane.shader.pixelate.461", "enabled_key": "fbp_effect_pixelate",
-        "input_socket": "Vector", "output_socket": "Vector Out", "property_map": {"fbp_pixelate_resolution": "Resolution"},
-        "extra_properties": ("fbp_pixelate_square_pixels",),
-        "evolve_property": "fbp_pixelate_resolution", "evolve_amount": 32.0, "supports_seed": True,
-        "builtin": True,
-    },
-    FBP_EFFECT_SOLID_MASK: {
-        "label": "Tint", "icon": "IMAGE", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Tint",), "canonical_name": "FBP_SH_Tint_450",
-        "asset_id": "frame_by_plane.shader.tint.450", "enabled_key": "fbp_effect_solid_mask",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "property_map": {"fbp_solid_mask_color": "Mask Color", "fbp_solid_mask_factor": "Mask Factor"},
-        "evolve_property": "fbp_solid_mask_factor", "evolve_amount": 1.0, "supports_seed": True,
-    },
-    FBP_EFFECT_HUE_SATURATION: {
-        "label": "Hue / Saturation", "icon": "COLOR", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Hue_Saturation",), "canonical_name": "FBP_SH_Hue_Saturation_450",
-        "asset_id": "frame_by_plane.shader.hue_saturation.450", "enabled_key": "fbp_effect_hue_saturation",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "property_map": {"fbp_hue_saturation_hue": "Hue", "fbp_hue_saturation_saturation": "Saturation", "fbp_hue_saturation_value": "Value"},
-        "evolve_property": "fbp_hue_saturation_hue", "evolve_amount": 0.5, "supports_seed": True,
-    },
-    FBP_EFFECT_BRIGHTNESS_CONTRAST: {
-        "label": "Brightness / Contrast", "icon": "IMAGE_ZDEPTH", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Brightness_Contrast",), "canonical_name": "FBP_SH_Brightness_Contrast_450",
-        "asset_id": "frame_by_plane.shader.brightness_contrast.450", "enabled_key": "fbp_effect_brightness_contrast",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "property_map": {"fbp_brightness_contrast_brightness": "Brightness", "fbp_brightness_contrast_contrast": "Contrast"},
-    },
-    FBP_EFFECT_INVERT: {
-        "label": "Invert", "icon": "IMAGE_ALPHA", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Invert",), "canonical_name": "FBP_SH_Invert_450",
-        "asset_id": "frame_by_plane.shader.invert.450", "enabled_key": "fbp_effect_invert",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "property_map": {"fbp_invert_factor": "Factor"},
-    },
-    FBP_EFFECT_THRESHOLD: {
-        "label": "Threshold", "icon": "MOD_MASK", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Threshold",), "canonical_name": "FBP_SH_Threshold_450",
-        "asset_id": "frame_by_plane.shader.threshold.450", "enabled_key": "fbp_effect_threshold",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "property_map": {"fbp_threshold_value": "Threshold"},
-    },
-    FBP_EFFECT_COLOR_ISOLATE: {
-        "label": "Color Isolate", "icon": "EYEDROPPER", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Color_Isolate",), "canonical_name": "FBP_SH_Color_Isolate_445",
-        "asset_id": "frame_by_plane.shader.color_isolate.445", "enabled_key": "fbp_effect_color_isolate",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "property_map": {"fbp_color_isolate_target": "Target Color", "fbp_color_isolate_tolerance": "Tolerance", "fbp_color_isolate_falloff": "Falloff"},
-    },
-    FBP_EFFECT_DUOTONE: {
-        "label": "Duotone", "icon": "MOD_TINT", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Duotone",), "canonical_name": "FBP_SH_Duotone_445",
-        "asset_id": "frame_by_plane.shader.duotone.445", "enabled_key": "fbp_effect_duotone",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "property_map": {"fbp_duotone_shadows": "Shadows Tone", "fbp_duotone_highlights": "Highlights Tone"},
-    },
-    FBP_EFFECT_GRAIN: {
-        "label": "Film Grain", "icon": "RENDER_STILL", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Film_Grain",), "canonical_name": "FBP_SH_Film_Grain_450",
-        "asset_id": "frame_by_plane.shader.film_grain.450", "enabled_key": "fbp_effect_grain",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {"fbp_grain_strength": "Intensity", "fbp_grain_scale": "Grain Scale", "fbp_grain_seed": "Animate (W)"},
-        "evolve_property": "fbp_grain_seed", "evolve_amount": 1.0, "supports_seed": False,
-    },
-    FBP_EFFECT_PAPER_FIBERS: {
-        "label": "Paper Fibers", "icon": "TEXTURE", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Paper_Fibers",), "canonical_name": "FBP_SH_Paper_Fibers_450",
-        "asset_id": "frame_by_plane.shader.paper_fibers.450", "enabled_key": "fbp_effect_paper_fibers",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {"fbp_paper_fiber_scale": "Fiber Scale", "fbp_paper_fiber_intensity": "Intensity", "fbp_paper_fiber_phase": "Animate (W)"},
-        "evolve_property": "fbp_paper_fiber_phase", "evolve_amount": 0.2, "supports_seed": True,
-    },
-    FBP_EFFECT_GRADIENT_LIGHT: {
-        "label": "2D Gradient Light", "icon": "LIGHT", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_2D_Gradient_Light",), "canonical_name": "FBP_SH_2D_Gradient_Light_445",
-        "asset_id": "frame_by_plane.shader.gradient_light.445", "enabled_key": "fbp_effect_gradient_light",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {"fbp_gradient_light_angle": "Light Angle", "fbp_gradient_shadow_position": "Shadow Position", "fbp_gradient_softness": "Softness", "fbp_gradient_shadow_color": "Shadow Color"},
-    },
-    FBP_EFFECT_GOBO_SHADOWS: {
-        "label": "Gobo Shadows", "icon": "LIGHT_SPOT", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Gobo_Shadows",), "canonical_name": "FBP_SH_Gobo_Shadows_445",
-        "asset_id": "frame_by_plane.shader.gobo_shadows.445", "enabled_key": "fbp_effect_gobo_shadows",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {"fbp_gobo_pattern_scale": "Pattern Scale", "fbp_gobo_rotation": "Rotation Angle", "fbp_gobo_sharpness": "Sharpness"},
-    },
-    FBP_EFFECT_CRT_SCANLINES: {
-        "label": "CRT Scanlines", "icon": "NODE_TEXTURE", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_CRT_Scanlines",), "canonical_name": "FBP_SH_CRT_Scanlines_445",
-        "asset_id": "frame_by_plane.shader.crt_scanlines.445", "enabled_key": "fbp_effect_crt_scanlines",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {"fbp_crt_line_count": "Line Count", "fbp_crt_opacity": "Opacity"},
-    },
-    FBP_EFFECT_VIGNETTE: {
-        "label": "Vignette", "icon": "MESH_CIRCLE", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Vignette",), "canonical_name": "FBP_SH_Vignette_450",
-        "asset_id": "frame_by_plane.shader.vignette.450", "enabled_key": "fbp_effect_vignette",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {"fbp_vignette_radius": "Radius", "fbp_vignette_smoothness": "Smoothness", "fbp_vignette_strength": "Strength"},
-    },
-    FBP_EFFECT_POSTERIZE: {
-        "label": "Posterize", "icon": "MOD_TINT", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_Posterize",), "canonical_name": "FBP_SH_Posterize_445",
-        "asset_id": "frame_by_plane.shader.posterize.445", "enabled_key": "fbp_effect_posterize",
-        "input_socket": "Color In", "output_socket": "Color Out", "property_map": {"fbp_posterize_steps": "Color Steps"},
-        "evolve_property": "fbp_posterize_steps", "evolve_amount": 8.0, "supports_seed": True,
-    },
-    FBP_EFFECT_DIGITAL_NOISE: {
-        "label": "Digital Noise", "icon": "RNDCURVE", "kind": "SHADER", "stage": "COLOR",
-        "canonical_name": "FBP_SH_Digital_Noise_466",
-        "asset_id": "frame_by_plane.shader.digital_noise.466", "enabled_key": "fbp_effect_digital_noise",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {
-            "fbp_digital_noise_luma": "Luminance Noise",
-            "fbp_digital_noise_chroma": "Chroma Noise",
-            "fbp_digital_noise_scale": "Noise Scale",
-            "fbp_digital_noise_shadow_bias": "Shadow Bias",
-            "fbp_digital_noise_seed": "Animate (W)",
-        },
-        "evolve_property": "fbp_digital_noise_seed", "evolve_amount": 1.0, "supports_seed": True,
-        "builtin": True,
-    },
-    FBP_EFFECT_CHROMA_KEY: {
-        "label": "Chroma Key", "icon": "EYEDROPPER", "kind": "SHADER", "stage": "COLOR",
-        "canonical_name": "FBP_SH_Chroma_Key_480",
-        "asset_id": "frame_by_plane.shader.chroma_key.480", "enabled_key": "fbp_effect_chroma_key",
-        "input_socket": "Color In", "output_socket": "Color Out",
-        "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "property_map": {
-            "fbp_chroma_key_color": "Key Color",
-            "fbp_chroma_key_tolerance": "Tolerance",
-            "fbp_chroma_key_softness": "Softness",
-            "fbp_chroma_key_despill": "Despill",
-            "fbp_chroma_key_invert": "Invert",
-        },
-        "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte"), ("DISTANCE", "Distance")),
-        "debug_socket": "Debug Mode",
-        "builtin": True,
-    },
-    FBP_EFFECT_HALFTONE: {
-        "label": "Halftone", "icon": "MESH_CIRCLE", "kind": "SHADER", "stage": "COLOR",
-        "canonical_name": "FBP_SH_Halftone_480",
-        "asset_id": "frame_by_plane.shader.halftone.480", "enabled_key": "fbp_effect_halftone",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "property_map": {
-            "fbp_halftone_scale": "Cell Scale", "fbp_halftone_dot_size": "Dot Size",
-            "fbp_halftone_rotation": "Rotation", "fbp_halftone_contrast": "Contrast",
-            "fbp_halftone_invert": "Invert",
-            "fbp_halftone_shape": "Shape",
-            "fbp_halftone_use_source_color": "Use Source Color",
-            "fbp_halftone_foreground": "Foreground",
-            "fbp_halftone_background": "Background",
-            "fbp_halftone_transparent_background": "Transparent Background",
-        },
-        "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "debug_modes": (("FINAL", "Final"), ("LUMINANCE", "Luminance"), ("MASK", "Mask")),
-        "debug_socket": "Debug Mode",
-        "builtin": True,
-    },
-    FBP_EFFECT_DOT_MATRIX: {
-        "label": "Dot Matrix", "icon": "SNAP_GRID", "kind": "SHADER", "stage": "COLOR",
-        "canonical_name": "FBP_SH_Dot_Matrix_483",
-        "asset_id": "frame_by_plane.shader.dot_matrix.483", "enabled_key": "fbp_effect_dot_matrix",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "property_map": {
-            "fbp_dot_matrix_scale": "Cell Scale", "fbp_dot_matrix_dot_size": "Dot Size",
-            "fbp_dot_matrix_spacing": "Spacing", "fbp_dot_matrix_contrast": "Contrast",
-            "fbp_dot_matrix_response": "Brightness Response",
-            "fbp_dot_matrix_invert": "Invert", "fbp_dot_matrix_random_size": "Random Size",
-            "fbp_dot_matrix_random_brightness": "Random Brightness", "fbp_dot_matrix_seed": "Seed",
-            "fbp_dot_matrix_glow": "Glow", "fbp_dot_matrix_use_source_color": "Use Source Color",
-            "fbp_dot_matrix_foreground": "Foreground", "fbp_dot_matrix_background": "Background",
-            "fbp_dot_matrix_transparent_background": "Transparent Background",
-            "fbp_dot_matrix_shape": "Shape",
-            "fbp_dot_matrix_min_size": "Minimum Size",
-            "fbp_dot_matrix_max_size": "Maximum Size",
-            "fbp_dot_matrix_dead_pixels": "Dead Pixels",
-            "fbp_dot_matrix_flicker": "Flicker",
-        },
-        "evolve_property": "fbp_dot_matrix_seed", "evolve_amount": 1.0,
-        "evolve_mode": "SEED_STEP", "supports_seed": True,
-        "debug_modes": (("FINAL", "Final"), ("LUMINANCE", "Luminance"), ("MASK", "Mask")),
-        "debug_socket": "Debug Mode",
-        "private_group": True, "image_aware": True, "builtin": True,
-    },
-    FBP_EFFECT_ASCII_MATRIX: {
-        "label": "Textellation", "icon": "FONT_DATA", "kind": "SHADER", "stage": "COLOR",
-        "canonical_name": "FBP_SH_Textellation_485",
-        "asset_id": "frame_by_plane.shader.textellation.485", "enabled_key": "fbp_effect_ascii_matrix",
-        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "property_map": {
-            "fbp_ascii_scale": "Cell Scale", "fbp_ascii_contrast": "Contrast",
-            "fbp_ascii_invert": "Invert", "fbp_ascii_colorize": "Use Source Color",
-            "fbp_ascii_foreground": "Foreground", "fbp_ascii_background": "Background",
-            "fbp_ascii_transparent_background": "Transparent Background",
-            "fbp_ascii_variation": "Variation", "fbp_ascii_random_seed": "Seed",
-            "fbp_ascii_edge_boost": "Edge Boost",
-            "fbp_ascii_dither": "Dither",
-        },
-        "extra_properties": ("fbp_ascii_charset", "fbp_ascii_character_count"),
-        "evolve_property": "fbp_ascii_random_seed", "evolve_amount": 1.0,
-        "evolve_mode": "SEED_STEP", "supports_seed": True,
-        "debug_modes": (("FINAL", "Final"), ("LUMINANCE", "Luminance"), ("GLYPH", "Glyph Index")),
-        "debug_socket": "Debug Mode",
-        "private_group": True, "image_aware": True, "builtin": True,
-    },
-    FBP_EFFECT_TEXT_MATRIX: {
-        "label": "Text Matrix", "icon": "OUTLINER_OB_FONT", "kind": "GEOMETRY",
-        "canonical_name": "FBP_GN_Text_Matrix_487", "modifier_name": "FBP • Text Matrix",
-        "asset_id": "frame_by_plane.text_matrix.487", "enabled_key": "fbp_effect_text_matrix",
-        "property_map": {
-            "fbp_text_matrix_viewport_columns": "Columns",
-            "fbp_text_matrix_viewport_rows": "Rows",
-            "fbp_text_matrix_character_count": "Character Count",
-            "fbp_text_matrix_character_aspect": "Character Aspect",
-            "fbp_text_matrix_glyph_scale": "Glyph Scale",
-            "fbp_text_matrix_contrast": "Contrast",
-            "fbp_text_matrix_invert": "Invert",
-            "fbp_text_matrix_variation": "Variation",
-            "fbp_text_matrix_seed": "Seed",
-            "fbp_text_matrix_alpha_threshold": "Alpha Threshold",
-            "fbp_text_matrix_use_source_color": "Use Source Color",
-            "fbp_text_matrix_text_color": "Text Color",
-            "fbp_text_matrix_transparent_background": "Transparent Background",
-            "fbp_text_matrix_realize": "Realize Text",
-        },
-        "extra_properties": (
-            "fbp_text_matrix_charset", "fbp_text_matrix_custom_charset",
-            "fbp_text_matrix_font", "fbp_text_matrix_background_color",
-            "fbp_text_matrix_render_columns", "fbp_text_matrix_render_rows", "fbp_text_matrix_quality",
-            "fbp_text_matrix_auto_playback_limit", "fbp_text_matrix_playback_columns",
-            "fbp_text_matrix_playback_rows",
-        ),
-        "evolve_property": "fbp_text_matrix_seed", "evolve_amount": 1.0,
-        "evolve_mode": "SEED_STEP", "supports_seed": True,
-        "private_group": True, "image_aware": True, "alpha_aware": False,
-        "supports": ("IMAGE", "SEQUENCE"), "builtin": True,
-    },
-}
+_FBP_PREVIOUS_OBJECT_CONTEXT_CALLBACK = globals().get("_fbp_draw_object_context_effects")
 
 
-FBP_EFFECT_METADATA = {
-    FBP_EFFECT_CROP: ("BASE", "LIGHT", "Crop the visible borders without changing the rig transform. The operation is non-destructive and can be animated."),
-    FBP_EFFECT_EXTEND: ("BASE", "LIGHT", "Extend the plane borders while preserving the central image. Edge Pixel clamps the border; Repeat Texture continues the texture."),
-    FBP_EFFECT_SOLID_MASK: ("BASE", "LIGHT", "Apply a color tint to the final plane output. Useful for recoloring images, solid planes and gradients."),
-    FBP_EFFECT_HUE_SATURATION: ("BASE", "LIGHT", "Adjust hue, saturation and value on the final color output."),
-    FBP_EFFECT_BRIGHTNESS_CONTRAST: ("BASE", "LIGHT", "Adjust brightness and contrast without rebuilding the source material."),
-    FBP_EFFECT_INVERT: ("BASE", "LIGHT", "Invert the final color output. Factor allows partial inversion."),
-    FBP_EFFECT_THRESHOLD: ("BASE", "LIGHT", "Convert luminance into a hard black-and-white threshold."),
-    FBP_EFFECT_COLOR_ISOLATE: ("BASE", "LIGHT", "Keep a selected color range and suppress the remaining colors."),
-    FBP_EFFECT_DUOTONE: ("BASE", "LIGHT", "Map shadows and highlights to two editable colors."),
-    FBP_EFFECT_CHROMA_KEY: ("BASE", "MEDIUM", "Remove a selected color and generate transparency. Softness cleans edges; Despill reduces the key color around the subject."),
-    FBP_EFFECT_UV_DISTORTION: ("2D", "MEDIUM", "Distort UV coordinates with procedural turbulence. Animated or high-frequency distortion can cost viewport performance."),
-    FBP_EFFECT_PIXELATE: ("2D", "LIGHT", "Reduce detail into adjustable pixel blocks. Square Pixels compensates for the plane aspect ratio and is enabled by default."),
-    FBP_EFFECT_GRAIN: ("2D", "LIGHT", "Add soft monochromatic film-like grain. Use Digital Noise for colored high-ISO sensor noise."),
-    FBP_EFFECT_DIGITAL_NOISE: ("2D", "MEDIUM", "Simulate high-ISO digital sensor noise with separate luminance and chromatic components. Strong animated chroma noise may be expensive."),
-    FBP_EFFECT_HALFTONE: ("2D", "MEDIUM", "Convert luminance into a printed-dot pattern. Small cells can increase shader cost and cause viewport aliasing."),
-    FBP_EFFECT_DOT_MATRIX: ("2D", "MEDIUM", "Rebuild the source image as cell-centered dots whose radius and brightness follow image luminance. Brightness Response reshapes the luminance-to-size curve; optional randomness only modulates the image-driven result."),
-    FBP_EFFECT_ASCII_MATRIX: ("2D", "HEAVY", "Replace the animated FBP image or sequence with density-sorted atlas glyphs. Partial alpha is read as lighter luminance, total transparency is removed, and source-pixel color is preserved by default."),
-    FBP_EFFECT_TEXT_MATRIX: ("3D", "VERY_HEAVY", "Generate real vector text from the animated source. Geometry Nodes maps alpha-aware luminance to density-sorted glyphs and can preserve one sampled source color per cell."),
-    FBP_EFFECT_PAPER_FIBERS: ("2D", "MEDIUM", "Overlay procedural paper fibers on the final color."),
-    FBP_EFFECT_GRADIENT_LIGHT: ("2D", "LIGHT", "Add a directional 2D light and shadow gradient."),
-    FBP_EFFECT_GOBO_SHADOWS: ("2D", "MEDIUM", "Project a procedural gobo-like shadow pattern across the plane."),
-    FBP_EFFECT_CRT_SCANLINES: ("2D", "LIGHT", "Add CRT-style horizontal scanlines."),
-    FBP_EFFECT_VIGNETTE: ("2D", "LIGHT", "Darken the image edges with an adjustable vignette."),
-    FBP_EFFECT_POSTERIZE: ("2D", "LIGHT", "Reduce the number of color levels for a graphic posterized look."),
-    FBP_EFFECT_MESH_WIGGLE: ("3D", "MEDIUM", "Deform the plane with animated procedural noise. High subdivision values may slow playback."),
-    FBP_EFFECT_STOP_MOTION_CRUMPLE: ("3D", "HEAVY", "Create stepped, stop-motion-style surface crumpling. Resolution has a strong impact on viewport performance."),
-    FBP_EFFECT_WIND_BENDER: ("3D", "MEDIUM", "Bend the plane as if affected by wind. Choose the pinned edge, Local or World direction, global sway or flowing sine waves, and preview the falloff before animating flags, paper and hanging signs."),
-    FBP_EFFECT_THICKNESS: ("3D", "HEAVY", "Extrude the alpha silhouette into a thick object. High alpha resolution can be expensive."),
-    FBP_EFFECT_INFINITE_ROTATION: ("3D", "LIGHT", "Continuously rotate the plane with optional stepped motion."),
-    FBP_EFFECT_FELT_FUZZ: ("3D", "VERY_HEAVY", "Generate alpha-aware felt fibers. Render density and subdivisions can be extremely expensive."),
-}
-
-for _effect_id, (_category, _performance, _description) in FBP_EFFECT_METADATA.items():
-    _definition = FBP_EFFECT_REGISTRY.get(_effect_id)
-    if _definition is None:
-        continue
-    _definition.setdefault("category", _category)
-    _definition.setdefault("performance", _performance)
-    _definition.setdefault("description", _description)
-    _definition.setdefault("supports", ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"))
-
-# Color-chain effects can choose whether they read the original material color
-# or the result of earlier effects. Image-sampling Matrix effects intentionally
-# stay on their dedicated source because a shader cannot sample an arbitrary
-# upstream color chain at a different cell-center UV without baking.
-for _definition in FBP_EFFECT_REGISTRY.values():
-    if (
-        _definition.get("kind") == "SHADER"
-        and _definition.get("stage") == "COLOR"
-        and not _definition.get("image_aware")
-    ):
-        _definition.setdefault("supports_input_source", True)
-
-FBP_SHADER_STAGE_ORDER = {
-    "UV": (FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_PIXELATE),
-    "COLOR": (
-        FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
-        FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD,
-        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_HALFTONE,
-        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_GRAIN,
-        FBP_EFFECT_DIGITAL_NOISE,
-        FBP_EFFECT_PAPER_FIBERS, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_GOBO_SHADOWS,
-        FBP_EFFECT_CRT_SCANLINES, FBP_EFFECT_VIGNETTE, FBP_EFFECT_POSTERIZE,
-    ),
-}
-
-FBP_BASE_EFFECT_MENU_ORDER = (
-    FBP_EFFECT_CROP, FBP_EFFECT_EXTEND, FBP_EFFECT_CHROMA_KEY,
-    FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION, FBP_EFFECT_BRIGHTNESS_CONTRAST,
-    FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE,
-)
-FBP_2D_EFFECT_MENU_ORDER = (
-    FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_PIXELATE, FBP_EFFECT_GRAIN,
-    FBP_EFFECT_DIGITAL_NOISE, FBP_EFFECT_HALFTONE, FBP_EFFECT_DOT_MATRIX,
-    FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_PAPER_FIBERS,
-    FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_GOBO_SHADOWS, FBP_EFFECT_CRT_SCANLINES,
-    FBP_EFFECT_VIGNETTE, FBP_EFFECT_POSTERIZE,
-)
-FBP_3D_EFFECT_MENU_ORDER = (
-    FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE, FBP_EFFECT_WIND_BENDER,
-    FBP_EFFECT_THICKNESS, FBP_EFFECT_INFINITE_ROTATION, FBP_EFFECT_FELT_FUZZ,
-    FBP_EFFECT_TEXT_MATRIX,
-)
-
-# Horizontal add-menu sections. Base tools remain first, while image effects are
-# split by intent so the menu stays readable as the library grows.
-FBP_IMAGE_EFFECT_MENU_SECTIONS = (
-    (
-        "Base", "TOOL_SETTINGS",
-        (
-            FBP_EFFECT_CROP, FBP_EFFECT_EXTEND, FBP_EFFECT_CHROMA_KEY,
-            FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
-            FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT,
-            FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE,
-        ),
-    ),
-    (
-        "Creative", "NODE_TEXTURE",
-        (
-            FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_PIXELATE, FBP_EFFECT_HALFTONE,
-            FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_ASCII_MATRIX,
-            FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_GOBO_SHADOWS,
-            FBP_EFFECT_POSTERIZE,
-        ),
-    ),
-    (
-        "Film & Display", "RENDERLAYERS",
-        (
-            FBP_EFFECT_GRAIN, FBP_EFFECT_DIGITAL_NOISE, FBP_EFFECT_PAPER_FIBERS,
-            FBP_EFFECT_CRT_SCANLINES, FBP_EFFECT_VIGNETTE,
-        ),
-    ),
-)
-
-FBP_MESH_EFFECT_MENU_SECTIONS = (
-    (
-        "Deform & Motion", "MOD_DISPLACE",
-        (
-            FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE,
-            FBP_EFFECT_WIND_BENDER, FBP_EFFECT_INFINITE_ROTATION,
-        ),
-    ),
-    (
-        "Surface", "MATERIAL",
-        (FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_TEXT_MATRIX),
-    ),
-)
 
 _FBP_EVOLVE_HANDLER_ACTIVE = False
-_FBP_TEXT_MATRIX_PLAYBACK_ACTIVE = False
+_FBP_EFFECT_PLAYBACK_ACTIVE = False
 _FBP_EFFECT_CLIPBOARD = {}
 
 
-def fbp_normalize_effect_id(effect_id):
-    return str(effect_id or "")
 
 
 def _fbp_effect_visibility_key(effect_id):
@@ -736,52 +304,12 @@ def fbp_geometry_nodes_library_path():
     return Path(__file__).resolve().parent / "assets" / FBP_GN_LIBRARY_FILENAME
 
 
-def fbp_effect_definition(effect_id):
-    return FBP_EFFECT_REGISTRY.get(fbp_normalize_effect_id(effect_id), {})
 
 
-def fbp_rig_media_type(rig):
-    if not rig:
-        return "UNKNOWN"
-    if bool(getattr(rig, "fbp_is_color_plane", False)):
-        mode = str(getattr(rig, "fbp_color_plane_mode", "SOLID") or "SOLID")
-        if mode == "HOLDOUT":
-            return "HOLDOUT"
-        if mode == "GRADIENT":
-            return "GRADIENT"
-        return "COLOR"
-    try:
-        return "SEQUENCE" if len(getattr(rig, "fbp_images", ())) > 1 else "IMAGE"
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        return "IMAGE"
 
 
-def fbp_effect_supported_for_rig(rig, effect_id):
-    definition = fbp_effect_definition(effect_id)
-    if not definition or not rig:
-        return False
-    media_type = fbp_rig_media_type(rig)
-    supports = tuple(definition.get("supports", ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT")))
-    if media_type not in supports:
-        return False
-    return True
 
 
-def fbp_effect_tooltip(effect_id):
-    definition = fbp_effect_definition(effect_id)
-    if not definition:
-        return "Frame by Plane effect"
-    description = str(definition.get("description", "") or "")
-    category = str(definition.get("category", "2D") or "2D")
-    performance = str(definition.get("performance", "LIGHT") or "LIGHT").replace("_", " ").title()
-    supports = ", ".join(str(item).title() for item in definition.get("supports", ()))
-    warning = ""
-    if str(definition.get("performance", "")).upper() in {"HEAVY", "VERY_HEAVY"}:
-        warning = "\n\nWarning: This effect may reduce viewport playback performance."
-    return (
-        f"{description}\n\nCategory: {category}\n"
-        f"Compatibility: {supports}\nPerformance: {performance}{warning}"
-    )
 
 
 def _fbp_animation_key(effect_id, suffix):
@@ -869,6 +397,117 @@ FBP_ANIMATED_PROPERTY_EFFECTS = {
 }
 
 
+def _fbp_scene_camera_binding_is_animated(scene, active_effect_ids):
+    """Return whether camera-aware sockets can change between rendered frames.
+
+    Object transforms are evaluated natively by Geometry Nodes. Python work is
+    needed only for camera switches or numeric projection sockets driven by an
+    animated Camera datablock.
+    """
+    camera_effects = [
+        fbp_effect_definition(effect_id)
+        for effect_id in active_effect_ids
+        if fbp_effect_definition(effect_id).get("camera_aware")
+    ]
+    if not camera_effects:
+        return False
+
+    try:
+        if any(getattr(marker, "camera", None) is not None for marker in scene.timeline_markers):
+            return True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+    projection_sockets = any(
+        any(
+            str((definition.get("camera_contract", {}) or {}).get(key, "") or "")
+            for key in (
+                "lens_socket", "sensor_width_socket", "ortho_scale_socket",
+                "perspective_socket", "shift_x_socket", "shift_y_socket",
+            )
+        )
+        for definition in camera_effects
+    )
+    if not projection_sockets:
+        return False
+
+    camera = _fbp_scene_camera(scene)
+    camera_data = getattr(camera, "data", None) if camera else None
+    if camera_data is None:
+        return False
+    animated_paths = {"type", "lens", "sensor_width", "ortho_scale", "shift_x", "shift_y"}
+    try:
+        curves = fbp_action_fcurves(camera_data)
+        if any(
+            not bool(getattr(curve, "mute", False))
+            and str(getattr(curve, "data_path", "") or "") in animated_paths
+            for curve in curves or ()
+        ):
+            return True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        animation_data = getattr(camera_data, "animation_data", None)
+        for curve in getattr(animation_data, "drivers", ()) or ():
+            if str(getattr(curve, "data_path", "") or "") in animated_paths:
+                return True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    return False
+
+
+def fbp_scene_requires_effect_frame_sync(scene):
+    """Return whether active effects require Python writes for rendered frames.
+
+    Camera transforms and ordinary native ImageUser playback remain fully native.
+    The render session only keeps this handler active for image-aware effects,
+    animated effect properties, procedural Evolve controls, or camera projection
+    values that are passed through modifier sockets.
+    """
+    if scene is None:
+        return False
+    try:
+        from .layers import iter_scene_fbp_rigs
+        rigs = iter_scene_fbp_rigs(scene)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        # Unknown effect state must never opt a render into native pass-through.
+        return True
+
+    frame_sync_ids = set(FBP_FRAME_SYNC_GEOMETRY_EFFECT_IDS)
+    frame_sync_ids.update(FBP_FRAME_SYNC_SHADER_EFFECT_IDS)
+    for rig in rigs:
+        try:
+            active_effect_ids = set(_fbp_runtime_effect_ids(rig))
+            if not active_effect_ids:
+                continue
+            if active_effect_ids.intersection(frame_sync_ids):
+                return True
+            if _fbp_scene_camera_binding_is_animated(scene, active_effect_ids):
+                return True
+            if any(
+                effect_id in active_effect_ids
+                and bool(getattr(rig, property_key, False))
+                for effect_id, property_key in FBP_EVOLVE_EFFECT_PROPERTIES
+            ):
+                return True
+
+            curves = fbp_action_fcurves(rig)
+            for curve in curves or ():
+                if bool(getattr(curve, "mute", False)):
+                    continue
+                data_path = str(getattr(curve, "data_path", "") or "")
+                if any(
+                    effect_id in active_effect_ids
+                    for effect_id in FBP_ANIMATED_PROPERTY_EFFECTS.get(data_path, ())
+                ):
+                    return True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            # A preflight read failure is not evidence that frame sync is
+            # unnecessary. Keep the conservative managed render path enabled.
+            return True
+    return False
+
+
 def _fbp_set_custom_property_ui(rig, key, *, default, minimum=None, maximum=None, description=""):
     try:
         if key not in rig:
@@ -911,109 +550,200 @@ def fbp_assign_effect_layer_seed(rig, effect_id, *, force=False):
     return current
 
 
-def fbp_ensure_effect_animation_state(rig, effect_id):
-    """Return the compact automatic-animation state used by the Effects UI."""
-    definition = fbp_effect_definition(effect_id)
-    if not rig or not definition:
-        return {}
-    defaults = {
+def _fbp_effect_animation_defaults(definition):
+    return {
         "evolve": (False, None, None, "Animate the procedural parameter with non-repeating deterministic noise"),
         "step": (4, 1, 240, "Number of frames held before a new procedural value is generated"),
         "seed": (0, 0, 999999, "Select the deterministic infinite procedural-noise stream"),
         "unique": (False, None, None, "Give every layer an independent procedural-noise stream"),
         "layer_seed": (0, 0, 2147483647, "Persistent internal seed used by Unique per Layer"),
-        # Hidden amplitude shared by the current effect stack. Older .blend files
-        # may still contain a legacy *_loop custom property; it is intentionally
-        # ignored so Evolve never cycles back to an earlier phase.
+        # Hidden amplitude shared by the current non-repeating effect stack.
         "amount": (float(definition.get("evolve_amount", 1.0)), -100000.0, 100000.0, "Automatic evolve amount"),
     }
+
+
+def fbp_read_effect_animation_state(rig, effect_id):
+    """Read procedural animation state without mutating Blender datablocks.
+
+    This variant is safe inside frame handlers and UI drawing. Registered RNA
+    properties already expose their defaults; only the hidden ``amount`` may be
+    absent. A deterministic fallback seed avoids assigning ID properties from a
+    frame callback when an older/current file has Unique enabled but no seed.
+    """
+    definition = fbp_effect_definition(effect_id)
+    if rig is None or not definition:
+        return {}
     result = {}
-    for suffix, (default, minimum, maximum, description) in defaults.items():
+    for suffix, (default, _minimum, _maximum, _description) in _fbp_effect_animation_defaults(definition).items():
         key = _fbp_animation_key(effect_id, suffix)
-        if hasattr(rig, key):
-            try:
-                result[suffix] = getattr(rig, key)
-                continue
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                pass
-        _fbp_set_custom_property_ui(
-            rig, key, default=default, minimum=minimum, maximum=maximum,
-            description=description,
-        )
         try:
-            result[suffix] = rig[key]
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+            if hasattr(rig, key):
+                result[suffix] = getattr(rig, key)
+            else:
+                result[suffix] = rig.get(key, default)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             result[suffix] = default
     if bool(result.get("unique", False)) and int(result.get("layer_seed", 0) or 0) <= 0:
-        result["layer_seed"] = fbp_assign_effect_layer_seed(rig, effect_id)
+        try:
+            stable_name = str(getattr(rig, "name_full", getattr(rig, "name", "")) or "")
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            stable_name = ""
+        result["layer_seed"] = int(
+            _fbp_stable_string_seed(f"{stable_name}:{fbp_normalize_effect_id(effect_id)}")
+            % 2147483646
+        ) + 1
     return result
 
 
-def _fbp_text_matrix_effective_dimension(rig, prop_name, value):
-    """Return viewport grid dimensions, including temporary playback limits.
+def fbp_ensure_effect_animation_state(rig, effect_id):
+    """Initialize missing persistent animation state from a mutation-safe path."""
+    definition = fbp_effect_definition(effect_id)
+    if rig is None or not definition:
+        return {}
+    defaults = _fbp_effect_animation_defaults(definition)
+    for suffix, (default, minimum, maximum, description) in defaults.items():
+        key = _fbp_animation_key(effect_id, suffix)
+        if hasattr(rig, key):
+            continue
+        _fbp_set_custom_property_ui(
+            rig,
+            key,
+            default=default,
+            minimum=minimum,
+            maximum=maximum,
+            description=description,
+        )
+    state = fbp_read_effect_animation_state(rig, effect_id)
+    if bool(state.get("unique", False)):
+        try:
+            current_seed = int(getattr(rig, _fbp_animation_key(effect_id, "layer_seed"), 0) or 0)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            current_seed = 0
+        if current_seed <= 0:
+            state["layer_seed"] = fbp_assign_effect_layer_seed(rig, effect_id)
+    return state
 
-    Rows use ``0`` as Auto. That sentinel is preserved so the node group can
-    derive an aspect-correct row count from the current plane bounds.
-    """
+
+
+def fbp_reset_effect_animation_state(rig, effect_id):
+    """Restore registered animation controls and remove hidden ID properties."""
+    definition = fbp_effect_definition(effect_id)
+    if rig is None or not definition:
+        return False
+    changed = False
+    for suffix, (default, _minimum, _maximum, _description) in _fbp_effect_animation_defaults(definition).items():
+        key = _fbp_animation_key(effect_id, suffix)
+        try:
+            if hasattr(rig, key):
+                current = getattr(rig, key)
+                if current != default:
+                    changed = fbp_set_rna_property_silent(rig, key, default) or changed
+                continue
+            if key in rig:
+                del rig[key]
+                changed = True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+            continue
+    return changed
+
+def _fbp_quality_contracts(definition):
+    """Return normalized quality contracts declared by an effect definition."""
+    contracts = definition.get("quality_contracts", ()) if definition else ()
+    return tuple(contract for contract in contracts if isinstance(contract, dict))
+
+
+def _fbp_quality_value(value, contract):
+    """Clamp one quality value while preserving documented Auto sentinels."""
     try:
-        is_rows = prop_name == "fbp_text_matrix_viewport_rows"
         raw = int(value)
-        if is_rows and raw <= 0:
+        if bool(contract.get("zero_is_auto", False)) and raw <= 0:
             return 0
-        result = max(2, raw)
-        if (
-            _FBP_TEXT_MATRIX_PLAYBACK_ACTIVE
-            and bool(getattr(rig, "fbp_text_matrix_auto_playback_limit", True))
-        ):
-            limit_name = "fbp_text_matrix_playback_rows" if is_rows else "fbp_text_matrix_playback_columns"
-            default = 0 if is_rows else 24
-            limit = int(getattr(rig, limit_name, default) or default)
-            if is_rows and limit <= 0:
-                return result
-            return min(result, max(2, limit))
-        return result
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return max(int(contract.get("minimum", 0)), raw)
+    except (TypeError, ValueError, AttributeError):
         return value
 
 
-def _fbp_refresh_text_matrix_dimensions(scene=None):
+def _fbp_effective_quality_value(rig, effect_id, prop_name, value):
+    """Resolve viewport quality, including temporary playback overrides."""
+    definition = fbp_effect_definition(effect_id)
+    for contract in _fbp_quality_contracts(definition):
+        if prop_name != str(contract.get("viewport_property", "")):
+            continue
+        viewport_value = _fbp_quality_value(value, contract)
+        if not _FBP_EFFECT_PLAYBACK_ACTIVE:
+            return viewport_value
+        if effect_id == FBP_EFFECT_TEXT_MATRIX and not bool(
+            getattr(rig, "fbp_text_matrix_auto_playback_limit", True)
+        ):
+            return viewport_value
+        playback_property = str(contract.get("playback_property", ""))
+        if not playback_property:
+            return viewport_value
+        try:
+            playback_value = _fbp_quality_value(getattr(rig, playback_property), contract)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return viewport_value
+        if bool(contract.get("zero_is_auto", False)) and playback_value == 0:
+            return viewport_value
+        if str(contract.get("playback_mode", "REPLACE")).upper() == "LIMIT":
+            if bool(contract.get("zero_is_auto", False)) and viewport_value == 0:
+                return 0
+            try:
+                return min(int(viewport_value), int(playback_value))
+            except (TypeError, ValueError):
+                return viewport_value
+        return playback_value
+    return value
+
+
+def _fbp_refresh_effect_quality(scene=None):
+    """Refresh only the sockets participating in playback quality contracts."""
     try:
         from .layers import iter_scene_fbp_rigs
         rigs = iter_scene_fbp_rigs(scene or getattr(bpy.context, "scene", None))
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return
     for rig in rigs:
-        try:
-            if fbp_effect_is_active(rig, FBP_EFFECT_TEXT_MATRIX):
+        for effect_id in _fbp_runtime_effect_ids(rig):
+            definition = fbp_effect_definition(effect_id)
+            contracts = _fbp_quality_contracts(definition)
+            if not contracts or not fbp_effect_is_active(rig, effect_id):
+                continue
+            properties = {
+                str(contract.get("viewport_property", ""))
+                for contract in contracts
+                if str(contract.get("viewport_property", ""))
+            }
+            if not properties:
+                continue
+            try:
                 fbp_update_geometry_effect(
-                    rig,
-                    FBP_EFFECT_TEXT_MATRIX,
-                    scene=scene,
-                    sync_alpha=False,
-                    property_names={
-                        "fbp_text_matrix_viewport_columns",
-                        "fbp_text_matrix_viewport_rows",
-                    },
+                    rig, effect_id, scene=scene, sync_alpha=False,
+                    property_names=properties,
                 )
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            continue
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
 
 
 @persistent
-def fbp_text_matrix_playback_pre(scene, depsgraph=None):
+def fbp_effect_playback_pre(scene, depsgraph=None):
+    """Apply playback-specific quality contracts for all active effects."""
     del depsgraph
-    global _FBP_TEXT_MATRIX_PLAYBACK_ACTIVE
-    _FBP_TEXT_MATRIX_PLAYBACK_ACTIVE = True
-    _fbp_refresh_text_matrix_dimensions(scene)
+    global _FBP_EFFECT_PLAYBACK_ACTIVE
+    _FBP_EFFECT_PLAYBACK_ACTIVE = True
+    # Keyframes may have been added since the previous playback session. Build
+    # one fresh property map now, then reuse it throughout playback.
+    _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()
+    _fbp_refresh_effect_quality(scene)
 
 
 @persistent
-def fbp_text_matrix_playback_post(scene, depsgraph=None):
+def fbp_effect_playback_post(scene, depsgraph=None):
+    """Restore viewport quality contracts after animation playback."""
     del depsgraph
-    global _FBP_TEXT_MATRIX_PLAYBACK_ACTIVE
-    _FBP_TEXT_MATRIX_PLAYBACK_ACTIVE = False
-    _fbp_refresh_text_matrix_dimensions(scene)
-
+    global _FBP_EFFECT_PLAYBACK_ACTIVE
+    _FBP_EFFECT_PLAYBACK_ACTIVE = False
+    _fbp_refresh_effect_quality(scene)
 
 def _fbp_effect_runtime_value(rig, effect_id, prop_name, value, scene=None):
     effect_id = fbp_normalize_effect_id(effect_id)
@@ -1022,7 +752,7 @@ def _fbp_effect_runtime_value(rig, effect_id, prop_name, value, scene=None):
         value = fbp_mesh_wiggle_effective_w(rig)
     if not definition or prop_name != definition.get("evolve_property"):
         return value
-    state = fbp_ensure_effect_animation_state(rig, effect_id)
+    state = fbp_read_effect_animation_state(rig, effect_id)
     if not bool(state.get("evolve", False)):
         return value
     try:
@@ -1030,7 +760,7 @@ def _fbp_effect_runtime_value(rig, effect_id, prop_name, value, scene=None):
         stepped_frames = max(1, int(state.get("step", 4)))
         stream_seed = int(state.get("seed", 0))
         if bool(state.get("unique", False)):
-            stream_seed += int(fbp_assign_effect_layer_seed(rig, effect_id))
+            stream_seed += int(state.get("layer_seed", 0) or 0)
         amount = float(state.get("amount", definition.get("evolve_amount", 1.0)))
         scene = scene or getattr(bpy.context, "scene", None)
         frame = int(getattr(scene, "frame_current", 1))
@@ -1057,15 +787,26 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
     global _FBP_EVOLVE_HANDLER_ACTIVE
     if _FBP_EVOLVE_HANDLER_ACTIVE or fbp_undo_guard_active():
         return
+    render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
+    if (
+        render_guard_active
+        and not bool(fbp_runtime_get("fbp_render_needs_effect_frame_sync", False))
+    ):
+        return
+    if not render_guard_active and fbp_render_mutation_blocked(include_guard=False):
+        # Do not update node trees when an external render is active or Blender
+        # cannot confirm its job state. Managed renders are handled above.
+        return
     _FBP_EVOLVE_HANDLER_ACTIVE = True
     try:
         try:
-            # Use the synchronized layer cache on the per-frame hot path. The
-            # helper falls back to Scene objects only before the initial sync.
-            from .layers import iter_scene_fbp_rigs
-            rigs = iter_scene_fbp_rigs(scene)
+            # Resolve only rigs with an active effect stack. The index is rebuilt
+            # on structural changes and periodically self-heals external edits.
+            rigs = _fbp_scene_effect_runtime_rigs(scene)
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             return
+
+        _fbp_sync_scene_camera_bindings(scene, rigs)
 
         for rig in rigs:
             try:
@@ -1075,64 +816,50 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 # Discover the real effect stack once per rig. The previous
                 # implementation rescanned modifiers/materials separately for
                 # every alpha-aware and Evolve-capable effect on every frame.
-                active_effect_ids = set(_fbp_runtime_effect_ids(rig))
+                runtime_profile = _fbp_effect_runtime_profile(rig)
+                active_effect_ids = runtime_profile.get("active_ids", frozenset())
                 if not active_effect_ids:
                     continue
-                geometry_source_sync = any(
-                    effect_id in active_effect_ids
-                    for effect_id in FBP_FRAME_SYNC_GEOMETRY_EFFECT_IDS
-                )
+                geometry_source_sync = bool(runtime_profile.get("geometry_source_sync", False))
                 shader_source_sync = (
                     fbp_rig_media_type(rig) in {"IMAGE", "SEQUENCE"}
-                    and any(
-                        effect_id in active_effect_ids
-                        for effect_id in FBP_FRAME_SYNC_SHADER_EFFECT_IDS
-                    )
+                    and bool(runtime_profile.get("shader_source_sync", False))
                 )
-                action_curves = fbp_action_fcurves(rig)
-                try:
-                    has_action = action_curves is not None and len(action_curves) > 0
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                    has_action = False
-                    action_curves = None
+                animated_effect_properties = runtime_profile.get(
+                    "animated_effect_properties", {}
+                ) or {}
+                has_animated_effects = bool(animated_effect_properties)
+                evolve_pairs = runtime_profile.get("evolve_pairs", ()) or ()
                 evolve_enabled = any(
-                    effect_id in active_effect_ids
-                    and bool(getattr(rig, property_key, False))
-                    for effect_id, property_key in FBP_EVOLVE_EFFECT_PROPERTIES
+                    bool(getattr(rig, property_key, False))
+                    for _effect_id, property_key in evolve_pairs
                 )
-                if not (geometry_source_sync or shader_source_sync or has_action or evolve_enabled):
+                if not (geometry_source_sync or shader_source_sync or has_animated_effects or evolve_enabled):
                     continue
 
                 # Matrix effects follow the evaluated source image/sequence
                 # even when no procedural Evolve control is enabled.
                 if geometry_source_sync:
-                    _fbp_sync_geometry_alpha_frame_offset(rig, scene=scene)
+                    _fbp_sync_geometry_alpha_frame_offset(
+                        rig,
+                        scene=scene,
+                        effect_modifiers=runtime_profile.get("frame_geometry_modifiers", ()),
+                    )
                 if shader_source_sync:
-                    _fbp_sync_shader_image_sources(rig, active_effect_ids)
+                    _fbp_sync_shader_image_sources(
+                        rig,
+                        active_effect_ids,
+                        target_nodes=runtime_profile.get("frame_shader_targets", ()),
+                    )
 
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                _fbp_invalidate_effect_runtime_profile(rig)
                 continue
 
             # Keyframes on registered Object properties are evaluated by Blender,
             # but socket values are not RNA-linked and update callbacks are not
-            # called during animation evaluation. Detect animated effect properties
-            # and push their evaluated values into Shader/GN sockets every frame.
-            animated_effect_properties = {}
-            if has_action:
-                try:
-                    for curve in action_curves or ():
-                        if bool(getattr(curve, "mute", False)):
-                            continue
-                        data_path = str(getattr(curve, "data_path", "") or "")
-                        for animated_effect_id in FBP_ANIMATED_PROPERTY_EFFECTS.get(
-                            data_path, ()
-                        ):
-                            animated_effect_properties.setdefault(
-                                animated_effect_id, set()
-                            ).add(data_path)
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                    animated_effect_properties.clear()
-
+            # called during animation evaluation. The profile caches only the
+            # topology (effect -> property names); evaluated values remain live.
             updated_effect_ids = set()
             for animated_effect_id, animated_properties in animated_effect_properties.items():
                 try:
@@ -1143,6 +870,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         fbp_update_geometry_effect(
                             rig,
                             animated_effect_id,
+                            modifier=runtime_profile.get("geometry_modifiers", {}).get(animated_effect_id),
                             scene=scene,
                             sync_alpha=False,
                             property_names=animated_properties,
@@ -1153,16 +881,18 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                             animated_effect_id,
                             scene=scene,
                             property_names=animated_properties,
+                            nodes=runtime_profile.get("shader_nodes", {}).get(animated_effect_id),
                         )
                     updated_effect_ids.add(animated_effect_id)
                 except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    _fbp_invalidate_effect_runtime_profile(rig)
                     continue
 
             if not evolve_enabled:
                 continue
 
             # Avoid allocating a temporary tuple for every rig on every frame.
-            for effect_id, property_key in FBP_EVOLVE_EFFECT_PROPERTIES:
+            for effect_id, property_key in evolve_pairs:
                 try:
                     if not bool(getattr(rig, property_key, False)):
                         continue
@@ -1177,6 +907,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         fbp_update_geometry_effect(
                             rig,
                             effect_id,
+                            modifier=runtime_profile.get("geometry_modifiers", {}).get(effect_id),
                             scene=scene,
                             sync_alpha=False,
                             property_names=property_names,
@@ -1187,10 +918,13 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                             effect_id,
                             scene=scene,
                             property_names=property_names,
+                            nodes=runtime_profile.get("shader_nodes", {}).get(effect_id),
                         )
                 except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                     # A deleted/rebuilt datablock must not abort updates for the
                     # remaining layers during playback or background rendering.
+                    # Retire the profile so the next frame resolves fresh targets.
+                    _fbp_invalidate_effect_runtime_profile(rig)
                     continue
     finally:
         _FBP_EVOLVE_HANDLER_ACTIVE = False
@@ -1216,6 +950,19 @@ def _fbp_plane(rig):
     return None
 
 
+def _fbp_node_group_cache_key(node_group):
+    """Return a cache key resilient to RNA pointer reuse."""
+    if node_group is None:
+        return None
+    try:
+        return (
+            int(node_group.as_pointer()),
+            str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or ""),
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
 def _fbp_interface_inputs(node_group):
     """Return Geometry Nodes input sockets with a small runtime cache.
 
@@ -1228,10 +975,14 @@ def _fbp_interface_inputs(node_group):
     if not interface:
         return {}
     try:
-        pointer = int(node_group.as_pointer())
+        cache_key = _fbp_node_group_cache_key(node_group)
+        if cache_key is None:
+            return {}
         items = interface.items_tree
-        signature = (len(items), str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or ""))
-        cached = _FBP_INTERFACE_INPUT_CACHE.get(pointer)
+        # Keep the hot path O(1). Explicit group rebuild/removal clears this
+        # cache; the pointer+name key also prevents aliasing after datablock reuse.
+        signature = (len(items),)
+        cached = _FBP_INTERFACE_INPUT_CACHE.get(cache_key)
         if cached and cached[0] == signature:
             return cached[1]
         result = {
@@ -1240,7 +991,9 @@ def _fbp_interface_inputs(node_group):
             if getattr(item, "item_type", "") == "SOCKET"
             and getattr(item, "in_out", "") == "INPUT"
         }
-        _FBP_INTERFACE_INPUT_CACHE[pointer] = (signature, result)
+        if len(_FBP_INTERFACE_INPUT_CACHE) >= 512 and cache_key not in _FBP_INTERFACE_INPUT_CACHE:
+            _FBP_INTERFACE_INPUT_CACHE.clear()
+        _FBP_INTERFACE_INPUT_CACHE[cache_key] = (signature, result)
         return result
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return {}
@@ -1322,6 +1075,157 @@ def _fbp_set_modifier_input(modifier, node_group, socket_name, value, interface_
         return False
 
 
+
+def _fbp_scene_camera(scene=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    camera = getattr(scene, "camera", None) if scene else None
+    try:
+        return camera if camera and getattr(camera, "type", "") == "CAMERA" else None
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _fbp_camera_contract_values(camera, contract):
+    """Return standardized active-camera values keyed by declared socket name."""
+    values = {}
+    object_socket = str(contract.get("object_socket", "Camera") or "Camera")
+    if object_socket:
+        values[object_socket] = camera
+    data = getattr(camera, "data", None) if camera else None
+    camera_type = str(getattr(data, "type", "PERSP") or "PERSP") if data else "PERSP"
+    bindings = (
+        ("lens_socket", float(getattr(data, "lens", 50.0) or 50.0) if data else 50.0),
+        ("sensor_width_socket", float(getattr(data, "sensor_width", 36.0) or 36.0) if data else 36.0),
+        ("ortho_scale_socket", float(getattr(data, "ortho_scale", 6.0) or 6.0) if data else 6.0),
+        ("perspective_socket", 1.0 if camera is not None and camera_type == "PERSP" else 0.0),
+        ("shift_x_socket", float(getattr(data, "shift_x", 0.0) or 0.0) if data else 0.0),
+        ("shift_y_socket", float(getattr(data, "shift_y", 0.0) or 0.0) if data else 0.0),
+    )
+    for key, value in bindings:
+        socket_name = str(contract.get(key, "") or "")
+        if socket_name:
+            values[socket_name] = value
+    return values
+
+
+def _fbp_camera_binding_signature(scene):
+    camera = _fbp_scene_camera(scene)
+    try:
+        camera_key = int(camera.as_pointer()) if camera else 0
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        camera_key = id(camera) if camera else 0
+    data = getattr(camera, "data", None) if camera else None
+    try:
+        return (
+            camera_key,
+            str(getattr(data, "type", "") or ""),
+            round(float(getattr(data, "lens", 0.0) or 0.0), 6),
+            round(float(getattr(data, "sensor_width", 0.0) or 0.0), 6),
+            round(float(getattr(data, "ortho_scale", 0.0) or 0.0), 6),
+            round(float(getattr(data, "shift_x", 0.0) or 0.0), 6),
+            round(float(getattr(data, "shift_y", 0.0) or 0.0), 6),
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return (camera_key,)
+
+
+def _fbp_bind_geometry_camera_input(rig, effect_id, modifier, node_group=None, scene=None):
+    """Bind standardized active-camera inputs without rebuilding the node group."""
+    definition = fbp_effect_definition(effect_id)
+    if not definition.get("camera_aware") or not modifier:
+        return False
+    contract = definition.get("camera_contract", {}) or {}
+    node_group = node_group or getattr(modifier, "node_group", None)
+    if not node_group:
+        return False
+    interface_inputs = _fbp_interface_inputs(node_group)
+    camera = _fbp_scene_camera(scene)
+    changed = False
+    for socket_name, value in _fbp_camera_contract_values(camera, contract).items():
+        changed = _fbp_set_modifier_input(
+            modifier, node_group, socket_name, value, interface_inputs
+        ) or changed
+    return changed
+
+
+def _fbp_scene_camera_cache_key(scene):
+    """Return a Scene cache key that cannot alias a newly-created Scene."""
+    try:
+        return (
+            int(scene.as_pointer()),
+            str(getattr(scene, "name_full", getattr(scene, "name", "")) or ""),
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return (0, "")
+
+
+def _fbp_sync_scene_camera_bindings(scene, rigs):
+    """Refresh declared projection values only when the active camera data changes.
+
+    Camera-object transforms remain live through Geometry Nodes Object Info, so
+    ordinary camera or layer movement does not require Python socket writes.
+    """
+    if scene is None:
+        return False
+    scene_key = _fbp_scene_camera_cache_key(scene)
+    if not scene_key[0]:
+        return False
+    signature = _fbp_camera_binding_signature(scene)
+    if _FBP_CAMERA_BINDING_CACHE.get(scene_key) == signature:
+        return False
+    changed = False
+    for rig in rigs or ():
+        try:
+            for effect_id in _fbp_runtime_effect_ids(rig):
+                definition = fbp_effect_definition(effect_id)
+                if not definition.get("camera_aware"):
+                    continue
+                modifier = fbp_find_effect_modifier(rig, effect_id)
+                if not modifier:
+                    continue
+                changed = _fbp_bind_geometry_camera_input(
+                    rig, effect_id, modifier, scene=scene
+                ) or changed
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    if len(_FBP_CAMERA_BINDING_CACHE) >= 64 and scene_key not in _FBP_CAMERA_BINDING_CACHE:
+        _FBP_CAMERA_BINDING_CACHE.clear()
+    _FBP_CAMERA_BINDING_CACHE[scene_key] = signature
+    return changed
+
+
+def fbp_sync_scene_camera_bindings(scene=None, *, force=False):
+    """Safely refresh camera-aware effect sockets from timer or handler code."""
+    scene = scene or getattr(bpy.context, "scene", None)
+    if scene is None:
+        return False
+    scene_key = _fbp_scene_camera_cache_key(scene)
+    if force:
+        _FBP_CAMERA_BINDING_CACHE.pop(scene_key, None)
+    try:
+        from .layers import iter_scene_fbp_rigs
+        rigs = iter_scene_fbp_rigs(scene)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        rigs = ()
+    return _fbp_sync_scene_camera_bindings(scene, rigs)
+
+
+def fbp_camera_distance_for_rig(rig, scene=None):
+    """Return positive camera-space depth from the active camera to one FBP plane."""
+    camera = _fbp_scene_camera(scene)
+    target = _fbp_plane(rig) or rig
+    if not camera or not target:
+        return 0.0
+    try:
+        camera_location = camera.matrix_world.translation
+        target_location = target.matrix_world.translation
+        camera_forward = camera.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+        depth = (target_location - camera_location).dot(camera_forward)
+        return max(0.0001, float(depth))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return 0.0
+
+
 def _fbp_set_enabled(rig, effect_id, enabled):
     definition = fbp_effect_definition(effect_id)
     key = str(definition.get("enabled_key", "") or "")
@@ -1366,9 +1270,9 @@ def _fbp_group_matches(node_group, effect_id):
         tagged_effect = fbp_normalize_effect_id(node_group.get("fbp_effect_id", ""))
         tagged_asset = str(node_group.get("fbp_effect_asset_id", "") or "")
         geometry_asset = _fbp_node_group_asset_id(node_group)
-        # Programmatically generated groups must match the exact asset revision.
-        # Matching only the effect id would keep stale 4.6.1 Matrix/Halftone
-        # groups alive inside existing .blend files after their builders change.
+        # Programmatically generated groups must match the exact current asset
+        # revision. Reusing a stale generated group can preserve an obsolete
+        # socket layout and corrupt the active effect graph.
         if bool(definition.get("builtin", False)):
             return tagged_asset == asset_id or geometry_asset == asset_id
         return tagged_effect == effect_id or tagged_asset == asset_id or geometry_asset == asset_id
@@ -1385,8 +1289,17 @@ def _fbp_invalidate_node_group_caches(node_group):
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pointer = None
     if pointer is not None:
-        _FBP_INTERFACE_INPUT_CACHE.pop(pointer, None)
-        _FBP_MATRIX_IMAGE_NODE_CACHE.pop(pointer, None)
+        for cache in (
+            _FBP_INTERFACE_INPUT_CACHE,
+            _FBP_MATRIX_IMAGE_NODE_CACHE,
+            _FBP_CUSTOM_GEOMETRY_SOCKET_CACHE,
+        ):
+            for key in tuple(cache):
+                if isinstance(key, tuple) and key and key[0] == pointer:
+                    cache.pop(key, None)
+        for key in tuple(_FBP_CUSTOM_SHADER_SOCKET_CACHE):
+            if isinstance(key, tuple) and len(key) > 2 and key[2] == pointer:
+                _FBP_CUSTOM_SHADER_SOCKET_CACHE.pop(key, None)
     for effect_id, cached in list(_FBP_EFFECT_GROUP_CACHE.items()):
         if cached is node_group:
             _FBP_EFFECT_GROUP_CACHE.pop(effect_id, None)
@@ -1431,6 +1344,25 @@ def _fbp_load_effect_group(effect_id):
         return None
 
     asset_id = str(definition.get("asset_id", "") or "")
+    if bool(definition.get("custom", False)):
+        if bool(definition.get("custom_invalid", False)):
+            return None
+        node_group = find_custom_effect_group(effect_id)
+        if node_group is None:
+            return None
+        try:
+            node_group.use_fake_user = True
+            node_group["fbp_effect_id"] = effect_id
+            node_group["fbp_effect_asset_id"] = asset_id
+            node_group["fbp_effect_schema_version"] = FBP_EFFECT_SCHEMA_VERSION
+            if definition.get("kind") == "GEOMETRY":
+                node_group["fbp_geometry_effect_id"] = asset_id
+            else:
+                node_group["fbp_shader_effect_id"] = asset_id
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return None
+        return _fbp_store_effect_group_cache(effect_id, node_group)
+
     canonical_name = str(definition.get("canonical_name", "") or "")
     source_names = tuple(definition.get("source_names", ()))
 
@@ -1464,6 +1396,7 @@ def _fbp_load_effect_group(effect_id):
                 node_group.use_fake_user = True
                 node_group["fbp_effect_id"] = effect_id
                 node_group["fbp_effect_asset_id"] = asset_id
+                node_group["fbp_effect_schema_version"] = FBP_EFFECT_SCHEMA_VERSION
                 if definition.get("kind") == "GEOMETRY":
                     node_group["fbp_geometry_effect_id"] = asset_id
                 else:
@@ -1514,6 +1447,7 @@ def _fbp_load_effect_group(effect_id):
         node_group.use_fake_user = True
         node_group["fbp_effect_id"] = effect_id
         node_group["fbp_effect_asset_id"] = asset_id
+        node_group["fbp_effect_schema_version"] = FBP_EFFECT_SCHEMA_VERSION
         if definition.get("kind") == "GEOMETRY":
             node_group["fbp_geometry_effect_id"] = asset_id
         else:
@@ -2049,7 +1983,7 @@ def _fbp_sync_geometry_alpha(rig, modifier):
         return False
 
 
-def _fbp_sync_geometry_alpha_frame_offset(rig, scene=None):
+def _fbp_sync_geometry_alpha_frame_offset(rig, scene=None, effect_modifiers=None):
     """Keep image-aware Geometry Nodes bound to the current FBP source.
 
     Besides sequence timing, this also refreshes the image datablock itself.
@@ -2071,20 +2005,23 @@ def _fbp_sync_geometry_alpha_frame_offset(rig, scene=None):
         source_kind = ""
         src_user = None
 
-    effect_modifiers = []
-    try:
-        for modifier in plane.modifiers:
-            if getattr(modifier, "type", "") != "NODES":
-                continue
-            try:
-                tagged = fbp_normalize_effect_id(modifier.get("fbp_effect_id", ""))
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                tagged = ""
-            if tagged in FBP_FRAME_SYNC_GEOMETRY_EFFECT_IDS:
-                effect_modifiers.append(modifier)
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        return False
-    if not effect_modifiers:
+    if effect_modifiers is None:
+        resolved_modifiers = []
+        try:
+            for modifier in plane.modifiers:
+                if getattr(modifier, "type", "") != "NODES":
+                    continue
+                try:
+                    tagged = fbp_normalize_effect_id(modifier.get("fbp_effect_id", ""))
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    tagged = ""
+                if tagged in FBP_FRAME_SYNC_GEOMETRY_EFFECT_IDS:
+                    resolved_modifiers.append(modifier)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+    else:
+        resolved_modifiers = list(effect_modifiers or ())
+    if not resolved_modifiers:
         return False
 
     scene = scene or getattr(bpy.context, "scene", None)
@@ -2097,7 +2034,7 @@ def _fbp_sync_geometry_alpha_frame_offset(rig, scene=None):
     synced = False
     plane_changed = False
 
-    for modifier in effect_modifiers:
+    for modifier in resolved_modifiers:
         node_group = getattr(modifier, "node_group", None)
         image_node = _fbp_alpha_image_node(node_group) if node_group else None
         if image_node is None:
@@ -2180,6 +2117,7 @@ def _fbp_owned_geometry_group(rig, effect_id, source_group, current=None):
         node_group.use_fake_user = False
         node_group["fbp_effect_id"] = effect_id
         node_group["fbp_effect_asset_id"] = str(fbp_effect_definition(effect_id).get("asset_id", "") or "")
+        node_group["fbp_effect_schema_version"] = FBP_EFFECT_SCHEMA_VERSION
         node_group["fbp_effect_owner"] = plane.name
         node_group["fbp_private_effect_group"] = True
         if bool(fbp_effect_definition(effect_id).get("alpha_aware")):
@@ -2538,6 +2476,9 @@ def _fbp_cast_effect_value(prop_name, value):
         "fbp_wind_direction_space": {"LOCAL": 0.0, "WORLD": 1.0},
         "fbp_halftone_shape": {"CIRCLE": 0.0, "SQUARE": 1.0, "DIAMOND": 2.0, "LINE": 3.0},
         "fbp_dot_matrix_shape": {"CIRCLE": 0.0, "SQUARE": 1.0, "DIAMOND": 2.0, "LINE": 3.0},
+        "fbp_mesh_ripple_direction": {"X": 0.0, "Y": 1.0, "RADIAL": 2.0},
+        "fbp_paper_curl_edge": {"LEFT": 0.0, "RIGHT": 1.0, "BOTTOM": 2.0, "TOP": 3.0},
+        "fbp_camera_billboard_mode": {"FULL": 0.0, "HORIZONTAL": 1.0, "VERTICAL": 2.0},
     }
     if prop_name in enum_values:
         return enum_values[prop_name].get(str(value), 0.0)
@@ -2552,7 +2493,6 @@ def _fbp_cast_effect_value(prop_name, value):
         "fbp_thickness_alpha_resolution",
         "fbp_felt_seed",
         "fbp_felt_alpha_resolution",
-        "fbp_text_matrix_columns",
         "fbp_text_matrix_viewport_columns",
         "fbp_text_matrix_viewport_rows",
         "fbp_text_matrix_render_columns",
@@ -2560,6 +2500,16 @@ def _fbp_cast_effect_value(prop_name, value):
         "fbp_text_matrix_playback_columns",
         "fbp_text_matrix_playback_rows",
         "fbp_text_matrix_character_count",
+        "fbp_mesh_ripple_viewport_subdivision",
+        "fbp_mesh_ripple_playback_subdivision",
+        "fbp_mesh_ripple_render_subdivision",
+        "fbp_mesh_ripple_stepped",
+        "fbp_paper_curl_viewport_subdivision",
+        "fbp_paper_curl_playback_subdivision",
+        "fbp_paper_curl_render_subdivision",
+        "fbp_cutout_outline_viewport_resolution",
+        "fbp_cutout_outline_playback_resolution",
+        "fbp_cutout_outline_render_resolution",
     }:
         return int(value)
     if prop_name.endswith("shade_smooth"):
@@ -2602,6 +2552,7 @@ def _fbp_ensure_geometry_effect_group(rig, effect_id, modifier):
     try:
         modifier.node_group = target
         modifier["fbp_effect_id"] = effect_id
+        ensure_effect_instance_id(modifier, effect_id)
         modifier.name = str(
             definition.get("modifier_name", definition.get("label", effect_id))
         )
@@ -2745,11 +2696,7 @@ def fbp_update_geometry_effect(
         except (AttributeError, ReferenceError):
             continue
         value = _fbp_effect_runtime_value(rig, effect_id, prop_name, value, scene=scene)
-        if effect_id == FBP_EFFECT_TEXT_MATRIX and prop_name in {
-            "fbp_text_matrix_viewport_columns",
-            "fbp_text_matrix_viewport_rows",
-        }:
-            value = _fbp_text_matrix_effective_dimension(rig, prop_name, value)
+        value = _fbp_effective_quality_value(rig, effect_id, prop_name, value)
         if prop_name == "fbp_infinite_rotation_direction":
             value = -1.0 if str(value) == "RIGHT" else 1.0
         value = _fbp_cast_effect_value(prop_name, value)
@@ -2760,6 +2707,45 @@ def fbp_update_geometry_effect(
             value,
             interface_inputs,
         ) or updated
+
+    if definition.get("camera_aware"):
+        updated = _fbp_bind_geometry_camera_input(
+            rig, effect_id, modifier, node_group=node_group, scene=scene
+        ) or updated
+
+    if effect_id == FBP_EFFECT_CUTOUT_OUTLINE and (
+        full_update or "fbp_cutout_outline_color" in (requested or set())
+    ):
+        material = _fbp_ensure_owned_effect_material(
+            rig,
+            effect_id,
+            "Cutout Outline",
+            tuple(getattr(rig, "fbp_cutout_outline_color", (0.02, 0.02, 0.02, 1.0))),
+        )
+        if material:
+            updated = _fbp_set_modifier_input(
+                modifier, node_group, "Outline Material", material, interface_inputs
+            ) or updated
+
+    if effect_id == FBP_EFFECT_EXTRUDED_CUTOUT and (
+        full_update
+        or bool(requested & {"fbp_extruded_cutout_side_material", "fbp_extruded_cutout_side_color"})
+    ):
+        try:
+            material = getattr(rig, "fbp_extruded_cutout_side_material", None)
+            if material is None:
+                material = _fbp_ensure_owned_effect_material(
+                    rig,
+                    effect_id,
+                    "Extruded Cutout",
+                    tuple(getattr(rig, "fbp_extruded_cutout_side_color", (0.18, 0.12, 0.08, 1.0))),
+                )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            material = None
+        if material:
+            updated = _fbp_set_modifier_input(
+                modifier, node_group, "Side Material", material, interface_inputs
+            ) or updated
 
     if effect_id == FBP_EFFECT_THICKNESS and (
         full_update
@@ -2913,6 +2899,9 @@ def fbp_apply_geometry_effect(rig, effect_id):
         modifier.show_viewport = visible
         modifier.show_render = render_visible
         modifier["fbp_effect_id"] = effect_id
+        ensure_effect_instance_id(modifier, effect_id)
+        if bool(definition.get("custom", False)):
+            _fbp_initialize_custom_geometry_inputs(modifier, node_group)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not configure Geometry Nodes effect", exc)
         return False
@@ -2927,6 +2916,23 @@ def fbp_apply_geometry_effect(rig, effect_id):
     if effect_id == FBP_EFFECT_MESH_WIGGLE:
         fbp_assign_mesh_wiggle_layer_seed(rig)
         fbp_set_rna_property_silent(rig, "fbp_mesh_wiggle_enabled", True)
+    if effect_id == FBP_EFFECT_CAMERA_SCALE_LOCK and created_modifier:
+        reference_distance = fbp_camera_distance_for_rig(rig)
+        camera = _fbp_scene_camera()
+        camera_data = getattr(camera, "data", None) if camera else None
+        if reference_distance > 0.0:
+            fbp_set_rna_property_silent(
+                rig, "fbp_camera_scale_lock_reference_distance", reference_distance
+            )
+        if camera_data:
+            fbp_set_rna_property_silent(
+                rig, "fbp_camera_scale_lock_reference_lens",
+                float(getattr(camera_data, "lens", 50.0) or 50.0),
+            )
+            fbp_set_rna_property_silent(
+                rig, "fbp_camera_scale_lock_reference_sensor_width",
+                float(getattr(camera_data, "sensor_width", 36.0) or 36.0),
+            )
     _fbp_set_enabled(rig, effect_id, True)
     # A False return here means that every socket already matched its target,
     # not that the modifier failed. Keeping a newly created modifier is required
@@ -2950,7 +2956,7 @@ def fbp_remove_geometry_effect(rig, effect_id):
         cleaned = _fbp_set_enabled(rig, effect_id, False)
         cleaned = _fbp_clear_effect_visibility(rig, effect_id) or cleaned
         cleaned = _fbp_clear_effect_render_visibility(rig, effect_id) or cleaned
-        if effect_id in {FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_TEXT_MATRIX}:
+        if effect_id in {FBP_EFFECT_CUTOUT_OUTLINE, FBP_EFFECT_EXTRUDED_CUTOUT, FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_TEXT_MATRIX}:
             cleaned = _fbp_cleanup_owned_effect_materials(rig, effect_id) or cleaned
         if rig:
             fbp_sync_effect_items(rig)
@@ -2992,7 +2998,7 @@ def fbp_remove_geometry_effect(rig, effect_id):
 
     if effect_id == FBP_EFFECT_MESH_WIGGLE:
         fbp_set_rna_property_silent(rig, "fbp_mesh_wiggle_enabled", False)
-    if effect_id in {FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_TEXT_MATRIX}:
+    if effect_id in {FBP_EFFECT_CUTOUT_OUTLINE, FBP_EFFECT_EXTRUDED_CUTOUT, FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_TEXT_MATRIX}:
         _fbp_cleanup_owned_effect_materials(rig, effect_id)
     _fbp_set_enabled(rig, effect_id, False)
     _fbp_clear_effect_visibility(rig, effect_id)
@@ -3451,6 +3457,26 @@ def _fbp_relink_effect_alpha(material, effect_nodes, base_alpha):
     return changed
 
 
+def _fbp_color_stage_evaluation_nodes(material, rig=None):
+    """Return color effect nodes in their real evaluation order."""
+    effect_nodes = _fbp_stage_effect_nodes(material, "COLOR")
+    if rig is None:
+        try:
+            owner_name = str(material.get("fbp_effect_rig_owner", "") or "")
+            rig = bpy.data.objects.get(owner_name) if owner_name else None
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            rig = None
+    regular_nodes = []
+    final_nodes = []
+    for node in effect_nodes:
+        effect_id = _fbp_shader_effect_id(node)
+        if rig and fbp_effect_input_source(rig, effect_id) == "FINAL":
+            final_nodes.append(node)
+        else:
+            regular_nodes.append(node)
+    return regular_nodes + final_nodes
+
+
 def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_override=None):
     if not material or not material.node_tree:
         return False
@@ -3493,7 +3519,7 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
     if source is None or target is None:
         return False
     uv_source = _fbp_auxiliary_uv_source(material, image_node)
-    base_alpha = _fbp_material_base_alpha_source(material, image_node)
+    layer_alpha = _fbp_material_layer_alpha_source(material, image_node)
     _fbp_remove_stage_links(material, image_node, stage, effect_nodes)
     current = source
     anchor = image_node or _fbp_gradient_ramp_node(material) or getattr(source, "node", None)
@@ -3509,15 +3535,7 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
     # the graph acyclic: normal Previous/Original effects build the regular
     # stack first, then every Final Material effect processes that completed
     # result in its relative stack order.
-    regular_nodes = []
-    final_nodes = []
-    for node in effect_nodes:
-        effect_id = _fbp_shader_effect_id(node)
-        if rig and fbp_effect_input_source(rig, effect_id) == "FINAL":
-            final_nodes.append(node)
-        else:
-            regular_nodes.append(node)
-    evaluation_nodes = regular_nodes + final_nodes
+    evaluation_nodes = _fbp_color_stage_evaluation_nodes(material, rig)
 
     for index, node in enumerate(evaluation_nodes):
         effect_id = _fbp_shader_effect_id(node)
@@ -3544,7 +3562,7 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
         links.new(current, target)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
-    _fbp_relink_effect_alpha(material, evaluation_nodes, base_alpha)
+    _fbp_relink_effect_alpha(material, evaluation_nodes, layer_alpha)
     return True
 
 def _fbp_set_shader_node_values(
@@ -3696,27 +3714,23 @@ def _fbp_matrix_source_image_nodes(node_group):
     if not node_group:
         return ()
     try:
-        pointer = int(node_group.as_pointer())
-        signature = (
-            len(node_group.nodes),
-            str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or ""),
-        )
-        cached = _FBP_MATRIX_IMAGE_NODE_CACHE.get(pointer)
+        cache_key = _fbp_node_group_cache_key(node_group)
+        if cache_key is None:
+            return ()
+        signature = (len(node_group.nodes),)
+        cached = _FBP_MATRIX_IMAGE_NODE_CACHE.get(cache_key)
         if cached and cached[0] == signature:
             return cached[1]
         result = tuple(
             node for node in node_group.nodes
             if bool(node.get("fbp_matrix_source_image_node", False))
         )
-        _FBP_MATRIX_IMAGE_NODE_CACHE[pointer] = (signature, result)
+        if len(_FBP_MATRIX_IMAGE_NODE_CACHE) >= 512 and cache_key not in _FBP_MATRIX_IMAGE_NODE_CACHE:
+            _FBP_MATRIX_IMAGE_NODE_CACHE.clear()
+        _FBP_MATRIX_IMAGE_NODE_CACHE[cache_key] = (signature, result)
         return result
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return ()
-
-
-def _fbp_matrix_source_image_node(node_group):
-    nodes = _fbp_matrix_source_image_nodes(node_group)
-    return nodes[0] if nodes else None
 
 
 def _fbp_copy_shader_image_user(source_node, target_node):
@@ -3778,24 +3792,39 @@ def _fbp_sync_private_shader_source(material, node_group):
     return bool(source_image), changed
 
 
-def _fbp_sync_shader_image_sources(rig, active_effect_ids=None):
+def _fbp_sync_shader_image_sources(
+    rig,
+    active_effect_ids=None,
+    target_nodes=None,
+):
     """Refresh image-aware shader groups from the evaluated FBP material.
 
-    Private Matrix groups cannot share ImageUser animation data with the source
-    material. Copying the evaluated values on frame changes keeps Dot Matrix and
-    Textellation locked to native FBP image-sequence playback.
+    ``target_nodes`` is the cached ``(material, node, effect_id)`` list produced
+    by the runtime profile. The fallback traversal remains available for repair,
+    file-load and direct API calls outside the frame handler.
     """
     active = (
         active_effect_ids
         if isinstance(active_effect_ids, (set, frozenset))
         else set(active_effect_ids or FBP_FRAME_SYNC_SHADER_EFFECT_IDS)
     )
+    if target_nodes is None:
+        resolved_targets = []
+        for material in _fbp_plane_materials(rig):
+            for node in _fbp_shader_effect_nodes(material):
+                effect_id = _fbp_shader_effect_id(node)
+                if effect_id in active and effect_id in FBP_FRAME_SYNC_SHADER_EFFECT_IDS:
+                    resolved_targets.append((material, node, effect_id))
+    else:
+        resolved_targets = [
+            (material, node, effect_id)
+            for material, node, effect_id in (target_nodes or ())
+            if effect_id in active and effect_id in FBP_FRAME_SYNC_SHADER_EFFECT_IDS
+        ]
+
     changed = False
-    for material in _fbp_plane_materials(rig):
-        for node in _fbp_shader_effect_nodes(material):
-            effect_id = _fbp_shader_effect_id(node)
-            if effect_id not in active or effect_id not in FBP_FRAME_SYNC_SHADER_EFFECT_IDS:
-                continue
+    for material, node, _effect_id in resolved_targets:
+        try:
             has_image, source_changed = _fbp_sync_private_shader_source(
                 material, getattr(node, "node_tree", None)
             )
@@ -3803,12 +3832,11 @@ def _fbp_sync_shader_image_sources(rig, active_effect_ids=None):
             if use_image is not None:
                 desired = 1.0 if has_image else 0.0
                 if not _fbp_effect_values_equal(getattr(use_image, "default_value", None), desired):
-                    try:
-                        use_image.default_value = desired
-                        source_changed = True
-                    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                        pass
+                    use_image.default_value = desired
+                    source_changed = True
             changed = source_changed or changed
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
     return changed
 
 
@@ -3849,6 +3877,7 @@ def _fbp_owned_shader_group(rig, material, effect_id, source_group, current=None
         private["fbp_private_effect_group"] = True
         private["fbp_effect_id"] = effect_id
         private["fbp_effect_asset_id"] = asset_id
+        private["fbp_effect_schema_version"] = FBP_EFFECT_SCHEMA_VERSION
         private["fbp_effect_material_owner"] = owner
         return private
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
@@ -3926,6 +3955,7 @@ def _fbp_canonical_shader_effect_node(material, effect_id, node_group):
     try:
         node.label = str(definition.get("label", effect_id))
         node["fbp_shader_effect_id"] = effect_id
+        ensure_effect_instance_id(node, effect_id)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
 
@@ -3972,6 +4002,7 @@ def fbp_apply_shader_effect(rig, effect_id, *, rebuild=True, sync_items=True):
                 node.name = f"FBP Effect • {definition.get('label', effect_id)}"
                 node.label = str(definition.get("label", effect_id))
                 node["fbp_shader_effect_id"] = effect_id
+                ensure_effect_instance_id(node, effect_id)
                 changed = True
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
                 fbp_warn("Could not add shader effect node", exc)
@@ -4059,9 +4090,10 @@ def fbp_update_shader_effect(
     scene=None,
     *,
     property_names=None,
+    nodes=None,
 ):
     effect_id = fbp_normalize_effect_id(effect_id)
-    nodes = _fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+    nodes = list(nodes) if nodes is not None else _fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
     repaired = not nodes or any(
         not getattr(node, "node_tree", None)
         or not _fbp_group_matches(getattr(node, "node_tree", None), effect_id)
@@ -4098,20 +4130,15 @@ def fbp_update_shader_effect(
 
 
 def _fbp_material_base_alpha_source(material, image_node):
+    """Return the alpha source *before* the optional layer-opacity node.
+
+    Returning ``FBP_Opacity`` itself here creates a self-link on the next slider
+    update (node output -> its own input). The base source must remain the image,
+    native transparent-row mask, gradient ramp or procedural alpha value.
+    """
     node_tree = getattr(material, "node_tree", None) if material else None
     if not node_tree:
         return None
-    for node in node_tree.nodes:
-        try:
-            if (
-                getattr(node, "type", "") == "MATH"
-                and bool(node.get("fbp_internal_opacity_node", False))
-            ):
-                output = _fbp_node_socket(node.outputs, "Value", 0)
-                if output:
-                    return output
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            continue
     if image_node:
         native_mask = node_tree.nodes.get("FBP_Native_Frame_Alpha")
         if native_mask and getattr(native_mask, "type", "") == "MATH":
@@ -4145,6 +4172,27 @@ def _fbp_material_base_alpha_source(material, image_node):
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
     return _fbp_node_socket(alpha.outputs, "Value", 0)
+
+
+def _fbp_material_layer_alpha_source(material, image_node):
+    """Return alpha after the optional layer-opacity multiplier."""
+    base_alpha = _fbp_material_base_alpha_source(material, image_node)
+    node_tree = getattr(material, "node_tree", None) if material else None
+    if not node_tree or base_alpha is None:
+        return base_alpha
+    try:
+        opacity = node_tree.nodes.get("FBP_Opacity")
+        if (
+            opacity
+            and getattr(opacity, "type", "") == "MATH"
+            and str(getattr(opacity, "operation", "") or "") == "MULTIPLY"
+            and len(opacity.inputs[0].links) == 1
+            and opacity.inputs[0].links[0].from_socket == base_alpha
+        ):
+            return _fbp_node_socket(opacity.outputs, "Value", 0) or base_alpha
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, IndexError):
+        pass
+    return base_alpha
 
 
 def _fbp_active_surface_node(material):
@@ -4339,8 +4387,7 @@ def fbp_sync_layer_opacity_effect(rig, opacity=None):
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
         base_alpha = _fbp_material_base_alpha_source(material, image_node)
-        targets = _fbp_material_alpha_targets(material)
-        if not base_alpha or not targets:
+        if not base_alpha or not _fbp_material_alpha_targets(material):
             continue
         opacity_node, repaired = _fbp_prepare_opacity_node(node_tree)
         changed = repaired or changed
@@ -4353,11 +4400,11 @@ def fbp_sync_layer_opacity_effect(rig, opacity=None):
                 opacity_node.location = (image_node.location.x + 260.0, image_node.location.y - 220.0)
                 changed = True
             opacity_node.operation = "MULTIPLY"
-            opacity_node.inputs[1].default_value = opacity
+            if abs(float(opacity_node.inputs[1].default_value) - opacity) > 1e-6:
+                opacity_node.inputs[1].default_value = opacity
+                changed = True
             changed = _fbp_link_single(node_tree, base_alpha, opacity_node.inputs[0]) or changed
             alpha_output = _fbp_node_socket(opacity_node.outputs, "Value", 0)
-            for target in targets:
-                changed = _fbp_link_single(node_tree, alpha_output, target) or changed
         else:
             if opacity_node is not None:
                 try:
@@ -4365,14 +4412,87 @@ def fbp_sync_layer_opacity_effect(rig, opacity=None):
                     changed = True
                 except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                     pass
-            for target in targets:
-                changed = _fbp_link_single(node_tree, base_alpha, target) or changed
+            alpha_output = base_alpha
+
+        evaluation_nodes = _fbp_color_stage_evaluation_nodes(material, rig)
+        changed = _fbp_relink_effect_alpha(
+            material, evaluation_nodes, alpha_output
+        ) or changed
     return changed
 
 
 # ---------------------------------------------------------------------------
 # Generic effect stack state
 # ---------------------------------------------------------------------------
+
+
+def fbp_retag_effect_owners_after_layer_rename(rig, old_plane_name=""):
+    """Update current name-based effect ownership markers after a layer rename.
+
+    Effect datablocks are linked by pointers, but a few lightweight ownership
+    tags intentionally store readable datablock names for repair and cleanup.
+    Renaming a rig or its generated plane must update those tags atomically or
+    later effect refreshes can treat valid data as foreign and duplicate it.
+    """
+    if not rig:
+        return False
+    plane = _fbp_plane(rig)
+    if not plane:
+        return False
+
+    new_rig_name = str(getattr(rig, "name_full", getattr(rig, "name", "")) or "")
+    new_plane_name = str(getattr(plane, "name_full", getattr(plane, "name", "")) or "")
+    old_plane_name = str(old_plane_name or "")
+    changed = False
+
+    # Shader materials use the rig name to resolve input-source settings.
+    for material in _fbp_plane_materials(rig):
+        try:
+            tagged_owner = str(material.get("fbp_effect_rig_owner", "") or "")
+            has_effect_nodes = bool(_fbp_shader_effect_nodes(material))
+            if has_effect_nodes and tagged_owner != new_rig_name:
+                material["fbp_effect_rig_owner"] = new_rig_name
+                changed = True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+
+    # Private Geometry Nodes groups use the generated plane name as owner.
+    try:
+        for modifier in list(getattr(plane, "modifiers", ()) or ()):
+            group = getattr(modifier, "node_group", None)
+            if not group or not str(group.get("fbp_effect_id", "") or ""):
+                continue
+            owner = str(group.get("fbp_effect_owner", "") or "")
+            if owner == old_plane_name or (not owner and bool(group.get("fbp_private_effect_group", False))):
+                group["fbp_effect_owner"] = new_plane_name
+                changed = True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+    # Effect-owned side/back/text materials are not always in the plane slots.
+    # Rename is a rare user action, so a bounded global material scan is safer
+    # than leaving stale owners that later cleanup may misclassify.
+    if old_plane_name and old_plane_name != new_plane_name:
+        for material in list(bpy.data.materials):
+            try:
+                if str(material.get("fbp_effect_material_owner", "") or "") != old_plane_name:
+                    continue
+                material["fbp_effect_material_owner"] = new_plane_name
+                role = str(material.get("fbp_effect_material_role", "") or "")
+                expected_old = f"FBP {role} • {old_plane_name}" if role else ""
+                if expected_old and material.name == expected_old:
+                    material.name = f"FBP {role} • {new_plane_name}"
+                changed = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+
+    if changed:
+        _FBP_EFFECT_HEALTH_CACHE.clear()
+        try:
+            plane.update_tag()
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+    return changed
 
 
 def fbp_effect_is_active(rig, effect_id):
@@ -4399,51 +4519,256 @@ def fbp_effect_is_active(rig, effect_id):
 
 
 def _fbp_effect_ids_cache_key(rig):
+    """Return a cache key resilient to pointer reuse after datablock deletion."""
     try:
-        return int(rig.as_pointer())
+        pointer = int(rig.as_pointer())
+        name = str(getattr(rig, "name_full", getattr(rig, "name", "")) or "")
+        return (pointer, name)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        return str(getattr(rig, "name_full", getattr(rig, "name", "")) or "")
+        return (0, "")
+
+
+def _fbp_invalidate_effect_runtime_profile(rig=None):
+    """Drop cached per-frame targets without retaining stale RNA references."""
+    if rig is None:
+        _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()
+        return
+    key = _fbp_effect_ids_cache_key(rig)
+    if key and key[0]:
+        _FBP_EFFECT_RUNTIME_PROFILE_CACHE.pop(key, None)
 
 
 def _fbp_store_runtime_effect_ids(rig, effect_ids):
     key = _fbp_effect_ids_cache_key(rig)
-    if key in (None, ""):
+    if not key or not key[0]:
         return tuple(effect_ids or ())
     normalized = tuple(
         effect_id
         for effect_id in (fbp_normalize_effect_id(item) for item in effect_ids or ())
         if effect_id in FBP_EFFECT_REGISTRY
     )
+    # Discovery is also the structural invalidation boundary. Even when the IDs
+    # are unchanged, a material or modifier may have been rebuilt and its cached
+    # RNA targets must not survive that replacement.
+    previous = _FBP_EFFECT_IDS_CACHE.get(key)
+    _FBP_EFFECT_RUNTIME_PROFILE_CACHE.pop(key, None)
+    if previous != normalized:
+        _FBP_EFFECT_SCENE_RIG_CACHE.clear()
+    if len(_FBP_EFFECT_IDS_CACHE) >= 512 and key not in _FBP_EFFECT_IDS_CACHE:
+        _FBP_EFFECT_IDS_CACHE.clear()
+        _FBP_EFFECT_IDS_CACHE_TIME.clear()
+        _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()
+        _FBP_EFFECT_SCENE_RIG_CACHE.clear()
     _FBP_EFFECT_IDS_CACHE[key] = normalized
+    _FBP_EFFECT_IDS_CACHE_TIME[key] = time.monotonic()
     return normalized
 
 
 def _fbp_runtime_effect_ids(rig):
-    """Return the last synchronized stack for per-frame hot paths.
+    """Return the current effect stack for per-frame hot paths.
 
-    Effect add/remove/reorder operations already synchronize ``fbp_effects``.
-    Reusing that mirror avoids traversing every material node tree on every
-    evaluated frame. A full discovery remains the fallback for old files and
-    rigs that have not completed their initial synchronization yet.
+    ``Object.fbp_effects`` is a ``SKIP_SAVE`` UI mirror, so it is empty after a
+    file load and may also be cleared by Undo. Treating that transient list as
+    the source of truth silently disabled camera, quality and frame-sync work
+    until the Effects panel happened to rebuild it. On a cache miss, inspect
+    only the current effect modifiers/material nodes once, then keep the result
+    in the bounded runtime cache. No legacy conversion or asset rebuild occurs.
     """
     key = _fbp_effect_ids_cache_key(rig)
+    if not key or not key[0]:
+        return ()
     cached = _FBP_EFFECT_IDS_CACHE.get(key)
-    if cached is not None:
+    checked_at = float(_FBP_EFFECT_IDS_CACHE_TIME.get(key, 0.0) or 0.0)
+    if (
+        cached is not None
+        and time.monotonic() - checked_at <= _FBP_EFFECT_IDS_CACHE_SECONDS
+    ):
         return cached
     try:
-        signature = str(getattr(rig, "fbp_effects_signature", "") or "")
-        if signature:
-            ids = tuple(
-                fbp_normalize_effect_id(getattr(item, "effect_id", ""))
-                for item in rig.fbp_effects
-            )
-            return _fbp_store_runtime_effect_ids(rig, ids)
+        return tuple(fbp_effect_ids_for_rig(rig))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        pass
-    return tuple(fbp_effect_ids_for_rig(rig))
+        # Preserve the last known stack when Blender temporarily invalidates an
+        # RNA reference during depsgraph evaluation. Back off until the next TTL
+        # window instead of retrying the same failed scan on every frame.
+        fallback = cached if cached is not None else ()
+        _FBP_EFFECT_IDS_CACHE[key] = fallback
+        _FBP_EFFECT_IDS_CACHE_TIME[key] = time.monotonic()
+        return fallback
 
 
-def fbp_effect_ids_for_rig(rig):
+def _fbp_scene_effect_runtime_rigs(scene):
+    """Return only rigs with active effects, using a self-healing scene index."""
+    if scene is None:
+        return ()
+    try:
+        scene_key = (
+            int(scene.as_pointer()),
+            str(getattr(scene, "name_full", getattr(scene, "name", "")) or ""),
+        )
+        object_count = len(scene.objects)
+        layer_count = len(getattr(scene, "fbp_layers", ()) or ())
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        scene_key = (0, "")
+        object_count = -1
+        layer_count = -1
+    now = time.monotonic()
+    cached = _FBP_EFFECT_SCENE_RIG_CACHE.get(scene_key) if scene_key[0] else None
+    if cached is not None:
+        try:
+            if (
+                int(cached.get("object_count", -2)) == object_count
+                and int(cached.get("layer_count", -2)) == layer_count
+                and now - float(cached.get("checked_at", 0.0) or 0.0)
+                <= _FBP_EFFECT_SCENE_CACHE_SECONDS
+            ):
+                names = tuple(cached.get("rig_names", ()) or ())
+                resolved = tuple(
+                    rig for name in names
+                    for rig in (scene.objects.get(name),)
+                    if rig is not None
+                )
+                if len(resolved) == len(names):
+                    return resolved
+                _FBP_EFFECT_SCENE_RIG_CACHE.pop(scene_key, None)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+    try:
+        from .layers import iter_scene_fbp_rigs
+        rigs = tuple(
+            rig for rig in iter_scene_fbp_rigs(scene)
+            if tuple(_fbp_runtime_effect_ids(rig))
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ()
+    if scene_key[0]:
+        if len(_FBP_EFFECT_SCENE_RIG_CACHE) >= 32 and scene_key not in _FBP_EFFECT_SCENE_RIG_CACHE:
+            _FBP_EFFECT_SCENE_RIG_CACHE.clear()
+        _FBP_EFFECT_SCENE_RIG_CACHE[scene_key] = {
+            "object_count": object_count,
+            "layer_count": layer_count,
+            "checked_at": now,
+            "rig_names": tuple(
+                str(getattr(rig, "name", "") or "") for rig in rigs if rig is not None
+            ),
+        }
+    return rigs
+
+
+def _fbp_effect_runtime_profile(rig):
+    """Return cached targets and flags used by the frame-change hot path.
+
+    Effect discovery already has an explicit cache. This second-level profile
+    turns its ordered tuple into a reusable frozenset and resolves modifiers and
+    shader nodes once per structural stack change instead of once per frame.
+    """
+    key = _fbp_effect_ids_cache_key(rig)
+    if not key or not key[0]:
+        return {
+            "effect_ids": (), "active_ids": frozenset(),
+            "geometry_source_sync": False, "shader_source_sync": False,
+            "evolve_pairs": (), "geometry_modifiers": {},
+            "shader_nodes": {}, "frame_geometry_modifiers": (),
+            "frame_shader_targets": (),
+        }
+    effect_ids = tuple(_fbp_runtime_effect_ids(rig))
+    plane = _fbp_plane(rig)
+    try:
+        plane_key = (
+            int(plane.as_pointer()) if plane else 0,
+            str(getattr(plane, "name_full", getattr(plane, "name", "")) or "") if plane else "",
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        plane_key = (0, "")
+    cached = _FBP_EFFECT_RUNTIME_PROFILE_CACHE.get(key)
+    if (
+        cached is not None
+        and cached.get("effect_ids") == effect_ids
+        and cached.get("plane_key") == plane_key
+        and time.monotonic() - float(cached.get("built_at", 0.0) or 0.0)
+        <= _FBP_EFFECT_PROFILE_CACHE_SECONDS
+    ):
+        return cached
+
+    active_ids = frozenset(effect_ids)
+    geometry_modifiers = {}
+    frame_geometry_modifiers = []
+    if plane is not None:
+        try:
+            for modifier in plane.modifiers:
+                if getattr(modifier, "type", "") != "NODES":
+                    continue
+                effect_id = _fbp_geometry_effect_id_for_modifier(modifier)
+                if effect_id not in active_ids or effect_id in geometry_modifiers:
+                    continue
+                geometry_modifiers[effect_id] = modifier
+                if effect_id in FBP_FRAME_SYNC_GEOMETRY_EFFECT_IDS:
+                    frame_geometry_modifiers.append(modifier)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            geometry_modifiers.clear()
+            frame_geometry_modifiers.clear()
+
+    shader_node_lists = {}
+    frame_shader_targets = []
+    try:
+        for material in _fbp_plane_materials(rig):
+            for node in _fbp_shader_effect_nodes(material):
+                effect_id = _fbp_shader_effect_id(node)
+                if effect_id not in active_ids:
+                    continue
+                shader_node_lists.setdefault(effect_id, []).append(node)
+                if effect_id in FBP_FRAME_SYNC_SHADER_EFFECT_IDS:
+                    frame_shader_targets.append((material, node, effect_id))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        shader_node_lists.clear()
+        frame_shader_targets.clear()
+    shader_nodes = {
+        effect_id: tuple(nodes) for effect_id, nodes in shader_node_lists.items()
+    }
+
+    animated_effect_properties = {}
+    try:
+        for curve in fbp_action_fcurves(rig) or ():
+            if bool(getattr(curve, "mute", False)):
+                continue
+            data_path = str(getattr(curve, "data_path", "") or "")
+            for effect_id in FBP_ANIMATED_PROPERTY_EFFECTS.get(data_path, ()):
+                if effect_id in active_ids:
+                    animated_effect_properties.setdefault(effect_id, set()).add(data_path)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        animated_effect_properties.clear()
+    animated_effect_properties = {
+        effect_id: frozenset(property_names)
+        for effect_id, property_names in animated_effect_properties.items()
+    }
+
+    profile = {
+        "effect_ids": effect_ids,
+        "active_ids": active_ids,
+        "plane_key": plane_key,
+        "built_at": time.monotonic(),
+        "geometry_source_sync": bool(active_ids.intersection(FBP_FRAME_SYNC_GEOMETRY_EFFECT_IDS)),
+        "shader_source_sync": bool(active_ids.intersection(FBP_FRAME_SYNC_SHADER_EFFECT_IDS)),
+        "animated_effect_properties": animated_effect_properties,
+        "evolve_pairs": tuple(
+            (effect_id, property_key)
+            for effect_id, property_key in FBP_EVOLVE_EFFECT_PROPERTIES
+            if effect_id in active_ids
+        ),
+        "geometry_modifiers": geometry_modifiers,
+        "shader_nodes": shader_nodes,
+        "frame_geometry_modifiers": tuple(frame_geometry_modifiers),
+        "frame_shader_targets": tuple(frame_shader_targets),
+    }
+    if len(_FBP_EFFECT_RUNTIME_PROFILE_CACHE) >= 512 and key not in _FBP_EFFECT_RUNTIME_PROFILE_CACHE:
+        _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()
+    _FBP_EFFECT_RUNTIME_PROFILE_CACHE[key] = profile
+    return profile
+
+
+def fbp_effect_ids_for_rig(rig, *, refresh_custom=False):
+    if refresh_custom:
+        fbp_refresh_custom_effect_registry()
     plane = _fbp_plane(rig)
     if not plane:
         return []
@@ -4495,13 +4820,15 @@ def fbp_union_effect_ids(rigs):
 
 def fbp_effect_presence(rigs, effect_id):
     rigs = [rig for rig in list(rigs or []) if rig]
-    count = sum(1 for rig in rigs if fbp_effect_is_active(rig, effect_id))
+    effect_id = fbp_normalize_effect_id(effect_id)
+    count = sum(1 for rig in rigs if effect_id in _fbp_runtime_effect_ids(rig))
     return count, len(rigs)
 
 
 def fbp_effect_source_rig(rigs, effect_id):
+    effect_id = fbp_normalize_effect_id(effect_id)
     return next(
-        (rig for rig in list(rigs or []) if rig and fbp_effect_is_active(rig, effect_id)),
+        (rig for rig in list(rigs or []) if rig and effect_id in _fbp_runtime_effect_ids(rig)),
         None,
     )
 
@@ -4514,14 +4841,12 @@ def fbp_effect_asset_health_signature(rig, *, force=False, effect_ids=None):
     string for a fraction of a second; explicit synchronization forces a fresh
     check before attempting repairs.
     """
-    try:
-        cache_key = int(rig.as_pointer())
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        cache_key = str(getattr(rig, "name", "") or "")
+    cache_key = _fbp_effect_ids_cache_key(rig)
+    cacheable = bool(cache_key and cache_key[0])
     now = time.monotonic()
-    if not force:
+    if not force and cacheable:
         cached = _FBP_EFFECT_HEALTH_CACHE.get(cache_key)
-        if cached and (now - float(cached[0])) < 0.75:
+        if cached and (now - float(cached[0])) < _FBP_EFFECT_HEALTH_CACHE_SECONDS:
             return str(cached[1])
 
     tokens = []
@@ -4562,7 +4887,10 @@ def fbp_effect_asset_health_signature(rig, *, force=False, effect_ids=None):
                 break
         tokens.append(f"{effect_id}:{'ok' if healthy else 'broken'}")
     signature = ",".join(tokens)
-    _FBP_EFFECT_HEALTH_CACHE[cache_key] = (now, signature)
+    if cacheable:
+        if len(_FBP_EFFECT_HEALTH_CACHE) >= 512 and cache_key not in _FBP_EFFECT_HEALTH_CACHE:
+            _FBP_EFFECT_HEALTH_CACHE.clear()
+        _FBP_EFFECT_HEALTH_CACHE[cache_key] = (now, signature)
     return signature
 
 
@@ -4601,7 +4929,9 @@ def fbp_repair_effect_assets(rig):
     return changed
 
 
-def fbp_effect_items_signature(rig, rigs=None, *, force_health=False):
+def fbp_effect_items_signature(
+    rig, rigs=None, *, force_health=False, include_health=True
+):
     target_rigs = list(rigs or [rig])
     target_ids = []
     for item in target_rigs:
@@ -4618,10 +4948,13 @@ def fbp_effect_items_signature(rig, rigs=None, *, force_health=False):
     for item in target_rigs:
         try:
             names.append(str(getattr(item, "name_full", getattr(item, "name", "")) or ""))
-            health.append(fbp_effect_asset_health_signature(item, force=force_health))
+            health.append(
+                fbp_effect_asset_health_signature(item, force=force_health)
+                if include_health else "runtime"
+            )
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             names.append("")
-            health.append("broken")
+            health.append("broken" if include_health else "runtime")
     return (
         "|".join(target_ids)
         + "::"
@@ -4631,12 +4964,164 @@ def fbp_effect_items_signature(rig, rigs=None, *, force_health=False):
     )
 
 
-def fbp_sync_effect_items(rig, rigs=None):
+FBP_EFFECT_STACK_OWNER_KEY = "fbp_effect_stack_owner_id"
+
+
+def _fbp_effect_stack_owner_id(rig, *, force=False):
+    """Return a persistent per-rig owner identity and repair copied IDs.
+
+    Blender duplicates ID properties during Shift+D. The runtime owner index
+    detects two live rigs claiming the same stack identity and gives the later
+    claimant a fresh token without scanning every object in the project.
+    """
+    if rig is None:
+        return ""
+    rig_key = _fbp_effect_ids_cache_key(rig)
+    try:
+        owner_id = str(rig.get(FBP_EFFECT_STACK_OWNER_KEY, "") or "")
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ""
+    claimed_by = _FBP_EFFECT_STACK_OWNER_CACHE.get(owner_id) if owner_id else None
+    if force or not owner_id or (claimed_by is not None and claimed_by != rig_key):
+        owner_id = uuid.uuid4().hex
+        try:
+            rig[FBP_EFFECT_STACK_OWNER_KEY] = owner_id
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return ""
+    if len(_FBP_EFFECT_STACK_OWNER_CACHE) >= 1024 and owner_id not in _FBP_EFFECT_STACK_OWNER_CACHE:
+        _FBP_EFFECT_STACK_OWNER_CACHE.clear()
+    _FBP_EFFECT_STACK_OWNER_CACHE[owner_id] = rig_key
+    return owner_id
+
+
+def _fbp_assign_logical_effect_instance(owners, effect_id, owner_token, *, force=False):
+    owners = [owner for owner in tuple(owners or ()) if owner is not None]
+    if not owners:
+        return False
+    existing_ids = []
+    owner_tokens = []
+    for owner in owners:
+        try:
+            current = str(owner.get(FBP_EFFECT_INSTANCE_KEY, "") or "")
+            stored_owner = str(owner.get(FBP_EFFECT_INSTANCE_OWNER_KEY, "") or "")
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            current = ""
+            stored_owner = ""
+        if current:
+            existing_ids.append(current)
+        owner_tokens.append(stored_owner)
+    unique_ids = tuple(dict.fromkeys(existing_ids))
+    claimed_owner = (
+        _FBP_EFFECT_INSTANCE_OWNER_CACHE.get(unique_ids[0])
+        if len(unique_ids) == 1 else None
+    )
+    needs_fresh = bool(
+        force
+        or not unique_ids
+        or len(unique_ids) != 1
+        or any(token and token != owner_token for token in owner_tokens)
+        or (claimed_owner is not None and claimed_owner != owner_token)
+    )
+    instance_id = new_effect_instance_id(effect_id) if needs_fresh else unique_ids[0]
+    changed = False
+    for owner in owners:
+        try:
+            current = str(owner.get(FBP_EFFECT_INSTANCE_KEY, "") or "")
+            stored_owner = str(owner.get(FBP_EFFECT_INSTANCE_OWNER_KEY, "") or "")
+            version = int(owner.get(FBP_EFFECT_INSTANCE_VERSION_KEY, 0) or 0)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            current = ""
+            stored_owner = ""
+            version = 0
+        if (
+            current == instance_id
+            and stored_owner == owner_token
+            and version == FBP_EFFECT_INSTANCE_VERSION
+        ):
+            continue
+        if assign_effect_instance_id(owner, effect_id, instance_id, owner_token):
+            changed = True
+    if len(_FBP_EFFECT_INSTANCE_OWNER_CACHE) >= 2048 and instance_id not in _FBP_EFFECT_INSTANCE_OWNER_CACHE:
+        _FBP_EFFECT_INSTANCE_OWNER_CACHE.clear()
+    _FBP_EFFECT_INSTANCE_OWNER_CACHE[instance_id] = owner_token
+    return changed
+
+
+def fbp_refresh_effect_instance_ids(rig, *, force=False, refresh_stack_owner=False):
+    """Normalize logical effect-instance IDs for one Frame by Plane layer.
+
+    All material copies of one shader effect share one instance ID. Geometry
+    modifiers keep one ID each. Duplicated rigs receive a new stack owner and
+    therefore cannot retain the source layer's persistent instance identities.
+    """
+    if rig is None:
+        return False
+    owner_id = _fbp_effect_stack_owner_id(
+        rig, force=bool(force or refresh_stack_owner)
+    )
+    if not owner_id:
+        return False
+    changed = False
+    plane = _fbp_plane(rig)
+    if plane is not None:
+        try:
+            for modifier in plane.modifiers:
+                effect_id = _fbp_geometry_effect_id_for_modifier(modifier)
+                if not effect_id:
+                    continue
+                changed = _fbp_assign_logical_effect_instance(
+                    (modifier,), effect_id, f"{owner_id}:{effect_id}", force=force
+                ) or changed
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+    shader_owners = {}
+    try:
+        for material in _fbp_plane_materials(rig):
+            for node in _fbp_shader_effect_nodes(material):
+                effect_id = _fbp_shader_effect_id(node)
+                if effect_id:
+                    shader_owners.setdefault(effect_id, []).append(node)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        shader_owners.clear()
+    for effect_id, owners in shader_owners.items():
+        changed = _fbp_assign_logical_effect_instance(
+            owners, effect_id, f"{owner_id}:{effect_id}", force=force
+        ) or changed
+    return changed
+
+
+def fbp_effect_instance_id_for_rig(rig, effect_id, *, ensure=True):
+    """Return the logical identity of the concrete owner in the active stack."""
+    definition = fbp_effect_definition(effect_id)
+    if definition.get("kind") == "GEOMETRY":
+        modifier = fbp_find_effect_modifier(rig, effect_id)
+        if modifier:
+            return (
+                ensure_effect_instance_id(modifier, effect_id)
+                if ensure else effect_instance_id(modifier)
+            )
+        return ""
+    if definition.get("kind") == "SHADER":
+        nodes = _fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+        if nodes:
+            return (
+                ensure_effect_instance_id(nodes[0], effect_id)
+                if ensure else effect_instance_id(nodes[0])
+            )
+    if definition.get("kind") == "BASE":
+        return f"base:{fbp_normalize_effect_id(effect_id).lower()}"
+    return ""
+
+
+def fbp_sync_effect_items(rig, rigs=None, *, repair_assets=True):
     if not rig or not hasattr(rig, "fbp_effects"):
         return []
     target_rigs = list(rigs or [rig])
     for target_rig in target_rigs:
-        fbp_repair_effect_assets(target_rig)
+        if repair_assets:
+            fbp_repair_effect_assets(target_rig)
+        fbp_refresh_effect_instance_ids(target_rig)
 
     # Discover each repaired stack once and reuse it for union, health,
     # visibility and UI mirroring. The old path traversed every modifier and
@@ -4671,10 +5156,11 @@ def fbp_sync_effect_items(rig, rigs=None):
                     force=True,
                     effect_ids=effect_ids,
                 )
+                if repair_assets else "runtime"
             )
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             names.append("")
-            health.append("broken")
+            health.append("broken" if repair_assets else "runtime")
     signature = (
         "|".join(target_ids)
         + "::"
@@ -4713,7 +5199,12 @@ def fbp_sync_effect_items(rig, rigs=None):
             for effect_id in target_ids:
                 item = rig.fbp_effects.add()
                 item.effect_id = effect_id
+                item.instance_id = fbp_effect_instance_id_for_rig(rig, effect_id)
                 item.label = str(fbp_effect_definition(effect_id).get("label", effect_id))
+        else:
+            for item in rig.fbp_effects:
+                effect_id = str(getattr(item, "effect_id", "") or "")
+                item.instance_id = fbp_effect_instance_id_for_rig(rig, effect_id)
         if target_ids:
             rig.fbp_effects_index = target_ids.index(active_id) if active_id in target_ids else min(active_index, len(target_ids) - 1)
         else:
@@ -4734,7 +5225,7 @@ def fbp_schedule_effect_items_sync(rig, rigs=None):
         for effect_id in _fbp_runtime_effect_ids(target_rig):
             if effect_id not in target_ids:
                 target_ids.append(effect_id)
-    signature = fbp_effect_items_signature(rig, rigs)
+    signature = fbp_effect_items_signature(rig, rigs, include_health=False)
     try:
         current_ids = [str(getattr(item, "effect_id", "") or "") for item in rig.fbp_effects]
         if current_ids == target_ids and str(getattr(rig, "fbp_effects_signature", "") or "") == signature:
@@ -4757,7 +5248,10 @@ def fbp_schedule_effect_items_sync(rig, rigs=None):
         current_rigs = _fbp_selected_rigs(getattr(bpy, "context", None))
         if active_rig not in current_rigs:
             current_rigs = [active_rig]
-        fbp_sync_effect_items(active_rig, current_rigs)
+        # UI mirroring must stay lightweight. Structural repair is performed by
+        # effect operators, Scene sync and explicit diagnostics, not every time
+        # the sidebar needs to rebuild its transient list.
+        fbp_sync_effect_items(active_rig, current_rigs, repair_assets=False)
         return None
 
     _safe_tasks.schedule_once(f"ui.effect_stack.{rig_key}", _timer, first_interval=0.03)
@@ -4800,19 +5294,46 @@ def fbp_add_effect(rig, effect_id):
     if definition.get("kind") == "BASE":
         changed = _fbp_set_enabled(rig, effect_id, True)
         fbp_sync_effect_items(rig)
-        return changed or fbp_effect_is_active(rig, effect_id)
-    if definition.get("kind") == "GEOMETRY":
-        return fbp_apply_geometry_effect(rig, effect_id)
-    if definition.get("kind") == "SHADER":
-        return fbp_apply_shader_effect(rig, effect_id)
-    return False
+        applied = changed or fbp_effect_is_active(rig, effect_id)
+    elif definition.get("kind") == "GEOMETRY":
+        applied = fbp_apply_geometry_effect(rig, effect_id)
+    elif definition.get("kind") == "SHADER":
+        applied = fbp_apply_shader_effect(rig, effect_id)
+    else:
+        return False
+    if applied and definition.get("evolve_property"):
+        fbp_ensure_effect_animation_state(rig, effect_id)
+    return bool(applied)
 
 
-def fbp_restore_enabled_shader_effects(rig):
+def fbp_capture_custom_shader_effect_states(rig):
+    """Capture per-instance custom shader socket values before material rebuilds."""
+    if not rig:
+        return {}
+    fbp_refresh_custom_effect_registry(force=False)
+    states = {}
+    for effect_id, definition in tuple(FBP_EFFECT_REGISTRY.items()):
+        if not bool(definition.get("custom", False)):
+            continue
+        if definition.get("kind") != "SHADER":
+            continue
+        if bool(definition.get("custom_invalid", False)):
+            continue
+        if not _fbp_find_shader_effect_nodes_for_rig(rig, effect_id):
+            continue
+        state = _fbp_capture_custom_effect_inputs(rig, effect_id)
+        if state:
+            states[effect_id] = state
+    return states
+
+
+def fbp_restore_enabled_shader_effects(rig, custom_states=None):
     """Restore shader nodes after a color/gradient material was rebuilt."""
     if not rig:
         return False
     changed = False
+    custom_states = dict(custom_states or {})
+    fbp_refresh_custom_effect_registry(force=False)
     for effect_id, definition in FBP_EFFECT_REGISTRY.items():
         if definition.get("kind") != "SHADER":
             continue
@@ -4820,9 +5341,14 @@ def fbp_restore_enabled_shader_effects(rig):
             continue
         if not fbp_effect_supported_for_rig(rig, effect_id):
             continue
-        changed = fbp_apply_shader_effect(
+        applied = fbp_apply_shader_effect(
             rig, effect_id, rebuild=True, sync_items=False
-        ) or changed
+        )
+        changed = applied or changed
+        if applied and effect_id in custom_states:
+            changed = _fbp_apply_custom_effect_inputs(
+                rig, effect_id, custom_states[effect_id]
+            ) or changed
     fbp_sync_effect_items(rig)
     return changed
 
@@ -4830,20 +5356,18 @@ def fbp_restore_enabled_shader_effects(rig):
 
 def _fbp_clear_effect_auxiliary_state(rig, effect_id):
     changed = False
-    keys = (
+    for key in (
         _fbp_effect_state_key(effect_id, "input_source"),
         _fbp_effect_state_key(effect_id, "debug"),
-    )
-    definition = fbp_effect_definition(effect_id)
-    if definition.get("evolve_property"):
-        keys += tuple(_fbp_animation_key(effect_id, suffix) for suffix in ("evolve", "step", "seed", "unique", "layer_seed", "amount", "loop"))
-    for key in keys:
+    ):
         try:
             if key in rig:
                 del rig[key]
                 changed = True
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
             pass
+    if fbp_effect_definition(effect_id).get("evolve_property"):
+        changed = fbp_reset_effect_animation_state(rig, effect_id) or changed
     return changed
 
 def fbp_remove_effect(rig, effect_id):
@@ -4973,19 +5497,26 @@ def fbp_move_effect(rig, effect_id, direction):
     return False
 
 
-def fbp_reapply_all_effects(rig):
+def fbp_reapply_all_effects(rig, custom_states=None):
     """Restore shader routing and alpha images after an FBP material rebuild."""
     if not rig:
         return False
     changed = False
+    custom_states = dict(custom_states or {})
+    fbp_refresh_custom_effect_registry(force=False)
     for effect_id, definition in FBP_EFFECT_REGISTRY.items():
         if definition.get("kind") == "SHADER" and (
             _fbp_is_enabled(rig, effect_id)
             or bool(_fbp_find_shader_effect_nodes_for_rig(rig, effect_id))
         ):
-            changed = fbp_apply_shader_effect(
+            applied = fbp_apply_shader_effect(
                 rig, effect_id, rebuild=False, sync_items=False
-            ) or changed
+            )
+            changed = applied or changed
+            if applied and effect_id in custom_states:
+                changed = _fbp_apply_custom_effect_inputs(
+                    rig, effect_id, custom_states[effect_id]
+                ) or changed
     # Restore the user-defined order after a material rebuild.
     for stage in ("UV", "COLOR"):
         desired = _fbp_get_rig_shader_stage_order(rig, stage)
@@ -5138,12 +5669,23 @@ def update_effect_setting_cb(self, context, effect_id, prop_name):
                     "fbp_text_matrix_viewport_columns",
                     "fbp_text_matrix_viewport_rows",
                 }
-            fbp_update_geometry_effect(
-                rig,
-                effect_id,
-                sync_alpha=False,
-                property_names=requested,
-            )
+            for contract in _fbp_quality_contracts(definition):
+                playback_property = str(contract.get("playback_property", ""))
+                render_property = str(contract.get("render_property", ""))
+                viewport_property = str(contract.get("viewport_property", ""))
+                if prop_name == playback_property:
+                    requested = {viewport_property} if _FBP_EFFECT_PLAYBACK_ACTIVE and viewport_property else set()
+                    break
+                if prop_name == render_property:
+                    requested = set()
+                    break
+            if requested:
+                fbp_update_geometry_effect(
+                    rig,
+                    effect_id,
+                    sync_alpha=False,
+                    property_names=requested,
+                )
         else:
             fbp_update_shader_effect(
                 rig,
@@ -5203,13 +5745,21 @@ def update_mesh_wiggle_setting_cb(self, context, prop_name):
 
 
 def fbp_effect_visible_state(rig, effect_id):
+    effect_id = fbp_normalize_effect_id(effect_id)
     definition = fbp_effect_definition(effect_id)
     if definition.get("kind") == "BASE":
         return fbp_effect_is_active(rig, effect_id)
+    profile = _fbp_effect_runtime_profile(rig)
+    if effect_id not in profile.get("active_ids", ()):
+        return False
     if definition.get("kind") == "GEOMETRY":
-        modifier = fbp_find_effect_modifier(rig, effect_id)
+        modifier = profile.get("geometry_modifiers", {}).get(effect_id)
+        if modifier is None:
+            modifier = fbp_find_effect_modifier(rig, effect_id)
         return bool(modifier and getattr(modifier, "show_viewport", True))
-    nodes = _fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+    nodes = profile.get("shader_nodes", {}).get(effect_id, ())
+    if not nodes:
+        nodes = _fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
     return bool(nodes) and all(not bool(getattr(node, "mute", False)) for node in nodes)
 
 
@@ -5245,7 +5795,10 @@ def fbp_effect_render_visible_state(rig, effect_id):
     if definition.get("kind") == "BASE":
         return True
     if definition.get("kind") == "GEOMETRY":
-        modifier = fbp_find_effect_modifier(rig, effect_id)
+        profile = _fbp_effect_runtime_profile(rig)
+        modifier = profile.get("geometry_modifiers", {}).get(effect_id)
+        if modifier is None and effect_id in profile.get("active_ids", ()):
+            modifier = fbp_find_effect_modifier(rig, effect_id)
         if modifier is not None:
             return bool(getattr(modifier, "show_render", True))
         return _fbp_stored_effect_render_visibility(rig, effect_id, True)
@@ -5266,56 +5819,73 @@ def fbp_set_effect_render_visible(rig, effect_id, visible):
     return changed
 
 
-def fbp_effect_render_guard_pre():
-    """Apply render-only states and return enough data for a lossless restore."""
+def fbp_effect_render_guard_pre(scene=None):
+    """Apply render-only states once and return enough data for a lossless restore."""
     backup = []
-    for rig in bpy.data.objects:
+    try:
+        from .layers import iter_scene_fbp_rigs
+        rigs = iter_scene_fbp_rigs(scene or getattr(bpy.context, "scene", None))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        rigs = ()
+    for rig in rigs:
         if not bool(getattr(rig, "is_fbp_control", False)):
             continue
-        for effect_id in fbp_effect_ids_for_rig(rig):
+        # Render preflight is a correctness boundary: refresh discovery once,
+        # which also invalidates stale profile targets after external node or
+        # modifier edits, then reuse the rebuilt profile for every effect.
+        fbp_effect_ids_for_rig(rig)
+        profile = _fbp_effect_runtime_profile(rig)
+        for effect_id in profile.get("effect_ids", ()):
             definition = fbp_effect_definition(effect_id)
             if definition.get("kind") == "SHADER":
                 render_visible = _fbp_stored_effect_render_visibility(rig, effect_id, True)
-                for node in _fbp_find_shader_effect_nodes_for_rig(rig, effect_id):
+                for node in profile.get("shader_nodes", {}).get(effect_id, ()):
                     try:
-                        backup.append(("NODE_MUTE", node, bool(node.mute)))
-                        node.mute = not render_visible
+                        target_mute = not render_visible
+                        current_mute = bool(node.mute)
+                        if current_mute != target_mute:
+                            backup.append(("NODE_MUTE", node, current_mute))
+                            node.mute = target_mute
                     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                         pass
                 continue
-            if effect_id != FBP_EFFECT_TEXT_MATRIX:
+            contracts = _fbp_quality_contracts(definition)
+            if not contracts:
                 continue
-            modifier = fbp_find_effect_modifier(rig, effect_id)
+            modifier = profile.get("geometry_modifiers", {}).get(effect_id)
             node_group = getattr(modifier, "node_group", None) if modifier else None
             if not modifier or not node_group:
                 continue
-            render_dimensions = (
-                ("Columns", "fbp_text_matrix_render_columns", 96, 2),
-                ("Rows", "fbp_text_matrix_render_rows", 0, 0),
-            )
-            for socket_name, property_name, default, minimum in render_dimensions:
+            for contract in contracts:
+                socket_name = str(contract.get("socket", ""))
+                property_name = str(contract.get("render_property", ""))
+                if not socket_name or not property_name:
+                    continue
                 interface_socket = _fbp_interface_input(node_group, socket_name)
                 identifier = str(getattr(interface_socket, "identifier", "") or "")
                 if not identifier:
                     continue
                 try:
                     old_value = modifier.get(identifier)
-                    render_value = int(getattr(rig, property_name, default) or default)
-                    render_value = max(minimum, render_value)
-                    backup.append(("MODIFIER_INPUT", modifier, identifier, old_value))
-                    modifier[identifier] = render_value
+                    render_value = _fbp_quality_value(getattr(rig, property_name), contract)
+                    if old_value != render_value:
+                        backup.append(("MODIFIER_INPUT", modifier, identifier, old_value))
+                        modifier[identifier] = render_value
                 except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                     continue
     return backup
 
 
 def fbp_effect_render_guard_post(backup):
+    """Restore render-only effect values and return transient failures.
+
+    Reference/shape errors mean the original datablock no longer exists and can
+    be discarded. RuntimeError can be temporary while Blender is still releasing
+    render-owned data, so those entries remain queued for the idle watchdog.
+    """
+    retry = []
     for item in list(backup or ()):
         try:
-            if len(item) == 2:  # Compatibility with old handler backups.
-                node, muted = item
-                node.mute = bool(muted)
-                continue
             tag = item[0]
             if tag == "NODE_MUTE":
                 _tag, node, muted = item
@@ -5329,8 +5899,11 @@ def fbp_effect_render_guard_post(backup):
                         pass
                 else:
                     modifier[identifier] = value
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
+        except RuntimeError:
+            retry.append(item)
+        except (AttributeError, ReferenceError, TypeError, ValueError):
+            continue
+    return retry
 
 
 def fbp_effect_item_visible_get(rig, effect_id):
@@ -5350,6 +5923,617 @@ def fbp_effect_item_visible_set(rig, effect_id, visible):
         if fbp_effect_is_active(target, effect_id):
             changed = fbp_set_effect_visible(target, effect_id, visible) or changed
     return changed
+
+
+
+def _fbp_custom_effect_reserved_socket_names(definition):
+    return {
+        str(definition.get(key, "") or "")
+        for key in (
+            "input_socket", "output_socket", "alpha_input_socket",
+            "alpha_output_socket", "uv_input_socket",
+        )
+        if str(definition.get(key, "") or "")
+    }
+
+
+def _fbp_runtime_rna_key(value):
+    if value is None:
+        return (0, "")
+    try:
+        return (
+            int(value.as_pointer()),
+            str(getattr(value, "name_full", getattr(value, "name", "")) or ""),
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return (0, "")
+
+
+def _fbp_cache_custom_socket_descriptors(cache, key, value):
+    if not key or not key[0]:
+        return value
+    if len(cache) >= 512 and key not in cache:
+        for stale_key in tuple(cache)[:128]:
+            cache.pop(stale_key, None)
+    cache[key] = (time.monotonic(), value)
+    return value
+
+
+def _fbp_custom_geometry_value_sockets(node_group):
+    """Return editable modifier inputs using stable interface identifiers.
+
+    The descriptors are cached for a fraction of a second. This keeps socket
+    renames responsive while avoiding repeated full interface walks during
+    rapid sidebar redraws and slider interaction.
+    """
+    interface = getattr(node_group, "interface", None) if node_group else None
+    if interface is None:
+        return []
+    try:
+        items = interface.items_tree
+        item_count = len(items)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return []
+    base_key = _fbp_node_group_cache_key(node_group)
+    key = (base_key[0], base_key[1], item_count) if base_key else (0, "", item_count)
+    cached = _FBP_CUSTOM_GEOMETRY_SOCKET_CACHE.get(key)
+    if cached and time.monotonic() - float(cached[0]) <= _FBP_CUSTOM_SOCKET_CACHE_SECONDS:
+        return cached[1]
+
+    result = []
+    for item in items:
+        try:
+            if getattr(item, "item_type", "") != "SOCKET":
+                continue
+            if getattr(item, "in_out", "") != "INPUT":
+                continue
+            if bool(getattr(item, "hide_in_modifier", False)):
+                continue
+            socket_type = str(
+                getattr(item, "socket_type", "")
+                or getattr(item, "bl_socket_idname", "")
+                or ""
+            )
+            if socket_type in {
+                "NodeSocketGeometry", "NodeSocketShader", "NodeSocketVirtual",
+            }:
+                continue
+            name = str(getattr(item, "name", "") or "")
+            identifier = str(getattr(item, "identifier", "") or "")
+            if not name or not identifier:
+                continue
+            result.append((name, identifier, item))
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    return _fbp_cache_custom_socket_descriptors(
+        _FBP_CUSTOM_GEOMETRY_SOCKET_CACHE, key, result
+    )
+
+
+def _fbp_custom_shader_value_sockets(node, definition):
+    reserved = _fbp_custom_effect_reserved_socket_names(definition)
+    try:
+        input_count = len(node.inputs)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return []
+    node_key = _fbp_runtime_rna_key(node)
+    group_key = _fbp_node_group_cache_key(getattr(node, "node_tree", None))
+    key = (
+        node_key[0], node_key[1],
+        group_key[0] if group_key else 0,
+        group_key[1] if group_key else "",
+        input_count,
+        tuple(sorted(reserved)),
+    )
+    cached = _FBP_CUSTOM_SHADER_SOCKET_CACHE.get(key)
+    if cached and time.monotonic() - float(cached[0]) <= _FBP_CUSTOM_SOCKET_CACHE_SECONDS:
+        return cached[1]
+
+    result = []
+    for socket in getattr(node, "inputs", ()):
+        try:
+            name = str(getattr(socket, "name", "") or "")
+            identifier = str(getattr(socket, "identifier", "") or name)
+            if not name or name in reserved:
+                continue
+            if bool(getattr(socket, "hide_value", False)):
+                continue
+            if not bool(getattr(socket, "enabled", True)):
+                continue
+            if bool(getattr(socket, "is_linked", False)):
+                continue
+            if not hasattr(socket, "default_value"):
+                continue
+            result.append((name, identifier, socket))
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    return _fbp_cache_custom_socket_descriptors(
+        _FBP_CUSTOM_SHADER_SOCKET_CACHE, key, result
+    )
+
+
+
+def _fbp_capture_custom_effect_inputs(rig, effect_id):
+    definition = fbp_effect_definition(effect_id)
+    if not bool(definition.get("custom", False)):
+        return {}
+    if definition.get("kind") == "GEOMETRY":
+        modifier = fbp_find_effect_modifier(rig, effect_id)
+        node_group = getattr(modifier, "node_group", None) if modifier else None
+        if not modifier or not node_group:
+            return {}
+        values = {}
+        for _name, identifier, item in _fbp_custom_geometry_value_sockets(node_group):
+            try:
+                default = getattr(item, "default_value", None)
+                values[identifier] = _fbp_serialize_value(
+                    modifier.get(identifier, default)
+                )
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        return {"kind": "GEOMETRY", "values": values}
+
+    nodes = _fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+    node = nodes[0] if nodes else None
+    if node is None:
+        return {}
+    values = {}
+    for _name, identifier, socket in _fbp_custom_shader_value_sockets(
+        node, definition
+    ):
+        try:
+            values[identifier] = _fbp_serialize_value(socket.default_value)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    return {"kind": "SHADER", "values": values}
+
+
+def _fbp_custom_shader_nodes_need_sync(nodes, definition, master_state=None):
+    """Return whether material instances differ from the master group node."""
+    nodes = list(nodes or ())
+    if len(nodes) < 2:
+        return False
+    values = dict((master_state or {}).get("values", {}) or {})
+    if not values:
+        for _name, identifier, socket in _fbp_custom_shader_value_sockets(
+            nodes[0], definition
+        ):
+            try:
+                values[identifier] = _fbp_serialize_value(socket.default_value)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+    if not values:
+        return False
+    for node in nodes[1:]:
+        sockets = {
+            identifier: socket
+            for _name, identifier, socket
+            in _fbp_custom_shader_value_sockets(node, definition)
+        }
+        for identifier, serialized in values.items():
+            socket = sockets.get(identifier)
+            if socket is None:
+                continue
+            value = _fbp_deserialize_value(serialized)
+            if isinstance(value, list):
+                value = tuple(value)
+            try:
+                if not _fbp_effect_values_equal(socket.default_value, value):
+                    return True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+    return False
+
+
+def _fbp_custom_shader_topology_signature(nodes):
+    return tuple(_fbp_runtime_rna_key(node) for node in tuple(nodes or ()))
+
+
+def _fbp_custom_state_signature(state):
+    try:
+        return json.dumps(state or {}, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return repr(state or {})
+
+
+def _fbp_schedule_custom_shader_sync(rig, effect_id, nodes, definition):
+    """Defer multi-material value propagation outside UI drawing.
+
+    The master socket state is captured once per draw. A short-lived validated
+    state cache avoids rescanning every secondary material while no value or
+    node topology changed.
+    """
+    nodes = list(nodes or ())
+    state = _fbp_capture_custom_effect_inputs(rig, effect_id)
+    if not state:
+        return False
+    rig_key = fbp_obj_runtime_key(rig)
+    if rig_key is None:
+        return False
+    key = (rig_key, str(effect_id or ""))
+    topology = _fbp_custom_shader_topology_signature(nodes)
+    state_signature = _fbp_custom_state_signature(state)
+    cached = _FBP_CUSTOM_SHADER_SYNC_STATE_CACHE.get(key)
+    if (
+        cached
+        and cached[0] == topology
+        and cached[1] == state_signature
+        and time.monotonic() - float(cached[2]) <= _FBP_CUSTOM_SHADER_SYNC_CACHE_SECONDS
+    ):
+        return False
+    if not _fbp_custom_shader_nodes_need_sync(
+        nodes, definition, master_state=state
+    ):
+        _FBP_CUSTOM_SHADER_SYNC_STATE_CACHE[key] = (
+            topology, state_signature, time.monotonic()
+        )
+        return False
+
+    rig_name = str(getattr(rig, "name", "") or "")
+    try:
+        expected_instance = str(effect_instance_id(nodes[0]) or "") if nodes else ""
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        expected_instance = ""
+    if not expected_instance:
+        return False
+    _FBP_CUSTOM_SHADER_SYNC_PENDING[key] = (
+        rig_name, expected_instance, state, topology, state_signature
+    )
+
+    def _sync_latest():
+        payload = _FBP_CUSTOM_SHADER_SYNC_PENDING.pop(key, None)
+        if not payload:
+            return None
+        (
+            stored_name, stored_instance, latest_state,
+            _stored_topology, latest_signature,
+        ) = payload
+        target_rig = bpy.data.objects.get(stored_name) if stored_name else None
+        if target_rig is None or fbp_obj_runtime_key(target_rig) != rig_key:
+            target_rig = next(
+                (obj for obj in bpy.data.objects if fbp_obj_runtime_key(obj) == rig_key),
+                None,
+            )
+        if target_rig is not None:
+            current_nodes = _fbp_find_shader_effect_nodes_for_rig(target_rig, effect_id)
+            try:
+                current_instance = (
+                    str(effect_instance_id(current_nodes[0]) or "")
+                    if current_nodes else ""
+                )
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                current_instance = ""
+            if current_instance == stored_instance:
+                _fbp_apply_custom_effect_inputs(
+                    target_rig, effect_id, latest_state
+                )
+                _FBP_CUSTOM_SHADER_SYNC_STATE_CACHE[key] = (
+                    _fbp_custom_shader_topology_signature(current_nodes),
+                    latest_signature,
+                    time.monotonic(),
+                )
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        return schedule_once(
+            f"fbp_custom_shader_sync:{key[0]}:{key[1]}",
+            _sync_latest,
+            first_interval=0.03,
+        )
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        _FBP_CUSTOM_SHADER_SYNC_PENDING.pop(key, None)
+        return False
+
+
+def _fbp_apply_custom_effect_inputs(rig, effect_id, state):
+    definition = fbp_effect_definition(effect_id)
+    values = dict((state or {}).get("values", {}) or {})
+    if not bool(definition.get("custom", False)) or not values:
+        return False
+    changed = False
+    if definition.get("kind") == "GEOMETRY":
+        modifier = fbp_find_effect_modifier(rig, effect_id)
+        node_group = getattr(modifier, "node_group", None) if modifier else None
+        if not modifier or not node_group:
+            return False
+        by_identifier = {
+            identifier: item
+            for _name, identifier, item
+            in _fbp_custom_geometry_value_sockets(node_group)
+        }
+        for identifier, serialized in values.items():
+            if identifier not in by_identifier:
+                continue
+            value = _fbp_deserialize_value(serialized)
+            try:
+                current = modifier.get(identifier)
+                if _fbp_effect_values_equal(current, value):
+                    continue
+                modifier[identifier] = value
+                changed = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        return changed
+
+    for node in _fbp_find_shader_effect_nodes_for_rig(rig, effect_id):
+        sockets = {
+            identifier: socket
+            for _name, identifier, socket
+            in _fbp_custom_shader_value_sockets(node, definition)
+        }
+        for identifier, serialized in values.items():
+            socket = sockets.get(identifier)
+            if socket is None:
+                continue
+            value = _fbp_deserialize_value(serialized)
+            try:
+                if isinstance(value, list):
+                    value = tuple(value)
+                if _fbp_effect_values_equal(socket.default_value, value):
+                    continue
+                socket.default_value = value
+                changed = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+    return changed
+
+
+def _fbp_reset_custom_effect_inputs(rig, effect_id):
+    definition = fbp_effect_definition(effect_id)
+    group = find_custom_effect_group(effect_id)
+    if not bool(definition.get("custom", False)) or group is None:
+        return False
+    changed = False
+    if definition.get("kind") == "GEOMETRY":
+        modifier = fbp_find_effect_modifier(rig, effect_id)
+        if modifier is None:
+            return False
+        for _name, identifier, item in _fbp_custom_geometry_value_sockets(group):
+            try:
+                value = getattr(item, "default_value", None)
+                if value is None or _fbp_effect_values_equal(
+                    modifier.get(identifier), value
+                ):
+                    continue
+                modifier[identifier] = value
+                changed = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        return changed
+
+    defaults = {
+        str(getattr(item, "identifier", "") or getattr(item, "name", "") or ""):
+            getattr(item, "default_value", None)
+        for item in getattr(getattr(group, "interface", None), "items_tree", ())
+        if getattr(item, "item_type", "") == "SOCKET"
+        and getattr(item, "in_out", "") == "INPUT"
+        and hasattr(item, "default_value")
+    }
+    for node in _fbp_find_shader_effect_nodes_for_rig(rig, effect_id):
+        for _name, identifier, socket in _fbp_custom_shader_value_sockets(
+            node, definition
+        ):
+            if identifier not in defaults or defaults[identifier] is None:
+                continue
+            value = defaults[identifier]
+            try:
+                if _fbp_effect_values_equal(socket.default_value, value):
+                    continue
+                socket.default_value = value
+                changed = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+    return changed
+
+
+def _fbp_custom_geometry_missing_defaults(modifier, node_group):
+    """Return serializable defaults that are not initialized on the modifier."""
+    if not modifier or not node_group:
+        return {}
+    missing = {}
+    for _name, identifier, item in _fbp_custom_geometry_value_sockets(node_group):
+        try:
+            if identifier in modifier:
+                continue
+            default = getattr(item, "default_value", None)
+            if default is not None:
+                missing[identifier] = _fbp_serialize_value(default)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    return missing
+
+
+def _fbp_initialize_custom_geometry_inputs(modifier, node_group):
+    """Initialize missing custom GN inputs from their interface defaults.
+
+    Call this only from operators, deferred safe tasks or other mutation-safe
+    paths. UI draw callbacks must remain read-only.
+    """
+    changed = False
+    for identifier, serialized in _fbp_custom_geometry_missing_defaults(
+        modifier, node_group
+    ).items():
+        try:
+            modifier[identifier] = _fbp_deserialize_value(serialized)
+            changed = True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    return changed
+
+
+def _fbp_schedule_custom_geometry_init(rig, effect_id, modifier, node_group):
+    """Repair newly exposed GN sockets outside panel drawing and Undo teardown."""
+    defaults = _fbp_custom_geometry_missing_defaults(modifier, node_group)
+    if not defaults:
+        return False
+    rig_key = fbp_obj_runtime_key(rig)
+    if rig_key is None:
+        return False
+    rig_name = str(getattr(rig, "name", "") or "")
+    try:
+        expected_instance = str(effect_instance_id(modifier) or "")
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        expected_instance = ""
+    if not expected_instance:
+        return False
+    key = (rig_key, str(effect_id or ""))
+    _FBP_CUSTOM_GEOMETRY_INIT_PENDING[key] = (
+        rig_name, expected_instance, defaults
+    )
+
+    def _initialize_latest():
+        payload = _FBP_CUSTOM_GEOMETRY_INIT_PENDING.pop(key, None)
+        if not payload:
+            return None
+        stored_name, stored_instance, latest_defaults = payload
+        target_rig = bpy.data.objects.get(stored_name) if stored_name else None
+        if target_rig is None or fbp_obj_runtime_key(target_rig) != rig_key:
+            target_rig = next(
+                (obj for obj in bpy.data.objects if fbp_obj_runtime_key(obj) == rig_key),
+                None,
+            )
+        target_modifier = (
+            fbp_find_effect_modifier(target_rig, effect_id)
+            if target_rig is not None else None
+        )
+        target_group = (
+            getattr(target_modifier, "node_group", None)
+            if target_modifier is not None else None
+        )
+        try:
+            current_instance = (
+                str(effect_instance_id(target_modifier) or "")
+                if target_modifier is not None else ""
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            current_instance = ""
+        if (
+            target_modifier is not None
+            and target_group is not None
+            and current_instance == stored_instance
+        ):
+            for identifier, serialized in latest_defaults.items():
+                try:
+                    if identifier not in target_modifier:
+                        target_modifier[identifier] = _fbp_deserialize_value(serialized)
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    continue
+            try:
+                from .core import fbp_tag_view3d_ui_redraw
+                fbp_tag_view3d_ui_redraw()
+            except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        return schedule_once(
+            f"fbp_custom_geometry_init:{key[0]}:{key[1]}",
+            _initialize_latest,
+            first_interval=0.03,
+        )
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        _FBP_CUSTOM_GEOMETRY_INIT_PENDING.pop(key, None)
+        return False
+
+
+def _fbp_draw_custom_effect_inputs(layout, rig, effect_id):
+    group = find_custom_effect_group(effect_id)
+    live_definition = None
+    if group is not None:
+        live_definition = refresh_one_custom_effect_definition(
+            FBP_EFFECT_REGISTRY, effect_id, FBP_EFFECT_SCHEMA_VERSION
+        )
+        if live_definition:
+            finalize_effect_registry({effect_id: live_definition})
+    definition = live_definition or fbp_effect_definition(effect_id)
+    metadata = layout.box()
+    metadata.label(
+        text=str(
+            getattr(group, "name", "Missing Node Group")
+            if group else "Missing Node Group"
+        ),
+        icon="NODETREE" if group else "ERROR",
+    )
+    if bool(definition.get("custom_invalid", False)):
+        warning = metadata.row()
+        warning.alert = True
+        warning.label(
+            text=str(
+                definition.get("custom_error", "Invalid custom node interface")
+                or "Invalid custom node interface"
+            ),
+            icon="ERROR",
+        )
+        metadata.label(
+            text="Fix the node-group interface, then edit or re-register the effect",
+            icon="INFO",
+        )
+    edit_nodes = metadata.operator(
+        "fbp.edit_custom_node_effect_nodes",
+        text="Edit Nodes",
+        icon="NODETREE",
+    )
+    edit_nodes.effect_id = effect_id
+    row = metadata.row(align=True)
+    edit = row.operator(
+        "fbp.register_custom_node_effect",
+        text="Edit Name & Icon",
+        icon="GREASEPENCIL",
+    )
+    edit.effect_id = effect_id
+    hide = row.operator(
+        "fbp.hide_custom_node_effect",
+        text="Hide from Library",
+        icon="HIDE_ON",
+    )
+    hide.effect_id = effect_id
+
+    if bool(definition.get("custom_invalid", False)):
+        return 0
+
+    controls = layout.box()
+    controls.label(text="Node Group Inputs", icon="OPTIONS")
+    drawn = 0
+    if definition.get("kind") == "GEOMETRY":
+        modifier = fbp_find_effect_modifier(rig, effect_id)
+        node_group = getattr(modifier, "node_group", None) if modifier else None
+        if modifier and node_group:
+            for name, identifier, _item in _fbp_custom_geometry_value_sockets(
+                node_group
+            ):
+                try:
+                    if identifier in modifier:
+                        controls.prop(
+                            modifier,
+                            f'["{identifier}"]',
+                            text=name,
+                        )
+                        drawn += 1
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    continue
+            _fbp_schedule_custom_geometry_init(
+                rig, effect_id, modifier, node_group
+            )
+    else:
+        nodes = _fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+        node = nodes[0] if nodes else None
+        if node:
+            _fbp_schedule_custom_shader_sync(
+                rig, effect_id, nodes, definition
+            )
+            for name, _identifier, socket in _fbp_custom_shader_value_sockets(
+                node, definition
+            ):
+                try:
+                    controls.prop(socket, "default_value", text=name)
+                    drawn += 1
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    continue
+    if not drawn:
+        controls.label(text="No editable value sockets exposed", icon="INFO")
+    return drawn
 
 
 def fbp_draw_effect_settings(layout, rig, effect_id, selected_count=1, present_count=None):
@@ -5409,6 +6593,18 @@ def fbp_draw_effect_settings(layout, rig, effect_id, selected_count=1, present_c
             )
             op.effect_id = effect_id
             op.mode = mode
+    if bool(definition.get("custom", False)):
+        _fbp_draw_custom_effect_inputs(box, rig, effect_id)
+        if int(selected_count or 1) > 1:
+            copy_row = box.row(align=True)
+            copy_row.label(text="Socket edits affect the active layer", icon="INFO")
+            copy = copy_row.operator(
+                "fbp.copy_custom_effect_values_to_selected",
+                text="Copy Values to Selected",
+                icon="PASTEDOWN",
+            )
+            copy.effect_id = effect_id
+        return
     labels = {
         "fbp_mesh_wiggle_shade_smooth": "Shade Smooth",
         "fbp_mesh_wiggle_strength": "Strength",
@@ -5439,6 +6635,31 @@ def fbp_draw_effect_settings(layout, rig, effect_id, selected_count=1, present_c
         "fbp_wind_direction": "Wind Direction",
         "fbp_wind_preview_falloff": "Preview Falloff",
         "fbp_wind_reverse": "Reverse Direction",
+        "fbp_mesh_ripple_viewport_subdivision": "Viewport",
+        "fbp_mesh_ripple_playback_subdivision": "Playback",
+        "fbp_mesh_ripple_render_subdivision": "Render",
+        "fbp_mesh_ripple_direction": "Direction",
+        "fbp_mesh_ripple_amplitude": "Amplitude",
+        "fbp_mesh_ripple_frequency": "Frequency",
+        "fbp_mesh_ripple_speed": "Speed",
+        "fbp_mesh_ripple_phase": "Phase",
+        "fbp_mesh_ripple_stepped": "Stepped",
+        "fbp_mesh_ripple_pin_borders": "Pin Borders",
+        "fbp_mesh_ripple_border_falloff": "Border Falloff",
+        "fbp_paper_curl_viewport_subdivision": "Viewport",
+        "fbp_paper_curl_playback_subdivision": "Playback",
+        "fbp_paper_curl_render_subdivision": "Render",
+        "fbp_paper_curl_edge": "Edge",
+        "fbp_paper_curl_progress": "Progress",
+        "fbp_paper_curl_angle": "Curl Angle",
+        "fbp_paper_curl_radius": "Curl Radius",
+        "fbp_paper_curl_width": "Curl Width",
+        "fbp_paper_curl_lift": "Lift",
+        "fbp_paper_curl_reverse": "Reverse",
+        "fbp_camera_scale_lock_reference_distance": "Reference Distance",
+        "fbp_camera_scale_lock_reference_lens": "Reference Lens",
+        "fbp_camera_scale_lock_reference_sensor_width": "Reference Sensor Width",
+        "fbp_camera_scale_lock_influence": "Influence",
         "fbp_thickness_amount": "Thickness",
         "fbp_thickness_alpha_threshold": "Alpha Threshold",
         "fbp_thickness_alpha_resolution": "Alpha Resolution",
@@ -5549,7 +6770,111 @@ def fbp_draw_effect_settings(layout, rig, effect_id, selected_count=1, present_c
         "fbp_posterize_steps": "Color Steps",
     }
     property_map = dict(definition.get("property_map", {}))
-    if effect_id == FBP_EFFECT_WIND_BENDER:
+    if effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
+        box.prop(rig, "fbp_camera_billboard_mode", text="Facing Mode")
+        row = box.row(align=True)
+        row.prop(rig, "fbp_camera_billboard_flip", text="Flip", toggle=True)
+        row.prop(rig, "fbp_camera_billboard_offset", text="Camera Offset")
+        camera = _fbp_scene_camera(getattr(bpy.context, "scene", None))
+        if not camera:
+            box.label(text="Set an active scene camera to use this effect", icon="ERROR")
+        box.label(text="Rotates generated geometry only; rig transforms remain untouched", icon="CONSTRAINT")
+    elif effect_id == FBP_EFFECT_CAMERA_SCALE_LOCK:
+        box.prop(rig, "fbp_camera_scale_lock_influence", text="Influence", slider=True)
+        row = box.row(align=True)
+        row.prop(rig, "fbp_camera_scale_lock_reference_distance", text="Reference Distance")
+        row.operator("fbp.capture_camera_scale_reference", text="", icon="EYEDROPPER")
+        projection = box.row(align=True)
+        projection.prop(rig, "fbp_camera_scale_lock_reference_lens", text="Reference Lens")
+        projection.prop(rig, "fbp_camera_scale_lock_reference_sensor_width", text="Sensor")
+        camera = _fbp_scene_camera(getattr(bpy.context, "scene", None))
+        if not camera:
+            box.label(text="Set an active scene camera to use this effect", icon="ERROR")
+        elif str(getattr(getattr(camera, "data", None), "type", "") or "") != "PERSP":
+            box.label(text="Orthographic cameras leave the scale unchanged", icon="INFO")
+        box.label(text="The reference is captured automatically when the effect is added", icon="CAMERA_DATA")
+    elif effect_id == FBP_EFFECT_EXTRUDED_CUTOUT:
+        quality = box.box()
+        quality.label(text="Alpha Detail", icon="IMAGE_ALPHA")
+        row = quality.row(align=True)
+        row.prop(rig, "fbp_extruded_cutout_viewport_resolution", text="Viewport")
+        row.prop(rig, "fbp_extruded_cutout_playback_resolution", text="Playback")
+        row.prop(rig, "fbp_extruded_cutout_render_resolution", text="Render")
+        row = box.row(align=True)
+        row.prop(rig, "fbp_extruded_cutout_thickness", text="Thickness")
+        row.prop(rig, "fbp_extruded_cutout_direction", text="Direction")
+        materials = box.box()
+        materials.label(text="Sides and Back", icon="MATERIAL")
+        materials.prop(rig, "fbp_extruded_cutout_side_material", text="Material Override")
+        if getattr(rig, "fbp_extruded_cutout_side_material", None) is None:
+            materials.prop(rig, "fbp_extruded_cutout_side_color", text="Color")
+        box.prop(rig, "fbp_extruded_cutout_alpha_threshold", text="Alpha Threshold", slider=True)
+        box.label(text="The original animated plane remains the front surface", icon="IMAGE_ALPHA")
+        if int(getattr(rig, "fbp_extruded_cutout_viewport_resolution", 0) or 0) >= 7:
+            warning = box.row()
+            warning.alert = True
+            warning.label(text="High alpha detail may slow interaction", icon="ERROR")
+    elif effect_id == FBP_EFFECT_CUTOUT_OUTLINE:
+        quality = box.box()
+        quality.label(text="Alpha Detail", icon="IMAGE_ALPHA")
+        row = quality.row(align=True)
+        row.prop(rig, "fbp_cutout_outline_viewport_resolution", text="Viewport")
+        row.prop(rig, "fbp_cutout_outline_playback_resolution", text="Playback")
+        row.prop(rig, "fbp_cutout_outline_render_resolution", text="Render")
+        row = box.row(align=True)
+        row.prop(rig, "fbp_cutout_outline_width", text="Width")
+        row.prop(rig, "fbp_cutout_outline_offset", text="Offset")
+        box.prop(rig, "fbp_cutout_outline_color", text="Outline Color")
+        box.prop(rig, "fbp_cutout_outline_alpha_threshold", text="Alpha Threshold", slider=True)
+        box.label(text="The animated image alpha defines the outline", icon="IMAGE_ALPHA")
+        detail = int(getattr(rig, "fbp_cutout_outline_viewport_resolution", 0) or 0)
+        if detail >= 7:
+            warning = box.row()
+            warning.alert = True
+            warning.label(text="High alpha detail may slow interaction", icon="ERROR")
+    elif effect_id == FBP_EFFECT_PAPER_CURL:
+        quality = box.box()
+        quality.label(text="Geometry Quality", icon="MOD_SUBSURF")
+        row = quality.row(align=True)
+        row.prop(rig, "fbp_paper_curl_viewport_subdivision", text="Viewport")
+        row.prop(rig, "fbp_paper_curl_playback_subdivision", text="Playback")
+        row.prop(rig, "fbp_paper_curl_render_subdivision", text="Render")
+        box.prop(rig, "fbp_paper_curl_edge", text="Curl Edge")
+        box.prop(rig, "fbp_paper_curl_progress", text="Progress", slider=True)
+        row = box.row(align=True)
+        row.prop(rig, "fbp_paper_curl_angle", text="Angle")
+        row.prop(rig, "fbp_paper_curl_radius", text="Radius")
+        row = box.row(align=True)
+        row.prop(rig, "fbp_paper_curl_width", text="Width", slider=True)
+        row.prop(rig, "fbp_paper_curl_lift", text="Lift")
+        box.prop(rig, "fbp_paper_curl_reverse", text="Reverse Curl", toggle=True)
+        if int(getattr(rig, "fbp_paper_curl_viewport_subdivision", 0) or 0) >= 6:
+            warning = box.row()
+            warning.alert = True
+            warning.label(text="High viewport subdivisions may slow interaction", icon="ERROR")
+    elif effect_id == FBP_EFFECT_MESH_RIPPLE:
+        quality = box.box()
+        quality.label(text="Geometry Quality", icon="MOD_SUBSURF")
+        row = quality.row(align=True)
+        row.prop(rig, "fbp_mesh_ripple_viewport_subdivision", text="Viewport")
+        row.prop(rig, "fbp_mesh_ripple_playback_subdivision", text="Playback")
+        row.prop(rig, "fbp_mesh_ripple_render_subdivision", text="Render")
+        box.prop(rig, "fbp_mesh_ripple_direction", text="Direction")
+        row = box.row(align=True)
+        row.prop(rig, "fbp_mesh_ripple_amplitude", text="Amplitude")
+        row.prop(rig, "fbp_mesh_ripple_frequency", text="Frequency")
+        row = box.row(align=True)
+        row.prop(rig, "fbp_mesh_ripple_speed", text="Speed")
+        row.prop(rig, "fbp_mesh_ripple_phase", text="Phase")
+        box.prop(rig, "fbp_mesh_ripple_stepped", text="Stepped")
+        box.prop(rig, "fbp_mesh_ripple_pin_borders", text="Pin Borders", slider=True)
+        if float(getattr(rig, "fbp_mesh_ripple_pin_borders", 0.0) or 0.0) > 0.0:
+            box.prop(rig, "fbp_mesh_ripple_border_falloff", text="Border Falloff", slider=True)
+        if int(getattr(rig, "fbp_mesh_ripple_viewport_subdivision", 0) or 0) >= 6:
+            warning = box.row()
+            warning.alert = True
+            warning.label(text="High viewport subdivisions may slow playback", icon="ERROR")
+    elif effect_id == FBP_EFFECT_WIND_BENDER:
         for prop_name in ("fbp_wind_subdivision", "fbp_wind_pin_edge", "fbp_wind_motion_mode"):
             if hasattr(rig, prop_name):
                 box.prop(rig, prop_name, text=labels.get(prop_name, prop_name))
@@ -5713,14 +7038,15 @@ def fbp_draw_effect_settings(layout, rig, effect_id, selected_count=1, present_c
         if getattr(rig, "fbp_thickness_side_material", None) is None:
             materials.prop(rig, "fbp_thickness_side_color", text="Color")
     if definition.get("alpha_aware"):
-        if effect_id == FBP_EFFECT_THICKNESS:
+        if effect_id in {FBP_EFFECT_CUTOUT_OUTLINE, FBP_EFFECT_EXTRUDED_CUTOUT}:
+            pass
+        elif effect_id == FBP_EFFECT_THICKNESS:
             box.label(text="Image alpha defines the extruded silhouette", icon="IMAGE_ALPHA")
         elif effect_id == FBP_EFFECT_FELT_FUZZ:
             box.label(text="Uses the animated plane material", icon="MATERIAL")
             box.label(text="Image alpha limits generated fibers", icon="IMAGE_ALPHA")
 
     if definition.get("evolve_property") and effect_id != FBP_EFFECT_MESH_WIGGLE:
-        fbp_ensure_effect_animation_state(rig, effect_id)
         animation = box.box()
         animation.label(text="Procedural Noise", icon="RNDCURVE")
         seed_row = animation.row(align=True)
@@ -5895,37 +7221,228 @@ class FBP_UL_EffectStack3D(FBP_UL_EffectStack):
     category_filter = "3D"
 
 
+def _fbp_custom_effect_ids_for_view(view):
+    view = "3D" if str(view or "2D") == "3D" else "2D"
+    custom_ids = [
+        effect_id for effect_id, definition in FBP_EFFECT_REGISTRY.items()
+        if bool(definition.get("custom", False))
+        and not bool(definition.get("custom_invalid", False))
+        and not bool(definition.get("custom_hidden", False))
+        and str(definition.get("category", "2D") or "2D") == view
+    ]
+    custom_ids.sort(
+        key=lambda item: str(fbp_effect_definition(item).get("label", item)).casefold()
+    )
+    return custom_ids
+
+
+def _fbp_effect_add_menu_state(context):
+    """Cache selected rigs and active stack IDs once per menu draw."""
+    fbp_refresh_custom_effect_registry()
+    rigs = _fbp_selected_rigs(context)
+    active_effects = {
+        _fbp_effect_ids_cache_key(rig): set(
+            fbp_effect_ids_for_rig(rig, refresh_custom=False)
+        )
+        for rig in rigs
+    }
+    return rigs, active_effects
+
+
+def _fbp_draw_effect_add_columns(
+    layout, context, view, *, show_view_header=False, menu_state=None
+):
+    """Draw one horizontal row of effect categories.
+
+    Shared by the Effects panel add button and the viewport right-click menu so
+    both entry points use the same compatibility and duplicate checks.
+    """
+    rigs, active_effects = menu_state or _fbp_effect_add_menu_state(context)
+    view = "3D" if str(view or "2D") == "3D" else "2D"
+    sections = FBP_MESH_EFFECT_MENU_SECTIONS if view == "3D" else FBP_IMAGE_EFFECT_MENU_SECTIONS
+
+    def already_on_every_selected(effect_id):
+        return bool(rigs) and all(
+            effect_id in active_effects.get(_fbp_effect_ids_cache_key(rig), set())
+            for rig in rigs
+        )
+
+    if show_view_header:
+        layout.label(
+            text="Mesh Effects" if view == "3D" else "Image Effects",
+            icon="MODIFIER" if view == "3D" else "NODE_TEXTURE",
+        )
+
+    columns = layout.row(align=False)
+    for section_label, section_icon, effect_ids in sections:
+        column = columns.column(align=True)
+        column.label(text=section_label, icon=section_icon)
+        column.separator()
+        for effect_id in effect_ids:
+            definition = fbp_effect_definition(effect_id)
+            row = column.row(align=True)
+            supported = not rigs or any(
+                fbp_effect_supported_for_rig(rig, effect_id) for rig in rigs
+            )
+            already_on_all = already_on_every_selected(effect_id)
+            row.enabled = supported and not already_on_all
+            operator = row.operator(
+                "fbp.add_effect",
+                text=str(definition.get("label", effect_id)),
+                icon=str(definition.get("icon", "MODIFIER")),
+            )
+            operator.effect_id = effect_id
+
+    custom_column = columns.column(align=True)
+    custom_column.label(text="Custom Nodes", icon="NODETREE")
+    custom_column.separator()
+    custom_ids = _fbp_custom_effect_ids_for_view(view)
+    if custom_ids:
+        for effect_id in custom_ids:
+            definition = fbp_effect_definition(effect_id)
+            row = custom_column.row(align=True)
+            supported = not rigs or any(
+                fbp_effect_supported_for_rig(rig, effect_id) for rig in rigs
+            )
+            already_on_all = already_on_every_selected(effect_id)
+            row.enabled = supported and not already_on_all
+            operator = row.operator(
+                "fbp.add_effect",
+                text=str(definition.get("label", effect_id)),
+                icon=str(definition.get("icon", "NODETREE")),
+            )
+            operator.effect_id = effect_id
+    else:
+        custom_column.label(text="No custom effects", icon="INFO")
+    custom_column.separator()
+    create = custom_column.operator(
+        "fbp.create_custom_node_effect",
+        text="New Custom Effect",
+        icon="ADD",
+    )
+    create.kind = "GEOMETRY" if view == "3D" else "SHADER"
+    custom_column.operator(
+        "fbp.register_custom_node_effect",
+        text="Register Existing...",
+        icon="NODETREE",
+    )
+
+
 class FBP_MT_AddEffect(Menu):
     bl_idname = "FBP_MT_add_effect"
     bl_label = "Add Effect"
 
     def draw(self, context):
-        rigs = _fbp_selected_rigs(context)
-        layout = self.layout
         view = getattr(getattr(context, "scene", None), "fbp_effects_view", "2D")
-        sections = FBP_MESH_EFFECT_MENU_SECTIONS if view == "3D" else FBP_IMAGE_EFFECT_MENU_SECTIONS
+        _fbp_draw_effect_add_columns(self.layout, context, view)
 
-        columns = layout.row(align=False)
-        for section_label, section_icon, effect_ids in sections:
-            column = columns.column(align=True)
-            column.label(text=section_label, icon=section_icon)
-            column.separator()
-            for effect_id in effect_ids:
-                definition = fbp_effect_definition(effect_id)
-                row = column.row(align=True)
-                supported = not rigs or any(
-                    fbp_effect_supported_for_rig(rig, effect_id) for rig in rigs
+
+class FBP_MT_ObjectEffects2D(Menu):
+    bl_idname = "FBP_MT_object_effects_2d"
+    bl_label = "2D Effects"
+
+    def draw(self, context):
+        if not _fbp_selected_rigs(context):
+            self.layout.label(text="Select a Frame by Plane layer", icon="INFO")
+            return
+        _fbp_draw_effect_add_columns(self.layout, context, "2D")
+
+
+class FBP_MT_ObjectEffects3D(Menu):
+    bl_idname = "FBP_MT_object_effects_3d"
+    bl_label = "3D Effects"
+
+    def draw(self, context):
+        if not _fbp_selected_rigs(context):
+            self.layout.label(text="Select a Frame by Plane layer", icon="INFO")
+            return
+        _fbp_draw_effect_add_columns(self.layout, context, "3D")
+
+
+class FBP_MT_ObjectEffects(Menu):
+    bl_idname = "FBP_MT_object_effects"
+    bl_label = "Frame by Plane Effects"
+
+    def draw(self, context):
+        layout = self.layout
+        if not _fbp_selected_rigs(context):
+            layout.label(text="Select a Frame by Plane layer", icon="INFO")
+            return
+        layout.menu(
+            FBP_MT_ObjectEffects2D.bl_idname,
+            text="2D Effects",
+            icon="NODE_TEXTURE",
+        )
+        layout.menu(
+            FBP_MT_ObjectEffects3D.bl_idname,
+            text="3D Effects",
+            icon="MODIFIER",
+        )
+
+
+def _fbp_draw_object_context_effects(self, context):
+    """Prepend the lightweight Effects root menu to Blender's context menu."""
+    if not _fbp_selected_rigs(context):
+        return
+    self.layout.menu(
+        FBP_MT_ObjectEffects.bl_idname,
+        text="Effects",
+        icon="MODIFIER",
+    )
+    self.layout.separator()
+
+
+class FBP_OT_CaptureCameraScaleReference(Operator):
+    bl_idname = "fbp.capture_camera_scale_reference"
+    bl_label = "Capture Camera Scale Reference"
+    bl_description = "Capture the current camera-space depth, lens and sensor width as the framing reference"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_fbp_selected_rigs(context) and _fbp_scene_camera(getattr(context, "scene", None)))
+
+    def execute(self, context):
+        rigs = _fbp_selected_rigs(context)
+        scene = getattr(context, "scene", None)
+        changed = 0
+        for rig in rigs:
+            if not fbp_effect_is_active(rig, FBP_EFFECT_CAMERA_SCALE_LOCK):
+                continue
+            distance = fbp_camera_distance_for_rig(rig, scene)
+            if distance <= 0.0:
+                continue
+            camera = _fbp_scene_camera(scene)
+            camera_data = getattr(camera, "data", None) if camera else None
+            fbp_set_rna_property_silent(
+                rig, "fbp_camera_scale_lock_reference_distance", distance
+            )
+            if camera_data:
+                fbp_set_rna_property_silent(
+                    rig, "fbp_camera_scale_lock_reference_lens",
+                    float(getattr(camera_data, "lens", 50.0) or 50.0),
                 )
-                already_on_all = bool(rigs) and all(
-                    fbp_effect_is_active(rig, effect_id) for rig in rigs
+                fbp_set_rna_property_silent(
+                    rig, "fbp_camera_scale_lock_reference_sensor_width",
+                    float(getattr(camera_data, "sensor_width", 36.0) or 36.0),
                 )
-                row.enabled = supported and not already_on_all
-                operator = row.operator(
-                    "fbp.add_effect",
-                    text=str(definition.get("label", effect_id)),
-                    icon=str(definition.get("icon", "MODIFIER")),
-                )
-                operator.effect_id = effect_id
+            fbp_update_geometry_effect(
+                rig,
+                FBP_EFFECT_CAMERA_SCALE_LOCK,
+                scene=scene,
+                sync_alpha=False,
+                property_names={
+                    "fbp_camera_scale_lock_reference_distance",
+                    "fbp_camera_scale_lock_reference_lens",
+                    "fbp_camera_scale_lock_reference_sensor_width",
+                },
+            )
+            changed += 1
+        if not changed:
+            self.report({"WARNING"}, "No selected layer has Camera Scale Lock")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Captured camera reference for {changed} layer(s)")
+        return {"FINISHED"}
 
 
 class FBP_OT_SelectEffect(Operator):
@@ -6059,6 +7576,26 @@ def _fbp_copy_effect_stack_position(source, target, effect_id):
 
 
 FBP_BUILTIN_EFFECT_PRESETS = {
+    FBP_EFFECT_EXTRUDED_CUTOUT: {
+        "Paper Cutout": {"fbp_extruded_cutout_thickness": 0.025, "fbp_extruded_cutout_direction": -1.0, "fbp_extruded_cutout_alpha_threshold": 0.05, "fbp_extruded_cutout_side_color": (0.22, 0.16, 0.10, 1.0)},
+        "Thick Card": {"fbp_extruded_cutout_thickness": 0.08, "fbp_extruded_cutout_direction": -1.0, "fbp_extruded_cutout_alpha_threshold": 0.08, "fbp_extruded_cutout_side_color": (0.12, 0.08, 0.05, 1.0)},
+        "Forward Relief": {"fbp_extruded_cutout_thickness": 0.04, "fbp_extruded_cutout_direction": 1.0, "fbp_extruded_cutout_alpha_threshold": 0.05, "fbp_extruded_cutout_side_color": (0.35, 0.35, 0.35, 1.0)},
+    },
+    FBP_EFFECT_CUTOUT_OUTLINE: {
+        "Graphic Ink": {"fbp_cutout_outline_width": 0.012, "fbp_cutout_outline_offset": 0.001, "fbp_cutout_outline_alpha_threshold": 0.05, "fbp_cutout_outline_color": (0.01, 0.01, 0.01, 1.0)},
+        "Paper Sticker": {"fbp_cutout_outline_width": 0.025, "fbp_cutout_outline_offset": -0.001, "fbp_cutout_outline_alpha_threshold": 0.08, "fbp_cutout_outline_color": (0.92, 0.88, 0.76, 1.0)},
+        "Neon Edge": {"fbp_cutout_outline_width": 0.009, "fbp_cutout_outline_offset": 0.003, "fbp_cutout_outline_alpha_threshold": 0.03, "fbp_cutout_outline_color": (0.05, 0.75, 1.0, 1.0)},
+    },
+    FBP_EFFECT_CAMERA_SCALE_LOCK: {
+        "Lock Framing": {"fbp_camera_scale_lock_influence": 1.0},
+        "Soft Compensation": {"fbp_camera_scale_lock_influence": 0.5},
+        "Off": {"fbp_camera_scale_lock_influence": 0.0},
+    },
+    FBP_EFFECT_CAMERA_BILLBOARD: {
+        "Face Camera": {"fbp_camera_billboard_mode": "FULL", "fbp_camera_billboard_flip": False, "fbp_camera_billboard_offset": 0.0},
+        "Horizontal Only": {"fbp_camera_billboard_mode": "HORIZONTAL", "fbp_camera_billboard_flip": False, "fbp_camera_billboard_offset": 0.0},
+        "Vertical Only": {"fbp_camera_billboard_mode": "VERTICAL", "fbp_camera_billboard_flip": False, "fbp_camera_billboard_offset": 0.0},
+    },
     FBP_EFFECT_CHROMA_KEY: {
         "Green Screen": {"fbp_chroma_key_color": (0.0, 1.0, 0.0, 1.0), "fbp_chroma_key_tolerance": 0.20, "fbp_chroma_key_softness": 0.08, "fbp_chroma_key_despill": 0.65},
         "Blue Screen": {"fbp_chroma_key_color": (0.0, 0.18, 1.0, 1.0), "fbp_chroma_key_tolerance": 0.20, "fbp_chroma_key_softness": 0.08, "fbp_chroma_key_despill": 0.55},
@@ -6082,6 +7619,16 @@ FBP_BUILTIN_EFFECT_PRESETS = {
         "Green Terminal": {"fbp_ascii_charset": "CLASSIC", "fbp_ascii_colorize": False, "fbp_ascii_foreground": (0.08, 1.0, 0.22, 1.0), "fbp_ascii_background": (0.0, 0.015, 0.0, 1.0), "fbp_ascii_transparent_background": False},
         "Binary": {"fbp_ascii_charset": "BINARY", "fbp_ascii_character_count": 2, "fbp_ascii_colorize": False, "fbp_ascii_foreground": (0.75, 1.0, 0.75, 1.0)},
         "Typewriter": {"fbp_ascii_charset": "ALPHANUMERIC", "fbp_ascii_scale": 56.0, "fbp_ascii_colorize": False, "fbp_ascii_foreground": (0.08, 0.06, 0.04, 1.0), "fbp_ascii_background": (0.92, 0.88, 0.78, 1.0), "fbp_ascii_transparent_background": False},
+    },
+    FBP_EFFECT_PAPER_CURL: {
+        "Gentle Lift": {"fbp_paper_curl_edge": "TOP", "fbp_paper_curl_progress": 0.22, "fbp_paper_curl_angle": 1.35, "fbp_paper_curl_radius": 0.10, "fbp_paper_curl_width": 0.34, "fbp_paper_curl_lift": 0.015},
+        "Rolling Page": {"fbp_paper_curl_edge": "RIGHT", "fbp_paper_curl_progress": 0.58, "fbp_paper_curl_angle": 3.2, "fbp_paper_curl_radius": 0.18, "fbp_paper_curl_width": 0.30, "fbp_paper_curl_lift": 0.025},
+        "Reverse Peel": {"fbp_paper_curl_edge": "BOTTOM", "fbp_paper_curl_progress": 0.42, "fbp_paper_curl_angle": 2.5, "fbp_paper_curl_radius": 0.14, "fbp_paper_curl_width": 0.24, "fbp_paper_curl_lift": 0.02, "fbp_paper_curl_reverse": True},
+    },
+    FBP_EFFECT_MESH_RIPPLE: {
+        "Gentle Water": {"fbp_mesh_ripple_direction": "X", "fbp_mesh_ripple_amplitude": 0.035, "fbp_mesh_ripple_frequency": 2.5, "fbp_mesh_ripple_speed": 0.65, "fbp_mesh_ripple_pin_borders": 0.2},
+        "Paper Pulse": {"fbp_mesh_ripple_direction": "Y", "fbp_mesh_ripple_amplitude": 0.08, "fbp_mesh_ripple_frequency": 4.0, "fbp_mesh_ripple_speed": 1.2, "fbp_mesh_ripple_stepped": 2, "fbp_mesh_ripple_pin_borders": 0.55},
+        "Radial Shockwave": {"fbp_mesh_ripple_direction": "RADIAL", "fbp_mesh_ripple_amplitude": 0.16, "fbp_mesh_ripple_frequency": 6.0, "fbp_mesh_ripple_speed": 2.5, "fbp_mesh_ripple_pin_borders": 0.0},
     },
     FBP_EFFECT_WIND_BENDER: {
         "Gentle Breeze": {"fbp_wind_bend_amount": 0.18, "fbp_wind_speed": 1.1, "fbp_wind_turbulence": 0.018, "fbp_wind_gust_strength": 0.12, "fbp_wind_falloff": 1.4},
@@ -6128,6 +7675,9 @@ def _fbp_deserialize_value(value):
         "VectorFont": getattr(bpy.data, "fonts", None),
         "Material": getattr(bpy.data, "materials", None),
         "Image": getattr(bpy.data, "images", None),
+        "Object": getattr(bpy.data, "objects", None),
+        "Collection": getattr(bpy.data, "collections", None),
+        "Texture": getattr(bpy.data, "textures", None),
     }.get(kind)
     return collection.get(name) if collection and name else None
 
@@ -6160,6 +7710,7 @@ def _fbp_capture_effect_state(rig, effect_id):
             name: _fbp_serialize_value(_fbp_read_effect_property(rig, name))
             for name in _fbp_effect_property_names(effect_id)
         },
+        "custom_inputs": _fbp_capture_custom_effect_inputs(rig, effect_id),
         "visible": fbp_effect_visible_state(rig, effect_id),
         "render_visible": fbp_effect_render_visible_state(rig, effect_id),
         "input_source": fbp_effect_input_source(rig, effect_id),
@@ -6185,6 +7736,7 @@ def _fbp_apply_effect_state(rig, state):
         fbp_update_geometry_effect(rig, effect_id)
     else:
         fbp_update_shader_effect(rig, effect_id)
+    _fbp_apply_custom_effect_inputs(rig, effect_id, state.get("custom_inputs", {}))
     fbp_set_effect_visible(rig, effect_id, bool(state.get("visible", True)))
     fbp_set_effect_render_visible(rig, effect_id, bool(state.get("render_visible", True)))
     default_source = str(definition.get("default_input_source", "PREVIOUS") or "PREVIOUS")
@@ -6268,33 +7820,70 @@ def _fbp_user_preset_path():
     return root / "effect_presets.json"
 
 
+def _fbp_user_preset_stamp(path):
+    try:
+        stat = path.stat()
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        return None
+
+
 def _fbp_load_user_presets():
+    """Read user presets once per file revision instead of on every menu draw."""
     path = _fbp_user_preset_path()
-    if not path.is_file():
+    stamp = _fbp_user_preset_stamp(path)
+    if stamp is None:
+        _FBP_USER_PRESET_CACHE["stamp"] = None
+        _FBP_USER_PRESET_CACHE["data"] = {}
         return {}
+    if _FBP_USER_PRESET_CACHE.get("stamp") == stamp:
+        return copy.deepcopy(_FBP_USER_PRESET_CACHE.get("data", {}))
     try:
         data = json.loads(path.read_text(encoding="utf8"))
-        return data if isinstance(data, dict) else {}
+        data = data if isinstance(data, dict) else {}
     except (OSError, ValueError, TypeError):
-        return {}
+        data = {}
+    _FBP_USER_PRESET_CACHE["stamp"] = stamp
+    _FBP_USER_PRESET_CACHE["data"] = data
+    return copy.deepcopy(data)
 
 
 def _fbp_save_user_presets(data):
+    """Write preset JSON atomically so an interrupted save cannot corrupt it."""
     path = _fbp_user_preset_path()
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    payload = data if isinstance(data, dict) else {}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf8")
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf8",
+        )
+        temporary.replace(path)
+        _FBP_USER_PRESET_CACHE["stamp"] = _fbp_user_preset_stamp(path)
+        _FBP_USER_PRESET_CACHE["data"] = copy.deepcopy(payload)
         return True
     except OSError:
         return False
+    finally:
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
 
 
 def _fbp_apply_preset_values(rig, effect_id, values):
     state = _fbp_capture_effect_state(rig, effect_id)
-    normalized = {}
-    for name, value in dict(values).items():
-        normalized[name] = value if isinstance(value, dict) and "__datablock__" in value else _fbp_serialize_value(value)
-    state["properties"].update(normalized)
+    values = dict(values or {})
+    if int(values.get("__fbp_state__", 0) or 0) >= 1:
+        state["properties"].update(dict(values.get("properties", {}) or {}))
+        state["custom_inputs"] = dict(values.get("custom_inputs", {}) or {})
+    else:
+        normalized = {}
+        for name, value in values.items():
+            normalized[name] = value if isinstance(value, dict) and "__datablock__" in value else _fbp_serialize_value(value)
+        state["properties"].update(normalized)
     return _fbp_apply_effect_state(rig, state)
 
 
@@ -6309,8 +7898,18 @@ class FBP_MT_EffectPresets(Menu):
             layout.label(text="No Frame by Plane layer selected", icon="INFO")
             return
         rig = rigs[0]
-        fbp_sync_effect_items(rig, rigs)
+        # Menu drawing must remain read-only. The runtime mirror is normally
+        # synchronized by the Effects panel; after load/Undo, fall back to the
+        # current cached stack without repairing assets or writing UI rows.
         effect_id = fbp_active_effect_id(rig)
+        if not effect_id:
+            effect_ids = _fbp_runtime_effect_ids(rig)
+            try:
+                index = max(0, int(getattr(rig, "fbp_effects_index", 0) or 0))
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                index = 0
+            if effect_ids:
+                effect_id = effect_ids[min(index, len(effect_ids) - 1)]
         builtins = FBP_BUILTIN_EFFECT_PRESETS.get(effect_id, {})
         users = dict(_fbp_load_user_presets().get(effect_id, {}))
         if builtins:
@@ -6524,14 +8123,10 @@ class FBP_OT_ResetActiveEffect(Operator):
                     continue
             definition = fbp_effect_definition(effect_id)
             if definition.get("evolve_property"):
-                for suffix in ("evolve", "step", "seed", "unique", "layer_seed", "amount", "loop"):
-                    key = _fbp_animation_key(effect_id, suffix)
-                    try:
-                        if key in rig:
-                            del rig[key]
-                    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
-                        pass
+                fbp_reset_effect_animation_state(rig, effect_id)
                 fbp_ensure_effect_animation_state(rig, effect_id)
+            if bool(definition.get("custom", False)):
+                _fbp_reset_custom_effect_inputs(rig, effect_id)
             default_source = str(definition.get("default_input_source", "PREVIOUS") or "PREVIOUS")
             fbp_set_effect_input_source(rig, effect_id, default_source)
             fbp_set_effect_debug_mode(rig, effect_id, "FINAL")
@@ -6597,7 +8192,15 @@ class FBP_OT_SaveEffectPreset(Operator):
             return {"CANCELLED"}
         state = _fbp_capture_effect_state(rigs[0], effect_id)
         data = _fbp_load_user_presets()
-        data.setdefault(effect_id, {})[name] = state["properties"]
+        if bool(fbp_effect_definition(effect_id).get("custom", False)):
+            preset_value = {
+                "__fbp_state__": 1,
+                "properties": state["properties"],
+                "custom_inputs": state.get("custom_inputs", {}),
+            }
+        else:
+            preset_value = state["properties"]
+        data.setdefault(effect_id, {})[name] = preset_value
         if not _fbp_save_user_presets(data):
             self.report({"ERROR"}, "Could not save preset")
             return {"CANCELLED"}
@@ -6664,6 +8267,50 @@ class FBP_OT_DeleteEffectPreset(Operator):
         return {"FINISHED"} if _fbp_save_user_presets(data) else {"CANCELLED"}
 
 
+class FBP_OT_CopyCustomEffectValuesToSelected(Operator):
+    bl_idname = "fbp.copy_custom_effect_values_to_selected"
+    bl_label = "Copy Custom Effect Values to Selected"
+    bl_description = "Copy the active layer custom node socket values to every selected Frame by Plane layer"
+    bl_options = {"REGISTER", "UNDO"}
+
+    effect_id: StringProperty(name="Effect ID", default="", options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        return len(_fbp_selected_rigs(context)) > 1
+
+    def execute(self, context):
+        effect_id = fbp_normalize_effect_id(self.effect_id)
+        definition = fbp_effect_definition(effect_id)
+        rigs = _fbp_selected_rigs(context)
+        source = fbp_effect_source_rig(rigs, effect_id)
+        if (
+            not bool(definition.get("custom", False))
+            or bool(definition.get("custom_invalid", False))
+            or source is None
+        ):
+            return {"CANCELLED"}
+        state = _fbp_capture_custom_effect_inputs(source, effect_id)
+        if not state:
+            self.report({"WARNING"}, "This custom effect exposes no editable values")
+            return {"CANCELLED"}
+
+        changed = 0
+        for target in rigs:
+            if target is source:
+                continue
+            if not fbp_effect_is_active(target, effect_id):
+                if not fbp_add_effect(target, effect_id):
+                    continue
+            if _fbp_apply_custom_effect_inputs(target, effect_id, state):
+                changed += 1
+        if not changed:
+            self.report({"INFO"}, "Selected layers already use the same values")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Copied custom values to {changed} layer(s)")
+        return {"FINISHED"}
+
+
 class FBP_OT_CopyEffectToSelected(Operator):
     bl_idname = "fbp.copy_effect_to_selected"
     bl_label = "Copy Effect to Selected"
@@ -6697,6 +8344,7 @@ class FBP_OT_CopyEffectToSelected(Operator):
             )
 
         copied = 0
+        source_custom_inputs = _fbp_capture_custom_effect_inputs(source, effect_id)
         source_visible = fbp_effect_visible_state(source, effect_id)
         source_render_visible = fbp_effect_render_visible_state(source, effect_id)
         for target in targets:
@@ -6722,6 +8370,7 @@ class FBP_OT_CopyEffectToSelected(Operator):
                 fbp_update_geometry_effect(target, effect_id)
             else:
                 fbp_update_shader_effect(target, effect_id)
+            _fbp_apply_custom_effect_inputs(target, effect_id, source_custom_inputs)
 
             if effect_id == FBP_EFFECT_MESH_WIGGLE:
                 if bool(getattr(target, "fbp_mesh_wiggle_unique_seed", False)):
@@ -7126,9 +8775,13 @@ classes = (
     FBP_UL_EffectStack2D,
     FBP_UL_EffectStack3D,
     FBP_MT_AddEffect,
+    FBP_MT_ObjectEffects2D,
+    FBP_MT_ObjectEffects3D,
+    FBP_MT_ObjectEffects,
     FBP_MT_EffectPresets,
     FBP_MT_EffectStackActions,
     FBP_OT_EffectHeaderWarning,
+    FBP_OT_CaptureCameraScaleReference,
     FBP_OT_SelectEffect,
     FBP_OT_AddEffect,
     FBP_OT_SetEffectInputSource,
@@ -7143,6 +8796,7 @@ classes = (
     FBP_OT_SaveEffectPreset,
     FBP_OT_RenameEffectPreset,
     FBP_OT_DeleteEffectPreset,
+    FBP_OT_CopyCustomEffectValuesToSelected,
     FBP_OT_CopyEffectToSelected,
     FBP_OT_DuplicateActiveEffect,
     FBP_OT_SetEffectViewport,
@@ -7171,8 +8825,8 @@ def _fbp_remove_named_handler(collection, function):
 
 def _fbp_remove_evolve_handlers():
     _fbp_remove_named_handler(bpy.app.handlers.frame_change_post, fbp_effect_evolve_frame_change)
-    _fbp_remove_named_handler(bpy.app.handlers.animation_playback_pre, fbp_text_matrix_playback_pre)
-    _fbp_remove_named_handler(bpy.app.handlers.animation_playback_post, fbp_text_matrix_playback_post)
+    _fbp_remove_named_handler(bpy.app.handlers.animation_playback_pre, fbp_effect_playback_pre)
+    _fbp_remove_named_handler(bpy.app.handlers.animation_playback_post, fbp_effect_playback_post)
 
 
 
@@ -7185,23 +8839,63 @@ def fbp_clear_effect_runtime_caches():
     _FBP_INTERFACE_INPUT_CACHE.clear()
     _FBP_MATRIX_IMAGE_NODE_CACHE.clear()
     _FBP_EFFECT_IDS_CACHE.clear()
+    _FBP_EFFECT_IDS_CACHE_TIME.clear()
+    _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()
+    _FBP_EFFECT_SCENE_RIG_CACHE.clear()
+    _FBP_CAMERA_BINDING_CACHE.clear()
+    _FBP_CUSTOM_SHADER_SYNC_PENDING.clear()
+    _FBP_CUSTOM_GEOMETRY_INIT_PENDING.clear()
+    _FBP_CUSTOM_GEOMETRY_SOCKET_CACHE.clear()
+    _FBP_CUSTOM_SHADER_SOCKET_CACHE.clear()
+    _FBP_CUSTOM_SHADER_SYNC_STATE_CACHE.clear()
+    _FBP_EFFECT_STACK_OWNER_CACHE.clear()
+    _FBP_EFFECT_INSTANCE_OWNER_CACHE.clear()
+    _FBP_USER_PRESET_CACHE["stamp"] = None
+    _FBP_USER_PRESET_CACHE["data"] = {}
     _FBP_DEFAULT_FONT_CACHE = None
+
+
+def _fbp_remove_object_context_menu_entry():
+    menu_type = getattr(bpy.types, "VIEW3D_MT_object_context_menu", None)
+    if menu_type is None:
+        return
+    callbacks = (
+        _FBP_PREVIOUS_OBJECT_CONTEXT_CALLBACK,
+        _fbp_draw_object_context_effects,
+    )
+    seen = set()
+    for callback in callbacks:
+        if not callable(callback) or id(callback) in seen:
+            continue
+        seen.add(id(callback))
+        try:
+            menu_type.remove(callback)
+        except (AttributeError, RuntimeError, ValueError):
+            pass
 
 
 def register():
     fbp_clear_effect_runtime_caches()
+    fbp_refresh_custom_effect_registry(force=True)
+    for issue in FBP_EFFECT_REGISTRY_ISSUES:
+        fbp_warn(f"Effect registry validation: {issue}")
     for cls in classes:
         bpy.utils.register_class(cls)
+    _fbp_remove_object_context_menu_entry()
+    menu_type = getattr(bpy.types, "VIEW3D_MT_object_context_menu", None)
+    if menu_type is not None:
+        menu_type.prepend(_fbp_draw_object_context_effects)
     _fbp_remove_evolve_handlers()
     bpy.app.handlers.frame_change_post.append(fbp_effect_evolve_frame_change)
-    bpy.app.handlers.animation_playback_pre.append(fbp_text_matrix_playback_pre)
-    bpy.app.handlers.animation_playback_post.append(fbp_text_matrix_playback_post)
+    bpy.app.handlers.animation_playback_pre.append(fbp_effect_playback_pre)
+    bpy.app.handlers.animation_playback_post.append(fbp_effect_playback_post)
 
 
 def unregister():
-    global _FBP_TEXT_MATRIX_PLAYBACK_ACTIVE
-    _FBP_TEXT_MATRIX_PLAYBACK_ACTIVE = False
+    global _FBP_EFFECT_PLAYBACK_ACTIVE
+    _FBP_EFFECT_PLAYBACK_ACTIVE = False
     fbp_clear_effect_runtime_caches()
+    _fbp_remove_object_context_menu_entry()
     _fbp_remove_evolve_handlers()
     for cls in reversed(classes):
         try:

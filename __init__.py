@@ -2,22 +2,22 @@ import importlib
 
 
 bl_info = {
-    "name": "Frame by Plane",
+    "name": "Frame By Plane",
     "author": "Alessandro Pannoli",
-    "version": (4, 8, 7),
+    "version": (5, 2, 1),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > Frame by Plane",
-    "description": "Version 4.8.7: corrected Text Matrix image sampling and manual grid rows.",
+    "description": "Import images, PNG sequences, videos and layered folders as animated image planes.",
     "category": "Animation",
 }
 
 
 _MODULE_NAMES = (
-    "constants", "matrix_presets", "path_utils", "safe_tasks", "runtime",
+    "constants", "matrix_presets", "path_utils", "safe_tasks", "runtime", "effect_schema",
     # Register Object properties before the Effects UI/handler. On unregister
     # the reverse order removes the frame handler before deleting its RNA props.
-    "properties", "builtin_effects", "geometry_nodes", "materials", "layers", "scene_sync",
-    "native_backend", "builder", "importer", "core", "handlers",
+    "properties", "custom_effects", "effects_registry", "builtin_effects", "geometry_nodes", "materials", "layers", "scene_sync",
+    "native_backend", "builder", "importer", "core", "drawing_plane", "handlers",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural",
     "operator_project", "operators", "ui_icons", "ui_layout", "ui",

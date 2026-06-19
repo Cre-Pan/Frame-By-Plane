@@ -755,13 +755,33 @@ class FBP_OT_DuplicateSelectedLayers(Operator):
             dst_item.is_selected = src_item.is_selected
             dst_item.is_empty = getattr(src_item, 'is_empty', False)
             dst_item.filepath = getattr(src_item, 'filepath', '')
+            dst_item.image = getattr(src_item, 'image', None)
+            dst_item.image_name = getattr(src_item, 'image_name', '')
+            if bool(getattr(src_rig, "fbp_is_drawing_plane", False)):
+                try:
+                    import uuid
+                    dst_item.stable_id = uuid.uuid4().hex
+                except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+                    dst_item.stable_id = getattr(src_item, 'stable_id', '')
+            else:
+                dst_item.stable_id = getattr(src_item, 'stable_id', '')
             try:
                 dst_item.procedural_kind = getattr(src_item, 'procedural_kind', 'AUTO')
                 dst_item.preview_color_a = getattr(src_item, 'preview_color_a', (1.0, 1.0, 1.0, 1.0))
                 dst_item.preview_color_b = getattr(src_item, 'preview_color_b', (1.0, 1.0, 1.0, 1.0))
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
                 pass
-        dst_rig.fbp_images_index = min(src_rig.fbp_images_index, max(0, len(dst_rig.fbp_images) - 1))
+        fbp_set_rna_property_silent(
+            dst_rig,
+            'fbp_images_index',
+            min(src_rig.fbp_images_index, max(0, len(dst_rig.fbp_images) - 1)),
+        )
+        if bool(getattr(src_rig, "fbp_is_drawing_plane", False)):
+            try:
+                from .drawing_plane import DRAWING_INDEX_KEY
+                dst_rig[DRAWING_INDEX_KEY] = int(src_rig.get(DRAWING_INDEX_KEY, 0) or 0)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+                pass
 
     def _copy_materials(self, src_plane, dst_plane):
         dst_plane.data.materials.clear()
@@ -796,6 +816,16 @@ class FBP_OT_DuplicateSelectedLayers(Operator):
             new_rig.name = rig.name + "_Copy"
             new_rig.is_fbp_control = True
             new_rig.fbp_collection_name = source_collection.name if source_collection else ""
+            if bool(getattr(rig, "fbp_is_drawing_plane", False)):
+                try:
+                    import uuid
+                    new_rig["fbp_drawing_uuid"] = uuid.uuid4().hex
+                    animation_data = getattr(new_rig, "animation_data", None)
+                    action = getattr(animation_data, "action", None) if animation_data else None
+                    if action is not None:
+                        animation_data.action = action.copy()
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+                    pass
 
             if not any(existing == new_rig for existing in active_collection.objects):
                 active_collection.objects.link(new_rig)
@@ -1024,6 +1054,7 @@ class FBP_OT_SplitSelectedImagesToNewPlane(Operator):
             new_plane.parent = new_rig
             new_plane.matrix_world = plane.matrix_world.copy()
             new_plane.hide_select = plane.hide_select
+            new_plane["fbp_parent_rig_name"] = new_rig.name
             new_rig.fbp_plane_target = new_plane
             new_rig.fbp_collection_name = getattr(rig, "fbp_collection_name", "")
             new_plane.fbp_collection_name = getattr(plane, "fbp_collection_name", "")

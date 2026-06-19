@@ -8,7 +8,10 @@ from .runtime import (
     fbp_runtime_get,
     fbp_runtime_set,
     fbp_undo_guard_active,
+    fbp_render_mutation_blocked,
     fbp_warn,
+    fbp_obj_runtime_token,
+    fbp_normalize_obj_runtime_token,
 )
 from .layers import (
     object_in_scene,
@@ -28,10 +31,50 @@ FBP_FALLBACK_TIMER_INTERVAL = 10.0
 FBP_FALLBACK_DUPLICATE_SCAN_INTERVAL = 45.0
 FBP_FALLBACK_ORPHAN_SCAN_INTERVAL = 30.0
 
+# Per-scene object totals let the depsgraph listener avoid checking every known
+# rig/plane link during ordinary transforms, shading changes and UI redraws.
+# Deletion, duplication and collection unlinking change this total and still
+# trigger the complete safety check immediately.
+_FBP_SCENE_OBJECT_COUNT_CACHE = globals().get("_FBP_SCENE_OBJECT_COUNT_CACHE", {})
+if not isinstance(_FBP_SCENE_OBJECT_COUNT_CACHE, dict):
+    _FBP_SCENE_OBJECT_COUNT_CACHE = {}
+_FBP_FALLBACK_SCAN_CLOCKS = globals().get("_FBP_FALLBACK_SCAN_CLOCKS", {})
+if not isinstance(_FBP_FALLBACK_SCAN_CLOCKS, dict):
+    _FBP_FALLBACK_SCAN_CLOCKS = {}
+
+
+def _fbp_scene_cache_key(scene):
+    if scene is None:
+        return None
+    try:
+        return (
+            int(scene.as_pointer()),
+            str(getattr(scene, "name_full", getattr(scene, "name", "")) or ""),
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _fbp_scene_object_count_changed(scene, *, update=True):
+    key = _fbp_scene_cache_key(scene)
+    if key is None:
+        return True
+    try:
+        count = len(scene.objects)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return True
+    previous = _FBP_SCENE_OBJECT_COUNT_CACHE.get(key)
+    if update:
+        if len(_FBP_SCENE_OBJECT_COUNT_CACHE) >= 64 and key not in _FBP_SCENE_OBJECT_COUNT_CACHE:
+            _FBP_SCENE_OBJECT_COUNT_CACHE.clear()
+        _FBP_SCENE_OBJECT_COUNT_CACHE[key] = count
+    return previous is None or previous != count
+
 
 def _core():
     from . import core as _core_mod
     return _core_mod
+
 
 
 def fbp_fast_import_is_active():
@@ -72,11 +115,8 @@ def fbp_animation_playback_active(context=None):
 
 
 def fbp_render_job_active():
-    """Return True while Blender is evaluating a render job."""
-    try:
-        return bool(bpy.app.is_job_running("RENDER"))
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return False
+    """Return True unless Blender confirms that no render job is active."""
+    return fbp_render_mutation_blocked(include_guard=False)
 
 
 def fbp_background_sync_should_pause(context=None):
@@ -178,7 +218,7 @@ def fbp_scene_fallback_candidates(scene):
     return result
 
 def fbp_stop_playback_for_datablock_cleanup(context=None):
-    """Stop playback before deleting Object/Mesh/Material/Image datablocks.
+    """Stop playback before deleting Object, Mesh or Material datablocks.
 
     Returns False when playback is still active so callers can defer the
     destructive operation instead of touching data used by viewport evaluation.
@@ -221,9 +261,15 @@ def fbp_ensure_plane_render_safe(rig, frame=None):
 # SECTION 01 - Layer Collection Sync #
 
 def _fbp_object_identity(obj):
-    """Return a stable runtime key without relying on costly RNA equality scans."""
-    if not obj:
+    """Return a runtime identity that survives renames and resists name reuse."""
+    if obj is None:
         return None
+    try:
+        session_uid = int(getattr(obj, "session_uid", 0) or 0)
+        if session_uid > 0:
+            return ("UID", session_uid)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     try:
         return ("PTR", int(obj.as_pointer()))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
@@ -240,7 +286,7 @@ _FBP_KNOWN_LINKS_STATE_KEY = "fbp_known_rig_plane_links_by_scene"
 
 def _fbp_scene_runtime_identity(scene):
     """Return a runtime-only identity for a Scene datablock."""
-    if not scene:
+    if scene is None:
         return None
     try:
         return int(scene.as_pointer())
@@ -282,16 +328,77 @@ def _fbp_get_known_links(scene):
     return result
 
 
-def _fbp_set_known_links(scene, links):
-    """Store a Scene-bound copy of the rig/plane map."""
+def _fbp_normalize_identity(value):
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        kind = str(value[0] or "")
+        if kind in {"UID", "PTR", "NAME"}:
+            return (kind, value[1])
+    return None
+
+
+def _fbp_identity_matches(obj, identity):
+    normalized = _fbp_normalize_identity(identity)
+    return bool(normalized is not None and _fbp_object_identity(obj) == normalized)
+
+
+def _fbp_find_scene_object_by_identity(scene, identity):
+    normalized = _fbp_normalize_identity(identity)
+    if scene is None or normalized is None:
+        return None
+    kind, value = normalized
+    if kind == "NAME":
+        obj = bpy.data.objects.get(str(value or ""))
+        try:
+            return obj if obj and object_in_scene(obj, scene) else None
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return None
+    try:
+        for obj in scene.objects:
+            if _fbp_object_identity(obj) == normalized:
+                return obj
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _fbp_get_known_link_identities(scene):
+    """Return runtime identities paired with the remembered name snapshot."""
+    scene_key = _fbp_scene_runtime_identity(scene)
+    if scene_key is None:
+        return {}
+    store = fbp_runtime_get(_FBP_KNOWN_LINKS_STATE_KEY, {}) or {}
+    if not isinstance(store, dict):
+        return {}
+    entry = store.get(scene_key)
+    if not isinstance(entry, dict):
+        return {}
+    raw = entry.get("identities", {})
+    if not isinstance(raw, dict):
+        return {}
+    result = {}
+    for rig_name, record in raw.items():
+        if not isinstance(record, dict):
+            continue
+        planes = record.get("planes", {})
+        result[str(rig_name or "")] = {
+            "rig_key": _fbp_normalize_identity(record.get("rig_key")),
+            "planes": {
+                str(name): _fbp_normalize_identity(identity)
+                for name, identity in dict(planes or {}).items()
+                if name and _fbp_normalize_identity(identity) is not None
+            },
+        }
+    return result
+
+
+def _fbp_set_known_links(scene, links, identities=None):
+    """Store a Scene-bound name map plus rename-safe object identities."""
     scene_key = _fbp_scene_runtime_identity(scene)
     if scene_key is None:
         return False
     store = fbp_runtime_get(_FBP_KNOWN_LINKS_STATE_KEY, {}) or {}
     store = dict(store) if isinstance(store, dict) else {}
 
-    # Drop stale Scene pointers before updating the current entry. This keeps the
-    # runtime dictionary bounded after users create/delete many Scenes.
     live_scene_keys = set()
     try:
         live_scene_keys = {int(item.as_pointer()) for item in bpy.data.scenes}
@@ -301,15 +408,38 @@ def _fbp_set_known_links(scene, links):
         store = {key: value for key, value in store.items() if key in live_scene_keys}
 
     normalized = {}
+    normalized_identities = {}
+    supplied_identities = dict(identities or {}) if isinstance(identities, dict) else {}
     for rig_name, plane_names in dict(links or {}).items():
         name = str(rig_name or "")
         if not name:
             continue
-        normalized[name] = [str(item) for item in list(plane_names or ()) if item]
+        names = [str(item) for item in list(plane_names or ()) if item]
+        normalized[name] = names
+
+        supplied = supplied_identities.get(name, {})
+        rig = bpy.data.objects.get(name)
+        rig_key = _fbp_normalize_identity(
+            supplied.get("rig_key") if isinstance(supplied, dict) else None
+        ) or _fbp_object_identity(rig)
+        supplied_planes = supplied.get("planes", {}) if isinstance(supplied, dict) else {}
+        plane_identities = {}
+        for plane_name in names:
+            identity = _fbp_normalize_identity(dict(supplied_planes or {}).get(plane_name))
+            if identity is None:
+                identity = _fbp_object_identity(bpy.data.objects.get(plane_name))
+            if identity is not None:
+                plane_identities[plane_name] = identity
+        normalized_identities[name] = {
+            "rig_key": rig_key,
+            "planes": plane_identities,
+        }
+
     store[scene_key] = {
         "scene_ref": scene,
         "scene_name": str(getattr(scene, "name", "") or ""),
         "links": normalized,
+        "identities": normalized_identities,
     }
     return fbp_runtime_set(_FBP_KNOWN_LINKS_STATE_KEY, store)
 
@@ -319,6 +449,192 @@ def fbp_clear_known_link_snapshots():
     return fbp_runtime_set(_FBP_KNOWN_LINKS_STATE_KEY, {})
 
 
+def _fbp_retarget_runtime_layer_name(rig, old_rig_name, new_rig_name, old_plane_name="", new_plane_name=""):
+    """Retarget runtime-only UI rows and delete snapshots after an Object rename.
+
+    ``Scene.fbp_layers`` deliberately stores object names rather than live Object
+    pointers because the latter proved unsafe around Blender 5.1 Undo. Renaming
+    the Object therefore has to update those strings before any UI rebuild tries
+    to resolve them. Keeping this operation explicit also preserves per-row
+    selection, solo, mute and lock state instead of deleting/recreating the row.
+    """
+    if not rig or not old_rig_name or not new_rig_name:
+        return False
+    changed = False
+    rig_runtime_key = fbp_obj_runtime_token(rig)
+    for scene in list(getattr(bpy.data, "scenes", ()) or ()):
+        try:
+            scene_contains_rig = object_in_scene(rig, scene)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            scene_contains_rig = False
+        if not scene_contains_rig:
+            continue
+
+        scene_changed = False
+        for item in list(getattr(scene, "fbp_layers", ()) or ()):
+            try:
+                item_name = str(getattr(item, "obj_name", "") or "")
+                item_runtime_key = fbp_normalize_obj_runtime_token(
+                    getattr(item, "obj_runtime_key", "")
+                )
+                runtime_matches = bool(
+                    item_runtime_key
+                    and rig_runtime_key
+                    and item_runtime_key == rig_runtime_key
+                )
+                if item_name != old_rig_name and not runtime_matches:
+                    continue
+                item.obj_name = new_rig_name
+                if rig_runtime_key:
+                    item.obj_runtime_key = rig_runtime_key
+                scene_changed = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+
+        for row in list(getattr(scene, "fbp_layer_tree_rows", ()) or ()):
+            try:
+                if str(getattr(row, "rig_name", "") or "") != old_rig_name:
+                    continue
+                row.rig_name = new_rig_name
+                row.name = new_rig_name
+                scene_changed = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+
+        links = _fbp_get_known_links(scene)
+        identities = _fbp_get_known_link_identities(scene)
+        if old_rig_name in links:
+            plane_names = list(links.pop(old_rig_name, ()) or ())
+            identity_record = identities.pop(old_rig_name, {})
+            plane_identities = dict(identity_record.get("planes", {}) or {}) if isinstance(identity_record, dict) else {}
+            if old_plane_name and new_plane_name and old_plane_name != new_plane_name:
+                plane_names = [
+                    new_plane_name if name == old_plane_name else name
+                    for name in plane_names
+                ]
+                if old_plane_name in plane_identities:
+                    plane_identities[new_plane_name] = plane_identities.pop(old_plane_name)
+            links[new_rig_name] = list(dict.fromkeys(plane_names))
+            identities[new_rig_name] = {
+                "rig_key": _fbp_object_identity(rig),
+                "planes": plane_identities,
+            }
+            _fbp_set_known_links(scene, links, identities)
+            scene_changed = True
+
+        if scene_changed:
+            # A linked rig can appear in more than one Scene. Mark every cached
+            # tree signature dirty; the active Scene is recomputed immediately
+            # by ``fbp_rename_layer_rig`` below.
+            try:
+                scene.fbp_layer_tree_signature = ""
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+            changed = True
+    return changed
+
+
+def fbp_rename_layer_rig(rig, new_name, context=None):
+    """Rename one FBP layer and refresh every current ownership reference.
+
+    Blender keeps real pointers valid across object renames, while Frame by
+    Plane intentionally stores several runtime fallback names for Undo-safe UI,
+    orphan cleanup and effect repair. This helper updates those names as one
+    operation so the layer never disappears from the panel after a rename.
+    """
+    if not rig or not getattr(rig, "is_fbp_control", False):
+        return ""
+    requested = str(new_name or "").strip()
+    if not requested:
+        return ""
+
+    old_rig_name = str(getattr(rig, "name", "") or "")
+    if not old_rig_name:
+        return ""
+    try:
+        if bpy.data.objects.get(old_rig_name) != rig:
+            return ""
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ""
+
+    try:
+        plane = getattr(rig, "fbp_plane_target", None)
+    except ReferenceError:
+        plane = None
+    old_plane_name = str(getattr(plane, "name", "") or "") if plane else ""
+
+    # Preserve custom hidden-plane names. Only follow the rig rename when the
+    # plane still uses Frame by Plane's generated naming convention.
+    auto_plane_name = bool(
+        plane
+        and old_plane_name in {f"Plane_{old_rig_name}", f"{old_rig_name}_Plane"}
+    )
+    old_rig_mesh_name = str(getattr(getattr(rig, "data", None), "name", "") or "")
+    old_plane_mesh_name = str(getattr(getattr(plane, "data", None), "name", "") or "") if plane else ""
+
+    try:
+        rig.name = requested
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not rename Frame by Plane layer", exc)
+        return ""
+    actual_rig_name = str(getattr(rig, "name", "") or requested)
+
+    if old_rig_mesh_name == f"Mesh_{old_rig_name}_Rig":
+        try:
+            rig.data.name = f"Mesh_{actual_rig_name}_Rig"
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+    if plane:
+        if auto_plane_name:
+            try:
+                plane.name = f"Plane_{actual_rig_name}"
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        if old_plane_mesh_name == f"Mesh_Plane_{old_rig_name}":
+            try:
+                plane.data.name = f"Mesh_Plane_{actual_rig_name}"
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        try:
+            plane["fbp_parent_rig_name"] = actual_rig_name
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+            pass
+
+    new_plane_name = str(getattr(plane, "name", "") or "") if plane else ""
+    _fbp_retarget_runtime_layer_name(
+        rig,
+        old_rig_name,
+        actual_rig_name,
+        old_plane_name=old_plane_name,
+        new_plane_name=new_plane_name,
+    )
+
+    try:
+        from .geometry_nodes import fbp_retag_effect_owners_after_layer_rename
+        fbp_retag_effect_owners_after_layer_rename(
+            rig, old_plane_name=old_plane_name
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not retag effect owners after layer rename", exc)
+
+    context = context or getattr(bpy, "context", None)
+    if context and getattr(context, "scene", None):
+        # The runtime rows were already retargeted above. Avoid a complete scene
+        # rescan here: direct text-field renames used to expose the old row name
+        # for one or more redraws, briefly showing a missing-layer error.
+        try:
+            from .ui_layout import fbp_layer_tree_signature
+            context.scene.fbp_layer_tree_signature = fbp_layer_tree_signature(context)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            context.scene.fbp_layer_tree_signature = ""
+        try:
+            _core().fbp_tag_view3d_ui_redraw()
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+    return actual_rig_name
+
+
 def sync_layer_collection(context):
     if fbp_undo_is_active():
         return
@@ -326,7 +642,8 @@ def sync_layer_collection(context):
     for i in range(len(sc.fbp_layers) - 1, -1, -1):
         try:
             item = sc.fbp_layers[i]
-            if not item.obj or not object_in_scene(item.obj, sc):
+            rig = item.obj
+            if not rig or not object_in_scene(rig, sc):
                 sc.fbp_layers.remove(i)
         except ReferenceError:
             sc.fbp_layers.remove(i)
@@ -334,13 +651,24 @@ def sync_layer_collection(context):
     existing_keys = set()
     for item in sc.fbp_layers:
         try:
-            if item.obj and object_in_scene(item.obj, sc):
-                key = _fbp_object_identity(item.obj)
-                if key is not None:
-                    existing_keys.add(key)
-                plane = getattr(item.obj, "fbp_plane_target", None)
-                if plane and object_in_scene(plane, sc):
-                    plane.is_fbp_plane = True
+            rig = item.obj
+            if not rig or not object_in_scene(rig, sc):
+                continue
+            key = _fbp_object_identity(rig)
+            if key is not None:
+                existing_keys.add(key)
+                runtime_key = fbp_obj_runtime_token(rig)
+                raw_runtime_key = str(
+                    getattr(item, "obj_runtime_key", "") or ""
+                )
+                stored_runtime_key = fbp_normalize_obj_runtime_token(raw_runtime_key)
+                if stored_runtime_key != runtime_key or raw_runtime_key != runtime_key:
+                    item.obj_runtime_key = runtime_key
+            if str(getattr(item, "obj_name", "") or "") != str(getattr(rig, "name", "") or ""):
+                item.obj_name = str(getattr(rig, "name", "") or "")
+            plane = getattr(rig, "fbp_plane_target", None)
+            if plane and object_in_scene(plane, sc):
+                plane.is_fbp_plane = True
         except ReferenceError:
             pass
 
@@ -371,61 +699,107 @@ def sync_layer_collection(context):
             fbp_refresh_layer_tree_rows(context)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
+    try:
+        _core().fbp_invalidate_procedural_scene_cache(sc)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    _fbp_scene_object_count_changed(sc, update=True)
 
 # SECTION 02 - Rig / Plane Link Helpers #
 
 def fbp_linked_planes_for_rig(rig, scene=None):
-    """Find every render plane that belongs to a rig, even if the pointer is stale."""
+    """Find planes owned by ``rig`` without adopting another live rig's plane."""
     planes = []
     seen = set()
     if not rig:
         return planes
 
-    def add_plane(obj):
+    try:
+        objects = list(scene.objects if scene else bpy.data.objects)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        objects = []
+    rig_identity = _fbp_object_identity(rig)
+
+    def is_claimed_by_other(obj):
+        try:
+            parent = getattr(obj, "parent", None)
+            if (
+                parent
+                and _fbp_object_identity(parent) != rig_identity
+                and getattr(parent, "is_fbp_control", False)
+            ):
+                if scene is None or object_in_scene(parent, scene):
+                    return True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return True
+        for candidate in objects:
+            try:
+                if (
+                    _fbp_object_identity(candidate) == rig_identity
+                    or not getattr(candidate, "is_fbp_control", False)
+                ):
+                    continue
+                if getattr(candidate, "fbp_plane_target", None) == obj:
+                    return True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        return False
+
+    def add_plane(obj, *, fallback=False):
         try:
             key = _fbp_object_identity(obj)
             if (
-                key is not None
-                and key not in seen
-                and getattr(obj, "is_fbp_plane", False)
-                and bpy.data.objects.get(obj.name) == obj
+                key is None
+                or key in seen
+                or not getattr(obj, "is_fbp_plane", False)
+                or bpy.data.objects.get(obj.name) != obj
+                or (fallback and is_claimed_by_other(obj))
             ):
-                seen.add(key)
-                planes.append(obj)
-        except ReferenceError:
-            pass
+                return
+            seen.add(key)
+            planes.append(obj)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return
 
     try:
-        add_plane(getattr(rig, "fbp_plane_target", None))
+        explicit_target = getattr(rig, "fbp_plane_target", None)
+        if (
+            explicit_target is not None
+            and _fbp_object_identity(getattr(explicit_target, "parent", None)) == rig_identity
+        ):
+            add_plane(explicit_target)
+        else:
+            add_plane(explicit_target, fallback=True)
     except ReferenceError:
         pass
 
-    objects = scene.objects if scene else bpy.data.objects
+    rig_name = str(getattr(rig, "name", "") or "")
     for obj in objects:
         try:
             if not getattr(obj, "is_fbp_plane", False):
                 continue
-            if getattr(obj, "parent", None) == rig:
+            if _fbp_object_identity(getattr(obj, "parent", None)) == rig_identity:
                 add_plane(obj)
                 continue
-            if getattr(obj, "name", "") == "Plane_" + getattr(rig, "name", ""):
-                add_plane(obj)
+            if getattr(obj, "name", "") == "Plane_" + rig_name:
+                add_plane(obj, fallback=True)
                 continue
-            if obj.get("fbp_parent_rig_name", "") == getattr(rig, "name", ""):
-                add_plane(obj)
+            if str(obj.get("fbp_parent_rig_name", "") or "") == rig_name:
+                add_plane(obj, fallback=True)
         except ReferenceError:
             continue
     return planes
 
+
 # SECTION 03 - Safe Object / Data-block Removal #
 
 def fbp_remove_plane_datablock(plane):
-    """Remove a linked FBP plane plus private mesh/material/image datablocks.
+    """Remove a linked FBP plane plus private mesh/material datablocks.
 
     Never deletes files from disk.
 
     Important Blender API safety rule: this function must not remove Object,
-    Mesh, Material or Image datablocks while a depsgraph_update_post callback is
+    Mesh or Material datablocks while a depsgraph_update_post callback is
     running. If a depsgraph handler reaches this function, defer the cleanup to
     a timer and exit without touching bpy.data.*.remove().
     """
@@ -463,25 +837,24 @@ def fbp_remove_plane_datablock(plane):
         return False
 
 def fbp_snapshot_layer_plane_links(context):
-    """Remember valid rig -> plane links for native Blender Delete cleanup.
+    """Remember one authoritative plane owner for native Delete cleanup.
 
-    Build the map in two linear passes. The previous implementation called
-    ``fbp_linked_planes_for_rig`` for every rig, which rescanned the complete
-    Scene each time and became quadratic in large multiplane projects.
+    A broken Shift+D duplicate may temporarily point at the source rig's plane.
+    The previous snapshot assigned that same plane to both rigs and whichever rig
+    was visited last overwrote ``fbp_parent_rig_name``. Ownership now follows a
+    strict precedence and each plane can appear under only one rig.
     """
     scene = getattr(context, "scene", None) if context else None
     if not scene:
         return
 
     links = {}
+    identities = {}
     try:
         rigs = []
         rig_by_key = {}
         rig_by_name = {}
-        target_rigs_by_plane_key = {}
-        planes_by_rig_key = {}
-        seen_plane_keys_by_rig_key = {}
-
+        target_claimants = {}
         for obj in scene.objects:
             try:
                 if not bool(getattr(obj, "is_fbp_control", False)):
@@ -491,83 +864,71 @@ def fbp_snapshot_layer_plane_links(context):
                     continue
                 rigs.append(obj)
                 rig_by_key[rig_key] = obj
-                rig_by_name[getattr(obj, "name", "")] = obj
-                planes_by_rig_key[rig_key] = []
-                seen_plane_keys_by_rig_key[rig_key] = set()
-
+                rig_by_name[str(getattr(obj, "name", "") or "")] = obj
                 target = getattr(obj, "fbp_plane_target", None)
                 target_key = _fbp_object_identity(target)
                 if (
                     target_key is not None
                     and bool(getattr(target, "is_fbp_plane", False))
-                    and bpy.data.objects.get(getattr(target, "name", "")) == target
+                    and object_in_scene(target, scene)
                 ):
-                    target_rigs_by_plane_key.setdefault(target_key, []).append(obj)
+                    target_claimants.setdefault(target_key, []).append(obj)
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 continue
 
-        def add_link(rig, plane):
-            rig_key = _fbp_object_identity(rig)
-            plane_key = _fbp_object_identity(plane)
-            if rig_key not in rig_by_key or plane_key is None:
-                return
-            if plane_key in seen_plane_keys_by_rig_key[rig_key]:
-                return
-            if not bool(getattr(plane, "is_fbp_plane", False)):
-                return
-            if bpy.data.objects.get(getattr(plane, "name", "")) != plane:
-                return
-            seen_plane_keys_by_rig_key[rig_key].add(plane_key)
-            planes_by_rig_key[rig_key].append(plane)
-
-        # Preserve the explicit PointerProperty target first, including old
-        # files where the plane is linked outside the active Scene collection.
-        for plane_key, target_rigs in target_rigs_by_plane_key.items():
-            for rig in target_rigs:
-                target = getattr(rig, "fbp_plane_target", None)
-                if _fbp_object_identity(target) == plane_key:
-                    add_link(rig, target)
-
-        # Associate every Scene plane once through parent, stored rig name,
-        # conventional object name, or explicit target pointer.
-        for obj in scene.objects:
+        owned = {key: [] for key in rig_by_key}
+        used_plane_keys = set()
+        for plane in scene.objects:
             try:
-                if not bool(getattr(obj, "is_fbp_plane", False)):
+                if not bool(getattr(plane, "is_fbp_plane", False)):
                     continue
-                plane_key = _fbp_object_identity(obj)
-                candidate_rigs = list(target_rigs_by_plane_key.get(plane_key, ()))
+                plane_key = _fbp_object_identity(plane)
+                if plane_key is None or plane_key in used_plane_keys:
+                    continue
 
-                parent = getattr(obj, "parent", None)
-                if _fbp_object_identity(parent) in rig_by_key:
-                    candidate_rigs.append(parent)
+                owner = None
+                parent = getattr(plane, "parent", None)
+                parent_key = _fbp_object_identity(parent)
+                if parent_key in rig_by_key:
+                    owner = rig_by_key[parent_key]
 
-                stored_name = str(obj.get("fbp_parent_rig_name", "") or "")
-                stored_rig = rig_by_name.get(stored_name)
-                if stored_rig:
-                    candidate_rigs.append(stored_rig)
+                if owner is None:
+                    stored_name = str(plane.get("fbp_parent_rig_name", "") or "")
+                    owner = rig_by_name.get(stored_name)
 
-                object_name = str(getattr(obj, "name", "") or "")
-                named_rig = rig_by_name.get(object_name[6:]) if object_name.startswith("Plane_") else None
-                if named_rig:
-                    candidate_rigs.append(named_rig)
+                if owner is None:
+                    plane_name = str(getattr(plane, "name", "") or "")
+                    if plane_name.startswith("Plane_"):
+                        owner = rig_by_name.get(plane_name[6:])
 
-                seen_candidates = set()
-                for rig in candidate_rigs:
-                    rig_key = _fbp_object_identity(rig)
-                    if rig_key is None or rig_key in seen_candidates:
-                        continue
-                    seen_candidates.add(rig_key)
-                    add_link(rig, obj)
+                if owner is None:
+                    claimants = target_claimants.get(plane_key, ())
+                    if len(claimants) == 1:
+                        owner = claimants[0]
+
+                owner_key = _fbp_object_identity(owner)
+                if owner_key not in owned:
+                    continue
+                used_plane_keys.add(plane_key)
+                owned[owner_key].append(plane)
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
                 continue
 
         for rig in rigs:
             rig_key = _fbp_object_identity(rig)
-            planes = planes_by_rig_key.get(rig_key, ())
+            planes = owned.get(rig_key, ())
             if not planes:
                 continue
             rig_name = str(getattr(rig, "name", "") or "")
-            links[rig_name] = [str(getattr(plane, "name", "") or "") for plane in planes]
+            plane_names = [str(getattr(plane, "name", "") or "") for plane in planes]
+            links[rig_name] = plane_names
+            identities[rig_name] = {
+                "rig_key": rig_key,
+                "planes": {
+                    str(getattr(plane, "name", "") or ""): _fbp_object_identity(plane)
+                    for plane in planes
+                },
+            }
             for plane in planes:
                 try:
                     plane["fbp_parent_rig_name"] = rig_name
@@ -578,105 +939,181 @@ def fbp_snapshot_layer_plane_links(context):
         return
 
     try:
-        _fbp_set_known_links(scene, links)
+        _fbp_set_known_links(scene, links, identities)
     except Exception as exc:
         fbp_warn("Could not store FBP rig/plane links", exc)
+
 
 
 # SECTION 04 - Native Delete Cleanup #
 
 def fbp_cleanup_planes_for_deleted_rigs(context):
-    """After native X/Delete removes only a rig, remove its remembered image plane too."""
+    """Repair renamed rig links or remove only identity-matched orphan planes."""
     if not context:
         return 0
     scene = getattr(context, "scene", None)
     if not scene:
         return 0
     links = _fbp_get_known_links(scene)
+    identities = _fbp_get_known_link_identities(scene)
     removed = 0
+    repaired = 0
     changed = False
+
+    try:
+        live_rigs = [obj for obj in scene.objects if getattr(obj, "is_fbp_control", False)]
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        live_rigs = []
+
+    def other_live_rig_claims(plane, excluded_identity=None):
+        for candidate in live_rigs:
+            try:
+                candidate_key = _fbp_object_identity(candidate)
+                if excluded_identity is not None and candidate_key == excluded_identity:
+                    continue
+                if getattr(candidate, "fbp_plane_target", None) == plane:
+                    return True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        try:
+            parent = getattr(plane, "parent", None)
+            parent_key = _fbp_object_identity(parent)
+            if parent and getattr(parent, "is_fbp_control", False):
+                if excluded_identity is None or parent_key != excluded_identity:
+                    return True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return True
+        return False
+
     for rig_name, plane_names in list(links.items()):
+        record = identities.get(rig_name, {})
+        stored_rig_key = _fbp_normalize_identity(record.get("rig_key")) if isinstance(record, dict) else None
+        stored_plane_keys = dict(record.get("planes", {}) or {}) if isinstance(record, dict) else {}
+
         rig = bpy.data.objects.get(rig_name)
-        rig_alive = bool(rig and getattr(rig, "is_fbp_control", False) and object_in_scene(rig, scene))
+        rig_alive = False
+        try:
+            rig_alive = bool(
+                rig
+                and getattr(rig, "is_fbp_control", False)
+                and object_in_scene(rig, scene)
+                and (stored_rig_key is None or _fbp_identity_matches(rig, stored_rig_key))
+            )
+        except ReferenceError:
+            rig_alive = False
         if rig_alive:
             continue
 
-        # Resolve remembered planes by name and supplement them with a targeted
-        # scan for planes that were renamed manually before their rig was deleted.
-        # This O(scene) fallback runs only when a remembered rig actually vanished.
-        candidate_planes = []
-        seen_plane_keys = set()
-        for plane_name in plane_names or []:
-            plane = bpy.data.objects.get(plane_name)
-            if plane and object_in_scene(plane, scene):
-                key = _fbp_object_identity(plane)
-                if key is not None and key not in seen_plane_keys:
-                    seen_plane_keys.add(key)
-                    candidate_planes.append(plane)
+        # Identity lookup distinguishes a real rename from a replacement object
+        # that merely inherited the old name.
+        renamed_rig = _fbp_find_scene_object_by_identity(scene, stored_rig_key)
         try:
-            for plane in scene.objects:
-                if not getattr(plane, "is_fbp_plane", False):
-                    continue
-                if str(plane.get("fbp_parent_rig_name", "") or "") != rig_name:
-                    continue
-                key = _fbp_object_identity(plane)
-                if key is not None and key not in seen_plane_keys:
-                    seen_plane_keys.add(key)
+            renamed_rig_valid = bool(
+                renamed_rig and getattr(renamed_rig, "is_fbp_control", False)
+            )
+        except ReferenceError:
+            renamed_rig_valid = False
+        if renamed_rig_valid:
+            new_rig_name = str(getattr(renamed_rig, "name", "") or "")
+            candidate_planes = []
+            for plane_name in plane_names or ():
+                plane = _fbp_find_scene_object_by_identity(
+                    scene, stored_plane_keys.get(plane_name)
+                )
+                if plane and getattr(plane, "is_fbp_plane", False):
                     candidate_planes.append(plane)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
-
-        # If the rig was only renamed in Blender, a candidate plane still has a
-        # live FBP parent. Update the snapshot instead of treating it as deleted.
-        live_parent = None
-        live_plane_names = []
-        for plane in candidate_planes:
-            try:
-                parent = getattr(plane, "parent", None)
-                if parent and getattr(parent, "is_fbp_control", False) and object_in_scene(parent, scene):
-                    live_parent = parent
-                    live_plane_names.append(plane.name)
-            except ReferenceError:
-                continue
-        if live_parent:
+            if not candidate_planes:
+                try:
+                    target = getattr(renamed_rig, "fbp_plane_target", None)
+                    if target and object_in_scene(target, scene):
+                        candidate_planes.append(target)
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    pass
+            old_plane_name = str(plane_names[0] if plane_names else "")
+            new_plane_name = str(getattr(candidate_planes[0], "name", "") or "") if candidate_planes else old_plane_name
+            for plane in candidate_planes:
+                try:
+                    plane["fbp_parent_rig_name"] = new_rig_name
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+                    pass
+            _fbp_retarget_runtime_layer_name(
+                renamed_rig,
+                rig_name,
+                new_rig_name,
+                old_plane_name=old_plane_name,
+                new_plane_name=new_plane_name,
+            )
+            # Keep this function's local snapshot aligned as well; otherwise a
+            # later changed entry could overwrite the retargeted runtime state.
             links.pop(rig_name, None)
-            links[live_parent.name] = live_plane_names
-            for plane_name in live_plane_names:
-                plane = bpy.data.objects.get(plane_name)
-                if plane:
-                    try:
-                        plane["fbp_parent_rig_name"] = live_parent.name
-                    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                        pass
+            links[new_rig_name] = [
+                str(getattr(plane, "name", "") or "") for plane in candidate_planes
+            ] or list(plane_names or ())
+            identities.pop(rig_name, None)
+            identities[new_rig_name] = {
+                "rig_key": _fbp_object_identity(renamed_rig),
+                "planes": {
+                    str(getattr(plane, "name", "") or ""): _fbp_object_identity(plane)
+                    for plane in candidate_planes
+                },
+            }
+            try:
+                from .geometry_nodes import fbp_retag_effect_owners_after_layer_rename
+                fbp_retag_effect_owners_after_layer_rename(
+                    renamed_rig,
+                    old_plane_name=old_plane_name,
+                )
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                fbp_warn("Could not repair effect owners after a recovered rig rename", exc)
+            repaired += 1
             changed = True
             continue
 
+        candidate_planes = []
+        seen_plane_keys = set()
+        for plane_name in plane_names or ():
+            identity = stored_plane_keys.get(plane_name)
+            plane = _fbp_find_scene_object_by_identity(scene, identity)
+            # Runtime snapshots created before this revision did not include
+            # identities. Name fallback is allowed only for those old entries.
+            if plane is None and identity is None:
+                by_name = bpy.data.objects.get(plane_name)
+                if by_name and object_in_scene(by_name, scene):
+                    plane = by_name
+            key = _fbp_object_identity(plane)
+            if key is not None and key not in seen_plane_keys:
+                seen_plane_keys.add(key)
+                candidate_planes.append(plane)
+
         changed = True
         for plane in candidate_planes:
-            if not plane or not getattr(plane, "is_fbp_plane", False):
-                continue
-            # A datablock linked into another Scene is not an orphan globally.
-            # Avoid do_unlink=True removing a legitimate shared plane everywhere.
             try:
+                if not plane or not getattr(plane, "is_fbp_plane", False):
+                    continue
+                if other_live_rig_claims(plane, stored_rig_key):
+                    continue
                 used_elsewhere = any(
                     other_scene != scene and object_in_scene(plane, other_scene)
                     for other_scene in bpy.data.scenes
                 )
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                used_elsewhere = True
+                continue
             if used_elsewhere:
                 continue
             removed += 1 if fbp_remove_plane_datablock(plane) else 0
         links.pop(rig_name, None)
+        identities.pop(rig_name, None)
+
     if changed:
         try:
-            _fbp_set_known_links(scene, links)
+            _fbp_set_known_links(scene, links, identities)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
     if removed:
         cleanup_orphan_fbp_planes(context, force=True)
         sync_layer_collection(context)
-    return removed
+    return removed + repaired
+
 
 def schedule_delete_fbp_rigs(rig_names, *, first_interval=0.35, scene=None):
     """Delete rigs after the current popup/UI event has fully returned.
@@ -786,8 +1223,8 @@ def delete_fbp_rigs(context, rigs, *, defer_if_playing=True):
         except (AttributeError, RuntimeError, TypeError, ValueError, KeyError, IndexError) as exc:
             fbp_warn("Could not delete Frame by Plane rig", exc)
 
-    # Plane removal already cleans the FBP-owned unused mesh/material/image datablocks.
-    # Do not purge every unused image in the file: users may keep unrelated images as references.
+    # Plane removal already cleans FBP-owned unused mesh/material datablocks.
+    # Image datablocks remain owned by Blender and are left for explicit Orphan Purge.
 
     if context:
         cleanup_orphan_fbp_planes(context, force=True)
@@ -814,12 +1251,37 @@ def fbp_repair_default_duplicate_rig(rig, context=None):
         return False
     try:
         if getattr(plane, "parent", None) == rig:
-            # Valid rig/plane pair. Keep the fallback name marker fresh after renames.
+            # Valid rig/plane pair. Repair readable ownership markers only when
+            # the user renamed the rig directly in Blender. Avoid effect scans
+            # on ordinary depsgraph updates.
             try:
-                plane["fbp_parent_rig_name"] = rig.name
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
-            return False
+                old_rig_name = str(plane.get("fbp_parent_rig_name", "") or "")
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+                old_rig_name = ""
+            current_name = str(getattr(rig, "name", "") or "")
+            name_repaired = old_rig_name != current_name
+            if name_repaired:
+                plane_name = str(getattr(plane, "name", "") or "")
+                try:
+                    plane["fbp_parent_rig_name"] = current_name
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+                    pass
+                _fbp_retarget_runtime_layer_name(
+                    rig,
+                    old_rig_name,
+                    current_name,
+                    old_plane_name=plane_name,
+                    new_plane_name=plane_name,
+                )
+                try:
+                    from .geometry_nodes import fbp_retag_effect_owners_after_layer_rename
+                    fbp_retag_effect_owners_after_layer_rename(
+                        rig,
+                        old_plane_name=plane_name,
+                    )
+                except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                    fbp_warn("Could not repair effect owners after a manual rig rename", exc)
+            return name_repaired
     except ReferenceError:
         return False
 
@@ -874,8 +1336,15 @@ def fbp_repair_default_duplicate_rig(rig, context=None):
                 fbp_assign_mesh_wiggle_layer_seed,
                 fbp_effect_ids_for_rig,
                 fbp_reapply_all_effects,
+                fbp_refresh_effect_instance_ids,
                 fbp_sync_effect_items,
                 fbp_update_mesh_wiggle_modifier,
+            )
+            # Blender copies modifier/node ID properties during duplication.
+            # Refresh the logical stack owner before any effect rebuild so the
+            # duplicate never shares persistent instance IDs with its source.
+            fbp_refresh_effect_instance_ids(
+                rig, force=True, refresh_stack_owner=True
             )
             fbp_assign_mesh_wiggle_layer_seed(rig, force=True)
             for effect_id in fbp_effect_ids_for_rig(rig):
@@ -982,23 +1451,34 @@ def cleanup_orphan_fbp_planes(context, force=False):
 
 def fbp_initial_sync_timer():
     """One-shot sync after registration. Not a recurring 0.05s poll."""
+    if fbp_background_sync_should_pause(getattr(bpy, "context", None)):
+        return 0.50
     if bpy.context:
         sync_layer_collection(bpy.context)
     return None
 
 def fbp_known_links_have_deleted_rig(scene):
-    """Fast check used by the depsgraph handler before running any cleanup."""
+    """Detect deletion, replacement or rename using the stored rig identity."""
     links = _fbp_get_known_links(scene)
     if not links:
         return False
+    identities = _fbp_get_known_link_identities(scene)
     for rig_name in list(links.keys()):
+        record = identities.get(rig_name, {})
+        expected = _fbp_normalize_identity(record.get("rig_key")) if isinstance(record, dict) else None
         rig = bpy.data.objects.get(rig_name)
         try:
-            if not rig or not getattr(rig, "is_fbp_control", False) or not object_in_scene(rig, scene):
+            if (
+                not rig
+                or not getattr(rig, "is_fbp_control", False)
+                or not object_in_scene(rig, scene)
+                or (expected is not None and not _fbp_identity_matches(rig, expected))
+            ):
                 return True
         except ReferenceError:
             return True
     return False
+
 
 def fbp_depsgraph_updated_fbp_rigs(depsgraph, scene=None):
     """Return only FBP rig candidates touched by the current depsgraph update."""
@@ -1091,8 +1571,18 @@ def fbp_scene_has_broken_native_duplicate(scene=None, *, depsgraph=None, candida
             if scene and not object_in_scene(obj, scene):
                 continue
             plane = getattr(obj, "fbp_plane_target", None)
-            if plane and getattr(plane, "is_fbp_plane", False) and getattr(plane, "parent", None) != obj:
-                return True
+            if plane and getattr(plane, "is_fbp_plane", False):
+                if getattr(plane, "parent", None) != obj:
+                    return True
+                try:
+                    stored_name = str(plane.get("fbp_parent_rig_name", "") or "")
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+                    stored_name = ""
+                if stored_name != str(getattr(obj, "name", "") or ""):
+                    # The rig was renamed directly in Blender. Reuse the same
+                    # deferred repair path so ownership markers are never
+                    # mutated from depsgraph_update_post.
+                    return True
         except ReferenceError:
             return True
         except (AttributeError, TypeError, RuntimeError) as exc:
@@ -1149,22 +1639,49 @@ def fbp_run_native_ops_sync(
     return changed
 
 FBP_NATIVE_OPS_SYNC_RUNNING = False
-FBP_LAST_FALLBACK_DUPLICATE_SCAN = 0.0
-FBP_LAST_FALLBACK_ORPHAN_SCAN = 0.0
 FBP_DEPSGRAPH_HANDLER_ACTIVE = False
+
+
+def _fbp_fallback_scan_clock(scene, now):
+    """Return a bounded per-Scene safety-scan clock.
+
+    A single global timestamp allowed activity in one Scene to postpone orphan
+    and duplicate checks in every other Scene. Keeping small name/pointer keys
+    makes scene switching deterministic without retaining Blender RNA objects.
+    """
+    key = _fbp_scene_cache_key(scene)
+    if key is None:
+        return None, {"duplicate": 0.0, "orphan": 0.0, "seen": now}
+    clock = _FBP_FALLBACK_SCAN_CLOCKS.get(key)
+    if not isinstance(clock, dict):
+        clock = {"duplicate": 0.0, "orphan": 0.0, "seen": now}
+        if len(_FBP_FALLBACK_SCAN_CLOCKS) >= 32 and key not in _FBP_FALLBACK_SCAN_CLOCKS:
+            oldest_key = min(
+                _FBP_FALLBACK_SCAN_CLOCKS,
+                key=lambda item: float(
+                    _FBP_FALLBACK_SCAN_CLOCKS[item].get("seen", 0.0) or 0.0
+                ),
+            )
+            _FBP_FALLBACK_SCAN_CLOCKS.pop(oldest_key, None)
+        _FBP_FALLBACK_SCAN_CLOCKS[key] = clock
+    clock["seen"] = now
+    return key, clock
 
 
 def fbp_reset_deferred_sync_state():
     """Release local dedupe guards and fallback scan clocks."""
     global FBP_NATIVE_OPS_SYNC_RUNNING
     global FBP_DEPSGRAPH_HANDLER_ACTIVE
-    global FBP_LAST_FALLBACK_DUPLICATE_SCAN
-    global FBP_LAST_FALLBACK_ORPHAN_SCAN
     FBP_NATIVE_OPS_SYNC_RUNNING = False
     FBP_DEPSGRAPH_HANDLER_ACTIVE = False
-    FBP_LAST_FALLBACK_DUPLICATE_SCAN = 0.0
-    FBP_LAST_FALLBACK_ORPHAN_SCAN = 0.0
+    _FBP_SCENE_OBJECT_COUNT_CACHE.clear()
+    _FBP_FALLBACK_SCAN_CLOCKS.clear()
     fbp_clear_known_link_snapshots()
+    try:
+        from .drawing_plane import clear_drawing_runtime_cache
+        clear_drawing_runtime_cache()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def fbp_deferred_orphan_cleanup_timer(scene_pointer=None):
@@ -1264,6 +1781,11 @@ def fbp_depsgraph_native_ops_handler(scene, depsgraph):
     schedules fbp_deferred_orphan_cleanup_timer(). Object removal, mesh/image/
     material removal and duplicate-plane repair all run from the timer.
     """
+    # Render depsgraph updates are not native edit operations. Inspecting every
+    # evaluated frame wastes time and can queue repairs while render workers are
+    # reading image/material data. The render-session guard owns this period.
+    if bool(fbp_runtime_get("fbp_render_guard_active", False)) or fbp_render_job_active():
+        return
     if fbp_undo_is_active():
         return
 
@@ -1279,7 +1801,15 @@ def fbp_depsgraph_native_ops_handler(scene, depsgraph):
     FBP_DEPSGRAPH_HANDLER_ACTIVE = True
     try:
         candidate_rigs = fbp_depsgraph_updated_fbp_rigs(depsgraph, scene)
-        has_deleted_rig = fbp_known_links_have_deleted_rig(scene)
+        try:
+            from .drawing_plane import fbp_depsgraph_schedule_drawing_updates
+            fbp_depsgraph_schedule_drawing_updates(scene, candidate_rigs)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        topology_changed = _fbp_scene_object_count_changed(scene, update=True)
+        has_deleted_rig = (
+            topology_changed and fbp_known_links_have_deleted_rig(scene)
+        )
         auto_clean = bool(getattr(scene, 'fbp_auto_clean_orphans', False))
         has_orphan_plane = auto_clean and fbp_depsgraph_has_orphan_fbp_plane(depsgraph, scene)
         has_broken_duplicate = fbp_scene_has_broken_native_duplicate(scene, candidates=candidate_rigs)
@@ -1334,9 +1864,6 @@ def fbp_scene_has_orphan_fbp_plane_light(scene=None, *, candidates=None):
 
 def cleanup_orphan_fbp_planes_timer():
     """Low-frequency safety net for changes missed by depsgraph notifications."""
-    global FBP_LAST_FALLBACK_DUPLICATE_SCAN
-    global FBP_LAST_FALLBACK_ORPHAN_SCAN
-
     interval = FBP_FALLBACK_TIMER_INTERVAL
 
     context = bpy.context
@@ -1352,16 +1879,17 @@ def cleanup_orphan_fbp_planes_timer():
     changed = 0
     try:
         now = time.monotonic()
+        _clock_key, scan_clock = _fbp_fallback_scan_clock(scene, now)
         known_links = _fbp_get_known_links(scene)
         has_deleted_rig = bool(known_links) and fbp_known_links_have_deleted_rig(scene)
         duplicate_scan_due = (
-            (now - FBP_LAST_FALLBACK_DUPLICATE_SCAN)
+            now - float(scan_clock.get("duplicate", 0.0) or 0.0)
             >= FBP_FALLBACK_DUPLICATE_SCAN_INTERVAL
         )
         auto_clean = bool(getattr(scene, 'fbp_auto_clean_orphans', False))
         orphan_scan_due = (
             auto_clean
-            and (now - FBP_LAST_FALLBACK_ORPHAN_SCAN)
+            and now - float(scan_clock.get("orphan", 0.0) or 0.0)
             >= FBP_FALLBACK_ORPHAN_SCAN_INTERVAL
         )
         if not has_deleted_rig and not duplicate_scan_due and not orphan_scan_due:
@@ -1377,9 +1905,9 @@ def cleanup_orphan_fbp_planes_timer():
         # Record completed empty scans as well; otherwise an empty project would
         # repeat the collection-cache walk on every 10-second timer pulse.
         if duplicate_scan_due:
-            FBP_LAST_FALLBACK_DUPLICATE_SCAN = now
+            scan_clock["duplicate"] = now
         if orphan_scan_due:
-            FBP_LAST_FALLBACK_ORPHAN_SCAN = now
+            scan_clock["orphan"] = now
         if not candidates and not known_links:
             return interval
 

@@ -8,6 +8,8 @@ import bpy
 import json
 import os
 import shutil
+import subprocess
+import time
 
 
 from . import safe_tasks as _safe_tasks
@@ -536,6 +538,14 @@ for _key, _default in {
     "process": None,
     "log_handle": None,
     "log_path": "",
+    "log_offset": 0,
+    "log_partial": "",
+    "rendered_frames": set(),
+    "last_rendered_frame": 0,
+    "last_log_message": "",
+    "log_complete": False,
+    "last_filesystem_scan": 0.0,
+    "filesystem_progress": 0,
     "temp_dir": "",
     "out_dir": "",
     "prefix": "",
@@ -547,6 +557,21 @@ for _key, _default in {
 }.items():
     FBP_BG_RENDER_STATE.setdefault(_key, _default)
 del _key, _default
+
+
+def _fbp_bg_reset_progress_state():
+    """Reset the incremental progress parser without touching the child process."""
+    FBP_BG_RENDER_STATE.update({
+        "log_offset": 0,
+        "log_partial": "",
+        "rendered_frames": set(),
+        "last_rendered_frame": 0,
+        "last_log_message": "",
+        "log_complete": False,
+        "last_filesystem_scan": 0.0,
+        "filesystem_progress": 0,
+    })
+
 
 def _fbp_bg_clear_runtime_state(scene=None):
     """Clear stale background-render process/log state after finish or unload."""
@@ -564,6 +589,7 @@ def _fbp_bg_clear_runtime_state(scene=None):
         "started_at": 0.0,
         "session_token": "",
     })
+    _fbp_bg_reset_progress_state()
     if scene:
         try:
             scene.fbp_background_render_running = False
@@ -574,12 +600,27 @@ def _fbp_bg_clear_runtime_state(scene=None):
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
 
-def _fbp_bg_process_running():
+
+def _fbp_bg_process_status():
+    """Return ``(running, returncode, state_known)`` for the child process.
+
+    A transient ``Popen.poll()`` failure must never be interpreted as process
+    completion. Callers that mutate or delete session files can therefore keep
+    the conservative running state until process termination is confirmed.
+    """
     proc = FBP_BG_RENDER_STATE.get("process")
+    if proc is None:
+        return False, None, True
     try:
-        return bool(proc and proc.poll() is None)
-    except Exception:
-        return False
+        returncode = proc.poll()
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return True, None, False
+    return returncode is None, returncode, True
+
+
+def _fbp_bg_process_running():
+    running, _returncode, _state_known = _fbp_bg_process_status()
+    return bool(running)
 
 def _fbp_bg_close_log_handle():
     handle = FBP_BG_RENDER_STATE.get("log_handle")
@@ -589,6 +630,7 @@ def _fbp_bg_close_log_handle():
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
     FBP_BG_RENDER_STATE["log_handle"] = None
+
 
 def _fbp_bg_cleanup_temp_files():
     """Close the background log and remove the temporary script directory."""
@@ -602,10 +644,80 @@ def _fbp_bg_cleanup_temp_files():
     FBP_BG_RENDER_STATE["temp_dir"] = ""
     FBP_BG_RENDER_STATE["log_path"] = ""
 
+
+def _fbp_bg_read_progress_log():
+    """Incrementally parse only newly appended child-process log bytes.
+
+    The previous monitor listed and stat-ed the complete output directory every
+    0.75 seconds. Large or network output folders therefore became slower as a
+    render progressed. ``render_write`` already emits one deterministic marker,
+    so progress can be O(new log bytes) and independent of folder size.
+    """
+    log_path = str(FBP_BG_RENDER_STATE.get("log_path", "") or "")
+    if not log_path or not os.path.isfile(log_path):
+        return False
+    try:
+        offset = max(0, int(FBP_BG_RENDER_STATE.get("log_offset", 0) or 0))
+        size = os.path.getsize(log_path)
+        if offset > size:
+            # The file was truncated or replaced; restart the parser instead of
+            # silently skipping the new render session.
+            offset = 0
+            FBP_BG_RENDER_STATE["log_partial"] = ""
+        with open(log_path, "rb") as stream:
+            stream.seek(offset)
+            payload = stream.read()
+            FBP_BG_RENDER_STATE["log_offset"] = int(stream.tell())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    if not payload:
+        return True
+
+    text = str(FBP_BG_RENDER_STATE.get("log_partial", "") or "") + payload.decode(
+        "utf-8", errors="replace"
+    )
+    lines = text.split("\n")
+    FBP_BG_RENDER_STATE["log_partial"] = lines.pop() if lines else ""
+
+    rendered = FBP_BG_RENDER_STATE.get("rendered_frames")
+    if not isinstance(rendered, set):
+        rendered = set(rendered or ())
+        FBP_BG_RENDER_STATE["rendered_frames"] = rendered
+    start = int(FBP_BG_RENDER_STATE.get("start", 0) or 0)
+    end = int(FBP_BG_RENDER_STATE.get("end", 0) or 0)
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("[FBP_BG_FRAME]"):
+            try:
+                payload_text = line.split("]", 1)[1].strip()
+                frame_text = payload_text.split("/", 1)[0].strip()
+                frame = int(frame_text)
+                if (not start or frame >= start) and (not end or frame <= end):
+                    rendered.add(frame)
+                    FBP_BG_RENDER_STATE["last_rendered_frame"] = frame
+            except (IndexError, TypeError, ValueError):
+                pass
+            continue
+        if line.startswith("[FBP_BG]"):
+            message = line.split("]", 1)[1].strip() if "]" in line else line
+            FBP_BG_RENDER_STATE["last_log_message"] = message[-500:]
+            if message == "DONE":
+                FBP_BG_RENDER_STATE["log_complete"] = True
+            continue
+        lowered = line.lower()
+        if "traceback (most recent call last)" in lowered or "error" in lowered or "exception" in lowered:
+            FBP_BG_RENDER_STATE["last_log_message"] = line[-500:]
+    return True
+
+
 def _fbp_bg_count_rendered_frames(out_dir, prefix):
+    """Count output files only as a throttled filesystem fallback."""
     try:
         names = os.listdir(out_dir) if out_dir and os.path.isdir(out_dir) else []
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError):
         return 0
     prefix = str(prefix or "")
     count = 0
@@ -618,27 +730,50 @@ def _fbp_bg_count_rendered_frames(out_dir, prefix):
             try:
                 if os.path.getmtime(os.path.join(out_dir, name)) < started_at - 1.0:
                     continue
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-                pass
+            except OSError:
+                continue
         count += 1
     return count
 
-def _fbp_bg_update_scene_status(scene, message=None):
+
+def _fbp_bg_progress(*, force_filesystem_scan=False):
+    _fbp_bg_read_progress_log()
+    rendered = FBP_BG_RENDER_STATE.get("rendered_frames")
+    log_progress = len(rendered) if isinstance(rendered, set) else len(set(rendered or ()))
+    now = time.monotonic()
+    last_scan = float(FBP_BG_RENDER_STATE.get("last_filesystem_scan", 0.0) or 0.0)
+    # A filesystem scan is only needed if no marker has appeared yet, or once at
+    # process completion to verify engines that omit render_write callbacks.
+    should_scan = bool(force_filesystem_scan or (log_progress <= 0 and now - last_scan >= 3.0))
+    if should_scan:
+        filesystem_progress = _fbp_bg_count_rendered_frames(
+            FBP_BG_RENDER_STATE.get("out_dir", ""),
+            FBP_BG_RENDER_STATE.get("prefix", ""),
+        )
+        FBP_BG_RENDER_STATE["filesystem_progress"] = max(
+            int(FBP_BG_RENDER_STATE.get("filesystem_progress", 0) or 0),
+            int(filesystem_progress),
+        )
+        FBP_BG_RENDER_STATE["last_filesystem_scan"] = now
+    return max(log_progress, int(FBP_BG_RENDER_STATE.get("filesystem_progress", 0) or 0))
+
+
+def _fbp_bg_update_scene_status(scene, message=None, *, force_filesystem_scan=False):
     if not scene:
         return
     total = int(FBP_BG_RENDER_STATE.get("total", 0) or 0)
-    progress = _fbp_bg_count_rendered_frames(
-        FBP_BG_RENDER_STATE.get("out_dir", ""),
-        FBP_BG_RENDER_STATE.get("prefix", ""),
-    )
+    progress = _fbp_bg_progress(force_filesystem_scan=force_filesystem_scan)
     progress = max(0, min(progress, total)) if total else progress
     remaining = max(0, total - progress)
-    current = int(FBP_BG_RENDER_STATE.get("start", 0) or 0) + max(0, progress - 1)
+    start = int(FBP_BG_RENDER_STATE.get("start", 0) or 0)
+    end = int(FBP_BG_RENDER_STATE.get("end", 0) or 0)
+    last_frame = int(FBP_BG_RENDER_STATE.get("last_rendered_frame", 0) or 0)
+    current = last_frame if last_frame else start + max(0, progress - 1)
     running = _fbp_bg_process_running()
     if message is None:
         if running:
             if progress > 0:
-                next_frame = min(int(FBP_BG_RENDER_STATE.get("end", current) or current), current + 1)
+                next_frame = min(end or current, current + 1)
                 message = f"Rendered {progress}/{total} · Next Frame {next_frame} · {remaining} remaining"
             else:
                 message = f"Rendering starting · {total} frames total"
@@ -653,30 +788,72 @@ def _fbp_bg_update_scene_status(scene, message=None):
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
 
+
 def _fbp_bg_terminate_process(scene=None):
+    """Stop the child process without discarding live process state.
+
+    Temporary snapshots and logs are removed only after ``poll``/``wait`` has
+    positively confirmed process exit. If termination cannot be confirmed, the
+    process reference is intentionally retained so the modal monitor can keep
+    observing it and the user can retry Stop Render.
+    """
     proc = FBP_BG_RENDER_STATE.get("process")
-    if not proc:
+    if proc is None:
         _fbp_bg_update_scene_status(scene, "No background render is running")
         return False
+
+    stopped = False
     try:
-        if proc.poll() is None:
-            proc.terminate()
+        running, _returncode, state_known = _fbp_bg_process_status()
+        if state_known and not running:
+            stopped = True
+        else:
+            try:
+                proc.terminate()
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                pass
             try:
                 proc.wait(timeout=5)
-            except Exception:
+                stopped = True
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired):
                 try:
                     proc.kill()
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
                     pass
-        _fbp_bg_update_scene_status(scene, "Background render stopped")
-        return True
-    except Exception:
-        _fbp_bg_update_scene_status(scene, "Could not stop background render")
-        return False
-    finally:
+                try:
+                    proc.wait(timeout=2)
+                    stopped = True
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired):
+                    stopped = False
+
+        if not stopped:
+            running, _returncode, state_known = _fbp_bg_process_status()
+            stopped = bool(state_known and not running)
+
+        if not stopped:
+            _fbp_bg_read_progress_log()
+            _fbp_bg_update_scene_status(
+                scene,
+                "Could not confirm that the background render stopped",
+                force_filesystem_scan=True,
+            )
+            return False
+
+        _fbp_bg_update_scene_status(
+            scene, "Background render stopped", force_filesystem_scan=True
+        )
         FBP_BG_RENDER_STATE["process"] = None
         FBP_BG_RENDER_STATE["session_token"] = ""
         _fbp_bg_cleanup_temp_files()
+        return True
+    except Exception:
+        _fbp_bg_read_progress_log()
+        _fbp_bg_update_scene_status(
+            scene,
+            "Could not stop background render",
+            force_filesystem_scan=True,
+        )
+        return False
 
 def _fbp_select_pending_index(context, pending_index):
     scene = context.scene

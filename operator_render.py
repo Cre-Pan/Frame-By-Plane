@@ -16,6 +16,9 @@ from .operator_common import (
     _fbp_bg_cleanup_temp_files,
     _fbp_bg_clear_runtime_state,
     _fbp_bg_process_running,
+    _fbp_bg_process_status,
+    _fbp_bg_read_progress_log,
+    _fbp_bg_reset_progress_state,
     _fbp_bg_terminate_process,
     _fbp_bg_update_scene_status,
 )
@@ -29,13 +32,25 @@ _FBP_BG_RENDER_MODAL_TIMERS = globals().get("_FBP_BG_RENDER_MODAL_TIMERS", [])
 class FBP_OT_RepairRenderState(Operator):
     bl_idname      = "fbp.repair_render_state"
     bl_label       = "Repair FBP Render State"
-    bl_description = "Repair material slots, UVs and material indices before rendering"
+    bl_description = "Validate native media, timing, material slots, UVs and material indices before rendering"
     bl_options     = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         sync_layer_collection(context)
-        fixed = fbp_repair_all_render_state(context.scene, context.scene.frame_current)
-        self.report({'INFO'}, f"Render state repaired on {fixed} FBP layer(s)")
+        expected = sum(
+            1 for obj in context.scene.objects
+            if bool(getattr(obj, "is_fbp_control", False))
+        )
+        fixed = fbp_repair_all_render_state(
+            context.scene, context.scene.frame_current
+        )
+        if fixed != expected:
+            self.report(
+                {'ERROR'},
+                f"Render validation failed on {expected - fixed} of {expected} FBP layer(s)",
+            )
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Render state validated on {fixed} FBP layer(s)")
         return {'FINISHED'}
 
 class FBP_OT_BackgroundRenderFrames(Operator):
@@ -69,6 +84,12 @@ class FBP_OT_BackgroundRenderFrames(Operator):
         self._remove_modal_timer(context)
         if not self._owns_render_state():
             return result
+        # Consume the final child-process markers before deleting the temporary
+        # log. A single final filesystem verification covers engines that omit a
+        # render_write callback without scanning the output folder every tick.
+        _fbp_bg_update_scene_status(
+            context.scene, None, force_filesystem_scan=True
+        )
         FBP_BG_RENDER_STATE["process"] = None
         FBP_BG_RENDER_STATE["session_token"] = ""
         _fbp_bg_cleanup_temp_files()
@@ -84,8 +105,14 @@ class FBP_OT_BackgroundRenderFrames(Operator):
             self._remove_modal_timer(context)
             return {'CANCELLED'}
         if event.type == 'ESC':
-            _fbp_bg_terminate_process(context.scene)
-            return self._finish_modal(context, "Background render stopped", {'CANCELLED'})
+            if _fbp_bg_terminate_process(context.scene):
+                return self._finish_modal(
+                    context, "Background render stopped", {'CANCELLED'}
+                )
+            # Keep the modal owner alive when process exit could not be
+            # confirmed. Clearing its token/log here could orphan a live child.
+            self.report({'ERROR'}, "Could not confirm that the background render stopped")
+            return {'RUNNING_MODAL'}
 
         if event.type == 'TIMER':
             event_timer = getattr(event, "timer", None)
@@ -98,14 +125,27 @@ class FBP_OT_BackgroundRenderFrames(Operator):
                     area.tag_redraw()
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
                 pass
-            if not proc or proc.poll() is not None:
-                code = proc.poll() if proc else 0
-                if code == 0:
+            running, code, state_known = _fbp_bg_process_status()
+            if not state_known:
+                # A failed poll is not proof of completion. Preserve process,
+                # token and temporary files and try again on the next timer.
+                return {'RUNNING_MODAL'}
+            if not proc or not running:
+                if code in {None, 0}:
                     out_dir = FBP_BG_RENDER_STATE.get("out_dir", "")
                     self.report({'INFO'}, f"Background render finished: {out_dir}")
                     return self._finish_modal(context, "Background render finished", {'FINISHED'})
-                self.report({'WARNING'}, f"Background render stopped or failed with code {code}")
-                return self._finish_modal(context, f"Stopped or failed with code {code}", {'CANCELLED'})
+                _fbp_bg_read_progress_log()
+                detail = str(FBP_BG_RENDER_STATE.get("last_log_message", "") or "").strip()
+                report_message = f"Background render stopped or failed with code {code}"
+                if detail:
+                    report_message += f": {detail[:220]}"
+                self.report({'WARNING'}, report_message)
+                return self._finish_modal(
+                    context,
+                    f"Stopped or failed with code {code}" + (f" · {detail[:160]}" if detail else ""),
+                    {'CANCELLED'},
+                )
             return {'RUNNING_MODAL'}
 
         return {'PASS_THROUGH'}
@@ -162,12 +202,30 @@ class FBP_OT_BackgroundRenderFrames(Operator):
         raw_prefix = str(getattr(sc, 'fbp_render_prefix', '') or 'frame_').strip()
         prefix = os.path.basename(raw_prefix) or "frame_"
         prefix = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', '_', prefix).strip(' .') or "frame_"
-        blend_path = bpy.data.filepath
-        blender_bin = bpy.app.binary_path
+        blender_bin = os.path.abspath(str(getattr(bpy.app, "binary_path", "") or ""))
+        if not blender_bin or not os.path.isfile(blender_bin):
+            self.report({'ERROR'}, "Could not locate the current Blender executable")
+            return {'CANCELLED'}
 
-        # Repair and save before spawning the background instance.
-        fbp_repair_all_render_state(sc, sc.frame_current)
-        bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+        # Render an isolated snapshot. Saving the active project in-place here
+        # could overwrite unrelated user changes and couples the render process
+        # to the live Main. copy=True keeps the current .blend active while
+        # relative_remap=True preserves external media paths in the snapshot.
+        temp_dir = tempfile.mkdtemp(prefix="fbp_bg_render_")
+        snapshot_path = os.path.join(temp_dir, "frame_by_plane_render_snapshot.blend")
+        try:
+            result = bpy.ops.wm.save_as_mainfile(
+                filepath=snapshot_path,
+                copy=True,
+                relative_remap=True,
+                check_existing=False,
+            )
+            if 'FINISHED' not in result or not os.path.isfile(snapshot_path):
+                raise RuntimeError("Blender did not create the render snapshot")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self.report({'ERROR'}, f"Could not create background render snapshot: {exc}")
+            return {'CANCELLED'}
 
         script = f"""
 import bpy
@@ -180,6 +238,12 @@ PREFIX = {prefix!r}
 
 scene = bpy.context.scene
 os.makedirs(OUT_DIR, exist_ok=True)
+
+# Validate only the isolated snapshot, never the live interactive project.
+result = bpy.ops.fbp.repair_render_state()
+print(f"[FBP_BG] Native render-state validation: {{result}}", flush=True)
+if 'FINISHED' not in result:
+    raise RuntimeError("Frame by Plane render-state validation failed")
 
 scene.frame_start = START
 scene.frame_end = END
@@ -201,25 +265,34 @@ try:
 except Exception as exc:
     print(f"[FBP_BG] Viewport render guard skipped: {{exc}}", flush=True)
 
-print(f"[FBP_BG] Rendering frames {{START}}-{{END}} -> {{OUT_DIR}}", flush=True)
-for frame in range(START, END + 1):
-    scene.frame_set(frame)
-    scene.render.filepath = os.path.join(OUT_DIR, f"{{PREFIX}}{{frame:04d}}")
-    print(f"[FBP_BG_FRAME] {{frame}}/{{END}}", flush=True)
-    bpy.ops.render.render(write_still=True)
+# Use one native animation render job. The previous per-frame write_still loop
+# repeatedly created and destroyed Blender render sessions and image buffers,
+# which was slower and amplified native image-cache lifecycle risk.
+scene.render.filepath = os.path.join(OUT_DIR, PREFIX)
+
+def _fbp_bg_render_write(_scene):
+    print(f"[FBP_BG_FRAME] {{int(_scene.frame_current)}}/{{END}}", flush=True)
+
+bpy.app.handlers.render_write.append(_fbp_bg_render_write)
+try:
+    print(f"[FBP_BG] Rendering frames {{START}}-{{END}} -> {{OUT_DIR}}", flush=True)
+    bpy.ops.render.render(animation=True)
+finally:
+    try:
+        bpy.app.handlers.render_write.remove(_fbp_bg_render_write)
+    except ValueError:
+        pass
 print("[FBP_BG] DONE", flush=True)
 """
 
-        temp_dir = ""
         log_handle = None
         try:
-            temp_dir = tempfile.mkdtemp(prefix="fbp_bg_render_")
             script_path = os.path.join(temp_dir, "fbp_background_render.py")
             log_path = os.path.join(temp_dir, "fbp_background_render.log")
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(script)
 
-            cmd = [blender_bin, "-b", blend_path, "--python", script_path]
+            cmd = [blender_bin, "-b", snapshot_path, "--python", script_path]
             log_handle = open(log_path, "w", encoding="utf-8")
             proc = subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -237,6 +310,7 @@ print("[FBP_BG] DONE", flush=True)
             return {'CANCELLED'}
 
         self._session_token = f"{time.monotonic_ns()}:{id(self)}"
+        _fbp_bg_reset_progress_state()
         FBP_BG_RENDER_STATE.update({
             "process": proc,
             "session_token": self._session_token,
@@ -281,7 +355,10 @@ class FBP_OT_StopBackgroundRender(Operator):
         if _fbp_bg_terminate_process(context.scene):
             self.report({'INFO'}, "Background render stopped")
             return {'FINISHED'}
-        self.report({'WARNING'}, "No background render is running")
+        if _fbp_bg_process_running():
+            self.report({'ERROR'}, "Could not confirm that the background render stopped")
+        else:
+            self.report({'WARNING'}, "No background render is running")
         return {'CANCELLED'}
 
 class FBP_OT_BackgroundRenderStatus(Operator):
@@ -293,7 +370,6 @@ class FBP_OT_BackgroundRenderStatus(Operator):
     def draw(self, context):
         sc = context.scene
         layout = self.layout
-        _fbp_bg_update_scene_status(sc)
         total = int(getattr(sc, 'fbp_background_render_total', 0) or 0)
         progress = int(getattr(sc, 'fbp_background_render_progress', 0) or 0)
         remaining = max(0, total - progress)
@@ -310,6 +386,9 @@ class FBP_OT_BackgroundRenderStatus(Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        # Refresh before opening the dialog. ``draw`` must remain read-only and
+        # must never parse logs or write Scene RNA during a UI redraw.
+        _fbp_bg_update_scene_status(context.scene)
         return context.window_manager.invoke_props_dialog(self, width=420)
 
 

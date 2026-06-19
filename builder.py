@@ -19,11 +19,10 @@ from .runtime import fbp_warn as _fbp_warn, fbp_set_rna_property_silent
 def fbp_scene_orientation_is_horizontal(scene):
     """Return True only for the explicit Horizontal creation preset.
 
-    Older test files or UI states may carry slightly different string values,
-    so anything that is not clearly Horizontal falls back to Vertical.
+    Only the current enum token is accepted; unknown values fall back to Vertical.
     """
     value = str(getattr(scene, 'fbp_pre_orientation', 'VERT') or 'VERT').upper()
-    return value in {'HORIZ', 'HORIZONTAL'}
+    return value == 'HORIZ'
 
 
 def fbp_apply_creation_orientation(rig, scene):

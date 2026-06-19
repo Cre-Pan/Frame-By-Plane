@@ -1,7 +1,6 @@
 """Panels, UILists, Shift+A menu entries and render menu hooks."""
 
 import os
-import time
 
 import bpy
 from bpy.types import Panel, UIList, Menu
@@ -10,12 +9,12 @@ from .geometry_nodes import (
     fbp_active_effect_id,
     fbp_can_move_effect,
     fbp_draw_effect_settings,
-    fbp_effect_definition,
-    fbp_effect_ids_for_rig,
     fbp_effect_presence,
     fbp_effect_source_rig,
     fbp_schedule_effect_items_sync,
 )
+from .effects_registry import fbp_effect_definition
+
 
 from .constants import fbp_collection_color_icon, fbp_strip_icon
 from .path_utils import natural_sort_key
@@ -50,6 +49,7 @@ from .core import (
     pending_collection_is_open,
 )
 from .ui_icons import ui_icon
+from .drawing_plane import fbp_is_drawing_rig, draw_drawing_plane_ui
 from .ui_layout import (
     draw_creation_ui,
     draw_layer_tree_uilist,
@@ -316,9 +316,17 @@ class FBP_UL_LayerTreeList(UIList):
         solo_icon = ui_icon('layer.solo_on') if layer_item.solo_view else ui_icon('layer.solo_off')
         right.prop(layer_item, 'solo_view', text='', icon=solo_icon, icon_only=True, emboss=False)
 
-        # Property buttons keep Blender hold-and-slide painting.
+        # Holdout remains a paintable property. Plane selectability uses an
+        # operator because unlocking a plane should also make it the active
+        # viewport object and remove the rig from the selection.
         right.prop(layer_item, 'holdout', text='', icon=fbp_mask_icon(layer_item.holdout), icon_only=True, emboss=False)
-        right.prop(layer_item, 'plane_locked', text='', icon=fbp_select_plane_icon(rig, context), icon_only=True, emboss=False)
+        op_plane = right.operator(
+            'fbp.select_linked_plane',
+            text='',
+            icon=fbp_select_plane_icon(rig, context),
+            emboss=False,
+        )
+        op_plane.rig_name = rig.name
 
         lock_icon = ui_icon('layer.lock_on') if layer_item.rig_locked else ui_icon('layer.lock_off')
         right.prop(layer_item, 'rig_locked', text='', icon=lock_icon, icon_only=True, emboss=False)
@@ -353,7 +361,7 @@ class FBP_UL_ImageList(UIList):
                 if img_path and not os.path.exists(bpy.path.abspath(img_path)):
                     is_missing = True
                 if img_path and context.scene.fbp_show_previews:
-                    thumb = load_preview(img_path)
+                    thumb = load_preview(img_path, scene=context.scene)
                     if thumb:
                         custom_icon = thumb.icon_id
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
@@ -561,265 +569,25 @@ class FBP_UL_PendingTreeList(UIList):
 # ###ICON Tree View, Functions: collection collapse, visibility, solo, holdout, select rigs/planes, lock.
 
 # SECTION 05 - Panel: Settings / Project / Camera / Render / Maintenance #
-# ###ICON Panel Settings, Functions: project folder, camera, render, maintenance and project stats.
-_FBP_PROJECT_STATS_CACHE = {"timestamp": 0.0, "signature": None, "data": None}
-_FBP_PROJECT_STATS_CACHE_SECONDS = 0.75
+# Every tab deliberately draws four content rows. The panel therefore stays
+# visually stable while switching sections and does not scan project data.
 
 
-def _fbp_project_statistics(scene):
-    """Collect file-wide Frame by Plane statistics without changing data.
-
-    The Settings panel can redraw many times per second. A short-lived runtime
-    cache avoids repeatedly walking every scene, collection and source path
-    while keeping the displayed values responsive to edits.
-    """
-    now = time.monotonic()
-    try:
-        signature = (
-            str(getattr(bpy.data, "filepath", "") or ""),
-            len(bpy.data.scenes),
-            len(bpy.data.objects),
-            len(bpy.data.collections),
-        )
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        signature = None
-    cached = _FBP_PROJECT_STATS_CACHE.get("data")
-    if (
-        cached is not None
-        and signature == _FBP_PROJECT_STATS_CACHE.get("signature")
-        and now - float(_FBP_PROJECT_STATS_CACHE.get("timestamp", 0.0)) < _FBP_PROJECT_STATS_CACHE_SECONDS
-    ):
-        return cached
-
-    try:
-        project_scenes = bpy.data.scenes
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        project_scenes = (scene,) if scene else ()
-
-    rigs_by_pointer = {}
-    planes_by_pointer = {}
-    collection_ptrs = set()
-    visited_collection_ptrs = set()
-    scenes_with_fbp = 0
-
-    def pointer_key(datablock):
-        try:
-            return int(datablock.as_pointer())
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            return id(datablock)
-
-    def visit_collection(collection):
-        try:
-            collection_key = pointer_key(collection)
-            if collection_key in visited_collection_ptrs:
-                return
-            visited_collection_ptrs.add(collection_key)
-            if bool(getattr(collection, 'is_fbp_collection', False)):
-                collection_ptrs.add(collection_key)
-            for child in collection.children:
-                visit_collection(child)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            return
-
-    for project_scene in project_scenes:
-        scene_has_fbp = False
-        try:
-            for obj in project_scene.objects:
-                if bool(getattr(obj, 'is_fbp_control', False)):
-                    rigs_by_pointer[pointer_key(obj)] = obj
-                    scene_has_fbp = True
-                if bool(getattr(obj, 'is_fbp_plane', False)):
-                    planes_by_pointer[pointer_key(obj)] = obj
-            visit_collection(project_scene.collection)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
-        if scene_has_fbp:
-            scenes_with_fbp += 1
-
-    rigs = list(rigs_by_pointer.values())
-    planes = list(planes_by_pointer.values())
-    live_rig_ptrs = set(rigs_by_pointer)
-    target_plane_ptrs = set()
-    source_paths = set()
-    missing_paths = set()
-    content_starts = []
-    content_ends = []
-
-    image_layers = 0
-    color_layers = 0
-    gradient_layers = 0
-    holdout_layers = 0
-    logical_frames = 0
-    combined_duration = 0
-    active_effects = 0
-    shader_effects = 0
-    geometry_effects = 0
-    heavy_effects = 0
-    text_matrix_cells = 0
-    text_matrix_render_cells = 0
-
-    for rig in rigs:
-        try:
-            if bool(getattr(rig, 'fbp_is_color_plane', False)):
-                mode = str(getattr(rig, 'fbp_color_plane_mode', 'SOLID') or 'SOLID')
-                if mode == 'GRADIENT':
-                    gradient_layers += 1
-                elif mode == 'HOLDOUT':
-                    holdout_layers += 1
-                else:
-                    color_layers += 1
-            else:
-                image_layers += 1
-
-            rows = list(getattr(rig, 'fbp_images', []))
-            logical_frames += len(rows)
-            duration = sum(max(1, int(getattr(item, 'duration', 1) or 1)) for item in rows)
-            combined_duration += duration
-            start_frame = int(getattr(rig, 'fbp_start_frame', 1) or 1)
-            if rows:
-                content_starts.append(start_frame)
-                content_ends.append(start_frame + max(0, duration - 1))
-
-            for item in rows:
-                if bool(getattr(item, 'is_empty', False)):
-                    continue
-                raw = str(getattr(item, 'filepath', '') or '').strip()
-                if not raw:
-                    continue
-                absolute = os.path.abspath(bpy.path.abspath(raw))
-                normalized = os.path.normcase(os.path.normpath(absolute))
-                source_paths.add(normalized)
-                if not os.path.isfile(absolute):
-                    missing_paths.add(normalized)
-
-            plane = getattr(rig, 'fbp_plane_target', None)
-            if plane and bool(getattr(plane, 'is_fbp_plane', False)):
-                target_plane_ptrs.add(pointer_key(plane))
-            for collection in getattr(rig, 'users_collection', []):
-                collection_ptrs.add(pointer_key(collection))
-            for effect_id in fbp_effect_ids_for_rig(rig):
-                definition = fbp_effect_definition(effect_id)
-                kind = str(definition.get("kind", "") or "")
-                if kind not in {"SHADER", "GEOMETRY"}:
-                    continue
-                active_effects += 1
-                if kind == "SHADER":
-                    shader_effects += 1
-                else:
-                    geometry_effects += 1
-                if str(definition.get("performance", "") or "").upper() in {"HEAVY", "VERY_HEAVY"}:
-                    heavy_effects += 1
-                if effect_id == "TEXT_MATRIX":
-                    columns = max(2, int(getattr(rig, "fbp_text_matrix_viewport_columns", 24) or 24))
-                    aspect = max(0.1, float(getattr(rig, "fbp_text_matrix_character_aspect", 0.6) or 0.6))
-                    plane = getattr(rig, "fbp_plane_target", None)
-                    width = height = 1.0
-                    try:
-                        width = max(1e-4, abs(float(plane.dimensions.x)))
-                        height = max(1e-4, abs(float(plane.dimensions.y)))
-                    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                        pass
-                    manual_rows = int(getattr(rig, "fbp_text_matrix_viewport_rows", 0) or 0)
-                    rows = manual_rows if manual_rows > 0 else max(2, round((height / width) * columns * aspect))
-                    text_matrix_cells += columns * rows
-                    render_columns = max(2, int(getattr(rig, "fbp_text_matrix_render_columns", columns) or columns))
-                    manual_render_rows = int(getattr(rig, "fbp_text_matrix_render_rows", 0) or 0)
-                    render_rows = manual_render_rows if manual_render_rows > 0 else max(2, round((height / width) * render_columns * aspect))
-                    text_matrix_render_cells += render_columns * render_rows
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
-            continue
-
-    linked_planes = 0
-    orphan_planes = 0
-    for plane in planes:
-        try:
-            plane_ptr = pointer_key(plane)
-            parent = getattr(plane, 'parent', None)
-            parent_is_live_rig = bool(
-                parent
-                and getattr(parent, 'is_fbp_control', False)
-                and pointer_key(parent) in live_rig_ptrs
-            )
-            if plane_ptr in target_plane_ptrs or parent_is_live_rig:
-                linked_planes += 1
-            else:
-                orphan_planes += 1
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            orphan_planes += 1
-
-    generated_effect_node_groups = 0
-    generated_effect_materials = 0
-    try:
-        generated_effect_node_groups = sum(
-            1 for node_group in bpy.data.node_groups
-            if str(node_group.get("fbp_effect_asset_id", "") or "")
-        )
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        generated_effect_node_groups = 0
-    try:
-        generated_effect_materials = sum(
-            1 for material in bpy.data.materials
-            if str(material.get("fbp_effect_material_id", "") or "")
-        )
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        generated_effect_materials = 0
-
-    statistics = {
-        'scenes': scenes_with_fbp,
-        'layers': len(rigs),
-        'image_layers': image_layers,
-        'color_layers': color_layers,
-        'gradient_layers': gradient_layers,
-        'holdout_layers': holdout_layers,
-        'logical_frames': logical_frames,
-        'combined_duration': combined_duration,
-        'source_files': len(source_paths),
-        'missing_files': len(missing_paths),
-        'collections': len(collection_ptrs),
-        'linked_planes': linked_planes,
-        'orphan_planes': orphan_planes,
-        'effects': active_effects,
-        'shader_effects': shader_effects,
-        'geometry_effects': geometry_effects,
-        'heavy_effects': heavy_effects,
-        'text_matrix_cells': text_matrix_cells,
-        'text_matrix_render_cells': text_matrix_render_cells,
-        'generated_effect_node_groups': generated_effect_node_groups,
-        'generated_effect_materials': generated_effect_materials,
-        'content_start': min(content_starts) if content_starts else None,
-        'content_end': max(content_ends) if content_ends else None,
-    }
-    _FBP_PROJECT_STATS_CACHE["timestamp"] = now
-    _FBP_PROJECT_STATS_CACHE["signature"] = signature
-    _FBP_PROJECT_STATS_CACHE["data"] = statistics
-    return statistics
-
-
-def _fbp_settings_foldout(layout, scene, property_name, label, icon):
-    """Draw a compact disclosure box and return its content layout when open."""
-    box = layout.box()
-    is_open = bool(getattr(scene, property_name, False))
-    row = box.row(align=True)
-    row.label(text="", icon=icon)
-    row.prop(
-        scene,
-        property_name,
-        text=label,
-        icon=ui_icon("setup.expanded") if is_open else ui_icon("setup.collapsed"),
-        emboss=False,
-    )
-    return box if is_open else None
+def _fbp_settings_row(layout, *, align=False):
+    row = layout.row(align=align)
+    row.scale_y = 1.0
+    return row
 
 
 class FBP_PT_Settings(Panel):
-    bl_label       = "Settings"
-    bl_description = "Project, camera, render, maintenance and project statistics"
-    bl_idname      = "FBP_PT_settings"
-    bl_space_type  = 'VIEW_3D'
+    bl_label = "Settings"
+    bl_description = "Current project, display, camera, render and maintenance settings"
+    bl_idname = "FBP_PT_settings"
+    bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category    = "Frame by Plane"
-    bl_options     = {'DEFAULT_CLOSED'}
-    bl_order       = 0
+    bl_category = "Frame by Plane"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 0
 
     def draw_header(self, context):
         self.layout.label(text="", icon=ui_icon("settings.header"))
@@ -828,151 +596,117 @@ class FBP_PT_Settings(Panel):
         layout = self.layout
         sc = context.scene
 
-        tabs = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
+        tabs = layout.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=True)
         tabs.prop_enum(sc, "fbp_settings_section", 'PROJECT', text="Project", icon=ui_icon("settings.project"))
+        tabs.prop_enum(sc, "fbp_settings_section", 'DISPLAY', text="Display", icon=ui_icon("settings.display"))
         tabs.prop_enum(sc, "fbp_settings_section", 'CAMERA', text="Camera", icon=ui_icon("settings.camera_tab"))
         tabs.prop_enum(sc, "fbp_settings_section", 'RENDER', text="Render", icon=ui_icon("settings.render_tab"))
-        tabs.prop_enum(sc, "fbp_settings_section", 'MAINTENANCE', text="Maintenance", icon=ui_icon("settings.repair"))
+        tabs.prop_enum(sc, "fbp_settings_section", 'MAINTENANCE', text="Tools", icon=ui_icon("settings.repair"))
 
         layout.separator()
+        content = layout.box()
         section = getattr(sc, 'fbp_settings_section', 'PROJECT')
 
         if section == 'PROJECT':
-            primary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_primary_open', 'Project Folder', ui_icon("settings.project")
-            )
-            if primary is not None:
-                primary.prop(sc, "fbp_project_path", text="Project Folder")
+            row = _fbp_settings_row(content)
+            row.label(text="", icon=ui_icon("settings.project_folder"))
+            row.prop(sc, "fbp_project_path", text="Project Folder")
 
-            secondary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_secondary_open', 'Blender File', ui_icon("settings.save")
-            )
-            if secondary is not None:
-                row = secondary.row()
-                row.scale_y = 1.2
-                row.operator("fbp.save_file", text="Save Blender File", icon=ui_icon("settings.save"))
+            row = _fbp_settings_row(content)
+            row.label(text="", icon='FILE_FOLDER')
+            row.prop(sc, "fbp_last_directory", text="Import Folder")
+
+            row = _fbp_settings_row(content, align=True)
+            row.operator("fbp.save_file", text="Save", icon=ui_icon("settings.save"))
+            row.operator("fbp.scan_project_to_setup", text="Import Project", icon='IMPORT')
+            row.operator("fbp.import_folder_hierarchy", text="Import Folder", icon='OUTLINER_COLLECTION')
+
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_show_project_tools", text="Import Tools", icon='TOOL_SETTINGS')
+            row.operator("fbp.apply_preferences_to_scene", text="Apply Defaults", icon='CHECKMARK')
+
+        elif section == 'DISPLAY':
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_show_previews", text="Thumbnails", icon='IMAGE_DATA')
+            row.prop(sc, "fbp_show_color_previews", text="Color Previews", icon='COLOR')
+
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_thumbnail_background_enabled", text="Thumbnail BG", icon='IMAGE_BACKGROUND')
+            color = row.row(align=True)
+            color.enabled = bool(sc.fbp_thumbnail_background_enabled)
+            color.prop(sc, "fbp_thumbnail_background_color", text="")
+
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_sort_layers_alpha", text="Alphabetical", icon=ui_icon("layer.sort_alpha"))
+            row.prop(sc, "fbp_auto_collection_color_variants", text="Color Variants", icon='OUTLINER_COLLECTION')
+
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_show_create_tools", text="Create Tools", icon='TOOL_SETTINGS')
+            row.operator("fbp.sync_collection_colors", text="Sync", icon='COLOR')
+            row.operator("fbp.apply_preferences_to_scene", text="Defaults", icon='CHECKMARK')
 
         elif section == 'CAMERA':
-            primary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_primary_open', 'Projection', ui_icon("settings.projection")
-            )
-            if primary is not None:
-                primary.prop(sc, "fbp_camera_projection", text="Projection")
-                if sc.fbp_camera_projection == 'ORTHO':
-                    primary.prop(sc, "fbp_camera_ortho_scale", text="Orthographic Scale")
-                else:
-                    primary.prop(sc, "fbp_camera_lens", text="Lens (mm)")
-                row = primary.row(align=True)
-                row.prop(sc, "fbp_camera_clip_start", text="Clip Start")
-                row.prop(sc, "fbp_camera_clip_end", text="Clip End")
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_camera_projection", text="Projection", icon=ui_icon("settings.projection"))
+            if sc.fbp_camera_projection == 'ORTHO':
+                row.prop(sc, "fbp_camera_ortho_scale", text="Scale", icon='VIEW_CAMERA_UNSELECTED')
+            else:
+                row.prop(sc, "fbp_camera_lens", text="Lens", icon='CAMERA_DATA')
 
-            secondary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_secondary_open', 'Camera Frame', ui_icon("settings.camera_frame")
-            )
-            if secondary is not None:
-                secondary.prop(sc, "fbp_cam_ratio", text="Aspect Ratio")
-                if sc.fbp_cam_ratio == 'CUSTOM':
-                    row = secondary.row(align=True)
-                    row.prop(sc.render, "resolution_x", text="Width")
-                    row.prop(sc.render, "resolution_y", text="Height")
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_cam_ratio", text="Aspect", icon=ui_icon("settings.camera_frame"))
+            resolution = row.row(align=True)
+            resolution.active = sc.fbp_cam_ratio == 'CUSTOM'
+            resolution.prop(sc.render, "resolution_x", text="X")
+            resolution.prop(sc.render, "resolution_y", text="Y")
+
+            row = _fbp_settings_row(content, align=True)
+            row.prop(sc, "fbp_camera_clip_start", text="Clip Start")
+            row.prop(sc, "fbp_camera_clip_end", text="Clip End")
+
+            row = _fbp_settings_row(content, align=True)
+            row.prop(sc, "fbp_gen_camera", text="Generate", toggle=True, icon='CAMERA_DATA')
+            row.prop(sc, "fbp_cam_pivot", text="Cursor", toggle=True, icon='PIVOT_CURSOR')
+            row.prop(sc, "fbp_auto_scale", text="Fit", toggle=True, icon='FULLSCREEN_ENTER')
 
         elif section == 'RENDER':
-            primary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_primary_open', 'Output', ui_icon("settings.output")
-            )
-            if primary is not None:
-                primary.prop(sc, "fbp_render_output_dir", text="Output Folder")
-                primary.prop(sc, "fbp_render_prefix", text="Filename Prefix")
+            row = _fbp_settings_row(content)
+            row.label(text="", icon=ui_icon("settings.output"))
+            row.prop(sc, "fbp_render_output_dir", text="Output Folder")
 
-            secondary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_secondary_open', 'Render Sequence', ui_icon("settings.render_sequence")
-            )
-            if secondary is not None:
-                range_row = secondary.row(align=True)
-                range_row.label(text=f"Sequence In: {int(sc.frame_start)}", icon='PREV_KEYFRAME')
-                range_row.label(text=f"Sequence Out: {int(sc.frame_end)}", icon='NEXT_KEYFRAME')
-                row = secondary.row(align=True)
-                row.operator("fbp.repair_render_state", icon=ui_icon("settings.repair"), text="Repair Render State")
-                if getattr(sc, 'fbp_background_render_running', False):
-                    row.operator("fbp.stop_background_render", icon='CANCEL', text="Stop Render")
-                else:
-                    row.operator("fbp.background_render_frames", icon=ui_icon("settings.render_sequence"), text="Render Sequence")
-                if getattr(sc, 'fbp_background_render_running', False) or int(getattr(sc, 'fbp_background_render_total', 0) or 0) > 0:
-                    status_box = secondary.box()
-                    status_box.label(text=getattr(sc, 'fbp_background_render_status', 'Idle'), icon='RENDER_ANIMATION')
-                    total = int(getattr(sc, 'fbp_background_render_total', 0) or 0)
-                    progress = int(getattr(sc, 'fbp_background_render_progress', 0) or 0)
-                    if total > 0:
-                        status_box.label(text=f"Rendered Frames: {progress} of {total} · Remaining: {max(0, total - progress)}")
-                    status_box.operator("fbp.background_render_status", icon='INFO', text="Open Render Status")
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_render_prefix", text="Prefix", icon=ui_icon("layer.sort_alpha"))
+            row.prop(sc, "frame_start", text="In")
+            row.prop(sc, "frame_end", text="Out")
+
+            row = _fbp_settings_row(content, align=True)
+            row.operator("fbp.repair_render_state", icon=ui_icon("settings.repair"), text="Check State")
+            if getattr(sc, 'fbp_background_render_running', False):
+                row.operator("fbp.stop_background_render", icon='CANCEL', text="Stop")
+            else:
+                row.operator("fbp.background_render_frames", icon=ui_icon("settings.render_sequence"), text="Render Sequence")
+
+            row = _fbp_settings_row(content)
+            row.operator("fbp.save_file", text="Save Before Render", icon=ui_icon("settings.save"))
 
         else:
-            primary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_primary_open', 'Maintenance Tools', ui_icon("settings.repair")
-            )
-            if primary is not None:
-                row = primary.row(align=True)
-                row.operator("fbp.relink_from_project_root", icon=ui_icon("settings.relink"), text="Relink Missing Files")
-                row.operator("fbp.select_missing_layers", icon=ui_icon("generic.error"), text="Select Missing Layers")
-                primary.operator("fbp.project_health_check", icon=ui_icon("settings.health"), text="Create Detailed Health Report")
-                primary.operator("fbp.profile_effects", icon="TIME", text="Run Effects Profiler")
-                primary.operator("fbp.create_effect_regression_scene", icon="SCENE_DATA", text="Create Effects Regression Scene")
+            row = _fbp_settings_row(content)
+            row.prop(sc, "fbp_auto_clean_orphans", text="Auto-clean Orphans", icon='MODIFIER')
+            row.operator("fbp.relink_from_project_root", icon=ui_icon("settings.relink"), text="Relink")
+            row.operator("fbp.select_missing_layers", icon=ui_icon("generic.error"), text="Missing")
 
-            secondary = _fbp_settings_foldout(
-                layout, sc, 'fbp_settings_secondary_open', 'Project Statistics', ui_icon("settings.stats")
-            )
-            if secondary is not None:
-                stats = _fbp_project_statistics(sc)
-                col = secondary.column(align=True)
-                col.label(text=f"ACTIVE FBP Scenes: {stats['scenes']}")
-                col.label(text=f"ACTIVE FBP Layers: {stats['layers']} total · {stats['image_layers']} image/video")
-                col.label(text=f"Procedural Layers: {stats['color_layers']} color · {stats['gradient_layers']} gradient · {stats['holdout_layers']} holdout")
-                col.label(text=f"Logical Frame Rows: {stats['logical_frames']}")
-                col.label(text=f"Combined Layer Duration: {stats['combined_duration']} timeline-frame units")
-                if stats['content_start'] is not None:
-                    content_length = max(0, stats['content_end'] - stats['content_start'] + 1)
-                    col.label(text=f"Overall Authored Range: {stats['content_start']} to {stats['content_end']} · {content_length} frames")
-                else:
-                    col.label(text="Overall Authored Range: no animated layers")
-                scene_length = max(0, int(sc.frame_end) - int(sc.frame_start) + 1)
-                col.label(text=f"Current Scene Range: {int(sc.frame_start)} to {int(sc.frame_end)} · {scene_length} frames")
-                col.label(text=f"Project Structure: {stats['collections']} FBP collections · {stats['linked_planes']} linked render planes")
-                col.label(text=f"Source Media: {stats['source_files']} unique files · {stats['missing_files']} missing")
-                col.label(text=f"ACTIVE Effects: {stats['effects']} · {stats['shader_effects']} image · {stats['geometry_effects']} mesh")
-                if stats['heavy_effects']:
-                    col.label(text=f"Heavy Effects: {stats['heavy_effects']}", icon='ERROR')
-                if stats['generated_effect_node_groups']:
-                    col.label(text=f"Generated Effect Node Groups: {stats['generated_effect_node_groups']}", icon='NODETREE')
-                if stats['generated_effect_materials']:
-                    col.label(text=f"Generated Effect Materials: {stats['generated_effect_materials']}", icon='MATERIAL')
-                if stats['text_matrix_cells']:
-                    col.label(text=f"Text Matrix Characters: {stats['text_matrix_cells']:,} viewport · {stats['text_matrix_render_cells']:,} render")
-                if 'fbp_effect_profile_avg_ms' in sc:
-                    col.separator()
-                    col.label(
-                        text=(
-                            f"Last Effects Profile: {float(sc.get('fbp_effect_profile_avg_ms', 0.0)):.2f} ms avg · "
-                            f"{float(sc.get('fbp_effect_profile_max_ms', 0.0)):.2f} ms max"
-                        ),
-                        icon='TIME',
-                    )
-                    if float(sc.get('fbp_effect_profile_rss_mb', 0.0) or 0.0) > 0.0:
-                        col.label(
-                            text=(
-                                f"Blender Working Set: {float(sc.get('fbp_effect_profile_rss_mb', 0.0)):.1f} MiB · "
-                                f"Profile Delta: {float(sc.get('fbp_effect_profile_delta_mb', 0.0)):+.1f} MiB"
-                            ),
-                            icon='INFO',
-                        )
-                if stats['orphan_planes']:
-                    col.separator()
-                    col.label(text=f"Potential orphan planes: {stats['orphan_planes']}", icon=ui_icon("generic.error"))
-                elif stats['missing_files']:
-                    col.separator()
-                    col.label(text=f"Missing source files: {stats['missing_files']}", icon=ui_icon("generic.error"))
-                else:
-                    col.separator()
-                    col.label(text="No missing files or orphan planes detected.", icon=ui_icon("settings.health"))
+            row = _fbp_settings_row(content, align=True)
+            row.operator("fbp.project_health_check", icon=ui_icon("settings.health"), text="Health")
+            row.operator("fbp.deep_addon_audit", icon='CHECKMARK', text="Audit")
+            repair = row.operator("fbp.deep_addon_audit", icon=ui_icon("settings.repair"), text="Repair")
+            repair.repair = True
+
+            row = _fbp_settings_row(content, align=True)
+            row.operator("fbp.profile_effects", icon='TIME', text="Profiler")
+            row.operator("fbp.create_effect_regression_scene", icon='SCENE_DATA', text="Regression Scene")
+
+            row = _fbp_settings_row(content)
+            row.operator("fbp.apply_preferences_to_scene", icon='CHECKMARK', text="Apply Defaults")
 
 
 def fbp_scene_has_cached_rigs(context):
@@ -981,7 +715,7 @@ def fbp_scene_has_cached_rigs(context):
     if not scene:
         return False
     try:
-        for item in list(getattr(scene, "fbp_layers", ()) or ()):
+        for item in getattr(scene, "fbp_layers", ()) or ():
             rig = getattr(item, "obj", None)
             if rig and is_fbp_layer_object(rig):
                 return True
@@ -1021,6 +755,7 @@ class FBP_PT_LayerStack(Panel):
         draw_layer_tree_uilist(box, context)
         col = row.column(align=True)
         fbp_set_ui_units_x(col, 1.25)
+        col.prop(sc, "fbp_show_previews", text="", toggle=True, icon='IMAGE_DATA')
         col.prop(sc, "fbp_sort_layers_alpha", text="", toggle=True, icon=ui_icon("layer.sort_alpha"))
         col.operator("fbp.move_layer_stack", text="", icon=ui_icon("generic.down")).direction = 'DOWN'
         col.operator("fbp.move_layer_stack", text="", icon=ui_icon("generic.up")).direction  = 'UP'
@@ -1145,18 +880,20 @@ class FBP_PT_Sequence(Panel):
 
     def draw(self, context):
         layout = self.layout
-        sc = context.scene
         selected_rigs = get_selected_rigs(context)
         if not selected_rigs:
             return
 
         rig = selected_rigs[0]
+        if fbp_is_drawing_rig(rig):
+            draw_drawing_plane_ui(layout, context, rig)
+            return
 
         box = layout.box()
 
         row = box.row(align=False)
         row.prop(rig, "fbp_color_tag", text="", icon_only=False)
-        row.prop(rig, "name", text="", icon=ui_icon("sequence.header"))
+        row.prop(rig, "fbp_layer_name", text="", icon=ui_icon("sequence.header"))
         row.operator("fbp.replace_sequence", text="", icon=ui_icon("setup.edit"))
 
         row = box.row(align=False)
@@ -1356,7 +1093,7 @@ class FBP_PT_CreateExisting(Panel):
 class FBP_MT_FrameByPlaneAdd(Menu):
     bl_idname = "FBP_MT_frame_by_plane_add"
     bl_label = "Frame By Plane"
-    bl_description = "Create Frame by Plane image, color, gradient, holdout and multiplane layers"
+    bl_description = "Create Frame by Plane layers and multiplane projects"
 
     def draw(self, context):
         layout = self.layout
@@ -1368,11 +1105,39 @@ class FBP_MT_FrameByPlaneAdd(Menu):
         op.preset_type = 'HOLDOUT'
         layout.separator()
         layout.operator("fbp.popup_single_plane", text="Image Plane", icon=ui_icon("menu.image_plane"))
+        layout.operator("fbp.import_drawing_plane", text="Cutout Plane", icon="OUTLINER_OB_ARMATURE")
         op = layout.operator("fbp.popup_multiplane", text="Multiplane", icon=ui_icon("menu.multiplane"))
         op.animation = True
         layout.separator()
         layout.operator("fbp.create_color_plane_from_hex", text="Color Plane from Hex Color Code", icon=ui_icon("menu.hex"))
         layout.operator("fbp.import_single_image_from_clipboard", text="Single Plane from Clipboard", icon=ui_icon("menu.clipboard"))
+
+
+class FBP_MT_ObjectHoldout(Menu):
+    bl_idname = "FBP_MT_object_holdout"
+    bl_label = "Frame by Plane Holdout"
+
+    def draw(self, context):
+        layout = self.layout
+        if not get_selected_fbp_roots(context):
+            layout.label(text="Select a Frame by Plane layer", icon="INFO")
+            return
+        layout.operator(
+            "fbp.set_selected_holdout",
+            text="Set Selected as Holdout",
+            icon=ui_icon("menu.holdout_plane"),
+        )
+        layout.operator(
+            "fbp.holdout_all_except_selected",
+            text="Holdout All Except Selected",
+            icon=ui_icon("menu.holdout_plane"),
+        )
+        layout.separator()
+        layout.operator(
+            "fbp.restore_holdout_materials",
+            text="Restore Frame by Plane Holdouts",
+            icon="LOOP_BACK",
+        )
 
 
 # SECTION 11 - Native menus: Add / Context / Delete / Render #
@@ -1384,9 +1149,11 @@ def draw_fbp_image_add_menu(self, context):
 def draw_fbp_object_context_menu(self, context):
     if get_selected_fbp_roots(context):
         self.layout.separator()
-        self.layout.operator("fbp.set_selected_holdout", text="Set Selected as Holdout", icon=ui_icon("menu.holdout_plane"))
-        self.layout.operator("fbp.holdout_all_except_selected", text="Holdout All Except Selected", icon=ui_icon("menu.holdout_plane"))
-        self.layout.operator("fbp.restore_holdout_materials", text="Restore Frame by Plane Holdouts", icon=ui_icon("menu.holdout_plane"))
+        self.layout.menu(
+            FBP_MT_ObjectHoldout.bl_idname,
+            text="Holdout",
+            icon=ui_icon("menu.holdout_plane"),
+        )
         self.layout.separator()
         self.layout.operator("fbp.delete_sequence", text="Delete Frame by Plane Layer + Plane", icon=ui_icon("generic.delete"))
         self.layout.operator("fbp.merge_selected_to_active_sequence", text="Convert to Single Animated Plane", icon=ui_icon("layer.duplicate"))
@@ -1482,6 +1249,7 @@ ui_classes = (
     FBP_PT_CreateFirst,
     FBP_PT_CreateExisting,
     FBP_MT_FrameByPlaneAdd,
+    FBP_MT_ObjectHoldout,
 )
 
 

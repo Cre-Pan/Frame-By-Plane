@@ -36,6 +36,58 @@ def fbp_warn_once(key, message, exc=None):
     return True
 
 
+FBP_RENDER_IDLE = "IDLE"
+FBP_RENDER_BUSY = "BUSY"
+FBP_RENDER_UNKNOWN = "UNKNOWN"
+
+
+def fbp_render_state(*, include_guard=True):
+    """Return the canonical Blender render state.
+
+    ``include_guard`` also treats the Frame by Plane render-session guard as
+    busy. Callers that intentionally run managed per-frame render updates may
+    pass ``False`` and inspect the session flags separately.
+
+    Unknown state is kept distinct from idle so mutation-sensitive paths can
+    fail closed instead of writing Blender IDs while a render may be active.
+    """
+    if include_guard:
+        try:
+            if bool(_FBP_RUNTIME_STATE.get("fbp_render_guard_active", False)):
+                return FBP_RENDER_BUSY
+        except Exception as exc:
+            fbp_warn_once(
+                "render_guard_state_query_failed",
+                "Could not read the Frame by Plane render guard",
+                exc,
+            )
+            return FBP_RENDER_UNKNOWN
+
+    try:
+        import bpy
+
+        is_job_running = getattr(bpy.app, "is_job_running", None)
+        if not callable(is_job_running):
+            fbp_warn_once(
+                "render_job_api_unavailable",
+                "Blender render-job state is unavailable; unsafe updates are paused",
+            )
+            return FBP_RENDER_UNKNOWN
+        return FBP_RENDER_BUSY if bool(is_job_running("RENDER")) else FBP_RENDER_IDLE
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn_once(
+            "render_job_state_query_failed",
+            "Could not confirm Blender render-job state; unsafe updates are paused",
+            exc,
+        )
+        return FBP_RENDER_UNKNOWN
+
+
+def fbp_render_mutation_blocked(*, include_guard=True):
+    """Return True unless Blender is confirmed idle for ID-datablock writes."""
+    return fbp_render_state(include_guard=include_guard) != FBP_RENDER_IDLE
+
+
 # Runtime-only state.
 # Do NOT store transient flags in WindowManager/Object ID properties: Blender 5.1
 # can crash while freeing IDProperties during undo/depsgraph rebuilds.
@@ -102,6 +154,44 @@ def fbp_obj_runtime_key(obj):
             return None
 
 
+def fbp_obj_runtime_token(obj):
+    """Return the canonical string token stored by transient UI rows.
+
+    Runtime caches may keep integer pointer keys, but RNA StringProperties must
+    always use this plain representation. Keeping the conversion in one place
+    prevents tuple/debug representations from leaking into the layer resolver.
+    """
+    key = fbp_obj_runtime_key(obj)
+    return "" if key is None else str(key)
+
+
+def fbp_normalize_obj_runtime_token(value):
+    """Normalize runtime tokens written by current or briefly broken builds."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("PTR:") or text.startswith("NAME:"):
+        return text.split(":", 1)[1].strip()
+    # 4.9.14 accidentally stored ``str(("PTR", pointer))`` in UI rows.
+    # Accept that transient representation so an open session can self-repair.
+    if text.startswith("(") and text.endswith(")"):
+        inner = text[1:-1].strip()
+        if "," in inner:
+            prefix, payload = inner.split(",", 1)
+            if prefix.strip().strip("'\"") in {"PTR", "NAME"}:
+                payload = payload.strip()
+                if payload.endswith(","):
+                    payload = payload[:-1].rstrip()
+                return payload.strip().strip("'\"")
+    return text
+
+
+def fbp_obj_matches_runtime_token(obj, token):
+    if obj is None:
+        return False
+    expected = fbp_normalize_obj_runtime_token(token)
+    return bool(expected and fbp_obj_runtime_token(obj) == expected)
+
 
 def fbp_is_silent_property_update(obj):
     key = fbp_obj_runtime_key(obj)
@@ -110,7 +200,7 @@ def fbp_is_silent_property_update(obj):
 
 def fbp_set_rna_property_silent(obj, prop_name, value):
     """Set an RNA property while suppressing its update callback."""
-    if not obj:
+    if obj is None:
         return False
     key = fbp_obj_runtime_key(obj)
     try:

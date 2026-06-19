@@ -1,5 +1,8 @@
 """Core sequence, procedural material and shared UI operations."""
 
+import time
+from bisect import bisect_right
+
 import bpy
 
 from .constants import STRIP_COLORS_DICT, fbp_icon
@@ -16,8 +19,7 @@ from .materials import (
     update_fbp_gradient_viewport_color,
     apply_fbp_gradient_mapping_to_material,
     get_fbp_gradient_preview_material,
-    get_or_create_fbp_gradient_preview_material,
-    fbp_update_scene_gradient_preview_material,
+    fbp_schedule_gradient_preview_material_sync,
     fbp_get_active_frame_material,
     fbp_material_color_value,
     fbp_duplicate_procedural_material_for_frame,
@@ -29,9 +31,11 @@ from .runtime import (
     fbp_warn_once,
     fbp_runtime_get,
     fbp_runtime_set,
+    fbp_render_mutation_blocked,
     fbp_obj_runtime_key,
     fbp_is_silent_property_update,
     fbp_set_rna_property_silent,
+    fbp_action_fcurves,
 )
 from .layers import (
     _FBP_SYNCING_PROCEDURAL_PREVIEW_ITEMS,
@@ -50,6 +54,218 @@ from .layers import (
 
 _FBP_SYNCING_FRAME_MATERIAL_POINTERS = set()
 _FBP_SUPPRESS_IMAGE_DURATION_CB = False
+_FBP_PROCEDURAL_SCENE_CACHE_SECONDS = 1.0
+_FBP_PROCEDURAL_TIMING_CACHE = globals().get("_FBP_PROCEDURAL_TIMING_CACHE", {})
+if not isinstance(_FBP_PROCEDURAL_TIMING_CACHE, dict):
+    _FBP_PROCEDURAL_TIMING_CACHE = {}
+
+
+def _fbp_procedural_rig_cache_key(rig):
+    """Return a runtime-only key that does not retain Blender RNA objects."""
+    try:
+        return (
+            int(rig.as_pointer()),
+            str(getattr(rig, "name_full", getattr(rig, "name", "")) or ""),
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return (0, "")
+
+
+def fbp_invalidate_procedural_rig_cache(rig=None):
+    """Invalidate cached cumulative timing for one rig or for the whole Main."""
+    if rig is None:
+        _FBP_PROCEDURAL_TIMING_CACHE.clear()
+        return
+    key = _fbp_procedural_rig_cache_key(rig)
+    if key and key[0]:
+        _FBP_PROCEDURAL_TIMING_CACHE.pop(key, None)
+
+
+def fbp_clear_procedural_runtime_caches():
+    """Drop pure-Python sequence caches before Undo, load or module teardown."""
+    _FBP_PROCEDURAL_TIMING_CACHE.clear()
+    fbp_invalidate_procedural_scene_cache()
+
+
+def _fbp_procedural_timing_is_dynamic(rig):
+    """Return True only when duration values themselves are animated.
+
+    Transform animation is common on FBP rigs and must not disable the timing
+    cache. Only F-Curves/drivers targeting row durations or the global fallback
+    duration require rebuilding the cumulative table every frame.
+    """
+    def affects_timing(curve):
+        data_path = str(getattr(curve, "data_path", "") or "")
+        return (
+            data_path == "fbp_global_duration"
+            or (data_path.startswith("fbp_images[") and data_path.endswith("].duration"))
+        )
+
+    try:
+        animation_data = getattr(rig, "animation_data", None)
+        if animation_data is None:
+            return False
+        curves = fbp_action_fcurves(rig)
+        if curves is not None and any(affects_timing(curve) for curve in curves):
+            return True
+        if curves is None and getattr(animation_data, "action", None) is not None:
+            # Unknown/unsupported Action layout: preserve correctness.
+            return True
+        return any(affects_timing(curve) for curve in (getattr(animation_data, "drivers", ()) or ()))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return True
+
+
+def _fbp_build_procedural_timing(rig):
+    items = getattr(rig, "fbp_images", ()) or ()
+    count = len(items)
+    if count <= 0:
+        return None
+    default_duration = max(1, int(getattr(rig, "fbp_global_duration", 1) or 1))
+    durations = tuple(
+        max(1, int(getattr(item, "duration", default_duration) or default_duration))
+        for item in items
+    )
+    cumulative = []
+    total = 0
+    for duration in durations:
+        total += duration
+        cumulative.append(total)
+
+    ping_indices = ()
+    ping_cumulative = ()
+    ping_total = total
+    if count > 1:
+        order = tuple(range(count)) + tuple(range(count - 2, 0, -1))
+        ping_indices_list = []
+        ping_cumulative_list = []
+        ping_total = 0
+        for index in order:
+            ping_total += durations[index]
+            ping_indices_list.append(index)
+            ping_cumulative_list.append(ping_total)
+        ping_indices = tuple(ping_indices_list)
+        ping_cumulative = tuple(ping_cumulative_list)
+
+    return {
+        "count": count,
+        "durations": durations,
+        "cumulative": tuple(cumulative),
+        "total": max(1, total),
+        "ping_indices": ping_indices,
+        "ping_cumulative": ping_cumulative,
+        "ping_total": max(1, ping_total),
+    }
+
+
+def _fbp_procedural_timing(rig):
+    """Return cumulative timing, cached only while timing cannot be animated."""
+    if _fbp_procedural_timing_is_dynamic(rig):
+        return _fbp_build_procedural_timing(rig)
+    key = _fbp_procedural_rig_cache_key(rig)
+    if not key or not key[0]:
+        return _fbp_build_procedural_timing(rig)
+    cached = _FBP_PROCEDURAL_TIMING_CACHE.get(key)
+    if cached is not None:
+        return cached
+    timing = _fbp_build_procedural_timing(rig)
+    if len(_FBP_PROCEDURAL_TIMING_CACHE) >= 512 and key not in _FBP_PROCEDURAL_TIMING_CACHE:
+        _FBP_PROCEDURAL_TIMING_CACHE.clear()
+    _FBP_PROCEDURAL_TIMING_CACHE[key] = timing
+    return timing
+
+
+def fbp_invalidate_procedural_scene_cache(scene=None):
+    """Invalidate the lightweight pure-native playback fast-path cache."""
+    cache = dict(fbp_runtime_get("fbp_procedural_scene_cache", {}) or {})
+    if scene is None:
+        cache.clear()
+    else:
+        try:
+            cache.pop(int(scene.as_pointer()), None)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            cache.clear()
+    fbp_runtime_set("fbp_procedural_scene_cache", cache)
+
+
+def _fbp_scene_has_procedural_rows_cached(scene):
+    """Avoid scanning every native rig on every viewport playback frame."""
+    if not scene:
+        return False
+    try:
+        scene_key = int(scene.as_pointer())
+        object_count = len(scene.objects)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return True
+
+    now = time.monotonic()
+    cache = dict(fbp_runtime_get("fbp_procedural_scene_cache", {}) or {})
+    entry = cache.get(scene_key, {})
+    try:
+        if (
+            int(entry.get("object_count", -1)) == object_count
+            and "rig_names" in entry
+            and now - float(entry.get("checked_at", 0.0) or 0.0)
+            <= _FBP_PROCEDURAL_SCENE_CACHE_SECONDS
+        ):
+            return bool(entry.get("has_procedural", False))
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    rig_names = []
+    for rig in iter_scene_fbp_rigs(scene):
+        try:
+            if fbp_rig_uses_procedural_color(rig) and len(getattr(rig, "fbp_images", ())) > 0:
+                rig_names.append(str(getattr(rig, "name", "") or ""))
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    rig_names = tuple(name for name in rig_names if name)
+    has_procedural = bool(rig_names)
+    cache[scene_key] = {
+        "object_count": object_count,
+        "checked_at": now,
+        "has_procedural": has_procedural,
+        "rig_names": rig_names,
+    }
+    # Bound cache growth across temporary Scenes without retaining RNA objects.
+    if len(cache) > 16:
+        cache = dict(sorted(cache.items(), key=lambda item: item[1].get("checked_at", 0.0), reverse=True)[:16])
+    fbp_runtime_set("fbp_procedural_scene_cache", cache)
+    return has_procedural
+
+
+def _fbp_cached_procedural_scene_rigs(scene):
+    """Resolve only procedural sequence rigs after the scene index is validated."""
+    if not scene or not _fbp_scene_has_procedural_rows_cached(scene):
+        return ()
+    try:
+        scene_key = int(scene.as_pointer())
+        cache = fbp_runtime_get("fbp_procedural_scene_cache", {}) or {}
+        entry = cache.get(scene_key, {})
+        names = tuple(entry.get("rig_names", ()) or ())
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        names = ()
+    if not names:
+        return ()
+    rigs = []
+    try:
+        for name in names:
+            rig = scene.objects.get(name)
+            if rig is not None:
+                rigs.append(rig)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        fbp_invalidate_procedural_scene_cache(scene)
+        return ()
+    if len(rigs) != len(names):
+        # A rig was renamed/deleted without changing Scene object count. Rebuild
+        # once immediately so playback never skips another valid procedural rig.
+        fbp_invalidate_procedural_scene_cache(scene)
+        return tuple(
+            rig for rig in iter_scene_fbp_rigs(scene)
+            if fbp_rig_uses_procedural_color(rig)
+            and len(getattr(rig, "fbp_images", ())) > 0
+        )
+    return tuple(rigs)
 
 
 # ── CORE OPERATIONS ───────────────────────────────────────────────────────────
@@ -64,11 +280,11 @@ def fbp_rig_uses_procedural_color(rig):
 
 
 def fbp_sequence_index_at_frame(rig, frame=None):
-    """Evaluate the visible procedural row without per-frame list rebuilding.
+    """Evaluate the visible procedural row using cumulative cached timing.
 
-    Image layers use Blender ImageUser timing. Color, Gradient and Holdout rows
-    are evaluated here; keep the hot frame-change path compact because it runs
-    once per procedural layer on every evaluated frame.
+    Static timing uses ``bisect`` over a precomputed cumulative timeline. Only
+    rigs whose duration values are animated rebuild the small timing table every
+    frame; ordinary transform animation keeps the fast cached path.
     """
     if frame is None:
         scene = getattr(bpy.context, "scene", None)
@@ -81,42 +297,29 @@ def fbp_sequence_index_at_frame(rig, frame=None):
     if rel < 0:
         return -1
 
-    items = getattr(rig, "fbp_images", ()) or ()
-    count = len(items)
+    timing = _fbp_procedural_timing(rig)
+    if not timing:
+        return -1
+    count = int(timing.get("count", 0) or 0)
     if count <= 0:
         return -1
 
-    default_duration = max(1, int(getattr(rig, "fbp_global_duration", 1) or 1))
-    durations = tuple(
-        max(1, int(getattr(item, "duration", default_duration) or default_duration))
-        for item in items
-    )
     mode = str(getattr(rig, "fbp_loop_mode", "NONE") or "NONE")
-
     if mode == "PINGPONG" and count > 1:
-        # Ping-pong does not duplicate the first/last row at the turnarounds:
-        # 0, 1, 2, 1 for a three-row sequence.
-        total = max(1, sum(durations) + sum(durations[1:-1]))
-        local = rel % total
-        accumulator = 0
-        for index, duration in enumerate(durations):
-            accumulator += duration
-            if local < accumulator:
-                return index
-        for index in range(count - 2, 0, -1):
-            accumulator += durations[index]
-            if local < accumulator:
-                return index
-        return 0
+        total = int(timing.get("ping_total", 1) or 1)
+        local = rel % max(1, total)
+        cumulative = timing.get("ping_cumulative", ()) or ()
+        indices = timing.get("ping_indices", ()) or ()
+        position = bisect_right(cumulative, local)
+        if position >= len(indices):
+            position = len(indices) - 1
+        return int(indices[position]) if position >= 0 else 0
 
-    total = max(1, sum(durations))
-    local = rel % total if mode == "REPEAT" else min(rel, total - 1)
-    accumulator = 0
-    for index, duration in enumerate(durations):
-        accumulator += duration
-        if local < accumulator:
-            return index
-    return count - 1
+    total = int(timing.get("total", 1) or 1)
+    local = rel % max(1, total) if mode == "REPEAT" else min(rel, total - 1)
+    cumulative = timing.get("cumulative", ()) or ()
+    index = bisect_right(cumulative, local)
+    return max(0, min(index, count - 1))
 
 
 def fbp_apply_procedural_color_frame(rig, frame=None):
@@ -173,12 +376,15 @@ def fbp_apply_procedural_color_frame(rig, frame=None):
             pass
         visible = bool(getattr(rig, 'fbp_is_visible', True))
         try:
-            if not fbp_is_rendering_now():
-                plane.hide_viewport = not visible
+            hidden = not visible
+            if not fbp_is_rendering_now() and bool(getattr(plane, "hide_viewport", False)) != hidden:
+                plane.hide_viewport = hidden
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
         try:
-            plane.hide_render = not visible
+            hidden = not visible
+            if bool(getattr(plane, "hide_render", False)) != hidden:
+                plane.hide_render = hidden
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
             pass
         return True
@@ -186,12 +392,15 @@ def fbp_apply_procedural_color_frame(rig, frame=None):
     idx = fbp_sequence_index_at_frame(rig, frame)
     visible = bool(getattr(rig, 'fbp_is_visible', True)) and idx >= 0
     try:
-        if not fbp_is_rendering_now():
-            plane.hide_viewport = not visible
+        hidden = not visible
+        if not fbp_is_rendering_now() and bool(getattr(plane, "hide_viewport", False)) != hidden:
+            plane.hide_viewport = hidden
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
     try:
-        plane.hide_render = not visible
+        hidden = not visible
+        if bool(getattr(plane, "hide_render", False)) != hidden:
+            plane.hide_render = hidden
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError):
         pass
     if idx < 0:
@@ -248,13 +457,13 @@ def fbp_update_sequence_scene(scene=None, frame=None):
     if frame is None:
         frame = getattr(scene, 'frame_current', 1)
     updated = 0
-    has_procedural_rigs = False
-    for obj in iter_scene_fbp_rigs(scene):
+    procedural_rigs = _fbp_cached_procedural_scene_rigs(scene)
+    has_procedural_rigs = bool(procedural_rigs)
+    for obj in procedural_rigs:
         try:
             if not getattr(obj, 'is_fbp_control', False):
                 continue
             if fbp_rig_uses_procedural_color(obj) and len(getattr(obj, 'fbp_images', [])) > 0:
-                has_procedural_rigs = True
                 if fbp_apply_procedural_color_frame(obj, frame):
                     updated += 1
         except ReferenceError:
@@ -265,11 +474,47 @@ def fbp_update_sequence_scene(scene=None, frame=None):
                 "Sequence scene update skipped",
                 exc,
             )
+    try:
+        scene_key = int(scene.as_pointer())
+        cache = dict(fbp_runtime_get("fbp_procedural_scene_cache", {}) or {})
+        cache[scene_key] = {
+            "object_count": len(scene.objects),
+            "checked_at": time.monotonic(),
+            "has_procedural": has_procedural_rigs,
+            "rig_names": tuple(
+                str(getattr(rig, "name", "") or "")
+                for rig in procedural_rigs
+                if rig is not None
+            ),
+        }
+        fbp_runtime_set("fbp_procedural_scene_cache", cache)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     return updated, has_procedural_rigs
 
 
 def fbp_rebuild_sequence_backend_from_rig(rig):
+    if bool(getattr(rig, "fbp_is_drawing_plane", False)):
+        try:
+            from .drawing_plane import fbp_ensure_drawing_material, fbp_apply_drawing_index
+            if not fbp_ensure_drawing_material(rig):
+                return False
+            return bool(
+                fbp_apply_drawing_index(
+                    rig,
+                    getattr(bpy.context, "scene", None),
+                    force=True,
+                )
+            )
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Could not rebuild Cutout Plane", exc)
+            return False
     if fbp_rig_uses_procedural_color(rig):
+        # Rebuild/refresh entry points are structural mutation boundaries, never
+        # the per-frame hot path. Discard any cumulative timing from the previous
+        # row order before evaluating the current frame.
+        fbp_invalidate_procedural_rig_cache(rig)
+        fbp_invalidate_procedural_scene_cache()
         return fbp_apply_procedural_color_frame(rig, getattr(bpy.context.scene, 'frame_current', 1))
     try:
         from . import native_backend
@@ -280,10 +525,32 @@ def fbp_rebuild_sequence_backend_from_rig(rig):
 
 
 def fbp_refresh_sequence_backend_from_rig(rig):
+    if bool(getattr(rig, "fbp_is_drawing_plane", False)):
+        try:
+            from .drawing_plane import fbp_ensure_drawing_material, fbp_apply_drawing_index
+            if not fbp_ensure_drawing_material(rig):
+                return False
+            fbp_apply_drawing_index(
+                rig,
+                getattr(bpy.context, "scene", None),
+                force=True,
+            )
+            return True
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Cutout Plane refresh skipped", exc)
+            return False
     if fbp_rig_uses_procedural_color(rig):
+        fbp_invalidate_procedural_rig_cache(rig)
+        fbp_invalidate_procedural_scene_cache()
         return fbp_apply_procedural_color_frame(rig, getattr(bpy.context.scene, 'frame_current', 1))
     try:
         from . import native_backend
+        if native_backend.fbp_rig_has_unsupported_native_contract(rig):
+            fbp_warn_once(
+                f"unsupported_native_contract:{getattr(rig, 'name', 'unknown')}",
+                "This layer uses an unsupported older native contract; delete and reimport it",
+            )
+            return False
         if native_backend.fbp_refresh_native_sequence_from_rig(rig):
             return True
         return bool(native_backend.rebuild_native_sequence_from_rig(rig))
@@ -293,7 +560,7 @@ def fbp_refresh_sequence_backend_from_rig(rig):
 
 
 def fbp_replace_sequence_backend(rig, directory, files):
-    if not rig:
+    if not rig or bool(getattr(rig, "fbp_is_drawing_plane", False)):
         return False
     files = [str(f) for f in (files or []) if f]
     if not files:
@@ -308,7 +575,11 @@ def fbp_replace_sequence_backend(rig, directory, files):
 
 def fbp_native_sequence_files_from_rig(rig):
     """Return the immutable source sequence used by a native image rig."""
-    if not rig or getattr(rig, "fbp_is_color_plane", False):
+    if (
+        not rig
+        or getattr(rig, "fbp_is_color_plane", False)
+        or getattr(rig, "fbp_is_drawing_plane", False)
+    ):
         return "", []
     try:
         from . import native_backend
@@ -337,6 +608,19 @@ def do_update_animation(rig):
     """Refresh whichever sequence backend this rig uses."""
     if not rig or not getattr(rig, "is_fbp_control", False):
         return False
+    if getattr(rig, "fbp_is_drawing_plane", False):
+        try:
+            from .drawing_plane import fbp_update_drawing_index_ui, fbp_apply_drawing_index
+            fbp_update_drawing_index_ui(rig)
+            return bool(fbp_apply_drawing_index(rig, getattr(bpy.context, "scene", None), force=True))
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Could not refresh Cutout Plane", exc)
+            return False
+    # Every timing/row mutation reaches this bridge. Invalidate before reading
+    # the current frame so Undo, reorder, duration edits and multi-edit cannot
+    # reuse a cumulative table from the previous sequence state.
+    fbp_invalidate_procedural_rig_cache(rig)
+    fbp_invalidate_procedural_scene_cache()
     return bool(fbp_refresh_sequence_backend_from_rig(rig))
 
 
@@ -835,10 +1119,18 @@ def update_color_tag_cb(self, context):
         )
 
 def update_image_index_cb(self, context):
-    # Do not move the timeline when selecting an image row.
-    # The visible frame is evaluated from the current timeline position.
+    if fbp_is_silent_property_update(self):
+        return
     if not getattr(self, "is_fbp_control", False):
         return
+    if getattr(self, "fbp_is_drawing_plane", False):
+        try:
+            from .drawing_plane import fbp_select_drawing_from_list
+            fbp_select_drawing_from_list(self, context)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Could not select Cutout Plane entry", exc)
+        return
+    # Normal sequences keep their visible frame driven by timeline timing.
     do_update_animation(self)
     if getattr(self, "fbp_is_color_plane", False):
         fbp_load_active_procedural_frame_to_rig(self)
@@ -876,13 +1168,111 @@ def apply_camera_ratio_settings(scene):
 # ── RENDER STABILITY HELPERS ─────────────────────────────────────────────────
 
 def fbp_is_rendering_now():
-    """Best-effort render guard. Avoid UI side effects while Blender renders."""
-    if bool(fbp_runtime_get("fbp_render_guard_active", False)):
+    """Return True unless Blender is confirmed idle for datablock mutation."""
+    return fbp_render_mutation_blocked()
+
+
+
+
+def _fbp_scene_is_native_render_passthrough(scene):
+    """Return True when Blender can render FBP planes without add-on writes.
+
+    A scene containing only native Image/Sequence planes and no active effects
+    should follow the same render path as Blender's Images as Planes workflow.
+    Keep the render guard active only as a pause flag for timers/handlers, but do
+    not touch visibility, node trees, modifiers, images or RenderSettings.
+    """
+    if not scene:
         return True
     try:
-        return bool(bpy.app.is_job_running('RENDER'))
-    except Exception:
-        return False
+        from .geometry_nodes import fbp_effect_ids_for_rig
+        from .native_backend import fbp_native_rig_render_ready
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        fbp_effect_ids_for_rig = None
+        fbp_native_rig_render_ready = None
+
+    for rig in iter_scene_fbp_rigs(scene):
+        try:
+            if not bool(getattr(rig, "is_fbp_control", False)):
+                continue
+            if fbp_rig_uses_procedural_color(rig):
+                return False
+            if bool(getattr(rig, "fbp_is_drawing_plane", False)):
+                return False
+            plane = getattr(rig, "fbp_plane_target", None)
+            if not plane or not getattr(plane, "data", None):
+                return False
+            if fbp_effect_ids_for_rig is None or fbp_native_rig_render_ready is None:
+                return False
+            if tuple(fbp_effect_ids_for_rig(rig) or ()):
+                return False
+            # Render pass-through is allowed only for the exact current native
+            # contract. This is a structural check: it avoids full disk scans in
+            # render_init while still rejecting stale node/F-Curve/material state.
+            if not fbp_native_rig_render_ready(rig, check_files=False):
+                return False
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+    return True
+
+
+def _fbp_clear_render_runtime_state():
+    """Clear render-session flags without dereferencing Blender datablocks."""
+    for key, value in (
+        ("fbp_render_guard_active", False),
+        ("fbp_render_end_requested", False),
+        ("fbp_render_end_requested_at", 0.0),
+        ("fbp_render_session_mode", ""),
+        ("fbp_render_needs_procedural_frame_sync", False),
+        ("fbp_render_needs_drawing_frame_sync", False),
+        ("fbp_render_needs_effect_frame_sync", False),
+        ("fbp_render_lock_interface_previous", None),
+        ("fbp_render_scene_name", ""),
+        ("fbp_render_scene_pointer", None),
+        ("fbp_render_started_at", 0.0),
+        ("fbp_render_restore_failures", 0),
+        ("fbp_render_viewport_hidden_planes", {}),
+        ("fbp_effect_render_backup", []),
+    ):
+        fbp_runtime_set(key, value)
+
+def _fbp_scene_needs_procedural_render_sync(scene):
+    """Return whether render frames must swap procedural Color/Gradient rows."""
+    for rig in iter_scene_fbp_rigs(scene):
+        try:
+            if (
+                bool(getattr(rig, "is_fbp_control", False))
+                and fbp_rig_uses_procedural_color(rig)
+                and len(getattr(rig, "fbp_images", ())) > 0
+            ):
+                return True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            # Unknown procedural state must keep the managed render path active.
+            # A false negative here disables the only per-frame material swap.
+            return True
+    return False
+
+
+def _fbp_scene_needs_drawing_render_sync(scene):
+    """Return whether Cutout Plane images must be swapped for render frames."""
+    try:
+        from .drawing_plane import fbp_scene_has_drawing_planes
+        return bool(fbp_scene_has_drawing_planes(scene))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        # Unknown state must keep the managed render path active. A false
+        # negative would render the image left over from the viewport frame.
+        return True
+
+
+def _fbp_scene_needs_effect_render_sync(scene):
+    """Ask the effect system whether any active stack needs Python per frame."""
+    try:
+        from .geometry_nodes import fbp_scene_requires_effect_frame_sync
+        return bool(fbp_scene_requires_effect_frame_sync(scene))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        # Prefer a harmless managed/locked render over silently skipping effect
+        # synchronization when the preflight cannot prove that no writes occur.
+        return True
 
 
 def fbp_ensure_plane_render_safe(rig, frame=None):
@@ -896,6 +1286,44 @@ def fbp_ensure_plane_render_safe(rig, frame=None):
 
     if fbp_rig_uses_procedural_color(rig):
         return fbp_apply_procedural_color_frame(rig, frame)
+
+    if bool(getattr(rig, "fbp_is_drawing_plane", False)):
+        try:
+            from .drawing_plane import (
+                fbp_apply_drawing_index,
+                fbp_drawing_render_ready,
+                fbp_ensure_drawing_material,
+            )
+            if not fbp_drawing_render_ready(rig):
+                if fbp_is_rendering_now() or not fbp_ensure_drawing_material(rig):
+                    return False
+            if not fbp_drawing_render_ready(rig):
+                return False
+            fbp_apply_drawing_index(rig, getattr(bpy.context, "scene", None), force=True)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+        try:
+            return bool(len(mesh.materials) > 0 and ensure_fbp_plane_material_integrity(rig))
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+
+    try:
+        from .native_backend import fbp_native_rig_contract_issues
+        native_issues = fbp_native_rig_contract_issues(rig)
+        if native_issues and not fbp_is_rendering_now():
+            # Repair before a render job starts, never from an active render
+            # callback or dependency-graph evaluation.
+            if fbp_refresh_sequence_backend_from_rig(rig):
+                native_issues = fbp_native_rig_contract_issues(rig)
+        if native_issues:
+            fbp_warn_once(
+                f"native_render_contract:{getattr(rig, 'name', 'unknown')}",
+                "Native render contract is not ready: " + "; ".join(native_issues[:3]),
+            )
+            return False
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not validate native render contract", exc)
+        return False
 
     try:
         if len(mesh.materials) == 0:
@@ -937,17 +1365,17 @@ def fbp_repair_all_render_state(scene=None, frame=None):
 
 
 def fbp_render_visibility_guard(scene):
-    """Render-pre safe pass: visibility only, no mesh/material datablock edits.
+    """Apply render visibility once for the whole render job.
 
-    Animated procedural Color/Gradient/Holdout planes can be expensive in the
-    viewport while Blender renders. They remain renderable, but their viewport
-    visibility is temporarily disabled and restored after render/cancel.
+    The old implementation restored this state from ``render_post`` after every
+    animation frame, forcing repeated depsgraph rebuilds while the next frame was
+    already being prepared. The session guard now mutates it only at job start.
     """
     if not scene:
         return 0
     changed = 0
     viewport_backup = {}
-    for obj in list(scene.objects):
+    for obj in iter_scene_fbp_rigs(scene):
         try:
             if not getattr(obj, "is_fbp_control", False):
                 continue
@@ -960,10 +1388,10 @@ def fbp_render_visibility_guard(scene):
                 if plane.hide_render != target_hide:
                     plane.hide_render = target_hide
                     changed += 1
-                if getattr(obj, 'fbp_is_color_plane', False):
+                if getattr(obj, "fbp_is_color_plane", False):
                     viewport_backup[plane.name] = {
                         "object_key": fbp_obj_runtime_key(plane),
-                        "hide_viewport": bool(getattr(plane, 'hide_viewport', False)),
+                        "hide_viewport": bool(getattr(plane, "hide_viewport", False)),
                     }
                     if not plane.hide_viewport:
                         plane.hide_viewport = True
@@ -972,36 +1400,49 @@ def fbp_render_visibility_guard(scene):
             continue
         except (AttributeError, TypeError, RuntimeError) as exc:
             fbp_warn("Render visibility guard skipped object", exc)
-    if viewport_backup:
-        fbp_runtime_set('fbp_render_viewport_hidden_planes', viewport_backup)
+    fbp_runtime_set("fbp_render_viewport_hidden_planes", viewport_backup)
     return changed
 
 
-@bpy.app.handlers.persistent
-def fbp_render_guard_pre(scene):
-    # Some render paths can emit render_pre more than once before the matching
-    # post/cancel callback. Preserve the first backup instead of overwriting it
-    # with the already-hidden state from a nested notification.
-    if bool(fbp_runtime_get("fbp_render_guard_active", False)):
-        return
-    fbp_runtime_set('fbp_render_viewport_hidden_planes', {})
-    fbp_runtime_set("fbp_render_guard_active", True)
-    try:
-        from .geometry_nodes import fbp_effect_render_guard_pre
-        fbp_runtime_set("fbp_effect_render_backup", fbp_effect_render_guard_pre())
-    except Exception as exc:
-        fbp_warn("Effect render visibility guard failed", exc)
-    try:
-        fbp_render_visibility_guard(scene)
-    except Exception as e:
-        fbp_warn("Render visibility guard failed", e)
+def _fbp_render_session_scene(scene=None):
+    """Resolve the Scene that owned the active render session without stale RNA."""
+    stored_name = str(fbp_runtime_get("fbp_render_scene_name", "") or "")
+    stored_pointer = fbp_runtime_get("fbp_render_scene_pointer", None)
+    candidate = scene
+    if candidate is None or (stored_name and getattr(candidate, "name", "") != stored_name):
+        candidate = bpy.data.scenes.get(stored_name) if stored_name else candidate
+    if candidate is not None and stored_pointer is not None:
+        try:
+            if int(candidate.as_pointer()) != int(stored_pointer):
+                return None
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return None
+    return candidate
 
 
-@bpy.app.handlers.persistent
-def fbp_render_guard_post(scene):
-    try:
-        backup = fbp_runtime_get('fbp_render_viewport_hidden_planes', {}) or {}
-        for name, stored in list(backup.items()):
+def _fbp_restore_render_session_state(scene=None):
+    """Restore one completed/cancelled render session from Blender's idle loop.
+
+    Temporary RuntimeError failures remain queued so the watchdog can retry after
+    Blender fully releases render-owned node/modifier data. Invalid or deleted
+    datablocks are discarded because they can no longer be restored safely.
+    """
+    if not bool(fbp_runtime_get("fbp_render_guard_active", False)):
+        return False
+    mode = str(fbp_runtime_get("fbp_render_session_mode", "") or "")
+    if mode == "NATIVE_PASSTHROUGH":
+        # Native sessions never changed Blender data. Keep the guard alive until
+        # Blender's render job is genuinely idle, then clear only Python state.
+        _fbp_clear_render_runtime_state()
+        return True
+
+    scene = _fbp_render_session_scene(scene)
+    restore_pending = False
+
+    backup = fbp_runtime_get("fbp_render_viewport_hidden_planes", {}) or {}
+    remaining_viewport = {}
+    for name, stored in list(backup.items()):
+        try:
             obj = bpy.data.objects.get(name)
             if not obj:
                 continue
@@ -1010,19 +1451,176 @@ def fbp_render_guard_post(scene):
                     continue
                 was_hidden = bool(stored.get("hide_viewport", False))
             else:
-                # Runtime compatibility with a guard started before module reload.
                 was_hidden = bool(stored)
             obj.hide_viewport = was_hidden
-        fbp_runtime_set('fbp_render_viewport_hidden_planes', {})
-    except Exception as exc:
-        fbp_warn('Could not restore viewport visibility after render', exc)
+        except RuntimeError:
+            remaining_viewport[name] = stored
+            restore_pending = True
+        except (AttributeError, ReferenceError, TypeError, ValueError):
+            continue
+    fbp_runtime_set("fbp_render_viewport_hidden_planes", remaining_viewport)
+
+    effect_backup = fbp_runtime_get("fbp_effect_render_backup", []) or []
+    remaining_effects = []
+    if effect_backup:
+        try:
+            from .geometry_nodes import fbp_effect_render_guard_post
+            remaining_effects = list(
+                fbp_effect_render_guard_post(effect_backup) or ()
+            )
+        except RuntimeError:
+            remaining_effects = list(effect_backup)
+        except (ImportError, AttributeError, ReferenceError, TypeError, ValueError) as exc:
+            # Module reload can briefly make the restore helper unavailable.
+            # Keep the backup for a later idle retry instead of losing it.
+            fbp_warn("Could not restore effect state after render", exc)
+            remaining_effects = list(effect_backup)
+    if remaining_effects:
+        restore_pending = True
+    fbp_runtime_set("fbp_effect_render_backup", remaining_effects)
+
+    render = getattr(scene, "render", None) if scene else None
+    previous_lock = fbp_runtime_get("fbp_render_lock_interface_previous", None)
+    if render is not None and previous_lock is not None:
+        try:
+            render.use_lock_interface = bool(previous_lock)
+            fbp_runtime_set("fbp_render_lock_interface_previous", None)
+        except RuntimeError:
+            restore_pending = True
+        except (AttributeError, ReferenceError, TypeError, ValueError):
+            fbp_runtime_set("fbp_render_lock_interface_previous", None)
+    elif render is None:
+        # The owning Scene was removed; there is no remaining datablock to restore.
+        fbp_runtime_set("fbp_render_lock_interface_previous", None)
+
+    if restore_pending:
+        return False
+
+    _fbp_clear_render_runtime_state()
+    return True
+
+
+@bpy.app.handlers.persistent
+def fbp_render_guard_pre(scene):
+    """Enter one render session from ``render_init``.
+
+    Pure native image/sequence scenes use a strict pass-through mode: FBP only
+    raises its runtime pause flag so background timers and frame handlers stay
+    idle. No Blender datablock is modified before, during or after that render.
+    """
+    if bool(fbp_runtime_get("fbp_render_guard_active", False)):
+        return
+
+    generation = int(fbp_runtime_get("fbp_render_generation", 0) or 0) + 1
+    fbp_runtime_set("fbp_render_generation", generation)
+    fbp_runtime_set("fbp_render_guard_active", True)
     try:
-        from .geometry_nodes import fbp_effect_render_guard_post
-        fbp_effect_render_guard_post(fbp_runtime_get("fbp_effect_render_backup", []) or [])
-        fbp_runtime_set("fbp_effect_render_backup", [])
+        fbp_runtime_set("fbp_render_scene_name", str(getattr(scene, "name", "") or ""))
+        fbp_runtime_set("fbp_render_scene_pointer", int(scene.as_pointer()) if scene else None)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        fbp_runtime_set("fbp_render_scene_name", "")
+        fbp_runtime_set("fbp_render_scene_pointer", None)
+    fbp_runtime_set("fbp_render_viewport_hidden_planes", {})
+    fbp_runtime_set("fbp_effect_render_backup", [])
+    fbp_runtime_set("fbp_render_end_requested", False)
+    fbp_runtime_set("fbp_render_end_requested_at", 0.0)
+    fbp_runtime_set("fbp_render_lock_interface_previous", None)
+    fbp_runtime_set("fbp_render_started_at", time.monotonic())
+    fbp_runtime_set("fbp_render_restore_failures", 0)
+
+    try:
+        native_passthrough = _fbp_scene_is_native_render_passthrough(scene)
     except Exception as exc:
-        fbp_warn("Could not restore effect viewport visibility after render", exc)
-    fbp_runtime_set("fbp_render_guard_active", False)
+        # A failed preflight must choose the conservative managed path rather
+        # than leaving an active guard with an undefined session contract.
+        fbp_warn("Native render pass-through preflight failed", exc)
+        native_passthrough = False
+
+    if native_passthrough:
+        fbp_runtime_set("fbp_render_session_mode", "NATIVE_PASSTHROUGH")
+        fbp_runtime_set("fbp_render_needs_procedural_frame_sync", False)
+        fbp_runtime_set("fbp_render_needs_drawing_frame_sync", False)
+        fbp_runtime_set("fbp_render_needs_effect_frame_sync", False)
+        return
+
+    fbp_runtime_set("fbp_render_session_mode", "MANAGED")
+    needs_procedural = _fbp_scene_needs_procedural_render_sync(scene)
+    needs_drawing = _fbp_scene_needs_drawing_render_sync(scene)
+    needs_effects = _fbp_scene_needs_effect_render_sync(scene)
+    fbp_runtime_set("fbp_render_needs_procedural_frame_sync", needs_procedural)
+    fbp_runtime_set("fbp_render_needs_drawing_frame_sync", needs_drawing)
+    fbp_runtime_set("fbp_render_needs_effect_frame_sync", needs_effects)
+
+    # Blender warns that frame handlers can run concurrently with viewport
+    # evaluation. Managed FBP renders lock the interface whenever per-frame
+    # datablock writes are unavoidable.
+    render = getattr(scene, "render", None) if scene else None
+    if render is not None:
+        try:
+            previous_lock = bool(getattr(render, "use_lock_interface", False))
+            fbp_runtime_set("fbp_render_lock_interface_previous", previous_lock)
+            if (needs_procedural or needs_drawing or needs_effects) and not previous_lock:
+                render.use_lock_interface = True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+    try:
+        from .geometry_nodes import fbp_effect_render_guard_pre
+        fbp_runtime_set(
+            "fbp_effect_render_backup",
+            fbp_effect_render_guard_pre(scene=scene),
+        )
+    except Exception as exc:
+        fbp_warn("Effect render guard failed", exc)
+    try:
+        fbp_render_visibility_guard(scene)
+    except Exception as exc:
+        fbp_warn("Render visibility guard failed", exc)
+
+
+@bpy.app.handlers.persistent
+def fbp_render_guard_complete(scene):
+    """Record render completion without mutating managed Blender datablocks."""
+    if not bool(fbp_runtime_get("fbp_render_guard_active", False)):
+        return
+    # Never release the pause guard from Blender's completion callback. Even a
+    # pure native render can still be finalizing image buffers/depsgraph state at
+    # this point. The watchdog clears or restores state only after the render job
+    # is no longer active.
+    fbp_runtime_set("fbp_render_end_requested", True)
+    fbp_runtime_set("fbp_render_end_requested_at", time.monotonic())
+    # Wake the persistent watchdog immediately. Without this nudge, its idle
+    # two-second cadence left a window where a second render could start before
+    # the first session's temporary effect/visibility state was restored.
+    try:
+        from . import handlers as _handlers
+        _handlers.fbp_register_timer_once(
+            _handlers.fbp_render_guard_watchdog,
+            0.05,
+            persistent=True,
+            restart=True,
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def fbp_render_guard_idle_restore(scene=None):
+    """Restore a managed render after Blender has returned to its idle loop."""
+    if not bool(fbp_runtime_get("fbp_render_guard_active", False)):
+        return False
+    return _fbp_restore_render_session_state(scene)
+
+
+def fbp_render_guard_force_restore(scene=None):
+    """Immediate best-effort restore used only during explicit unregister."""
+    return _fbp_restore_render_session_state(scene or getattr(bpy.context, "scene", None))
+
+
+def fbp_render_guard_abandon():
+    """Forget transient references before Blender replaces the current Main."""
+    _fbp_clear_render_runtime_state()
+
+
 
 
 # ── HANDLERS ─────────────────────────────────────────────────────────────────
@@ -1030,20 +1628,56 @@ def fbp_render_guard_post(scene):
 
 @bpy.app.handlers.persistent
 def fbp_frame_change_handler(scene):
-    # Native ImageUser playback does not require Python work on each frame.
-    # Procedural Color / Gradient / Holdout rows still need material-slot timing.
+    """Synchronize only FBP backends that require Python on frame changes."""
+    render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
+    needs_procedural = bool(
+        fbp_runtime_get("fbp_render_needs_procedural_frame_sync", False)
+    ) if render_guard_active else _fbp_scene_has_procedural_rows_cached(scene)
+    needs_drawing = bool(
+        fbp_runtime_get("fbp_render_needs_drawing_frame_sync", False)
+    ) if render_guard_active else False
+
+    if not render_guard_active:
+        if fbp_render_mutation_blocked(include_guard=False):
+            # External renders and unknown render state must never trigger image
+            # or material writes from a frame handler.
+            return
+        try:
+            from .drawing_plane import fbp_scene_has_drawing_planes
+            needs_drawing = bool(fbp_scene_has_drawing_planes(scene))
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            needs_drawing = False
+
+    if not needs_procedural and not needs_drawing:
+        return
+
+    changed = False
     has_procedural_rigs = False
-    try:
-        _updated, has_procedural_rigs = fbp_update_sequence_scene(
-            scene, getattr(scene, 'frame_current', None)
-        )
-    except Exception as exc:
-        fbp_warn_once(
-            "procedural_sequence_frame_handler",
-            "Procedural sequence frame handler skipped",
-            exc,
-        )
-    if has_procedural_rigs and not fbp_is_rendering_now():
+    if needs_drawing:
+        try:
+            from .drawing_plane import fbp_sync_drawing_scene
+            changed = bool(fbp_sync_drawing_scene(scene)) or changed
+        except Exception as exc:
+            fbp_warn_once(
+                "drawing_plane_frame_handler",
+                "Cutout Plane frame handler skipped",
+                exc,
+            )
+
+    if needs_procedural:
+        try:
+            _updated, has_procedural_rigs = fbp_update_sequence_scene(
+                scene, getattr(scene, "frame_current", None)
+            )
+            changed = bool(_updated) or changed
+        except Exception as exc:
+            fbp_warn_once(
+                "procedural_sequence_frame_handler",
+                "Procedural sequence frame handler skipped",
+                exc,
+            )
+
+    if (changed or has_procedural_rigs) and not fbp_is_rendering_now():
         fbp_tag_view3d_ui_redraw()
     return
 
@@ -1090,13 +1724,14 @@ def update_color_plane_color_cb(self, context):
 
 
 def update_scene_gradient_preview_cb(self, context):
-    """Keep the creation preview material synced with the N-Panel / popup gradient controls."""
+    """Queue preview-node updates outside RNA callbacks and Undo teardown."""
+    del context
     try:
-        fbp_update_scene_gradient_preview_material(self)
+        fbp_schedule_gradient_preview_material_sync(self)
     except ReferenceError:
         return
     except Exception as exc:
-        fbp_warn("Could not update gradient preview material", exc)
+        fbp_warn("Could not schedule gradient preview update", exc)
 
 
 
@@ -1182,14 +1817,14 @@ def draw_scene_fbp_color_ramp(layout, scene):
     row.prop(scene, 'fbp_show_gradient_ramp', text='Color Ramp', icon=(fbp_icon('DOWNARROW_HLT') if is_open else fbp_icon('RIGHTARROW')), emboss=False)
     if not is_open:
         return
-    try:
-        mat = get_or_create_fbp_gradient_preview_material(scene)
-    except Exception as exc:
-        fbp_warn("Could not prepare gradient ColorRamp", exc)
-        mat = get_fbp_gradient_preview_material(scene)
+    mat = get_fbp_gradient_preview_material(scene)
+    if mat is None:
+        # Panel drawing must be read-only. The timer resolves the Scene again and
+        # creates the preview material after Blender returns to its idle loop.
+        fbp_schedule_gradient_preview_material_sync(scene)
     ramp_node = find_fbp_gradient_ramp_node(mat) if mat else None
     if not ramp_node:
-        box.label(text='No editable ColorRamp found.', icon=fbp_icon('ERROR'))
+        box.label(text='Preparing ColorRamp…', icon=fbp_icon('TIME'))
         return
     box.template_color_ramp(ramp_node, 'color_ramp', expand=True)
 
