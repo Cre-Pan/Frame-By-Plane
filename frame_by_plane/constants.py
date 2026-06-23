@@ -16,7 +16,6 @@ FBP_ICONS = {
     'EVENT_PLUS': 'EVENT_PLUS',  # Create/add new rig panel.  # Add/create buttons (Layers side tools, Multiplane Setup, image insert). ### DUPLICATE
     'ALIASED': 'ALIASED',  # Pixel interpolation enum icon.
     'ANTIALIASED': 'ANTIALIASED',  # Smooth interpolation enum icon.
-    'AREA_DOCK': 'AREA_DOCK',  # Split selected frames to a new plane.
     'ARROW_LEFTRIGHT': 'ARROW_LEFTRIGHT',  # Reverse sequence command. ### DUPLICATE
     'AXIS_FRONT': 'AXIS_FRONT',  # Vertical orientation enum icon.
     'AXIS_TOP': 'AXIS_TOP',  # Horizontal orientation enum icon.
@@ -25,7 +24,6 @@ FBP_ICONS = {
     'CHECKBOX_HLT': 'CHECKBOX_HLT',  # Checked rig/layer selection checkbox. ### DUPLICATE
     'CHECKMARK': 'CHECKMARK',  # Apply/health/check actions. ### DUPLICATE
     'CLIPUV_DEHLT': 'CLIPUV_DEHLT',  # Mask/Holdout enabled icon.
-    'CLIPUV_HLT': 'CLIPUV_HLT',  # Mask/Holdout disabled icon.
     'COLOR': 'COLOR',  # Gradient/ColorRamp UI and gradient plane type. ### DUPLICATE
     'COLORSET_20_VEC': 'COLORSET_20_VEC',  # Black color preset icon.
     'CON_CAMERASOLVER': 'CON_CAMERASOLVER',  # Track camera toggle. ### DUPLICATE
@@ -57,22 +55,36 @@ FBP_ICONS = {
     'LAYER_USED': 'LAYER_USED',  # Locked layer selection checkbox replacement. ### DUPLICATE
     'LIGHT': 'LIGHT',  # Solo/Bulb disabled state.
     'LIGHT_SUN': 'LIGHT_SUN',  # Shadeless/Emission toggle icon. ### DUPLICATE
+    'LINK_BLEND': 'LINK_BLEND',  # Split selected frames to a new plane.
     'LINKED': 'LINKED',  # Relink missing images action. ### DUPLICATE
     'LOCKED': 'LOCKED',  # Locked state for rigs/collections. ### DUPLICATE
     'MATERIAL': 'MATERIAL',  # Material/color plane panels. ### DUPLICATE
     'MESH_PLANE': 'MESH_PLANE',  # Plane creation menu icon. ### DUPLICATE
     'MODIFIER': 'MODIFIER',  # Plane tools/repair actions. ### DUPLICATE
+    'NODETREE': 'NODETREE',  # User-defined node effects.
+    'MOD_DISPLACE': 'MOD_DISPLACE',
+    'MOD_WAVE': 'MOD_WAVE',
+    'MOD_SIMPLEDEFORM': 'MOD_SIMPLEDEFORM',
+    'MOD_SOLIDIFY': 'MOD_SOLIDIFY',
+    'SHADING_RENDERED': 'SHADING_RENDERED',
+    'RNDCURVE': 'RNDCURVE',
+    'FORCE_WIND': 'FORCE_WIND',
+    'PARTICLES': 'PARTICLES',
+    'WORLD': 'WORLD',
+    'MESH_GRID': 'MESH_GRID',
+    'MESH_CIRCLE': 'MESH_CIRCLE',
+    'MESH_CUBE': 'MESH_CUBE',
+    'FONT_DATA': 'FONT_DATA',
+    'BRUSH_DATA': 'BRUSH_DATA',
+    'SPARKLES': 'SPARKLES',
     'MOD_BOOLEAN': 'MOD_BOOLEAN',  # Crop tool icon. ### DUPLICATE
-    'MOD_LENGTH': 'MOD_LENGTH',  # Match height / dimension tools.
-    'MOD_NOISE': 'MOD_NOISE',  # Wiggle/noise tools.
-    'EMPTY_SINGLE_ARROW': 'EMPTY_SINGLE_ARROW',  # Direction/height fit tools.
-    'NEWFOLDER': 'NEWFOLDER',
     'NODE_TEXTURE': 'NODE_TEXTURE',  # Gradient / texture-node plane icon.  # Pending folder without files.
-    'ONIONSKIN_ON': 'ONIONSKIN_ON',  # Animation section icon. ### DUPLICATE
     'OPTIONS': 'OPTIONS',  # Create/pre-settings section icon. ### DUPLICATE
-    'OUTLINER_COLLECTION': 'OUTLINER_COLLECTION',  # Collection rows, project import, collection creation. ### DUPLICATE
+    'OUTLINER': 'OUTLINER',  # Project settings tab.
+    'OUTLINER_COLLECTION': 'OUTLINER_COLLECTION',
+    'OUTPUT': 'OUTPUT',  # Collection rows, project import, collection creation. ### DUPLICATE
     'OUTLINER_OB_LIGHT': 'OUTLINER_OB_LIGHT',  # Solo/Bulb enabled state. ### DUPLICATE
-    'PANEL_CLOSE': 'PANEL_CLOSE',  # Remove item from frame list. ### DUPLICATE
+    'OUTLINER_OB_ARMATURE': 'OUTLINER_OB_ARMATURE',  # Dedicated Cutout Plane icon.
     'PASTEDOWN': 'PASTEDOWN',  # Hex color from clipboard menu icon. ### DUPLICATE
     'PIVOT_CURSOR': 'PIVOT_CURSOR',  # Camera pivot toggle. ### DUPLICATE
     'PREFERENCES': 'PREFERENCES',  # Settings panel header. ### DUPLICATE
@@ -80,7 +92,6 @@ FBP_ICONS = {
     'PROP_OFF': 'PROP_OFF',  # Select none action. ### DUPLICATE
     'PROP_ON': 'PROP_ON',  # Select all action. ### DUPLICATE
     'RECORD_ON': 'RECORD_ON',  # Current visible frame marker. ### DUPLICATE
-    'REMOVE': 'REMOVE',  # Remove pending/setup item. ### DUPLICATE
     'RENDERLAYERS': 'RENDERLAYERS',  # Multiplane mode/setup icon. ### DUPLICATE
     'RENDER_ANIMATION': 'RENDER_ANIMATION',  # Emergency/background render. ### DUPLICATE
     'RENDER_RESULT': 'RENDER_RESULT',  # Layers panel and image list icon. ### DUPLICATE
@@ -88,12 +99,11 @@ FBP_ICONS = {
     'RESTRICT_SELECT_ON': 'RESTRICT_SELECT_ON',  # Linked plane not selectable/locked selectability. ### DUPLICATE
     'RESTRICT_VIEW_ON': 'RESTRICT_VIEW_ON',  # Camera setup section. ### DUPLICATE
     'RIGHTARROW': 'RIGHTARROW',  # Collapsed thin disclosure arrow. ### DUPLICATE
-    'SCENE_DATA': 'SCENE_DATA',  # Output/camera ratio section. ### DUPLICATE
     'SNAP_GRID': 'SNAP_GRID',  # Pixel/Closest filter icon.
     'SNAP_FACE': 'SNAP_FACE',  # White preset icon.
     'SORTALPHA': 'SORTALPHA',  # A-Z sort buttons. ### DUPLICATE
-    'SORT_ASC': 'SORT_ASC',  # Thin up arrow / move up. ### DUPLICATE
-    'SORT_DESC': 'SORT_DESC',  # Thin down arrow / move down. ### DUPLICATE
+    'SORT_ASC': 'SORT_ASC',  # Thin down arrow / move down. ### DUPLICATE
+    'SORT_DESC': 'SORT_DESC',  # Thin up arrow / move up. ### DUPLICATE
     'STRIP_': 'STRIP_',  # Dynamic strip color prefix for layer color tags. ### DUPLICATE
     'STRIP_COLOR_01': 'STRIP_COLOR_01',  # Color tag enum/icon 01. ### DUPLICATE
     'STRIP_COLOR_02': 'STRIP_COLOR_02',  # Color tag enum/icon 02. ### DUPLICATE
@@ -104,12 +114,17 @@ FBP_ICONS = {
     'STRIP_COLOR_07': 'STRIP_COLOR_07',  # Color tag enum/icon 07. ### DUPLICATE
     'STRIP_COLOR_08': 'STRIP_COLOR_08',  # Color tag enum/icon 08. ### DUPLICATE
     'STRIP_COLOR_09': 'STRIP_COLOR_09',  # Color tag enum/icon 09. ### DUPLICATE
+    'TEXTURE': 'TEXTURE',  # Add a transparent logical frame.
     'TEXTURE_DATA': 'TEXTURE_DATA',  # Transparent procedural/empty frame icon.
+    'TRIA_DOWN_BAR': 'TRIA_DOWN_BAR',  # Move active frame to the bottom.
+    'TRIA_UP_BAR': 'TRIA_UP_BAR',  # Move active frame to the top.
     'TIME': 'TIME',  # Import/profile report icon. ### DUPLICATE
     'TRASH': 'TRASH',  # Delete/clear/remove actions. ### DUPLICATE
     'UV_SYNC_SELECT': 'UV_SYNC_SELECT',  # Ping-pong playback enum. ### DUPLICATE
     'UNLOCKED': 'UNLOCKED',  # Unlocked state for rigs/collections. ### DUPLICATE
-    'VIEW_CAMERA': 'VIEW_CAMERA',  # Create/use camera icon. ### DUPLICATE
+    'VIEW_CAMERA': 'VIEW_CAMERA',
+    'CAMERA_DATA': 'CAMERA_DATA',
+    'CAMERA_STEREO': 'CAMERA_STEREO',  # Existing camera icon.
     'COLLECTION_COLOR_01': 'COLLECTION_COLOR_01',  # Outliner collection color icon 01. ### DUPLICATE
     'COLLECTION_COLOR_02': 'COLLECTION_COLOR_02',  # Outliner collection color icon 02. ### DUPLICATE
     'COLLECTION_COLOR_03': 'COLLECTION_COLOR_03',  # Outliner collection color icon 03. ### DUPLICATE
@@ -124,9 +139,11 @@ def fbp_icon(name, fallback="BLANK1"):
     """Return a centralized Blender icon name used by Frame by Plane UI."""
     return FBP_ICONS.get(name, FBP_ICONS.get(fallback, fallback))
 
-def fbp_strip_icon(color_tag):
+def fbp_strip_icon(color_tag, fallback="STRIP_COLOR_09"):
     """Return a centralized strip color icon for layer color tags."""
-    return fbp_icon("STRIP_") + str(color_tag or "COLOR_09")
+    tag = str(color_tag or "COLOR_09")
+    key = f"STRIP_{tag}" if tag.startswith("COLOR_") else str(fallback)
+    return fbp_icon(key, fallback)
 
 def fbp_collection_color_icon(color_tag):
     """Return a centralized collection color icon, or the generic collection icon."""
@@ -163,8 +180,22 @@ COLOR_ENUM_ITEMS = [
     ('COLOR_09', "Gray",    "", fbp_icon('STRIP_COLOR_09'), 9),
 ]
 
+COLLECTION_COLOR_ENUM_ITEMS = [
+    ('NONE', "None", "Do not assign a color tag to this collection", fbp_icon('OUTLINER_COLLECTION'), 0),
+    ('COLOR_01', "Color 01", "Collection color 01", fbp_icon('COLLECTION_COLOR_01'), 1),
+    ('COLOR_02', "Color 02", "Collection color 02", fbp_icon('COLLECTION_COLOR_02'), 2),
+    ('COLOR_03', "Color 03", "Collection color 03", fbp_icon('COLLECTION_COLOR_03'), 3),
+    ('COLOR_04', "Color 04", "Collection color 04", fbp_icon('COLLECTION_COLOR_04'), 4),
+    ('COLOR_05', "Color 05", "Collection color 05", fbp_icon('COLLECTION_COLOR_05'), 5),
+    ('COLOR_06', "Color 06", "Collection color 06", fbp_icon('COLLECTION_COLOR_06'), 6),
+    ('COLOR_07', "Color 07", "Collection color 07", fbp_icon('COLLECTION_COLOR_07'), 7),
+    ('COLOR_08', "Color 08", "Collection color 08", fbp_icon('COLLECTION_COLOR_08'), 8),
+]
+
 preview_collections = {}
-FBP_SUPPORTED_IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.exr', '.tif', '.tiff'}
+FBP_SUPPORTED_IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.exr', '.tif', '.tiff', '.bmp', '.gif', '.jp2', '.j2k', '.hdr', '.pic', '.sgi', '.rgb', '.rgba', '.dds'}
+FBP_SUPPORTED_VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm', '.mpeg', '.mpg', '.mxf', '.ogv'}
+FBP_SUPPORTED_MEDIA_EXT = FBP_SUPPORTED_IMAGE_EXT | FBP_SUPPORTED_VIDEO_EXT
 
 FBP_TECHNICAL_MAP_SUFFIXES = (
     '_normal', '_norm', '_nrm', '_displace', '_disp', '_height',
@@ -174,4 +205,3 @@ FBP_TECHNICAL_MAP_SUFFIXES = (
 
 FBP_PROJECT_COLLECTION_PREFIX = 'FBP - '
 
-FBP_SUPPORT_EMAIL = "pannoli312@gmail.com"

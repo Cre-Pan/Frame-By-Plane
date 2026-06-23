@@ -1,24 +1,42 @@
-# Contributing
+# Contributing to Frame By Plane
 
-Thanks for helping improve Frame by Plane.
+Thank you for helping improve Frame By Plane.
 
-## Good first contributions
+## Bug reports
 
-- Report bugs with clear reproduction steps
-- Improve documentation
-- Test the add-on on different operating systems
-- Suggest workflow improvements for animation and multiplane scenes
+Please include:
 
-## Development notes
+- Blender version;
+- Frame By Plane version;
+- operating system;
+- exact steps to reproduce the issue;
+- expected and actual behavior;
+- screenshots, console output or a minimal `.blend` file when possible.
 
-This project is gradually being refactored.
+Do not include private media or project files unless you have permission to share them.
 
-Current structure:
+## Feature requests
 
-- `__init__.py` add-on entry point
-- `core.py` main add-on logic
-- `constants.py` shared constants
-- `path_utils.py` path and filename helpers
-- `profiling.py` import timing report utilities
+Describe the workflow problem first, then the proposed solution. Examples, mockups and references to existing Blender tools are welcome.
 
-Please keep changes small and easy to test.
+## Code contributions
+
+1. Create a branch from the current development branch.
+2. Keep changes focused and avoid unrelated formatting rewrites.
+3. Preserve Blender 5.1.2 compatibility unless a version change has been agreed.
+4. Run:
+
+```bash
+python -m compileall -q frame_by_plane
+python scripts/build_release.py --check
+```
+
+5. Explain user-facing changes and possible migration risks in the pull request.
+
+## Style notes
+
+- Prefer explicit, readable Blender API code.
+- Avoid silent `except Exception: pass` blocks.
+- Keep UI groups `align=False` by default; use `align=True` only for tightly related controls.
+- Preserve meaningful separators and visual grouping.
+- Avoid deleting image files from disk during cleanup operations.
