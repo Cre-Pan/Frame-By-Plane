@@ -23,17 +23,49 @@ from .matrix_presets import (
 
 BUILTIN_EFFECT_IDS = {
     "PIXELATE",
+    "SWIRL",
+    "BULGE_PINCH",
+    "LENS_WARP",
+    "WAVE_WARP",
+    "RIPPLE_DISTORTION",
+    "KALEIDOSCOPE",
+    "HEX_PIXELATE",
+    "MOSAIC_JITTER",
     "RECOLOR",
+    "WHITE_BALANCE",
+    "CURVES",
+    "COLOR_ISOLATE",
     "GRADIENT_LIGHT",
     "RIM",
+    "SHADOW",
     "DEPTH_BLUR",
+    "GAUSSIAN_BLUR",
+    "DIRECTIONAL_BLUR",
+    "TRIANGLE_BLUR",
+    "TILT_SHIFT",
+    "UNSHARP_MASK",
+    "EDGE_DETECT",
+    "SMOOTH_TOON",
+    "ADAPTIVE_THRESHOLD",
+    "FALSE_COLOR",
+    "CHROMATIC_ABERRATION",
+    "INK",
+    "EDGE_WORK",
+    "PENCIL_SKETCH",
+    "POSTER_EDGES",
+    "CROSSHATCH",
+    "EMBOSS",
     "ALPHA_MATTE",
     "LUMA_MATTE",
     "SQUARE_MASK",
     "CIRCLE_MASK",
     "TRIANGLE_MASK",
     "CLIPPING_MASK",
+    "IMPORTED_MASK",
+    "LAYER_BLEND",
     "COLOR_MASK",
+    "LUMINANCE_MASK",
+    "CHANNEL_MASK",
     "GRADIENT_MASK",
     "NOISE_MASK",
     "DIGITAL_NOISE",
@@ -44,12 +76,14 @@ BUILTIN_EFFECT_IDS = {
     "ASCII",
     "TEXT_MATRIX",
     "WIND_BENDER",
-    "MESH_RIPPLE",
-    "PAPER_CURL",
     "CUTOUT_OUTLINE",
     "THICKNESS",
     "CAMERA_SCALE_LOCK",
     "CAMERA_BILLBOARD",
+    "MIRROR",
+    "SOLARIZE",
+    "TRITONE",
+    "FILM_FADE",
 }
 
 
@@ -201,49 +235,274 @@ def _tag(group, effect_id, definition):
     return group
 
 
+def _uv_mix(group, original, warped, factor, *, prefix, x=1100, y=0):
+    """Blend two UV vectors without relying on color-only mix nodes."""
+    delta = _vector_math(group, "SUBTRACT", f"{prefix} Delta", x, y)
+    scale = _vector_math(group, "SCALE", f"{prefix} Factor", x + 190, y)
+    result = _vector_math(group, "ADD", f"{prefix} Result", x + 380, y)
+    group.links.new(warped, delta.inputs[0])
+    group.links.new(original, delta.inputs[1])
+    group.links.new(delta.outputs[0], scale.inputs[0])
+    group.links.new(factor, _input(scale, "Scale", 3))
+    group.links.new(original, result.inputs[0])
+    group.links.new(scale.outputs[0], result.inputs[1])
+    return result.outputs[0]
+
+
+def _uv_center_vector(group, inp, *, prefix, x=-1100, y=0):
+    center = _node(group, "ShaderNodeCombineXYZ", f"{prefix} Center", x, y)
+    group.links.new(inp.outputs["Center X"], center.inputs["X"])
+    group.links.new(inp.outputs["Center Y"], center.inputs["Y"])
+    return center.outputs[0]
+
+
 def _create_pixelate(name):
+    """Aspect-aware rectangular pixel grid with rotatable sampling cells."""
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
     _socket(group, "Vector", "INPUT", "NodeSocketVector", default=(0.0, 0.0, 0.0))
     _socket(group, "Pixels X", "INPUT", "NodeSocketFloat", default=64.0, minimum=1.0, maximum=8192.0)
     _socket(group, "Pixels Y", "INPUT", "NodeSocketFloat", default=36.0, minimum=1.0, maximum=8192.0)
+    _socket(group, "Rotation", "INPUT", "NodeSocketFloat", default=0.0, minimum=-6.283185307, maximum=6.283185307)
+    _socket(group, "Offset X", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0)
+    _socket(group, "Offset Y", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0)
     _socket(group, "Vector Out", "OUTPUT", "NodeSocketVector")
     inp, out = _group_io(group)
-
-    separate = _node(group, "ShaderNodeSeparateXYZ", "Separate UV", -700, 20)
-
-    x_mul = _math(group, "MULTIPLY", "X Cells", -500, 150)
-    x_floor = _math(group, "FLOOR", "X Floor", -320, 150)
-    x_half = _math(group, "ADD", "X Center", -140, 150, value_2=0.5)
-    x_div = _math(group, "DIVIDE", "X Normalize", 40, 150)
-
-    y_mul = _math(group, "MULTIPLY", "Y Cells", -500, -120)
-    y_floor = _math(group, "FLOOR", "Y Floor", -320, -120)
-    y_half = _math(group, "ADD", "Y Center", -140, -120, value_2=0.5)
-    y_div = _math(group, "DIVIDE", "Y Normalize", 40, -120)
-
-    combine = _node(group, "ShaderNodeCombineXYZ", "Pixelated UV", 290, 40)
-
     links = group.links
-    links.new(inp.outputs["Vector"], separate.inputs[0])
 
-    links.new(separate.outputs["X"], x_mul.inputs[0])
-    links.new(inp.outputs["Pixels X"], x_mul.inputs[1])
-    links.new(x_mul.outputs[0], x_floor.inputs[0])
-    links.new(x_floor.outputs[0], x_half.inputs[0])
-    links.new(x_half.outputs[0], x_div.inputs[0])
-    links.new(inp.outputs["Pixels X"], x_div.inputs[1])
+    offset = _node(group, "ShaderNodeCombineXYZ", "Pixel Grid Offset", -980, 230)
+    shifted = _vector_math(group, "ADD", "Offset Pixel Grid", -790, 120)
+    rotate = _node(group, "ShaderNodeVectorRotate", "Rotate Pixel Grid", -590, 120)
+    rotate.rotation_type = "Z_AXIS"
+    rotate.inputs["Center"].default_value = (0.5, 0.5, 0.0)
+    separate = _node(group, "ShaderNodeSeparateXYZ", "Separate Pixel UV", -390, 120)
 
-    links.new(separate.outputs["Y"], y_mul.inputs[0])
-    links.new(inp.outputs["Pixels Y"], y_mul.inputs[1])
-    links.new(y_mul.outputs[0], y_floor.inputs[0])
-    links.new(y_floor.outputs[0], y_half.inputs[0])
-    links.new(y_half.outputs[0], y_div.inputs[0])
-    links.new(inp.outputs["Pixels Y"], y_div.inputs[1])
+    x_mul = _math(group, "MULTIPLY", "X Cells", -180, 250)
+    x_floor = _math(group, "FLOOR", "X Floor", 0, 250)
+    x_half = _math(group, "ADD", "X Center", 180, 250, value_2=0.5)
+    x_div = _math(group, "DIVIDE", "X Normalize", 360, 250)
+    y_mul = _math(group, "MULTIPLY", "Y Cells", -180, -20)
+    y_floor = _math(group, "FLOOR", "Y Floor", 0, -20)
+    y_half = _math(group, "ADD", "Y Center", 180, -20, value_2=0.5)
+    y_div = _math(group, "DIVIDE", "Y Normalize", 360, -20)
+    combine = _node(group, "ShaderNodeCombineXYZ", "Pixelated UV", 560, 120)
+    inverse_angle = _math(group, "MULTIPLY", "Inverse Pixel Rotation", 360, -210, value_2=-1.0)
+    unrotate = _node(group, "ShaderNodeVectorRotate", "Restore Pixel Grid Rotation", 760, 120)
+    unrotate.rotation_type = "Z_AXIS"
+    unrotate.inputs["Center"].default_value = (0.5, 0.5, 0.0)
+    subtract_offset = _vector_math(group, "SUBTRACT", "Restore Pixel Grid Offset", 970, 120)
 
-    links.new(x_div.outputs[0], combine.inputs["X"])
-    links.new(y_div.outputs[0], combine.inputs["Y"])
+    links.new(inp.outputs["Offset X"], offset.inputs["X"])
+    links.new(inp.outputs["Offset Y"], offset.inputs["Y"])
+    links.new(inp.outputs["Vector"], shifted.inputs[0])
+    links.new(offset.outputs[0], shifted.inputs[1])
+    links.new(shifted.outputs[0], rotate.inputs["Vector"])
+    links.new(inp.outputs["Rotation"], rotate.inputs["Angle"])
+    links.new(rotate.outputs["Vector"], separate.inputs[0])
+    links.new(separate.outputs["X"], x_mul.inputs[0]); links.new(inp.outputs["Pixels X"], x_mul.inputs[1])
+    links.new(x_mul.outputs[0], x_floor.inputs[0]); links.new(x_floor.outputs[0], x_half.inputs[0])
+    links.new(x_half.outputs[0], x_div.inputs[0]); links.new(inp.outputs["Pixels X"], x_div.inputs[1])
+    links.new(separate.outputs["Y"], y_mul.inputs[0]); links.new(inp.outputs["Pixels Y"], y_mul.inputs[1])
+    links.new(y_mul.outputs[0], y_floor.inputs[0]); links.new(y_floor.outputs[0], y_half.inputs[0])
+    links.new(y_half.outputs[0], y_div.inputs[0]); links.new(inp.outputs["Pixels Y"], y_div.inputs[1])
+    links.new(x_div.outputs[0], combine.inputs["X"]); links.new(y_div.outputs[0], combine.inputs["Y"])
     links.new(separate.outputs["Z"], combine.inputs["Z"])
-    links.new(combine.outputs[0], out.inputs["Vector Out"])
+    links.new(inp.outputs["Rotation"], inverse_angle.inputs[0])
+    links.new(combine.outputs[0], unrotate.inputs["Vector"]); links.new(inverse_angle.outputs[0], unrotate.inputs["Angle"])
+    links.new(unrotate.outputs["Vector"], subtract_offset.inputs[0]); links.new(offset.outputs[0], subtract_offset.inputs[1])
+    links.new(subtract_offset.outputs[0], out.inputs["Vector Out"])
+    group["fbp_pixelate_contract_version"] = 2
+    return group
+
+
+def _create_swirl(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Center X", "INPUT", "NodeSocketFloat", default=0.5, minimum=-2.0, maximum=3.0)
+    _socket(group, "Center Y", "INPUT", "NodeSocketFloat", default=0.5, minimum=-2.0, maximum=3.0)
+    _socket(group, "Radius", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.001, maximum=4.0)
+    _socket(group, "Angle", "INPUT", "NodeSocketFloat", default=3.141592654, minimum=-25.13274123, maximum=25.13274123)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Vector Out", "OUTPUT", "NodeSocketVector")
+    inp, out = _group_io(group); links = group.links
+    center = _uv_center_vector(group, inp, prefix="Swirl", x=-1260, y=80)
+    centered = _vector_math(group, "SUBTRACT", "Swirl Centered UV", -1060, 80)
+    sep = _node(group, "ShaderNodeSeparateXYZ", "Swirl Coordinates", -860, 80)
+    x2 = _math(group, "MULTIPLY", "Swirl X Squared", -650, 250); y2 = _math(group, "MULTIPLY", "Swirl Y Squared", -650, 100)
+    r2 = _math(group, "ADD", "Swirl Radius Squared", -470, 180); radius = _math(group, "SQRT", "Swirl Radius", -290, 180)
+    safe_radius = _math(group, "MAXIMUM", "Safe Swirl Radius", -470, -20, value_2=0.0001)
+    normalized = _math(group, "DIVIDE", "Normalized Swirl Radius", -100, 180)
+    inv = _math(group, "SUBTRACT", "Swirl Falloff", 80, 180, value_1=1.0); clamp = _math(group, "MAXIMUM", "Clamp Swirl Falloff", 260, 180, value_2=0.0)
+    falloff = _math(group, "MULTIPLY", "Smooth Swirl Falloff", 440, 180); theta = _math(group, "MULTIPLY", "Swirl Angle", 620, 180)
+    cosine = _math(group, "COSINE", "Swirl Cosine", 800, 260); sine = _math(group, "SINE", "Swirl Sine", 800, 100)
+    xcos = _math(group, "MULTIPLY", "Swirl X Cos", 980, 320); ysin = _math(group, "MULTIPLY", "Swirl Y Sin", 980, 210); xr = _math(group, "SUBTRACT", "Swirl X", 1160, 280)
+    xsin = _math(group, "MULTIPLY", "Swirl X Sin", 980, 80); ycos = _math(group, "MULTIPLY", "Swirl Y Cos", 980, -30); yr = _math(group, "ADD", "Swirl Y", 1160, 30)
+    combine = _node(group, "ShaderNodeCombineXYZ", "Swirled Coordinates", 1340, 150); warped = _vector_math(group, "ADD", "Swirl Restore Center", 1530, 150)
+    links.new(inp.outputs["Vector"], centered.inputs[0]); links.new(center, centered.inputs[1]); links.new(centered.outputs[0], sep.inputs[0])
+    links.new(sep.outputs["X"], x2.inputs[0]); links.new(sep.outputs["X"], x2.inputs[1]); links.new(sep.outputs["Y"], y2.inputs[0]); links.new(sep.outputs["Y"], y2.inputs[1])
+    links.new(x2.outputs[0], r2.inputs[0]); links.new(y2.outputs[0], r2.inputs[1]); links.new(r2.outputs[0], radius.inputs[0]); links.new(inp.outputs["Radius"], safe_radius.inputs[0])
+    links.new(radius.outputs[0], normalized.inputs[0]); links.new(safe_radius.outputs[0], normalized.inputs[1]); links.new(normalized.outputs[0], inv.inputs[1]); links.new(inv.outputs[0], clamp.inputs[0])
+    links.new(clamp.outputs[0], falloff.inputs[0]); links.new(clamp.outputs[0], falloff.inputs[1]); links.new(falloff.outputs[0], theta.inputs[0]); links.new(inp.outputs["Angle"], theta.inputs[1])
+    links.new(theta.outputs[0], cosine.inputs[0]); links.new(theta.outputs[0], sine.inputs[0])
+    links.new(sep.outputs["X"], xcos.inputs[0]); links.new(cosine.outputs[0], xcos.inputs[1]); links.new(sep.outputs["Y"], ysin.inputs[0]); links.new(sine.outputs[0], ysin.inputs[1]); links.new(xcos.outputs[0], xr.inputs[0]); links.new(ysin.outputs[0], xr.inputs[1])
+    links.new(sep.outputs["X"], xsin.inputs[0]); links.new(sine.outputs[0], xsin.inputs[1]); links.new(sep.outputs["Y"], ycos.inputs[0]); links.new(cosine.outputs[0], ycos.inputs[1]); links.new(xsin.outputs[0], yr.inputs[0]); links.new(ycos.outputs[0], yr.inputs[1])
+    links.new(xr.outputs[0], combine.inputs["X"]); links.new(yr.outputs[0], combine.inputs["Y"]); links.new(combine.outputs[0], warped.inputs[0]); links.new(center, warped.inputs[1])
+    result = _uv_mix(group, inp.outputs["Vector"], warped.outputs[0], inp.outputs["Factor"], prefix="Swirl", x=1720, y=150)
+    links.new(result, out.inputs["Vector Out"])
+    return group
+
+
+def _create_bulge_pinch(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n,d,mi,ma in (("Center X",.5,-2,3),("Center Y",.5,-2,3),("Radius",.5,.001,4),("Strength",.5,-2,2),("Factor",1,0,1)):
+        _socket(group,n,"INPUT","NodeSocketFloat",default=d,minimum=mi,maximum=ma)
+    _socket(group,"Vector","INPUT","NodeSocketVector"); _socket(group,"Vector Out","OUTPUT","NodeSocketVector")
+    inp,out=_group_io(group); links=group.links; center=_uv_center_vector(group,inp,prefix="Bulge",x=-1100,y=80)
+    centered=_vector_math(group,"SUBTRACT","Bulge Centered UV",-900,80); length=_vector_math(group,"LENGTH","Bulge Radius",-700,80)
+    safe=_math(group,"MAXIMUM","Safe Bulge Radius",-700,-100,value_2=.0001); norm=_math(group,"DIVIDE","Bulge Normalized Radius",-500,80)
+    inv=_math(group,"SUBTRACT","Bulge Falloff",-320,80,value_1=1); clamp=_math(group,"MAXIMUM","Clamp Bulge Falloff",-140,80,value_2=0)
+    smooth=_math(group,"MULTIPLY","Smooth Bulge Falloff",40,80); amount=_math(group,"MULTIPLY","Bulge Amount",220,80)
+    scale=_math(group,"SUBTRACT","Bulge Scale",400,80,value_1=1); safe_scale=_math(group,"MAXIMUM","Safe Bulge Scale",580,80,value_2=.001)
+    scaled=_vector_math(group,"SCALE","Scale Bulge UV",760,80); warped=_vector_math(group,"ADD","Restore Bulge Center",950,80)
+    links.new(inp.outputs["Vector"],centered.inputs[0]); links.new(center,centered.inputs[1]); links.new(centered.outputs[0],length.inputs[0]); links.new(inp.outputs["Radius"],safe.inputs[0])
+    links.new(length.outputs["Value"],norm.inputs[0]); links.new(safe.outputs[0],norm.inputs[1]); links.new(norm.outputs[0],inv.inputs[1]); links.new(inv.outputs[0],clamp.inputs[0])
+    links.new(clamp.outputs[0],smooth.inputs[0]); links.new(clamp.outputs[0],smooth.inputs[1]); links.new(smooth.outputs[0],amount.inputs[0]); links.new(inp.outputs["Strength"],amount.inputs[1]); links.new(amount.outputs[0],scale.inputs[1]); links.new(scale.outputs[0],safe_scale.inputs[0])
+    links.new(centered.outputs[0],scaled.inputs[0]); links.new(safe_scale.outputs[0],_input(scaled,"Scale",3)); links.new(scaled.outputs[0],warped.inputs[0]); links.new(center,warped.inputs[1])
+    result=_uv_mix(group,inp.outputs["Vector"],warped.outputs[0],inp.outputs["Factor"],prefix="Bulge Pinch",x=1140,y=80); links.new(result,out.inputs["Vector Out"]); return group
+
+
+def _create_lens_warp(name):
+    group=bpy.data.node_groups.new(name,"ShaderNodeTree")
+    for n,d,mi,ma in (("Center X",.5,-2,3),("Center Y",.5,-2,3),("Distortion",0,-4,4),("Zoom",1,.01,8),("Factor",1,0,1)):_socket(group,n,"INPUT","NodeSocketFloat",default=d,minimum=mi,maximum=ma)
+    _socket(group,"Vector","INPUT","NodeSocketVector");_socket(group,"Vector Out","OUTPUT","NodeSocketVector");inp,out=_group_io(group);links=group.links;center=_uv_center_vector(group,inp,prefix="Lens",x=-1050,y=80)
+    centered=_vector_math(group,"SUBTRACT","Lens Centered UV",-850,80);sep=_node(group,"ShaderNodeSeparateXYZ","Lens Coordinates",-650,80)
+    x2=_math(group,"MULTIPLY","Lens X Squared",-450,190);y2=_math(group,"MULTIPLY","Lens Y Squared",-450,40);r2=_math(group,"ADD","Lens Radius Squared",-270,120)
+    distort=_math(group,"MULTIPLY","Lens Distortion Amount",-90,120);scale=_math(group,"ADD","Lens Radial Scale",90,120,value_1=1);safezoom=_math(group,"MAXIMUM","Safe Lens Zoom",90,-40,value_2=.001);finalscale=_math(group,"DIVIDE","Lens Scale and Zoom",270,120)
+    scaled=_vector_math(group,"SCALE","Warp Lens UV",460,120);warped=_vector_math(group,"ADD","Restore Lens Center",650,120)
+    links.new(inp.outputs["Vector"],centered.inputs[0]);links.new(center,centered.inputs[1]);links.new(centered.outputs[0],sep.inputs[0]);links.new(sep.outputs["X"],x2.inputs[0]);links.new(sep.outputs["X"],x2.inputs[1]);links.new(sep.outputs["Y"],y2.inputs[0]);links.new(sep.outputs["Y"],y2.inputs[1]);links.new(x2.outputs[0],r2.inputs[0]);links.new(y2.outputs[0],r2.inputs[1]);links.new(r2.outputs[0],distort.inputs[0]);links.new(inp.outputs["Distortion"],distort.inputs[1]);links.new(distort.outputs[0],scale.inputs[1]);links.new(inp.outputs["Zoom"],safezoom.inputs[0]);links.new(scale.outputs[0],finalscale.inputs[0]);links.new(safezoom.outputs[0],finalscale.inputs[1]);links.new(centered.outputs[0],scaled.inputs[0]);links.new(finalscale.outputs[0],_input(scaled,"Scale",3));links.new(scaled.outputs[0],warped.inputs[0]);links.new(center,warped.inputs[1])
+    result=_uv_mix(group,inp.outputs["Vector"],warped.outputs[0],inp.outputs["Factor"],prefix="Lens Warp",x=840,y=120);links.new(result,out.inputs["Vector Out"]);return group
+
+
+def _create_wave_warp(name):
+    group=bpy.data.node_groups.new(name,"ShaderNodeTree");_socket(group,"Vector","INPUT","NodeSocketVector")
+    for n,d,mi,ma in (("Amplitude",.025,-1,1),("Frequency",6,.01,256),("Phase",0,-1000,1000),("Speed",1,-20,20),("Angle",0,-6.283185307,6.283185307),("Factor",1,0,1)):_socket(group,n,"INPUT","NodeSocketFloat",default=d,minimum=mi,maximum=ma)
+    _socket(group,"Vector Out","OUTPUT","NodeSocketVector");inp,out=_group_io(group);links=group.links
+    centered=_vector_math(group,"SUBTRACT","Wave Centered UV",-1000,80);centered.inputs[1].default_value=(.5,.5,0);rotate=_node(group,"ShaderNodeVectorRotate","Wave Direction",-800,80);rotate.rotation_type="Z_AXIS";sep=_node(group,"ShaderNodeSeparateXYZ","Wave Coordinates",-600,80)
+    freq=_math(group,"MULTIPLY","Wave Frequency",-400,180);tau=_math(group,"MULTIPLY","Wave Tau",-220,180,value_2=6.283185307);phase=_math(group,"ADD","Wave Phase",-40,180);sine=_math(group,"SINE","Wave Sine",140,180);amp=_math(group,"MULTIPLY","Wave Amplitude",320,180);yadd=_math(group,"ADD","Wave Y",500,40);comb=_node(group,"ShaderNodeCombineXYZ","Wave Coordinates Out",680,80);inv=_math(group,"MULTIPLY","Inverse Wave Angle",500,-180,value_2=-1);unrotate=_node(group,"ShaderNodeVectorRotate","Restore Wave Direction",880,80);unrotate.rotation_type="Z_AXIS";restore=_vector_math(group,"ADD","Restore Wave Center",1080,80);restore.inputs[1].default_value=(.5,.5,0)
+    links.new(inp.outputs["Vector"],centered.inputs[0]);links.new(centered.outputs[0],rotate.inputs["Vector"]);links.new(inp.outputs["Angle"],rotate.inputs["Angle"]);links.new(rotate.outputs["Vector"],sep.inputs[0]);links.new(sep.outputs["X"],freq.inputs[0]);links.new(inp.outputs["Frequency"],freq.inputs[1]);links.new(freq.outputs[0],tau.inputs[0]);links.new(tau.outputs[0],phase.inputs[0]);links.new(inp.outputs["Phase"],phase.inputs[1]);links.new(phase.outputs[0],sine.inputs[0]);links.new(sine.outputs[0],amp.inputs[0]);links.new(inp.outputs["Amplitude"],amp.inputs[1]);links.new(sep.outputs["Y"],yadd.inputs[0]);links.new(amp.outputs[0],yadd.inputs[1]);links.new(sep.outputs["X"],comb.inputs["X"]);links.new(yadd.outputs[0],comb.inputs["Y"]);links.new(sep.outputs["Z"],comb.inputs["Z"]);links.new(inp.outputs["Angle"],inv.inputs[0]);links.new(comb.outputs[0],unrotate.inputs["Vector"]);links.new(inv.outputs[0],unrotate.inputs["Angle"]);links.new(unrotate.outputs["Vector"],restore.inputs[0]);result=_uv_mix(group,inp.outputs["Vector"],restore.outputs[0],inp.outputs["Factor"],prefix="Wave Warp",x=1270,y=80);links.new(result,out.inputs["Vector Out"]);return group
+
+
+def _create_ripple_distortion(name):
+    group=bpy.data.node_groups.new(name,"ShaderNodeTree");_socket(group,"Vector","INPUT","NodeSocketVector")
+    for n,d,mi,ma in (("Center X",.5,-2,3),("Center Y",.5,-2,3),("Amplitude",.02,-1,1),("Frequency",12,.01,512),("Phase",0,-1000,1000),("Speed",1,-20,20),("Radius",.75,.001,4),("Falloff",1,.05,8),("Factor",1,0,1)):_socket(group,n,"INPUT","NodeSocketFloat",default=d,minimum=mi,maximum=ma)
+    _socket(group,"Vector Out","OUTPUT","NodeSocketVector");inp,out=_group_io(group);links=group.links;center=_uv_center_vector(group,inp,prefix="Ripple",x=-1250,y=100);centered=_vector_math(group,"SUBTRACT","Ripple Centered UV",-1050,100);length=_vector_math(group,"LENGTH","Ripple Radius",-850,180);normal=_vector_math(group,"NORMALIZE","Ripple Direction",-850,20)
+    freq=_math(group,"MULTIPLY","Ripple Frequency",-650,220);tau=_math(group,"MULTIPLY","Ripple Tau",-470,220,value_2=6.283185307);phase=_math(group,"ADD","Ripple Phase",-290,220);sine=_math(group,"SINE","Ripple Sine",-110,220);wave=_math(group,"MULTIPLY","Ripple Amplitude",70,220)
+    safe_radius=_math(group,"MAXIMUM","Safe Ripple Radius",-650,-100,value_2=.0001);normr=_math(group,"DIVIDE","Normalized Ripple Radius",-470,-100);inv=_math(group,"SUBTRACT","Ripple Falloff",-290,-100,value_1=1);clamp=_math(group,"MAXIMUM","Clamp Ripple Falloff",-110,-100,value_2=0);power=_math(group,"POWER","Ripple Falloff Power",70,-100);disp=_math(group,"MULTIPLY","Ripple Displacement",250,120)
+    offset=_vector_math(group,"SCALE","Ripple Offset",440,120);warpedc=_vector_math(group,"ADD","Ripple Warped Centered",630,120);warped=_vector_math(group,"ADD","Restore Ripple Center",820,120)
+    links.new(inp.outputs["Vector"],centered.inputs[0]);links.new(center,centered.inputs[1]);links.new(centered.outputs[0],length.inputs[0]);links.new(centered.outputs[0],normal.inputs[0]);links.new(length.outputs["Value"],freq.inputs[0]);links.new(inp.outputs["Frequency"],freq.inputs[1]);links.new(freq.outputs[0],tau.inputs[0]);links.new(tau.outputs[0],phase.inputs[0]);links.new(inp.outputs["Phase"],phase.inputs[1]);links.new(phase.outputs[0],sine.inputs[0]);links.new(sine.outputs[0],wave.inputs[0]);links.new(inp.outputs["Amplitude"],wave.inputs[1]);links.new(inp.outputs["Radius"],safe_radius.inputs[0]);links.new(length.outputs["Value"],normr.inputs[0]);links.new(safe_radius.outputs[0],normr.inputs[1]);links.new(normr.outputs[0],inv.inputs[1]);links.new(inv.outputs[0],clamp.inputs[0]);links.new(clamp.outputs[0],power.inputs[0]);links.new(inp.outputs["Falloff"],power.inputs[1]);links.new(wave.outputs[0],disp.inputs[0]);links.new(power.outputs[0],disp.inputs[1]);links.new(normal.outputs[0],offset.inputs[0]);links.new(disp.outputs[0],_input(offset,"Scale",3));links.new(centered.outputs[0],warpedc.inputs[0]);links.new(offset.outputs[0],warpedc.inputs[1]);links.new(warpedc.outputs[0],warped.inputs[0]);links.new(center,warped.inputs[1]);result=_uv_mix(group,inp.outputs["Vector"],warped.outputs[0],inp.outputs["Factor"],prefix="Ripple Distortion",x=1010,y=120);links.new(result,out.inputs["Vector Out"]);return group
+
+
+def _create_kaleidoscope(name):
+    group=bpy.data.node_groups.new(name,"ShaderNodeTree");_socket(group,"Vector","INPUT","NodeSocketVector")
+    for n,d,mi,ma in (("Center X",.5,-2,3),("Center Y",.5,-2,3),("Segments",6,1,64),("Rotation",0,-6.283185307,6.283185307),("Factor",1,0,1)):_socket(group,n,"INPUT","NodeSocketFloat",default=d,minimum=mi,maximum=ma)
+    _socket(group,"Vector Out","OUTPUT","NodeSocketVector");inp,out=_group_io(group);links=group.links;center=_uv_center_vector(group,inp,prefix="Kaleidoscope",x=-1250,y=100);centered=_vector_math(group,"SUBTRACT","Kaleidoscope Centered UV",-1050,100);sep=_node(group,"ShaderNodeSeparateXYZ","Kaleidoscope Coordinates",-850,100)
+    x2=_math(group,"MULTIPLY","Kaleidoscope X2",-650,250);y2=_math(group,"MULTIPLY","Kaleidoscope Y2",-650,100);r2=_math(group,"ADD","Kaleidoscope R2",-470,180);radius=_math(group,"SQRT","Kaleidoscope Radius",-290,180);angle=_math(group,"ARCTAN2","Kaleidoscope Angle",-470,-20);rot=_math(group,"ADD","Kaleidoscope Rotation",-290,-20);safe=_math(group,"MAXIMUM","Kaleidoscope Segments",-290,-180,value_2=1);sector=_math(group,"DIVIDE","Kaleidoscope Sector",-110,-100,value_1=6.283185307);mod=_math(group,"MODULO","Kaleidoscope Modulo",70,-20);half=_math(group,"MULTIPLY","Kaleidoscope Half Sector",70,-150,value_2=.5);centerangle=_math(group,"SUBTRACT","Kaleidoscope Center Angle",250,-20);fold=_math(group,"ABSOLUTE","Kaleidoscope Fold",430,-20);unrot=_math(group,"SUBTRACT","Kaleidoscope Unrotate",610,-20);cos=_math(group,"COSINE","Kaleidoscope Cos",790,80);sin=_math(group,"SINE","Kaleidoscope Sin",790,-80);x=_math(group,"MULTIPLY","Kaleidoscope X",970,80);y=_math(group,"MULTIPLY","Kaleidoscope Y",970,-80);comb=_node(group,"ShaderNodeCombineXYZ","Kaleidoscope Folded UV",1150,20);warped=_vector_math(group,"ADD","Restore Kaleidoscope Center",1340,20)
+    links.new(inp.outputs["Vector"],centered.inputs[0]);links.new(center,centered.inputs[1]);links.new(centered.outputs[0],sep.inputs[0]);links.new(sep.outputs["X"],x2.inputs[0]);links.new(sep.outputs["X"],x2.inputs[1]);links.new(sep.outputs["Y"],y2.inputs[0]);links.new(sep.outputs["Y"],y2.inputs[1]);links.new(x2.outputs[0],r2.inputs[0]);links.new(y2.outputs[0],r2.inputs[1]);links.new(r2.outputs[0],radius.inputs[0]);links.new(sep.outputs["Y"],angle.inputs[0]);links.new(sep.outputs["X"],angle.inputs[1]);links.new(angle.outputs[0],rot.inputs[0]);links.new(inp.outputs["Rotation"],rot.inputs[1]);links.new(inp.outputs["Segments"],safe.inputs[0]);links.new(safe.outputs[0],sector.inputs[1]);links.new(rot.outputs[0],mod.inputs[0]);links.new(sector.outputs[0],mod.inputs[1]);links.new(sector.outputs[0],half.inputs[0]);links.new(mod.outputs[0],centerangle.inputs[0]);links.new(half.outputs[0],centerangle.inputs[1]);links.new(centerangle.outputs[0],fold.inputs[0]);links.new(fold.outputs[0],unrot.inputs[0]);links.new(inp.outputs["Rotation"],unrot.inputs[1]);links.new(unrot.outputs[0],cos.inputs[0]);links.new(unrot.outputs[0],sin.inputs[0]);links.new(cos.outputs[0],x.inputs[0]);links.new(radius.outputs[0],x.inputs[1]);links.new(sin.outputs[0],y.inputs[0]);links.new(radius.outputs[0],y.inputs[1]);links.new(x.outputs[0],comb.inputs["X"]);links.new(y.outputs[0],comb.inputs["Y"]);links.new(comb.outputs[0],warped.inputs[0]);links.new(center,warped.inputs[1]);result=_uv_mix(group,inp.outputs["Vector"],warped.outputs[0],inp.outputs["Factor"],prefix="Kaleidoscope",x=1530,y=20);links.new(result,out.inputs["Vector Out"]);return group
+
+
+def _create_hex_pixelate(name):
+    group=bpy.data.node_groups.new(name,"ShaderNodeTree");_socket(group,"Vector","INPUT","NodeSocketVector")
+    for n,d,mi,ma in (("Cells X",48,1,8192),("Cells Y",32,1,8192),("Rotation",0,-6.283185307,6.283185307),("Factor",1,0,1)):_socket(group,n,"INPUT","NodeSocketFloat",default=d,minimum=mi,maximum=ma)
+    _socket(group,"Vector Out","OUTPUT","NodeSocketVector");inp,out=_group_io(group);links=group.links;rotate=_node(group,"ShaderNodeVectorRotate","Rotate Hex Grid",-1050,100);rotate.rotation_type="Z_AXIS";rotate.inputs["Center"].default_value=(.5,.5,0);sep=_node(group,"ShaderNodeSeparateXYZ","Hex Grid Coordinates",-850,100)
+    ys=_math(group,"MULTIPLY","Hex Row Scale",-650,-20);yf=_math(group,"FLOOR","Hex Row",-470,-20);parity=_math(group,"MODULO","Hex Row Parity",-290,-20,value_2=2);stagger=_math(group,"MULTIPLY","Hex Row Stagger",-110,-20,value_2=.5)
+    xs=_math(group,"MULTIPLY","Hex Column Scale",-650,220);xshift=_math(group,"SUBTRACT","Hex Staggered Column",70,220);xf=_math(group,"FLOOR","Hex Column",250,220);xhalf=_math(group,"ADD","Hex Column Center",430,220,value_2=.5);xstagger=_math(group,"ADD","Hex Stagger Restore",610,220);xn=_math(group,"DIVIDE","Hex X Normalize",790,220)
+    yhalf=_math(group,"ADD","Hex Row Center",-110,-140,value_2=.5);yn=_math(group,"DIVIDE","Hex Y Normalize",70,-140);comb=_node(group,"ShaderNodeCombineXYZ","Hex Sample UV",970,80);inv=_math(group,"MULTIPLY","Inverse Hex Rotation",790,-120,value_2=-1);unrotate=_node(group,"ShaderNodeVectorRotate","Restore Hex Rotation",1160,80);unrotate.rotation_type="Z_AXIS";unrotate.inputs["Center"].default_value=(.5,.5,0)
+    links.new(inp.outputs["Vector"],rotate.inputs["Vector"]);links.new(inp.outputs["Rotation"],rotate.inputs["Angle"]);links.new(rotate.outputs["Vector"],sep.inputs[0]);links.new(sep.outputs["Y"],ys.inputs[0]);links.new(inp.outputs["Cells Y"],ys.inputs[1]);links.new(ys.outputs[0],yf.inputs[0]);links.new(yf.outputs[0],parity.inputs[0]);links.new(parity.outputs[0],stagger.inputs[0]);links.new(sep.outputs["X"],xs.inputs[0]);links.new(inp.outputs["Cells X"],xs.inputs[1]);links.new(xs.outputs[0],xshift.inputs[0]);links.new(stagger.outputs[0],xshift.inputs[1]);links.new(xshift.outputs[0],xf.inputs[0]);links.new(xf.outputs[0],xhalf.inputs[0]);links.new(xhalf.outputs[0],xstagger.inputs[0]);links.new(stagger.outputs[0],xstagger.inputs[1]);links.new(xstagger.outputs[0],xn.inputs[0]);links.new(inp.outputs["Cells X"],xn.inputs[1]);links.new(yf.outputs[0],yhalf.inputs[0]);links.new(yhalf.outputs[0],yn.inputs[0]);links.new(inp.outputs["Cells Y"],yn.inputs[1]);links.new(xn.outputs[0],comb.inputs["X"]);links.new(yn.outputs[0],comb.inputs["Y"]);links.new(inp.outputs["Rotation"],inv.inputs[0]);links.new(comb.outputs[0],unrotate.inputs["Vector"]);links.new(inv.outputs[0],unrotate.inputs["Angle"]);result=_uv_mix(group,inp.outputs["Vector"],unrotate.outputs["Vector"],inp.outputs["Factor"],prefix="Hex Pixelate",x=1350,y=80);links.new(result,out.inputs["Vector Out"]);return group
+
+
+def _create_mosaic_jitter(name):
+    """Rotatable block sampling with stable per-cell random offsets."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Vector", "INPUT", "NodeSocketVector")
+    for socket_name, default, minimum, maximum in (
+        ("Cells X", 32, 1, 8192), ("Cells Y", 18, 1, 8192),
+        ("Rotation", 0.0, -6.283185307, 6.283185307),
+        ("Jitter", 0.6, 0, 4), ("Offset X", 0.0, -2, 2),
+        ("Offset Y", 0.0, -2, 2), ("Seed", 0, -100000, 100000),
+        ("Factor", 1, 0, 1),
+    ):
+        _socket(group, socket_name, "INPUT", "NodeSocketFloat", default=default, minimum=minimum, maximum=maximum)
+    _socket(group, "Vector Out", "OUTPUT", "NodeSocketVector")
+    inp, out = _group_io(group)
+    links = group.links
+
+    offset = _node(group, "ShaderNodeCombineXYZ", "Mosaic Grid Offset", -1540, 120)
+    shifted = _vector_math(group, "ADD", "Offset Mosaic Grid", -1360, 120)
+    rotate = _node(group, "ShaderNodeVectorRotate", "Rotate Mosaic Grid", -1160, 120)
+    rotate.rotation_type = "Z_AXIS"
+    rotate.inputs["Center"].default_value = (0.5, 0.5, 0.0)
+    coordinates = _node(group, "ShaderNodeSeparateXYZ", "Mosaic Coordinates", -960, 120)
+    links.new(inp.outputs["Offset X"], offset.inputs["X"])
+    links.new(inp.outputs["Offset Y"], offset.inputs["Y"])
+    links.new(inp.outputs["Vector"], shifted.inputs[0])
+    links.new(offset.outputs[0], shifted.inputs[1])
+    links.new(shifted.outputs[0], rotate.inputs["Vector"])
+    links.new(inp.outputs["Rotation"], rotate.inputs["Angle"])
+    links.new(rotate.outputs["Vector"], coordinates.inputs[0])
+
+    xs = _math(group, "MULTIPLY", "Mosaic X Cells", -760, 250)
+    xf = _math(group, "FLOOR", "Mosaic X Cell", -580, 250)
+    xh = _math(group, "ADD", "Mosaic X Center", -400, 250, value_2=0.5)
+    xn = _math(group, "DIVIDE", "Mosaic X Normalize", -220, 250)
+    ys = _math(group, "MULTIPLY", "Mosaic Y Cells", -760, 0)
+    yf = _math(group, "FLOOR", "Mosaic Y Cell", -580, 0)
+    yh = _math(group, "ADD", "Mosaic Y Center", -400, 0, value_2=0.5)
+    yn = _math(group, "DIVIDE", "Mosaic Y Normalize", -220, 0)
+    cell = _node(group, "ShaderNodeCombineXYZ", "Mosaic Cell ID", -220, -230)
+    noise = _node(group, "ShaderNodeTexWhiteNoise", "Mosaic Random", 0, -190)
+    try:
+        noise.noise_dimensions = '3D'
+    except (AttributeError, TypeError, ValueError):
+        pass
+    split = _node(group, "ShaderNodeSeparateColor", "Mosaic Random Channels", 200, -190)
+    try:
+        split.mode = 'RGB'
+    except (AttributeError, TypeError, ValueError):
+        pass
+    rx = _math(group, "SUBTRACT", "Mosaic Random X", 400, -90, value_2=0.5)
+    ry = _math(group, "SUBTRACT", "Mosaic Random Y", 400, -230, value_2=0.5)
+    jx = _math(group, "MULTIPLY", "Mosaic Jitter X", 580, -90)
+    jy = _math(group, "MULTIPLY", "Mosaic Jitter Y", 580, -230)
+    jxcell = _math(group, "DIVIDE", "Mosaic X Cell Size", 760, -90)
+    jycell = _math(group, "DIVIDE", "Mosaic Y Cell Size", 760, -230)
+    xo = _math(group, "ADD", "Mosaic Sample X", 940, 180)
+    yo = _math(group, "ADD", "Mosaic Sample Y", 940, 0)
+    sample = _node(group, "ShaderNodeCombineXYZ", "Mosaic Rotated Sample UV", 1120, 100)
+    inverse_angle = _math(group, "MULTIPLY", "Inverse Mosaic Rotation", 940, -330, value_2=-1.0)
+    unrotate = _node(group, "ShaderNodeVectorRotate", "Restore Mosaic Rotation", 1320, 100)
+    unrotate.rotation_type = "Z_AXIS"
+    unrotate.inputs["Center"].default_value = (0.5, 0.5, 0.0)
+    restore_offset = _vector_math(group, "SUBTRACT", "Restore Mosaic Grid Offset", 1520, 100)
+
+    links.new(coordinates.outputs["X"], xs.inputs[0]); links.new(inp.outputs["Cells X"], xs.inputs[1])
+    links.new(xs.outputs[0], xf.inputs[0]); links.new(xf.outputs[0], xh.inputs[0]); links.new(xh.outputs[0], xn.inputs[0]); links.new(inp.outputs["Cells X"], xn.inputs[1])
+    links.new(coordinates.outputs["Y"], ys.inputs[0]); links.new(inp.outputs["Cells Y"], ys.inputs[1])
+    links.new(ys.outputs[0], yf.inputs[0]); links.new(yf.outputs[0], yh.inputs[0]); links.new(yh.outputs[0], yn.inputs[0]); links.new(inp.outputs["Cells Y"], yn.inputs[1])
+    links.new(xf.outputs[0], cell.inputs["X"]); links.new(yf.outputs[0], cell.inputs["Y"]); links.new(inp.outputs["Seed"], cell.inputs["Z"])
+    links.new(cell.outputs[0], noise.inputs["Vector"]); links.new(noise.outputs["Color"], split.inputs[0])
+    links.new(split.outputs[0], rx.inputs[0]); links.new(split.outputs[1], ry.inputs[0])
+    links.new(rx.outputs[0], jx.inputs[0]); links.new(inp.outputs["Jitter"], jx.inputs[1])
+    links.new(ry.outputs[0], jy.inputs[0]); links.new(inp.outputs["Jitter"], jy.inputs[1])
+    links.new(jx.outputs[0], jxcell.inputs[0]); links.new(inp.outputs["Cells X"], jxcell.inputs[1])
+    links.new(jy.outputs[0], jycell.inputs[0]); links.new(inp.outputs["Cells Y"], jycell.inputs[1])
+    links.new(xn.outputs[0], xo.inputs[0]); links.new(jxcell.outputs[0], xo.inputs[1])
+    links.new(yn.outputs[0], yo.inputs[0]); links.new(jycell.outputs[0], yo.inputs[1])
+    links.new(xo.outputs[0], sample.inputs["X"]); links.new(yo.outputs[0], sample.inputs["Y"])
+    links.new(inp.outputs["Rotation"], inverse_angle.inputs[0])
+    links.new(sample.outputs[0], unrotate.inputs["Vector"]); links.new(inverse_angle.outputs[0], unrotate.inputs["Angle"])
+    links.new(unrotate.outputs["Vector"], restore_offset.inputs[0]); links.new(offset.outputs[0], restore_offset.inputs[1])
+    result = _uv_mix(group, inp.outputs["Vector"], restore_offset.outputs[0], inp.outputs["Factor"], prefix="Mosaic Jitter", x=1710, y=100)
+    links.new(result, out.inputs["Vector Out"])
+    group["fbp_mosaic_jitter_version"] = 2
     return group
 
 
@@ -430,18 +689,280 @@ def _create_depth_blur(name):
     return group
 
 
+def _blur_sample(group, inp, uv_socket, weight, label, x, y, prefix):
+    """Create one premultiplied image sample used by an alpha-safe blur.
 
-def _create_track_matte(name, *, luma=False):
-    """Create an alpha-only track matte sampled from another FBP source image."""
+    ``weight`` can be a numeric constant or a node socket. Socket weights let
+    Samples disable taps without rebuilding the material node tree.
+    """
+    links = group.links
+    image = _node(group, "ShaderNodeTexImage", f"{prefix} {label}", x, y)
+    image["fbp_matrix_source_image_node"] = True
+    image["fbp_source_interpolation"] = "Linear"
+    try:
+        image.interpolation = "Linear"
+        image.extension = "EXTEND"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    premultiply = _vector_math(group, "SCALE", f"{label} Premultiply", x + 220, y + 35)
+    weighted_color = _vector_math(group, "SCALE", f"{label} Color Weight", x + 430, y + 35)
+    weighted_alpha = _math(group, "MULTIPLY", f"{label} Alpha Weight", x + 430, y - 75)
+    links.new(uv_socket, image.inputs["Vector"])
+    links.new(image.outputs["Color"], premultiply.inputs[0])
+    links.new(image.outputs["Alpha"], _input(premultiply, "Scale", 3))
+    links.new(premultiply.outputs[0], weighted_color.inputs[0])
+    links.new(image.outputs["Alpha"], weighted_alpha.inputs[0])
+    if isinstance(weight, (int, float)):
+        _input(weighted_color, "Scale", 3).default_value = float(weight)
+        weighted_alpha.inputs[1].default_value = float(weight)
+    else:
+        links.new(weight, _input(weighted_color, "Scale", 3))
+        links.new(weight, weighted_alpha.inputs[1])
+    return weighted_color.outputs[0], weighted_alpha.outputs[0]
+
+
+def _blur_add_chain(group, sockets, *, vector, prefix, x, y):
+    current = sockets[0]
+    for index, socket in enumerate(sockets[1:], 1):
+        node = (
+            _vector_math(group, "ADD", f"{prefix} {index}", x + index * 150, y)
+            if vector else
+            _math(group, "ADD", f"{prefix} {index}", x + index * 150, y)
+        )
+        group.links.new(current, node.inputs[0])
+        group.links.new(socket, node.inputs[1])
+        current = node.outputs[0]
+    return current
+
+
+def _blur_dynamic_weight(group, samples_socket, index, static_weight, prefix, x, y):
+    """Return a tap weight enabled only when Samples includes this tap."""
+    enabled = _math(group, "GREATER_THAN", f"{prefix} Tap {index + 1} Enabled", x, y, value_2=float(index) + 0.5)
+    weighted = _math(group, "MULTIPLY", f"{prefix} Tap {index + 1} Weight", x + 170, y, value_2=float(static_weight))
+    group.links.new(samples_socket, enabled.inputs[0])
+    group.links.new(enabled.outputs[0], weighted.inputs[0])
+    return weighted.outputs[0]
+
+
+def _finish_alpha_safe_blur(group, inp, out, color_terms, alpha_terms, *, total_weight, enabled_socket, prefix):
+    """Average premultiplied samples, unpremultiply safely and blend with input."""
+    links = group.links
+    color_sum = _blur_add_chain(group, color_terms, vector=True, prefix=f"{prefix} Color Sum", x=3800, y=350)
+    alpha_sum = _blur_add_chain(group, alpha_terms, vector=False, prefix=f"{prefix} Alpha Sum", x=3800, y=-120)
+    safe_total = _math(group, "MAXIMUM", f"Safe {prefix} Sample Weight", 7550, -310, value_2=0.0001)
+    normalize = _math(group, "DIVIDE", f"{prefix} Sample Normalization", 7730, -310, value_1=1.0)
+    if isinstance(total_weight, (int, float)):
+        safe_total.inputs[0].default_value = float(total_weight)
+    else:
+        links.new(total_weight, safe_total.inputs[0])
+    links.new(safe_total.outputs[0], normalize.inputs[1])
+
+    color_avg = _vector_math(group, "SCALE", f"{prefix} Color Average", 7900, 350)
+    alpha_avg = _math(group, "MULTIPLY", f"{prefix} Alpha Average", 7900, -120)
+    safe_alpha = _math(group, "MAXIMUM", f"Safe {prefix} Alpha", 8090, -120, value_2=0.0001)
+    reciprocal = _math(group, "DIVIDE", f"{prefix} Unpremultiply Factor", 8270, -120, value_1=1.0)
+    unpremultiply = _vector_math(group, "SCALE", f"Unpremultiplied {prefix}", 8450, 350)
+    valid_alpha = _math(group, "GREATER_THAN", f"Valid {prefix} Alpha", 8450, 180, value_2=0.0005)
+    guarded_color = _mix_rgb(group, "MIX", f"Guard Transparent {prefix}", 8630, 430)
+    image_weight = _math(group, "MULTIPLY", f"{prefix} Image Weight", 8270, 40)
+    effect_weight = _math(group, "MULTIPLY", f"{prefix} Effect Weight", 8450, 40)
+    fallback_weight = _math(group, "SUBTRACT", f"{prefix} Fallback Weight", 8450, -120, value_1=1.0)
+    color_mix = _mix_rgb(group, "MIX", f"{prefix} Source Mix", 8870, 300)
+    image_alpha = _math(group, "MULTIPLY", f"{prefix} Image Alpha", 8870, -60)
+    fallback_alpha = _math(group, "MULTIPLY", f"{prefix} Fallback Alpha", 8870, -190)
+    alpha_out = _math(group, "ADD", f"{prefix} Final Alpha", 9060, -120)
+
+    links.new(color_sum, color_avg.inputs[0])
+    links.new(normalize.outputs[0], _input(color_avg, "Scale", 3))
+    links.new(alpha_sum, alpha_avg.inputs[0])
+    links.new(normalize.outputs[0], alpha_avg.inputs[1])
+    links.new(alpha_avg.outputs[0], safe_alpha.inputs[0])
+    links.new(safe_alpha.outputs[0], reciprocal.inputs[1])
+    links.new(color_avg.outputs[0], unpremultiply.inputs[0])
+    links.new(reciprocal.outputs[0], _input(unpremultiply, "Scale", 3))
+    links.new(alpha_avg.outputs[0], valid_alpha.inputs[0])
+    links.new(valid_alpha.outputs[0], guarded_color.inputs[0])
+    links.new(inp.outputs["Color In"], guarded_color.inputs[1])
+    links.new(unpremultiply.outputs[0], guarded_color.inputs[2])
+    links.new(inp.outputs["Use Image Sample"], image_weight.inputs[0])
+    links.new(enabled_socket, image_weight.inputs[1])
+    links.new(image_weight.outputs[0], effect_weight.inputs[0])
+    links.new(inp.outputs["Factor"], effect_weight.inputs[1])
+    links.new(effect_weight.outputs[0], fallback_weight.inputs[1])
+    links.new(effect_weight.outputs[0], color_mix.inputs[0])
+    links.new(inp.outputs["Color In"], color_mix.inputs[1])
+    links.new(guarded_color.outputs[0], color_mix.inputs[2])
+    links.new(alpha_avg.outputs[0], image_alpha.inputs[0])
+    links.new(effect_weight.outputs[0], image_alpha.inputs[1])
+    links.new(inp.outputs["Alpha In"], fallback_alpha.inputs[0])
+    links.new(fallback_weight.outputs[0], fallback_alpha.inputs[1])
+    links.new(image_alpha.outputs[0], alpha_out.inputs[0])
+    links.new(fallback_alpha.outputs[0], alpha_out.inputs[1])
+    links.new(color_mix.outputs[0], out.inputs["Color Out"])
+    links.new(alpha_out.outputs[0], out.inputs["Alpha Out"])
+
+
+def _create_gaussian_blur(name):
+    """Up-to-25-tap alpha-safe Gaussian-style blur with editable quality."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Radius X", "INPUT", "NodeSocketFloat", default=4.0, minimum=0.0, maximum=256.0)
+    _socket(group, "Radius Y", "INPUT", "NodeSocketFloat", default=4.0, minimum=0.0, maximum=256.0)
+    _socket(group, "Samples", "INPUT", "NodeSocketInt", default=17, minimum=3, maximum=25)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Texel X", "INPUT", "NodeSocketFloat", default=0.001, minimum=0.0, maximum=1.0)
+    _socket(group, "Texel Y", "INPUT", "NodeSocketFloat", default=0.001, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    radius_x = _math(group, "MULTIPLY", "Gaussian Radius X", -1150, 620)
+    radius_y = _math(group, "MULTIPLY", "Gaussian Radius Y", -1150, 470)
+    maximum_radius = _math(group, "MAXIMUM", "Gaussian Maximum Radius", -1150, 300)
+    enabled = _math(group, "GREATER_THAN", "Gaussian Radius Enabled", -950, 300, value_2=0.0001)
+    links.new(inp.outputs["Radius X"], radius_x.inputs[0])
+    links.new(inp.outputs["Texel X"], radius_x.inputs[1])
+    links.new(inp.outputs["Radius Y"], radius_y.inputs[0])
+    links.new(inp.outputs["Texel Y"], radius_y.inputs[1])
+    links.new(inp.outputs["Radius X"], maximum_radius.inputs[0])
+    links.new(inp.outputs["Radius Y"], maximum_radius.inputs[1])
+    links.new(maximum_radius.outputs[0], enabled.inputs[0])
+
+    # Center plus twelve mirrored pairs. Any odd Samples value therefore keeps
+    # the kernel spatially balanced instead of revealing offset image copies.
+    taps = [
+        (0.0, 0.0, 1.0000, "Center"),
+        (0.25, 0.0, 0.8569, "Inner Right"), (-0.25, 0.0, 0.8569, "Inner Left"),
+        (0.0, 0.25, 0.8569, "Inner Top"), (0.0, -0.25, 0.8569, "Inner Bottom"),
+        (0.25, 0.25, 0.7344, "Inner Top Right"), (-0.25, -0.25, 0.7344, "Inner Bottom Left"),
+        (-0.25, 0.25, 0.7344, "Inner Top Left"), (0.25, -0.25, 0.7344, "Inner Bottom Right"),
+        (0.5, 0.0, 0.5394, "Middle Right"), (-0.5, 0.0, 0.5394, "Middle Left"),
+        (0.0, 0.5, 0.5394, "Middle Top"), (0.0, -0.5, 0.5394, "Middle Bottom"),
+        (0.5, 0.5, 0.2910, "Middle Top Right"), (-0.5, -0.5, 0.2910, "Middle Bottom Left"),
+        (-0.5, 0.5, 0.2910, "Middle Top Left"), (0.5, -0.5, 0.2910, "Middle Bottom Right"),
+        (0.75, 0.0, 0.1724, "Outer Right"), (-0.75, 0.0, 0.1724, "Outer Left"),
+        (0.0, 0.75, 0.1724, "Outer Top"), (0.0, -0.75, 0.1724, "Outer Bottom"),
+        (1.0, 0.0, 0.0622, "Far Right"), (-1.0, 0.0, 0.0622, "Far Left"),
+        (0.0, 1.0, 0.0622, "Far Top"), (0.0, -1.0, 0.0622, "Far Bottom"),
+    ]
+    color_terms, alpha_terms, weight_terms = [], [], []
+    for index, (ox, oy, static_weight, label) in enumerate(taps):
+        y = 610 - index * 150
+        x_scale = _math(group, "MULTIPLY", f"{label} Gaussian X", -760, y + 38, value_2=ox)
+        y_scale = _math(group, "MULTIPLY", f"{label} Gaussian Y", -760, y - 38, value_2=oy)
+        offset = _node(group, "ShaderNodeCombineXYZ", f"{label} Gaussian Offset", -580, y)
+        uv = _vector_math(group, "ADD", f"{label} Gaussian UV", -390, y)
+        weight = _blur_dynamic_weight(group, inp.outputs["Samples"], index, static_weight, "Gaussian", -1100, y)
+        links.new(radius_x.outputs[0], x_scale.inputs[0])
+        links.new(radius_y.outputs[0], y_scale.inputs[0])
+        links.new(x_scale.outputs[0], offset.inputs["X"])
+        links.new(y_scale.outputs[0], offset.inputs["Y"])
+        links.new(inp.outputs["UV Vector"], uv.inputs[0])
+        links.new(offset.outputs[0], uv.inputs[1])
+        color, alpha = _blur_sample(group, inp, uv.outputs[0], weight, label, -170, y, "Gaussian Blur")
+        color_terms.append(color); alpha_terms.append(alpha); weight_terms.append(weight)
+
+    total_weight = _blur_add_chain(group, weight_terms, vector=False, prefix="Gaussian Weight Sum", x=3800, y=-340)
+    _finish_alpha_safe_blur(group, inp, out, color_terms, alpha_terms,
+        total_weight=total_weight, enabled_socket=enabled.outputs[0], prefix="Gaussian Blur")
+    group["fbp_blur_contract_version"] = 2
+    group["fbp_blur_kind"] = "GAUSSIAN"
+    return group
+
+
+def _create_directional_blur(name):
+    """Up-to-25-tap alpha-safe directional blur centered on the source pixel."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Angle", "INPUT", "NodeSocketFloat", default=0.0, minimum=-6.283185307, maximum=6.283185307)
+    _socket(group, "Distance", "INPUT", "NodeSocketFloat", default=12.0, minimum=0.0, maximum=512.0)
+    _socket(group, "Samples", "INPUT", "NodeSocketInt", default=17, minimum=3, maximum=25)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Texel X", "INPUT", "NodeSocketFloat", default=0.001, minimum=0.0, maximum=1.0)
+    _socket(group, "Texel Y", "INPUT", "NodeSocketFloat", default=0.001, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    cosine = _math(group, "COSINE", "Directional Blur Cosine", -1250, 620)
+    sine = _math(group, "SINE", "Directional Blur Sine", -1250, 470)
+    distance_x = _math(group, "MULTIPLY", "Directional Distance X", -1050, 620)
+    distance_y = _math(group, "MULTIPLY", "Directional Distance Y", -1050, 470)
+    texel_x = _math(group, "MULTIPLY", "Directional Texel X", -850, 620)
+    texel_y = _math(group, "MULTIPLY", "Directional Texel Y", -850, 470)
+    enabled = _math(group, "GREATER_THAN", "Directional Distance Enabled", -850, 300, value_2=0.0001)
+    links.new(inp.outputs["Angle"], cosine.inputs[0]); links.new(inp.outputs["Angle"], sine.inputs[0])
+    links.new(cosine.outputs[0], distance_x.inputs[0]); links.new(inp.outputs["Distance"], distance_x.inputs[1])
+    links.new(sine.outputs[0], distance_y.inputs[0]); links.new(inp.outputs["Distance"], distance_y.inputs[1])
+    links.new(distance_x.outputs[0], texel_x.inputs[0]); links.new(inp.outputs["Texel X"], texel_x.inputs[1])
+    links.new(distance_y.outputs[0], texel_y.inputs[0]); links.new(inp.outputs["Texel Y"], texel_y.inputs[1])
+    links.new(inp.outputs["Distance"], enabled.inputs[0])
+
+    taps = [(0.0, 13.0, "Center")]
+    for pair in range(1, 13):
+        position = 0.5 * (float(pair) / 12.0)
+        weight = float(13 - pair)
+        taps.extend(((position, weight, f"Forward {pair}"), (-position, weight, f"Back {pair}")))
+    color_terms, alpha_terms, weight_terms = [], [], []
+    for index, (position, static_weight, label) in enumerate(taps):
+        y = 610 - index * 150
+        x_scale = _math(group, "MULTIPLY", f"{label} Direction X", -650, y + 38, value_2=position)
+        y_scale = _math(group, "MULTIPLY", f"{label} Direction Y", -650, y - 38, value_2=position)
+        offset = _node(group, "ShaderNodeCombineXYZ", f"{label} Direction Offset", -470, y)
+        uv = _vector_math(group, "ADD", f"{label} Direction UV", -280, y)
+        weight = _blur_dynamic_weight(group, inp.outputs["Samples"], index, static_weight, "Directional", -1200, y)
+        links.new(texel_x.outputs[0], x_scale.inputs[0]); links.new(texel_y.outputs[0], y_scale.inputs[0])
+        links.new(x_scale.outputs[0], offset.inputs["X"]); links.new(y_scale.outputs[0], offset.inputs["Y"])
+        links.new(inp.outputs["UV Vector"], uv.inputs[0]); links.new(offset.outputs[0], uv.inputs[1])
+        color, alpha = _blur_sample(group, inp, uv.outputs[0], weight, label, -60, y, "Directional Blur")
+        color_terms.append(color); alpha_terms.append(alpha); weight_terms.append(weight)
+
+    total_weight = _blur_add_chain(group, weight_terms, vector=False, prefix="Directional Weight Sum", x=3800, y=-340)
+    _finish_alpha_safe_blur(group, inp, out, color_terms, alpha_terms,
+        total_weight=total_weight, enabled_socket=enabled.outputs[0], prefix="Directional Blur")
+    group["fbp_blur_contract_version"] = 2
+    group["fbp_blur_kind"] = "DIRECTIONAL"
+    return group
+
+def _create_track_matte(name, *, luma=False, source_opacity=False):
+    """Create an alpha-only track matte sampled from another FBP source image.
+
+    ``source_opacity`` is enabled for Clipping Mask so the sampled alpha follows
+    the visible opacity of the base layer rather than only the raw file alpha.
+    """
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
     _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
     _socket(group, "Use Mask Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
     _socket(group, "Use Source Transform", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    if source_opacity:
+        _socket(group, "Use Camera Projection", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+        _socket(group, "Camera Perspective", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+        # Camera-local point -> source-plane-local point matrix.  Passing the
+        # actual affine transform is more robust than reconstructing a 2D
+        # homography from four corners, especially with parent scale, camera
+        # animation and planes placed at different depths.
+        for row in range(3):
+            for column in range(4):
+                default = 1.0 if row == column else 0.0
+                _socket(group, f"Camera To Source M{row}{column}", "INPUT", "NodeSocketFloat", default=default)
+        _socket(group, "Source Opacity", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "Source Min X", "INPUT", "NodeSocketFloat", default=-1.0)
     _socket(group, "Source Max X", "INPUT", "NodeSocketFloat", default=1.0)
     _socket(group, "Source Min Y", "INPUT", "NodeSocketFloat", default=-1.0)
     _socket(group, "Source Max Y", "INPUT", "NodeSocketFloat", default=1.0)
+    _socket(group, "Source UV Min X", "INPUT", "NodeSocketFloat", default=0.0)
+    _socket(group, "Source UV Max X", "INPUT", "NodeSocketFloat", default=1.0)
+    _socket(group, "Source UV Min Y", "INPUT", "NodeSocketFloat", default=0.0)
+    _socket(group, "Source UV Max Y", "INPUT", "NodeSocketFloat", default=1.0)
     _socket(group, "UV Offset X", "INPUT", "NodeSocketFloat", default=0.0)
     _socket(group, "UV Offset Y", "INPUT", "NodeSocketFloat", default=0.0)
     _socket(group, "UV Scale X", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.001, maximum=1000.0)
@@ -487,14 +1008,119 @@ def _create_track_matte(name, *, luma=False):
     links.new(separate.outputs["X"], map_x.inputs["Value"])
     links.new(inp.outputs["Source Min X"], map_x.inputs["From Min"])
     links.new(inp.outputs["Source Max X"], map_x.inputs["From Max"])
+    links.new(inp.outputs["Source UV Min X"], map_x.inputs["To Min"])
+    links.new(inp.outputs["Source UV Max X"], map_x.inputs["To Max"])
     links.new(separate.outputs["Y"], map_y.inputs["Value"])
     links.new(inp.outputs["Source Min Y"], map_y.inputs["From Min"])
     links.new(inp.outputs["Source Max Y"], map_y.inputs["From Max"])
+    links.new(inp.outputs["Source UV Min Y"], map_y.inputs["To Min"])
+    links.new(inp.outputs["Source UV Max Y"], map_y.inputs["To Max"])
     links.new(map_x.outputs["Result"], combine.inputs["X"])
     links.new(map_y.outputs["Result"], combine.inputs["Y"])
     links.new(inp.outputs["Use Source Transform"], uv_mix.inputs[0])
     links.new(inp.outputs["UV Vector"], uv_mix.inputs[1])
     links.new(combine.outputs[0], uv_mix.inputs[2])
+
+    coordinate_output = uv_mix.outputs[0]
+    if source_opacity:
+        # Convert the shaded point to camera-local space, intersect the camera
+        # ray with the real source plane, then transform that hit point into the
+        # source plane's local XY coordinates.  This avoids the visible offset
+        # caused by fitting a corner homography and remains exact with parented,
+        # scaled or depth-separated planes.
+        camera_coords = _node(group, "ShaderNodeTexCoord", "Clipping Camera Coordinates", -1580, -80)
+        camera_coords["fbp_mask_camera_coord_node"] = True
+        camera_sep = _node(group, "ShaderNodeSeparateXYZ", "Separate Camera Coordinates", -1380, -80)
+        links.new(camera_coords.outputs["Object"], camera_sep.inputs[0])
+
+        def _sum_three_terms(prefix, row, x, y):
+            terms = []
+            for column, socket in enumerate((camera_sep.outputs["X"], camera_sep.outputs["Y"], camera_sep.outputs["Z"])):
+                term = _math(group, "MULTIPLY", f"{prefix} M{row}{column}", x, y - column * 70)
+                links.new(socket, term.inputs[0])
+                links.new(inp.outputs[f"Camera To Source M{row}{column}"], term.inputs[1])
+                terms.append(term.outputs[0])
+            first = _math(group, "ADD", f"{prefix} First Sum", x + 190, y - 35)
+            total = _math(group, "ADD", f"{prefix} Total", x + 370, y - 55)
+            links.new(terms[0], first.inputs[0]); links.new(terms[1], first.inputs[1])
+            links.new(first.outputs[0], total.inputs[0]); links.new(terms[2], total.inputs[1])
+            return total.outputs[0]
+
+        # Perspective: P = t * camera_point, where source-local Z(P) = 0.
+        perspective_denominator = _sum_three_terms("Perspective Plane Denominator", 2, -1160, -330)
+        perspective_numerator = _math(group, "MULTIPLY", "Perspective Plane Numerator", -780, -370, value_2=-1.0)
+        perspective_t = _math(group, "DIVIDE", "Perspective Ray Distance", -600, -320)
+        links.new(inp.outputs["Camera To Source M23"], perspective_numerator.inputs[0])
+        links.new(perspective_numerator.outputs[0], perspective_t.inputs[0])
+        links.new(perspective_denominator, perspective_t.inputs[1])
+        perspective_point = _node(group, "ShaderNodeVectorMath", "Perspective Source Plane Hit", -390, -280)
+        perspective_point.operation = "SCALE"
+        links.new(camera_coords.outputs["Object"], perspective_point.inputs[0])
+        links.new(perspective_t.outputs[0], perspective_point.inputs["Scale"])
+
+        # Orthographic: X/Y stay constant along the camera ray; solve only Z.
+        ortho_x_term = _math(group, "MULTIPLY", "Ortho Plane X", -1160, -610)
+        ortho_y_term = _math(group, "MULTIPLY", "Ortho Plane Y", -1160, -680)
+        ortho_xy = _math(group, "ADD", "Ortho Plane XY", -970, -640)
+        ortho_offset = _math(group, "ADD", "Ortho Plane With Offset", -790, -640)
+        ortho_negated = _math(group, "MULTIPLY", "Ortho Plane Negated", -610, -640, value_2=-1.0)
+        ortho_z = _math(group, "DIVIDE", "Orthographic Source Plane Z", -430, -640)
+        links.new(camera_sep.outputs["X"], ortho_x_term.inputs[0]); links.new(inp.outputs["Camera To Source M20"], ortho_x_term.inputs[1])
+        links.new(camera_sep.outputs["Y"], ortho_y_term.inputs[0]); links.new(inp.outputs["Camera To Source M21"], ortho_y_term.inputs[1])
+        links.new(ortho_x_term.outputs[0], ortho_xy.inputs[0]); links.new(ortho_y_term.outputs[0], ortho_xy.inputs[1])
+        links.new(ortho_xy.outputs[0], ortho_offset.inputs[0]); links.new(inp.outputs["Camera To Source M23"], ortho_offset.inputs[1])
+        links.new(ortho_offset.outputs[0], ortho_negated.inputs[0])
+        links.new(ortho_negated.outputs[0], ortho_z.inputs[0]); links.new(inp.outputs["Camera To Source M22"], ortho_z.inputs[1])
+        ortho_point = _node(group, "ShaderNodeCombineXYZ", "Orthographic Source Plane Hit", -210, -610)
+        links.new(camera_sep.outputs["X"], ortho_point.inputs["X"]); links.new(camera_sep.outputs["Y"], ortho_point.inputs["Y"]); links.new(ortho_z.outputs[0], ortho_point.inputs["Z"])
+
+        ray_mode = _mix_rgb(group, "MIX", "Camera Ray Type", 0, -330)
+        try:
+            ray_mode.use_clamp = False
+        except AttributeError:
+            pass
+        links.new(inp.outputs["Camera Perspective"], ray_mode.inputs[0])
+        links.new(ortho_point.outputs[0], ray_mode.inputs[1])
+        links.new(perspective_point.outputs[0], ray_mode.inputs[2])
+        hit_sep = _node(group, "ShaderNodeSeparateXYZ", "Separate Source Plane Hit", 190, -330)
+        links.new(ray_mode.outputs[0], hit_sep.inputs[0])
+
+        def _source_local_component(prefix, row, y):
+            terms = []
+            for column, socket in enumerate((hit_sep.outputs["X"], hit_sep.outputs["Y"], hit_sep.outputs["Z"])):
+                term = _math(group, "MULTIPLY", f"{prefix} M{row}{column}", 390, y - column * 70)
+                links.new(socket, term.inputs[0])
+                links.new(inp.outputs[f"Camera To Source M{row}{column}"], term.inputs[1])
+                terms.append(term.outputs[0])
+            first = _math(group, "ADD", f"{prefix} First Sum", 580, y - 35)
+            total = _math(group, "ADD", f"{prefix} Linear Sum", 760, y - 55)
+            translated = _math(group, "ADD", f"{prefix} With Translation", 940, y - 55)
+            links.new(terms[0], first.inputs[0]); links.new(terms[1], first.inputs[1])
+            links.new(first.outputs[0], total.inputs[0]); links.new(terms[2], total.inputs[1])
+            links.new(total.outputs[0], translated.inputs[0]); links.new(inp.outputs[f"Camera To Source M{row}3"], translated.inputs[1])
+            return translated.outputs[0]
+
+        source_local_x = _source_local_component("Source Local X", 0, -180)
+        source_local_y = _source_local_component("Source Local Y", 1, -500)
+        camera_map_x = _node(group, "ShaderNodeMapRange", "Map Camera Source X", 1140, -210)
+        camera_map_y = _node(group, "ShaderNodeMapRange", "Map Camera Source Y", 1140, -480)
+        for mapper in (camera_map_x, camera_map_y):
+            mapper.interpolation_type = "LINEAR"
+            mapper.clamp = False
+        links.new(source_local_x, camera_map_x.inputs["Value"]); links.new(inp.outputs["Source Min X"], camera_map_x.inputs["From Min"]); links.new(inp.outputs["Source Max X"], camera_map_x.inputs["From Max"]); links.new(inp.outputs["Source UV Min X"], camera_map_x.inputs["To Min"]); links.new(inp.outputs["Source UV Max X"], camera_map_x.inputs["To Max"])
+        links.new(source_local_y, camera_map_y.inputs["Value"]); links.new(inp.outputs["Source Min Y"], camera_map_y.inputs["From Min"]); links.new(inp.outputs["Source Max Y"], camera_map_y.inputs["From Max"]); links.new(inp.outputs["Source UV Min Y"], camera_map_y.inputs["To Min"]); links.new(inp.outputs["Source UV Max Y"], camera_map_y.inputs["To Max"])
+        camera_uv = _node(group, "ShaderNodeCombineXYZ", "Camera Projected UV", 1370, -330)
+        links.new(camera_map_x.outputs["Result"], camera_uv.inputs["X"]); links.new(camera_map_y.outputs["Result"], camera_uv.inputs["Y"])
+
+        camera_mix = _mix_rgb(group, "MIX", "Clipping Projection Mode", 1550, 180)
+        try:
+            camera_mix.use_clamp = False
+        except AttributeError:
+            pass
+        links.new(inp.outputs["Use Camera Projection"], camera_mix.inputs[0])
+        links.new(uv_mix.outputs[0], camera_mix.inputs[1])
+        links.new(camera_uv.outputs[0], camera_mix.inputs[2])
+        coordinate_output = camera_mix.outputs[0]
 
     uv_sep = _node(group, "ShaderNodeSeparateXYZ", "Separate Matte UV", -340, 500)
     center_x = _math(group, "SUBTRACT", "Center Matte X", -140, 560, value_2=0.5)
@@ -517,7 +1143,7 @@ def _create_track_matte(name, *, luma=False):
     offset_y = _math(group, "SUBTRACT", "Offset Matte Y", 760, 390)
     uv_final = _node(group, "ShaderNodeCombineXYZ", "Transformed Matte UV", 940, 500)
 
-    links.new(uv_mix.outputs[0], uv_sep.inputs[0])
+    links.new(coordinate_output, uv_sep.inputs[0])
     links.new(uv_sep.outputs["X"], center_x.inputs[0])
     links.new(uv_sep.outputs["Y"], center_y.inputs[0])
     links.new(inp.outputs["UV Scale X"], safe_scale_x.inputs[0])
@@ -553,6 +1179,20 @@ def _create_track_matte(name, *, luma=False):
     if luma:
         bw = _node(group, "ShaderNodeRGBToBW", "Matte Luminance", -760, 260)
         luma_alpha = _math(group, "MULTIPLY", "Luminance Alpha", -580, 210)
+        links.new(image.outputs["Color"], bw.inputs[0])
+        links.new(bw.outputs[0], luma_alpha.inputs[0])
+        links.new(image.outputs["Alpha"], luma_alpha.inputs[1])
+        raw_source = luma_alpha.outputs[0]
+    else:
+        raw_source = image.outputs["Alpha"]
+
+    if source_opacity:
+        visible_source = _math(group, "MULTIPLY", "Visible Source Alpha", -390, 40)
+        links.new(raw_source, visible_source.inputs[0])
+        links.new(inp.outputs["Source Opacity"], visible_source.inputs[1])
+        raw_source = visible_source.outputs[0]
+
+    if luma:
         low = _math(group, "SUBTRACT", "Luma Lower Bound", -580, 20)
         safe_softness = _math(group, "MAXIMUM", "Safe Luma Softness", -760, -100, value_2=0.0001)
         high = _math(group, "ADD", "Luma Upper Bound", -400, 20)
@@ -561,21 +1201,16 @@ def _create_track_matte(name, *, luma=False):
         ramp.clamp = True
         ramp.inputs["To Min"].default_value = 0.0
         ramp.inputs["To Max"].default_value = 1.0
-        links.new(image.outputs["Color"], bw.inputs[0])
-        links.new(bw.outputs[0], luma_alpha.inputs[0])
-        links.new(image.outputs["Alpha"], luma_alpha.inputs[1])
         links.new(inp.outputs["Softness"], safe_softness.inputs[0])
         links.new(inp.outputs["Threshold"], low.inputs[0])
         links.new(safe_softness.outputs[0], low.inputs[1])
         links.new(inp.outputs["Threshold"], high.inputs[0])
         links.new(safe_softness.outputs[0], high.inputs[1])
-        links.new(luma_alpha.outputs[0], ramp.inputs["Value"])
+        links.new(raw_source, ramp.inputs["Value"])
         links.new(low.outputs[0], ramp.inputs["From Min"])
         links.new(high.outputs[0], ramp.inputs["From Max"])
-        raw_source = luma_alpha.outputs[0]
         matte = ramp.outputs["Result"]
     else:
-        raw_source = image.outputs["Alpha"]
         matte = raw_source
 
     inverse = _math(group, "SUBTRACT", "Inverted Matte", 30, 40, value_1=1.0)
@@ -648,12 +1283,132 @@ def _create_track_matte(name, *, luma=False):
     links.new(source_preview.outputs[0], preview_output.inputs[1])
     links.new(preview_output.outputs[0], out.inputs["Alpha Out"])
     links.new(effective.outputs[0], out.inputs["Mask Out"])
-    group["fbp_track_matte_contract_version"] = 5
+    group["fbp_track_matte_contract_version"] = 8 if source_opacity else 5
     return group
 
 
 def _create_alpha_matte(name):
     return _create_track_matte(name, luma=False)
+
+
+def _create_clipping_mask(name):
+    return _create_track_matte(name, luma=False, source_opacity=True)
+
+
+def _create_imported_mask(name):
+    """Create an alpha mask sampled from an imported full-canvas grayscale PNG."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Mask Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Invert", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    _socket(group, "Mask Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    image = _node(group, "ShaderNodeTexImage", "Imported Layer Mask", -780, 120)
+    image["fbp_imported_mask_image_node"] = True
+    try:
+        image.interpolation = "Linear"
+        image.extension = "CLIP"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    bw = _node(group, "ShaderNodeRGBToBW", "Imported Mask Value", -560, 120)
+    available = _math(group, "MULTIPLY", "Available Imported Mask", -360, 120)
+    missing = _math(group, "SUBTRACT", "Missing Imported Mask", -360, -40, value_1=1.0)
+    source = _math(group, "ADD", "Imported Mask or Pass Through", -160, 80)
+    inverse = _math(group, "SUBTRACT", "Imported Mask Inverse", 20, -20, value_1=1.0)
+    normal_weight = _math(group, "SUBTRACT", "Imported Mask Normal Weight", 20, 150, value_1=1.0)
+    normal_part = _math(group, "MULTIPLY", "Imported Mask Normal", 200, 150)
+    inverse_part = _math(group, "MULTIPLY", "Imported Mask Inverted", 200, -20)
+    selected = _math(group, "ADD", "Selected Imported Mask", 380, 70)
+    factor_part = _math(group, "MULTIPLY", "Imported Mask Factor", 560, 100)
+    original_weight = _math(group, "SUBTRACT", "Imported Mask Original Weight", 560, -40, value_1=1.0)
+    effective = _math(group, "ADD", "Effective Imported Mask", 740, 50)
+    result = _math(group, "MULTIPLY", "Imported Mask Alpha", 920, 50)
+
+    links.new(inp.outputs["UV Vector"], image.inputs["Vector"])
+    links.new(image.outputs["Color"], bw.inputs[0])
+    links.new(bw.outputs[0], available.inputs[0])
+    links.new(inp.outputs["Use Mask Sample"], available.inputs[1])
+    links.new(inp.outputs["Use Mask Sample"], missing.inputs[1])
+    links.new(available.outputs[0], source.inputs[0])
+    links.new(missing.outputs[0], source.inputs[1])
+    links.new(source.outputs[0], inverse.inputs[1])
+    links.new(inp.outputs["Invert"], normal_weight.inputs[1])
+    links.new(source.outputs[0], normal_part.inputs[0])
+    links.new(normal_weight.outputs[0], normal_part.inputs[1])
+    links.new(inverse.outputs[0], inverse_part.inputs[0])
+    links.new(inp.outputs["Invert"], inverse_part.inputs[1])
+    links.new(normal_part.outputs[0], selected.inputs[0])
+    links.new(inverse_part.outputs[0], selected.inputs[1])
+    links.new(selected.outputs[0], factor_part.inputs[0])
+    links.new(inp.outputs["Factor"], factor_part.inputs[1])
+    links.new(inp.outputs["Factor"], original_weight.inputs[1])
+    links.new(factor_part.outputs[0], effective.inputs[0])
+    links.new(original_weight.outputs[0], effective.inputs[1])
+    links.new(inp.outputs["Alpha In"], result.inputs[0])
+    links.new(effective.outputs[0], result.inputs[1])
+    links.new(result.outputs[0], out.inputs["Alpha Out"])
+    links.new(effective.outputs[0], out.inputs["Mask Out"])
+    group["fbp_imported_mask_contract_version"] = 1
+    return group
+
+
+def _create_layer_blend(name):
+    """Create a pairwise layer blend sampled from the FBP layer below."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Source Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Use Hard Light", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    image = _node(group, "ShaderNodeTexImage", "Layer Below Image", -720, 80)
+    image["fbp_mask_source_image_node"] = True
+    try:
+        image.interpolation = "Linear"
+        image.extension = "CLIP"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    normal = _mix_rgb(group, "MULTIPLY", "Imported Blend Mode", -420, 150)
+    normal["fbp_layer_blend_mix_node"] = True
+    hard = _mix_rgb(group, "OVERLAY", "Hard Light", -420, -80)
+    selector = _mix_rgb(group, "MIX", "Blend Mode Selector", -160, 80)
+    effective = _math(group, "MULTIPLY", "Blend Source Availability", -160, -140)
+    effective_factor = _math(group, "MULTIPLY", "Layer Blend Factor", 30, -100)
+    final = _mix_rgb(group, "MIX", "Layer Blend Result", 240, 80)
+    try:
+        normal.inputs[0].default_value = 1.0
+        hard.inputs[0].default_value = 1.0
+    except (AttributeError, IndexError, TypeError, ValueError):
+        pass
+
+    links.new(inp.outputs["UV Vector"], image.inputs["Vector"])
+    links.new(image.outputs["Color"], normal.inputs[1])
+    links.new(inp.outputs["Color In"], normal.inputs[2])
+    # Photoshop Hard Light is Overlay with the foreground/background roles swapped.
+    links.new(inp.outputs["Color In"], hard.inputs[1])
+    links.new(image.outputs["Color"], hard.inputs[2])
+    links.new(inp.outputs["Use Hard Light"], selector.inputs[0])
+    links.new(normal.outputs[0], selector.inputs[1])
+    links.new(hard.outputs[0], selector.inputs[2])
+    links.new(image.outputs["Alpha"], effective.inputs[0])
+    links.new(inp.outputs["Use Source Sample"], effective.inputs[1])
+    links.new(effective.outputs[0], effective_factor.inputs[0])
+    links.new(inp.outputs["Factor"], effective_factor.inputs[1])
+    links.new(effective_factor.outputs[0], final.inputs[0])
+    links.new(inp.outputs["Color In"], final.inputs[1])
+    links.new(selector.outputs[0], final.inputs[2])
+    links.new(final.outputs[0], out.inputs["Color Out"])
+    group["fbp_layer_blend_contract_version"] = 1
+    return group
 
 
 def _create_luma_matte(name):
@@ -879,6 +1634,212 @@ def _create_color_mask(name):
     )
 
 
+def _create_luminance_mask(name):
+    """Create an alpha-safe luminance-range mask for stills and sequences."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Minimum", "INPUT", "NodeSocketFloat", default=0.2, minimum=0.0, maximum=1.0)
+    _socket(group, "Maximum", "INPUT", "NodeSocketFloat", default=0.8, minimum=0.0, maximum=1.0)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.1, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Invert", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    _socket(group, "Mask Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    image = _node(group, "ShaderNodeTexImage", "Luminance Mask Source", -900, 180)
+    image["fbp_matrix_source_image_node"] = True
+    image["fbp_source_interpolation"] = "Linear"
+    try:
+        image.interpolation = "Linear"
+        image.extension = "EXTEND"
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    luminance = _node(group, "ShaderNodeRGBToBW", "Source Luminance", -680, 180)
+    ordered_min = _math(group, "MINIMUM", "Ordered Luminance Minimum", -680, -80)
+    ordered_max = _math(group, "MAXIMUM", "Ordered Luminance Maximum", -680, -210)
+    safe_softness = _math(group, "MAXIMUM", "Safe Luminance Softness", -680, -340, value_2=0.00001)
+    lower_start = _math(group, "SUBTRACT", "Luminance Lower Feather", -450, -60)
+    upper_end = _math(group, "ADD", "Luminance Upper Feather", -450, -250)
+
+    lower = _node(group, "ShaderNodeMapRange", "Luminance Lower Range", -210, 210)
+    lower.interpolation_type = "SMOOTHERSTEP"
+    lower.clamp = True
+    lower.inputs["To Min"].default_value = 0.0
+    lower.inputs["To Max"].default_value = 1.0
+
+    upper = _node(group, "ShaderNodeMapRange", "Luminance Upper Range", -210, -80)
+    upper.interpolation_type = "SMOOTHERSTEP"
+    upper.clamp = True
+    upper.inputs["To Min"].default_value = 1.0
+    upper.inputs["To Max"].default_value = 0.0
+
+    band = _math(group, "MULTIPLY", "Luminance Range Mask", 40, 120)
+    source_alpha = _math(group, "MULTIPLY", "Luminance Mask Source Alpha", 230, 120)
+
+    links.new(inp.outputs["UV Vector"], image.inputs["Vector"])
+    links.new(image.outputs["Color"], luminance.inputs["Color"])
+    links.new(inp.outputs["Minimum"], ordered_min.inputs[0])
+    links.new(inp.outputs["Maximum"], ordered_min.inputs[1])
+    links.new(inp.outputs["Minimum"], ordered_max.inputs[0])
+    links.new(inp.outputs["Maximum"], ordered_max.inputs[1])
+    links.new(inp.outputs["Softness"], safe_softness.inputs[0])
+    links.new(ordered_min.outputs[0], lower_start.inputs[0])
+    links.new(safe_softness.outputs[0], lower_start.inputs[1])
+    links.new(ordered_max.outputs[0], upper_end.inputs[0])
+    links.new(safe_softness.outputs[0], upper_end.inputs[1])
+
+    links.new(luminance.outputs["Val"], lower.inputs["Value"])
+    links.new(lower_start.outputs[0], lower.inputs["From Min"])
+    links.new(ordered_min.outputs[0], lower.inputs["From Max"])
+    links.new(luminance.outputs["Val"], upper.inputs["Value"])
+    links.new(ordered_max.outputs[0], upper.inputs["From Min"])
+    links.new(upper_end.outputs[0], upper.inputs["From Max"])
+    links.new(lower.outputs["Result"], band.inputs[0])
+    links.new(upper.outputs["Result"], band.inputs[1])
+    links.new(band.outputs[0], source_alpha.inputs[0])
+    links.new(image.outputs["Alpha"], source_alpha.inputs[1])
+
+    group["fbp_generated_mask_contract_version"] = 2
+    return _finish_generated_mask(
+        group, inp, out, source_alpha.outputs[0], prefix="Luminance Mask",
+        x=430, y=120, availability=inp.outputs["Use Image Sample"],
+    )
+
+
+def _create_channel_mask(name):
+    """Create an alpha-safe source-channel range mask for stills and sequences."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Channel", "INPUT", "NodeSocketFloat", default=4.0, minimum=0.0, maximum=4.0)
+    _socket(group, "Minimum", "INPUT", "NodeSocketFloat", default=0.2, minimum=0.0, maximum=1.0)
+    _socket(group, "Maximum", "INPUT", "NodeSocketFloat", default=0.8, minimum=0.0, maximum=1.0)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.1, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Invert", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    _socket(group, "Mask Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    image = _node(group, "ShaderNodeTexImage", "Channel Mask Source", -1180, 220)
+    image["fbp_matrix_source_image_node"] = True
+    image["fbp_source_interpolation"] = "Linear"
+    try:
+        image.interpolation = "Linear"
+        image.extension = "EXTEND"
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    separate = _node(group, "ShaderNodeSeparateXYZ", "Source RGB Channels", -960, 320)
+    luminance = _node(group, "ShaderNodeRGBToBW", "Source Luminance", -960, 80)
+    links.new(inp.outputs["UV Vector"], image.inputs["Vector"])
+    links.new(image.outputs["Color"], separate.inputs[0])
+    links.new(image.outputs["Color"], luminance.inputs["Color"])
+
+    channel_sources = (
+        separate.outputs["X"],
+        separate.outputs["Y"],
+        separate.outputs["Z"],
+        image.outputs["Alpha"],
+        luminance.outputs["Val"],
+    )
+    selected_parts = []
+    alpha_selector = None
+    for index, source in enumerate(channel_sources):
+        selector = _math(group, "COMPARE", f"Select Channel {index}", -720, 380 - index * 120)
+        selector.inputs[1].default_value = float(index)
+        selector.inputs[2].default_value = 0.1
+        links.new(inp.outputs["Channel"], selector.inputs[0])
+        part = _math(group, "MULTIPLY", f"Channel {index} Part", -500, 380 - index * 120)
+        links.new(source, part.inputs[0])
+        links.new(selector.outputs[0], part.inputs[1])
+        selected_parts.append(part.outputs[0])
+        if index == 3:
+            alpha_selector = selector.outputs[0]
+
+    sum_a = _math(group, "ADD", "Channel Sum A", -260, 300)
+    sum_b = _math(group, "ADD", "Channel Sum B", -260, 100)
+    sum_c = _math(group, "ADD", "Channel Sum C", -40, 220)
+    selected = _math(group, "ADD", "Selected Channel", 180, 180)
+    links.new(selected_parts[0], sum_a.inputs[0])
+    links.new(selected_parts[1], sum_a.inputs[1])
+    links.new(selected_parts[2], sum_b.inputs[0])
+    links.new(selected_parts[3], sum_b.inputs[1])
+    links.new(sum_a.outputs[0], sum_c.inputs[0])
+    links.new(sum_b.outputs[0], sum_c.inputs[1])
+    links.new(sum_c.outputs[0], selected.inputs[0])
+    links.new(selected_parts[4], selected.inputs[1])
+
+    ordered_min = _math(group, "MINIMUM", "Ordered Channel Minimum", 180, -40)
+    ordered_max = _math(group, "MAXIMUM", "Ordered Channel Maximum", 180, -160)
+    safe_softness = _math(group, "MAXIMUM", "Safe Channel Softness", 180, -280, value_2=0.00001)
+    lower_start = _math(group, "SUBTRACT", "Channel Lower Feather", 400, -40)
+    upper_end = _math(group, "ADD", "Channel Upper Feather", 400, -190)
+    links.new(inp.outputs["Minimum"], ordered_min.inputs[0])
+    links.new(inp.outputs["Maximum"], ordered_min.inputs[1])
+    links.new(inp.outputs["Minimum"], ordered_max.inputs[0])
+    links.new(inp.outputs["Maximum"], ordered_max.inputs[1])
+    links.new(inp.outputs["Softness"], safe_softness.inputs[0])
+    links.new(ordered_min.outputs[0], lower_start.inputs[0])
+    links.new(safe_softness.outputs[0], lower_start.inputs[1])
+    links.new(ordered_max.outputs[0], upper_end.inputs[0])
+    links.new(safe_softness.outputs[0], upper_end.inputs[1])
+
+    lower = _node(group, "ShaderNodeMapRange", "Channel Lower Range", 620, 220)
+    lower.interpolation_type = "SMOOTHERSTEP"
+    lower.clamp = True
+    lower.inputs["To Min"].default_value = 0.0
+    lower.inputs["To Max"].default_value = 1.0
+    upper = _node(group, "ShaderNodeMapRange", "Channel Upper Range", 620, -40)
+    upper.interpolation_type = "SMOOTHERSTEP"
+    upper.clamp = True
+    upper.inputs["To Min"].default_value = 1.0
+    upper.inputs["To Max"].default_value = 0.0
+    links.new(selected.outputs[0], lower.inputs["Value"])
+    links.new(lower_start.outputs[0], lower.inputs["From Min"])
+    links.new(ordered_min.outputs[0], lower.inputs["From Max"])
+    links.new(selected.outputs[0], upper.inputs["Value"])
+    links.new(ordered_max.outputs[0], upper.inputs["From Min"])
+    links.new(upper_end.outputs[0], upper.inputs["From Max"])
+
+    band = _math(group, "MULTIPLY", "Channel Range Mask", 850, 120)
+    links.new(lower.outputs["Result"], band.inputs[0])
+    links.new(upper.outputs["Result"], band.inputs[1])
+
+    # RGB and luminance masks ignore fully transparent source pixels. The
+    # Alpha channel itself must not be multiplied by alpha a second time.
+    non_alpha = _math(group, "SUBTRACT", "Non Alpha Channel", 850, -180, value_1=1.0)
+    rgb_alpha = _math(group, "MULTIPLY", "RGB Channel Source Alpha", 1060, 60)
+    alpha_part = _math(group, "MULTIPLY", "Alpha Channel Range", 1060, -100)
+    source_mask = _math(group, "ADD", "Channel Mask Source Alpha", 1270, 20)
+    links.new(alpha_selector, non_alpha.inputs[1])
+    links.new(band.outputs[0], rgb_alpha.inputs[0])
+    links.new(image.outputs["Alpha"], rgb_alpha.inputs[1])
+    # Reuse a separate multiplication for the alpha branch, weighted by selector.
+    links.new(band.outputs[0], alpha_part.inputs[0])
+    links.new(alpha_selector, alpha_part.inputs[1])
+    non_alpha_weighted = _math(group, "MULTIPLY", "Non Alpha Range", 1060, 180)
+    links.new(rgb_alpha.outputs[0], non_alpha_weighted.inputs[0])
+    links.new(non_alpha.outputs[0], non_alpha_weighted.inputs[1])
+    links.new(non_alpha_weighted.outputs[0], source_mask.inputs[0])
+    links.new(alpha_part.outputs[0], source_mask.inputs[1])
+
+    group["fbp_generated_mask_contract_version"] = 1
+    return _finish_generated_mask(
+        group, inp, out, source_mask.outputs[0], prefix="Channel Mask",
+        x=1460, y=80, availability=inp.outputs["Use Image Sample"],
+    )
+
+
 def _create_gradient_mask(name):
     """Create a linear/radial UV-space mask."""
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
@@ -1013,7 +1974,6 @@ def _create_noise_mask(name):
     return _finish_generated_mask(group, inp, out, ramp.outputs["Result"], prefix="Noise Mask", x=330, y=130)
 
 
-
 def _configure_effect_color_ramp(node, role, elements):
     """Configure and tag a native Color Ramp exposed by the Effects panel."""
     node["fbp_effect_color_ramp"] = True
@@ -1034,6 +1994,174 @@ def _configure_effect_color_ramp(node, role, elements):
     except (AttributeError, TypeError, ValueError):
         pass
     return node
+
+
+def _create_white_balance(name):
+    """Apply artist-friendly temperature and green/magenta tint correction."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Temperature", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0)
+    _socket(group, "Tint", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    temp_r = _math(group, "MULTIPLY", "Warm Red", -700, 300, value_2=0.30)
+    tint_r = _math(group, "MULTIPLY", "Tint Red", -700, 180, value_2=0.15)
+    red_sum = _math(group, "ADD", "Red Balance", -500, 260)
+    red = _math(group, "ADD", "Red Multiplier", -300, 260, value_1=1.0)
+    tint_g = _math(group, "MULTIPLY", "Tint Green", -700, 20, value_2=-0.25)
+    green = _math(group, "ADD", "Green Multiplier", -300, 20, value_1=1.0)
+    temp_b = _math(group, "MULTIPLY", "Cool Blue", -700, -160, value_2=-0.30)
+    tint_b = _math(group, "MULTIPLY", "Tint Blue", -700, -280, value_2=0.15)
+    blue_sum = _math(group, "ADD", "Blue Balance", -500, -220)
+    blue = _math(group, "ADD", "Blue Multiplier", -300, -220, value_1=1.0)
+    balance = _node(group, "ShaderNodeCombineColor", "White Balance Multipliers", -80, 80)
+    try:
+        balance.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    corrected = _mix_rgb(group, "MULTIPLY", "White Balanced Color", 160, 100, fac=1.0)
+    result = _mix_rgb(group, "MIX", "White Balance Factor", 400, 100)
+
+    links.new(inp.outputs["Temperature"], temp_r.inputs[0])
+    links.new(inp.outputs["Tint"], tint_r.inputs[0])
+    links.new(temp_r.outputs[0], red_sum.inputs[0]); links.new(tint_r.outputs[0], red_sum.inputs[1])
+    links.new(red_sum.outputs[0], red.inputs[1])
+    links.new(inp.outputs["Tint"], tint_g.inputs[0]); links.new(tint_g.outputs[0], green.inputs[1])
+    links.new(inp.outputs["Temperature"], temp_b.inputs[0]); links.new(inp.outputs["Tint"], tint_b.inputs[0])
+    links.new(temp_b.outputs[0], blue_sum.inputs[0]); links.new(tint_b.outputs[0], blue_sum.inputs[1])
+    links.new(blue_sum.outputs[0], blue.inputs[1])
+    links.new(red.outputs[0], balance.inputs[0]); links.new(green.outputs[0], balance.inputs[1]); links.new(blue.outputs[0], balance.inputs[2])
+    links.new(inp.outputs["Color In"], corrected.inputs[1]); links.new(balance.outputs[0], corrected.inputs[2])
+    links.new(inp.outputs["Factor"], result.inputs[0]); links.new(inp.outputs["Color In"], result.inputs[1]); links.new(corrected.outputs[0], result.inputs[2])
+    links.new(result.outputs[0], out.inputs["Color Out"])
+    group["fbp_white_balance_version"] = 1
+    return group
+
+
+def _create_curves(name):
+    """Expose Blender's native RGB Curves widget inside a private effect group."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+    curves = _node(group, "ShaderNodeRGBCurve", "Frame By Plane Curves", -220, 120)
+    curves["fbp_effect_curve_mapping"] = True
+    curves["fbp_effect_curve_role"] = "COLOR_CURVES"
+    try:
+        curves.mapping.initialize()
+        curves.mapping.update()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    mix = _mix_rgb(group, "MIX", "Curves Factor", 120, 120)
+    links.new(inp.outputs["Color In"], curves.inputs["Color"])
+    links.new(inp.outputs["Factor"], mix.inputs[0])
+    links.new(inp.outputs["Color In"], mix.inputs[1])
+    links.new(curves.outputs["Color"], mix.inputs[2])
+    links.new(mix.outputs[0], out.inputs["Color Out"])
+    group["fbp_curve_mapping_contract_version"] = 1
+    return group
+
+
+def _create_color_isolate(name):
+    """Preserve a perceptual HSV color range while desaturating the rest."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Target Color", "INPUT", "NodeSocketColor", default=(1.0, 0.0, 0.0, 1.0))
+    _socket(group, "Tolerance", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=1.0)
+    _socket(group, "Falloff", "INPUT", "NodeSocketFloat", default=0.10, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    source_hsv = _node(group, "ShaderNodeSeparateColor", "Source HSV", -1120, 250)
+    target_hsv = _node(group, "ShaderNodeSeparateColor", "Target HSV", -1120, 20)
+    try:
+        source_hsv.mode = target_hsv.mode = "HSV"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Color In"], source_hsv.inputs[0])
+    links.new(inp.outputs["Target Color"], target_hsv.inputs[0])
+
+    hue_sub = _math(group, "SUBTRACT", "Hue Difference", -900, 330)
+    hue_abs = _math(group, "ABSOLUTE", "Absolute Hue Difference", -720, 330)
+    hue_wrap = _math(group, "SUBTRACT", "Wrapped Hue Difference", -540, 250, value_1=1.0)
+    hue_min = _math(group, "MINIMUM", "Shortest Hue Distance", -360, 330)
+    hue_norm = _math(group, "MULTIPLY", "Normalized Hue Distance", -180, 330, value_2=2.0)
+    links.new(source_hsv.outputs[0], hue_sub.inputs[0]); links.new(target_hsv.outputs[0], hue_sub.inputs[1])
+    links.new(hue_sub.outputs[0], hue_abs.inputs[0]); links.new(hue_abs.outputs[0], hue_wrap.inputs[1])
+    links.new(hue_abs.outputs[0], hue_min.inputs[0]); links.new(hue_wrap.outputs[0], hue_min.inputs[1])
+    links.new(hue_min.outputs[0], hue_norm.inputs[0])
+
+    sat_sub = _math(group, "SUBTRACT", "Saturation Difference", -900, 120)
+    sat_abs = _math(group, "ABSOLUTE", "Absolute Saturation Difference", -720, 120)
+    sat_weight = _math(group, "MULTIPLY", "Weighted Saturation Difference", -540, 120, value_2=0.35)
+    value_sub = _math(group, "SUBTRACT", "Value Difference", -900, -40)
+    value_abs = _math(group, "ABSOLUTE", "Absolute Value Difference", -720, -40)
+    value_weight = _math(group, "MULTIPLY", "Weighted Value Difference", -540, -40, value_2=0.15)
+    links.new(source_hsv.outputs[1], sat_sub.inputs[0]); links.new(target_hsv.outputs[1], sat_sub.inputs[1])
+    links.new(sat_sub.outputs[0], sat_abs.inputs[0]); links.new(sat_abs.outputs[0], sat_weight.inputs[0])
+    links.new(source_hsv.outputs[2], value_sub.inputs[0]); links.new(target_hsv.outputs[2], value_sub.inputs[1])
+    links.new(value_sub.outputs[0], value_abs.inputs[0]); links.new(value_abs.outputs[0], value_weight.inputs[0])
+
+    chroma_sum = _math(group, "ADD", "Hue and Saturation Distance", 0, 250)
+    chroma_metric = _math(group, "ADD", "Perceptual Chroma Distance", 180, 250)
+    gray_sat = _math(group, "MULTIPLY", "Gray Saturation Distance", -360, -80, value_2=0.5)
+    gray_val = _math(group, "MULTIPLY", "Gray Value Distance", -360, -180, value_2=0.5)
+    gray_metric = _math(group, "ADD", "Neutral Color Distance", -180, -120)
+    links.new(hue_norm.outputs[0], chroma_sum.inputs[0]); links.new(sat_weight.outputs[0], chroma_sum.inputs[1])
+    links.new(chroma_sum.outputs[0], chroma_metric.inputs[0]); links.new(value_weight.outputs[0], chroma_metric.inputs[1])
+    links.new(sat_abs.outputs[0], gray_sat.inputs[0]); links.new(value_abs.outputs[0], gray_val.inputs[0])
+    links.new(gray_sat.outputs[0], gray_metric.inputs[0]); links.new(gray_val.outputs[0], gray_metric.inputs[1])
+
+    saturation_gate = _node(group, "ShaderNodeMapRange", "Target Saturation Gate", 0, -80)
+    saturation_gate.clamp = True
+    saturation_gate.interpolation_type = "SMOOTHERSTEP"
+    saturation_gate.inputs["From Min"].default_value = 0.05
+    saturation_gate.inputs["From Max"].default_value = 0.25
+    saturation_gate.inputs["To Min"].default_value = 0.0
+    saturation_gate.inputs["To Max"].default_value = 1.0
+    inverse_gate = _math(group, "SUBTRACT", "Neutral Target Weight", 180, -80, value_1=1.0)
+    chroma_scaled = _math(group, "MULTIPLY", "Chroma Metric Weight", 360, 210)
+    gray_scaled = _math(group, "MULTIPLY", "Neutral Metric Weight", 360, -80)
+    distance = _math(group, "ADD", "Color Isolate Distance", 540, 120)
+    links.new(target_hsv.outputs[1], saturation_gate.inputs["Value"])
+    links.new(saturation_gate.outputs["Result"], inverse_gate.inputs[1])
+    links.new(chroma_metric.outputs[0], chroma_scaled.inputs[0]); links.new(saturation_gate.outputs["Result"], chroma_scaled.inputs[1])
+    links.new(gray_metric.outputs[0], gray_scaled.inputs[0]); links.new(inverse_gate.outputs[0], gray_scaled.inputs[1])
+    links.new(chroma_scaled.outputs[0], distance.inputs[0]); links.new(gray_scaled.outputs[0], distance.inputs[1])
+
+    upper = _math(group, "ADD", "Color Isolate Outer Range", 540, -80)
+    transition = _node(group, "ShaderNodeMapRange", "Color Isolate Transition", 760, 150)
+    transition.interpolation_type = "SMOOTHERSTEP"
+    transition.clamp = True
+    transition.inputs["To Min"].default_value = 1.0
+    transition.inputs["To Max"].default_value = 0.0
+    links.new(inp.outputs["Tolerance"], upper.inputs[0]); links.new(inp.outputs["Falloff"], upper.inputs[1])
+    links.new(distance.outputs[0], transition.inputs["Value"])
+    links.new(inp.outputs["Tolerance"], transition.inputs["From Min"]); links.new(upper.outputs[0], transition.inputs["From Max"])
+
+    gray_value = _node(group, "ShaderNodeRGBToBW", "Color Isolate Grayscale", 540, -260)
+    gray = _node(group, "ShaderNodeCombineColor", "Color Isolate Gray Color", 760, -260)
+    try:
+        gray.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    isolated = _mix_rgb(group, "MIX", "Color Isolate Mask", 980, 100)
+    result = _mix_rgb(group, "MIX", "Color Isolate Factor", 1200, 100)
+    links.new(inp.outputs["Color In"], gray_value.inputs[0])
+    for index in range(3):
+        links.new(gray_value.outputs[0], gray.inputs[index])
+    links.new(transition.outputs["Result"], isolated.inputs[0]); links.new(gray.outputs[0], isolated.inputs[1]); links.new(inp.outputs["Color In"], isolated.inputs[2])
+    links.new(inp.outputs["Factor"], result.inputs[0]); links.new(inp.outputs["Color In"], result.inputs[1]); links.new(isolated.outputs[0], result.inputs[2])
+    links.new(result.outputs[0], out.inputs["Color Out"])
+    group["fbp_color_isolate_version"] = 2
+    return group
 
 
 def _create_recolor(name):
@@ -1062,11 +2190,776 @@ def _create_recolor(name):
     return group
 
 
+def _create_solarize(name):
+    """Invert highlights above a luminance threshold with a soft transition."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Threshold", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.0, maximum=1.0)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.08, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    luma = _node(group, "ShaderNodeRGBToBW", "Solarize Luminance", -680, 180)
+    delta = _math(group, "SUBTRACT", "Luminance Above Threshold", -470, 180)
+    safe_softness = _math(group, "MAXIMUM", "Safe Solarize Softness", -470, -40, value_2=0.00001)
+    normalize = _math(group, "DIVIDE", "Solarize Transition", -250, 180)
+    center = _math(group, "ADD", "Centered Solarize Transition", -50, 180, value_2=0.5)
+    clamp_low = _math(group, "MAXIMUM", "Solarize Mask Minimum", 140, 180, value_2=0.0)
+    clamp = _math(group, "MINIMUM", "Solarize Mask", 320, 180, value_2=1.0)
+    invert = _node(group, "ShaderNodeInvert", "Solarized Color", -50, -80)
+    amount = _math(group, "MULTIPLY", "Solarize Amount", 340, 180)
+    mix = _mix_rgb(group, "MIX", "Solarize Mix", 560, 80)
+
+    links.new(inp.outputs["Color In"], luma.inputs[0])
+    links.new(luma.outputs[0], delta.inputs[0])
+    links.new(inp.outputs["Threshold"], delta.inputs[1])
+    links.new(inp.outputs["Softness"], safe_softness.inputs[0])
+    links.new(delta.outputs[0], normalize.inputs[0])
+    links.new(safe_softness.outputs[0], normalize.inputs[1])
+    links.new(normalize.outputs[0], center.inputs[0])
+    links.new(center.outputs[0], clamp_low.inputs[0])
+    links.new(clamp_low.outputs[0], clamp.inputs[0])
+    links.new(inp.outputs["Color In"], invert.inputs[1])
+    links.new(clamp.outputs[0], amount.inputs[0])
+    links.new(inp.outputs["Factor"], amount.inputs[1])
+    links.new(amount.outputs[0], mix.inputs[0])
+    links.new(inp.outputs["Color In"], mix.inputs[1])
+    links.new(invert.outputs[0], mix.inputs[2])
+    links.new(mix.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_tritone(name):
+    """Map source luminance to editable shadow, midtone and highlight colors."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Shadows Tone", "INPUT", "NodeSocketColor", default=(0.02, 0.03, 0.08, 1.0))
+    _socket(group, "Midtones Tone", "INPUT", "NodeSocketColor", default=(0.55, 0.20, 0.22, 1.0))
+    _socket(group, "Highlights Tone", "INPUT", "NodeSocketColor", default=(1.0, 0.86, 0.55, 1.0))
+    _socket(group, "Midpoint", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.01, maximum=0.99)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    luma = _node(group, "ShaderNodeRGBToBW", "Tritone Luminance", -760, 170)
+    safe_mid = _math(group, "MAXIMUM", "Safe Tritone Midpoint", -560, 40, value_2=0.00001)
+    inverse_mid = _math(group, "SUBTRACT", "Highlight Range", -560, -120, value_1=1.0)
+    safe_inverse = _math(group, "MAXIMUM", "Safe Highlight Range", -360, -120, value_2=0.00001)
+    low_t = _math(group, "DIVIDE", "Shadow to Midtone", -350, 200)
+    low_clamp_min = _math(group, "MAXIMUM", "Shadow Midtone Clamp Minimum", -150, 200, value_2=0.0)
+    low_clamp = _math(group, "MINIMUM", "Shadow Midtone Clamp", 40, 200, value_2=1.0)
+    high_delta = _math(group, "SUBTRACT", "Luminance Above Midpoint", -360, 40)
+    high_t = _math(group, "DIVIDE", "Midtone to Highlight", -150, 40)
+    high_clamp_min = _math(group, "MAXIMUM", "Midtone Highlight Clamp Minimum", 40, 40, value_2=0.0)
+    high_clamp = _math(group, "MINIMUM", "Midtone Highlight Clamp", 230, 40, value_2=1.0)
+    lower_mix = _mix_rgb(group, "MIX", "Shadow Midtone Mix", 60, 250)
+    upper_mix = _mix_rgb(group, "MIX", "Midtone Highlight Mix", 260, 80)
+    select_upper = _math(group, "GREATER_THAN", "Select Highlight Range", 60, -100)
+    tritone = _mix_rgb(group, "MIX", "Tritone Range Mix", 470, 190)
+    result = _mix_rgb(group, "MIX", "Tritone Factor", 700, 140)
+
+    links.new(inp.outputs["Color In"], luma.inputs[0])
+    links.new(inp.outputs["Midpoint"], safe_mid.inputs[0])
+    links.new(inp.outputs["Midpoint"], inverse_mid.inputs[1])
+    links.new(inverse_mid.outputs[0], safe_inverse.inputs[0])
+    links.new(luma.outputs[0], low_t.inputs[0])
+    links.new(safe_mid.outputs[0], low_t.inputs[1])
+    links.new(low_t.outputs[0], low_clamp_min.inputs[0])
+    links.new(low_clamp_min.outputs[0], low_clamp.inputs[0])
+    links.new(luma.outputs[0], high_delta.inputs[0])
+    links.new(inp.outputs["Midpoint"], high_delta.inputs[1])
+    links.new(high_delta.outputs[0], high_t.inputs[0])
+    links.new(safe_inverse.outputs[0], high_t.inputs[1])
+    links.new(high_t.outputs[0], high_clamp_min.inputs[0])
+    links.new(high_clamp_min.outputs[0], high_clamp.inputs[0])
+    links.new(low_clamp.outputs[0], lower_mix.inputs[0])
+    links.new(inp.outputs["Shadows Tone"], lower_mix.inputs[1])
+    links.new(inp.outputs["Midtones Tone"], lower_mix.inputs[2])
+    links.new(high_clamp.outputs[0], upper_mix.inputs[0])
+    links.new(inp.outputs["Midtones Tone"], upper_mix.inputs[1])
+    links.new(inp.outputs["Highlights Tone"], upper_mix.inputs[2])
+    links.new(luma.outputs[0], select_upper.inputs[0])
+    links.new(inp.outputs["Midpoint"], select_upper.inputs[1])
+    links.new(select_upper.outputs[0], tritone.inputs[0])
+    links.new(lower_mix.outputs[0], tritone.inputs[1])
+    links.new(upper_mix.outputs[0], tritone.inputs[2])
+    links.new(inp.outputs["Factor"], result.inputs[0])
+    links.new(inp.outputs["Color In"], result.inputs[1])
+    links.new(tritone.outputs[0], result.inputs[2])
+    links.new(result.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_film_fade(name):
+    """Create a light faded-film grade without requiring compositor nodes."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Fade Color", "INPUT", "NodeSocketColor", default=(0.72, 0.48, 0.28, 1.0))
+    _socket(group, "Amount", "INPUT", "NodeSocketFloat", default=0.35, minimum=0.0, maximum=1.0)
+    _socket(group, "Desaturation", "INPUT", "NodeSocketFloat", default=0.45, minimum=0.0, maximum=1.0)
+    _socket(group, "Contrast Loss", "INPUT", "NodeSocketFloat", default=0.30, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    luma = _node(group, "ShaderNodeRGBToBW", "Film Fade Luminance", -700, 120)
+    desat_amount = _math(group, "MULTIPLY", "Film Fade Desaturation", -500, 260)
+    desaturate = _mix_rgb(group, "MIX", "Film Fade Desaturate", -260, 170)
+    contrast_amount = _math(group, "MULTIPLY", "Film Fade Contrast Loss", -260, -40)
+    reduce_contrast = _mix_rgb(group, "MIX", "Film Fade Lift", 0, 130)
+    reduce_contrast.inputs[2].default_value = (0.5, 0.5, 0.5, 1.0)
+    tint_amount = _math(group, "MULTIPLY", "Film Fade Tint Amount", 0, -80, value_2=0.55)
+    tint = _mix_rgb(group, "SCREEN", "Film Fade Tint", 250, 130)
+    final = _mix_rgb(group, "MIX", "Film Fade Amount", 500, 130)
+
+    links.new(inp.outputs["Color In"], luma.inputs[0])
+    links.new(inp.outputs["Amount"], desat_amount.inputs[0])
+    links.new(inp.outputs["Desaturation"], desat_amount.inputs[1])
+    links.new(desat_amount.outputs[0], desaturate.inputs[0])
+    links.new(inp.outputs["Color In"], desaturate.inputs[1])
+    links.new(luma.outputs[0], desaturate.inputs[2])
+    links.new(inp.outputs["Amount"], contrast_amount.inputs[0])
+    links.new(inp.outputs["Contrast Loss"], contrast_amount.inputs[1])
+    links.new(contrast_amount.outputs[0], reduce_contrast.inputs[0])
+    links.new(desaturate.outputs[0], reduce_contrast.inputs[1])
+    links.new(inp.outputs["Amount"], tint_amount.inputs[0])
+    links.new(tint_amount.outputs[0], tint.inputs[0])
+    links.new(reduce_contrast.outputs[0], tint.inputs[1])
+    links.new(inp.outputs["Fade Color"], tint.inputs[2])
+    links.new(inp.outputs["Amount"], final.inputs[0])
+    links.new(inp.outputs["Color In"], final.inputs[1])
+    links.new(tint.outputs[0], final.inputs[2])
+    links.new(final.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _source_image_node(group, name, x, y):
+    node = _node(group, "ShaderNodeTexImage", name, x, y)
+    node["fbp_matrix_source_image_node"] = True
+    node["fbp_source_interpolation"] = "Linear"
+    try:
+        node.interpolation = "Linear"; node.extension = "EXTEND"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return node
+
+
+def _create_triangle_blur(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n,t,d,mi,ma in (("Color In","NodeSocketColor",(0.5,0.5,0.5,1),None,None),("Alpha In","NodeSocketFloat",1,0,1),("UV Vector","NodeSocketVector",None,None,None),("Use Image Sample","NodeSocketFloat",0,0,1),("Radius","NodeSocketFloat",8,0,512),("Samples","NodeSocketInt",17,3,25),("Factor","NodeSocketFloat",1,0,1),("Texel X","NodeSocketFloat",.001,0,1),("Texel Y","NodeSocketFloat",.001,0,1)):
+        _socket(group,n,"INPUT",t,default=d,minimum=mi,maximum=ma)
+    _socket(group,"Color Out","OUTPUT","NodeSocketColor"); _socket(group,"Alpha Out","OUTPUT","NodeSocketFloat")
+    inp,out=_group_io(group); links=group.links
+    rx=_math(group,"MULTIPLY","Triangle Radius X",-1100,500); ry=_math(group,"MULTIPLY","Triangle Radius Y",-1100,360)
+    links.new(inp.outputs["Radius"],rx.inputs[0]); links.new(inp.outputs["Texel X"],rx.inputs[1]); links.new(inp.outputs["Radius"],ry.inputs[0]); links.new(inp.outputs["Texel Y"],ry.inputs[1])
+    enabled=_math(group,"GREATER_THAN","Triangle Enabled",-900,220,value_2=.0001); links.new(inp.outputs["Radius"],enabled.inputs[0])
+    positions=[(0,0,1),(0.2,0,.8),(-.2,0,.8),(0,.2,.8),(0,-.2,.8),(.4,0,.6),(-.4,0,.6),(0,.4,.6),(0,-.4,.6),(.6,0,.4),(-.6,0,.4),(0,.6,.4),(0,-.6,.4),(.8,0,.2),(-.8,0,.2),(0,.8,.2),(0,-.8,.2),(1,0,.08),(-1,0,.08),(0,1,.08),(0,-1,.08)]
+    cs=[]; al=[]; ws=[]
+    for i,(ox,oy,w) in enumerate(positions):
+        y=620-i*145; sx=_math(group,"MULTIPLY",f"Triangle X {i}",-730,y+30,value_2=ox); sy=_math(group,"MULTIPLY",f"Triangle Y {i}",-730,y-30,value_2=oy); comb=_node(group,"ShaderNodeCombineXYZ",f"Triangle Offset {i}",-550,y); uv=_vector_math(group,"ADD",f"Triangle UV {i}",-360,y); wt=_blur_dynamic_weight(group,inp.outputs["Samples"],i,w,"Triangle",-1100,y)
+        links.new(rx.outputs[0],sx.inputs[0]); links.new(ry.outputs[0],sy.inputs[0]); links.new(sx.outputs[0],comb.inputs["X"]); links.new(sy.outputs[0],comb.inputs["Y"]); links.new(inp.outputs["UV Vector"],uv.inputs[0]); links.new(comb.outputs[0],uv.inputs[1]); c,a=_blur_sample(group,inp,uv.outputs[0],wt,str(i),-150,y,"Triangle Blur"); cs.append(c); al.append(a); ws.append(wt)
+    total=_blur_add_chain(group,ws,vector=False,prefix="Triangle Weight",x=3500,y=-320); _finish_alpha_safe_blur(group,inp,out,cs,al,total_weight=total,enabled_socket=enabled.outputs[0],prefix="Triangle Blur")
+    return group
+
+
+def _create_tilt_shift(name):
+    """Create an alpha-safe Tilt Shift blur with a rotatable focus band."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for socket_name, socket_type, default, minimum, maximum in (
+        ("Color In", "NodeSocketColor", (0.5, 0.5, 0.5, 1.0), None, None),
+        ("Alpha In", "NodeSocketFloat", 1.0, 0.0, 1.0),
+        ("UV Vector", "NodeSocketVector", None, None, None),
+        ("Use Image Sample", "NodeSocketFloat", 0.0, 0.0, 1.0),
+        ("Focus Position", "NodeSocketFloat", 0.5, -1.0, 2.0),
+        ("Focus Width", "NodeSocketFloat", 0.25, 0.001, 2.0),
+        ("Focus Angle", "NodeSocketFloat", 0.0, -6.283185307, 6.283185307),
+        ("Blur Radius", "NodeSocketFloat", 16.0, 0.0, 512.0),
+        ("Factor", "NodeSocketFloat", 1.0, 0.0, 1.0),
+        ("Texel X", "NodeSocketFloat", 0.001, 0.0, 1.0),
+        ("Texel Y", "NodeSocketFloat", 0.001, 0.0, 1.0),
+    ):
+        _socket(group, socket_name, "INPUT", socket_type, default=default, minimum=minimum, maximum=maximum)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    # Project centered UV coordinates onto the normal of the focus band.
+    separate = _node(group, "ShaderNodeSeparateXYZ", "Tilt UV", -1450, 560)
+    centered_x = _math(group, "SUBTRACT", "Tilt Centered X", -1260, 650, value_2=0.5)
+    centered_y = _math(group, "SUBTRACT", "Tilt Centered Y", -1260, 500, value_2=0.5)
+    sine = _math(group, "SINE", "Tilt Angle Sine", -1260, 300)
+    cosine = _math(group, "COSINE", "Tilt Angle Cosine", -1260, 180)
+    negative_sine = _math(group, "MULTIPLY", "Tilt Normal X", -1070, 300, value_2=-1.0)
+    projected_x = _math(group, "MULTIPLY", "Tilt Project X", -880, 650)
+    projected_y = _math(group, "MULTIPLY", "Tilt Project Y", -880, 500)
+    projected = _math(group, "ADD", "Tilt Projected Coordinate", -690, 570)
+    projected_centered = _math(group, "ADD", "Tilt Projected UV", -510, 570, value_2=0.5)
+    delta = _math(group, "SUBTRACT", "Tilt Distance", -330, 570)
+    absolute = _math(group, "ABSOLUTE", "Tilt Absolute", -150, 570)
+    half = _math(group, "MULTIPLY", "Tilt Half Width", -330, 390, value_2=0.5)
+    outside = _math(group, "SUBTRACT", "Tilt Outside", 30, 570)
+    normalized = _math(group, "DIVIDE", "Tilt Normalized", 210, 570)
+    clamp_high = _math(group, "MINIMUM", "Tilt Clamp High", 390, 570, value_2=1.0)
+    clamp_low = _math(group, "MAXIMUM", "Tilt Clamp Low", 570, 570, value_2=0.0)
+
+    links.new(inp.outputs["UV Vector"], separate.inputs[0])
+    links.new(separate.outputs["X"], centered_x.inputs[0])
+    links.new(separate.outputs["Y"], centered_y.inputs[0])
+    links.new(inp.outputs["Focus Angle"], sine.inputs[0])
+    links.new(inp.outputs["Focus Angle"], cosine.inputs[0])
+    links.new(sine.outputs[0], negative_sine.inputs[0])
+    links.new(centered_x.outputs[0], projected_x.inputs[0])
+    links.new(negative_sine.outputs[0], projected_x.inputs[1])
+    links.new(centered_y.outputs[0], projected_y.inputs[0])
+    links.new(cosine.outputs[0], projected_y.inputs[1])
+    links.new(projected_x.outputs[0], projected.inputs[0])
+    links.new(projected_y.outputs[0], projected.inputs[1])
+    links.new(projected.outputs[0], projected_centered.inputs[0])
+    links.new(projected_centered.outputs[0], delta.inputs[0])
+    links.new(inp.outputs["Focus Position"], delta.inputs[1])
+    links.new(delta.outputs[0], absolute.inputs[0])
+    links.new(inp.outputs["Focus Width"], half.inputs[0])
+    links.new(absolute.outputs[0], outside.inputs[0])
+    links.new(half.outputs[0], outside.inputs[1])
+    links.new(outside.outputs[0], normalized.inputs[0])
+    links.new(half.outputs[0], normalized.inputs[1])
+    links.new(normalized.outputs[0], clamp_high.inputs[0])
+    links.new(clamp_high.outputs[0], clamp_low.inputs[0])
+
+    radius = _math(group, "MULTIPLY", "Tilt Radius", 760, 570)
+    enabled = _math(group, "GREATER_THAN", "Tilt Enabled", 950, 570, value_2=0.0001)
+    links.new(inp.outputs["Blur Radius"], radius.inputs[0])
+    links.new(clamp_low.outputs[0], radius.inputs[1])
+    links.new(radius.outputs[0], enabled.inputs[0])
+
+    color_samples = []
+    alpha_samples = []
+    weights = []
+    taps = [0.0, -1.0, -0.8, -0.6, -0.4, -0.2, 0.2, 0.4, 0.6, 0.8, 1.0, -0.3, 0.3]
+    for index, tap_value in enumerate(taps):
+        y = 430 - index * 150
+        tap = _math(group, "MULTIPLY", f"Tilt Tap {index}", 1120, y, value_2=tap_value)
+        x_pixels = _math(group, "MULTIPLY", f"Tilt X Pixels {index}", 1300, y + 35)
+        y_pixels = _math(group, "MULTIPLY", f"Tilt Y Pixels {index}", 1300, y - 35)
+        x_normal = _math(group, "MULTIPLY", f"Tilt X Normal {index}", 1480, y + 35)
+        y_normal = _math(group, "MULTIPLY", f"Tilt Y Normal {index}", 1480, y - 35)
+        offset = _node(group, "ShaderNodeCombineXYZ", f"Tilt Offset {index}", 1660, y)
+        uv = _vector_math(group, "ADD", f"Tilt UV {index}", 1840, y)
+        links.new(radius.outputs[0], tap.inputs[0])
+        links.new(tap.outputs[0], x_pixels.inputs[0])
+        links.new(inp.outputs["Texel X"], x_pixels.inputs[1])
+        links.new(tap.outputs[0], y_pixels.inputs[0])
+        links.new(inp.outputs["Texel Y"], y_pixels.inputs[1])
+        links.new(x_pixels.outputs[0], x_normal.inputs[0])
+        links.new(negative_sine.outputs[0], x_normal.inputs[1])
+        links.new(y_pixels.outputs[0], y_normal.inputs[0])
+        links.new(cosine.outputs[0], y_normal.inputs[1])
+        links.new(x_normal.outputs[0], offset.inputs["X"])
+        links.new(y_normal.outputs[0], offset.inputs["Y"])
+        links.new(inp.outputs["UV Vector"], uv.inputs[0])
+        links.new(offset.outputs[0], uv.inputs[1])
+        weight = max(0.1, 1.0 - abs(tap_value))
+        color, alpha = _blur_sample(group, inp, uv.outputs[0], weight, str(index), 2020, y, "Tilt Shift")
+        color_samples.append(color)
+        alpha_samples.append(alpha)
+        weights.append(weight)
+
+    _finish_alpha_safe_blur(
+        group, inp, out,
+        color_samples, alpha_samples,
+        total_weight=sum(weights),
+        enabled_socket=enabled.outputs[0],
+        prefix="Tilt Shift",
+    )
+    return group
+
+
+def _sample_source_luma(group, inp, radius_socket, ox, oy, prefix, x, y):
+    """Sample source-image luminance at an offset measured in source pixels."""
+    links = group.links
+    px = _math(group, "MULTIPLY", f"{prefix} Radius X", x, y + 45, value_2=float(ox))
+    py = _math(group, "MULTIPLY", f"{prefix} Radius Y", x, y - 45, value_2=float(oy))
+    tx = _math(group, "MULTIPLY", f"{prefix} Texel X", x + 180, y + 45)
+    ty = _math(group, "MULTIPLY", f"{prefix} Texel Y", x + 180, y - 45)
+    offset = _node(group, "ShaderNodeCombineXYZ", f"{prefix} Offset", x + 360, y)
+    uv = _vector_math(group, "ADD", f"{prefix} UV", x + 540, y)
+    image = _source_image_node(group, f"{prefix} Sample", x + 720, y)
+    luma = _node(group, "ShaderNodeRGBToBW", f"{prefix} Luminance", x + 910, y)
+    links.new(radius_socket, px.inputs[0])
+    links.new(radius_socket, py.inputs[0])
+    links.new(px.outputs[0], tx.inputs[0])
+    links.new(inp.outputs["Texel X"], tx.inputs[1])
+    links.new(py.outputs[0], ty.inputs[0])
+    links.new(inp.outputs["Texel Y"], ty.inputs[1])
+    links.new(tx.outputs[0], offset.inputs["X"])
+    links.new(ty.outputs[0], offset.inputs["Y"])
+    links.new(inp.outputs["UV Vector"], uv.inputs[0])
+    links.new(offset.outputs[0], uv.inputs[1])
+    links.new(uv.outputs[0], image.inputs["Vector"])
+    links.new(image.outputs["Color"], luma.inputs[0])
+    return luma.outputs[0]
+
+
+def _weighted_scalar_sum(group, terms, prefix, x, y):
+    """Return a scalar socket containing a weighted sum of input sockets."""
+    weighted = []
+    for index, (socket, weight) in enumerate(terms):
+        if float(weight) == 1.0:
+            weighted.append(socket)
+            continue
+        node = _math(group, "MULTIPLY", f"{prefix} Weight {index}", x, y - index * 90, value_2=float(weight))
+        group.links.new(socket, node.inputs[0])
+        weighted.append(node.outputs[0])
+    if not weighted:
+        return None
+    current = weighted[0]
+    for index, socket in enumerate(weighted[1:], 1):
+        add = _math(group, "ADD", f"{prefix} Sum {index}", x + 190 * index, y)
+        group.links.new(current, add.inputs[0])
+        group.links.new(socket, add.inputs[1])
+        current = add.outputs[0]
+    return current
+
+
+def _local_luma_average(group, inp, radius_socket, prefix, x, y):
+    """Weighted eight-neighbor luminance average (cardinals 2, diagonals 1)."""
+    positions = (
+        (-1, 1, 1), (0, 1, 2), (1, 1, 1),
+        (-1, 0, 2), (1, 0, 2),
+        (-1, -1, 1), (0, -1, 2), (1, -1, 1),
+    )
+    terms = []
+    for index, (ox, oy, weight) in enumerate(positions):
+        sample = _sample_source_luma(
+            group, inp, radius_socket, ox, oy,
+            f"{prefix} {index}", x, y - index * 155,
+        )
+        terms.append((sample, weight))
+    total = _weighted_scalar_sum(group, terms, f"{prefix} Weighted", x + 1120, y)
+    average = _math(group, "MULTIPLY", f"{prefix} Average", x + 2650, y, value_2=(1.0 / 12.0))
+    group.links.new(total, average.inputs[0])
+    return average.outputs[0]
+
+
+def _sobel_magnitude(group, inp, radius_socket, prefix, x, y):
+    """Build a true 3×3 Sobel magnitude from source-image luminance."""
+    samples = {}
+    positions = ((-1, 1), (0, 1), (1, 1), (-1, 0), (1, 0), (-1, -1), (0, -1), (1, -1))
+    for index, (ox, oy) in enumerate(positions):
+        samples[(ox, oy)] = _sample_source_luma(
+            group, inp, radius_socket, ox, oy,
+            f"{prefix} Sample {index}", x, y - index * 155,
+        )
+    gx = _weighted_scalar_sum(group, (
+        (samples[(-1, 1)], -1), (samples[(-1, 0)], -2), (samples[(-1, -1)], -1),
+        (samples[(1, 1)], 1), (samples[(1, 0)], 2), (samples[(1, -1)], 1),
+    ), f"{prefix} Gx", x + 1120, y + 220)
+    gy = _weighted_scalar_sum(group, (
+        (samples[(-1, 1)], -1), (samples[(0, 1)], -2), (samples[(1, 1)], -1),
+        (samples[(-1, -1)], 1), (samples[(0, -1)], 2), (samples[(1, -1)], 1),
+    ), f"{prefix} Gy", x + 1120, y - 220)
+    gx2 = _math(group, "MULTIPLY", f"{prefix} Gx Squared", x + 2450, y + 180)
+    gy2 = _math(group, "MULTIPLY", f"{prefix} Gy Squared", x + 2450, y - 180)
+    total = _math(group, "ADD", f"{prefix} Gradient Sum", x + 2650, y)
+    magnitude = _math(group, "SQRT", f"{prefix} Magnitude", x + 2840, y)
+    group.links.new(gx, gx2.inputs[0]); group.links.new(gx, gx2.inputs[1])
+    group.links.new(gy, gy2.inputs[0]); group.links.new(gy, gy2.inputs[1])
+    group.links.new(gx2.outputs[0], total.inputs[0]); group.links.new(gy2.outputs[0], total.inputs[1])
+    group.links.new(total.outputs[0], magnitude.inputs[0])
+    return magnitude.outputs[0]
+
+
+def _smooth_threshold(group, value_socket, threshold_socket, softness_socket, prefix, x, y):
+    """Convert a value to a smooth 0–1 mask around an editable threshold."""
+    half = _math(group, "MULTIPLY", f"{prefix} Half Softness", x, y - 120, value_2=0.5)
+    lower = _math(group, "SUBTRACT", f"{prefix} Lower", x + 190, y + 40)
+    upper = _math(group, "ADD", f"{prefix} Upper", x + 190, y - 80)
+    epsilon = _math(group, "ADD", f"{prefix} Minimum Width", x + 370, y - 170, value_2=0.00001)
+    safe_upper = _math(group, "MAXIMUM", f"{prefix} Safe Upper", x + 550, y - 80)
+    ramp = _node(group, "ShaderNodeMapRange", f"{prefix} Smooth Threshold", x + 760, y)
+    ramp.interpolation_type = "SMOOTHERSTEP"
+    ramp.clamp = True
+    ramp.inputs["To Min"].default_value = 0.0
+    ramp.inputs["To Max"].default_value = 1.0
+    links = group.links
+    links.new(softness_socket, half.inputs[0])
+    links.new(threshold_socket, lower.inputs[0]); links.new(half.outputs[0], lower.inputs[1])
+    links.new(threshold_socket, upper.inputs[0]); links.new(half.outputs[0], upper.inputs[1])
+    links.new(lower.outputs[0], epsilon.inputs[0])
+    links.new(upper.outputs[0], safe_upper.inputs[0]); links.new(epsilon.outputs[0], safe_upper.inputs[1])
+    links.new(value_socket, ramp.inputs["Value"])
+    links.new(lower.outputs[0], ramp.inputs["From Min"])
+    links.new(safe_upper.outputs[0], ramp.inputs["From Max"])
+    return ramp.outputs["Result"]
+
+
+def _smooth_quantized_color(group, color_socket, levels_socket, softness_socket, prefix, x, y):
+    """Quantize RGB channels with true smooth transitions at band boundaries."""
+    links = group.links
+    separate = _node(group, "ShaderNodeSeparateColor", f"{prefix} Separate", x, y)
+    try:
+        separate.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(color_socket, separate.inputs[0])
+    safe_levels = _math(group, "MAXIMUM", f"{prefix} Safe Levels", x, y - 260, value_2=2.0)
+    intervals = _math(group, "SUBTRACT", f"{prefix} Intervals", x + 180, y - 260, value_2=1.0)
+    links.new(levels_socket, safe_levels.inputs[0]); links.new(safe_levels.outputs[0], intervals.inputs[0])
+    results = []
+    for index, channel in enumerate(("Red", "Green", "Blue")):
+        cy = y + 260 - index * 210
+        scaled = _math(group, "MULTIPLY", f"{prefix} {channel} Scaled", x + 200, cy)
+        base = _math(group, "FLOOR", f"{prefix} {channel} Base", x + 390, cy + 55)
+        fraction = _math(group, "FRACT", f"{prefix} {channel} Fraction", x + 390, cy - 55)
+        half_soft = _math(group, "MULTIPLY", f"{prefix} {channel} Half Softness", x + 390, cy - 150, value_2=0.5)
+        lower = _math(group, "SUBTRACT", f"{prefix} {channel} Lower", x + 580, cy - 100, value_1=0.5)
+        upper = _math(group, "ADD", f"{prefix} {channel} Upper", x + 580, cy - 190, value_1=0.5)
+        epsilon = _math(group, "ADD", f"{prefix} {channel} Epsilon", x + 760, cy - 250, value_2=0.00001)
+        safe_upper = _math(group, "MAXIMUM", f"{prefix} {channel} Safe Upper", x + 940, cy - 190)
+        transition = _node(group, "ShaderNodeMapRange", f"{prefix} {channel} Transition", x + 1120, cy)
+        transition.interpolation_type = "SMOOTHERSTEP"; transition.clamp = True
+        transition.inputs["To Min"].default_value = 0.0; transition.inputs["To Max"].default_value = 1.0
+        rounded = _math(group, "ADD", f"{prefix} {channel} Rounded", x + 1320, cy)
+        result = _math(group, "DIVIDE", f"{prefix} {channel} Quantized", x + 1510, cy)
+        links.new(separate.outputs[channel], scaled.inputs[0]); links.new(intervals.outputs[0], scaled.inputs[1])
+        links.new(scaled.outputs[0], base.inputs[0]); links.new(scaled.outputs[0], fraction.inputs[0])
+        links.new(softness_socket, half_soft.inputs[0])
+        links.new(half_soft.outputs[0], lower.inputs[1]); links.new(half_soft.outputs[0], upper.inputs[1])
+        links.new(lower.outputs[0], epsilon.inputs[0])
+        links.new(upper.outputs[0], safe_upper.inputs[0]); links.new(epsilon.outputs[0], safe_upper.inputs[1])
+        links.new(fraction.outputs[0], transition.inputs["Value"])
+        links.new(lower.outputs[0], transition.inputs["From Min"]); links.new(safe_upper.outputs[0], transition.inputs["From Max"])
+        links.new(base.outputs[0], rounded.inputs[0]); links.new(transition.outputs["Result"], rounded.inputs[1])
+        links.new(rounded.outputs[0], result.inputs[0]); links.new(intervals.outputs[0], result.inputs[1])
+        results.append(result.outputs[0])
+    combine = _node(group, "ShaderNodeCombineColor", f"{prefix} Combine", x + 1710, y)
+    try:
+        combine.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    for index, result in enumerate(results):
+        links.new(result, combine.inputs[index])
+    return combine.outputs[0]
+
+
+def _create_unsharp_mask(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Radius", "NodeSocketFloat", 1, 0, 32), ("Amount", "NodeSocketFloat", 1, 0, 4), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    average_luma = _local_luma_average(group, inp, inp.outputs["Radius"], "Unsharp", -1500, 420)
+    source_luma = _node(group, "ShaderNodeRGBToBW", "Unsharp Source Luminance", 1450, 300)
+    detail = _math(group, "SUBTRACT", "Unsharp Luminance Detail", 1650, 300)
+    scaled = _math(group, "MULTIPLY", "Unsharp Detail Amount", 1840, 300)
+    detail_color = _node(group, "ShaderNodeCombineColor", "Unsharp Detail Color", 2040, 300)
+    result = _vector_math(group, "ADD", "Unsharp Result", 2240, 300)
+    mix = _mix_rgb(group, "MIX", "Unsharp Factor", 2440, 300)
+    try:
+        detail_color.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Color In"], source_luma.inputs[0])
+    links.new(source_luma.outputs[0], detail.inputs[0]); links.new(average_luma, detail.inputs[1])
+    links.new(detail.outputs[0], scaled.inputs[0]); links.new(inp.outputs["Amount"], scaled.inputs[1])
+    for index in range(3):
+        links.new(scaled.outputs[0], detail_color.inputs[index])
+    links.new(inp.outputs["Color In"], result.inputs[0]); links.new(detail_color.outputs[0], result.inputs[1])
+    links.new(inp.outputs["Factor"], mix.inputs[0]); links.new(inp.outputs["Color In"], mix.inputs[1]); links.new(result.outputs[0], mix.inputs[2])
+    links.new(mix.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_edge_detect(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Width", "NodeSocketFloat", 1, 0, 32), ("Strength", "NodeSocketFloat", 2, 0, 10), ("Threshold", "NodeSocketFloat", .05, 0, 1), ("Softness", "NodeSocketFloat", .04, 0, 1), ("Edge Color", "NodeSocketColor", (0,0,0,1), None, None), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    magnitude = _sobel_magnitude(group, inp, inp.outputs["Width"], "Edge Detect", -1650, 500)
+    strength = _math(group, "MULTIPLY", "Edge Detect Strength", 1400, 350)
+    amount = _math(group, "MULTIPLY", "Edge Detect Factor", 2700, 350)
+    mix = _mix_rgb(group, "MIX", "Edge Detect Color Mix", 2900, 350)
+    links.new(magnitude, strength.inputs[0]); links.new(inp.outputs["Strength"], strength.inputs[1])
+    mask = _smooth_threshold(group, strength.outputs[0], inp.outputs["Threshold"], inp.outputs["Softness"], "Edge Detect", 1600, 350)
+    links.new(mask, amount.inputs[0]); links.new(inp.outputs["Factor"], amount.inputs[1])
+    links.new(amount.outputs[0], mix.inputs[0]); links.new(inp.outputs["Color In"], mix.inputs[1]); links.new(inp.outputs["Edge Color"], mix.inputs[2])
+    links.new(mix.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_smooth_toon(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(.5,.5,.5,1))
+    _socket(group, "Levels", "INPUT", "NodeSocketFloat", default=6, minimum=2, maximum=64)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=.15, minimum=0, maximum=1)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1, minimum=0, maximum=1)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    toon = _smooth_quantized_color(group, inp.outputs["Color In"], inp.outputs["Levels"], inp.outputs["Softness"], "Smooth Toon", -1050, 200)
+    mix = _mix_rgb(group, "MIX", "Smooth Toon Factor", 900, 200)
+    links.new(inp.outputs["Factor"], mix.inputs[0]); links.new(inp.outputs["Color In"], mix.inputs[1]); links.new(toon, mix.inputs[2]); links.new(mix.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_adaptive_threshold(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Radius", "NodeSocketFloat", 4, 0, 64), ("Offset", "NodeSocketFloat", 0, -1, 1), ("Softness", "NodeSocketFloat", .05, 0, 1), ("Invert", "NodeSocketFloat", 0, 0, 1), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    average = _local_luma_average(group, inp, inp.outputs["Radius"], "Adaptive Threshold", -1500, 420)
+    source = _node(group, "ShaderNodeRGBToBW", "Adaptive Source Luminance", 1450, 360)
+    cutoff = _math(group, "ADD", "Adaptive Cutoff", 1650, 160)
+    delta = _math(group, "SUBTRACT", "Adaptive Delta", 1840, 360)
+    zero = _node(group, "ShaderNodeValue", "Adaptive Zero Threshold", 1840, 120); zero.outputs[0].default_value = 0.0
+    mask = _smooth_threshold(group, delta.outputs[0], zero.outputs[0], inp.outputs["Softness"], "Adaptive", 2040, 360)
+    invert = _node(group, "ShaderNodeInvert", "Adaptive Invert", 3200, 240)
+    invert_mix = _mix_rgb(group, "MIX", "Adaptive Invert Mix", 3400, 300)
+    bw = _node(group, "ShaderNodeCombineColor", "Adaptive Black White", 3600, 300)
+    final = _mix_rgb(group, "MIX", "Adaptive Factor", 3800, 300)
+    try:
+        bw.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Color In"], source.inputs[0])
+    links.new(average, cutoff.inputs[0]); links.new(inp.outputs["Offset"], cutoff.inputs[1])
+    links.new(source.outputs[0], delta.inputs[0]); links.new(cutoff.outputs[0], delta.inputs[1])
+    links.new(mask, invert.inputs[1])
+    links.new(inp.outputs["Invert"], invert_mix.inputs[0]); links.new(mask, invert_mix.inputs[1]); links.new(invert.outputs[0], invert_mix.inputs[2])
+    for index in range(3): links.new(invert_mix.outputs[0], bw.inputs[index])
+    links.new(inp.outputs["Factor"], final.inputs[0]); links.new(inp.outputs["Color In"], final.inputs[1]); links.new(bw.outputs[0], final.inputs[2])
+    links.new(final.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_ink(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Width", "NodeSocketFloat", 1, 0, 32), ("Threshold", "NodeSocketFloat", .045, 0, 1), ("Softness", "NodeSocketFloat", .05, 0, 1), ("Strength", "NodeSocketFloat", 2.5, 0, 16), ("Ink Color", "NodeSocketColor", (.015,.01,.008,1), None, None), ("Paper Color", "NodeSocketColor", (.94,.90,.80,1), None, None), ("Preserve Color", "NodeSocketFloat", .2, 0, 1), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    magnitude = _sobel_magnitude(group, inp, inp.outputs["Width"], "Ink", -1650, 500)
+    strength = _math(group, "MULTIPLY", "Ink Strength", 1400, 360)
+    base = _mix_rgb(group, "MIX", "Ink Paper Base", 1400, 80)
+    ink_mix = _mix_rgb(group, "MIX", "Ink Lines", 2800, 300)
+    final = _mix_rgb(group, "MIX", "Ink Factor", 3000, 300)
+    links.new(magnitude, strength.inputs[0]); links.new(inp.outputs["Strength"], strength.inputs[1])
+    mask = _smooth_threshold(group, strength.outputs[0], inp.outputs["Threshold"], inp.outputs["Softness"], "Ink", 1600, 360)
+    links.new(inp.outputs["Preserve Color"], base.inputs[0]); links.new(inp.outputs["Paper Color"], base.inputs[1]); links.new(inp.outputs["Color In"], base.inputs[2])
+    links.new(mask, ink_mix.inputs[0]); links.new(base.outputs[0], ink_mix.inputs[1]); links.new(inp.outputs["Ink Color"], ink_mix.inputs[2])
+    links.new(inp.outputs["Factor"], final.inputs[0]); links.new(inp.outputs["Color In"], final.inputs[1]); links.new(ink_mix.outputs[0], final.inputs[2])
+    links.new(final.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_edge_work(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Radius", "NodeSocketFloat", 1.5, 0, 64), ("Thickness", "NodeSocketFloat", 4, 0, 128), ("Strength", "NodeSocketFloat", 5, 0, 32), ("Threshold", "NodeSocketFloat", .025, 0, 1), ("Softness", "NodeSocketFloat", .06, 0, 1), ("Edge Color", "NodeSocketColor", (.02,.015,.01,1), None, None), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    outer_radius = _math(group, "ADD", "Edge Work Outer Radius", -1600, -850)
+    links.new(inp.outputs["Radius"], outer_radius.inputs[0]); links.new(inp.outputs["Thickness"], outer_radius.inputs[1])
+    inner = _local_luma_average(group, inp, inp.outputs["Radius"], "Edge Work Inner", -1500, 650)
+    outer = _local_luma_average(group, inp, outer_radius.outputs[0], "Edge Work Outer", -1500, -900)
+    difference = _math(group, "SUBTRACT", "Edge Work Difference", 1500, 260)
+    absolute = _math(group, "ABSOLUTE", "Edge Work Absolute", 1690, 260)
+    strength = _math(group, "MULTIPLY", "Edge Work Strength", 1880, 260)
+    amount = _math(group, "MULTIPLY", "Edge Work Factor", 3150, 260)
+    mix = _mix_rgb(group, "MIX", "Edge Work Color", 3350, 260)
+    links.new(inner, difference.inputs[0]); links.new(outer, difference.inputs[1]); links.new(difference.outputs[0], absolute.inputs[0])
+    links.new(absolute.outputs[0], strength.inputs[0]); links.new(inp.outputs["Strength"], strength.inputs[1])
+    mask = _smooth_threshold(group, strength.outputs[0], inp.outputs["Threshold"], inp.outputs["Softness"], "Edge Work", 2070, 260)
+    links.new(mask, amount.inputs[0]); links.new(inp.outputs["Factor"], amount.inputs[1])
+    links.new(amount.outputs[0], mix.inputs[0]); links.new(inp.outputs["Color In"], mix.inputs[1]); links.new(inp.outputs["Edge Color"], mix.inputs[2])
+    links.new(mix.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_pencil_sketch(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Radius", "NodeSocketFloat", 6, 0, 128), ("Contrast", "NodeSocketFloat", 1.6, 0, 8), ("Graphite Color", "NodeSocketColor", (.03,.025,.02,1), None, None), ("Paper Color", "NodeSocketColor", (.96,.93,.84,1), None, None), ("Color Amount", "NodeSocketFloat", 0, 0, 1), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    average = _local_luma_average(group, inp, inp.outputs["Radius"], "Pencil", -1500, 420)
+    source = _node(group, "ShaderNodeRGBToBW", "Pencil Source Luminance", 1450, 360)
+    safe_average = _math(group, "MAXIMUM", "Pencil Safe Average", 1650, 160, value_2=0.00001)
+    divide = _math(group, "DIVIDE", "Pencil Color Dodge", 1840, 360)
+    clamp = _math(group, "MINIMUM", "Pencil Clamp", 2030, 360, value_2=1.0)
+    darkness = _math(group, "SUBTRACT", "Pencil Darkness", 2220, 360, value_1=1.0)
+    contrast = _math(group, "MULTIPLY", "Pencil Contrast", 2410, 360)
+    dark_clamp = _math(group, "MINIMUM", "Pencil Dark Clamp", 2600, 360, value_2=1.0)
+    sketch = _math(group, "SUBTRACT", "Pencil Sketch Value", 2790, 360, value_1=1.0)
+    sketch_color = _node(group, "ShaderNodeCombineColor", "Pencil Sketch Grayscale", 2980, 80)
+    tone = _mix_rgb(group, "MIX", "Pencil Tone Map", 3180, 420)
+    colorized = _mix_rgb(group, "MULTIPLY", "Pencil Source Color", 3180, 160, fac=1.0)
+    color_mix = _mix_rgb(group, "MIX", "Pencil Color Amount", 3400, 340)
+    final = _mix_rgb(group, "MIX", "Pencil Factor", 3620, 340)
+    try:
+        sketch_color.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Color In"], source.inputs[0]); links.new(average, safe_average.inputs[0])
+    links.new(source.outputs[0], divide.inputs[0]); links.new(safe_average.outputs[0], divide.inputs[1]); links.new(divide.outputs[0], clamp.inputs[0])
+    links.new(clamp.outputs[0], darkness.inputs[1]); links.new(darkness.outputs[0], contrast.inputs[0]); links.new(inp.outputs["Contrast"], contrast.inputs[1])
+    links.new(contrast.outputs[0], dark_clamp.inputs[0]); links.new(dark_clamp.outputs[0], sketch.inputs[1])
+    for index in range(3):
+        links.new(sketch.outputs[0], sketch_color.inputs[index])
+    links.new(sketch.outputs[0], tone.inputs[0]); links.new(inp.outputs["Graphite Color"], tone.inputs[1]); links.new(inp.outputs["Paper Color"], tone.inputs[2])
+    links.new(inp.outputs["Color In"], colorized.inputs[1]); links.new(sketch_color.outputs[0], colorized.inputs[2])
+    links.new(inp.outputs["Color Amount"], color_mix.inputs[0]); links.new(tone.outputs[0], color_mix.inputs[1]); links.new(colorized.outputs[0], color_mix.inputs[2])
+    links.new(inp.outputs["Factor"], final.inputs[0]); links.new(inp.outputs["Color In"], final.inputs[1]); links.new(color_mix.outputs[0], final.inputs[2])
+    links.new(final.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_poster_edges(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Levels", "NodeSocketFloat", 5, 2, 64), ("Band Softness", "NodeSocketFloat", .08, 0, 1), ("Edge Width", "NodeSocketFloat", 1, 0, 32), ("Edge Strength", "NodeSocketFloat", 2.8, 0, 16), ("Edge Threshold", "NodeSocketFloat", .045, 0, 1), ("Edge Color", "NodeSocketColor", (.01,.008,.006,1), None, None), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    poster = _smooth_quantized_color(group, inp.outputs["Color In"], inp.outputs["Levels"], inp.outputs["Band Softness"], "Poster Edges", -1650, 1000)
+    magnitude = _sobel_magnitude(group, inp, inp.outputs["Edge Width"], "Poster Edges", -1650, -300)
+    strength = _math(group, "MULTIPLY", "Poster Edge Strength", 1400, -220)
+    zero_soft = _node(group, "ShaderNodeValue", "Poster Edge Softness", 1400, -420); zero_soft.outputs[0].default_value = 0.035
+    edge_mix = _mix_rgb(group, "MIX", "Poster Edge Color", 2800, 300)
+    final = _mix_rgb(group, "MIX", "Poster Edges Factor", 3020, 300)
+    links.new(magnitude, strength.inputs[0]); links.new(inp.outputs["Edge Strength"], strength.inputs[1])
+    mask = _smooth_threshold(group, strength.outputs[0], inp.outputs["Edge Threshold"], zero_soft.outputs[0], "Poster Edges", 1600, -220)
+    links.new(mask, edge_mix.inputs[0]); links.new(poster, edge_mix.inputs[1]); links.new(inp.outputs["Edge Color"], edge_mix.inputs[2])
+    links.new(inp.outputs["Factor"], final.inputs[0]); links.new(inp.outputs["Color In"], final.inputs[1]); links.new(edge_mix.outputs[0], final.inputs[2])
+    links.new(final.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _periodic_line(group, coordinate_socket, scale_socket, width_socket, prefix, x, y):
+    scaled = _math(group, "MULTIPLY", f"{prefix} Scale", x, y)
+    fraction = _math(group, "FRACT", f"{prefix} Fraction", x + 180, y)
+    center = _math(group, "SUBTRACT", f"{prefix} Center", x + 360, y, value_2=0.5)
+    absolute = _math(group, "ABSOLUTE", f"{prefix} Absolute", x + 540, y)
+    line = _math(group, "LESS_THAN", f"{prefix} Line", x + 720, y)
+    group.links.new(coordinate_socket, scaled.inputs[0]); group.links.new(scale_socket, scaled.inputs[1])
+    group.links.new(scaled.outputs[0], fraction.inputs[0]); group.links.new(fraction.outputs[0], center.inputs[0])
+    group.links.new(center.outputs[0], absolute.inputs[0]); group.links.new(absolute.outputs[0], line.inputs[0]); group.links.new(width_socket, line.inputs[1])
+    return line.outputs[0]
+
+
+def _create_crosshatch(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Scale", "NodeSocketFloat", 72, 1, 2000), ("Rotation", "NodeSocketFloat", 0, -6.283, 6.283), ("Line Width", "NodeSocketFloat", .10, .001, .49), ("Levels", "NodeSocketInt", 4, 1, 4), ("Ink Color", "NodeSocketColor", (.02,.015,.01,1), None, None), ("Paper Color", "NodeSocketColor", (.95,.91,.80,1), None, None), ("Preserve Color", "NodeSocketFloat", .10, 0, 1), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    centered = _vector_math(group, "SUBTRACT", "Crosshatch Center UV", -1200, 420); centered.inputs[1].default_value = (0.5,0.5,0.0)
+    separate = _node(group, "ShaderNodeSeparateXYZ", "Crosshatch Source Axes", -1020, 420)
+    aspect = _math(group, "DIVIDE", "Crosshatch Aspect", -1020, 120)
+    x_aspect = _math(group, "MULTIPLY", "Crosshatch Aspect X", -820, 500)
+    combine = _node(group, "ShaderNodeCombineXYZ", "Crosshatch Aspect UV", -620, 420)
+    rotate = _node(group, "ShaderNodeVectorRotate", "Crosshatch Rotation", -420, 420); rotate.rotation_type = "Z_AXIS"; rotate.inputs["Center"].default_value = (0,0,0)
+    axes = _node(group, "ShaderNodeSeparateXYZ", "Crosshatch Axes", -220, 420)
+    diag_a = _math(group, "ADD", "Crosshatch Diagonal A", -20, 300)
+    diag_b = _math(group, "SUBTRACT", "Crosshatch Diagonal B", -20, 150)
+    luma = _node(group, "ShaderNodeRGBToBW", "Crosshatch Luminance", -220, 20)
+    darkness = _math(group, "SUBTRACT", "Crosshatch Darkness", -20, 20, value_1=1.0)
+    links.new(inp.outputs["UV Vector"], centered.inputs[0]); links.new(centered.outputs[0], separate.inputs[0])
+    links.new(inp.outputs["Texel Y"], aspect.inputs[0]); links.new(inp.outputs["Texel X"], aspect.inputs[1])
+    links.new(separate.outputs["X"], x_aspect.inputs[0]); links.new(aspect.outputs[0], x_aspect.inputs[1])
+    links.new(x_aspect.outputs[0], combine.inputs["X"]); links.new(separate.outputs["Y"], combine.inputs["Y"])
+    links.new(combine.outputs[0], rotate.inputs["Vector"]); links.new(inp.outputs["Rotation"], rotate.inputs["Angle"]); links.new(rotate.outputs["Vector"], axes.inputs[0])
+    links.new(axes.outputs["X"], diag_a.inputs[0]); links.new(axes.outputs["Y"], diag_a.inputs[1]); links.new(axes.outputs["X"], diag_b.inputs[0]); links.new(axes.outputs["Y"], diag_b.inputs[1])
+    links.new(inp.outputs["Color In"], luma.inputs[0]); links.new(luma.outputs[0], darkness.inputs[1])
+    coordinates = (axes.outputs["X"], axes.outputs["Y"], diag_a.outputs[0], diag_b.outputs[0])
+    thresholds = (0.18, 0.38, 0.58, 0.76)
+    active_lines = []
+    for index, (coordinate, threshold) in enumerate(zip(coordinates, thresholds), 1):
+        line = _periodic_line(group, coordinate, inp.outputs["Scale"], inp.outputs["Line Width"], f"Crosshatch {index}", 180, 620 - index * 160)
+        dark_test = _math(group, "GREATER_THAN", f"Crosshatch Darkness Level {index}", 1100, 620 - index * 160, value_2=threshold)
+        level_test = _math(group, "GREATER_THAN", f"Crosshatch Enabled Level {index}", 1100, 540 - index * 160, value_2=(index - 0.5))
+        active = _math(group, "MULTIPLY", f"Crosshatch Active {index}", 1300, 600 - index * 160)
+        active_level = _math(group, "MULTIPLY", f"Crosshatch Active Level {index}", 1490, 600 - index * 160)
+        links.new(darkness.outputs[0], dark_test.inputs[0]); links.new(inp.outputs["Levels"], level_test.inputs[0])
+        links.new(line, active.inputs[0]); links.new(dark_test.outputs[0], active.inputs[1]); links.new(active.outputs[0], active_level.inputs[0]); links.new(level_test.outputs[0], active_level.inputs[1])
+        active_lines.append(active_level.outputs[0])
+    hatch = active_lines[0]
+    for index, socket in enumerate(active_lines[1:], 2):
+        maximum = _math(group, "MAXIMUM", f"Crosshatch Combine {index}", 1700 + index * 150, 300)
+        links.new(hatch, maximum.inputs[0]); links.new(socket, maximum.inputs[1]); hatch = maximum.outputs[0]
+    base = _mix_rgb(group, "MIX", "Crosshatch Paper Base", 2450, 180)
+    ink = _mix_rgb(group, "MIX", "Crosshatch Ink", 2650, 300)
+    final = _mix_rgb(group, "MIX", "Crosshatch Factor", 2860, 300)
+    links.new(inp.outputs["Preserve Color"], base.inputs[0]); links.new(inp.outputs["Paper Color"], base.inputs[1]); links.new(inp.outputs["Color In"], base.inputs[2])
+    links.new(hatch, ink.inputs[0]); links.new(base.outputs[0], ink.inputs[1]); links.new(inp.outputs["Ink Color"], ink.inputs[2])
+    links.new(inp.outputs["Factor"], final.inputs[0]); links.new(inp.outputs["Color In"], final.inputs[1]); links.new(ink.outputs[0], final.inputs[2]); links.new(final.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_emboss(name):
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (("Color In", "NodeSocketColor", (.5,.5,.5,1), None, None), ("UV Vector", "NodeSocketVector", None, None, None), ("Angle", "NodeSocketFloat", .785398, -6.283, 6.283), ("Distance", "NodeSocketFloat", 2, 0, 128), ("Strength", "NodeSocketFloat", 2, -8, 8), ("Bias", "NodeSocketFloat", .5, 0, 1), ("Color Amount", "NodeSocketFloat", 0, 0, 1), ("Factor", "NodeSocketFloat", 1, 0, 1), ("Texel X", "NodeSocketFloat", .001, 0, 1), ("Texel Y", "NodeSocketFloat", .001, 0, 1)):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group); links = group.links
+    cosine = _math(group, "COSINE", "Emboss Cosine", -1100, 500); sine = _math(group, "SINE", "Emboss Sine", -1100, 350)
+    dx = _math(group, "MULTIPLY", "Emboss Direction X", -900, 500); dy = _math(group, "MULTIPLY", "Emboss Direction Y", -900, 350)
+    tx = _math(group, "MULTIPLY", "Emboss Texel X", -700, 500); ty = _math(group, "MULTIPLY", "Emboss Texel Y", -700, 350)
+    offset = _node(group, "ShaderNodeCombineXYZ", "Emboss Offset", -500, 420)
+    uv_plus = _vector_math(group, "ADD", "Emboss Positive UV", -300, 500); uv_minus = _vector_math(group, "SUBTRACT", "Emboss Negative UV", -300, 280)
+    image_plus = _source_image_node(group, "Emboss Positive Sample", -100, 500); image_minus = _source_image_node(group, "Emboss Negative Sample", -100, 280)
+    luma_plus = _node(group, "ShaderNodeRGBToBW", "Emboss Positive Luminance", 100, 500); luma_minus = _node(group, "ShaderNodeRGBToBW", "Emboss Negative Luminance", 100, 280)
+    difference = _math(group, "SUBTRACT", "Emboss Difference", 300, 400); strength = _math(group, "MULTIPLY", "Emboss Strength", 500, 400); bias = _math(group, "ADD", "Emboss Bias", 700, 400)
+    minimum = _math(group, "MAXIMUM", "Emboss Minimum", 900, 400, value_2=0); maximum = _math(group, "MINIMUM", "Emboss Maximum", 1080, 400, value_2=1)
+    grayscale = _node(group, "ShaderNodeCombineColor", "Emboss Grayscale", 1260, 400)
+    colorized = _mix_rgb(group, "MULTIPLY", "Emboss Colorized", 1450, 220, fac=1.0)
+    color_mix = _mix_rgb(group, "MIX", "Emboss Color Amount", 1660, 360)
+    final = _mix_rgb(group, "MIX", "Emboss Factor", 1870, 360)
+    try: grayscale.mode = "RGB"
+    except (AttributeError, TypeError, ValueError): pass
+    links.new(inp.outputs["Angle"], cosine.inputs[0]); links.new(inp.outputs["Angle"], sine.inputs[0])
+    links.new(cosine.outputs[0], dx.inputs[0]); links.new(inp.outputs["Distance"], dx.inputs[1]); links.new(sine.outputs[0], dy.inputs[0]); links.new(inp.outputs["Distance"], dy.inputs[1])
+    links.new(dx.outputs[0], tx.inputs[0]); links.new(inp.outputs["Texel X"], tx.inputs[1]); links.new(dy.outputs[0], ty.inputs[0]); links.new(inp.outputs["Texel Y"], ty.inputs[1])
+    links.new(tx.outputs[0], offset.inputs["X"]); links.new(ty.outputs[0], offset.inputs["Y"])
+    links.new(inp.outputs["UV Vector"], uv_plus.inputs[0]); links.new(offset.outputs[0], uv_plus.inputs[1]); links.new(inp.outputs["UV Vector"], uv_minus.inputs[0]); links.new(offset.outputs[0], uv_minus.inputs[1])
+    links.new(uv_plus.outputs[0], image_plus.inputs["Vector"]); links.new(uv_minus.outputs[0], image_minus.inputs["Vector"])
+    links.new(image_plus.outputs["Color"], luma_plus.inputs[0]); links.new(image_minus.outputs["Color"], luma_minus.inputs[0])
+    links.new(luma_plus.outputs[0], difference.inputs[0]); links.new(luma_minus.outputs[0], difference.inputs[1]); links.new(difference.outputs[0], strength.inputs[0]); links.new(inp.outputs["Strength"], strength.inputs[1])
+    links.new(strength.outputs[0], bias.inputs[0]); links.new(inp.outputs["Bias"], bias.inputs[1]); links.new(bias.outputs[0], minimum.inputs[0]); links.new(minimum.outputs[0], maximum.inputs[0])
+    for index in range(3): links.new(maximum.outputs[0], grayscale.inputs[index])
+    links.new(inp.outputs["Color In"], colorized.inputs[1]); links.new(grayscale.outputs[0], colorized.inputs[2])
+    links.new(inp.outputs["Color Amount"], color_mix.inputs[0]); links.new(grayscale.outputs[0], color_mix.inputs[1]); links.new(colorized.outputs[0], color_mix.inputs[2])
+    links.new(inp.outputs["Factor"], final.inputs[0]); links.new(inp.outputs["Color In"], final.inputs[1]); links.new(color_mix.outputs[0], final.inputs[2]); links.new(final.outputs[0], out.inputs["Color Out"])
+    return group
+
+
+def _create_false_color(name):
+    group=bpy.data.node_groups.new(name,"ShaderNodeTree");_socket(group,"Color In","INPUT","NodeSocketColor",default=(.5,.5,.5,1));_socket(group,"Dark Color","INPUT","NodeSocketColor",default=(0,.05,.3,1));_socket(group,"Light Color","INPUT","NodeSocketColor",default=(1,.65,.05,1));_socket(group,"Factor","INPUT","NodeSocketFloat",default=1,minimum=0,maximum=1);_socket(group,"Color Out","OUTPUT","NodeSocketColor");inp,out=_group_io(group);links=group.links;l=_node(group,"ShaderNodeRGBToBW","False Color Luma",-400,150);mapc=_mix_rgb(group,"MIX","False Color Map",-100,150);mix=_mix_rgb(group,"MIX","False Color Factor",180,150);links.new(inp.outputs["Color In"],l.inputs[0]);links.new(l.outputs[0],mapc.inputs[0]);links.new(inp.outputs["Dark Color"],mapc.inputs[1]);links.new(inp.outputs["Light Color"],mapc.inputs[2]);links.new(inp.outputs["Factor"],mix.inputs[0]);links.new(inp.outputs["Color In"],mix.inputs[1]);links.new(mapc.outputs[0],mix.inputs[2]);links.new(mix.outputs[0],out.inputs["Color Out"]);return group
+
+
+def _create_chromatic_aberration(name):
+    group=bpy.data.node_groups.new(name,"ShaderNodeTree")
+    for n,t,d,mi,ma in (("Color In","NodeSocketColor",(.5,.5,.5,1),None,None),("UV Vector","NodeSocketVector",None,None,None),("Distance","NodeSocketFloat",3,0,128),("Angle","NodeSocketFloat",0,-6.283,6.283),("Factor","NodeSocketFloat",1,0,1),("Texel X","NodeSocketFloat",.001,0,1),("Texel Y","NodeSocketFloat",.001,0,1)):_socket(group,n,"INPUT",t,default=d,minimum=mi,maximum=ma)
+    _socket(group,"Color Out","OUTPUT","NodeSocketColor");inp,out=_group_io(group);links=group.links;cos=_math(group,"COSINE","CA Cos",-900,400);sin=_math(group,"SINE","CA Sin",-900,250);dx=_math(group,"MULTIPLY","CA DX",-720,400);dy=_math(group,"MULTIPLY","CA DY",-720,250);tx=_math(group,"MULTIPLY","CA TX",-540,400);ty=_math(group,"MULTIPLY","CA TY",-540,250);off=_node(group,"ShaderNodeCombineXYZ","CA Offset",-360,320);uvr=_vector_math(group,"ADD","CA Red UV",-180,420);uvb=_vector_math(group,"SUBTRACT","CA Blue UV",-180,180);red=_source_image_node(group,"CA Red",20,420);blue=_source_image_node(group,"CA Blue",20,180);sr=_node(group,"ShaderNodeSeparateColor","CA Red Split",220,420);ss=_node(group,"ShaderNodeSeparateColor","CA Source Split",220,300);sb=_node(group,"ShaderNodeSeparateColor","CA Blue Split",220,180);comb=_node(group,"ShaderNodeCombineColor","CA Combine",440,300);mix=_mix_rgb(group,"MIX","CA Factor",660,300)
+    for n in (sr, ss, sb, comb):
+        try:
+            n.mode = 'RGB'
+        except (AttributeError, TypeError, ValueError):
+            pass
+    links.new(inp.outputs["Angle"],cos.inputs[0]);links.new(inp.outputs["Angle"],sin.inputs[0]);links.new(cos.outputs[0],dx.inputs[0]);links.new(inp.outputs["Distance"],dx.inputs[1]);links.new(sin.outputs[0],dy.inputs[0]);links.new(inp.outputs["Distance"],dy.inputs[1]);links.new(dx.outputs[0],tx.inputs[0]);links.new(inp.outputs["Texel X"],tx.inputs[1]);links.new(dy.outputs[0],ty.inputs[0]);links.new(inp.outputs["Texel Y"],ty.inputs[1]);links.new(tx.outputs[0],off.inputs["X"]);links.new(ty.outputs[0],off.inputs["Y"]);links.new(inp.outputs["UV Vector"],uvr.inputs[0]);links.new(off.outputs[0],uvr.inputs[1]);links.new(inp.outputs["UV Vector"],uvb.inputs[0]);links.new(off.outputs[0],uvb.inputs[1]);links.new(uvr.outputs[0],red.inputs["Vector"]);links.new(uvb.outputs[0],blue.inputs["Vector"]);links.new(red.outputs["Color"],sr.inputs[0]);links.new(inp.outputs["Color In"],ss.inputs[0]);links.new(blue.outputs["Color"],sb.inputs[0]);links.new(sr.outputs["Red"],comb.inputs[0]);links.new(ss.outputs["Green"],comb.inputs[1]);links.new(sb.outputs["Blue"],comb.inputs[2]);links.new(inp.outputs["Factor"],mix.inputs[0]);links.new(inp.outputs["Color In"],mix.inputs[1]);links.new(comb.outputs[0],mix.inputs[2]);links.new(mix.outputs[0],out.inputs["Color Out"]);return group
+
+
 def _create_gradient_light(name):
     """Multiply the source by a directional user-editable Color Ramp."""
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
     _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
     _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Center X", "INPUT", "NodeSocketFloat", default=0.5, minimum=-2.0, maximum=3.0)
+    _socket(group, "Center Y", "INPUT", "NodeSocketFloat", default=0.5, minimum=-2.0, maximum=3.0)
     _socket(group, "Light Angle", "INPUT", "NodeSocketFloat", default=0.0, minimum=-6.283185, maximum=6.283185)
     _socket(group, "Light Position", "INPUT", "NodeSocketFloat", default=0.0, minimum=-2.0, maximum=2.0)
     _socket(group, "Strength", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
@@ -1074,8 +2967,8 @@ def _create_gradient_light(name):
     inp, out = _group_io(group)
     links = group.links
 
+    center_vector = _node(group, "ShaderNodeCombineXYZ", "Gradient Light Center", -900, -80)
     center = _vector_math(group, "SUBTRACT", "Centered Light UV", -700, 120)
-    center.inputs[1].default_value = (0.5, 0.5, 0.0)
     rotate = _node(group, "ShaderNodeVectorRotate", "Rotate Gradient Light", -480, 120)
     rotate.rotation_type = "Z_AXIS"
     rotate.inputs["Center"].default_value = (0.0, 0.0, 0.0)
@@ -1090,7 +2983,10 @@ def _create_gradient_light(name):
     multiply = _mix_rgb(group, "MULTIPLY", "Gradient Light Multiply", 610, 130)
     result = _mix_rgb(group, "MIX", "Gradient Light Strength", 850, 130)
 
+    links.new(inp.outputs["Center X"], center_vector.inputs["X"])
+    links.new(inp.outputs["Center Y"], center_vector.inputs["Y"])
     links.new(inp.outputs["UV Vector"], center.inputs[0])
+    links.new(center_vector.outputs[0], center.inputs[1])
     links.new(center.outputs[0], rotate.inputs["Vector"])
     links.new(inp.outputs["Light Angle"], rotate.inputs["Angle"])
     links.new(rotate.outputs["Vector"], separate.inputs[0])
@@ -1113,8 +3009,12 @@ def _rim_image_sample(group, uv_output, vector_offset, name, x, y):
     image = _node(group, "ShaderNodeTexImage", f"{name} Sample", x + 210, y)
     image["fbp_matrix_source_image_node"] = True
     image["fbp_source_interpolation"] = "Linear"
+    # Rim samples must not extend edge pixels beyond the image domain. The
+    # private-source synchronizer reads this explicit contract instead of
+    # forcing EXTEND on every image-aware shader effect.
+    image["fbp_source_extension"] = "CLIP"
     try:
-        image.extension = "EXTEND"
+        image.extension = "CLIP"
         image.interpolation = "Linear"
     except (AttributeError, TypeError, ValueError):
         pass
@@ -1125,13 +3025,24 @@ def _rim_image_sample(group, uv_output, vector_offset, name, x, y):
 
 
 def _create_rim(name):
-    """Create a soft colorable inner/outer rim from source alpha."""
+    """Create an alpha-safe inner rim with a real two-radius blur kernel.
+
+    The result never expands the source silhouette: color is mixed only where
+    ``Alpha In`` is already visible and ``Alpha Out`` passes through unchanged.
+    Blur interpolates between a Width-sized erosion kernel and a wider kernel,
+    so it softens the inner edge instead of merely increasing opacity or moving
+    the border outside the original image alpha.
+    """
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
     _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
     _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
     _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "Width", "INPUT", "NodeSocketFloat", default=0.012, minimum=0.00001, maximum=0.5)
+    _socket(group, "Offset X", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0)
+    _socket(group, "Offset Y", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0)
+    _socket(group, "Rotation", "INPUT", "NodeSocketFloat", default=0.0, minimum=-6.283185307, maximum=6.283185307)
+    _socket(group, "Blur", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=0.5)
     _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.25, minimum=0.0, maximum=1.0)
     _socket(group, "Intensity", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=2.0)
     _socket(group, "Rim Color", "INPUT", "NodeSocketColor", default=(1.0, 0.35, 0.05, 1.0))
@@ -1140,105 +3051,445 @@ def _create_rim(name):
     inp, out = _group_io(group)
     links = group.links
 
-    neg_width = _math(group, "MULTIPLY", "Negative Rim Width", -820, -240, value_2=-1.0)
-    offset_r = _node(group, "ShaderNodeCombineXYZ", "Rim Right Offset", -620, 430)
-    offset_l = _node(group, "ShaderNodeCombineXYZ", "Rim Left Offset", -620, 250)
-    offset_u = _node(group, "ShaderNodeCombineXYZ", "Rim Up Offset", -620, 70)
-    offset_d = _node(group, "ShaderNodeCombineXYZ", "Rim Down Offset", -620, -110)
-    links.new(inp.outputs["Width"], neg_width.inputs[0])
-    links.new(inp.outputs["Width"], offset_r.inputs["X"])
-    links.new(neg_width.outputs[0], offset_l.inputs["X"])
-    links.new(inp.outputs["Width"], offset_u.inputs["Y"])
-    links.new(neg_width.outputs[0], offset_d.inputs["Y"])
+    # Rotate the controller offset in plane-local space. The controller itself
+    # is parented to the plane, so its local Z rotation follows any rig/plane
+    # orientation without introducing world-space assumptions.
+    cosine = _math(group, "COSINE", "Rim Rotation Cosine", -1900, 820)
+    sine = _math(group, "SINE", "Rim Rotation Sine", -1900, 680)
+    x_cos = _math(group, "MULTIPLY", "Rim X Cos", -1710, 860)
+    y_sin = _math(group, "MULTIPLY", "Rim Y Sin", -1710, 750)
+    x_sin = _math(group, "MULTIPLY", "Rim X Sin", -1710, 630)
+    y_cos = _math(group, "MULTIPLY", "Rim Y Cos", -1710, 520)
+    rotated_x = _math(group, "SUBTRACT", "Rim Rotated X", -1510, 820)
+    rotated_y = _math(group, "ADD", "Rim Rotated Y", -1510, 600)
+    negative_x = _math(group, "MULTIPLY", "Rim Negative X", -1320, 820, value_2=-1.0)
+    negative_y = _math(group, "MULTIPLY", "Rim Negative Y", -1320, 600, value_2=-1.0)
+    spatial_offset = _node(group, "ShaderNodeCombineXYZ", "Rim Spatial Offset", -1130, 710)
+    shifted_uv = _vector_math(group, "ADD", "Rim Shifted UV", -930, 710)
+    links.new(inp.outputs["Rotation"], cosine.inputs[0])
+    links.new(inp.outputs["Rotation"], sine.inputs[0])
+    links.new(inp.outputs["Offset X"], x_cos.inputs[0])
+    links.new(cosine.outputs[0], x_cos.inputs[1])
+    links.new(inp.outputs["Offset Y"], y_sin.inputs[0])
+    links.new(sine.outputs[0], y_sin.inputs[1])
+    links.new(inp.outputs["Offset X"], x_sin.inputs[0])
+    links.new(sine.outputs[0], x_sin.inputs[1])
+    links.new(inp.outputs["Offset Y"], y_cos.inputs[0])
+    links.new(cosine.outputs[0], y_cos.inputs[1])
+    links.new(x_cos.outputs[0], rotated_x.inputs[0])
+    links.new(y_sin.outputs[0], rotated_x.inputs[1])
+    links.new(x_sin.outputs[0], rotated_y.inputs[0])
+    links.new(y_cos.outputs[0], rotated_y.inputs[1])
+    links.new(rotated_x.outputs[0], negative_x.inputs[0])
+    links.new(rotated_y.outputs[0], negative_y.inputs[0])
+    links.new(negative_x.outputs[0], spatial_offset.inputs["X"])
+    links.new(negative_y.outputs[0], spatial_offset.inputs["Y"])
+    links.new(inp.outputs["UV Vector"], shifted_uv.inputs[0])
+    links.new(spatial_offset.outputs[0], shifted_uv.inputs[1])
 
-    samples = [
-        _rim_image_sample(group, inp.outputs["UV Vector"], offset_r.outputs[0], "Rim Right", -390, 430),
-        _rim_image_sample(group, inp.outputs["UV Vector"], offset_l.outputs[0], "Rim Left", -390, 250),
-        _rim_image_sample(group, inp.outputs["UV Vector"], offset_u.outputs[0], "Rim Up", -390, 70),
-        _rim_image_sample(group, inp.outputs["UV Vector"], offset_d.outputs[0], "Rim Down", -390, -110),
-    ]
-    max_a = _math(group, "MAXIMUM", "Rim Neighbor Max A", 60, 360)
-    max_b = _math(group, "MAXIMUM", "Rim Neighbor Max B", 60, 140)
-    max_all = _math(group, "MAXIMUM", "Rim Neighbor Maximum", 250, 250)
-    min_a = _math(group, "MINIMUM", "Rim Neighbor Min A", 60, -80)
-    min_b = _math(group, "MINIMUM", "Rim Neighbor Min B", 60, -300)
-    min_all = _math(group, "MINIMUM", "Rim Neighbor Minimum", 250, -190)
-    for node, a, b in ((max_a, samples[0], samples[1]), (max_b, samples[2], samples[3]), (min_a, samples[0], samples[1]), (min_b, samples[2], samples[3])):
-        links.new(a, node.inputs[0])
-        links.new(b, node.inputs[1])
-    links.new(max_a.outputs[0], max_all.inputs[0])
-    links.new(max_b.outputs[0], max_all.inputs[1])
-    links.new(min_a.outputs[0], min_all.inputs[0])
-    links.new(min_b.outputs[0], min_all.inputs[1])
-    outer = _math(group, "SUBTRACT", "Outer Rim", 450, 280)
-    inner = _math(group, "SUBTRACT", "Inner Rim", 450, 70)
-    edge = _math(group, "MAXIMUM", "Image Rim Edge", 630, 180)
-    links.new(max_all.outputs[0], outer.inputs[0])
-    links.new(inp.outputs["Alpha In"], outer.inputs[1])
-    links.new(inp.outputs["Alpha In"], inner.inputs[0])
-    links.new(min_all.outputs[0], inner.inputs[1])
-    links.new(outer.outputs[0], edge.inputs[0])
-    links.new(inner.outputs[0], edge.inputs[1])
+    safe_width = _math(group, "MAXIMUM", "Rim Safe Width", -930, 450, value_2=0.00001)
+    soft_radius = _math(group, "ADD", "Rim Soft Radius", -740, 450)
+    safe_soft_radius = _math(group, "MAXIMUM", "Rim Safe Soft Radius", -550, 450, value_2=0.00001)
+    blur_ratio = _math(group, "DIVIDE", "Rim Blur Ratio", -360, 450)
+    blur_low = _math(group, "MAXIMUM", "Rim Blur Clamp Low", -170, 450, value_2=0.0)
+    blur_factor = _math(group, "MINIMUM", "Rim Blur Factor", 20, 450, value_2=1.0)
+    inverse_blur = _math(group, "SUBTRACT", "Rim Sharp Weight", 210, 450, value_1=1.0)
+    links.new(inp.outputs["Width"], safe_width.inputs[0])
+    links.new(safe_width.outputs[0], soft_radius.inputs[0])
+    links.new(inp.outputs["Blur"], soft_radius.inputs[1])
+    links.new(soft_radius.outputs[0], safe_soft_radius.inputs[0])
+    links.new(inp.outputs["Blur"], blur_ratio.inputs[0])
+    links.new(safe_soft_radius.outputs[0], blur_ratio.inputs[1])
+    links.new(blur_ratio.outputs[0], blur_low.inputs[0])
+    links.new(blur_low.outputs[0], blur_factor.inputs[0])
+    links.new(blur_factor.outputs[0], inverse_blur.inputs[1])
 
-    # UV-border fallback for procedural Color/Gradient planes.
-    uv_sep = _node(group, "ShaderNodeSeparateXYZ", "Rim UV Axes", -360, -470)
-    inv_x = _math(group, "SUBTRACT", "Rim Inverse X", -140, -520, value_1=1.0)
-    inv_y = _math(group, "SUBTRACT", "Rim Inverse Y", -140, -680, value_1=1.0)
-    min_x = _math(group, "MINIMUM", "Rim X Distance", 50, -520)
-    min_y = _math(group, "MINIMUM", "Rim Y Distance", 50, -680)
-    border_distance = _math(group, "MINIMUM", "Rim Border Distance", 250, -600)
-    border_limit = _math(group, "ADD", "Rim Border Soft Limit", 450, -610)
-    border_delta = _math(group, "SUBTRACT", "Rim Border Delta", 630, -600)
-    safe_soft = _math(group, "MAXIMUM", "Rim Safe Softness", 630, -740, value_2=0.0001)
-    border_norm = _math(group, "DIVIDE", "Rim Border Normalize", 810, -620)
-    border_clamp_low = _math(group, "MAXIMUM", "Rim Border Clamp Low", 990, -620, value_2=0.0)
-    border_mask = _math(group, "MINIMUM", "Rim Border Mask", 1170, -620, value_2=1.0)
-    links.new(inp.outputs["UV Vector"], uv_sep.inputs[0])
-    links.new(uv_sep.outputs["X"], inv_x.inputs[1])
-    links.new(uv_sep.outputs["Y"], inv_y.inputs[1])
-    links.new(uv_sep.outputs["X"], min_x.inputs[0])
+    def build_image_kernel(radius_socket, prefix, x, y):
+        diagonal = _math(group, "MULTIPLY", f"{prefix} Diagonal Radius", x, y - 30, value_2=0.70710678118)
+        negative_radius = _math(group, "MULTIPLY", f"{prefix} Negative Radius", x, y - 140, value_2=-1.0)
+        negative_diagonal = _math(group, "MULTIPLY", f"{prefix} Negative Diagonal", x + 190, y - 140, value_2=-1.0)
+        links.new(radius_socket, diagonal.inputs[0])
+        links.new(radius_socket, negative_radius.inputs[0])
+        links.new(diagonal.outputs[0], negative_diagonal.inputs[0])
+        specs = (
+            (None, None, "Center", 4.0),
+            (radius_socket, None, "Right", 2.0),
+            (negative_radius.outputs[0], None, "Left", 2.0),
+            (None, radius_socket, "Up", 2.0),
+            (None, negative_radius.outputs[0], "Down", 2.0),
+            (diagonal.outputs[0], diagonal.outputs[0], "Up Right", 1.0),
+            (negative_diagonal.outputs[0], diagonal.outputs[0], "Up Left", 1.0),
+            (diagonal.outputs[0], negative_diagonal.outputs[0], "Down Right", 1.0),
+            (negative_diagonal.outputs[0], negative_diagonal.outputs[0], "Down Left", 1.0),
+        )
+        weighted_samples = []
+        for index, (x_socket, y_socket, label, weight) in enumerate(specs):
+            row_y = y + 250 - index * 115
+            combine = _node(group, "ShaderNodeCombineXYZ", f"{prefix} {label} Offset", x + 380, row_y)
+            if x_socket is not None:
+                links.new(x_socket, combine.inputs["X"])
+            if y_socket is not None:
+                links.new(y_socket, combine.inputs["Y"])
+            alpha_sample = _rim_image_sample(
+                group, shifted_uv.outputs[0], combine.outputs[0],
+                f"{prefix} {label}", x + 570, row_y,
+            )
+            if weight != 1.0:
+                weighted = _math(group, "MULTIPLY", f"{prefix} {label} Weight", x + 980, row_y, value_2=weight)
+                links.new(alpha_sample, weighted.inputs[0])
+                weighted_samples.append(weighted.outputs[0])
+            else:
+                weighted_samples.append(alpha_sample)
+        total = weighted_samples[0]
+        for index, sample in enumerate(weighted_samples[1:], 1):
+            add = _math(group, "ADD", f"{prefix} Sample Sum {index}", x + 1180 + index * 120, y)
+            links.new(total, add.inputs[0])
+            links.new(sample, add.inputs[1])
+            total = add.outputs[0]
+        average = _math(group, "MULTIPLY", f"{prefix} Gaussian Alpha", x + 2250, y, value_2=(1.0 / 16.0))
+        links.new(total, average.inputs[0])
+        return average.outputs[0]
+
+    sharp_image_alpha = build_image_kernel(safe_width.outputs[0], "Rim Sharp", -120, 1150)
+    soft_image_alpha = build_image_kernel(safe_soft_radius.outputs[0], "Rim Blur", -120, -100)
+    sharp_image_weight = _math(group, "MULTIPLY", "Rim Sharp Image Weight", 2550, 780)
+    soft_image_weight = _math(group, "MULTIPLY", "Rim Soft Image Weight", 2550, 620)
+    blended_image_alpha = _math(group, "ADD", "Rim Blended Image Alpha", 2740, 700)
+    links.new(sharp_image_alpha, sharp_image_weight.inputs[0])
+    links.new(inverse_blur.outputs[0], sharp_image_weight.inputs[1])
+    links.new(soft_image_alpha, soft_image_weight.inputs[0])
+    links.new(blur_factor.outputs[0], soft_image_weight.inputs[1])
+    links.new(sharp_image_weight.outputs[0], blended_image_alpha.inputs[0])
+    links.new(soft_image_weight.outputs[0], blended_image_alpha.inputs[1])
+
+    # Procedural Color/Gradient planes do not expose an image texture. Recreate
+    # the same two-radius contract from the shifted UV distance to the border.
+    uv_axes = _node(group, "ShaderNodeSeparateXYZ", "Rim UV Axes", 2550, 250)
+    inv_x = _math(group, "SUBTRACT", "Rim Inverse X", 2740, 300, value_1=1.0)
+    inv_y = _math(group, "SUBTRACT", "Rim Inverse Y", 2740, 160, value_1=1.0)
+    min_x = _math(group, "MINIMUM", "Rim X Border Distance", 2930, 300)
+    min_y = _math(group, "MINIMUM", "Rim Y Border Distance", 2930, 160)
+    border_distance = _math(group, "MINIMUM", "Rim Border Distance", 3120, 230)
+    links.new(shifted_uv.outputs[0], uv_axes.inputs[0])
+    links.new(uv_axes.outputs["X"], inv_x.inputs[1])
+    links.new(uv_axes.outputs["Y"], inv_y.inputs[1])
+    links.new(uv_axes.outputs["X"], min_x.inputs[0])
     links.new(inv_x.outputs[0], min_x.inputs[1])
-    links.new(uv_sep.outputs["Y"], min_y.inputs[0])
+    links.new(uv_axes.outputs["Y"], min_y.inputs[0])
     links.new(inv_y.outputs[0], min_y.inputs[1])
     links.new(min_x.outputs[0], border_distance.inputs[0])
     links.new(min_y.outputs[0], border_distance.inputs[1])
-    links.new(inp.outputs["Width"], border_limit.inputs[0])
-    links.new(inp.outputs["Softness"], border_limit.inputs[1])
-    links.new(border_limit.outputs[0], border_delta.inputs[0])
-    links.new(border_distance.outputs[0], border_delta.inputs[1])
-    links.new(inp.outputs["Softness"], safe_soft.inputs[0])
-    links.new(border_delta.outputs[0], border_norm.inputs[0])
-    links.new(safe_soft.outputs[0], border_norm.inputs[1])
-    links.new(border_norm.outputs[0], border_clamp_low.inputs[0])
-    links.new(border_clamp_low.outputs[0], border_mask.inputs[0])
 
-    image_weight = _math(group, "MULTIPLY", "Image Rim Weight", 830, 180)
-    fallback_weight = _math(group, "SUBTRACT", "Fallback Rim Weight", 830, -40, value_1=1.0)
-    fallback_mask = _math(group, "MULTIPLY", "Fallback Rim", 1010, -40)
-    combined = _math(group, "ADD", "Selected Rim", 1190, 100)
-    intensity = _math(group, "MULTIPLY", "Rim Intensity", 1370, 100)
-    clamp = _math(group, "MINIMUM", "Rim Clamp", 1540, 100, value_2=1.0)
-    links.new(edge.outputs[0], image_weight.inputs[0])
+    def build_procedural_alpha(radius_socket, prefix, x, y):
+        normalized = _math(group, "DIVIDE", f"{prefix} Normalize", x, y)
+        clamp_low = _math(group, "MAXIMUM", f"{prefix} Clamp Low", x + 190, y, value_2=0.0)
+        clamp_high = _math(group, "MINIMUM", f"{prefix} Alpha", x + 380, y, value_2=1.0)
+        links.new(border_distance.outputs[0], normalized.inputs[0])
+        links.new(radius_socket, normalized.inputs[1])
+        links.new(normalized.outputs[0], clamp_low.inputs[0])
+        links.new(clamp_low.outputs[0], clamp_high.inputs[0])
+        return clamp_high.outputs[0]
+
+    sharp_procedural = build_procedural_alpha(safe_width.outputs[0], "Rim Sharp Procedural", 3310, 310)
+    soft_procedural = build_procedural_alpha(safe_soft_radius.outputs[0], "Rim Soft Procedural", 3310, 120)
+    sharp_proc_weight = _math(group, "MULTIPLY", "Rim Sharp Procedural Weight", 3890, 310)
+    soft_proc_weight = _math(group, "MULTIPLY", "Rim Soft Procedural Weight", 3890, 120)
+    blended_procedural = _math(group, "ADD", "Rim Blended Procedural Alpha", 4080, 220)
+    links.new(sharp_procedural, sharp_proc_weight.inputs[0])
+    links.new(inverse_blur.outputs[0], sharp_proc_weight.inputs[1])
+    links.new(soft_procedural, soft_proc_weight.inputs[0])
+    links.new(blur_factor.outputs[0], soft_proc_weight.inputs[1])
+    links.new(sharp_proc_weight.outputs[0], blended_procedural.inputs[0])
+    links.new(soft_proc_weight.outputs[0], blended_procedural.inputs[1])
+
+    image_weight = _math(group, "MULTIPLY", "Rim Image Source Weight", 4260, 700)
+    inverse_use = _math(group, "SUBTRACT", "Rim Procedural Source Weight", 4260, 500, value_1=1.0)
+    procedural_weight = _math(group, "MULTIPLY", "Rim Procedural Weighted", 4450, 500)
+    sampled_alpha = _math(group, "ADD", "Rim Selected Alpha", 4640, 620)
+    links.new(blended_image_alpha.outputs[0], image_weight.inputs[0])
     links.new(inp.outputs["Use Image Sample"], image_weight.inputs[1])
-    links.new(inp.outputs["Use Image Sample"], fallback_weight.inputs[1])
-    links.new(border_mask.outputs[0], fallback_mask.inputs[0])
-    links.new(fallback_weight.outputs[0], fallback_mask.inputs[1])
-    links.new(image_weight.outputs[0], combined.inputs[0])
-    links.new(fallback_mask.outputs[0], combined.inputs[1])
-    links.new(combined.outputs[0], intensity.inputs[0])
+    links.new(inp.outputs["Use Image Sample"], inverse_use.inputs[1])
+    links.new(blended_procedural.outputs[0], procedural_weight.inputs[0])
+    links.new(inverse_use.outputs[0], procedural_weight.inputs[1])
+    links.new(image_weight.outputs[0], sampled_alpha.inputs[0])
+    links.new(procedural_weight.outputs[0], sampled_alpha.inputs[1])
+
+    # A - shifted/eroded A is an inner rim. Multiplying by A and preserving
+    # Alpha Out guarantees no colored pixels appear outside the original alpha.
+    difference = _math(group, "SUBTRACT", "Rim Inner Difference", 4830, 620)
+    positive = _math(group, "MAXIMUM", "Rim Positive Difference", 5020, 620, value_2=0.0)
+    inside = _math(group, "MULTIPLY", "Rim Inside Original Alpha", 5210, 620)
+    softness_gain = _math(group, "MULTIPLY", "Rim Softness Gain", 4830, 400, value_2=4.0)
+    softness_denom = _math(group, "ADD", "Rim Softness Denominator", 5020, 400, value_2=1.0)
+    exponent = _math(group, "DIVIDE", "Rim Softness Exponent", 5210, 400, value_1=1.0)
+    softened = _math(group, "POWER", "Rim Softened Mask", 5400, 620)
+    intensity = _math(group, "MULTIPLY", "Rim Intensity", 5590, 620)
+    clamp = _math(group, "MINIMUM", "Rim Clamp", 5780, 620, value_2=1.0)
+    links.new(inp.outputs["Alpha In"], difference.inputs[0])
+    links.new(sampled_alpha.outputs[0], difference.inputs[1])
+    links.new(difference.outputs[0], positive.inputs[0])
+    links.new(positive.outputs[0], inside.inputs[0])
+    links.new(inp.outputs["Alpha In"], inside.inputs[1])
+    links.new(inp.outputs["Softness"], softness_gain.inputs[0])
+    links.new(softness_gain.outputs[0], softness_denom.inputs[0])
+    links.new(softness_denom.outputs[0], exponent.inputs[1])
+    links.new(inside.outputs[0], softened.inputs[0])
+    links.new(exponent.outputs[0], softened.inputs[1])
+    links.new(softened.outputs[0], intensity.inputs[0])
     links.new(inp.outputs["Intensity"], intensity.inputs[1])
     links.new(intensity.outputs[0], clamp.inputs[0])
 
-    mix = _mix_rgb(group, "MIX", "Apply Rim Color", 1740, 160)
-    alpha = _math(group, "MAXIMUM", "Rim Alpha", 1740, -40)
+    mix = _mix_rgb(group, "MIX", "Apply Inner Rim", 5970, 620)
     links.new(clamp.outputs[0], mix.inputs[0])
     links.new(inp.outputs["Color In"], mix.inputs[1])
     links.new(inp.outputs["Rim Color"], mix.inputs[2])
-    links.new(inp.outputs["Alpha In"], alpha.inputs[0])
-    links.new(clamp.outputs[0], alpha.inputs[1])
     links.new(mix.outputs[0], out.inputs["Color Out"])
-    links.new(alpha.outputs[0], out.inputs["Alpha Out"])
-    group["fbp_rim_contract_version"] = 1
+    links.new(inp.outputs["Alpha In"], out.inputs["Alpha Out"])
+    group["fbp_rim_contract_version"] = 5
+    return group
+
+
+def _create_shadow(name):
+    """Create an alpha-aware inner/outer shadow with straight-alpha compositing.
+
+    Outer shadows are composited as a real source-over operation instead of
+    mixing hidden RGB values from transparent texels. This avoids pale fringes,
+    dark seams and opacity-dependent color shifts around antialiased edges.
+    """
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Blend Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=7.0)
+    _socket(group, "Offset X", "INPUT", "NodeSocketFloat", default=0.025, minimum=-1.0, maximum=1.0)
+    _socket(group, "Offset Y", "INPUT", "NodeSocketFloat", default=-0.025, minimum=-1.0, maximum=1.0)
+    _socket(group, "Blur", "INPUT", "NodeSocketFloat", default=0.02, minimum=0.0, maximum=0.5)
+    _socket(group, "Opacity", "INPUT", "NodeSocketFloat", default=0.65, minimum=0.0, maximum=1.0)
+    _socket(group, "Shadow Color", "INPUT", "NodeSocketColor", default=(0.0, 0.0, 0.0, 1.0))
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    # Positive Position values move the visible shadow in the same direction,
+    # therefore the source alpha is sampled from the inverse UV direction.
+    neg_x = _math(group, "MULTIPLY", "Shadow Negative X", -1850, 720, value_2=-1.0)
+    neg_y = _math(group, "MULTIPLY", "Shadow Negative Y", -1850, 590, value_2=-1.0)
+    base_offset = _node(group, "ShaderNodeCombineXYZ", "Shadow Position", -1650, 660)
+    shifted_uv = _vector_math(group, "ADD", "Shadow Shifted UV", -1450, 660)
+    links.new(inp.outputs["Offset X"], neg_x.inputs[0])
+    links.new(inp.outputs["Offset Y"], neg_y.inputs[0])
+    links.new(neg_x.outputs[0], base_offset.inputs["X"])
+    links.new(neg_y.outputs[0], base_offset.inputs["Y"])
+    links.new(inp.outputs["UV Vector"], shifted_uv.inputs[0])
+    links.new(base_offset.outputs[0], shifted_uv.inputs[1])
+
+    # Nine-tap Gaussian-like kernel. It is deliberately fixed-size so slider
+    # edits stay cheap and animated image sequences do not allocate runtime data.
+    safe_blur = _math(group, "MAXIMUM", "Shadow Safe Blur", -1450, 390, value_2=0.000001)
+    diagonal = _math(group, "MULTIPLY", "Shadow Diagonal Radius", -1260, 390, value_2=0.70710678118)
+    negative = _math(group, "MULTIPLY", "Shadow Negative Radius", -1260, 270, value_2=-1.0)
+    negative_diagonal = _math(group, "MULTIPLY", "Shadow Negative Diagonal", -1070, 270, value_2=-1.0)
+    links.new(inp.outputs["Blur"], safe_blur.inputs[0])
+    links.new(safe_blur.outputs[0], diagonal.inputs[0])
+    links.new(safe_blur.outputs[0], negative.inputs[0])
+    links.new(diagonal.outputs[0], negative_diagonal.inputs[0])
+
+    specs = (
+        (None, None, "Center", 4.0),
+        (safe_blur.outputs[0], None, "Right", 2.0),
+        (negative.outputs[0], None, "Left", 2.0),
+        (None, safe_blur.outputs[0], "Up", 2.0),
+        (None, negative.outputs[0], "Down", 2.0),
+        (diagonal.outputs[0], diagonal.outputs[0], "Up Right", 1.0),
+        (negative_diagonal.outputs[0], diagonal.outputs[0], "Up Left", 1.0),
+        (diagonal.outputs[0], negative_diagonal.outputs[0], "Down Right", 1.0),
+        (negative_diagonal.outputs[0], negative_diagonal.outputs[0], "Down Left", 1.0),
+    )
+    weighted_samples = []
+    for index, (x_socket, y_socket, label, weight) in enumerate(specs):
+        y = 1220 - index * 135
+        offset = _node(group, "ShaderNodeCombineXYZ", f"Shadow {label} Offset", -1020, y)
+        if x_socket is not None:
+            links.new(x_socket, offset.inputs["X"])
+        if y_socket is not None:
+            links.new(y_socket, offset.inputs["Y"])
+        alpha = _rim_image_sample(group, shifted_uv.outputs[0], offset.outputs[0], f"Shadow {label}", -820, y)
+        if weight != 1.0:
+            weighted = _math(group, "MULTIPLY", f"Shadow {label} Weight", -390, y, value_2=weight)
+            links.new(alpha, weighted.inputs[0])
+            weighted_samples.append(weighted.outputs[0])
+        else:
+            weighted_samples.append(alpha)
+    total = weighted_samples[0]
+    for index, sample in enumerate(weighted_samples[1:], 1):
+        add = _math(group, "ADD", f"Shadow Sample Sum {index}", 20 + index * 125, 850)
+        links.new(total, add.inputs[0])
+        links.new(sample, add.inputs[1])
+        total = add.outputs[0]
+    image_alpha = _math(group, "MULTIPLY", "Shadow Gaussian Alpha", 1120, 850, value_2=1.0 / 16.0)
+    links.new(total, image_alpha.inputs[0])
+
+    # Color and Gradient planes have no private image sample. Reconstruct their
+    # rectangular alpha from UVs so Inner Shadow remains useful and deterministic.
+    axes = _node(group, "ShaderNodeSeparateXYZ", "Shadow Procedural UV", 500, 470)
+    inv_x = _math(group, "SUBTRACT", "Shadow Procedural Inverse X", 690, 540, value_1=1.0)
+    inv_y = _math(group, "SUBTRACT", "Shadow Procedural Inverse Y", 690, 400, value_1=1.0)
+    min_x = _math(group, "MINIMUM", "Shadow Procedural X Distance", 880, 540)
+    min_y = _math(group, "MINIMUM", "Shadow Procedural Y Distance", 880, 400)
+    edge = _math(group, "MINIMUM", "Shadow Procedural Edge Distance", 1070, 470)
+    normalized = _math(group, "DIVIDE", "Shadow Procedural Soft Edge", 1260, 470)
+    clamp_low = _math(group, "MAXIMUM", "Shadow Procedural Clamp Low", 1450, 470, value_2=0.0)
+    proc_alpha = _math(group, "MINIMUM", "Shadow Procedural Alpha", 1640, 470, value_2=1.0)
+    links.new(shifted_uv.outputs[0], axes.inputs[0])
+    links.new(axes.outputs["X"], inv_x.inputs[1])
+    links.new(axes.outputs["Y"], inv_y.inputs[1])
+    links.new(axes.outputs["X"], min_x.inputs[0])
+    links.new(inv_x.outputs[0], min_x.inputs[1])
+    links.new(axes.outputs["Y"], min_y.inputs[0])
+    links.new(inv_y.outputs[0], min_y.inputs[1])
+    links.new(min_x.outputs[0], edge.inputs[0])
+    links.new(min_y.outputs[0], edge.inputs[1])
+    links.new(edge.outputs[0], normalized.inputs[0])
+    links.new(safe_blur.outputs[0], normalized.inputs[1])
+    links.new(normalized.outputs[0], clamp_low.inputs[0])
+    links.new(clamp_low.outputs[0], proc_alpha.inputs[0])
+
+    image_weight = _math(group, "MULTIPLY", "Shadow Image Weight", 1840, 790)
+    inverse_use = _math(group, "SUBTRACT", "Shadow Procedural Weight", 1840, 600, value_1=1.0)
+    proc_weight = _math(group, "MULTIPLY", "Shadow Procedural Weighted", 2030, 600)
+    sampled = _math(group, "ADD", "Shadow Selected Alpha", 2220, 720)
+    links.new(image_alpha.outputs[0], image_weight.inputs[0])
+    links.new(inp.outputs["Use Image Sample"], image_weight.inputs[1])
+    links.new(inp.outputs["Use Image Sample"], inverse_use.inputs[1])
+    links.new(proc_alpha.outputs[0], proc_weight.inputs[0])
+    links.new(inverse_use.outputs[0], proc_weight.inputs[1])
+    links.new(image_weight.outputs[0], sampled.inputs[0])
+    links.new(proc_weight.outputs[0], sampled.inputs[1])
+
+    # Outer is the positive alpha expansion only. Subtracting the current alpha
+    # prevents the previous A*(1-A) edge halo and keeps zero-offset shadows clean.
+    outer_difference = _math(group, "SUBTRACT", "Shadow Outer Difference", 2410, 860)
+    outer = _math(group, "MAXIMUM", "Shadow Outer Mask", 2600, 860, value_2=0.0)
+    inv_sampled = _math(group, "SUBTRACT", "Shadow Inside Gap", 2410, 650, value_1=1.0)
+    inner = _math(group, "MULTIPLY", "Shadow Inner Mask", 2600, 650)
+    inv_mode = _math(group, "SUBTRACT", "Shadow Outer Mode Weight", 2600, 430, value_1=1.0)
+    outer_mode = _math(group, "MULTIPLY", "Shadow Outer Selected", 2790, 850)
+    inner_mode = _math(group, "MULTIPLY", "Shadow Inner Selected", 2790, 650)
+    selected_mask = _math(group, "ADD", "Shadow Selected Mask", 2980, 760)
+    opacity = _math(group, "MULTIPLY", "Shadow Opacity", 3170, 760)
+    clamp_mask = _math(group, "MINIMUM", "Shadow Mask Clamp", 3360, 760, value_2=1.0)
+    links.new(sampled.outputs[0], outer_difference.inputs[0])
+    links.new(inp.outputs["Alpha In"], outer_difference.inputs[1])
+    links.new(outer_difference.outputs[0], outer.inputs[0])
+    links.new(sampled.outputs[0], inv_sampled.inputs[1])
+    links.new(inp.outputs["Alpha In"], inner.inputs[0])
+    links.new(inv_sampled.outputs[0], inner.inputs[1])
+    links.new(inp.outputs["Mode"], inv_mode.inputs[1])
+    links.new(outer.outputs[0], outer_mode.inputs[0])
+    links.new(inv_mode.outputs[0], outer_mode.inputs[1])
+    links.new(inner.outputs[0], inner_mode.inputs[0])
+    links.new(inp.outputs["Mode"], inner_mode.inputs[1])
+    links.new(outer_mode.outputs[0], selected_mask.inputs[0])
+    links.new(inner_mode.outputs[0], selected_mask.inputs[1])
+    links.new(selected_mask.outputs[0], opacity.inputs[0])
+    links.new(inp.outputs["Opacity"], opacity.inputs[1])
+    links.new(opacity.outputs[0], clamp_mask.inputs[0])
+
+    # Build the editable effect blend. Blend Mode combines the shadow color with
+    # this layer only; scene/background layer blending remains a separate feature.
+    blend_specs = (
+        ("NORMAL", None),
+        ("MULTIPLY", "MULTIPLY"),
+        ("SCREEN", "SCREEN"),
+        ("OVERLAY", "OVERLAY"),
+        ("SOFT_LIGHT", "SOFT_LIGHT"),
+        ("HARD_LIGHT", "HARD_LIGHT"),
+        ("ADD", "ADD"),
+        ("DIFFERENCE", "DIFFERENCE"),
+    )
+    blend_outputs = [inp.outputs["Shadow Color"]]
+    for index, (label, blend_type) in enumerate(blend_specs[1:], 1):
+        y = 1150 - index * 125
+        if blend_type == "HARD_LIGHT":
+            node = _mix_rgb(group, "OVERLAY", "Shadow Hard Light", 2450, y)
+            links.new(inp.outputs["Shadow Color"], node.inputs[1])
+            links.new(inp.outputs["Color In"], node.inputs[2])
+        else:
+            node = _mix_rgb(group, blend_type, f"Shadow {label.title().replace('_', ' ')}", 2450, y)
+            links.new(inp.outputs["Color In"], node.inputs[1])
+            links.new(inp.outputs["Shadow Color"], node.inputs[2])
+        blend_outputs.append(node.outputs[0])
+
+    selected_blend = blend_outputs[0]
+    for index, branch in enumerate(blend_outputs[1:], 1):
+        threshold = _math(group, "GREATER_THAN", f"Shadow Blend Select {index}", 2730 + index * 95, 1180 - index * 90, value_2=index - 0.5)
+        selector = _mix_rgb(group, "MIX", f"Shadow Blend Result {index}", 2920 + index * 150, 1080 - index * 75)
+        links.new(inp.outputs["Blend Mode"], threshold.inputs[0])
+        links.new(threshold.outputs[0], selector.inputs[0])
+        links.new(selected_blend, selector.inputs[1])
+        links.new(branch, selector.inputs[2])
+        selected_blend = selector.outputs[0]
+
+    # Inner shadow stays inside the original alpha and simply blends color.
+    inner_color = _mix_rgb(group, "MIX", "Apply Inner Shadow", 4050, 780)
+    links.new(clamp_mask.outputs[0], inner_color.inputs[0])
+    links.new(inp.outputs["Color In"], inner_color.inputs[1])
+    links.new(selected_blend, inner_color.inputs[2])
+
+    # Outer shadow is a straight-alpha source-over composite. The shadow color
+    # remains stable as opacity falls instead of being mixed toward hidden RGB.
+    outer_effect_color = _mix_rgb(group, "MIX", "Outer Shadow Edge Blend", 3860, 1040)
+    links.new(inp.outputs["Alpha In"], outer_effect_color.inputs[0])
+    links.new(inp.outputs["Shadow Color"], outer_effect_color.inputs[1])
+    links.new(selected_blend, outer_effect_color.inputs[2])
+
+    inverse_alpha = _math(group, "SUBTRACT", "Shadow Remaining Transparency", 3550, 560, value_1=1.0)
+    shadow_contribution = _math(group, "MULTIPLY", "Shadow Outer Contribution", 3740, 560)
+    outer_alpha = _math(group, "ADD", "Shadow Outer Alpha", 3930, 560)
+    safe_outer_alpha = _math(group, "MAXIMUM", "Shadow Safe Outer Alpha", 4120, 560, value_2=0.000001)
+    links.new(inp.outputs["Alpha In"], inverse_alpha.inputs[1])
+    links.new(clamp_mask.outputs[0], shadow_contribution.inputs[0])
+    links.new(inverse_alpha.outputs[0], shadow_contribution.inputs[1])
+    links.new(inp.outputs["Alpha In"], outer_alpha.inputs[0])
+    links.new(shadow_contribution.outputs[0], outer_alpha.inputs[1])
+    links.new(outer_alpha.outputs[0], safe_outer_alpha.inputs[0])
+
+    source_premult = _mix_rgb(group, "MULTIPLY", "Shadow Source Premultiplied", 4240, 1010)
+    shadow_premult = _mix_rgb(group, "MULTIPLY", "Shadow Color Premultiplied", 4240, 850)
+    premult_sum = _mix_rgb(group, "ADD", "Shadow Premultiplied Sum", 4470, 930)
+    straight_outer = _mix_rgb(group, "DIVIDE", "Shadow Straight Color", 4700, 930)
+    links.new(inp.outputs["Color In"], source_premult.inputs[1])
+    links.new(inp.outputs["Alpha In"], source_premult.inputs[2])
+    links.new(outer_effect_color.outputs[0], shadow_premult.inputs[1])
+    links.new(shadow_contribution.outputs[0], shadow_premult.inputs[2])
+    links.new(source_premult.outputs[0], premult_sum.inputs[1])
+    links.new(shadow_premult.outputs[0], premult_sum.inputs[2])
+    links.new(premult_sum.outputs[0], straight_outer.inputs[1])
+    links.new(safe_outer_alpha.outputs[0], straight_outer.inputs[2])
+
+    final_color = _mix_rgb(group, "MIX", "Shadow Inner Outer Color", 4950, 850)
+    links.new(inp.outputs["Mode"], final_color.inputs[0])
+    links.new(straight_outer.outputs[0], final_color.inputs[1])
+    links.new(inner_color.outputs[0], final_color.inputs[2])
+    links.new(final_color.outputs[0], out.inputs["Color Out"])
+
+    inner_alpha = _math(group, "MULTIPLY", "Shadow Inner Alpha Selected", 4310, 430)
+    outer_alpha_selected = _math(group, "MULTIPLY", "Shadow Outer Alpha Selected", 4310, 300)
+    alpha_out = _math(group, "ADD", "Shadow Final Alpha", 4500, 360)
+    alpha_clamp = _math(group, "MINIMUM", "Shadow Final Alpha Clamp", 4690, 360, value_2=1.0)
+    links.new(inp.outputs["Alpha In"], inner_alpha.inputs[0])
+    links.new(inp.outputs["Mode"], inner_alpha.inputs[1])
+    links.new(outer_alpha.outputs[0], outer_alpha_selected.inputs[0])
+    links.new(inv_mode.outputs[0], outer_alpha_selected.inputs[1])
+    links.new(inner_alpha.outputs[0], alpha_out.inputs[0])
+    links.new(outer_alpha_selected.outputs[0], alpha_out.inputs[1])
+    links.new(alpha_out.outputs[0], alpha_clamp.inputs[0])
+    links.new(alpha_clamp.outputs[0], out.inputs["Alpha Out"])
+
+    group["fbp_shadow_contract_version"] = 2
     return group
 
 def _create_digital_noise(name):
@@ -2298,7 +4549,6 @@ def _create_ascii_matrix(name, asset_dir):
     return group
 
 
-
 TERMINAL_ASCII_FILL_SIZE = (80, 8)
 TERMINAL_ASCII_EDGE_SIZE = (72, 8)
 TERMINAL_ASCII_FILL_COLUMNS = 10
@@ -2979,380 +5229,152 @@ def _create_text_matrix(name):
     return group
 
 
-
-def _create_mesh_ripple(name):
-    """Create a directional/radial ripple Geometry Nodes group."""
-    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
-    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
-    _socket(group, "Subdivision", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=7)
-    _socket(group, "Direction", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
-    _socket(group, "Amplitude", "INPUT", "NodeSocketFloat", default=0.08, minimum=-10.0, maximum=10.0)
-    _socket(group, "Frequency", "INPUT", "NodeSocketFloat", default=3.0, minimum=0.0, maximum=100.0)
-    _socket(group, "Speed", "INPUT", "NodeSocketFloat", default=1.0, minimum=-100.0, maximum=100.0)
-    _socket(group, "Phase", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1000.0, maximum=1000.0)
-    _socket(group, "Stepped", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=240)
-    _socket(group, "Pin Borders", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Border Falloff", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.001, maximum=1.0)
-    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
-    inp, out = _group_io(group)
-    links = group.links
-
-    subdivide = _node(group, "GeometryNodeSubdivideMesh", "Ripple Subdivision", -1500, 320)
-    bounds = _node(group, "GeometryNodeBoundBox", "Ripple Bounds", -1300, 80)
-    position = _node(group, "GeometryNodeInputPosition", "Ripple Position", -1300, -160)
-    pos_xyz = _node(group, "ShaderNodeSeparateXYZ", "Ripple Position Axes", -1110, -160)
-    min_xyz = _node(group, "ShaderNodeSeparateXYZ", "Ripple Minimum Axes", -1110, 40)
-    max_xyz = _node(group, "ShaderNodeSeparateXYZ", "Ripple Maximum Axes", -1110, 220)
-    links.new(inp.outputs["Geometry"], subdivide.inputs["Mesh"])
-    links.new(inp.outputs["Subdivision"], subdivide.inputs["Level"])
-    links.new(subdivide.outputs["Mesh"], bounds.inputs["Geometry"])
-    links.new(position.outputs["Position"], pos_xyz.inputs[0])
-    links.new(bounds.outputs["Min"], min_xyz.inputs[0])
-    links.new(bounds.outputs["Max"], max_xyz.inputs[0])
-
-    def normalized_axis(axis, y):
-        size = _math(group, "SUBTRACT", f"Ripple {axis} Size", -910, y)
-        safe = _math(group, "MAXIMUM", f"Ripple Safe {axis}", -740, y, value_2=0.000001)
-        relative = _math(group, "SUBTRACT", f"Ripple {axis} Relative", -910, y - 90)
-        normalized = _math(group, "DIVIDE", f"Ripple Normalized {axis}", -560, y - 40)
-        links.new(max_xyz.outputs[axis], size.inputs[0])
-        links.new(min_xyz.outputs[axis], size.inputs[1])
-        links.new(size.outputs[0], safe.inputs[0])
-        links.new(pos_xyz.outputs[axis], relative.inputs[0])
-        links.new(min_xyz.outputs[axis], relative.inputs[1])
-        links.new(relative.outputs[0], normalized.inputs[0])
-        links.new(safe.outputs[0], normalized.inputs[1])
-        return normalized.outputs[0]
-
-    norm_x = normalized_axis("X", 210)
-    norm_y = normalized_axis("Y", -20)
-    centered_x = _math(group, "SUBTRACT", "Ripple Centered X", -360, 90, value_2=0.5)
-    centered_y = _math(group, "SUBTRACT", "Ripple Centered Y", -360, -40, value_2=0.5)
-    center_vec = _node(group, "ShaderNodeCombineXYZ", "Ripple Center Vector", -170, 20)
-    radial = _vector_math(group, "LENGTH", "Ripple Radius", 20, 20)
-    links.new(norm_x, centered_x.inputs[0])
-    links.new(norm_y, centered_y.inputs[0])
-    links.new(centered_x.outputs[0], center_vec.inputs["X"])
-    links.new(centered_y.outputs[0], center_vec.inputs["Y"])
-    links.new(center_vec.outputs[0], radial.inputs[0])
-
-    use_y = _math(group, "GREATER_THAN", "Ripple Use Y", 10, 250, value_2=0.5)
-    xy_switch = _node(group, "GeometryNodeSwitch", "Ripple X or Y", 210, 240)
-    xy_switch.input_type = "FLOAT"
-    use_radial = _math(group, "GREATER_THAN", "Ripple Use Radial", 210, 90, value_2=1.5)
-    direction_switch = _node(group, "GeometryNodeSwitch", "Ripple Direction", 410, 180)
-    direction_switch.input_type = "FLOAT"
-    links.new(inp.outputs["Direction"], use_y.inputs[0])
-    links.new(use_y.outputs[0], xy_switch.inputs["Switch"])
-    links.new(norm_x, xy_switch.inputs["False"])
-    links.new(norm_y, xy_switch.inputs["True"])
-    links.new(inp.outputs["Direction"], use_radial.inputs[0])
-    links.new(use_radial.outputs[0], direction_switch.inputs["Switch"])
-    links.new(xy_switch.outputs["Output"], direction_switch.inputs["False"])
-    links.new(_output(radial, "Value", 1), direction_switch.inputs["True"])
-
-    coord_freq = _math(group, "MULTIPLY", "Ripple Coordinate Frequency", 610, 180)
-    coord_cycles = _math(group, "MULTIPLY", "Ripple Coordinate Cycles", 790, 180, value_2=6.283185307179586)
-    scene_time = _node(group, "GeometryNodeInputSceneTime", "Ripple Scene Time", 180, -250)
-    safe_step = _math(group, "MAXIMUM", "Ripple Safe Step", 180, -390, value_2=1.0)
-    frame_div = _math(group, "DIVIDE", "Ripple Frame Divide", 370, -250)
-    frame_floor = _math(group, "FLOOR", "Ripple Frame Floor", 550, -250)
-    stepped_frame = _math(group, "MULTIPLY", "Ripple Stepped Frame", 730, -250)
-    time_scale = _math(group, "MULTIPLY", "Ripple Time Scale", 910, -250, value_2=0.1)
-    time_speed = _math(group, "MULTIPLY", "Ripple Time Speed", 1090, -250)
-    moving_phase = _math(group, "ADD", "Ripple Moving Phase", 1090, 80)
-    user_phase = _math(group, "ADD", "Ripple User Phase", 1270, 80)
-    sine = _math(group, "SINE", "Ripple Sine", 1450, 80)
-    amplitude = _math(group, "MULTIPLY", "Ripple Amplitude", 1630, 80)
-    links.new(direction_switch.outputs["Output"], coord_freq.inputs[0])
-    links.new(inp.outputs["Frequency"], coord_freq.inputs[1])
-    links.new(coord_freq.outputs[0], coord_cycles.inputs[0])
-    links.new(inp.outputs["Stepped"], safe_step.inputs[0])
-    links.new(scene_time.outputs["Frame"], frame_div.inputs[0])
-    links.new(safe_step.outputs[0], frame_div.inputs[1])
-    links.new(frame_div.outputs[0], frame_floor.inputs[0])
-    links.new(frame_floor.outputs[0], stepped_frame.inputs[0])
-    links.new(safe_step.outputs[0], stepped_frame.inputs[1])
-    links.new(stepped_frame.outputs[0], time_scale.inputs[0])
-    links.new(time_scale.outputs[0], time_speed.inputs[0])
-    links.new(inp.outputs["Speed"], time_speed.inputs[1])
-    links.new(coord_cycles.outputs[0], moving_phase.inputs[0])
-    links.new(time_speed.outputs[0], moving_phase.inputs[1])
-    links.new(moving_phase.outputs[0], user_phase.inputs[0])
-    links.new(inp.outputs["Phase"], user_phase.inputs[1])
-    links.new(user_phase.outputs[0], sine.inputs[0])
-    links.new(sine.outputs[0], amplitude.inputs[0])
-    links.new(inp.outputs["Amplitude"], amplitude.inputs[1])
-
-    inv_x = _math(group, "SUBTRACT", "Ripple Inverse X", 720, -520, value_1=1.0)
-    inv_y = _math(group, "SUBTRACT", "Ripple Inverse Y", 720, -650, value_1=1.0)
-    edge_x = _math(group, "MINIMUM", "Ripple X Edge Distance", 900, -520)
-    edge_y = _math(group, "MINIMUM", "Ripple Y Edge Distance", 900, -650)
-    edge_min = _math(group, "MINIMUM", "Ripple Border Distance", 1080, -585)
-    safe_falloff = _math(group, "MAXIMUM", "Ripple Safe Border Falloff", 1260, -650, value_2=0.001)
-    edge_normalized = _math(group, "DIVIDE", "Ripple Border Normalize", 1440, -585)
-    edge_clamp = _math(group, "MINIMUM", "Ripple Border Clamp", 1620, -585, value_2=1.0)
-    pin_inverse = _math(group, "SUBTRACT", "Ripple Unpinned Weight", 1440, -410, value_1=1.0)
-    pin_edge = _math(group, "MULTIPLY", "Ripple Pinned Edge", 1800, -520)
-    pin_free = _math(group, "MULTIPLY", "Ripple Free Surface", 1800, -390)
-    pin_mix = _math(group, "ADD", "Ripple Pin Mix", 1980, -455)
-    masked = _math(group, "MULTIPLY", "Ripple Masked Amount", 1980, 60)
-    links.new(norm_x, inv_x.inputs[1])
-    links.new(norm_y, inv_y.inputs[1])
-    links.new(norm_x, edge_x.inputs[0])
-    links.new(inv_x.outputs[0], edge_x.inputs[1])
-    links.new(norm_y, edge_y.inputs[0])
-    links.new(inv_y.outputs[0], edge_y.inputs[1])
-    links.new(edge_x.outputs[0], edge_min.inputs[0])
-    links.new(edge_y.outputs[0], edge_min.inputs[1])
-    links.new(inp.outputs["Border Falloff"], safe_falloff.inputs[0])
-    links.new(edge_min.outputs[0], edge_normalized.inputs[0])
-    links.new(safe_falloff.outputs[0], edge_normalized.inputs[1])
-    links.new(edge_normalized.outputs[0], edge_clamp.inputs[0])
-    links.new(inp.outputs["Pin Borders"], pin_inverse.inputs[1])
-    links.new(edge_clamp.outputs[0], pin_edge.inputs[0])
-    links.new(inp.outputs["Pin Borders"], pin_edge.inputs[1])
-    pin_free.inputs[0].default_value = 1.0
-    links.new(pin_inverse.outputs[0], pin_free.inputs[1])
-    links.new(pin_edge.outputs[0], pin_mix.inputs[0])
-    links.new(pin_free.outputs[0], pin_mix.inputs[1])
-    links.new(amplitude.outputs[0], masked.inputs[0])
-    links.new(pin_mix.outputs[0], masked.inputs[1])
-
-    offset = _node(group, "ShaderNodeCombineXYZ", "Ripple Offset", 2170, 60)
-    set_position = _node(group, "GeometryNodeSetPosition", "Mesh Ripple", 2370, 260)
-    links.new(masked.outputs[0], offset.inputs["Z"])
-    links.new(subdivide.outputs["Mesh"], set_position.inputs["Geometry"])
-    links.new(offset.outputs[0], set_position.inputs["Offset"])
-    links.new(set_position.outputs["Geometry"], out.inputs["Geometry"])
-    group["fbp_quality_contract_version"] = 1
-    return group
-
-
-def _create_paper_curl(name):
-    """Create a lightweight edge-curl deformation for paper and cut-out planes."""
-    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
-    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
-    _socket(group, "Subdivision", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=7)
-    _socket(group, "Edge", "INPUT", "NodeSocketFloat", default=3.0, minimum=0.0, maximum=3.0)
-    _socket(group, "Progress", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Curl Angle", "INPUT", "NodeSocketFloat", default=2.35619449, minimum=0.0, maximum=6.28318531)
-    _socket(group, "Curl Radius", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=10.0)
-    _socket(group, "Curl Width", "INPUT", "NodeSocketFloat", default=0.28, minimum=0.001, maximum=1.0)
-    _socket(group, "Lift", "INPUT", "NodeSocketFloat", default=0.02, minimum=-10.0, maximum=10.0)
-    _socket(group, "Reverse", "INPUT", "NodeSocketBool", default=False)
-    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
-    inp, out = _group_io(group)
-    links = group.links
-
-    subdivide = _node(group, "GeometryNodeSubdivideMesh", "Paper Curl Subdivision", -1540, 300)
-    bounds = _node(group, "GeometryNodeBoundBox", "Paper Bounds", -1340, 40)
-    position = _node(group, "GeometryNodeInputPosition", "Paper Position", -1340, -180)
-    pos_xyz = _node(group, "ShaderNodeSeparateXYZ", "Paper Position Axes", -1150, -180)
-    min_xyz = _node(group, "ShaderNodeSeparateXYZ", "Paper Minimum Axes", -1150, 120)
-    max_xyz = _node(group, "ShaderNodeSeparateXYZ", "Paper Maximum Axes", -1150, 260)
-    links.new(inp.outputs["Geometry"], subdivide.inputs["Mesh"])
-    links.new(inp.outputs["Subdivision"], subdivide.inputs["Level"])
-    links.new(subdivide.outputs["Mesh"], bounds.inputs["Geometry"])
-    links.new(position.outputs["Position"], pos_xyz.inputs[0])
-    links.new(bounds.outputs["Min"], min_xyz.inputs[0])
-    links.new(bounds.outputs["Max"], max_xyz.inputs[0])
-
-    def normalized_axis(axis, y):
-        size = _math(group, "SUBTRACT", f"Paper {axis} Size", -960, y)
-        safe = _math(group, "MAXIMUM", f"Paper Safe {axis}", -790, y, value_2=0.000001)
-        relative = _math(group, "SUBTRACT", f"Paper {axis} Relative", -960, y - 90)
-        normalized = _math(group, "DIVIDE", f"Paper Normalized {axis}", -610, y - 40)
-        links.new(max_xyz.outputs[axis], size.inputs[0])
-        links.new(min_xyz.outputs[axis], size.inputs[1])
-        links.new(size.outputs[0], safe.inputs[0])
-        links.new(pos_xyz.outputs[axis], relative.inputs[0])
-        links.new(min_xyz.outputs[axis], relative.inputs[1])
-        links.new(relative.outputs[0], normalized.inputs[0])
-        links.new(safe.outputs[0], normalized.inputs[1])
-        return normalized.outputs[0]
-
-    norm_x = normalized_axis("X", 230)
-    norm_y = normalized_axis("Y", -40)
-    inv_x = _math(group, "SUBTRACT", "Paper Inverse X", -420, 180, value_1=1.0)
-    inv_y = _math(group, "SUBTRACT", "Paper Inverse Y", -420, -40, value_1=1.0)
-    links.new(norm_x, inv_x.inputs[1])
-    links.new(norm_y, inv_y.inputs[1])
-
-    after_left = _math(group, "GREATER_THAN", "Paper Edge After Left", -520, 470, value_2=0.5)
-    before_bottom = _math(group, "LESS_THAN", "Paper Edge Before Bottom", -520, 390, value_2=1.5)
-    is_right = _math(group, "MULTIPLY", "Paper Right Edge", -330, 450)
-    is_vertical = _math(group, "GREATER_THAN", "Paper Vertical Edge", -420, 320, value_2=1.5)
-    is_top = _math(group, "GREATER_THAN", "Paper Top Edge", -420, 250, value_2=2.5)
-    negative_edge = _math(group, "ADD", "Paper Negative Edge", -180, 360)
-    links.new(inp.outputs["Edge"], after_left.inputs[0])
-    links.new(inp.outputs["Edge"], before_bottom.inputs[0])
-    links.new(after_left.outputs[0], is_right.inputs[0])
-    links.new(before_bottom.outputs[0], is_right.inputs[1])
-    links.new(inp.outputs["Edge"], is_vertical.inputs[0])
-    links.new(inp.outputs["Edge"], is_top.inputs[0])
-    links.new(is_right.outputs[0], negative_edge.inputs[0])
-    links.new(is_top.outputs[0], negative_edge.inputs[1])
-
-    horizontal_distance = _node(group, "GeometryNodeSwitch", "Paper Horizontal Distance", -190, 200)
-    horizontal_distance.input_type = "FLOAT"
-    vertical_distance = _node(group, "GeometryNodeSwitch", "Paper Vertical Distance", -190, -20)
-    vertical_distance.input_type = "FLOAT"
-    edge_distance = _node(group, "GeometryNodeSwitch", "Paper Edge Distance", 40, 100)
-    edge_distance.input_type = "FLOAT"
-    links.new(is_right.outputs[0], horizontal_distance.inputs["Switch"])
-    links.new(norm_x, horizontal_distance.inputs["False"])
-    links.new(inv_x.outputs[0], horizontal_distance.inputs["True"])
-    links.new(is_top.outputs[0], vertical_distance.inputs["Switch"])
-    links.new(norm_y, vertical_distance.inputs["False"])
-    links.new(inv_y.outputs[0], vertical_distance.inputs["True"])
-    links.new(is_vertical.outputs[0], edge_distance.inputs["Switch"])
-    links.new(horizontal_distance.outputs["Output"], edge_distance.inputs["False"])
-    links.new(vertical_distance.outputs["Output"], edge_distance.inputs["True"])
-
-    safe_width = _math(group, "MAXIMUM", "Paper Safe Curl Width", 40, -180, value_2=0.001)
-    reveal = _math(group, "SUBTRACT", "Paper Curl Reveal", 240, 100)
-    normalized_reveal = _math(group, "DIVIDE", "Paper Curl Normalize", 420, 100)
-    clamp_low = _math(group, "MAXIMUM", "Paper Curl Clamp Low", 600, 100, value_2=0.0)
-    clamp_high = _math(group, "MINIMUM", "Paper Curl Clamp High", 780, 100, value_2=1.0)
-    half_pi = _math(group, "MULTIPLY", "Paper Curl Half Pi", 960, 100, value_2=1.5707963267948966)
-    profile = _math(group, "SINE", "Paper Curl Profile", 1140, 100)
-    links.new(inp.outputs["Curl Width"], safe_width.inputs[0])
-    links.new(inp.outputs["Progress"], reveal.inputs[0])
-    links.new(edge_distance.outputs["Output"], reveal.inputs[1])
-    links.new(reveal.outputs[0], normalized_reveal.inputs[0])
-    links.new(safe_width.outputs[0], normalized_reveal.inputs[1])
-    links.new(normalized_reveal.outputs[0], clamp_low.inputs[0])
-    links.new(clamp_low.outputs[0], clamp_high.inputs[0])
-    links.new(clamp_high.outputs[0], half_pi.inputs[0])
-    links.new(half_pi.outputs[0], profile.inputs[0])
-
-    angle = _math(group, "MULTIPLY", "Paper Curl Angle", 1320, 100)
-    sine = _math(group, "SINE", "Paper Curl Sine", 1500, 180)
-    cosine = _math(group, "COSINE", "Paper Curl Cosine", 1500, 20)
-    one_minus_cos = _math(group, "SUBTRACT", "Paper Curl Height Profile", 1680, 20, value_1=1.0)
-    axis_amount = _math(group, "MULTIPLY", "Paper Curl Axis Radius", 1680, 180)
-    axis_scale = _math(group, "MULTIPLY", "Paper Curl Axis Scale", 1860, 180, value_2=0.35)
-    height = _math(group, "MULTIPLY", "Paper Curl Height", 1860, 20)
-    lift = _math(group, "MULTIPLY", "Paper Curl Lift", 1680, -140)
-    height_lift = _math(group, "ADD", "Paper Curl Height and Lift", 2040, -20)
-    links.new(profile.outputs[0], angle.inputs[0])
-    links.new(inp.outputs["Curl Angle"], angle.inputs[1])
-    links.new(angle.outputs[0], sine.inputs[0])
-    links.new(angle.outputs[0], cosine.inputs[0])
-    links.new(cosine.outputs[0], one_minus_cos.inputs[1])
-    links.new(sine.outputs[0], axis_amount.inputs[0])
-    links.new(inp.outputs["Curl Radius"], axis_amount.inputs[1])
-    links.new(axis_amount.outputs[0], axis_scale.inputs[0])
-    links.new(one_minus_cos.outputs[0], height.inputs[0])
-    links.new(inp.outputs["Curl Radius"], height.inputs[1])
-    links.new(profile.outputs[0], lift.inputs[0])
-    links.new(inp.outputs["Lift"], lift.inputs[1])
-    links.new(height.outputs[0], height_lift.inputs[0])
-    links.new(lift.outputs[0], height_lift.inputs[1])
-
-    reverse_double = _math(group, "MULTIPLY", "Paper Reverse Double", 1680, -300, value_2=2.0)
-    surface_sign = _math(group, "SUBTRACT", "Paper Surface Sign", 1860, -300, value_1=1.0)
-    signed_height = _math(group, "MULTIPLY", "Paper Signed Height", 2220, -20)
-    links.new(inp.outputs["Reverse"], reverse_double.inputs[0])
-    links.new(reverse_double.outputs[0], surface_sign.inputs[1])
-    links.new(height_lift.outputs[0], signed_height.inputs[0])
-    links.new(surface_sign.outputs[0], signed_height.inputs[1])
-
-    axis_sign = _node(group, "GeometryNodeSwitch", "Paper Edge Direction", 1500, 360)
-    axis_sign.input_type = "FLOAT"
-    axis_sign.inputs["False"].default_value = 1.0
-    axis_sign.inputs["True"].default_value = -1.0
-    links.new(negative_edge.outputs[0], axis_sign.inputs["Switch"])
-    signed_axis = _math(group, "MULTIPLY", "Paper Signed Axis", 2040, 180)
-    links.new(axis_scale.outputs[0], signed_axis.inputs[0])
-    links.new(axis_sign.outputs["Output"], signed_axis.inputs[1])
-
-    horizontal_mask = _math(group, "SUBTRACT", "Paper Horizontal Mask", 1680, 500, value_1=1.0)
-    x_offset = _math(group, "MULTIPLY", "Paper X Offset", 2220, 220)
-    y_offset = _math(group, "MULTIPLY", "Paper Y Offset", 2220, 120)
-    links.new(is_vertical.outputs[0], horizontal_mask.inputs[1])
-    links.new(signed_axis.outputs[0], x_offset.inputs[0])
-    links.new(horizontal_mask.outputs[0], x_offset.inputs[1])
-    links.new(signed_axis.outputs[0], y_offset.inputs[0])
-    links.new(is_vertical.outputs[0], y_offset.inputs[1])
-
-    offset = _node(group, "ShaderNodeCombineXYZ", "Paper Curl Offset", 2420, 100)
-    set_position = _node(group, "GeometryNodeSetPosition", "Paper Curl", 2620, 260)
-    links.new(x_offset.outputs[0], offset.inputs["X"])
-    links.new(y_offset.outputs[0], offset.inputs["Y"])
-    links.new(signed_height.outputs[0], offset.inputs["Z"])
-    links.new(subdivide.outputs["Mesh"], set_position.inputs["Geometry"])
-    links.new(offset.outputs[0], set_position.inputs["Offset"])
-    links.new(set_position.outputs["Geometry"], out.inputs["Geometry"])
-    group["fbp_quality_contract_version"] = 1
-    group["fbp_paper_curl_version"] = 1
-    return group
-
-
 def _create_cutout_outline(name):
-    """Generate an alpha-derived outline while preserving the source plane."""
+    """Generate an alpha-derived outline with a Blender-version-safe graph."""
     group = bpy.data.node_groups.new(name, "GeometryNodeTree")
     _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
     _socket(group, "Alpha Resolution", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=8)
     _socket(group, "Alpha Threshold", "INPUT", "NodeSocketFloat", default=0.05, minimum=0.0, maximum=1.0)
     _socket(group, "Outline Width", "INPUT", "NodeSocketFloat", default=0.012, minimum=0.00001, maximum=10.0)
     _socket(group, "Offset", "INPUT", "NodeSocketFloat", default=0.001, minimum=-10.0, maximum=10.0)
+    _socket(group, "Show Image", "INPUT", "NodeSocketBool", default=True)
+    _socket(group, "Wiggle Amount", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=10.0)
+    _socket(group, "Wiggle Scale", "INPUT", "NodeSocketFloat", default=8.0, minimum=0.01, maximum=1000.0)
+    _socket(group, "Wiggle Phase", "INPUT", "NodeSocketFloat", default=0.0, minimum=-100000.0, maximum=100000.0)
     _socket(group, "Outline Material", "INPUT", "NodeSocketMaterial")
     _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
     inp, out = _group_io(group)
     links = group.links
 
-    masked_geometry, _image_texture = _alpha_geometry_mask(
-        group, inp, prefix="Cutout Alpha", x=-1500, y=280
-    )
-    edge_neighbors = _node(group, "GeometryNodeInputMeshEdgeNeighbors", "Cutout Edge Neighbors", -500, -40)
-    boundary = _math(group, "COMPARE", "Cutout Boundary Edges", -280, -20, value_2=1.0)
-    # Blender 5.1 exposes equality through COMPARE with an epsilon input.
-    if len(boundary.inputs) > 2:
-        boundary.inputs[2].default_value = 0.1
-    mesh_to_curve = _node(group, "GeometryNodeMeshToCurve", "Cutout Boundary Curve", -60, 240)
-    set_radius = _node(group, "GeometryNodeSetCurveRadius", "Cutout Outline Width", 180, 240)
+    def link(output_socket, input_socket):
+        if output_socket is None or input_socket is None:
+            return False
+        try:
+            links.new(output_socket, input_socket)
+            return True
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
 
-    profile = _node(group, "GeometryNodeCurvePrimitiveCircle", "Cutout Outline Profile", 140, -180)
+    masked_geometry, _image_texture = _alpha_geometry_mask(
+        group, inp, prefix="Cutout Alpha", x=-1760, y=320
+    )
+
+    edge_neighbors = _node(
+        group, "GeometryNodeInputMeshEdgeNeighbors", "Cutout Edge Neighbors", -760, -40
+    )
+    boundary = _math(
+        group, "COMPARE", "Cutout Boundary Edges", -560, -20, value_2=1.0
+    )
+    try:
+        if len(boundary.inputs) > 2:
+            boundary.inputs[2].default_value = 0.1
+    except (AttributeError, IndexError, TypeError, ValueError):
+        pass
+    mesh_to_curve = _node(
+        group, "GeometryNodeMeshToCurve", "Cutout Boundary Curve", -340, 260
+    )
+    link(_output(edge_neighbors, "Face Count", 0), _input(boundary, "Value", 0))
+    link(masked_geometry, _input(mesh_to_curve, "Mesh", 0))
+    link(_output(boundary, "Value", 0), _input(mesh_to_curve, "Selection", 1))
+
+    # Use two scalar noise samples instead of color-channel socket indexing.
+    # This avoids socket-layout differences between Blender builds while still
+    # producing independent X/Y displacement controlled by one Evolution phase.
+    spline_parameter = _node(
+        group, "GeometryNodeSplineParameter", "Cutout Spline Parameter", -340, -150
+    )
+    noise_vector = _node(
+        group, "ShaderNodeCombineXYZ", "Cutout Wiggle Coordinate", -120, -210
+    )
+    noise_x = _node(group, "ShaderNodeTexNoise", "Cutout Wiggle X", 100, -150)
+    noise_y = _node(group, "ShaderNodeTexNoise", "Cutout Wiggle Y", 100, -350)
+    for noise in (noise_x, noise_y):
+        try:
+            noise.noise_dimensions = "4D"
+        except (AttributeError, TypeError, ValueError):
+            pass
+    phase_y = _math(group, "ADD", "Cutout Wiggle Y Phase", -120, -430, value_2=17.0)
+    center_x = _math(group, "SUBTRACT", "Center Cutout Wiggle X", 330, -130, value_2=0.5)
+    center_y = _math(group, "SUBTRACT", "Center Cutout Wiggle Y", 330, -330, value_2=0.5)
+    signed_x = _math(group, "MULTIPLY", "Signed Cutout Wiggle X", 520, -130, value_2=2.0)
+    signed_y = _math(group, "MULTIPLY", "Signed Cutout Wiggle Y", 520, -330, value_2=2.0)
+    amount_x = _math(group, "MULTIPLY", "Cutout Wiggle Amount X", 710, -130)
+    amount_y = _math(group, "MULTIPLY", "Cutout Wiggle Amount Y", 710, -330)
+    offset_xy = _node(group, "ShaderNodeCombineXYZ", "Cutout Wiggle Offset", 900, -220)
+    wiggle = _node(group, "GeometryNodeSetPosition", "Wiggle Cutout Outline", 1090, 230)
+
+    link(_output(spline_parameter, "Factor", 0), _input(noise_vector, "X", 0))
+    for noise in (noise_x, noise_y):
+        link(_output(noise_vector, "Vector", 0), _input(noise, "Vector", 0))
+        link(inp.outputs.get("Wiggle Scale"), _input(noise, "Scale"))
+    link(inp.outputs.get("Wiggle Phase"), _input(noise_x, "W"))
+    link(inp.outputs.get("Wiggle Phase"), _input(phase_y, "Value", 0))
+    link(_output(phase_y, "Value", 0), _input(noise_y, "W"))
+    link(_output(noise_x, "Fac", 0), _input(center_x, "Value", 0))
+    link(_output(noise_y, "Fac", 0), _input(center_y, "Value", 0))
+    link(_output(center_x, "Value", 0), _input(signed_x, "Value", 0))
+    link(_output(center_y, "Value", 0), _input(signed_y, "Value", 0))
+    link(_output(signed_x, "Value", 0), _input(amount_x, "Value", 0))
+    link(_output(signed_y, "Value", 0), _input(amount_y, "Value", 0))
+    link(inp.outputs.get("Wiggle Amount"), _input(amount_x, "Value", 1))
+    link(inp.outputs.get("Wiggle Amount"), _input(amount_y, "Value", 1))
+    link(_output(amount_x, "Value", 0), _input(offset_xy, "X", 0))
+    link(_output(amount_y, "Value", 0), _input(offset_xy, "Y", 1))
+    link(_output(mesh_to_curve, "Curve", 0), _input(wiggle, "Geometry", 0))
+    link(_output(offset_xy, "Vector", 0), _input(wiggle, "Offset"))
+
+    profile = _node(
+        group, "GeometryNodeCurvePrimitiveCircle", "Cutout Outline Profile", 760, -500
+    )
     try:
         profile.mode = "RADIUS"
     except (AttributeError, TypeError, ValueError):
         pass
-    profile_resolution = _input(profile, "Resolution")
-    if profile_resolution is not None:
-        profile_resolution.default_value = 6
-    profile_radius = _input(profile, "Radius")
-    if profile_radius is not None:
-        profile_radius.default_value = 1.0
+    resolution_input = _input(profile, "Resolution")
+    if resolution_input is not None:
+        try:
+            resolution_input.default_value = 6
+        except (AttributeError, TypeError, ValueError):
+            pass
+    curve_to_mesh = _node(
+        group, "GeometryNodeCurveToMesh", "Cutout Outline Mesh", 1300, 220
+    )
+    set_material = _node(
+        group, "GeometryNodeSetMaterial", "Cutout Outline Material", 1510, 220
+    )
+    z_offset = _node(
+        group, "ShaderNodeCombineXYZ", "Cutout Outline Offset", 1510, -30
+    )
+    set_position = _node(
+        group, "GeometryNodeSetPosition", "Offset Cutout Outline", 1720, 220
+    )
+    image_switch = _node(
+        group, "GeometryNodeSwitch", "Show Source Image", 1720, 450
+    )
+    try:
+        image_switch.input_type = "GEOMETRY"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    join = _node(group, "GeometryNodeJoinGeometry", "Join Plane and Outline", 1950, 310)
 
-    curve_to_mesh = _node(group, "GeometryNodeCurveToMesh", "Cutout Outline Mesh", 440, 220)
-    set_material = _node(group, "GeometryNodeSetMaterial", "Cutout Outline Material", 680, 220)
-    offset_vector = _node(group, "ShaderNodeCombineXYZ", "Cutout Outline Offset", 680, -60)
-    set_position = _node(group, "GeometryNodeSetPosition", "Offset Cutout Outline", 920, 220)
-    join = _node(group, "GeometryNodeJoinGeometry", "Join Plane and Outline", 1180, 240)
-
-    links.new(_output(edge_neighbors, "Face Count", 0), boundary.inputs[0])
-    links.new(masked_geometry, mesh_to_curve.inputs["Mesh"])
-    links.new(boundary.outputs[0], mesh_to_curve.inputs["Selection"])
-    links.new(mesh_to_curve.outputs["Curve"], set_radius.inputs["Curve"])
-    links.new(inp.outputs["Outline Width"], set_radius.inputs["Radius"])
-    links.new(set_radius.outputs["Curve"], curve_to_mesh.inputs["Curve"])
-    links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
-    links.new(curve_to_mesh.outputs["Mesh"], set_material.inputs["Geometry"])
-    links.new(inp.outputs["Outline Material"], set_material.inputs["Material"])
-    links.new(inp.outputs["Offset"], offset_vector.inputs["Z"])
-    links.new(set_material.outputs["Geometry"], set_position.inputs["Geometry"])
-    links.new(offset_vector.outputs[0], set_position.inputs["Offset"])
-    links.new(inp.outputs["Geometry"], join.inputs["Geometry"])
-    links.new(set_position.outputs["Geometry"], join.inputs["Geometry"])
-    links.new(join.outputs["Geometry"], out.inputs["Geometry"])
+    link(_output(wiggle, "Geometry", 0), _input(curve_to_mesh, "Curve", 0))
+    link(_output(profile, "Curve", 0), _input(curve_to_mesh, "Profile Curve", 1))
+    link(inp.outputs.get("Outline Width"), _input(profile, "Radius"))
+    link(_output(curve_to_mesh, "Mesh", 0), _input(set_material, "Geometry", 0))
+    link(inp.outputs.get("Outline Material"), _input(set_material, "Material"))
+    link(inp.outputs.get("Offset"), _input(z_offset, "Z", 2))
+    link(_output(set_material, "Geometry", 0), _input(set_position, "Geometry", 0))
+    link(_output(z_offset, "Vector", 0), _input(set_position, "Offset"))
+    link(inp.outputs.get("Show Image"), _input(image_switch, "Switch"))
+    link(inp.outputs.get("Geometry"), _input(image_switch, "True"))
+    link(_output(image_switch, "Output", 0), _input(join, "Geometry", 0))
+    link(_output(set_position, "Geometry", 0), _input(join, "Geometry", 0))
+    link(_output(join, "Geometry", 0), out.inputs.get("Geometry"))
 
     group["fbp_quality_contract_version"] = 1
     group["fbp_alpha_geometry_contract_version"] = 1
-    group["fbp_cutout_outline_version"] = 2
+    group["fbp_cutout_outline_version"] = 6
     return group
-
 
 
 def _alpha_geometry_pixel_grid(group, group_input, *, prefix="Alpha Pixels", x=-1700, y=300):
@@ -3424,6 +5446,8 @@ def _create_extrude(name):
     _socket(group, "Alpha Threshold", "INPUT", "NodeSocketFloat", default=0.05, minimum=0.0, maximum=1.0)
     _socket(group, "Use Alpha Mask", "INPUT", "NodeSocketBool", default=False)
     _socket(group, "Thickness", "INPUT", "NodeSocketFloat", default=0.04, minimum=0.0, maximum=10.0)
+    _socket(group, "Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Array Count", "INPUT", "NodeSocketInt", default=12, minimum=2, maximum=128)
     _socket(group, "Direction", "INPUT", "NodeSocketFloat", default=-1.0, minimum=-1.0, maximum=1.0)
     _socket(group, "Side Material", "INPUT", "NodeSocketMaterial")
     _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
@@ -3523,11 +5547,65 @@ def _create_extrude(name):
     links.new(_output(front_switch, "Output", 0), join_volume.inputs["Geometry"])
     links.new(_output(back_switch, "Output", 0), join_volume.inputs["Geometry"])
     links.new(set_side_material.outputs["Geometry"], join_volume.inputs["Geometry"])
-    links.new(join_volume.outputs["Geometry"], out.inputs["Geometry"])
 
-    group["fbp_quality_contract_version"] = 1
+    # Fake Array mode repeats the complete textured plane through the requested
+    # depth. This is intentionally different from true side-wall extrusion and
+    # is useful for graphic stacked-card or cel-layer thickness.
+    safe_array_count = _math(group, "MAXIMUM", "Safe Extrude Array Count", 160, -520, value_2=2.0)
+    array_denominator = _math(group, "SUBTRACT", "Extrude Array Divisions", 340, -520, value_2=1.0)
+    array_spacing = _math(group, "DIVIDE", "Extrude Array Spacing", 520, -520)
+    array_offset = _node(group, "ShaderNodeCombineXYZ", "Extrude Array Offset", 700, -520)
+    mesh_line = _node(group, "GeometryNodeMeshLine", "Extrude Array Points", 880, -420)
+    try:
+        mesh_line.mode = "OFFSET"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    geometry_instance = _node(group, "GeometryNodeGeometryToInstance", "Extrude Plane Instance", 880, -650)
+    instance_on_points = _node(group, "GeometryNodeInstanceOnPoints", "Extrude Plane Array", 1120, -420)
+    realize_array = _node(group, "GeometryNodeRealizeInstances", "Realize Extrude Array", 1360, -420)
+    links.new(inp.outputs["Array Count"], safe_array_count.inputs[0])
+    links.new(safe_array_count.outputs[0], array_denominator.inputs[0])
+    links.new(signed_thickness.outputs[0], array_spacing.inputs[0])
+    links.new(array_denominator.outputs[0], array_spacing.inputs[1])
+    links.new(array_spacing.outputs[0], array_offset.inputs["Z"])
+    links.new(safe_array_count.outputs[0], _input(mesh_line, "Count", 0))
+    links.new(array_offset.outputs[0], _input(mesh_line, "Offset", 2))
+    links.new(inp.outputs["Geometry"], geometry_instance.inputs["Geometry"])
+    links.new(mesh_line.outputs["Mesh"], instance_on_points.inputs["Points"])
+    links.new(geometry_instance.outputs["Instances"], instance_on_points.inputs["Instance"])
+    links.new(instance_on_points.outputs["Instances"], realize_array.inputs["Geometry"])
+
+    array_mode = _math(group, "GREATER_THAN", "Use Extrude Array", 1120, 40, value_2=0.5)
+    mode_switch = _node(group, "GeometryNodeSwitch", "Extrude Method", 1360, 420)
+    try:
+        mode_switch.input_type = "GEOMETRY"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Mode"], array_mode.inputs[0])
+    links.new(array_mode.outputs[0], _input(mode_switch, "Switch", 0))
+    links.new(join_volume.outputs["Geometry"], _input(mode_switch, "False", 1))
+    links.new(realize_array.outputs["Geometry"], _input(mode_switch, "True", 2))
+
+    # At zero effective depth, return the original input plane instead of two
+    # coincident caps. This prevents z-fighting, doubled transparency and an
+    # unnecessary side-wall branch when Thickness or animated Direction is zero.
+    absolute_depth = _math(group, "ABSOLUTE", "Absolute Extrude Depth", 760, 80)
+    has_depth = _math(group, "GREATER_THAN", "Extrude Has Depth", 950, 80, value_2=0.000001)
+    output_switch = _node(group, "GeometryNodeSwitch", "Extrude Depth Bypass", 1120, 420)
+    try:
+        output_switch.input_type = "GEOMETRY"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(signed_thickness.outputs[0], absolute_depth.inputs[0])
+    links.new(absolute_depth.outputs[0], has_depth.inputs[0])
+    links.new(has_depth.outputs[0], _input(output_switch, "Switch", 0))
+    links.new(inp.outputs["Geometry"], _input(output_switch, "False", 1))
+    links.new(_output(mode_switch, "Output", 0), _input(output_switch, "True", 2))
+    links.new(_output(output_switch, "Output", 0), out.inputs["Geometry"])
+
+    group["fbp_quality_contract_version"] = 2
     group["fbp_alpha_geometry_contract_version"] = 3
-    group["fbp_extrude_version"] = 7
+    group["fbp_extrude_version"] = 9
     return group
 
 def _create_wind_bender(name):
@@ -3538,8 +5616,11 @@ def _create_wind_bender(name):
     _socket(group, "Bend Amount", "INPUT", "NodeSocketFloat", default=0.5, minimum=-10.0, maximum=10.0)
     _socket(group, "Wind Speed", "INPUT", "NodeSocketFloat", default=2.0, minimum=-100.0, maximum=100.0)
     _socket(group, "Stepped", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=240)
-    _socket(group, "Pin Edge", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=3.0)
-    _socket(group, "Motion Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Pin Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=5.0)
+    _socket(group, "Pin Strength", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Pin Vertex Group", "INPUT", "NodeSocketString", default="")
+    _socket(group, "Motion Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
+    _socket(group, "Ripple Direction", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
     _socket(group, "Wave Count", "INPUT", "NodeSocketFloat", default=2.0, minimum=0.0, maximum=40.0)
     _socket(group, "Wave Amplitude", "INPUT", "NodeSocketFloat", default=0.12, minimum=0.0, maximum=10.0)
     _socket(group, "Wave Speed", "INPUT", "NodeSocketFloat", default=2.0, minimum=-100.0, maximum=100.0)
@@ -3595,30 +5676,76 @@ def _create_wind_bender(name):
     links.new(norm_y, top_distance.inputs[1])
     distances = (norm_x, right_distance.outputs[0], norm_y, top_distance.outputs[0])
 
+    # Individual edge modes: Left, Right, Bottom and Top.
     weighted = []
     for index, distance in enumerate(distances):
-        compare = _math(group, "COMPARE", f"Pin Edge {index}", -30, 330 - index * 105)
+        compare = _math(group, "COMPARE", f"Pin Edge {index}", -30, 390 - index * 105)
         compare.inputs[1].default_value = float(index)
         epsilon = _input(compare, "Epsilon", 2)
         if epsilon is not None:
             epsilon.default_value = 0.1
-        multiply = _math(group, "MULTIPLY", f"Pinned Falloff {index}", 150, 330 - index * 105)
-        links.new(inp.outputs["Pin Edge"], compare.inputs[0])
+        multiply = _math(group, "MULTIPLY", f"Pinned Edge Distance {index}", 150, 390 - index * 105)
+        links.new(inp.outputs["Pin Mode"], compare.inputs[0])
         links.new(distance, multiply.inputs[0])
         links.new(compare.outputs[0], multiply.inputs[1])
         weighted.append(multiply.outputs[0])
-    add_a = _math(group, "ADD", "Pinned Horizontal", 340, 250)
-    add_b = _math(group, "ADD", "Pinned Vertical", 340, 20)
-    falloff = _math(group, "ADD", "Pinned Edge Falloff", 520, 135)
-    links.new(weighted[0], add_a.inputs[0])
-    links.new(weighted[1], add_a.inputs[1])
-    links.new(weighted[2], add_b.inputs[0])
-    links.new(weighted[3], add_b.inputs[1])
-    links.new(add_a.outputs[0], falloff.inputs[0])
-    links.new(add_b.outputs[0], falloff.inputs[1])
-    shaped_falloff = _math(group, "POWER", "Pinned Falloff Shape", 700, 135)
-    links.new(falloff.outputs[0], shaped_falloff.inputs[0])
-    links.new(inp.outputs["Falloff"], shaped_falloff.inputs[1])
+    add_a = _math(group, "ADD", "Pinned Horizontal", 340, 310)
+    add_b = _math(group, "ADD", "Pinned Vertical", 340, 80)
+    individual_distance = _math(group, "ADD", "Selected Pinned Edge", 520, 195)
+    links.new(weighted[0], add_a.inputs[0]); links.new(weighted[1], add_a.inputs[1])
+    links.new(weighted[2], add_b.inputs[0]); links.new(weighted[3], add_b.inputs[1])
+    links.new(add_a.outputs[0], individual_distance.inputs[0]); links.new(add_b.outputs[0], individual_distance.inputs[1])
+    individual_falloff = _math(group, "POWER", "Individual Pin Falloff", 700, 195)
+    links.new(individual_distance.outputs[0], individual_falloff.inputs[0])
+    links.new(inp.outputs["Falloff"], individual_falloff.inputs[1])
+
+    # All Borders follows the actual evaluated bounds, so Crop and Extend are
+    # naturally included without any separate UV assumptions.
+    edge_x = _math(group, "MINIMUM", "Pin X Border Distance", 150, -130)
+    edge_y = _math(group, "MINIMUM", "Pin Y Border Distance", 150, -250)
+    all_distance = _math(group, "MINIMUM", "All Border Distance", 340, -190)
+    all_falloff = _math(group, "POWER", "All Borders Falloff", 520, -190)
+    links.new(norm_x, edge_x.inputs[0]); links.new(right_distance.outputs[0], edge_x.inputs[1])
+    links.new(norm_y, edge_y.inputs[0]); links.new(top_distance.outputs[0], edge_y.inputs[1])
+    links.new(edge_x.outputs[0], all_distance.inputs[0]); links.new(edge_y.outputs[0], all_distance.inputs[1])
+    links.new(all_distance.outputs[0], all_falloff.inputs[0]); links.new(inp.outputs["Falloff"], all_falloff.inputs[1])
+
+    named_group = _node(group, "GeometryNodeInputNamedAttribute", "Pinned Vertex Group", 150, -430)
+    try:
+        named_group.data_type = "FLOAT"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    vertex_free = _math(group, "SUBTRACT", "Vertex Group Free Weight", 360, -430, value_1=1.0)
+    vertex_falloff = _math(group, "POWER", "Vertex Group Pin Falloff", 540, -430)
+    links.new(inp.outputs["Pin Vertex Group"], named_group.inputs["Name"])
+    links.new(named_group.outputs["Attribute"], vertex_free.inputs[1])
+    links.new(vertex_free.outputs[0], vertex_falloff.inputs[0]); links.new(inp.outputs["Falloff"], vertex_falloff.inputs[1])
+
+    special_mode = _math(group, "GREATER_THAN", "Use All Or Vertex Pin", 710, -80, value_2=3.5)
+    vertex_mode = _math(group, "GREATER_THAN", "Use Vertex Group Pin", 710, -230, value_2=4.5)
+    all_or_vertex = _node(group, "GeometryNodeSwitch", "All Or Vertex Pin", 900, -250)
+    selected_pin = _node(group, "GeometryNodeSwitch", "Selected Pin Mode", 1090, 30)
+    for switch in (all_or_vertex, selected_pin):
+        try:
+            switch.input_type = "FLOAT"
+        except (AttributeError, TypeError, ValueError):
+            pass
+    links.new(inp.outputs["Pin Mode"], special_mode.inputs[0]); links.new(inp.outputs["Pin Mode"], vertex_mode.inputs[0])
+    links.new(vertex_mode.outputs[0], all_or_vertex.inputs["Switch"])
+    links.new(all_falloff.outputs[0], all_or_vertex.inputs["False"])
+    links.new(vertex_falloff.outputs[0], all_or_vertex.inputs["True"])
+    links.new(special_mode.outputs[0], selected_pin.inputs["Switch"])
+    links.new(individual_falloff.outputs[0], selected_pin.inputs["False"])
+    links.new(all_or_vertex.outputs["Output"], selected_pin.inputs["True"])
+
+    strength_inverse = _math(group, "SUBTRACT", "Unpinned Strength", 1270, -80, value_1=1.0)
+    pinned_weight = _math(group, "MULTIPLY", "Pinned Surface Weight", 1270, 80)
+    free_weight = _math(group, "MULTIPLY", "Unpinned Surface Weight", 1450, -80)
+    shaped_falloff = _math(group, "ADD", "Final Pin Falloff", 1630, 30)
+    links.new(inp.outputs["Pin Strength"], strength_inverse.inputs[1])
+    links.new(selected_pin.outputs["Output"], pinned_weight.inputs[0]); links.new(inp.outputs["Pin Strength"], pinned_weight.inputs[1])
+    free_weight.inputs[0].default_value = 1.0; links.new(strength_inverse.outputs[0], free_weight.inputs[1])
+    links.new(pinned_weight.outputs[0], shaped_falloff.inputs[0]); links.new(free_weight.outputs[0], shaped_falloff.inputs[1])
 
     scene_time = _node(group, "GeometryNodeInputSceneTime", "Scene Time", -850, -420)
     safe_step = _math(group, "MAXIMUM", "Safe Step", -850, -540, value_2=1.0)
@@ -3672,17 +5799,53 @@ def _create_wind_bender(name):
     links.new(wave_amount.outputs[0], wave_falloff.inputs[0])
     links.new(shaped_falloff.outputs[0], wave_falloff.inputs[1])
 
-    mode_normal = _math(group, "SUBTRACT", "Sway Mode Weight", 1040, -500, value_1=1.0)
-    sway_mode = _math(group, "MULTIPLY", "Selected Sway", 1220, -480)
-    wave_mode = _math(group, "MULTIPLY", "Selected Flow", 1980, -300)
-    selected_motion = _math(group, "ADD", "Selected Wind Motion", 2160, -360)
-    links.new(inp.outputs["Motion Mode"], mode_normal.inputs[1])
-    links.new(sway_falloff.outputs[0], sway_mode.inputs[0])
-    links.new(mode_normal.outputs[0], sway_mode.inputs[1])
-    links.new(wave_falloff.outputs[0], wave_mode.inputs[0])
-    links.new(inp.outputs["Motion Mode"], wave_mode.inputs[1])
-    links.new(sway_mode.outputs[0], selected_motion.inputs[0])
-    links.new(wave_mode.outputs[0], selected_motion.inputs[1])
+    # Ripple is now a third behavior of Mesh Motion instead of a separate
+    # add-menu effect. It shares quality, time and pinning with Sway and Flow.
+    centered_x = _math(group, "SUBTRACT", "Motion Centered X", 920, 520, value_2=0.5)
+    centered_y = _math(group, "SUBTRACT", "Motion Centered Y", 920, 390, value_2=0.5)
+    radial_vec = _node(group, "ShaderNodeCombineXYZ", "Motion Radial Vector", 1100, 455)
+    radial_coord = _vector_math(group, "LENGTH", "Motion Radial Coordinate", 1280, 455)
+    use_y = _math(group, "GREATER_THAN", "Ripple Uses Y", 920, 690, value_2=0.5)
+    xy_switch = _node(group, "GeometryNodeSwitch", "Ripple X or Y", 1100, 680)
+    use_radial = _math(group, "GREATER_THAN", "Ripple Uses Radius", 1280, 620, value_2=1.5)
+    ripple_coord = _node(group, "GeometryNodeSwitch", "Ripple Coordinate", 1460, 610)
+    for switch in (xy_switch, ripple_coord):
+        switch.input_type = "FLOAT"
+    links.new(norm_x, centered_x.inputs[0]); links.new(norm_y, centered_y.inputs[0])
+    links.new(centered_x.outputs[0], radial_vec.inputs["X"]); links.new(centered_y.outputs[0], radial_vec.inputs["Y"])
+    links.new(radial_vec.outputs[0], radial_coord.inputs[0])
+    links.new(inp.outputs["Ripple Direction"], use_y.inputs[0]); links.new(use_y.outputs[0], xy_switch.inputs["Switch"])
+    links.new(norm_x, xy_switch.inputs["False"]); links.new(norm_y, xy_switch.inputs["True"])
+    links.new(inp.outputs["Ripple Direction"], use_radial.inputs[0]); links.new(use_radial.outputs[0], ripple_coord.inputs["Switch"])
+    links.new(xy_switch.outputs["Output"], ripple_coord.inputs["False"]); links.new(radial_coord.outputs["Value"], ripple_coord.inputs["True"])
+    ripple_frequency = _math(group, "MULTIPLY", "Mesh Motion Ripple Frequency", 1640, 610)
+    ripple_cycles = _math(group, "MULTIPLY", "Mesh Motion Ripple Cycles", 1820, 610, value_2=6.283185307)
+    ripple_time = _math(group, "MULTIPLY", "Mesh Motion Ripple Time", 1640, 480)
+    ripple_phase_a = _math(group, "ADD", "Mesh Motion Ripple Moving Phase", 2000, 550)
+    ripple_phase_b = _math(group, "ADD", "Mesh Motion Ripple User Phase", 2180, 550)
+    ripple_sine = _math(group, "SINE", "Mesh Motion Ripple", 2360, 550)
+    ripple_amount = _math(group, "MULTIPLY", "Mesh Motion Ripple Amount", 2540, 550)
+    ripple_falloff = _math(group, "MULTIPLY", "Mesh Motion Ripple Pinning", 2720, 550)
+    links.new(ripple_coord.outputs["Output"], ripple_frequency.inputs[0]); links.new(inp.outputs["Wave Count"], ripple_frequency.inputs[1])
+    links.new(ripple_frequency.outputs[0], ripple_cycles.inputs[0])
+    links.new(time_scale.outputs[0], ripple_time.inputs[0]); links.new(inp.outputs["Wave Speed"], ripple_time.inputs[1])
+    links.new(ripple_cycles.outputs[0], ripple_phase_a.inputs[0]); links.new(ripple_time.outputs[0], ripple_phase_a.inputs[1])
+    links.new(ripple_phase_a.outputs[0], ripple_phase_b.inputs[0]); links.new(inp.outputs["Phase"], ripple_phase_b.inputs[1])
+    links.new(ripple_phase_b.outputs[0], ripple_sine.inputs[0]); links.new(ripple_sine.outputs[0], ripple_amount.inputs[0])
+    links.new(inp.outputs["Wave Amplitude"], ripple_amount.inputs[1]); links.new(ripple_amount.outputs[0], ripple_falloff.inputs[0])
+    links.new(shaped_falloff.outputs[0], ripple_falloff.inputs[1])
+
+    use_flow = _math(group, "GREATER_THAN", "Use Flow Behavior", 1980, -500, value_2=0.5)
+    use_ripple = _math(group, "GREATER_THAN", "Use Ripple Behavior", 2180, -500, value_2=1.5)
+    sway_or_flow = _node(group, "GeometryNodeSwitch", "Sway Or Flow", 2180, -360)
+    selected_motion = _node(group, "GeometryNodeSwitch", "Selected Mesh Motion", 2920, 120)
+    for switch in (sway_or_flow, selected_motion):
+        switch.input_type = "FLOAT"
+    links.new(inp.outputs["Motion Mode"], use_flow.inputs[0]); links.new(inp.outputs["Motion Mode"], use_ripple.inputs[0])
+    links.new(use_flow.outputs[0], sway_or_flow.inputs["Switch"])
+    links.new(sway_falloff.outputs[0], sway_or_flow.inputs["False"]); links.new(wave_falloff.outputs[0], sway_or_flow.inputs["True"])
+    links.new(use_ripple.outputs[0], selected_motion.inputs["Switch"])
+    links.new(sway_or_flow.outputs["Output"], selected_motion.inputs["False"]); links.new(ripple_falloff.outputs[0], selected_motion.inputs["True"])
 
     gust_noise = _node(group, "ShaderNodeTexNoise", "Wind Gusts", 1900, -760)
     gust_noise.noise_dimensions = "4D"
@@ -3767,7 +5930,6 @@ def _create_wind_bender(name):
     return group
 
 
-
 def _camera_space_vectors(group, camera_socket, *, prefix="Camera Space", x=-900, y=200):
     """Return camera location and normalized view direction in modifier-object space.
 
@@ -3784,6 +5946,37 @@ def _camera_space_vectors(group, camera_socket, *, prefix="Camera Space", x=-900
     direction = _vector_math(group, "NORMALIZE", f"{prefix} Direction", x + 220, y)
     group.links.new(camera_info.outputs["Location"], direction.inputs[0])
     return camera_info.outputs["Location"], direction.outputs[0]
+
+
+def _create_mirror(name):
+    """Mirror plane geometry around its local origin without moving the rig pivot."""
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Mirror X", "INPUT", "NodeSocketBool", default=True)
+    _socket(group, "Mirror Y", "INPUT", "NodeSocketBool", default=False)
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    links = group.links
+
+    x_double = _math(group, "MULTIPLY", "Mirror X Double", -520, 140, value_2=2.0)
+    x_sign = _math(group, "SUBTRACT", "Mirror X Sign", -300, 140, value_1=1.0)
+    y_double = _math(group, "MULTIPLY", "Mirror Y Double", -520, -20, value_2=2.0)
+    y_sign = _math(group, "SUBTRACT", "Mirror Y Sign", -300, -20, value_1=1.0)
+    scale = _node(group, "ShaderNodeCombineXYZ", "Mirror Scale", -80, 80)
+    scale.inputs["Z"].default_value = 1.0
+    transform = _node(group, "GeometryNodeTransform", "Mirror Geometry", 160, 80)
+
+    links.new(inp.outputs["Mirror X"], x_double.inputs[0])
+    links.new(x_double.outputs[0], x_sign.inputs[1])
+    links.new(inp.outputs["Mirror Y"], y_double.inputs[0])
+    links.new(y_double.outputs[0], y_sign.inputs[1])
+    links.new(x_sign.outputs[0], scale.inputs["X"])
+    links.new(y_sign.outputs[0], scale.inputs["Y"])
+    links.new(inp.outputs["Geometry"], transform.inputs["Geometry"])
+    links.new(scale.outputs[0], transform.inputs["Scale"])
+    links.new(transform.outputs["Geometry"], out.inputs["Geometry"])
+    group["fbp_mirror_contract_version"] = 1
+    return group
 
 
 def _create_camera_billboard(name):
@@ -4063,9 +6256,16 @@ def _builtin_group_is_complete(group, definition):
             return False
     if bool(definition.get("mask_source_transform_aware")):
         try:
-            if int(group.get("fbp_track_matte_contract_version", 0) or 0) < 5:
+            required_contract = max(
+                5, int(definition.get("track_matte_contract_version", 5) or 5)
+            )
+            if int(group.get("fbp_track_matte_contract_version", 0) or 0) < required_contract:
                 return False
             if not any(bool(node.get("fbp_mask_source_coord_node", False)) for node in group.nodes):
+                return False
+            if required_contract >= 7 and not any(
+                bool(node.get("fbp_mask_camera_coord_node", False)) for node in group.nodes
+            ):
                 return False
         except FBP_DATA_ERRORS:
             return False
@@ -4090,6 +6290,7 @@ def _builtin_group_is_complete(group, definition):
             return False
     if str(definition.get("asset_id", "") or "").startswith((
         "frame_by_plane.shader.color_mask",
+        "frame_by_plane.shader.luminance_mask",
         "frame_by_plane.shader.gradient_mask",
         "frame_by_plane.shader.noise_mask",
     )):
@@ -4171,17 +6372,49 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
 
     builders = {
         "PIXELATE": lambda: _create_pixelate(canonical_name),
+        "SWIRL": lambda: _create_swirl(canonical_name),
+        "BULGE_PINCH": lambda: _create_bulge_pinch(canonical_name),
+        "LENS_WARP": lambda: _create_lens_warp(canonical_name),
+        "WAVE_WARP": lambda: _create_wave_warp(canonical_name),
+        "RIPPLE_DISTORTION": lambda: _create_ripple_distortion(canonical_name),
+        "KALEIDOSCOPE": lambda: _create_kaleidoscope(canonical_name),
+        "HEX_PIXELATE": lambda: _create_hex_pixelate(canonical_name),
+        "MOSAIC_JITTER": lambda: _create_mosaic_jitter(canonical_name),
         "RECOLOR": lambda: _create_recolor(canonical_name),
+        "WHITE_BALANCE": lambda: _create_white_balance(canonical_name),
+        "CURVES": lambda: _create_curves(canonical_name),
+        "COLOR_ISOLATE": lambda: _create_color_isolate(canonical_name),
         "GRADIENT_LIGHT": lambda: _create_gradient_light(canonical_name),
         "RIM": lambda: _create_rim(canonical_name),
+        "SHADOW": lambda: _create_shadow(canonical_name),
         "DEPTH_BLUR": lambda: _create_depth_blur(canonical_name),
+        "GAUSSIAN_BLUR": lambda: _create_gaussian_blur(canonical_name),
+        "DIRECTIONAL_BLUR": lambda: _create_directional_blur(canonical_name),
+        "TRIANGLE_BLUR": lambda: _create_triangle_blur(canonical_name),
+        "TILT_SHIFT": lambda: _create_tilt_shift(canonical_name),
+        "UNSHARP_MASK": lambda: _create_unsharp_mask(canonical_name),
+        "EDGE_DETECT": lambda: _create_edge_detect(canonical_name),
+        "SMOOTH_TOON": lambda: _create_smooth_toon(canonical_name),
+        "ADAPTIVE_THRESHOLD": lambda: _create_adaptive_threshold(canonical_name),
+        "FALSE_COLOR": lambda: _create_false_color(canonical_name),
+        "CHROMATIC_ABERRATION": lambda: _create_chromatic_aberration(canonical_name),
+        "INK": lambda: _create_ink(canonical_name),
+        "EDGE_WORK": lambda: _create_edge_work(canonical_name),
+        "PENCIL_SKETCH": lambda: _create_pencil_sketch(canonical_name),
+        "POSTER_EDGES": lambda: _create_poster_edges(canonical_name),
+        "CROSSHATCH": lambda: _create_crosshatch(canonical_name),
+        "EMBOSS": lambda: _create_emboss(canonical_name),
         "ALPHA_MATTE": lambda: _create_alpha_matte(canonical_name),
         "LUMA_MATTE": lambda: _create_luma_matte(canonical_name),
-        "CLIPPING_MASK": lambda: _create_alpha_matte(canonical_name),
+        "CLIPPING_MASK": lambda: _create_clipping_mask(canonical_name),
+        "IMPORTED_MASK": lambda: _create_imported_mask(canonical_name),
+        "LAYER_BLEND": lambda: _create_layer_blend(canonical_name),
         "SQUARE_MASK": lambda: _create_object_shape_mask(canonical_name, shape="SQUARE"),
         "CIRCLE_MASK": lambda: _create_object_shape_mask(canonical_name, shape="CIRCLE"),
         "TRIANGLE_MASK": lambda: _create_object_shape_mask(canonical_name, shape="TRIANGLE"),
         "COLOR_MASK": lambda: _create_color_mask(canonical_name),
+        "LUMINANCE_MASK": lambda: _create_luminance_mask(canonical_name),
+        "CHANNEL_MASK": lambda: _create_channel_mask(canonical_name),
         "GRADIENT_MASK": lambda: _create_gradient_mask(canonical_name),
         "NOISE_MASK": lambda: _create_noise_mask(canonical_name),
         "DIGITAL_NOISE": lambda: _create_digital_noise(canonical_name),
@@ -4192,12 +6425,14 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
         "ASCII": lambda: _create_terminal_ascii(canonical_name, asset_dir),
         "TEXT_MATRIX": lambda: _create_text_matrix(canonical_name),
         "WIND_BENDER": lambda: _create_wind_bender(canonical_name),
-        "MESH_RIPPLE": lambda: _create_mesh_ripple(canonical_name),
-        "PAPER_CURL": lambda: _create_paper_curl(canonical_name),
         "CUTOUT_OUTLINE": lambda: _create_cutout_outline(canonical_name),
         "THICKNESS": lambda: _create_extrude(canonical_name),
         "CAMERA_SCALE_LOCK": lambda: _create_camera_scale_lock(canonical_name),
         "CAMERA_BILLBOARD": lambda: _create_camera_billboard(canonical_name),
+        "MIRROR": lambda: _create_mirror(canonical_name),
+        "SOLARIZE": lambda: _create_solarize(canonical_name),
+        "TRITONE": lambda: _create_tritone(canonical_name),
+        "FILM_FADE": lambda: _create_film_fade(canonical_name),
     }
     builder = builders.get(effect_id)
     if builder is None:

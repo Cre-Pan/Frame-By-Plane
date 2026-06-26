@@ -38,6 +38,12 @@ _HANDLER_SPECS = (
     ("undo_post", "fbp_undo_post_handler", 1),
     ("load_pre", "fbp_load_pre_handler", 1),
     ("load_post", "fbp_load_post_handler", 1),
+) + (
+    (("redo_pre", "fbp_redo_pre_handler", 1),)
+    if getattr(bpy.app.handlers, "redo_pre", None) is not None else ()
+) + (
+    (("redo_post", "fbp_redo_post_handler", 1),)
+    if getattr(bpy.app.handlers, "redo_post", None) is not None else ()
 )
 
 
@@ -64,9 +70,13 @@ def _timer_registered(callback):
     if callback is None:
         return False
     try:
-        return bool(bpy.app.timers.is_registered(callback))
-    except FBP_DATA_ERRORS:
-        return False
+        from .handlers import fbp_timer_is_registered
+        return bool(fbp_timer_is_registered(callback))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        try:
+            return bool(bpy.app.timers.is_registered(callback))
+        except FBP_DATA_ERRORS:
+            return False
 
 
 def _repair_runtime_services():
@@ -129,6 +139,13 @@ def _audit_timers(stats, issues, warnings, *, repair=False):
             stats["timer_mismatches"] += 1
             issues.append(f"Required timer is not registered: {label}")
 
+    # Completed one-shot timers are harmless and Blender unregisters them
+    # automatically. Mirror that state before auditing so a previous callback
+    # generation cannot survive only as bookkeeping noise.
+    try:
+        handlers.fbp_prune_timer_registry()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     registry = getattr(handlers, "_FBP_REGISTERED_TIMERS", {})
     stale_registry_keys = []
     try:
@@ -262,6 +279,11 @@ def _audit_scene_ownership(scene, stats, issues, warnings, *, repair=False):
                 if repair:
                     try:
                         plane.is_fbp_plane = True
+                        try:
+                            if getattr(plane, "data", None) is not None:
+                                plane.data["fbp_plane_mesh"] = True
+                        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                            pass
                     except FBP_DATA_ERRORS:
                         pass
             if not _object_in_scene(plane, candidate_scene):

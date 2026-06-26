@@ -4,6 +4,83 @@ This module is intentionally Blender-light: it avoids bpy imports so it can be
 tested and refactored independently.
 """
 
+# Release metadata lives here so the add-on header, preferences and local
+# What's New UI cannot silently drift apart during incremental releases.
+FBP_VERSION = (6, 1, 0)
+FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
+FBP_VERSION_FAMILY = ".".join(str(part) for part in FBP_VERSION[:2])
+# Public 6.1 LTS release metadata. Keep the semantic version numeric in the
+# manifest and expose the LTS designation only in user-facing text.
+FBP_PUBLIC_VERSION_STRING = "6.1 LTS"
+FBP_RELEASE_SUMMARY = "Frame By Plane 6.1.0 LTS: stable native workflow, autonomous release tests and lighter platform packages"
+
+# Principal layer blend modes shared by RNA properties, operators and UI.
+# ``short`` is intentionally compact so every layer can expose a Procreate-style
+# badge without pushing long names or the fixed action strip out of alignment.
+FBP_LAYER_BLEND_MODE_DEFINITIONS = (
+    {"id": "NORMAL", "label": "Normal", "short": "N", "description": "Disable Layer Blend and show the layer normally", "icon": "DOT", "section": "Normal"},
+    {"id": "MULTIPLY", "label": "Multiply", "short": "M", "description": "Multiply this layer with the image layer below", "icon": "REMOVE", "section": "Darken"},
+    {"id": "DARKEN", "label": "Darken", "short": "D", "description": "Keep the darker channel values", "icon": "HIDE_ON", "section": "Darken"},
+    {"id": "COLOR_BURN", "label": "Color Burn", "short": "CB", "description": "Darken the base using the current layer", "icon": "REMOVE", "section": "Darken"},
+    {"id": "SCREEN", "label": "Screen", "short": "S", "description": "Screen blend against the image layer below", "icon": "ADD", "section": "Lighten"},
+    {"id": "LIGHTEN", "label": "Lighten", "short": "L", "description": "Keep the lighter channel values", "icon": "HIDE_OFF", "section": "Lighten"},
+    {"id": "COLOR_DODGE", "label": "Color Dodge", "short": "CD", "description": "Brighten the base using the current layer", "icon": "ADD", "section": "Lighten"},
+    {"id": "ADD", "label": "Add / Linear Dodge", "short": "A", "description": "Add the current layer to the base", "icon": "ADD", "section": "Lighten"},
+    {"id": "OVERLAY", "label": "Overlay", "short": "O", "description": "Overlay blend against the image layer below", "icon": "NODE_MATERIAL", "section": "Contrast"},
+    {"id": "SOFT_LIGHT", "label": "Soft Light", "short": "SL", "description": "Soft Light blend against the image layer below", "icon": "LIGHT_SUN", "section": "Contrast"},
+    {"id": "HARD_LIGHT", "label": "Hard Light", "short": "HL", "description": "Hard Light blend against the image layer below", "icon": "LIGHT_SUN", "section": "Contrast"},
+    {"id": "LINEAR_LIGHT", "label": "Linear Light", "short": "LL", "description": "Apply Linear Light against the layer below", "icon": "LIGHT_SUN", "section": "Contrast"},
+    {"id": "DIFFERENCE", "label": "Difference", "short": "Di", "description": "Use the absolute difference between layers", "icon": "ARROW_LEFTRIGHT", "section": "Comparison"},
+    {"id": "EXCLUSION", "label": "Exclusion", "short": "Ex", "description": "Apply a softer, lower-contrast Difference blend", "icon": "PROP_CON", "section": "Comparison"},
+    {"id": "SUBTRACT", "label": "Subtract", "short": "Su", "description": "Subtract the current layer from the base", "icon": "REMOVE", "section": "Comparison"},
+    {"id": "DIVIDE", "label": "Divide", "short": "Dv", "description": "Divide the base by the current layer", "icon": "MODIFIER", "section": "Comparison"},
+    {"id": "HUE", "label": "Hue", "short": "H", "description": "Use current-layer hue with base saturation and luminance", "icon": "COLOR", "section": "Color"},
+    {"id": "SATURATION", "label": "Saturation", "short": "Sa", "description": "Use current-layer saturation with base hue and luminance", "icon": "COLOR", "section": "Color"},
+    {"id": "COLOR", "label": "Color", "short": "C", "description": "Use current-layer hue and saturation with base luminance", "icon": "COLOR", "section": "Color"},
+    {"id": "LUMINOSITY", "label": "Luminosity", "short": "Lu", "description": "Use current-layer luminance with base hue and saturation", "icon": "COLOR", "section": "Color"},
+)
+
+FBP_LAYER_BLEND_MODE_BY_ID = {item["id"]: item for item in FBP_LAYER_BLEND_MODE_DEFINITIONS}
+FBP_LAYER_BLEND_MODE_ITEMS = tuple(
+    (item["id"], item["label"], item["description"])
+    for item in FBP_LAYER_BLEND_MODE_DEFINITIONS
+    if item["id"] != "NORMAL"
+)
+FBP_LAYER_BLEND_MENU_ITEMS = tuple(
+    (item["id"], item["label"], item["description"])
+    for item in FBP_LAYER_BLEND_MODE_DEFINITIONS
+)
+
+def fbp_layer_blend_definition(mode):
+    return FBP_LAYER_BLEND_MODE_BY_ID.get(str(mode or "NORMAL").upper(), FBP_LAYER_BLEND_MODE_BY_ID["NORMAL"])
+
+def fbp_layer_blend_short(mode):
+    return str(fbp_layer_blend_definition(mode).get("short", "N") or "N")
+
+def fbp_layer_blend_label(mode):
+    return str(fbp_layer_blend_definition(mode).get("label", "Normal") or "Normal")
+
+
+def fbp_layer_blend_mode_columns():
+    """Group blend definitions into compact horizontal menu columns.
+
+    The single Normal entry is merged into Darken so it does not waste an
+    entire column. Registry order remains the source of truth everywhere.
+    """
+    columns = []
+    current_section = None
+    for definition in FBP_LAYER_BLEND_MODE_DEFINITIONS:
+        section = str(definition.get("section", "") or "")
+        if section != current_section:
+            columns.append([])
+            current_section = section
+        columns[-1].append(definition)
+    if len(columns) > 1 and len(columns[0]) == 1:
+        columns[1] = columns[0] + columns[1]
+        columns.pop(0)
+    return tuple(tuple(column) for column in columns if column)
+
+
 # ICON REGISTRY #
 #################
 # Edit icon values here to change them everywhere in Frame by Plane.
@@ -60,13 +137,17 @@ FBP_ICONS = {
     'LOCKED': 'LOCKED',  # Locked state for rigs/collections. ### DUPLICATE
     'MATERIAL': 'MATERIAL',  # Material/color plane panels. ### DUPLICATE
     'MESH_PLANE': 'MESH_PLANE',  # Plane creation menu icon. ### DUPLICATE
+    'MESH_MONKEY': 'MESH_MONKEY',  # Feedback and community section icon.
     'MODIFIER': 'MODIFIER',  # Plane tools/repair actions. ### DUPLICATE
+    'MOD_MASK': 'MOD_MASK',  # Imported/clipping mask status.
+    'NODE_MATERIAL': 'NODE_MATERIAL',  # Layer blend and shader-material status.
     'NODETREE': 'NODETREE',  # User-defined node effects.
     'MOD_DISPLACE': 'MOD_DISPLACE',
     'MOD_WAVE': 'MOD_WAVE',
     'MOD_SIMPLEDEFORM': 'MOD_SIMPLEDEFORM',
     'MOD_SOLIDIFY': 'MOD_SOLIDIFY',
     'SHADING_RENDERED': 'SHADING_RENDERED',
+    'SOLO_ON': 'SOLO_ON',  # Review/support primary action icon.
     'RNDCURVE': 'RNDCURVE',
     'FORCE_WIND': 'FORCE_WIND',
     'PARTICLES': 'PARTICLES',
@@ -76,7 +157,7 @@ FBP_ICONS = {
     'MESH_CUBE': 'MESH_CUBE',
     'FONT_DATA': 'FONT_DATA',
     'BRUSH_DATA': 'BRUSH_DATA',
-    'SPARKLES': 'SPARKLES',
+    'SPARKLES': 'LIGHT_SUN',  # Sparkle-style fallback available in Blender 5.1.2.
     'MOD_BOOLEAN': 'MOD_BOOLEAN',  # Crop tool icon. ### DUPLICATE
     'NODE_TEXTURE': 'NODE_TEXTURE',  # Gradient / texture-node plane icon.  # Pending folder without files.
     'OPTIONS': 'OPTIONS',  # Create/pre-settings section icon. ### DUPLICATE
@@ -114,11 +195,16 @@ FBP_ICONS = {
     'STRIP_COLOR_07': 'STRIP_COLOR_07',  # Color tag enum/icon 07. ### DUPLICATE
     'STRIP_COLOR_08': 'STRIP_COLOR_08',  # Color tag enum/icon 08. ### DUPLICATE
     'STRIP_COLOR_09': 'STRIP_COLOR_09',  # Color tag enum/icon 09. ### DUPLICATE
+    'TEXT': 'TEXT',  # Text datablock and diagnostic report actions.
     'TEXTURE': 'TEXTURE',  # Add a transparent logical frame.
     'TEXTURE_DATA': 'TEXTURE_DATA',  # Transparent procedural/empty frame icon.
     'TRIA_DOWN_BAR': 'TRIA_DOWN_BAR',  # Move active frame to the bottom.
     'TRIA_UP_BAR': 'TRIA_UP_BAR',  # Move active frame to the top.
     'TIME': 'TIME',  # Import/profile report icon. ### DUPLICATE
+    'TOOL_SETTINGS': 'TOOL_SETTINGS',  # Settings cleanup and maintenance actions.
+    'URL': 'URL',  # External review/support links.
+    'CANCEL': 'CANCEL',  # Dismiss/disable optional prompts.
+    'PRESET': 'PRESET',  # What's New section header.
     'TRASH': 'TRASH',  # Delete/clear/remove actions. ### DUPLICATE
     'UV_SYNC_SELECT': 'UV_SYNC_SELECT',  # Ping-pong playback enum. ### DUPLICATE
     'UNLOCKED': 'UNLOCKED',  # Unlocked state for rigs/collections. ### DUPLICATE
@@ -204,4 +290,3 @@ FBP_TECHNICAL_MAP_SUFFIXES = (
 )
 
 FBP_PROJECT_COLLECTION_PREFIX = 'FBP - '
-

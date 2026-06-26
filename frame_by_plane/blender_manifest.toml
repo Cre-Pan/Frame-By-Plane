@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "5.8.6"
+version = "6.1.0"
 name = "Frame By Plane"
 tagline = "A better Image as Planes workflow for animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
@@ -25,9 +25,24 @@ copyright = [
   "2026 Alessandro Pannoli",
 ]
 
+wheels = [
+  "./wheels/attrs-26.1.0-py3-none-any.whl",
+  "./wheels/pillow-12.2.0-cp313-cp313-macosx_10_13_x86_64.whl",
+  "./wheels/pillow-12.2.0-cp313-cp313-macosx_11_0_arm64.whl",
+  "./wheels/pillow-12.2.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+  "./wheels/pillow-12.2.0-cp313-cp313-win_amd64.whl",
+  "./wheels/pillow-12.2.0-cp313-cp313-win_arm64.whl",
+  "./wheels/psd_tools-1.17.3-cp313-abi3-macosx_10_13_x86_64.whl",
+  "./wheels/psd_tools-1.17.3-cp313-abi3-macosx_11_0_arm64.whl",
+  "./wheels/psd_tools-1.17.3-cp313-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+  "./wheels/psd_tools-1.17.3-cp313-cp313-win_amd64.whl",
+  "./wheels/psd_tools-1.17.3-cp313-cp313-win_arm64.whl",
+  "./wheels/typing_extensions-4.15.0-py3-none-any.whl",
+]
+
 [permissions]
-files = "Import media, rename sequences, and save rendered frames"
-clipboard = "Import images and media paths from the clipboard"
+files = "Read media and write layered/render cache files"
+clipboard = "Import media paths and copy diagnostic reports to the clipboard"
 
 [build]
 paths_exclude_pattern = [
@@ -46,7 +61,6 @@ paths_exclude_pattern = [
   "PRESETS_AND_SETTINGS.md",
   "ROADMAP_STATUS.md",
   "KNOWN_LIMITATIONS.md",
-  "LTS_TEST_REPORT.md",
   "tests/",
   "*.sha256",
   "*.log",

@@ -310,8 +310,6 @@ def rebuild_fbp_image_material(mat, use_emission=None, opacity=None):
         return None
 
 
-
-
 def _fbp_reapply_registered_effects(rig, custom_states=None):
     """Restore tagged shader effects and refresh alpha-aware geometry."""
     if not rig:
@@ -361,7 +359,6 @@ def set_fbp_material_transparency(mat, opacity=1.0):
     configure_fbp_material_surface(mat, opacity, has_alpha=True)
 
 
-
 def do_update_opacity(rig):
     """Update layer opacity in place without rebuilding image materials.
 
@@ -396,8 +393,16 @@ def do_update_opacity(rig):
 
     if not is_procedural:
         try:
-            from .geometry_nodes import fbp_sync_layer_opacity_effect
+            from .geometry_nodes import (
+                fbp_schedule_clipping_mask_sync,
+                fbp_sync_layer_opacity_effect,
+            )
             fbp_sync_layer_opacity_effect(rig, opacity)
+            # Clipping Mask samples the visible alpha of its source layer.
+            # Coalesce slider drags into one safe relation refresh.
+            fbp_schedule_clipping_mask_sync(
+                getattr(bpy.context, "scene", None)
+            )
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, ImportError) as exc:
             fbp_warn("Could not update layer opacity in place", exc)
 

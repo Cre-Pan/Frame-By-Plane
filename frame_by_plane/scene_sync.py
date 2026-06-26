@@ -22,6 +22,7 @@ from .layers import (
     is_fbp_layer_object,
     fbp_layer_backend_type,
     fbp_rebuild_layer_view_cache,
+    get_primary_fbp_collection,
 )
 
 from .materials import (
@@ -83,7 +84,6 @@ def _core():
     return _core_mod
 
 
-
 def fbp_fast_import_is_active():
     from .importer import fbp_fast_import_is_active as _is_active
     return _is_active()
@@ -118,7 +118,6 @@ def fbp_animation_playback_active(context=None):
     except FBP_DATA_ERRORS:
         pass
     return False
-
 
 
 def fbp_render_job_active():
@@ -284,8 +283,6 @@ def _fbp_object_identity(obj):
             return ("NAME", str(obj.name_full))
         except FBP_DATA_ERRORS:
             return None
-
-
 
 
 _FBP_KNOWN_LINKS_STATE_KEY = "fbp_known_rig_plane_links_by_scene"
@@ -770,6 +767,11 @@ def sync_layer_collection(context):
             plane = getattr(rig, "fbp_plane_target", None)
             if plane and object_in_scene(plane, sc):
                 plane.is_fbp_plane = True
+                try:
+                    if getattr(plane, "data", None) is not None:
+                        plane.data["fbp_plane_mesh"] = True
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    pass
         except ReferenceError:
             pass
 
@@ -784,6 +786,11 @@ def sync_layer_collection(context):
             plane = getattr(obj, "fbp_plane_target", None)
             if plane and object_in_scene(plane, sc):
                 plane.is_fbp_plane = True
+                try:
+                    if getattr(plane, "data", None) is not None:
+                        plane.data["fbp_plane_mesh"] = True
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    pass
             sc.fbp_layers.move(len(sc.fbp_layers) - 1, 0)
 
     fbp_rebuild_layer_view_cache(context)
@@ -991,6 +998,17 @@ def fbp_remove_plane_datablock(plane, *, pending_materials=None):
             return False
         mesh = getattr(plane, 'data', None)
         mats_to_remove = [mat for mat in mesh.materials if mat] if mesh else []
+        for child in tuple(getattr(plane, 'children', ()) or ()):
+            try:
+                is_control = bool(child.get('fbp_is_effect_control', False))
+                is_bounds_guide = bool(child.get('fbp_is_crop_extend_bounds_guide', False))
+                if is_control or is_bounds_guide:
+                    child_mesh = getattr(child, 'data', None) if is_bounds_guide else None
+                    bpy.data.objects.remove(child, do_unlink=True)
+                    if child_mesh and child_mesh.users == 0:
+                        bpy.data.meshes.remove(child_mesh)
+            except FBP_DATA_ERRORS:
+                continue
         bpy.data.objects.remove(plane, do_unlink=True)
         if mesh and mesh.users == 0:
             bpy.data.meshes.remove(mesh)
@@ -1111,7 +1129,6 @@ def fbp_snapshot_layer_plane_links(context):
         _fbp_set_known_links(scene, links, identities)
     except Exception as exc:
         fbp_warn("Could not store FBP rig/plane links", exc)
-
 
 
 # SECTION 04 - Native Delete Cleanup #
@@ -1509,6 +1526,11 @@ def fbp_repair_default_duplicate_rig(rig, context=None):
             new_plane.data = source_plane.data.copy()
         new_plane.name = "Plane_" + rig.name
         new_plane.is_fbp_plane = True
+        try:
+            if getattr(new_plane, "data", None) is not None:
+                new_plane.data["fbp_plane_mesh"] = True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
         new_plane["fbp_parent_rig_name"] = rig.name
         new_plane.fbp_collection_name = getattr(rig, "fbp_collection_name", "")
         new_plane.hide_select = getattr(source_plane, "hide_select", True)
@@ -1669,6 +1691,11 @@ def cleanup_orphan_fbp_planes(context, force=False):
         except Exception as exc:
             fbp_warn("Orphan cleanup skipped object", exc)
     _fbp_flush_pending_material_cleanup(pending_materials)
+    try:
+        from .effect_controls import cleanup_orphan_effect_controls
+        removed += int(cleanup_orphan_effect_controls(scene) or 0)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not clean orphan effect controls", exc)
     # Avoid a global purge here so unrelated unused images in the user's .blend are preserved.
     return removed
 
@@ -1706,22 +1733,46 @@ def fbp_known_links_have_deleted_rig(scene):
 
 
 def _fbp_depsgraph_fbp_hints(depsgraph, scene=None, *, check_orphans=False):
-    """Collect touched FBP rigs and optional orphan hints in one update pass."""
+    """Collect touched FBP rigs and relation-order hints in one update pass.
+
+    Layer Blend and Clipping Mask choose their automatic source from physical
+    camera depth. Blender operators already refresh that relationship after an
+    explicit Up/Down action, but direct transforms and animated camera moves
+    also change the ordering. Returning the affected canonical collections lets
+    the depsgraph handler queue one scoped, safe timer refresh instead of a
+    scene-wide shader scan.
+    """
     candidates = []
     seen = set()
+    relation_collections = []
+    seen_collections = set()
     has_orphan = False
+    camera_transform_changed = False
     if not depsgraph:
-        return candidates, has_orphan
+        return candidates, has_orphan, relation_collections, camera_transform_changed
     try:
         updates = depsgraph.updates
     except (AttributeError, ReferenceError, RuntimeError):
-        return candidates, has_orphan
+        return candidates, has_orphan, relation_collections, camera_transform_changed
 
     for update in updates:
         try:
             obj = getattr(update, "id", None)
+            if isinstance(obj, bpy.types.Camera):
+                active_camera = getattr(scene, "camera", None) if scene is not None else None
+                if active_camera is not None and getattr(active_camera, "data", None) is obj:
+                    camera_transform_changed = True
+                continue
             if not isinstance(obj, bpy.types.Object):
                 continue
+            transform_changed = bool(getattr(update, "is_updated_transform", False))
+            if (
+                transform_changed
+                and scene is not None
+                and obj is getattr(scene, "camera", None)
+            ):
+                camera_transform_changed = True
+
             rig = None
             if getattr(obj, "is_fbp_control", False):
                 rig = obj
@@ -1742,6 +1793,15 @@ def _fbp_depsgraph_fbp_hints(depsgraph, scene=None, *, check_orphans=False):
                 continue
             if scene and not object_in_scene(rig, scene):
                 continue
+
+            if transform_changed:
+                collection = get_primary_fbp_collection(rig)
+                if collection is not None:
+                    collection_key = fbp_obj_runtime_key(collection)
+                    if collection_key is not None and collection_key not in seen_collections:
+                        seen_collections.add(collection_key)
+                        relation_collections.append(collection)
+
             key = fbp_obj_runtime_key(rig)
             if key is None or key in seen:
                 continue
@@ -1752,23 +1812,15 @@ def _fbp_depsgraph_fbp_hints(depsgraph, scene=None, *, check_orphans=False):
                 has_orphan = True
         except (AttributeError, TypeError, RuntimeError) as exc:
             fbp_warn("Could not inspect depsgraph update", exc)
-    return candidates, has_orphan
+    return candidates, has_orphan, relation_collections, camera_transform_changed
 
 
 def fbp_depsgraph_updated_fbp_rigs(depsgraph, scene=None):
     """Return only FBP rig candidates touched by the current depsgraph update."""
-    candidates, _has_orphan = _fbp_depsgraph_fbp_hints(
+    candidates, _has_orphan, _collections, _camera_changed = _fbp_depsgraph_fbp_hints(
         depsgraph, scene, check_orphans=False
     )
     return candidates
-
-
-def fbp_depsgraph_has_orphan_fbp_plane(depsgraph, scene=None):
-    """Return whether a touched FBP plane has lost its owning rig."""
-    _candidates, has_orphan = _fbp_depsgraph_fbp_hints(
-        depsgraph, scene, check_orphans=True
-    )
-    return has_orphan
 
 
 def fbp_scene_has_broken_native_duplicate(scene=None, *, depsgraph=None, candidates=None):
@@ -2014,6 +2066,18 @@ def fbp_depsgraph_native_ops_handler(scene, depsgraph):
     schedules fbp_deferred_orphan_cleanup_timer(). Object removal, mesh/image/
     material removal and duplicate-plane repair all run from the timer.
     """
+    # The autonomous regression transaction replaces complete temporary Scene
+    # graphs. Do not even inspect depsgraph RNA while those IDs are being freed.
+    if bool(fbp_runtime_get("fbp_pause_managed_timers", False)):
+        return
+    try:
+        resume_after = float(
+            fbp_runtime_get("fbp_managed_timers_resume_after", 0.0) or 0.0
+        )
+    except (TypeError, ValueError):
+        resume_after = 0.0
+    if resume_after > time.monotonic():
+        return
     # Render depsgraph updates are not native edit operations. Inspecting every
     # evaluated frame wastes time and can queue repairs while render workers are
     # reading image/material data. The render-session guard owns this period.
@@ -2034,7 +2098,12 @@ def fbp_depsgraph_native_ops_handler(scene, depsgraph):
     FBP_DEPSGRAPH_HANDLER_ACTIVE = True
     try:
         auto_clean = bool(getattr(scene, 'fbp_auto_clean_orphans', False))
-        candidate_rigs, has_orphan_plane = _fbp_depsgraph_fbp_hints(
+        (
+            candidate_rigs,
+            has_orphan_plane,
+            relation_collections,
+            camera_transform_changed,
+        ) = _fbp_depsgraph_fbp_hints(
             depsgraph, scene, check_orphans=auto_clean
         )
         try:
@@ -2047,6 +2116,15 @@ def fbp_depsgraph_native_ops_handler(scene, depsgraph):
             fbp_depsgraph_schedule_drawing_updates(scene, candidate_rigs)
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
+        if camera_transform_changed or relation_collections:
+            try:
+                from .geometry_nodes import fbp_schedule_clipping_mask_sync
+                fbp_schedule_clipping_mask_sync(
+                    scene,
+                    collections=None if camera_transform_changed else relation_collections,
+                )
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
         topology_changed = _fbp_scene_object_count_changed(scene, update=True)
         if topology_changed:
             try:

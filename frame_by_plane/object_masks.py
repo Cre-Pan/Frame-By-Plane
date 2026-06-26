@@ -31,12 +31,13 @@ except ImportError:  # Blender always provides bmesh; keep import-time resilienc
 from .runtime import (
     FBP_DATA_ERRORS,
     fbp_render_mutation_blocked,
+    fbp_runtime_get,
     fbp_set_rna_property_silent,
     fbp_undo_guard_active,
     fbp_warn,
 )
 
-FBP_OBJECT_MASK_SCHEMA_VERSION = 4
+FBP_OBJECT_MASK_SCHEMA_VERSION = 5
 FBP_OBJECT_MASK_SHAPES = frozenset({"SQUARE", "CIRCLE", "TRIANGLE"})
 FBP_OBJECT_MASK_RESOLUTION = 256
 FBP_OBJECT_MASK_FALLBACK_RESOLUTION = 128
@@ -160,6 +161,19 @@ def is_object_mask_helper(obj):
         return False
 
 
+def _set_idprop_if_changed(data, key, value):
+    """Write an IDProperty only when its stored value is actually different."""
+    if data is None:
+        return False
+    try:
+        if data.get(key, None) == value:
+            return False
+        data[key] = value
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
 def tag_object_mask_helper(obj, owner, shape):
     if not obj or not owner:
         return False
@@ -167,19 +181,26 @@ def tag_object_mask_helper(obj, owner, shape):
     if not owner_id:
         return False
     shape = normalize_object_mask_shape(shape)
+    changed = False
     try:
-        obj[KEY_IS_HELPER] = True
-        obj[KEY_SCHEMA] = FBP_OBJECT_MASK_SCHEMA_VERSION
-        obj[KEY_SHAPE] = shape
-        obj[KEY_OWNER_NAME] = str(getattr(owner, "name", "") or "")
-        obj[KEY_OWNER_ID] = owner_id
+        changed = _set_idprop_if_changed(obj, KEY_IS_HELPER, True) or changed
+        changed = _set_idprop_if_changed(
+            obj, KEY_SCHEMA, FBP_OBJECT_MASK_SCHEMA_VERSION
+        ) or changed
+        changed = _set_idprop_if_changed(obj, KEY_SHAPE, shape) or changed
+        changed = _set_idprop_if_changed(
+            obj, KEY_OWNER_NAME, str(getattr(owner, "name", "") or "")
+        ) or changed
+        changed = _set_idprop_if_changed(obj, KEY_OWNER_ID, owner_id) or changed
         mesh = getattr(obj, "data", None)
         if mesh is not None:
-            mesh[KEY_IS_HELPER_MESH] = True
-            mesh[KEY_HELPER_NAME] = obj.name
-            mesh[KEY_SCHEMA] = FBP_OBJECT_MASK_SCHEMA_VERSION
+            changed = _set_idprop_if_changed(mesh, KEY_IS_HELPER_MESH, True) or changed
+            changed = _set_idprop_if_changed(mesh, KEY_HELPER_NAME, obj.name) or changed
+            changed = _set_idprop_if_changed(
+                mesh, KEY_SCHEMA, FBP_OBJECT_MASK_SCHEMA_VERSION
+            ) or changed
         _HELPER_NAMES.add(obj.name)
-        return True
+        return changed
     except FBP_DATA_ERRORS:
         return False
 
@@ -263,27 +284,57 @@ def _helper_matches_owner(helper, owner, shape):
     )
 
 
+def _helper_is_direct_plane_child(helper, owner, shape):
+    """Recognize a duplicated helper before its copied owner UUID is repaired."""
+    if not is_object_mask_helper(helper) or not owner:
+        return False
+    plane = getattr(owner, "fbp_plane_target", None)
+    if plane is None:
+        return False
+    contract = object_mask_contract(helper) or {}
+    try:
+        return bool(
+            getattr(helper, "parent", None) is plane
+            and contract.get("shape") == normalize_object_mask_shape(shape)
+        )
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _adopt_direct_object_mask_helper(owner, helper, shape, prop_name):
+    """Retag a copied helper for its duplicated rig without creating a second cage."""
+    if not _helper_is_direct_plane_child(helper, owner, shape):
+        return None
+    tag_object_mask_helper(helper, owner, shape)
+    fbp_set_rna_property_silent(owner, prop_name, helper)
+    _HELPER_NAMES.add(helper.name)
+    # A duplicated helper may still reference the source rig's private SDF
+    # image. Reconcile image ownership immediately so editing the copy cannot
+    # alter the original mask, then refresh any active shader binding.
+    try:
+        ensure_object_mask_image(helper, force=True)
+        from .geometry_nodes import fbp_refresh_object_mask_binding
+        fbp_refresh_object_mask_binding(owner, object_mask_effect_id(shape))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    return helper
+
+
 def find_object_mask_owner(helper):
     contract = object_mask_contract(helper) or {}
     owner_id = str(contract.get("owner_id", "") or "")
     owner_name = str(contract.get("owner_name", "") or "")
 
-    # The helper is parented to the plane, which is parented to the rig. Resolve
-    # that direct relationship first: it is O(1), survives rig renames and
-    # avoids a global bpy.data.objects scan in the visibility timer.
-    try:
-        plane = getattr(helper, "parent", None)
-        direct_owner = getattr(plane, "parent", None) if plane else None
-        if direct_owner and bool(getattr(direct_owner, "is_fbp_control", False)):
-            if not owner_id or str(direct_owner.get(KEY_OWNER_RIG_ID, "") or "") == owner_id:
-                return direct_owner
-    except FBP_DATA_ERRORS:
-        pass
-
+    # Resolve through stored names/UUIDs rather than helper.parent.parent. During
+    # Scene replacement Blender can briefly leave an RNA parent pointer whose ID
+    # has already been freed. Merely reading that nested pointer can terminate
+    # Blender at the C level before Python can raise ReferenceError. Name lookup
+    # returns a fresh RNA wrapper from the current Main and is therefore safe.
     candidate = bpy.data.objects.get(owner_name) if owner_name else None
     try:
         if candidate and bool(getattr(candidate, "is_fbp_control", False)):
-            if str(candidate.get(KEY_OWNER_RIG_ID, "") or "") == owner_id:
+            candidate_id = str(candidate.get(KEY_OWNER_RIG_ID, "") or "")
+            if not owner_id or candidate_id == owner_id:
                 return candidate
     except FBP_DATA_ERRORS:
         pass
@@ -313,16 +364,33 @@ def find_object_mask_helper(owner, shape):
     if _helper_matches_owner(helper, owner, shape):
         _HELPER_NAMES.add(helper.name)
         return helper
+
     plane = getattr(owner, "fbp_plane_target", None)
     try:
         candidates = tuple(getattr(plane, "children", ()) or ()) if plane else ()
     except FBP_DATA_ERRORS:
         candidates = ()
+
+    # Prefer an already-valid helper. This preserves an explicitly repaired
+    # contract when a stale copied cage also remains under the same plane.
     for candidate in candidates:
         if _helper_matches_owner(candidate, owner, shape):
             fbp_set_rna_property_silent(owner, prop_name, candidate)
             _HELPER_NAMES.add(candidate.name)
             return candidate
+
+    # Blender hierarchy duplication copies custom properties before the new
+    # rig receives a unique owner UUID. Adopt the helper that was duplicated
+    # with the plane rather than generating a second Shape Mask cage.
+    adopted = _adopt_direct_object_mask_helper(owner, helper, shape, prop_name)
+    if adopted is not None:
+        return adopted
+    for candidate in candidates:
+        adopted = _adopt_direct_object_mask_helper(
+            owner, candidate, shape, prop_name
+        )
+        if adopted is not None:
+            return adopted
     return None
 
 
@@ -355,7 +423,6 @@ def _shape_mesh(shape, name):
     mesh.from_pydata(vertices, edges, [])
     mesh.update()
     return mesh
-
 
 
 def _ensure_helper_wire_topology(helper):
@@ -522,10 +589,57 @@ def _apply_helper_mesh_plane_lock(owner, helper, shape):
         return False
 
 
+def _select_object_mask_helper_preserving_layer(context, owner, helper):
+    """Activate a Shape Mask cage without clearing the current layer selection."""
+    if not owner or not helper:
+        return False
+    context = context or bpy.context
+    plane = getattr(owner, "fbp_plane_target", None)
+    try:
+        selected_objects = tuple(getattr(context, "selected_objects", ()) or ())
+    except FBP_DATA_ERRORS:
+        selected_objects = ()
+    changed = False
+    # Only deactivate other Shape Mask cages. Selected rigs, planes and any
+    # unrelated objects remain untouched, preserving multi-layer workflows.
+    for candidate in selected_objects:
+        if candidate is helper or not is_object_mask_helper(candidate):
+            continue
+        try:
+            if candidate.select_get():
+                candidate.select_set(False)
+                changed = True
+        except FBP_DATA_ERRORS:
+            continue
+    for candidate in (owner, plane, helper):
+        if candidate is None:
+            continue
+        try:
+            if candidate is helper and candidate.hide_get():
+                candidate.hide_set(False)
+                changed = True
+            if not candidate.select_get():
+                candidate.select_set(True)
+                changed = True
+        except FBP_DATA_ERRORS:
+            continue
+    try:
+        view_layer = getattr(context, "view_layer", None)
+        if view_layer and view_layer.objects.active is not helper:
+            view_layer.objects.active = helper
+            changed = True
+    except FBP_DATA_ERRORS:
+        pass
+    return changed
+
+
 def create_object_mask_helper(owner, shape, context=None, *, select=True):
     shape = normalize_object_mask_shape(shape)
     existing = find_object_mask_helper(owner, shape)
     if existing:
+        if select:
+            _select_object_mask_helper_preserving_layer(context, owner, existing)
+        sync_object_mask_helper_visibility(existing, owner=owner)
         return existing
     plane, bounds = _plane_bounds(owner)
     if not plane:
@@ -562,18 +676,7 @@ def create_object_mask_helper(owner, shape, context=None, *, select=True):
     except Exception as exc:
         fbp_warn("Could not initialize editable Shape Mask image", exc)
     if select:
-        try:
-            bpy.ops.object.select_all(action='DESELECT')
-        except FBP_DATA_ERRORS:
-            pass
-        try:
-            owner.select_set(True)
-            helper.select_set(True)
-            view_layer = getattr(context, "view_layer", None) if context else getattr(bpy.context, "view_layer", None)
-            if view_layer:
-                view_layer.objects.active = helper
-        except FBP_DATA_ERRORS:
-            pass
+        _select_object_mask_helper_preserving_layer(context, owner, helper)
     sync_object_mask_helper_visibility(helper, owner=owner)
     return helper
 
@@ -582,22 +685,17 @@ def ensure_object_mask_helper(owner, shape, context=None, *, select=False):
     helper = find_object_mask_helper(owner, shape)
     if helper is None:
         return create_object_mask_helper(owner, shape, context=context, select=select)
-    tag_object_mask_helper(helper, owner, shape)
-    _ensure_helper_wire_topology(helper)
+    contract_changed = tag_object_mask_helper(helper, owner, shape)
+    topology_changed = _ensure_helper_wire_topology(helper)
     _apply_helper_lock(owner, helper, shape)
+    try:
+        ensure_object_mask_image(
+            helper, force=bool(contract_changed or topology_changed)
+        )
+    except FBP_DATA_ERRORS:
+        pass
     if select:
-        try:
-            bpy.ops.object.select_all(action='DESELECT')
-        except FBP_DATA_ERRORS:
-            pass
-        try:
-            owner.select_set(True)
-            helper.select_set(True)
-            view_layer = getattr(context, "view_layer", None) if context else getattr(bpy.context, "view_layer", None)
-            if view_layer:
-                view_layer.objects.active = helper
-        except FBP_DATA_ERRORS:
-            pass
+        _select_object_mask_helper_preserving_layer(context, owner, helper)
     sync_object_mask_helper_visibility(helper, owner=owner)
     return helper
 
@@ -873,26 +971,53 @@ def _rasterize_sdf_fallback(points, bounds, resolution):
 
 
 def _mask_image_for_helper(helper, resolution):
-    """Return ``(image, needs_pixels)`` for this helper's private SDF image."""
+    """Return a private ``(image, needs_pixels)`` pair for this helper.
+
+    The image ownership contract is validated even when the helper stores a
+    live image name. This is essential after Blender hierarchy duplication,
+    where the copied helper initially inherits the source mask image name.
+    """
     needs_pixels = False
+    contract = object_mask_contract(helper) or {}
+    owner_id = str(contract.get("owner_id", "") or "")
+    shape = normalize_object_mask_shape(contract.get("shape", "SQUARE"))
     try:
         image_name = str(helper.get(KEY_IMAGE_NAME, "") or "")
     except FBP_DATA_ERRORS:
         image_name = ""
     image = bpy.data.images.get(image_name) if image_name else None
+
     if image is not None:
         try:
-            if tuple(int(value) for value in image.size[:2]) != (resolution, resolution):
+            stored_owner_id = str(image.get(KEY_OWNER_ID, "") or "")
+            stored_shape = normalize_object_mask_shape(
+                image.get(KEY_SHAPE, shape)
+            )
+            if stored_owner_id != owner_id or stored_shape != shape:
+                # Never retag a foreign image: another rig may still use it.
+                image = None
+            elif tuple(int(value) for value in image.size[:2]) != (
+                resolution, resolution
+            ):
                 image.scale(resolution, resolution)
                 needs_pixels = True
         except FBP_DATA_ERRORS:
             image = None
+
     if image is None:
-        contract = object_mask_contract(helper) or {}
-        owner_token = str(contract.get("owner_id", "") or uuid.uuid4().hex)[:12]
-        shape = normalize_object_mask_shape(contract.get("shape", "SQUARE"))
+        owner_token = str(owner_id or uuid.uuid4().hex)[:12]
         image_name = f"FBP {object_mask_label(shape)} Mask SDF • {owner_token}"
-        image = bpy.data.images.get(image_name)
+        candidate = bpy.data.images.get(image_name)
+        if candidate is not None:
+            try:
+                candidate_owner = str(candidate.get(KEY_OWNER_ID, "") or "")
+                candidate_shape = normalize_object_mask_shape(
+                    candidate.get(KEY_SHAPE, shape)
+                )
+                if candidate_owner == owner_id and candidate_shape == shape:
+                    image = candidate
+            except FBP_DATA_ERRORS:
+                image = None
         if image is None:
             image = bpy.data.images.new(
                 image_name,
@@ -904,22 +1029,23 @@ def _mask_image_for_helper(helper, resolution):
             needs_pixels = True
         else:
             try:
-                if tuple(int(value) for value in image.size[:2]) != (resolution, resolution):
+                if tuple(int(value) for value in image.size[:2]) != (
+                    resolution, resolution
+                ):
                     image.scale(resolution, resolution)
                     needs_pixels = True
             except FBP_DATA_ERRORS:
                 pass
-        try:
-            image[KEY_IS_MASK_IMAGE] = True
-            image[KEY_OWNER_ID] = str(contract.get("owner_id", "") or "")
-            image[KEY_SHAPE] = shape
+
+    try:
+        _set_idprop_if_changed(image, KEY_IS_MASK_IMAGE, True)
+        _set_idprop_if_changed(image, KEY_OWNER_ID, owner_id)
+        _set_idprop_if_changed(image, KEY_SHAPE, shape)
+        if image.colorspace_settings.name != 'Non-Color':
             image.colorspace_settings.name = 'Non-Color'
-        except FBP_DATA_ERRORS:
-            pass
-        try:
-            helper[KEY_IMAGE_NAME] = image.name
-        except FBP_DATA_ERRORS:
-            pass
+        _set_idprop_if_changed(helper, KEY_IMAGE_NAME, image.name)
+    except FBP_DATA_ERRORS:
+        pass
     return image, needs_pixels
 
 
@@ -1016,7 +1142,9 @@ def sync_object_mask_helper_visibility(helper, *, owner=None):
     owner = owner or find_object_mask_owner(helper)
     contract = object_mask_contract(helper) or {}
     shape = normalize_object_mask_shape(contract.get("shape", "SQUARE"))
-    plane = getattr(owner, "fbp_plane_target", None) if owner else getattr(helper, "parent", None)
+    # Never fall back to helper.parent here: a helper may survive one event-loop
+    # tick after its generated parent was removed during regression cleanup.
+    plane = getattr(owner, "fbp_plane_target", None) if owner else None
     try:
         show_preference = bool(getattr(owner, object_mask_show_property(shape), True)) if owner else True
         selected = bool(
@@ -1078,6 +1206,18 @@ def _discover_object_mask_helpers(force=False):
 
 def object_mask_runtime_timer():
     """Keep helper visibility/locks responsive and refresh edited geometry."""
+    # Destructive regression cleanup and the short post-cleanup grace period must
+    # finish before any RNA pointer is traversed. This uses process-local state,
+    # never WindowManager IDProperties, so it remains safe while Main changes.
+    now = time.monotonic()
+    if bool(fbp_runtime_get("fbp_pause_managed_timers", False)):
+        return 0.5
+    try:
+        resume_after = float(fbp_runtime_get("fbp_managed_timers_resume_after", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        resume_after = 0.0
+    if resume_after > now:
+        return max(0.05, min(0.5, resume_after - now))
     if fbp_undo_guard_active() or fbp_render_mutation_blocked():
         return 0.5
     try:
@@ -1592,7 +1732,7 @@ def audit_object_masks(rigs, *, repair=False, context=None):
         if key is not None:
             linked_image_keys.add(key)
             helpers_by_image.setdefault(key, []).append(helper)
-    for image_key, linked_helpers in helpers_by_image.items():
+    for _image_key, linked_helpers in helpers_by_image.items():
         if len(linked_helpers) <= 1:
             continue
         stats["mask_shared_images"] += 1

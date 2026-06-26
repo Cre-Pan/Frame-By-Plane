@@ -1,42 +1,39 @@
 # Contributing to Frame By Plane
 
-Thank you for helping improve Frame By Plane.
+Contributions, reproducible bug reports and focused pull requests are welcome.
+
+## Development requirements
+
+- Blender 5.1.2 or newer.
+- Python syntax compatible with Blender’s bundled Python.
+- No network dependency at runtime.
+- New third-party code or wheels must include their license and attribution.
+
+## Before opening a pull request
+
+1. Keep the change limited to one clear purpose.
+2. Run `python tools/verify_repository.py`.
+3. Compile the extension sources with `python -m compileall -q frame_by_plane`.
+4. Test installation from a freshly built ZIP.
+5. Verify save/reopen and Undo/Redo when the change affects scene data.
+6. Update `CHANGELOG.md` for user-visible changes.
 
 ## Bug reports
 
-Please include:
+Include:
 
-- Blender version;
-- Frame By Plane version;
-- operating system;
-- exact steps to reproduce the issue;
-- expected and actual behavior;
-- screenshots, console output or a minimal `.blend` file when possible.
+- Frame By Plane version.
+- Exact Blender version.
+- Operating system and architecture.
+- Minimal reproduction steps.
+- Expected and actual behavior.
+- Relevant screenshots or console traceback.
+- Diagnostic report from Frame By Plane when available.
 
-Do not include private media or project files unless you have permission to share them.
+## Code style
 
-## Feature requests
-
-Describe the workflow problem first, then the proposed solution. Examples, mockups and references to existing Blender tools are welcome.
-
-## Code contributions
-
-1. Create a branch from the current development branch.
-2. Keep changes focused and avoid unrelated formatting rewrites.
-3. Preserve Blender 5.1.2 compatibility unless a version change has been agreed.
-4. Run:
-
-```bash
-python -m compileall -q frame_by_plane
-python scripts/build_release.py --check
-```
-
-5. Explain user-facing changes and possible migration risks in the pull request.
-
-## Style notes
-
-- Prefer explicit, readable Blender API code.
-- Avoid silent `except Exception: pass` blocks.
-- Keep UI groups `align=False` by default; use `align=True` only for tightly related controls.
-- Preserve meaningful separators and visual grouping.
-- Avoid deleting image files from disk during cleanup operations.
+- Prefer small, explicit functions.
+- Avoid silent broad exception handling.
+- Keep UI strings and tooltips clear for non-developers.
+- Preserve Blender data safely across Undo/Redo, file reload and handler execution.
+- Do not commit generated packages, caches, backups or local test files.

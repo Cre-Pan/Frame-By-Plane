@@ -10,20 +10,26 @@ from .geometry_nodes import (
     fbp_draw_effect_mask_editor,
     fbp_effect_presence,
     fbp_effect_source_rig,
+    fbp_focus_lattice_ui,
     fbp_schedule_effect_items_sync,
     fbp_selected_effect_ids,
 )
 from .effects_registry import (
     FBP_EFFECT_CLIPPING_MASK,
+    FBP_EFFECT_LAYER_BLEND,
     FBP_EFFECT_SQUARE_MASK,
     FBP_EFFECT_CIRCLE_MASK,
     FBP_EFFECT_TRIANGLE_MASK,
+    FBP_EFFECT_LATTICE,
     fbp_effect_definition,
     fbp_normalize_effect_id,
 )
 
 
-from .constants import fbp_collection_color_icon, fbp_strip_icon
+from .constants import (
+    fbp_collection_color_icon, fbp_layer_blend_label,
+    fbp_layer_blend_mode_columns, fbp_layer_blend_short, fbp_strip_icon,
+)
 from .path_utils import cached_file_exists, natural_sort_key
 from .runtime import fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
 from .layers import (
@@ -36,6 +42,7 @@ from .layers import (
     fbp_layer_row_type_icon,
     fbp_layer_backend_label,
     fbp_layer_backend_type,
+    fbp_layer_clipping_active_hint,
     fbp_make_depth_context_cache,
     fbp_mask_icon,
     fbp_procedural_kind_for_item,
@@ -47,6 +54,7 @@ from .layers import (
     get_primary_fbp_collection,
     get_selected_fbp_roots,
     get_selected_rigs,
+    fbp_resolve_rig_from_any_object,
     is_fbp_layer_object,
     is_layer_item_visible_in_collections,
     load_preview,
@@ -59,6 +67,7 @@ from .core import (
     pending_collection_is_open,
 )
 from .ui_icons import ui_icon
+from .compositor import fbp_scene_compositor_state
 from .drawing_plane import fbp_is_drawing_rig, draw_drawing_plane_ui
 from .ui_layout import (
     draw_creation_ui,
@@ -73,6 +82,83 @@ _FBP_CLIPPING_ENABLED_KEY = str(
         'enabled_key', 'fbp_effect_clipping_mask'
     ) or 'fbp_effect_clipping_mask'
 )
+_FBP_LAYER_BLEND_ENABLED_KEY = str(
+    fbp_effect_definition(FBP_EFFECT_LAYER_BLEND).get(
+        'enabled_key', 'fbp_effect_layer_blend'
+    ) or 'fbp_effect_layer_blend'
+)
+
+
+def _fbp_layer_blend_mode_for_ui(rig):
+    """Read the persistent layer-feature hint without traversing shader nodes."""
+    try:
+        if not bool(rig.get(_FBP_LAYER_BLEND_ENABLED_KEY, False)):
+            return 'NORMAL'
+        return str(getattr(rig, 'fbp_layer_blend_mode', 'MULTIPLY') or 'MULTIPLY').upper()
+    except FBP_DATA_ERRORS:
+        return 'NORMAL'
+
+
+def _fbp_draw_layer_blend_badge(layout, rig):
+    mode = _fbp_layer_blend_mode_for_ui(rig)
+    short = fbp_layer_blend_short(mode)
+    badge = layout.row(align=True)
+    fbp_set_ui_units_x(badge, 1.15 if len(short) == 1 else 1.65)
+    op = badge.operator('fbp.show_layer_blend_menu', text=short, emboss=False)
+    op.rig_name = rig.name
+    return mode
+
+
+def _fbp_common_layer_blend_mode(rigs):
+    """Return the shared mode, or an empty string for a mixed selection."""
+    modes = {_fbp_layer_blend_mode_for_ui(rig) for rig in rigs if rig}
+    return next(iter(modes)) if len(modes) == 1 else ""
+
+
+def _fbp_draw_layer_blend_choices(layout, rigs, *, rig_name=""):
+    """Draw a hover-friendly multi-column blend mode chooser."""
+    common_mode = _fbp_common_layer_blend_mode(rigs)
+    if common_mode:
+        layout.label(
+            text=f"Current: {fbp_layer_blend_short(common_mode)}  {fbp_layer_blend_label(common_mode)}",
+            icon="CHECKMARK",
+        )
+    else:
+        layout.label(text="Mixed blend modes", icon="INFO")
+
+    grid = layout.row(align=False)
+    for definitions in fbp_layer_blend_mode_columns():
+        column = grid.column(align=False)
+        for definition in definitions:
+            mode = str(definition.get("id", "NORMAL") or "NORMAL")
+            short = str(definition.get("short", "N") or "N")
+            label = str(definition.get("label", mode.title()) or mode.title())
+            icon = (
+                "CHECKMARK" if common_mode == mode
+                else str(definition.get("icon", "NODE_MATERIAL") or "NODE_MATERIAL")
+            )
+            op = column.operator(
+                "fbp.set_layer_blend_mode",
+                text=f"{short}   {label}",
+                icon=icon,
+            )
+            op.mode = mode
+            op.rig_name = str(rig_name or "")
+
+
+class FBP_MT_LayerBlendDropdown(Menu):
+    bl_idname = "FBP_MT_layer_blend_dropdown"
+    bl_label = "Blend"
+    bl_description = "Choose a blend mode; the current mode is marked with a check"
+
+    def draw(self, context):
+        rigs = get_selected_rigs(context)
+        if not rigs:
+            self.layout.label(text="Select a Frame By Plane layer", icon="INFO")
+            return
+        _fbp_draw_layer_blend_choices(self.layout, rigs)
+
+
 # The markers below identify the relevant UI locations.
 # ###ICON Panel Layer Stack, Function Preview/Color Tag: preview.icon_id, fbp_strip_icon(rig.fbp_color_tag)
 # ###ICON Panel Layer Stack, Function Solo: OUTLINER_OB_LIGHT / LIGHT
@@ -119,7 +205,6 @@ def fbp_layer_backend_icon(rig):
 # ###ICON Menu Render, Function Background Render: RENDER_ANIMATION
 #
 # Main icon aliases live in ui_icons.py.
-
 
 
 _FBP_SHAPE_MASK_EFFECTS = (
@@ -277,6 +362,7 @@ class FBP_UL_LayerStack(UIList):
             op_name.target_type = 'LAYER'
             op_name.rig_name = rig.name
             op_name.index = index
+            _fbp_draw_layer_blend_badge(row, rig)
             row.separator()
             row.label(text=f"F.{len(rig.fbp_images)}")
 
@@ -427,28 +513,20 @@ class FBP_UL_LayerTreeList(UIList):
         preview_content.active = content_enabled
         fbp_draw_layer_tag_and_preview(preview_content, rig, context)
 
-        # The plane-type icon itself is the Clipping Mask button. When the
-        # relationship is inactive it keeps the normal backend icon; when active
-        # it changes to TRACKING_REFINE_BACKWARDS. This avoids adding a second
-        # identity column and keeps the layer name aligned exactly as before.
-        # Read the persistent enabled hint instead of traversing material nodes
-        # during each UIList redraw. Repair paths still validate the shader graph
-        # when the operator is invoked.
-        try:
-            clipping_active = bool(rig.get(_FBP_CLIPPING_ENABLED_KEY, False))
-        except FBP_DATA_ERRORS:
-            clipping_active = False
+        # Keep the layer backend identity independent from layer interaction.
+        # Clipping Mask receives its own icon immediately before the layer name:
+        # TOPBAR when inactive and AREA_JOIN_DOWN when the relationship is active.
+        content.label(text='', icon=fbp_layer_backend_icon(rig))
+        clipping_active = fbp_layer_clipping_active_hint(rig)
         clipping = content.operator(
             'fbp.toggle_clipping_mask',
             text='',
-            icon=(
-                'TRACKING_REFINE_BACKWARDS'
-                if clipping_active
-                else fbp_layer_backend_icon(rig)
-            ),
+            icon='AREA_JOIN_DOWN' if clipping_active else 'TOPBAR',
             emboss=False,
         )
         clipping.rig_name = rig.name
+
+        _fbp_draw_layer_blend_badge(content, rig)
 
         name_content = content.row(align=True)
         name_content.active = content_enabled
@@ -737,8 +815,43 @@ class FBP_UL_PendingTreeList(UIList):
                 icon=ui_icon('generic.error'),
             )
 
+        timeline_frames = file_count
+        if pending is not None and str(getattr(pending, 'source_preset', '') or '') == 'TOON_BOOM_EXPORT':
+            try:
+                prepared_durations = [
+                    max(1, int(value))
+                    for value in str(getattr(pending, 'source_durations_str', '') or '').split('|')
+                    if value
+                ]
+            except (TypeError, ValueError):
+                prepared_durations = []
+            if len(prepared_durations) == file_count:
+                timeline_frames = sum(prepared_durations)
+
+        timing_text = (
+            f'F {file_count} / T {timeline_frames}'
+            if timeline_frames != file_count
+            else f'F {file_count}'
+        )
+        if pending is not None and bool(getattr(pending, 'source_from_layered', False)):
+            warnings = bool(str(getattr(pending, 'source_warnings', '') or '').strip())
+            if warnings:
+                actions.label(text='', icon=ui_icon('ERROR'))
+            elif bool(getattr(pending, 'source_flattened_group', False)):
+                actions.label(text='', icon=ui_icon('OUTLINER_COLLECTION'))
+            elif bool(getattr(pending, 'source_is_clipping', False)):
+                actions.label(text='', icon=ui_icon('CLIPUV_DEHLT'))
+            elif str(getattr(pending, 'source_mask_file', '') or ''):
+                actions.label(text='', icon=ui_icon('MOD_MASK'))
+            elif bool(getattr(pending, 'source_blend_supported', False)) and str(getattr(pending, 'source_blend_mode', 'NORMAL') or 'NORMAL').upper() not in {'NORMAL', 'PASS_THROUGH'}:
+                actions.label(text='', icon=ui_icon('NODE_MATERIAL'))
+            elif not bool(getattr(pending, 'source_layer_visible', True)):
+                actions.label(text='', icon=ui_icon('HIDE_ON'))
+            elif float(getattr(pending, 'source_layer_opacity', 1.0) or 0.0) < 0.999:
+                actions.label(text='', icon=ui_icon('IMAGE_ALPHA'))
+
         if file_count > 1:
-            actions.label(text=f'F {file_count}')
+            actions.label(text=timing_text)
             reverse_sequence = actions.operator(
                 'fbp.reverse_pending_sequence',
                 text='',
@@ -747,7 +860,7 @@ class FBP_UL_PendingTreeList(UIList):
             )
             reverse_sequence.index = pending_index
         elif file_count == 1:
-            actions.label(text='F 1')
+            actions.label(text=timing_text)
         else:
             actions.label(text='', icon=ui_icon('generic.error'))
 
@@ -783,14 +896,70 @@ class FBP_UL_PendingTreeList(UIList):
 # ###ICON Tree View, Functions: collection collapse, visibility, solo, holdout, select rigs/planes, lock.
 
 # SECTION 05 - Panel: Settings / Project / Camera / Render / Maintenance #
-# Every tab deliberately draws four content rows. The panel therefore stays
-# visually stable while switching sections and does not scan project data.
+# Settings tabs avoid project scans and draw only cached or direct scene data.
 
 
 def _fbp_settings_row(layout, *, align=False):
     row = layout.row(align=align)
     row.scale_y = 1.0
     return row
+
+
+def _fbp_draw_settings_repair(content, sc, context):
+    """Draw four compact Tools rows, including the locked one-button test suite."""
+    row = _fbp_settings_row(content, align=False)
+    row.prop(sc, "fbp_auto_clean_orphans", text="Auto-clean", icon='MODIFIER')
+    row.operator("fbp.relink_from_project_root", icon=ui_icon("settings.relink"), text="Relink")
+    row.operator("fbp.select_missing_layers", icon=ui_icon("generic.error"), text="Missing")
+
+    row = _fbp_settings_row(content, align=False)
+    row.operator("fbp.deep_addon_audit", icon='CHECKMARK', text="Audit")
+    repair = row.operator("fbp.deep_addon_audit", icon=ui_icon("settings.repair"), text="Repair")
+    repair.repair = True
+    row.operator("fbp.repair_all_layer_relations", icon='LINKED', text="Relations")
+    row.operator("fbp.repair_effect_controls", icon='EMPTY_ARROWS', text="Controls")
+
+    row = _fbp_settings_row(content, align=False)
+    row.operator("fbp.apply_preferences_to_scene", icon='CHECKMARK', text="Apply Add-on Defaults")
+
+    # Fourth row: Developer Tool and Experimental Features are intentionally
+    # separate. The lock is session-only and closes again when a test starts.
+    row = _fbp_settings_row(content, align=False)
+    wm = context.window_manager
+    running = bool(getattr(wm, "fbp_developer_test_running", False))
+    unlocked = bool(getattr(wm, "fbp_developer_tool_unlocked", False))
+    last_status = str(getattr(wm, "fbp_developer_test_last_status", "NOT_RUN") or "NOT_RUN")
+
+    developer = row.box()
+    developer_row = developer.row(align=True)
+    developer_row.prop(
+        wm,
+        "fbp_developer_tool_unlocked",
+        text="",
+        icon='UNLOCKED' if unlocked else 'LOCKED',
+        toggle=True,
+    )
+    run_slot = developer_row.row(align=True)
+    run_slot.enabled = unlocked and not running
+    if running:
+        step = int(getattr(wm, "fbp_developer_test_step", 0) or 0)
+        total = int(getattr(wm, "fbp_developer_test_total", 0) or 0)
+        label = f"Testing {step}/{total}"
+        icon = 'TIME'
+    else:
+        label = "Developer Tool"
+        icon = 'CHECKMARK' if last_status == 'PASS' else ('ERROR' if last_status in {'WARNING', 'FAIL'} else 'CONSOLE')
+    run_slot.operator("fbp.run_autonomous_developer_test", text=label, icon=icon)
+
+    experimental = row.box()
+    experimental_row = experimental.row(align=True)
+    experimental_row.prop(
+        sc,
+        "fbp_experimental_compositor",
+        text="Experimental Features",
+        toggle=True,
+        icon='TOOL_SETTINGS',
+    )
 
 
 class FBP_PT_Settings(Panel):
@@ -810,34 +979,52 @@ class FBP_PT_Settings(Panel):
         layout = self.layout
         sc = context.scene
 
+        experimental = bool(getattr(sc, "fbp_experimental_compositor", False))
         tabs = layout.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=True)
-        tabs.prop_enum(sc, "fbp_settings_section", 'PROJECT', text="Project", icon=ui_icon("settings.project"))
-        tabs.prop_enum(sc, "fbp_settings_section", 'DISPLAY', text="Display", icon=ui_icon("settings.display"))
-        tabs.prop_enum(sc, "fbp_settings_section", 'CAMERA', text="Camera", icon=ui_icon("settings.camera_tab"))
-        tabs.prop_enum(sc, "fbp_settings_section", 'RENDER', text="Render", icon=ui_icon("settings.render_tab"))
-        tabs.prop_enum(sc, "fbp_settings_section", 'MAINTENANCE', text="Tools", icon=ui_icon("settings.repair"))
+        tab = tabs.row(align=True)
+        tab.prop_enum(sc, "fbp_settings_section", 'PROJECT', text="Project", icon=ui_icon("settings.project"))
+        tab = tabs.row(align=True)
+        tab.prop_enum(sc, "fbp_settings_section", 'DISPLAY', text="Display", icon=ui_icon("settings.display"))
+        tab = tabs.row(align=True)
+        tab.prop_enum(sc, "fbp_settings_section", 'CAMERA', text="Camera", icon=ui_icon("settings.camera_tab"))
+        tab = tabs.row(align=True)
+        tab.prop_enum(sc, "fbp_settings_section", 'RENDER', text="Render", icon=ui_icon("settings.render_tab"))
+        tab = tabs.row(align=True)
+        tab.enabled = experimental
+        tab.prop_enum(sc, "fbp_settings_section", 'COMPOSITOR', text="Compositor", icon='NODETREE')
+        tab = tabs.row(align=True)
+        tab.prop_enum(sc, "fbp_settings_section", 'MAINTENANCE', text="Tools", icon=ui_icon("settings.repair"))
 
         layout.separator()
         content = layout.box()
         section = getattr(sc, 'fbp_settings_section', 'PROJECT')
+        if section == 'COMPOSITOR' and not experimental:
+            section = 'MAINTENANCE'
+            try:
+                sc.fbp_settings_section = 'MAINTENANCE'
+            except FBP_DATA_ERRORS:
+                pass
 
         if section == 'PROJECT':
             row = _fbp_settings_row(content)
             row.label(text="", icon=ui_icon("settings.project_folder"))
             row.prop(sc, "fbp_project_path", text="Project Folder")
 
-            row = _fbp_settings_row(content)
-            row.label(text="", icon='FILE_FOLDER')
-            row.prop(sc, "fbp_last_directory", text="Import Folder")
-
             row = _fbp_settings_row(content, align=True)
             row.operator("fbp.save_file", text="Save", icon=ui_icon("settings.save"))
             row.operator("fbp.scan_project_to_setup", text="Import Project", icon='IMPORT')
-            row.operator("fbp.import_folder_hierarchy", text="Import Folder", icon='OUTLINER_COLLECTION')
+            row.operator("fbp.import_folder_hierarchy", text="Read Setup", icon='OUTLINER_COLLECTION')
+
+            row = _fbp_settings_row(content, align=True)
+            row.operator("fbp.import_folder_multiplane", text="Import Folder", icon='FILE_FOLDER')
+            op = row.operator("fbp.import_folder_multiplane", text="Clipboard", icon=ui_icon("menu.clipboard"))
+            op.from_clipboard = True
+            op = row.operator("fbp.import_folder_multiplane", text="Last", icon='FILE_REFRESH')
+            op.use_last_folder = True
 
             row = _fbp_settings_row(content)
             row.prop(sc, "fbp_show_project_tools", text="Import Tools", icon='TOOL_SETTINGS')
-            row.operator("fbp.apply_preferences_to_scene", text="Apply Defaults", icon='CHECKMARK')
+            row.operator("fbp.apply_preferences_to_scene", text="Defaults", icon='CHECKMARK')
 
         elif section == 'DISPLAY':
             row = _fbp_settings_row(content)
@@ -888,50 +1075,68 @@ class FBP_PT_Settings(Panel):
             row.label(text="", icon=ui_icon("settings.output"))
             row.prop(sc, "fbp_render_output_dir", text="Output Folder")
 
-            row = _fbp_settings_row(content)
+            row = _fbp_settings_row(content, align=True)
             row.prop(sc, "fbp_alpha_render_method", text="Alpha", icon='IMAGE_ALPHA')
-
-            row = _fbp_settings_row(content)
             row.prop(sc, "fbp_render_prefix", text="Prefix", icon=ui_icon("layer.sort_alpha"))
-            row.prop(sc, "frame_start", text="In")
-            row.prop(sc, "frame_end", text="Out")
 
             row = _fbp_settings_row(content, align=True)
-            row.operator("fbp.repair_render_state", icon=ui_icon("settings.repair"), text="Check State")
+            row.prop(sc, "frame_start", text="In")
+            row.prop(sc, "frame_end", text="Out")
+            row.operator("fbp.repair_render_state", icon=ui_icon("settings.repair"), text="")
+
+            row = _fbp_settings_row(content, align=True)
+            row.operator("fbp.save_file", text="", icon=ui_icon("settings.save"))
             if getattr(sc, 'fbp_background_render_running', False):
                 row.operator("fbp.stop_background_render", icon='CANCEL', text="Stop")
             else:
                 row.operator("fbp.background_render_frames", icon=ui_icon("settings.render_sequence"), text="Render Sequence")
 
-            row = _fbp_settings_row(content)
-            row.operator("fbp.save_file", text="Save Before Render", icon=ui_icon("settings.save"))
+        elif section == 'COMPOSITOR':
+            state = fbp_scene_compositor_state(sc)
+            row = _fbp_settings_row(content, align=True)
+            if state == 'ACTIVE':
+                row.label(text="Active", icon='CHECKMARK')
+                row.operator("fbp.restore_compositor", text="", icon='LOOP_BACK')
+            else:
+                row.label(text="Available" if state == 'AVAILABLE' else "Disabled", icon='NODETREE')
+                row.operator("fbp.enable_compositor", text="", icon='PLAY')
+            row.operator("fbp.rebuild_compositor", text="", icon='FILE_REFRESH')
+            shading = getattr(getattr(context, "space_data", None), "shading", None)
+            viewport_compositor = bool(
+                shading
+                and hasattr(shading, "use_compositor")
+                and shading.use_compositor == 'ALWAYS'
+            )
+            row.operator(
+                "fbp.toggle_viewport_compositor",
+                text="",
+                icon='RENDER_RESULT',
+                depress=viewport_compositor,
+            )
+
+            row = _fbp_settings_row(content, align=True)
+            row.prop(sc, "fbp_compositor_preset", text="Preset")
+            preset = row.operator("fbp.apply_compositor_preset", text="", icon='CHECKMARK')
+            preset.preset = sc.fbp_compositor_preset
+
+            row = _fbp_settings_row(content, align=True)
+            row.prop(sc, "fbp_compositor_exposure", text="Exposure")
+            row.prop(sc, "fbp_compositor_saturation", text="Saturation")
+            row.prop(sc, "fbp_compositor_value", text="Value")
+
+            row = _fbp_settings_row(content, align=True)
+            row.prop(sc, "fbp_compositor_blur_x", text="Blur X")
+            row.prop(sc, "fbp_compositor_blur_y", text="Y")
+            row.prop(sc, "fbp_compositor_glare_enabled", text="", icon='LIGHT_SUN')
+            bloom = row.row(align=True)
+            bloom.enabled = bool(sc.fbp_compositor_glare_enabled)
+            bloom.prop(sc, "fbp_compositor_glare_threshold", text="T")
+            bloom.prop(sc, "fbp_compositor_glare_strength", text="S")
+            row.prop(sc, "fbp_compositor_lens_distortion", text="Lens")
+            row.prop(sc, "fbp_compositor_dispersion", text="RGB")
 
         else:
-            row = _fbp_settings_row(content)
-            row.prop(sc, "fbp_auto_clean_orphans", text="Auto-clean Orphans", icon='MODIFIER')
-            row.operator("fbp.relink_from_project_root", icon=ui_icon("settings.relink"), text="Relink")
-            row.operator("fbp.select_missing_layers", icon=ui_icon("generic.error"), text="Missing")
-
-            row = _fbp_settings_row(content, align=True)
-            row.operator("fbp.project_health_check", icon=ui_icon("settings.health"), text="Health")
-            row.operator("fbp.deep_addon_audit", icon='CHECKMARK', text="Audit")
-            repair = row.operator("fbp.deep_addon_audit", icon=ui_icon("settings.repair"), text="Repair")
-            repair.repair = True
-
-            row = _fbp_settings_row(content, align=True)
-            row.operator("fbp.run_lifecycle_audit", icon='RECOVER_LAST', text="Lifecycle")
-            row.operator("fbp.profile_effects", icon='TIME', text="Profiler")
-            row.operator("fbp.run_native_backend_regression", icon='FILE_REFRESH', text="Native Test")
-
-            row = _fbp_settings_row(content)
-            row.operator("fbp.run_lts_release_gate", icon='CHECKMARK', text="LTS Release Gate")
-
-            row = _fbp_settings_row(content, align=True)
-            row.operator("fbp.create_native_regression_scene", icon='IMAGE_DATA', text="Native Scene")
-            row.operator("fbp.create_effect_regression_scene", icon='SCENE_DATA', text="Effects Scene")
-
-            row = _fbp_settings_row(content)
-            row.operator("fbp.apply_preferences_to_scene", icon='CHECKMARK', text="Apply Defaults")
+            _fbp_draw_settings_repair(content, sc, context)
 
 
 def fbp_scene_has_cached_rigs(context):
@@ -1040,6 +1245,47 @@ class FBP_PT_LayerStack(Panel):
         delete.operator("fbp.delete_sequence", text="", icon=ui_icon("generic.delete"))
 
 
+def _fbp_draw_blend_control(layout, selected_rigs):
+    """Draw Layer Blend as a first-class control above the effects stack."""
+    if not selected_rigs:
+        return
+    common_mode = _fbp_common_layer_blend_mode(selected_rigs)
+    row = layout.row(align=True)
+    row.scale_y = 1.0
+    row.label(text="Blend", icon="NODE_MATERIAL")
+    if common_mode:
+        menu_text = f"{fbp_layer_blend_short(common_mode)}   {fbp_layer_blend_label(common_mode)}"
+    else:
+        menu_text = "Mixed"
+    row.menu(
+        FBP_MT_LayerBlendDropdown.bl_idname,
+        text=menu_text,
+        icon="DOWNARROW_HLT",
+    )
+
+    if len(selected_rigs) == 1 and common_mode and common_mode != "NORMAL":
+        rig = selected_rigs[0]
+        factor = layout.row(align=True)
+        factor.prop(rig, "fbp_layer_blend_factor", text="Opacity", slider=True, icon="IMAGE_ALPHA")
+        source = getattr(rig, "fbp_layer_blend_source", None)
+        if source is None:
+            warning = layout.row(align=False)
+            warning.alert = True
+            warning.label(text="No compatible image layer below", icon="ERROR")
+        else:
+            source_row = layout.row(align=False)
+            source_row.label(text="Source", icon="NODE_MATERIAL")
+            select_source = source_row.operator(
+                "fbp.select_layer_relation_source",
+                text=getattr(source, "name", "Layer"),
+                icon="RESTRICT_SELECT_OFF",
+            )
+            select_source.rig_name = rig.name
+            select_source.relation = 'BLEND'
+
+    layout.separator(factor=0.35)
+
+
 def draw_effects_ui(layout, context):
     """Draw Image, Mask and Mesh stacks without replacing the main controls.
 
@@ -1053,12 +1299,53 @@ def draw_effects_ui(layout, context):
 
     sc = context.scene
     rig = selected_rigs[0]
+    active_object = getattr(context, "object", None)
+    force_lattice_mesh_view = False
+    try:
+        if active_object is not None and str(getattr(active_object, "type", "") or "") == "LATTICE":
+            owner = fbp_resolve_rig_from_any_object(active_object, context)
+            if owner is not None and owner in selected_rigs:
+                rig = owner
+                force_lattice_mesh_view = True
+                # Never mutate Scene/UI state directly from a Panel.draw call.
+                # Queue the category and row focus for the next safe timer tick,
+                # while this draw already renders the contextual Mesh stack.
+                from .safe_tasks import schedule_once
+                helper_name = str(getattr(active_object, "name", "") or "")
+                owner_name = str(getattr(owner, "name", "") or "")
+
+                def _focus_lattice_from_panel():
+                    current = getattr(bpy.context, "active_object", None)
+                    if (
+                        current is None
+                        or str(getattr(current, "type", "") or "") != "LATTICE"
+                        or str(getattr(current, "name", "") or "") != helper_name
+                    ):
+                        return None
+                    current_owner = bpy.data.objects.get(owner_name)
+                    if current_owner is not None:
+                        fbp_focus_lattice_ui(bpy.context, current_owner)
+                    return None
+
+                schedule_once(
+                    f"lattice.selection_focus.{owner_name}",
+                    _focus_lattice_from_panel,
+                    first_interval=0.0,
+                )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+    _fbp_draw_blend_control(layout, selected_rigs)
     listed_effects = fbp_schedule_effect_items_sync(rig, selected_rigs)
     effect_definitions = {
         effect_id: (fbp_effect_definition(effect_id) or {})
         for effect_id in listed_effects
     }
     active_effect = fbp_active_effect_id(rig) if listed_effects else ""
+    if force_lattice_mesh_view and FBP_EFFECT_LATTICE in listed_effects:
+        active_effect = FBP_EFFECT_LATTICE
+    if active_effect == FBP_EFFECT_LAYER_BLEND:
+        active_effect = ""
     active_definition = effect_definitions.get(active_effect, {}) if active_effect else {}
     presence_cache = {}
 
@@ -1076,17 +1363,20 @@ def draw_effects_ui(layout, context):
     contextual_shape_effect = _fbp_context_shape_mask_effect(
         context, rig, listed_effects, active_effect
     )
-
     # Category controls always remain the first visible row. Previously the
     # contextual Shape Mask box could push or replace the normal stack, making
     # the Effects panel appear to disappear.
     switch = layout.row(align=True)
-    switch.scale_y = 1.1
-    switch.prop_enum(sc, "fbp_effects_view", '2D', text="Image", icon="NODE_TEXTURE")
-    switch.prop_enum(sc, "fbp_effects_view", 'MASK', text="Masks", icon="IMAGE_ALPHA")
-    switch.prop_enum(sc, "fbp_effects_view", '3D', text="Mesh", icon="MODIFIER")
+    switch.scale_y = 1.0
+    switch.prop_enum(sc, "fbp_effects_view", '2D', text="Image", icon="IMAGE_BACKGROUND")
+    switch.prop_enum(sc, "fbp_effects_view", 'MASK', text="Mask", icon="CLIPUV_DEHLT")
+    switch.prop_enum(sc, "fbp_effects_view", '3D', text="Mesh", icon="WORKSPACE")
 
-    effects_view = str(getattr(sc, "fbp_effects_view", "2D") or "2D")
+    effects_view = (
+        "3D"
+        if force_lattice_mesh_view
+        else str(getattr(sc, "fbp_effects_view", "2D") or "2D")
+    )
     visible_categories = (
         {"3D"} if effects_view == "3D"
         else ({"MASK"} if effects_view == "MASK" else {"BASE", "2D"})
@@ -1098,7 +1388,8 @@ def draw_effects_ui(layout, context):
 
     visible_effects = [
         effect_id for effect_id in listed_effects
-        if str(effect_definitions.get(effect_id, {}).get("category", "2D") or "2D")
+        if effect_id != FBP_EFFECT_LAYER_BLEND
+        and str(effect_definitions.get(effect_id, {}).get("category", "2D") or "2D")
         in visible_categories
     ]
 
@@ -1113,11 +1404,14 @@ def draw_effects_ui(layout, context):
             list_type, list_id,
             rig, "fbp_effects",
             rig, "fbp_effects_index",
-            rows=8,
+            rows=6,
         )
 
-        selected_effect_ids = fbp_selected_effect_ids(
-            rig, fallback_active=True, movable_only=True, categories=visible_categories
+        selected_effect_ids = tuple(
+            effect_id for effect_id in fbp_selected_effect_ids(
+                rig, fallback_active=True, movable_only=True, categories=visible_categories
+            )
+            if effect_id != FBP_EFFECT_LAYER_BLEND
         )
         shared_selection = bool(
             selected_effect_ids
@@ -1557,19 +1851,42 @@ class FBP_PT_CreateExisting(Panel):
 
 # SECTION 10 - Menu: Shift+A > Frame by Plane #
 # ###ICON Menu Shift+A, Functions: Color Plane, Gradient, Holdout, Image Plane, Multiplane, Clipboard.
+class FBP_MT_FrameByPlaneMore(Menu):
+    bl_idname = "FBP_MT_frame_by_plane_more"
+    bl_label = "More"
+    bl_description = "Secondary import workflows and reusable folder sources"
+
+    def draw(self, context):
+        del context
+        layout = self.layout
+        layout.operator_context = 'INVOKE_DEFAULT'
+
+        layout.operator("fbp.import_folder_multiplane", text="Import Folder...", icon='FILE_FOLDER')
+        op = layout.operator("fbp.import_folder_multiplane", text="Folder Path from Clipboard", icon=ui_icon("menu.clipboard"))
+        op.from_clipboard = True
+        op = layout.operator("fbp.import_folder_multiplane", text="Import Last Folder", icon='FILE_REFRESH')
+        op.use_last_folder = True
+
+        layout.separator()
+        layout.operator("fbp.import_psd", text="Import PSD / PSB...", icon='FILE_IMAGE')
+        layout.operator("fbp.import_procreate", text="Import Procreate...", icon='BRUSH_DATA')
+        layout.operator("fbp.import_toon_boom_export", text="Toon Boom Export...", icon='RENDER_ANIMATION')
+
+
 class FBP_MT_FrameByPlaneAdd(Menu):
     bl_idname = "FBP_MT_frame_by_plane_add"
     bl_label = "Frame By Plane"
     bl_description = "Create Frame by Plane layers and multiplane projects"
 
     def draw(self, context):
+        del context
         layout = self.layout
         # Every primary entry opens a popup or file browser. Force invoke
         # context so Shift+A never bypasses the operator's setup dialog.
         layout.operator_context = 'INVOKE_DEFAULT'
 
-        # Keep Shift+A compact: related tools are separated visually without
-        # non-clickable section labels taking vertical space.
+        # Keep the primary workflow short; secondary import formats live in the
+        # final hover submenu instead of pushing creation tools below the fold.
         layout.operator("fbp.popup_single_plane", text="Image Plane", icon=ui_icon("menu.image_plane"))
         op = layout.operator("fbp.popup_multiplane", text="Multiplane", icon=ui_icon("menu.multiplane"))
         op.animation = True
@@ -1588,6 +1905,9 @@ class FBP_MT_FrameByPlaneAdd(Menu):
         layout.separator()
         layout.operator("fbp.create_color_plane_from_hex", text="Color Plane from Hex Color Code", icon=ui_icon("menu.hex"))
         layout.operator("fbp.import_single_image_from_clipboard", text="Single Plane from Clipboard", icon=ui_icon("menu.clipboard"))
+
+        layout.separator()
+        layout.menu(FBP_MT_FrameByPlaneMore.bl_idname, text="More", icon="COLLAPSEMENU")
 
 
 class FBP_MT_ObjectHoldout(Menu):
@@ -1770,6 +2090,22 @@ def _fbp_draw_layer_button_context(layout, context, rig_name):
         icon=ui_icon('layer.select_all'),
         rig_name=rig.name,
     )
+    blend_mode = _fbp_layer_blend_mode_for_ui(rig)
+    blend = layout.operator(
+        'fbp.show_layer_blend_menu',
+        text=f"Blend: {fbp_layer_blend_label(blend_mode)} ({fbp_layer_blend_short(blend_mode)})",
+        icon='NODE_MATERIAL',
+    )
+    blend.rig_name = rig.name
+    blend_source = getattr(rig, "fbp_layer_blend_source", None)
+    if blend_mode != "NORMAL" and blend_source is not None:
+        select_blend_source = layout.operator(
+            'fbp.select_layer_relation_source',
+            text=f"Select Blend Source: {getattr(blend_source, 'name', 'Layer')}",
+            icon='RESTRICT_SELECT_OFF',
+        )
+        select_blend_source.rig_name = rig.name
+        select_blend_source.relation = 'BLEND'
 
     clipping = layout.operator(
         'fbp.toggle_clipping_mask',
@@ -1777,6 +2113,15 @@ def _fbp_draw_layer_button_context(layout, context, rig_name):
         icon=identity_icon,
     )
     clipping.rig_name = rig.name
+    clipping_source = getattr(rig, "fbp_clipping_mask_source", None)
+    if clipping_active and clipping_source is not None:
+        select_clipping_source = layout.operator(
+            'fbp.select_layer_relation_source',
+            text=f"Select Clipping Source: {getattr(clipping_source, 'name', 'Layer')}",
+            icon='RESTRICT_SELECT_OFF',
+        )
+        select_clipping_source.rig_name = rig.name
+        select_clipping_source.relation = 'CLIPPING'
     plane = layout.operator(
         'fbp.select_linked_plane',
         text='Select Linked Plane',
@@ -2010,7 +2355,12 @@ def draw_fbp_button_context_menu(self, context):
     identifier = _fbp_button_operator_identifier(properties)
     layout = self.layout
 
-    if 'toggleclippingmask' in identifier or 'toggle_clipping_mask' in identifier:
+    if (
+        'toggleclippingmask' in identifier
+        or 'toggle_clipping_mask' in identifier
+        or 'showlayerblendmenu' in identifier
+        or 'show_layer_blend_menu' in identifier
+    ):
         _fbp_draw_layer_button_context(
             layout,
             context,
@@ -2053,6 +2403,15 @@ def draw_fbp_image_add_menu(self, context):
 def draw_fbp_object_context_menu(self, context):
     if get_selected_fbp_roots(context):
         self.layout.separator()
+        # The Viewport context menu receives Blend above Effects from
+        # geometry_nodes.py. Keep the same hover submenu in the Outliner without
+        # duplicating it in the Viewport.
+        if getattr(getattr(context, "area", None), "type", "") != 'VIEW_3D':
+            self.layout.menu(
+                FBP_MT_LayerBlendDropdown.bl_idname,
+                text='Blend',
+                icon='NODE_MATERIAL',
+            )
         self.layout.menu(
             FBP_MT_ObjectHoldout.bl_idname,
             text="Holdout",
@@ -2077,7 +2436,6 @@ def fbp_render_menu_draw(self, context):
 def fbp_render_menu_class():
     """Return Blender 5.1's Topbar Render menu."""
     return getattr(bpy.types, "TOPBAR_MT_render", None)
-
 
 
 _FBP_REGISTERED_MENU_CALLBACKS = globals().get("_FBP_REGISTERED_MENU_CALLBACKS", [])
@@ -2146,6 +2504,8 @@ def unregister_fbp_menus():
 # SECTION 12 - UI registration #
 # Add or remove panels/UILists here without changing core.py.
 ui_classes = (
+    FBP_MT_LayerBlendDropdown,
+    FBP_MT_FrameByPlaneMore,
     FBP_UL_LayerStack,
     FBP_UL_LayerTreeList,
     FBP_UL_ImageList,

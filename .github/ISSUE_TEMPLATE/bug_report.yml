@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible Frame By Plane problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: input
+    id: fbp-version
+    attributes:
+      label: Frame By Plane version
+      placeholder: 6.1.0
+    validations:
+      required: true
+  - type: input
+    id: blender-version
+    attributes:
+      label: Blender version
+      placeholder: 5.1.2
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Windows x64
+        - Windows ARM64
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux x64
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Explain what happened and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open...
+        2. Import...
+        3. Click...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic report or traceback
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I tested with the latest public Frame By Plane release.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true

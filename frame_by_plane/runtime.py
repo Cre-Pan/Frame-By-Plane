@@ -120,8 +120,6 @@ def fbp_runtime_get(key, default=None, context=None):
         return default
 
 
-
-
 def fbp_undo_guard_active(*, release_expired=False):
     """Return the transient Undo/load guard.
 
@@ -340,4 +338,3 @@ def fbp_runtime_clear():
 
 def unregister():
     fbp_runtime_clear()
-

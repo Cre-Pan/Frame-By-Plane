@@ -55,7 +55,6 @@ from .operator_common import (
 )
 
 
-
 class FBP_OT_UpdateAnimation(Operator):
     bl_idname  = "fbp.update_animation"
     bl_label   = "Update Animation"
@@ -1007,6 +1006,11 @@ class FBP_OT_DuplicateSelectedLayers(Operator):
                     new_plane.data = plane.data.copy()
                 new_plane.name = plane.name + "_Copy"
                 new_plane.is_fbp_plane = True
+                try:
+                    if getattr(new_plane, "data", None) is not None:
+                        new_plane.data["fbp_plane_mesh"] = True
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    pass
                 new_plane["fbp_parent_rig_name"] = new_rig.name
                 new_plane.fbp_collection_name = source_collection.name if source_collection else ""
 
@@ -1244,6 +1248,11 @@ class FBP_OT_SplitSelectedImagesToNewPlane(Operator):
                 new_plane.data = plane.data.copy()
             new_plane.name = plane.name + "_Split"
             new_plane.is_fbp_plane = True
+            try:
+                if getattr(new_plane, "data", None) is not None:
+                    new_plane.data["fbp_plane_mesh"] = True
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
             source_collection.objects.link(new_plane)
             new_plane.parent = new_rig
             new_plane.matrix_world = plane.matrix_world.copy()

@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a focused improvement for Frame By Plane
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Current workflow or limitation
+      description: Describe the task you are trying to complete.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Explain the behavior and where it should appear in the interface.
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References or examples

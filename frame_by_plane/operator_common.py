@@ -29,8 +29,6 @@ from .runtime import (
 )
 
 
-
-
 def fbp_sequence_row_start_frame(rig, index):
     """Return the first scene frame occupied by a logical sequence row.
 
@@ -71,7 +69,6 @@ def fbp_jump_timeline_to_sequence_row(context, rig, index):
             return True
         except FBP_DATA_ERRORS:
             return False
-
 
 
 def _fbp_refresh_pending_tree(context):
@@ -130,7 +127,7 @@ def _fbp_find_insert_index_for_pending(scene, active_index, collection_name):
 FBP_GENERATION_OVERLAY = globals().get("FBP_GENERATION_OVERLAY", {})
 FBP_GENERATION_OVERLAY.setdefault("handle", None)
 FBP_GENERATION_OVERLAY.setdefault("active", False)
-FBP_GENERATION_OVERLAY.setdefault("text", "⌛  Generating Frame By Plane Sequence...")
+FBP_GENERATION_OVERLAY.setdefault("text", "Generating Frame By Plane Sequence...")
 _FBP_GENERATION_TIMERS = globals().get("_FBP_GENERATION_TIMERS", [])
 
 def _fbp_tag_view3d_redraw():
@@ -222,7 +219,7 @@ def _fbp_hide_generation_overlay(context=None):
 def _fbp_show_generation_start_popup(context, title="Generating Frame By Plane Sequence"):
     """Show a temporary viewport overlay that can be removed programmatically."""
     _fbp_hide_generation_overlay(context)
-    FBP_GENERATION_OVERLAY["text"] = f"⌛  {str(title or 'Generating Frame By Plane Sequence').rstrip('.')}..."
+    FBP_GENERATION_OVERLAY["text"] = f"{str(title or 'Generating Frame By Plane Sequence').rstrip('.')}..."
     FBP_GENERATION_OVERLAY["active"] = True
     try:
         FBP_GENERATION_OVERLAY["handle"] = bpy.types.SpaceView3D.draw_handler_add(

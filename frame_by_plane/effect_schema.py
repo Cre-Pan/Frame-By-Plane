@@ -7,7 +7,7 @@ modifier and shader-node contract again.
 """
 
 from .runtime import FBP_DATA_ERRORS, fbp_unique_token_hex
-FBP_EFFECT_SCHEMA_VERSION = 17
+FBP_EFFECT_SCHEMA_VERSION = 18
 FBP_EFFECT_INSTANCE_VERSION = 1
 FBP_EFFECT_INSTANCE_KEY = "fbp_effect_instance_id"
 FBP_EFFECT_INSTANCE_VERSION_KEY = "fbp_effect_instance_version"
@@ -81,6 +81,7 @@ def finalize_effect_registry(registry):
         definition.setdefault("supports_future_instances", kind in {"SHADER", "GEOMETRY"})
         definition.setdefault("quality_profile", "NONE")
         definition.setdefault("camera_aware", False)
+        definition.setdefault("ui_labels", {})
         # Keep UI stack categories canonical. Older built-ins and third-party
         # definitions sometimes used human-facing labels such as ``Masks`` or
         # ``Mesh``; the Effects UI filters stable identifiers instead.
@@ -170,6 +171,19 @@ def validate_effect_registry(registry):
         if any(not str(name or "").strip() for name in extra_properties):
             issues.append(f"{prefix}: extra_properties contains an empty name")
         known_properties = set(property_map) | {str(name) for name in extra_properties if name}
+        ui_labels = definition.get("ui_labels", {}) or {}
+        if not isinstance(ui_labels, dict):
+            issues.append(f"{prefix}: ui_labels is not a mapping")
+            ui_labels = {}
+        else:
+            unknown_ui_labels = sorted(set(ui_labels) - known_properties)
+            if unknown_ui_labels:
+                issues.append(
+                    f"{prefix}: ui_labels references unknown properties "
+                    + ", ".join(unknown_ui_labels)
+                )
+            if any(not str(label or "").strip() for label in ui_labels.values()):
+                issues.append(f"{prefix}: ui_labels contains an empty label")
         evolve_property = str(definition.get("evolve_property", "") or "")
         if evolve_property and evolve_property not in known_properties:
             issues.append(f"{prefix}: evolve_property is not registered")

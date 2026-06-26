@@ -460,7 +460,7 @@ def _fbp_build_layer_tree_cache(context):
         # layers. Renaming therefore cannot silently change the physical stack.
         return rig_depth.get(rig_key, 0.0)
 
-    for collection_key, collection_rigs in direct_rigs.items():
+    for collection_rigs in direct_rigs.values():
         collection_rigs.sort(key=rig_sort_key, reverse=not alpha_sort)
 
     descendant_rig_keys = {}
@@ -852,6 +852,9 @@ def draw_pending_setup_grouped(layout, context):
     side = list_row.column(align=True)
     side.operator('fbp.add_pending_plane', text='', icon=ui_icon('generic.add'))
     side.operator('fbp.add_pending_collection', text='', icon=ui_icon('setup.collection_new'))
+    if any(bool(getattr(item, 'source_from_layered', False)) for item in items):
+        side.separator()
+        side.operator('fbp.layered_import_report', text='', icon=fbp_icon('INFO'))
 
     active_row = None
     try:
@@ -914,6 +917,14 @@ def draw_pending_setup_grouped(layout, context):
     remove.operator('fbp.remove_pending_tree_selection', text='', icon=ui_icon('generic.delete'))
 
 
+def _draw_import_alpha_crop_options(layout, scene):
+    """Draw import-time alpha crop controls without changing current media."""
+    row = layout.row(align=False)
+    row.prop(scene, "fbp_import_crop_alpha", text="Crop Transparent Borders", icon='FULLSCREEN_EXIT')
+    padding = row.row(align=False)
+    padding.enabled = bool(getattr(scene, "fbp_import_crop_alpha", False))
+    padding.prop(scene, "fbp_import_crop_alpha_padding", text="Padding")
+
 
 # SECTION 02 - Create UI: Single / Multiplane / Color #
 # ###ICON Panel Create, Function Color Plane: create.color_plane
@@ -955,6 +966,7 @@ def draw_creation_ui(layout, context):
         row.prop(sc, "fbp_pre_loop_mode", expand=True)
         box.prop(sc, "fbp_pre_interpolation", text="Filtering", expand=False)
         box.prop(sc, "fbp_pre_orientation", expand=False)
+        _draw_import_alpha_crop_options(box, sc)
         layout.separator()
         row = layout.row(align=False)
         row.scale_y = 1.2
@@ -1032,6 +1044,7 @@ def draw_creation_ui(layout, context):
     box.prop(sc, "fbp_pre_loop_mode", expand=False)
     box.prop(sc, "fbp_pre_interpolation", expand=False)
     box.prop(sc, "fbp_pre_orientation", expand=False)
+    _draw_import_alpha_crop_options(box, sc)
 
     box = layout.box()
     box.label(text="Camera Setup", icon=fbp_icon("RESTRICT_VIEW_ON"))
@@ -1073,4 +1086,3 @@ def draw_creation_ui(layout, context):
     right.enabled = pending
     left.operator("fbp.generate_multiplane", text="Generate Multiplane", icon=fbp_icon("RENDERLAYERS"))
     right.operator("fbp.clear_pending_planes", icon=fbp_icon("TRASH"), text="Clear Setup")
-

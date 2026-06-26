@@ -67,7 +67,6 @@ def request_custom_effect_registry_refresh(force=True):
         return False
 
 
-
 CUSTOM_EFFECT_ICON_ITEMS = (
     ("NODETREE", "Nodes", "Generic node effect", fbp_icon("NODETREE"), 0),
     ("NODE_TEXTURE", "Texture", "Texture or image processing", fbp_icon("NODE_TEXTURE"), 1),
@@ -748,8 +747,6 @@ def find_custom_effect_group(effect_id):
             _CUSTOM_GROUP_MISS_CACHE.pop(stale_id, None)
     _CUSTOM_GROUP_MISS_CACHE[effect_id] = now
     return None
-
-
 
 
 def refresh_one_custom_effect_definition(registry, effect_id, schema_version):

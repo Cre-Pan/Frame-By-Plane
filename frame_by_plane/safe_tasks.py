@@ -95,8 +95,28 @@ def schedule_once(name, callback, *, first_interval=0.03):
                     FBP_RENDER_BUSY,
                     FBP_RENDER_UNKNOWN,
                     fbp_render_state,
+                    fbp_runtime_get,
                     fbp_undo_guard_active,
                 )
+                # Destructive Developer Tool cleanup invalidates every deferred
+                # mutation captured from its temporary Scenes. Keep safe tasks
+                # dormant while the transaction is active; cleanup explicitly
+                # retires them before generated datablocks are removed.
+                if bool(fbp_runtime_get("fbp_pause_managed_timers", False)):
+                    unknown_guard_since = 0.0
+                    repeat_interval = 0.10
+                    return repeat_interval
+                try:
+                    resume_after = float(
+                        fbp_runtime_get("fbp_managed_timers_resume_after", 0.0) or 0.0
+                    )
+                except (TypeError, ValueError):
+                    resume_after = 0.0
+                now = time.monotonic()
+                if resume_after > now:
+                    unknown_guard_since = 0.0
+                    repeat_interval = max(0.05, min(0.25, resume_after - now))
+                    return repeat_interval
                 if fbp_undo_guard_active():
                     unknown_guard_since = 0.0
                     repeat_interval = 0.10

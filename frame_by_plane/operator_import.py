@@ -1,21 +1,24 @@
 """Focused Frame by Plane operator module."""
 
+import hashlib
 import math
 import os
 import re
 import tempfile
 import time
+from urllib.parse import unquote, urlparse
 
 import bpy
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
+    EnumProperty,
     IntProperty,
     StringProperty,
 )
 from bpy.types import Operator
 
-from .constants import FBP_PROJECT_COLLECTION_PREFIX, fbp_icon
+from .constants import FBP_PROJECT_COLLECTION_PREFIX, FBP_SUPPORTED_MEDIA_EXT, fbp_icon
 from .path_utils import (
     clean_layer_name_from_path,
     is_supported_media_file,
@@ -37,8 +40,32 @@ from .importer import (
     fbp_fast_import_is_active,
     fbp_folder_direct_dirs,
     fbp_folder_direct_images,
+    fbp_group_direct_media_into_layers,
     fbp_order_sequence_files,
+    fbp_sequence_exposure_durations,
     fbp_scan_project_layers_for_setup,
+)
+from .layered_import import (
+    FBP_LAYERED_EXTENSIONS,
+    fbp_default_psd_cache_root,
+    fbp_default_procreate_cache_root,
+    fbp_extract_psd_layers,
+    fbp_extract_procreate_layers,
+    fbp_inspect_psd_layers,
+    fbp_inspect_procreate_layers,
+    fbp_layered_backend_status,
+    fbp_layered_blend_mode_for_blender,
+    fbp_probe_layered_document,
+)
+from .effects_registry import (
+    FBP_EFFECT_CLIPPING_MASK,
+    FBP_EFFECT_IMPORTED_MASK,
+    FBP_EFFECT_LAYER_BLEND,
+)
+from .geometry_nodes import (
+    fbp_add_effect,
+    fbp_sync_clipping_masks,
+    fbp_update_shader_effect,
 )
 from .layers import (
     fbp_mark_layer_cache_dirty,
@@ -51,6 +78,7 @@ from .layers import (
     set_collection_color_tag,
     set_viewport_object_color,
     sync_collection_colors_to_rigs,
+    update_rig_visibility,
 )
 from .scene_sync import fbp_remove_plane_datablock, sync_layer_collection
 from .runtime import (
@@ -89,8 +117,45 @@ from .operator_common import (
 )
 
 
+def _fbp_draw_import_alpha_crop_options(layout, scene):
+    """Draw the shared import-only transparent-border crop controls."""
+    row = layout.row(align=False)
+    row.prop(scene, "fbp_import_crop_alpha", text="Crop Transparent Borders", icon='FULLSCREEN_EXIT')
+    padding = row.row(align=False)
+    padding.enabled = bool(getattr(scene, "fbp_import_crop_alpha", False))
+    padding.prop(scene, "fbp_import_crop_alpha_padding", text="Padding")
+
+
 _FBP_SAFE_SEQUENCE_PREFIX_RE = re.compile(r"[^0-9A-Za-z_\-]+")
 _FBP_SAFE_CLIPBOARD_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+# Short-lived runtime cache shared by the folder picker and media FileHandler.
+# It prevents the same hierarchy from being rescanned between invoke/draw/execute
+# while never serializing filesystem state into the .blend file.
+_FBP_FOLDER_SCAN_CACHE = globals().get("_FBP_FOLDER_SCAN_CACHE", {})
+_FBP_FOLDER_SCAN_CACHE_TTL = 20.0
+_FBP_FOLDER_SCAN_CACHE_MAX = 8
+_FBP_FOLDER_SCAN_CACHE_SCHEMA = 3
+
+# Folder imports can create many Blender datablocks in one operation. These
+# thresholds do not block ordinary projects: the first pair only adds a visible
+# warning, while the second pair requires an explicit confirmation checkbox.
+_FBP_FOLDER_IMPORT_WARNING_LAYERS = 256
+_FBP_FOLDER_IMPORT_WARNING_FILES = 2000
+_FBP_FOLDER_IMPORT_CONFIRM_LAYERS = 1000
+_FBP_FOLDER_IMPORT_CONFIRM_FILES = 10000
+_FBP_FOLDER_PREVIEW_LIMIT = 8
+_FBP_TOON_BOOM_WARNING_TIMELINE_FRAMES = 100_000
+_FBP_TOON_BOOM_CONFIRM_TIMELINE_FRAMES = 1_000_000
+
+
+def _fbp_reset_folder_import_confirmations(self, context):
+    """Clear confirmations whenever an import choice changes."""
+    for name in ("allow_very_large_import", "confirm_large_folder", "confirm_single_root_only"):
+        try:
+            setattr(self, name, False)
+        except (AttributeError, TypeError, ValueError):
+            continue
 
 
 def _fbp_note_successful_import(context, *, multiplane=False):
@@ -228,6 +293,85 @@ def _fbp_configure_generated_camera(scene, camera_object):
         return False
 
 
+def _fbp_clear_pending_source_metadata(item):
+    """Clear external-source metadata after manually replacing setup media."""
+    defaults = {
+        'source_from_layered': False,
+        'source_document': '',
+        'source_layer_path': '',
+        'source_layer_kind': '',
+        'source_layer_visible': True,
+        'source_layer_opacity': 1.0,
+        'source_blend_mode': 'NORMAL',
+        'source_is_clipping': False,
+        'source_mask_file': '',
+        'source_blend_supported': False,
+        'source_cache_key': '',
+        'source_preset': '',
+        'source_frame_numbers_str': '',
+        'source_durations_str': '',
+        'source_flattened_group': False,
+        'source_warnings': '',
+    }
+    for name, value in defaults.items():
+        try:
+            setattr(item, name, value)
+        except FBP_DATA_ERRORS:
+            continue
+
+
+def _fbp_clear_layered_import_report(scene):
+    """Reset scene-level layered import diagnostics without touching setup rows."""
+    defaults = {
+        'fbp_layered_report_source': '',
+        'fbp_layered_report_format': '',
+        'fbp_layered_report_backend': '',
+        'fbp_layered_report_cache_reused': False,
+        'fbp_layered_report_fallback_preview': False,
+        'fbp_layered_report_skipped_layers': 0,
+        'fbp_layered_report_flattened_groups': 0,
+        'fbp_layered_report_merged_clipping': 0,
+        'fbp_layered_report_decoded_layers': 0,
+        'fbp_layered_report_transferred_blends': 0,
+        'fbp_layered_report_transferred_masks': 0,
+        'fbp_layered_report_transferred_clipping': 0,
+        'fbp_layered_report_unsupported_blends': 0,
+        'fbp_layered_report_warnings': '',
+    }
+    for name, value in defaults.items():
+        try:
+            setattr(scene, name, value)
+        except FBP_DATA_ERRORS:
+            continue
+
+
+def _fbp_store_layered_import_report(scene, source_path, extraction):
+    """Persist a compact report for the current PSD/PSB/Procreate setup."""
+    _fbp_clear_layered_import_report(scene)
+    values = {
+        'fbp_layered_report_source': str(source_path or ''),
+        'fbp_layered_report_format': str(getattr(extraction, 'source_format', '') or 'LAYERED'),
+        'fbp_layered_report_backend': str(getattr(extraction, 'backend_version', '') or ''),
+        'fbp_layered_report_cache_reused': bool(getattr(extraction, 'reused_cache', False)),
+        'fbp_layered_report_fallback_preview': bool(getattr(extraction, 'fallback_preview', False)),
+        'fbp_layered_report_skipped_layers': max(0, int(getattr(extraction, 'skipped_layers', 0) or 0)),
+        'fbp_layered_report_flattened_groups': max(0, int(getattr(extraction, 'flattened_groups', 0) or 0)),
+        'fbp_layered_report_merged_clipping': max(0, int(getattr(extraction, 'merged_clipping_layers', 0) or 0)),
+        'fbp_layered_report_decoded_layers': max(0, int(getattr(extraction, 'decoded_layers', 0) or 0)),
+        'fbp_layered_report_transferred_blends': max(0, int(getattr(extraction, 'transferred_blend_modes', 0) or 0)),
+        'fbp_layered_report_transferred_masks': max(0, int(getattr(extraction, 'transferred_masks', 0) or 0)),
+        'fbp_layered_report_transferred_clipping': max(0, int(getattr(extraction, 'transferred_clipping_layers', 0) or 0)),
+        'fbp_layered_report_unsupported_blends': max(0, int(getattr(extraction, 'unsupported_blend_modes', 0) or 0)),
+        'fbp_layered_report_warnings': '\n'.join(
+            str(value) for value in getattr(extraction, 'warnings', ()) if str(value).strip()
+        ),
+    }
+    for name, value in values.items():
+        try:
+            setattr(scene, name, value)
+        except FBP_DATA_ERRORS:
+            continue
+
 
 def _fbp_pending_snapshot(item):
     """Copy one pending setup item into plain Python data."""
@@ -239,6 +383,22 @@ def _fbp_pending_snapshot(item):
         'is_selected': bool(getattr(item, 'is_selected', False)),
         'follow_collection_color': bool(getattr(item, 'follow_collection_color', True)),
         'fbp_color_tag': str(getattr(item, 'fbp_color_tag', 'COLOR_01') or 'COLOR_01'),
+        'source_from_layered': bool(getattr(item, 'source_from_layered', False)),
+        'source_document': str(getattr(item, 'source_document', '') or ''),
+        'source_layer_path': str(getattr(item, 'source_layer_path', '') or ''),
+        'source_layer_kind': str(getattr(item, 'source_layer_kind', '') or ''),
+        'source_layer_visible': bool(getattr(item, 'source_layer_visible', True)),
+        'source_layer_opacity': float(getattr(item, 'source_layer_opacity', 1.0) or 0.0),
+        'source_blend_mode': str(getattr(item, 'source_blend_mode', 'NORMAL') or 'NORMAL'),
+        'source_is_clipping': bool(getattr(item, 'source_is_clipping', False)),
+        'source_mask_file': str(getattr(item, 'source_mask_file', '') or ''),
+        'source_blend_supported': bool(getattr(item, 'source_blend_supported', False)),
+        'source_cache_key': str(getattr(item, 'source_cache_key', '') or ''),
+        'source_preset': str(getattr(item, 'source_preset', '') or ''),
+        'source_frame_numbers_str': str(getattr(item, 'source_frame_numbers_str', '') or ''),
+        'source_durations_str': str(getattr(item, 'source_durations_str', '') or ''),
+        'source_flattened_group': bool(getattr(item, 'source_flattened_group', False)),
+        'source_warnings': str(getattr(item, 'source_warnings', '') or ''),
     }
 
 
@@ -254,6 +414,22 @@ def _fbp_restore_pending_snapshots(scene, snapshots):
         item.is_selected = bool(data.get('is_selected', False))
         item.follow_collection_color = bool(data.get('follow_collection_color', True))
         item.fbp_color_tag = data.get('fbp_color_tag', 'COLOR_01')
+        item.source_from_layered = bool(data.get('source_from_layered', False))
+        item.source_document = data.get('source_document', '')
+        item.source_layer_path = data.get('source_layer_path', '')
+        item.source_layer_kind = data.get('source_layer_kind', '')
+        item.source_layer_visible = bool(data.get('source_layer_visible', True))
+        item.source_layer_opacity = max(0.0, min(1.0, float(data.get('source_layer_opacity', 1.0))))
+        item.source_blend_mode = data.get('source_blend_mode', 'NORMAL')
+        item.source_is_clipping = bool(data.get('source_is_clipping', False))
+        item.source_mask_file = data.get('source_mask_file', '')
+        item.source_blend_supported = bool(data.get('source_blend_supported', False))
+        item.source_cache_key = data.get('source_cache_key', '')
+        item.source_preset = data.get('source_preset', '')
+        item.source_frame_numbers_str = data.get('source_frame_numbers_str', '')
+        item.source_durations_str = data.get('source_durations_str', '')
+        item.source_flattened_group = bool(data.get('source_flattened_group', False))
+        item.source_warnings = data.get('source_warnings', '')
 
 
 def _fbp_expand_pending_snapshot(data):
@@ -270,10 +446,14 @@ def _fbp_expand_pending_snapshot(data):
     except (TypeError, ValueError):
         base_color_index = 1
     follows_collection = bool(data.get('follow_collection_color', True))
+    source_numbers = [value for value in str(data.get('source_frame_numbers_str', '') or '').split('|') if value]
+    source_durations = [value for value in str(data.get('source_durations_str', '') or '').split('|') if value]
     for offset, filename in enumerate(files):
         row = dict(data)
         row['name'] = clean_layer_name_from_path(filename)
         row['files_str'] = filename
+        row['source_frame_numbers_str'] = source_numbers[offset] if offset < len(source_numbers) else ''
+        row['source_durations_str'] = source_durations[offset] if offset < len(source_durations) else ''
         if not follows_collection:
             row['fbp_color_tag'] = f"COLOR_{((base_color_index - 1 + offset) % 9) + 1:02d}"
         expanded.append(row)
@@ -379,6 +559,10 @@ def _fbp_merge_pending_collection_to_sequence(context, collection_path):
     first['name'] = leaf or str(first.get('name', '') or 'Sequence')
     first['collection_name'] = parent_path
     first['files_str'] = '|'.join(str(row.get('files_str', '') or '') for row in rows)
+    merged_numbers = [str(row.get('source_frame_numbers_str', '') or '') for row in rows]
+    merged_durations = [str(row.get('source_durations_str', '') or '') for row in rows]
+    first['source_frame_numbers_str'] = '|'.join(value for value in merged_numbers if value)
+    first['source_durations_str'] = '|'.join(value for value in merged_durations if value)
     first['follow_collection_color'] = bool(parent_path)
     first['is_selected'] = any(bool(row.get('is_selected', False)) for row in rows)
 
@@ -413,7 +597,7 @@ def _fbp_reverse_pending_selected_order(context):
         if len(indices) < 2:
             continue
         reversed_rows = [snapshots[index] for index in reversed(indices)]
-        for target_index, row in zip(indices, reversed_rows):
+        for target_index, row in zip(indices, reversed_rows, strict=True):
             snapshots[target_index] = row
         changed_groups += 1
     if not changed_groups:
@@ -748,6 +932,10 @@ class FBP_OT_EditPendingPlane(Operator):
                 reverse=False,
             )
             item.files_str = "|".join(sorted_files)
+            # Manual replacement invalidates every external-source contract.
+            # A new image must not inherit PSD/Procreate masks, clipping, opacity
+            # or blend data, nor stale Toon Boom exposure metadata.
+            _fbp_clear_pending_source_metadata(item)
             if len(sorted_files) == 1:
                 item.name = clean_layer_name_from_path(sorted_files[0])
             else:
@@ -803,6 +991,7 @@ class FBP_OT_ClearPendingPlanes(Operator):
 
     def execute(self, context):
         context.scene.fbp_pending_planes.clear()
+        _fbp_clear_layered_import_report(context.scene)
         _fbp_refresh_pending_tree(context)
         return {'FINISHED'}
 
@@ -819,6 +1008,14 @@ def _fbp_reverse_pending_sequences(context, indices=None):
             continue
         files.reverse()
         item.files_str = "|".join(files)
+        for attr_name in ('source_frame_numbers_str', 'source_durations_str'):
+            values = [
+                value for value in str(getattr(item, attr_name, '') or '').split('|')
+                if value
+            ]
+            if len(values) == len(files):
+                values.reverse()
+                setattr(item, attr_name, '|'.join(values))
         changed += 1
     if changed:
         _fbp_refresh_pending_tree(context)
@@ -843,7 +1040,6 @@ class FBP_OT_ReversePendingSequence(Operator):
             self.report({'INFO'}, "This setup row does not contain an image sequence")
             return {'CANCELLED'}
         return {'FINISHED'}
-
 
 
 class FBP_OT_ScanProjectToSetup(Operator):
@@ -1064,6 +1260,13 @@ class FBP_OT_GenerateMultiplane(Operator):
     bl_description = "Generate the full plane system in 3D space"
     bl_options     = {'REGISTER', 'UNDO'}
 
+    synchronous: BoolProperty(
+        name="Synchronous Generation",
+        description="Internal regression option that skips the UI deferral timer",
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     def invoke(self, context, event):
         _fbp_show_generation_start_popup(context, "Generating Frame By Plane Sequence")
         deferred = _fbp_add_generation_timer(context, self, delay=0.20)
@@ -1087,6 +1290,8 @@ class FBP_OT_GenerateMultiplane(Operator):
         return self._run_generation(context)
 
     def execute(self, context):
+        if self.synchronous:
+            return self._run_generation(context)
         # Some UI entry points, especially Shift+A popup buttons, call execute()
         # directly instead of invoke(). Defer from here too so the generation
         # popup can appear before the heavy Python import starts.
@@ -1236,6 +1441,29 @@ class FBP_OT_GenerateMultiplane(Operator):
             variant_index = color_variant_counters.get(color_group, 0)
             color_variant_counters[color_group] = variant_index + 1
 
+            source_durations = []
+            for value in str(getattr(p_item, 'source_durations_str', '') or '').split('|'):
+                if not value:
+                    continue
+                try:
+                    source_durations.append(max(1, int(value)))
+                except (TypeError, ValueError):
+                    source_durations = []
+                    break
+            if len(source_durations) != len(f_list):
+                source_durations = []
+            source_frame_numbers = []
+            for value in str(getattr(p_item, 'source_frame_numbers_str', '') or '').split('|'):
+                if not value:
+                    continue
+                try:
+                    source_frame_numbers.append(int(value))
+                except (TypeError, ValueError):
+                    source_frame_numbers = []
+                    break
+            if len(source_frame_numbers) != len(f_list):
+                source_frame_numbers = []
+
             try:
                 rig = build_fbp_rig(
                     context, p_item.name, p_item.directory, f_list, rig_loc,
@@ -1243,6 +1471,9 @@ class FBP_OT_GenerateMultiplane(Operator):
                     target_collection=layer_collection,
                     color_variant_index=variant_index,
                     follow_collection_color=follows_collection,
+                    item_durations=source_durations or None,
+                    source_frame_numbers=source_frame_numbers or None,
+                    source_preset=str(getattr(p_item, 'source_preset', '') or ''),
                 )
             except Exception as exc:
                 fbp_warn(f"Could not generate layer '{p_item.name}'", exc)
@@ -1257,6 +1488,81 @@ class FBP_OT_GenerateMultiplane(Operator):
             rig.fbp_depth_order = depth_index
             depth_index += 1
 
+            if bool(getattr(p_item, "source_from_layered", False)):
+                source_opacity = max(0.0, min(1.0, float(getattr(p_item, "source_layer_opacity", 1.0))))
+                source_visible = bool(getattr(p_item, "source_layer_visible", True))
+                try:
+                    rig["fbp_layered_source_document"] = str(getattr(p_item, "source_document", "") or "")
+                    rig["fbp_layered_source_layer_path"] = str(getattr(p_item, "source_layer_path", "") or "")
+                    rig["fbp_layered_source_kind"] = str(getattr(p_item, "source_layer_kind", "") or "")
+                    rig["fbp_layered_source_blend_mode"] = str(getattr(p_item, "source_blend_mode", "NORMAL") or "NORMAL")
+                    rig["fbp_layered_source_cache_key"] = str(getattr(p_item, "source_cache_key", "") or "")
+                    rig["fbp_layered_flattened_group"] = bool(getattr(p_item, "source_flattened_group", False))
+                    rig["fbp_layered_source_warnings"] = str(getattr(p_item, "source_warnings", "") or "")
+                    rig["fbp_layered_source_opacity"] = source_opacity
+                except FBP_DATA_ERRORS:
+                    pass
+                try:
+                    rig.fbp_opacity = source_opacity
+                except FBP_DATA_ERRORS:
+                    pass
+                try:
+                    rig.fbp_is_visible = source_visible
+                    update_rig_visibility(rig, context=context)
+                except FBP_DATA_ERRORS:
+                    pass
+
+                source_blend_mode = str(getattr(p_item, "source_blend_mode", "NORMAL") or "NORMAL").upper()
+                blender_blend_mode = fbp_layered_blend_mode_for_blender(source_blend_mode)
+                source_mask_file = str(getattr(p_item, "source_mask_file", "") or "")
+                source_is_clipping = bool(getattr(p_item, "source_is_clipping", False))
+                source_blend_supported = bool(getattr(p_item, "source_blend_supported", False))
+                try:
+                    rig["fbp_layered_source_is_clipping"] = source_is_clipping
+                    rig["fbp_layered_source_mask_file"] = source_mask_file
+                    rig["fbp_layered_source_blend_supported"] = source_blend_supported
+                except FBP_DATA_ERRORS:
+                    pass
+                if source_mask_file and os.path.isfile(source_mask_file):
+                    try:
+                        rig.fbp_imported_mask_path = source_mask_file
+                        fbp_add_effect(
+                            rig, FBP_EFFECT_IMPORTED_MASK,
+                            inherit_active_group=False, sync_items=False,
+                        )
+                        fbp_update_shader_effect(
+                            rig, FBP_EFFECT_IMPORTED_MASK,
+                            property_names={"fbp_imported_mask_path"},
+                        )
+                    except FBP_DATA_ERRORS:
+                        pass
+                if source_is_clipping:
+                    try:
+                        # Layered imports are exported on one common canvas, so
+                        # normalized UV clipping preserves the source document.
+                        rig.fbp_clipping_mask_use_source_transform = False
+                        rig.fbp_clipping_mask_use_camera_projection = False
+                        rig["fbp_clipping_projection_version"] = 3
+                        fbp_add_effect(
+                            rig, FBP_EFFECT_CLIPPING_MASK,
+                            inherit_active_group=False, sync_items=False,
+                        )
+                    except FBP_DATA_ERRORS:
+                        pass
+                if source_blend_supported and blender_blend_mode not in {"NORMAL", "PASS_THROUGH"}:
+                    try:
+                        rig.fbp_layer_blend_mode = blender_blend_mode
+                        fbp_add_effect(
+                            rig, FBP_EFFECT_LAYER_BLEND,
+                            inherit_active_group=False, sync_items=False,
+                        )
+                        fbp_update_shader_effect(
+                            rig, FBP_EFFECT_LAYER_BLEND,
+                            property_names={"fbp_layer_blend_mode"},
+                        )
+                    except FBP_DATA_ERRORS:
+                        pass
+
             if sc.fbp_auto_scale and cam and not fbp_fast_import_is_active():
                 context.view_layer.update()
                 context.evaluated_depsgraph_get().update()
@@ -1267,6 +1573,11 @@ class FBP_OT_GenerateMultiplane(Operator):
             generated_rigs.append(rig)
             last_rig = rig
 
+        if generated_rigs:
+            try:
+                fbp_sync_clipping_masks(context)
+            except FBP_DATA_ERRORS:
+                pass
 
         if not generated_rigs:
             # A failed Multiplane build must not leave a camera, cursor/pivot
@@ -2073,6 +2384,76 @@ class FBP_OT_ClearGenerationReport(Operator):
         _fbp_clear_generation_report(context)
         return {'FINISHED'}
 
+def _fbp_execute_single_plane_import(operator, context, directory, filenames):
+    """Build one FBP rig from already resolved media filenames."""
+    directory = bpy.path.abspath(str(directory or ""))
+    filenames = [
+        str(name) for name in (filenames or ())
+        if name and is_supported_media_file(name)
+        and (is_supported_video_file(name) or not is_technical_map_file(name))
+    ]
+    if not directory or not os.path.isdir(directory) or not filenames:
+        operator.report({'WARNING'}, "SELECT AT LEAST ONE IMAGE or choose a folder containing supported media")
+        return {'CANCELLED'}
+
+    context.scene.fbp_last_directory = directory
+    sorted_files = fbp_order_sequence_files(filenames, reverse=False)
+    video_files = [name for name in sorted_files if is_supported_video_file(name)]
+    if video_files and len(sorted_files) != 1:
+        operator.report({'WARNING'}, "Import one video at a time; videos cannot be mixed with image sequences")
+        return {'CANCELLED'}
+
+    if len(sorted_files) == 1:
+        rig_name = clean_layer_name_from_path(sorted_files[0])
+    else:
+        rig_name = (
+            clean_layer_name_from_path(os.path.basename(os.path.normpath(directory)))
+            or clean_layer_name_from_path(sorted_files[0])
+            or "Sequence_Rig"
+        )
+
+    target_collection = context.collection if context.collection else context.scene.collection
+    try:
+        rig = build_fbp_rig(
+            context,
+            rig_name,
+            directory,
+            sorted_files,
+            context.scene.cursor.location.copy(),
+            target_collection=target_collection,
+        )
+    except Exception as exc:
+        issue = _fbp_build_issue(
+            rig_name,
+            directory,
+            sorted_files,
+            f"Could not generate this layer: {exc}",
+        )
+        _fbp_store_generation_report(
+            context,
+            mode="Single Plane",
+            generated_rigs=[],
+            cancelled=True,
+            message="Single plane generation failed.",
+            extra_issues=[issue],
+        )
+        _fbp_finish_generation_ui(context)
+        operator.report({'ERROR'}, f"Single plane import failed: {exc}")
+        return {'CANCELLED'}
+
+    bpy.ops.object.select_all(action='DESELECT')
+    if object_in_view_layer(rig, context):
+        rig.select_set(True)
+        context.view_layer.objects.active = rig
+    set_viewport_object_color(context)
+    if len(sorted_files) > 1:
+        operator.report({'INFO'}, f"Imported {len(sorted_files)} images as one animated plane")
+    report = _fbp_store_generation_report(context, mode="Single Plane", generated_rigs=[rig])
+    _fbp_finish_generation_ui(context, report)
+    _fbp_note_successful_import(context, multiplane=False)
+    return {'FINISHED'}
+
+
 class FBP_OT_ImportSingleImage(Operator):
     bl_idname = "fbp.import_single_image"
     bl_label = "Single Plane"
@@ -2104,107 +2485,2235 @@ class FBP_OT_ImportSingleImage(Operator):
         # This avoids silently creating an empty/square plane from Shift+A.
         if not filenames and self.directory and os.path.isdir(bpy.path.abspath(self.directory)):
             filenames = fbp_folder_direct_images(bpy.path.abspath(self.directory))
-
-        filenames = [f for f in filenames if is_supported_media_file(f) and (is_supported_video_file(f) or not is_technical_map_file(f))]
-        if not filenames:
-            self.report({'WARNING'}, "SELECT AT LEAST ONE IMAGE or choose a folder containing supported media")
-            return {'CANCELLED'}
-        context.scene.fbp_last_directory = self.directory
-        sorted_files = fbp_order_sequence_files(
-            filenames,
-            reverse=False,
-        )
-        video_files = [name for name in sorted_files if is_supported_video_file(name)]
-        if video_files and len(sorted_files) != 1:
-            self.report({'WARNING'}, "Import one video at a time; videos cannot be mixed with image sequences")
-            return {'CANCELLED'}
-        if len(sorted_files) == 1:
-            rig_name = clean_layer_name_from_path(sorted_files[0])
-        else:
-            rig_name = clean_layer_name_from_path(os.path.basename(os.path.normpath(self.directory))) or clean_layer_name_from_path(sorted_files[0]) or "Sequence_Rig"
-        target_collection = context.collection if context.collection else context.scene.collection
-        try:
-            rig = build_fbp_rig(
-                context, rig_name, self.directory, sorted_files,
-                context.scene.cursor.location.copy(), target_collection=target_collection)
-        except Exception as exc:
-            issue = _fbp_build_issue(rig_name, self.directory, sorted_files, f"Could not generate this layer: {exc}")
-            _fbp_store_generation_report(
-                context,
-                mode="Single Plane",
-                generated_rigs=[],
-                cancelled=True,
-                message="Single plane generation failed.",
-                extra_issues=[issue],
-            )
-            _fbp_finish_generation_ui(context)
-            self.report({'ERROR'}, f"Single plane import failed: {exc}")
-            return {'CANCELLED'}
-        bpy.ops.object.select_all(action='DESELECT')
-        if object_in_view_layer(rig, context):
-            rig.select_set(True)
-            context.view_layer.objects.active = rig
-        set_viewport_object_color(context)
-        if len(sorted_files) > 1:
-            self.report({'INFO'}, f"Imported {len(sorted_files)} images as one animated plane")
-        report = _fbp_store_generation_report(context, mode="Single Plane", generated_rigs=[rig])
-        _fbp_finish_generation_ui(context, report)
-        _fbp_note_successful_import(context, multiplane=False)
-        return {'FINISHED'}
+        return _fbp_execute_single_plane_import(self, context, self.directory, filenames)
 
 class FBP_OT_ImportFolderMultiplane(Operator):
     bl_idname = "fbp.import_folder_multiplane"
-    bl_label = "Multiplane"
-    bl_description = "Create a multiplane setup directly from a folder"
+    bl_label = "Import Folder"
+    bl_description = (
+        "Choose a folder, or read a copied folder path, then preview and automatically import it "
+        "as one Single Plane or as a Multiplane according to its detected contents"
+    )
     bl_options = {'REGISTER', 'UNDO'}
 
-    animation: BoolProperty(description="Enable animated-media behavior for this import or Multiplane setup instead of a single static image workflow.", default=True)
-    filepath: StringProperty(description="Selected media file path returned by Blender's file browser.", subtype='FILE_PATH')
-    directory: StringProperty(description="Folder currently selected in Blender's file browser.", subtype='DIR_PATH')
-    files: CollectionProperty(description="Files selected in Blender's file browser for this import or replacement action.", type=bpy.types.OperatorFileListElement)
+    animation: BoolProperty(
+        name="Group Numbered Image Sequences",
+        description=(
+            "Group matching numbered images into animated planes. Videos remain video layers; "
+            "disable this option to use only the first image of each detected image sequence"
+        ),
+        default=True,
+        update=_fbp_reset_folder_import_confirmations,
+    )
+    filter_folder: BoolProperty(
+        default=True,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    use_last_folder: BoolProperty(
+        name="Use Last Import Folder",
+        description="Reuse the most recent valid Frame By Plane import folder without opening the file browser",
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    preflight_ready: BoolProperty(
+        description="Internal state indicating that the chosen folder has been scanned and is ready for confirmation",
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    allow_very_large_import: BoolProperty(
+        name="Import This Very Large Folder",
+        description=(
+            "Explicitly confirm generation of a very large number of layers or source files. "
+            "Large imports can take time and consume substantial memory"
+        ),
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+    confirm_single_root_only: BoolProperty(
+        name="Import Only the Root-Level Source",
+        description=(
+            "Confirm that only the single logical source stored directly in the selected folder "
+            "will be imported, while nested and additional detected layers are intentionally ignored"
+        ),
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+    detected_layers: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_files: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_collections: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_sequences: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_stills: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_videos: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_direct_layers: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_preview: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    detected_snapshot_token: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    detected_animation_state: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_base_path: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    directory: StringProperty(
+        description="Folder selected in Blender's file browser",
+        subtype='DIR_PATH',
+        options={'SKIP_SAVE'},
+    )
+    from_clipboard: BoolProperty(
+        name="Read Folder Path from Clipboard",
+        description=(
+            "Read a folder path copied as text from Explorer, Finder or another file manager. "
+            "On Windows use Copy as path"
+        ),
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    synchronous_generation: BoolProperty(
+        name="Synchronous Generation",
+        description="Internal regression option that completes Multiplane generation before returning",
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    import_mode: EnumProperty(
+        name="Import As",
+        description="Automatically detect the folder structure or force one import type",
+        items=(
+            ('AUTO', "Auto Detect", "One logical layer becomes one plane; multiple logical layers become a Multiplane"),
+            ('SINGLE', "Single Plane", "Use the folder root only when it contains exactly one logical still, video or numbered image sequence"),
+            ('MULTI', "Multiplane", "Create one layer for each detected still, sequence, video or nested folder source"),
+        ),
+        default='AUTO',
+        options={'SKIP_SAVE'},
+        update=_fbp_reset_folder_import_confirmations,
+    )
 
-    def invoke(self, context, event):
-        path = context.scene.fbp_project_path or context.scene.fbp_last_directory
-        if path:
-            self.directory = path
-        context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+    def _resolve_base(self, context):
+        if self.from_clipboard:
+            base = _fbp_resolve_selected_folder("", self.directory)
+            if not base:
+                base = _fbp_folder_path_from_clipboard(context)
+            return base
+        return _fbp_resolve_selected_folder("", self.directory)
 
-    def execute(self, context):
-        base = self.directory or (os.path.dirname(self.filepath) if self.filepath else "")
-        base = bpy.path.abspath(base)
+    def _refresh_detection(self, base, *, consume=False):
+        rows = _fbp_scan_folder_rows_cached(base, animation=self.animation, consume=consume)
+        summary = _fbp_folder_rows_summary(rows)
+        self.detected_layers = summary['layers']
+        self.detected_files = summary['files']
+        self.detected_collections = summary['collections']
+        self.detected_sequences = summary['sequences']
+        self.detected_stills = summary['stills']
+        self.detected_videos = summary['videos']
+        self.detected_preview = _fbp_folder_rows_preview_text(rows)
+        self.detected_snapshot_token = _fbp_folder_rows_token(base, rows)
+        self.detected_animation_state = bool(self.animation)
+        self.detected_base_path = os.path.normcase(
+            os.path.realpath(os.path.abspath(os.path.normpath(str(base or ""))))
+        )
+
+        self.detected_direct_layers = len(_fbp_folder_rows_direct(base, rows))
+        return rows
+
+    def _open_preflight(self, context, base):
         if not base or not os.path.isdir(base):
             self.report({'WARNING'}, "Choose a valid folder")
             return {'CANCELLED'}
-        sc = context.scene
-        rows = fbp_scan_project_layers_for_setup(
-            base,
-            separate_sequences=False,
-            reverse_sequences=False,
-        )
-        if not self.animation:
-            rows = [(name, coll, directory, files[:1], follow) for name, coll, directory, files, follow in rows if files]
+        self.directory = base
+        rows = self._refresh_detection(base, consume=False)
         if not rows:
-            self.report({'WARNING'}, "No supported images found")
+            _fbp_discard_folder_scan_cache(base)
+            self.report({'WARNING'}, "No supported images, sequences, or videos found")
             return {'CANCELLED'}
-        sc.fbp_creation_mode = 'MULTI'
-        sc.fbp_parent_import_path = base
-        sc.fbp_pending_planes.clear()
-        color_map = {}
-        for name, collection_name, directory, files, follow_collection_color in rows:
-            item = sc.fbp_pending_planes.add()
-            item.name = name
-            item.collection_name = collection_name
-            item.directory = directory
-            item.files_str = "|".join(files)
-            item.follow_collection_color = bool(follow_collection_color)
-            color_key = (
-                collection_name
-                if item.follow_collection_color and collection_name
-                else f"{os.path.normcase(os.path.abspath(directory or base))}::{name}"
+        self.preflight_ready = True
+        self.allow_very_large_import = False
+        self.confirm_single_root_only = False
+        return context.window_manager.invoke_props_dialog(self, width=500)
+
+    def invoke(self, context, event):
+        base = ""
+        if self.from_clipboard:
+            base = _fbp_folder_path_from_clipboard(context)
+            if not base:
+                self.report({'WARNING'}, "Clipboard does not contain a valid folder path. Use Copy as path first")
+                return {'CANCELLED'}
+        elif self.use_last_folder:
+            for raw in (context.scene.fbp_last_directory, context.scene.fbp_project_path):
+                candidate = bpy.path.abspath(str(raw or ""))
+                if candidate and os.path.isdir(candidate):
+                    base = os.path.abspath(os.path.normpath(candidate))
+                    break
+            if not base:
+                self.report({'WARNING'}, "No valid previous import folder is available")
+                return {'CANCELLED'}
+
+        if base:
+            return self._open_preflight(context, base)
+
+        path = context.scene.fbp_last_directory or context.scene.fbp_project_path
+        if path and os.path.isdir(bpy.path.abspath(path)):
+            self.directory = path
+        self.preflight_ready = False
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def check(self, context):
+        """Refresh the preflight only when its source-defining options change.
+
+        Blender calls ``check`` for every edited dialog property. Revalidating
+        thousands of directories and source files when the user merely ticks a
+        confirmation checkbox caused avoidable stalls on large or networked
+        projects. The exact snapshot is still revalidated in ``execute``.
+        """
+        if not self.preflight_ready:
+            return False
+        base = self._resolve_base(context)
+        if not base or not os.path.isdir(base):
+            return False
+        normalized_base = os.path.normcase(
+            os.path.realpath(os.path.abspath(os.path.normpath(base)))
+        )
+        source_options_changed = (
+            bool(self.detected_animation_state) != bool(self.animation)
+            or str(self.detected_base_path or "") != normalized_base
+        )
+        if not source_options_changed:
+            return False
+
+        previous = (
+            self.detected_layers,
+            self.detected_files,
+            self.detected_collections,
+            self.detected_sequences,
+            self.detected_stills,
+            self.detected_videos,
+            self.detected_direct_layers,
+            self.detected_preview,
+            self.detected_snapshot_token,
+        )
+        self._refresh_detection(base, consume=False)
+        current = (
+            self.detected_layers,
+            self.detected_files,
+            self.detected_collections,
+            self.detected_sequences,
+            self.detected_stills,
+            self.detected_videos,
+            self.detected_direct_layers,
+            self.detected_preview,
+            self.detected_snapshot_token,
+        )
+        self.allow_very_large_import = False
+        self.confirm_single_root_only = False
+        return current != previous
+
+    def draw(self, context):
+        layout = self.layout
+        base = self._resolve_base(context)
+        layout.label(text="Folder Import", icon=fbp_icon("FILE_FOLDER"))
+
+        if not self.preflight_ready:
+            layout.label(text="Choose the source folder, then confirm the detected structure.", icon=fbp_icon("INFO"))
+            layout.prop(self, "import_mode", expand=True)
+            layout.prop(self, "animation")
+            _fbp_draw_import_alpha_crop_options(layout, context.scene)
+            return
+
+        if base:
+            layout.label(text=os.path.basename(os.path.normpath(base)) or base)
+
+        summary = layout.box()
+        summary.label(
+            text=f"Detected: {self.detected_layers} layer(s) from {self.detected_files} media file(s)",
+            icon=fbp_icon("FILE_IMAGE"),
+        )
+        detail = summary.row(align=False)
+        detail.label(text=f"Still layers: {self.detected_stills}")
+        detail.label(text=f"Sequences: {self.detected_sequences}")
+        detail.label(text=f"Videos: {self.detected_videos}")
+        summary.label(text=f"Collection paths: {self.detected_collections}", icon=fbp_icon("FILE_FOLDER"))
+
+        if self.detected_preview:
+            preview = layout.box()
+            preview.label(text="Detected Layers", icon=fbp_icon("OUTLINER_COLLECTION"))
+            for line in self.detected_preview.splitlines():
+                preview.label(text=line)
+            remaining = max(0, self.detected_layers - _FBP_FOLDER_PREVIEW_LIMIT)
+            if remaining:
+                preview.label(text=f"… and {remaining} more layer(s)", icon=fbp_icon("DOT"))
+
+        resolved_mode = _fbp_resolved_folder_import_mode(self.import_mode, self.detected_layers)
+        summary.label(
+            text=("Result: Single Plane" if resolved_mode == 'SINGLE' else "Result: Multiplane"),
+            icon=fbp_icon("IMAGE_DATA") if resolved_mode == 'SINGLE' else fbp_icon("OUTLINER_COLLECTION"),
+        )
+
+        layout.prop(self, "import_mode", expand=True)
+        layout.prop(self, "animation")
+        _fbp_draw_import_alpha_crop_options(layout, context.scene)
+
+        if self.import_mode == 'SINGLE' and self.detected_layers > 1:
+            single_box = layout.box()
+            if self.detected_direct_layers == 1:
+                ignored = max(0, self.detected_layers - 1)
+                single_box.label(text="Single Plane will use the only root-level source.", icon=fbp_icon("INFO"))
+                single_box.label(text=f"{ignored} nested or additional layer(s) will be ignored.")
+                single_box.prop(self, "confirm_single_root_only")
+            else:
+                single_box.alert = True
+                single_box.label(text="Single Plane is unavailable for this folder.", icon=fbp_icon("ERROR"))
+                single_box.label(text="Choose Auto Detect/Multiplane, or use a folder with one root-level source.")
+
+        warning, confirmation = _fbp_folder_import_size_flags(
+            {'layers': self.detected_layers, 'files': self.detected_files}
+        )
+        if warning:
+            box = layout.box()
+            box.alert = True
+            box.label(text="Large folder import", icon=fbp_icon("ERROR"))
+            box.label(text="Generation may take time and create many Blender datablocks.")
+            if confirmation:
+                box.prop(self, "allow_very_large_import")
+
+        layout.separator()
+        layout.label(text="Review the detection above before generating the planes.", icon=fbp_icon("INFO"))
+        layout.label(text="The source snapshot is checked again when you confirm the import.", icon=fbp_icon("LOCKED"))
+
+    def cancel(self, context):
+        base = self._resolve_base(context)
+        if base:
+            _fbp_discard_folder_scan_cache(base)
+
+    def execute(self, context):
+        base = self._resolve_base(context)
+        if not base or not os.path.isdir(base):
+            message = (
+                "Clipboard does not contain a valid folder path. Use Copy as path first"
+                if self.from_clipboard else "Choose a valid folder"
             )
-            item.fbp_color_tag = _fbp_color_tag_for_group(color_key, color_map)
+            self.report({'WARNING'}, message)
+            return {'CANCELLED'}
+
+        # The directory picker cannot display a reliable recursive summary while
+        # browsing. After the folder is chosen, pause once for a dedicated,
+        # consistent confirmation dialog instead of importing immediately.
+        if not self.preflight_ready:
+            return self._open_preflight(context, base)
+
+        if (
+            self.import_mode == 'SINGLE'
+            and self.detected_layers > 1
+            and self.detected_direct_layers == 1
+            and not self.confirm_single_root_only
+        ):
+            _fbp_discard_folder_scan_cache(base)
+            self.report({'ERROR'}, "Confirm that only the root-level source should be imported")
+            return {'CANCELLED'}
+
+        confirmed_snapshot_token = self.detected_snapshot_token
+
+        # Consume one exact scan snapshot and use the same rows for the final
+        # confirmation and generation. This avoids a race where the directory
+        # changes between two scans and the warning no longer describes what is
+        # actually imported.
+        rows = self._refresh_detection(base, consume=True)
+        if not rows:
+            self.report({'WARNING'}, "No supported images, sequences, or videos found")
+            return {'CANCELLED'}
+        if confirmed_snapshot_token and self.detected_snapshot_token != confirmed_snapshot_token:
+            self.allow_very_large_import = False
+            self.confirm_single_root_only = False
+            self.report({'ERROR'}, "Folder sources changed after preview; review the import again")
+            return {'CANCELLED'}
+        if (
+            self.import_mode == 'SINGLE'
+            and self.detected_layers > 1
+            and self.detected_direct_layers == 1
+            and not self.confirm_single_root_only
+        ):
+            self.report({'ERROR'}, "Folder sources changed; confirm the root-only Single Plane import again")
+            return {'CANCELLED'}
+
+        _warning, confirmation = _fbp_folder_import_size_flags(
+            {'layers': self.detected_layers, 'files': self.detected_files}
+        )
+        if confirmation and not self.allow_very_large_import:
+            self.report({'ERROR'}, "Confirm the very large folder import before continuing")
+            return {'CANCELLED'}
+
+        return _fbp_execute_detected_folder_import(
+            self,
+            context,
+            base,
+            rows,
+            import_mode=self.import_mode,
+            synchronous_generation=self.synchronous_generation,
+        )
+
+
+def _fbp_resolve_selected_folder(filepath, directory):
+    """Return a valid absolute folder from Blender file-selector properties."""
+    candidates = [directory, filepath]
+    for raw in candidates:
+        path = bpy.path.abspath(str(raw or "")).strip()
+        if not path:
+            continue
+        path = os.path.abspath(os.path.normpath(path))
+        if os.path.isdir(path):
+            return path
+        if os.path.isfile(path):
+            return os.path.dirname(path)
+    return ""
+
+
+def _fbp_clipboard_text_paths(raw_text):
+    """Yield normalized path candidates from copied text or file:// URIs."""
+    raw_text = str(raw_text or "").replace("\x00", "").strip()
+    if not raw_text:
+        return []
+
+    candidates = []
+    # Copy-as-path commonly produces one quoted path per line when multiple
+    # filesystem items are selected. Keep line boundaries instead of splitting
+    # on spaces, which are valid inside paths.
+    for raw_line in raw_text.splitlines() or [raw_text]:
+        value = raw_line.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1].strip()
+        if not value:
+            continue
+
+        if value.lower().startswith("file://"):
+            parsed = urlparse(value)
+            decoded = unquote(parsed.path or "")
+            if parsed.netloc:
+                decoded = f"//{parsed.netloc}{decoded}"
+            # file:///C:/Folder becomes /C:/Folder after URL parsing.
+            if os.name == 'nt' and len(decoded) >= 3 and decoded[0] == '/' and decoded[2] == ':':
+                decoded = decoded[1:]
+            value = decoded
+
+        value = os.path.expandvars(os.path.expanduser(value))
+        if value:
+            candidates.append(os.path.abspath(os.path.normpath(value)))
+    return candidates
+
+
+def _fbp_folder_path_from_clipboard(context):
+    """Return the first existing folder represented by Blender's text clipboard."""
+    raw = getattr(context.window_manager, 'clipboard', '') or ''
+    for path in _fbp_clipboard_text_paths(raw):
+        if os.path.isdir(path):
+            return path
+        if os.path.isfile(path):
+            return os.path.dirname(path)
+    return ""
+
+
+def _fbp_clone_folder_rows(rows):
+    """Return mutable copies so callers cannot alter the runtime scan cache."""
+    cloned = []
+    for row in rows or ():
+        if len(row) < 5:
+            continue
+        name, collection_name, directory, files, follow = row[:5]
+        cloned.append((str(name), str(collection_name), str(directory), list(files or ()), bool(follow)))
+    return cloned
+
+
+def _fbp_folder_rows_token(base, rows):
+    """Return a stable fingerprint for one reviewed folder snapshot.
+
+    The token includes source identity and lightweight file metadata. This keeps
+    a preview honest when a frame is replaced or edited in place without being
+    renamed, even when the parent directory timestamp does not change.
+    """
+    digest = hashlib.sha256()
+    raw_base = bpy.path.abspath(str(base or "")).strip()
+    normalized_base = ""
+    if raw_base:
+        normalized_base = os.path.normcase(
+            os.path.realpath(os.path.abspath(os.path.normpath(raw_base)))
+        )
+    digest.update(normalized_base.encode("utf-8", "surrogatepass"))
+    digest.update(b"\0")
+
+    for row in rows or ():
+        if len(row) < 4 or not row[3]:
+            continue
+        name, collection_name, directory, files = row[:4]
+        raw_directory = str(directory or "").strip()
+        normalized_directory = ""
+        if raw_directory:
+            normalized_directory = os.path.normcase(
+                os.path.realpath(os.path.abspath(os.path.normpath(raw_directory)))
+            )
+
+        for value in (str(name), str(collection_name), normalized_directory):
+            digest.update(value.encode("utf-8", "surrogatepass"))
+            digest.update(b"\0")
+
+        for filename in files or ():
+            raw_filename = str(filename or "")
+            source_path = (
+                raw_filename
+                if os.path.isabs(raw_filename)
+                else os.path.join(normalized_directory, raw_filename)
+            )
+            normalized_source = os.path.normcase(
+                os.path.realpath(os.path.abspath(os.path.normpath(source_path)))
+            )
+            digest.update(normalized_source.encode("utf-8", "surrogatepass"))
+            digest.update(b"\0")
+            try:
+                stat = os.stat(source_path)
+                metadata = (
+                    int(getattr(stat, 'st_size', 0)),
+                    int(getattr(stat, 'st_mtime_ns', int(stat.st_mtime * 1_000_000_000))),
+                    int(getattr(stat, 'st_ctime_ns', int(stat.st_ctime * 1_000_000_000))),
+                    int(getattr(stat, 'st_dev', 0)),
+                    int(getattr(stat, 'st_ino', 0)),
+                )
+                digest.update("|".join(str(value) for value in metadata).encode("ascii"))
+            except (OSError, PermissionError, ValueError):
+                digest.update(b"MISSING")
+            digest.update(b"\0")
+
+        if len(row) > 4:
+            digest.update(b"1" if bool(row[4]) else b"0")
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _fbp_folder_rows_direct(base, rows):
+    """Return root-level rows from the exact preflight snapshot."""
+    raw_base = bpy.path.abspath(str(base or "")).strip()
+    if not raw_base:
+        return []
+    base_key = os.path.normcase(os.path.realpath(os.path.abspath(os.path.normpath(raw_base))))
+    direct = []
+    for row in rows or ():
+        if len(row) < 4 or not row[3]:
+            continue
+        raw_directory = str(row[2] or "").strip()
+        if not raw_directory:
+            continue
+        directory = os.path.abspath(os.path.normpath(raw_directory))
+        if os.path.normcase(os.path.realpath(directory)) == base_key:
+            direct.append(row)
+    return direct
+
+
+def _fbp_folder_rows_summary(rows):
+    """Return compact counts used by reports and confirmation UI."""
+    valid = [row for row in (rows or ()) if len(row) >= 4 and row[3]]
+    collections = {str(row[1]).strip() for row in valid if str(row[1]).strip()}
+    sequences = 0
+    stills = 0
+    videos = 0
+    for row in valid:
+        files = list(row[3] or ())
+        if any(is_supported_video_file(name) for name in files):
+            videos += 1
+        elif len(files) > 1:
+            sequences += 1
+        else:
+            stills += 1
+    return {
+        'layers': len(valid),
+        'files': sum(len(row[3]) for row in valid),
+        'collections': len(collections),
+        'sequences': sequences,
+        'stills': stills,
+        'videos': videos,
+    }
+
+
+def _fbp_folder_rows_preview_text(rows, limit=_FBP_FOLDER_PREVIEW_LIMIT):
+    """Return a compact, filesystem-free preview for an operator dialog."""
+    lines = []
+    for row in rows or ():
+        if len(row) < 4 or not row[3]:
+            continue
+        name, collection_name, _directory, files = row[:4]
+        files = list(files or ())
+        if any(is_supported_video_file(filename) for filename in files):
+            kind = "Video"
+        elif len(files) > 1:
+            kind = f"Sequence · {len(files)} frames"
+        else:
+            kind = "Still"
+        prefix = f"{collection_name} / " if str(collection_name or '').strip() else ""
+        label = f"{prefix}{name}".replace("\n", " ").replace("\r", " ")
+        if len(label) > 72:
+            label = f"{label[:34]}…{label[-34:]}"
+        lines.append(f"{label} — {kind}")
+        if len(lines) >= max(1, int(limit or 1)):
+            break
+    return "\n".join(lines)
+
+
+def _fbp_resolved_folder_import_mode(import_mode, layer_count):
+    """Return the effective Single/Multiplane choice shown by preflight UI."""
+    mode = str(import_mode or 'AUTO')
+    if mode == 'AUTO':
+        return 'SINGLE' if int(layer_count or 0) == 1 else 'MULTI'
+    return 'SINGLE' if mode == 'SINGLE' else 'MULTI'
+
+
+def _fbp_folder_import_size_flags(summary):
+    """Return (warning, explicit_confirmation_required) for one scan summary."""
+    layers = max(0, int((summary or {}).get('layers', 0) or 0))
+    files = max(0, int((summary or {}).get('files', 0) or 0))
+    warning = (
+        layers >= _FBP_FOLDER_IMPORT_WARNING_LAYERS
+        or files >= _FBP_FOLDER_IMPORT_WARNING_FILES
+    )
+    confirmation = (
+        layers >= _FBP_FOLDER_IMPORT_CONFIRM_LAYERS
+        or files >= _FBP_FOLDER_IMPORT_CONFIRM_FILES
+    )
+    return warning, confirmation
+
+
+def _fbp_folder_scan_signature(base, rows, *, scanned_directories=None):
+    """Capture state for every directory visited by the project scanner.
+
+    Tracking only folders that produced layers misses a later media file added
+    inside a previously empty nested directory. The optional collector supplied
+    by the one-pass scanner closes that cache invalidation gap.
+    """
+    base = os.path.abspath(os.path.normpath(str(base or "")))
+    directories = {base}
+    base_key = os.path.normcase(os.path.realpath(base))
+
+    for raw_directory in scanned_directories or ():
+        current = os.path.abspath(os.path.normpath(str(raw_directory or "")))
+        if current:
+            directories.add(current)
+
+    # Backward-compatible fallback for callers that do not provide the complete
+    # scanner directory list. Include row directories and all ancestors.
+    for row in rows or ():
+        if len(row) < 3:
+            continue
+        current = os.path.abspath(os.path.normpath(str(row[2] or "")))
+        while current:
+            try:
+                common = os.path.normcase(os.path.realpath(os.path.commonpath((base, current))))
+            except (OSError, ValueError):
+                break
+            if common != base_key:
+                break
+            directories.add(current)
+            if os.path.normcase(os.path.realpath(current)) == base_key:
+                break
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+
+    signature = []
+    for directory in sorted(directories, key=lambda value: os.path.normcase(value)):
+        normalized = os.path.normcase(os.path.realpath(directory))
+        try:
+            stat = os.stat(directory)
+            metadata = (
+                int(getattr(stat, 'st_mtime_ns', int(stat.st_mtime * 1_000_000_000))),
+                int(getattr(stat, 'st_ctime_ns', int(stat.st_ctime * 1_000_000_000))),
+                int(getattr(stat, 'st_size', 0)),
+                1 if os.access(directory, os.R_OK) else 0,
+            )
+        except (OSError, PermissionError, ValueError):
+            metadata = (-1, -1, -1, 0)
+        signature.append((normalized, *metadata))
+    return tuple(signature)
+
+
+def _fbp_folder_scan_signature_is_current(signature):
+    """Return False when any previously scanned directory changed."""
+    if not signature:
+        return False
+    for item in signature:
+        if len(item) != 5:
+            return False
+        directory, previous_mtime, previous_ctime, previous_size, previous_access = item
+        try:
+            stat = os.stat(directory)
+            current = (
+                int(getattr(stat, 'st_mtime_ns', int(stat.st_mtime * 1_000_000_000))),
+                int(getattr(stat, 'st_ctime_ns', int(stat.st_ctime * 1_000_000_000))),
+                int(getattr(stat, 'st_size', 0)),
+                1 if os.access(directory, os.R_OK) else 0,
+            )
+        except (OSError, PermissionError, ValueError):
+            return False
+        if current != (
+            int(previous_mtime),
+            int(previous_ctime),
+            int(previous_size),
+            int(previous_access),
+        ):
+            return False
+    return True
+
+
+def _fbp_discard_folder_scan_cache(base=None):
+    """Release cached folder rows after cancellation or an aborted import."""
+    if not base:
+        _FBP_FOLDER_SCAN_CACHE.clear()
+        return
+    raw_base = bpy.path.abspath(str(base or "")).strip()
+    if not raw_base:
+        return
+    key_path = os.path.normcase(os.path.realpath(os.path.abspath(os.path.normpath(raw_base))))
+    for key in tuple(_FBP_FOLDER_SCAN_CACHE):
+        if key and key[0] == key_path:
+            _FBP_FOLDER_SCAN_CACHE.pop(key, None)
+
+
+def _fbp_scan_folder_rows_cached(base, *, animation=True, consume=False):
+    """Scan one folder with a bounded, short-lived runtime-only cache."""
+    raw_base = bpy.path.abspath(str(base or "")).strip()
+    if not raw_base:
+        return []
+    base = os.path.abspath(os.path.normpath(raw_base))
+    if not os.path.isdir(base):
+        return []
+
+    now = time.monotonic()
+    key = (os.path.normcase(os.path.realpath(base)), bool(animation))
+    entry = _FBP_FOLDER_SCAN_CACHE.get(key)
+    entry_is_fresh = bool(
+        entry
+        and int(entry.get('schema', 0) or 0) == _FBP_FOLDER_SCAN_CACHE_SCHEMA
+        and now - float(entry.get('time', 0.0)) <= _FBP_FOLDER_SCAN_CACHE_TTL
+        and _fbp_folder_scan_signature_is_current(entry.get('signature', ()))
+    )
+    if entry_is_fresh:
+        rows = _fbp_clone_folder_rows(entry.get('rows', ()))
+        if consume:
+            _FBP_FOLDER_SCAN_CACHE.pop(key, None)
+        return rows
+    if entry:
+        _FBP_FOLDER_SCAN_CACHE.pop(key, None)
+
+    scanned_directories = []
+    rows = fbp_scan_project_layers_for_setup(
+        base,
+        separate_sequences=False,
+        reverse_sequences=False,
+        scanned_directories=scanned_directories,
+    )
+    if not animation:
+        rows = [
+            (name, coll, directory, files[:1], follow)
+            for name, coll, directory, files, follow in rows
+            if files
+        ]
+
+    _FBP_FOLDER_SCAN_CACHE[key] = {
+        'schema': _FBP_FOLDER_SCAN_CACHE_SCHEMA,
+        'time': now,
+        'rows': _fbp_clone_folder_rows(rows),
+        'signature': _fbp_folder_scan_signature(
+            base,
+            rows,
+            scanned_directories=scanned_directories,
+        ),
+    }
+    # Prune expired entries first, then cap the cache deterministically.
+    for cache_key, cached in tuple(_FBP_FOLDER_SCAN_CACHE.items()):
+        if now - float(cached.get('time', 0.0)) > _FBP_FOLDER_SCAN_CACHE_TTL:
+            _FBP_FOLDER_SCAN_CACHE.pop(cache_key, None)
+    if len(_FBP_FOLDER_SCAN_CACHE) > _FBP_FOLDER_SCAN_CACHE_MAX:
+        oldest = sorted(
+            _FBP_FOLDER_SCAN_CACHE.items(),
+            key=lambda item: float(item[1].get('time', 0.0)),
+        )
+        for cache_key, _cached in oldest[:-_FBP_FOLDER_SCAN_CACHE_MAX]:
+            _FBP_FOLDER_SCAN_CACHE.pop(cache_key, None)
+
+    result = _fbp_clone_folder_rows(rows)
+    if consume:
+        _FBP_FOLDER_SCAN_CACHE.pop(key, None)
+    return result
+
+
+def _fbp_single_plane_source_from_rows(base, rows):
+    """Resolve one safe Single Plane source without merging unrelated media."""
+    valid = [row for row in (rows or ()) if len(row) >= 4 and row[3]]
+    if len(valid) == 1:
+        _name, _collection, directory, filenames = valid[0][:4]
+        return str(directory), list(filenames or ()), ""
+
+    direct_rows = _fbp_folder_rows_direct(base, valid)
+    if len(direct_rows) != 1:
+        return "", [], "Single Plane requires exactly one logical source in the selected folder root"
+    _name, _collection, directory, filenames = direct_rows[0][:4]
+    return str(directory), list(filenames or ()), ""
+
+
+def _fbp_single_plane_source_from_paths(paths):
+    """Resolve dropped paths only when they form one logical media source."""
+    files = _fbp_drop_importable_files(paths)
+    directories = {
+        os.path.normcase(os.path.realpath(os.path.dirname(path))): os.path.dirname(path)
+        for path in files
+    }
+    if len(directories) != 1:
+        return "", [], "Single Plane requires media from one folder"
+    directory = next(iter(directories.values()))
+    grouped = fbp_group_direct_media_into_layers(
+        [os.path.basename(path) for path in files],
+        clean_layer_name_from_path(directory),
+    )
+    if len(grouped) != 1:
+        return "", [], "Single Plane requires one still, one video, or one numbered image sequence"
+    _layer_name, filenames, _is_sequence = grouped[0]
+    return directory, list(filenames or ()), ""
+
+
+def _fbp_execute_detected_folder_import(
+    operator, context, base, rows, *, import_mode='AUTO', synchronous_generation=False
+):
+    """Import already detected folder rows through one shared safe decision path."""
+    rows = [row for row in (rows or ()) if len(row) >= 4 and row[3]]
+    summary = _fbp_folder_rows_summary(rows)
+    if not rows:
+        operator.report({'WARNING'}, "No supported images, sequences, or videos found")
+        return {'CANCELLED'}
+
+    context.scene.fbp_last_directory = base
+    context.scene.fbp_parent_import_path = base
+    resolved_mode = str(import_mode or 'AUTO')
+    if resolved_mode == 'AUTO':
+        resolved_mode = 'SINGLE' if len(rows) == 1 else 'MULTI'
+
+    if resolved_mode == 'SINGLE':
+        directory, filenames, error = _fbp_single_plane_source_from_rows(base, rows)
+        if error:
+            operator.report({'WARNING'}, error)
+            return {'CANCELLED'}
+        if not filenames:
+            operator.report({'WARNING'}, "Single Plane requires supported media directly inside the selected folder")
+            return {'CANCELLED'}
+        result = _fbp_execute_single_plane_import(operator, context, directory, filenames)
+        if result == {'FINISHED'}:
+            operator.report(
+                {'INFO'},
+                f"Imported folder as one plane from {len(filenames)} media file(s)",
+            )
+        return result
+
+    if _fbp_prepare_pending_rows(context, base, rows) <= 0:
+        operator.report({'WARNING'}, "No Multiplane layers could be prepared")
+        return {'CANCELLED'}
+    operator.report(
+        {'INFO'},
+        f"Detected {summary['layers']} layer(s) from {summary['files']} media file(s); generating Multiplane",
+    )
+    if synchronous_generation:
+        # The normal UI stays deferred so its progress popup can draw first. The
+        # autonomous developer test needs a deterministic result before it counts
+        # created layers, so it executes the same generator body synchronously.
+        return bpy.ops.fbp.generate_multiplane(
+            "EXEC_DEFAULT", False, synchronous=True
+        )
+    return bpy.ops.fbp.generate_multiplane()
+
+
+def _fbp_resolve_dropped_paths(filepath, directory, files):
+    """Resolve FileHandler properties into unique absolute filesystem paths."""
+    base_directory = bpy.path.abspath(str(directory or ""))
+    candidates = []
+
+    for item in files or ():
+        name = str(getattr(item, "name", "") or "")
+        if not name:
+            continue
+        path = name if os.path.isabs(name) else os.path.join(base_directory, name)
+        candidates.append(path)
+
+    raw_filepath = bpy.path.abspath(str(filepath or ""))
+    if raw_filepath:
+        candidates.append(raw_filepath)
+
+    resolved = []
+    seen = set()
+    for path in candidates:
+        absolute = os.path.abspath(os.path.normpath(path))
+        key = os.path.normcase(os.path.realpath(absolute))
+        if key in seen or not os.path.exists(absolute):
+            continue
+        seen.add(key)
+        resolved.append(absolute)
+    return resolved
+
+
+def _fbp_drop_importable_files(paths):
+    """Return supported, non-technical media files from a drop payload."""
+    result = []
+    for path in paths or ():
+        if not os.path.isfile(path):
+            continue
+        if not is_supported_media_file(path):
+            continue
+        if not is_supported_video_file(path) and is_technical_map_file(path):
+            continue
+        result.append(path)
+    return result
+
+
+def _fbp_drop_rows_from_files(paths):
+    """Build Multiplane setup rows from exactly the media files that were dropped."""
+    files = _fbp_drop_importable_files(paths)
+    if not files:
+        return "", []
+
+    by_directory = {}
+    directory_order = []
+    for path in files:
+        directory = os.path.dirname(path)
+        key = os.path.normcase(directory)
+        if key not in by_directory:
+            by_directory[key] = [directory, []]
+            directory_order.append(key)
+        by_directory[key][1].append(os.path.basename(path))
+
+    directories = [by_directory[key][0] for key in directory_order]
+    try:
+        common_root = os.path.commonpath(directories)
+    except (ValueError, OSError):
+        common_root = directories[0]
+
+    multiple_directories = len(directories) > 1
+    rows = []
+    for key in directory_order:
+        directory, filenames = by_directory[key]
+        folder_name = clean_layer_name_from_path(directory)
+        grouped = fbp_group_direct_media_into_layers(filenames, folder_name)
+
+        collection_name = ""
+        if multiple_directories:
+            try:
+                relative = os.path.relpath(directory, common_root)
+            except (ValueError, OSError):
+                relative = folder_name
+            if relative not in {"", "."}:
+                parts = [
+                    clean_layer_name_from_path(part)
+                    for part in relative.split(os.sep)
+                    if part not in {"", ".", ".."}
+                ]
+                collection_name = " / ".join(part for part in parts if part)
+
+        for layer_name, layer_files, _is_sequence in grouped:
+            rows.append((
+                layer_name,
+                collection_name,
+                directory,
+                fbp_order_sequence_files(layer_files, reverse=False),
+                bool(collection_name),
+            ))
+    return common_root, rows
+
+
+def _fbp_prepare_pending_rows(context, base, rows):
+    """Populate the existing Multiplane Setup using pre-resolved rows."""
+    scene = context.scene
+    _fbp_clear_layered_import_report(scene)
+    scene.fbp_creation_mode = 'MULTI'
+    scene.fbp_parent_import_path = base
+    scene.fbp_project_path = base
+    scene.fbp_last_directory = base
+    scene.fbp_pending_planes.clear()
+
+    color_map = {}
+    for name, collection_name, directory, files, follow_collection_color in rows:
+        if not files:
+            continue
+        item = scene.fbp_pending_planes.add()
+        item.name = name
+        item.collection_name = collection_name
+        item.directory = directory
+        item.files_str = "|".join(files)
+        item.follow_collection_color = bool(follow_collection_color)
+        color_key = (
+            collection_name
+            if item.follow_collection_color and collection_name
+            else f"{os.path.normcase(os.path.abspath(directory or base))}::{name}"
+        )
+        item.fbp_color_tag = _fbp_color_tag_for_group(color_key, color_map)
+    scene.fbp_pending_open_collections = ""
+    return len(scene.fbp_pending_planes)
+
+
+def _fbp_prepare_toon_boom_pending_rows(context, base, rows, *, preserve_exposure_gaps=True):
+    """Populate Multiplane Setup from a Toon Boom Harmony image export."""
+    scene = context.scene
+    _fbp_clear_layered_import_report(scene)
+    scene.fbp_creation_mode = 'MULTI'
+    scene.fbp_parent_import_path = base
+    scene.fbp_project_path = base
+    scene.fbp_last_directory = base
+    scene.fbp_pending_planes.clear()
+
+    color_map = {}
+    total_exposure_frames = 0
+    preserved_hold_frames = 0
+    timed_sequences = 0
+    for name, collection_name, directory, files, follow_collection_color in rows:
+        ordered_files = fbp_order_sequence_files(files, reverse=False)
+        if not ordered_files:
+            continue
+        durations, frame_numbers = fbp_sequence_exposure_durations(
+            ordered_files,
+            clean_layer_name_from_path(directory),
+            preserve_gaps=bool(preserve_exposure_gaps),
+        )
+        if len(frame_numbers) == len(ordered_files):
+            timed_sequences += 1
+        if len(durations) != len(ordered_files):
+            durations = [1] * len(ordered_files)
+        total_exposure_frames += sum(durations)
+        preserved_hold_frames += sum(max(0, value - 1) for value in durations)
+
+        item = scene.fbp_pending_planes.add()
+        item.name = name
+        item.collection_name = collection_name
+        item.directory = directory
+        item.files_str = '|'.join(ordered_files)
+        item.follow_collection_color = bool(follow_collection_color)
+        item.source_preset = 'TOON_BOOM_EXPORT'
+        item.source_frame_numbers_str = '|'.join(str(value) for value in frame_numbers)
+        item.source_durations_str = '|'.join(str(value) for value in durations)
+        color_key = (
+            collection_name
+            if item.follow_collection_color and collection_name
+            else f"{os.path.normcase(os.path.abspath(directory or base))}::{name}"
+        )
+        item.fbp_color_tag = _fbp_color_tag_for_group(color_key, color_map)
+
+    scene.fbp_pending_open_collections = ''
+    _fbp_refresh_pending_tree(context)
+    return {
+        'layers': len(scene.fbp_pending_planes),
+        'timed_sequences': timed_sequences,
+        'exposure_frames': total_exposure_frames,
+        'hold_frames': preserved_hold_frames,
+    }
+
+
+class FBP_OT_ImportToonBoomExport(Operator):
+    bl_idname = 'fbp.import_toon_boom_export'
+    bl_label = 'Import Toon Boom Export'
+    bl_description = (
+        'Read a Toon Boom Harmony image export as collapsed Multiplane Setup collections, '
+        'group numbered drawings into sequences and optionally preserve numbered exposure gaps'
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filter_folder: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
+    directory: StringProperty(
+        name='Export Folder',
+        description='Root folder containing Toon Boom Harmony PNG/image sequences',
+        subtype='DIR_PATH',
+        options={'SKIP_SAVE'},
+    )
+    preflight_ready: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    preserve_exposure_gaps: BoolProperty(
+        name='Preserve Numbered Exposure Gaps',
+        description=(
+            'Use gaps between drawing numbers as hold durations: for example Drawing_0001 and '
+            'Drawing_0004 keep the first drawing visible for three timeline frames'
+        ),
+        default=True,
+        options={'SKIP_SAVE'},
+    )
+    detected_layers: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_files: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_collections: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_sequences: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_exposure_frames: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_hold_frames: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_preview: StringProperty(default='', options={'HIDDEN', 'SKIP_SAVE'})
+    detected_snapshot_token: StringProperty(default='', options={'HIDDEN', 'SKIP_SAVE'})
+    detected_gap_state: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
+    allow_very_large_import: BoolProperty(
+        name='Prepare This Very Large Export',
+        description='Confirm preparing a very large Toon Boom export in Multiplane Setup',
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+
+    def _base(self):
+        return _fbp_resolve_selected_folder('', self.directory)
+
+    def _size_flags(self):
+        warning, confirmation = _fbp_folder_import_size_flags({
+            'layers': self.detected_layers,
+            'files': self.detected_files,
+        })
+        if self.detected_exposure_frames >= _FBP_TOON_BOOM_WARNING_TIMELINE_FRAMES:
+            warning = True
+        if self.detected_exposure_frames >= _FBP_TOON_BOOM_CONFIRM_TIMELINE_FRAMES:
+            confirmation = True
+        return warning, confirmation
+
+    def _refresh(self, base, *, consume=False):
+        rows = _fbp_scan_folder_rows_cached(base, animation=True, consume=consume)
+        summary = _fbp_folder_rows_summary(rows)
+        exposure_frames = 0
+        hold_frames = 0
+        sequence_count = 0
+        for _name, _collection, directory, files, _follow in rows:
+            durations, frame_numbers = fbp_sequence_exposure_durations(
+                files,
+                clean_layer_name_from_path(directory),
+                preserve_gaps=bool(self.preserve_exposure_gaps),
+            )
+            if len(frame_numbers) == len(files) and len(files) > 1:
+                sequence_count += 1
+            exposure_frames += sum(durations)
+            hold_frames += sum(max(0, value - 1) for value in durations)
+        self.detected_layers = summary['layers']
+        self.detected_files = summary['files']
+        self.detected_collections = summary['collections']
+        self.detected_sequences = sequence_count
+        self.detected_exposure_frames = exposure_frames
+        self.detected_hold_frames = hold_frames
+        self.detected_preview = _fbp_folder_rows_preview_text(rows)
+        self.detected_snapshot_token = _fbp_folder_rows_token(base, rows)
+        self.detected_gap_state = bool(self.preserve_exposure_gaps)
+        return rows
+
+    def _open_preflight(self, context, base):
+        if not base or not os.path.isdir(base):
+            self.report({'WARNING'}, 'Choose a valid Toon Boom export folder')
+            return {'CANCELLED'}
+        self.directory = base
+        rows = self._refresh(base, consume=False)
+        if not rows:
+            _fbp_discard_folder_scan_cache(base)
+            self.report({'WARNING'}, 'No supported image sequences or media found')
+            return {'CANCELLED'}
+        self.preflight_ready = True
+        self.allow_very_large_import = False
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def invoke(self, context, event):
+        path = context.scene.fbp_last_directory or context.scene.fbp_project_path
+        if path and os.path.isdir(bpy.path.abspath(path)):
+            self.directory = path
+        self.preflight_ready = False
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def check(self, context):
+        if not self.preflight_ready:
+            return False
+        base = self._base()
+        if not base or not os.path.isdir(base):
+            return False
+        if bool(self.detected_gap_state) == bool(self.preserve_exposure_gaps):
+            return False
+        previous = (self.detected_exposure_frames, self.detected_hold_frames)
+        self._refresh(base, consume=False)
+        self.allow_very_large_import = False
+        return previous != (self.detected_exposure_frames, self.detected_hold_frames)
+
+    def draw(self, context):
+        layout = self.layout
+        base = self._base()
+        layout.label(text='Toon Boom Harmony Export', icon=fbp_icon('RENDER_ANIMATION'))
+        if base:
+            layout.label(text=os.path.basename(os.path.normpath(base)) or base, icon=fbp_icon('FILE_FOLDER'))
+        if not self.preflight_ready:
+            layout.label(text='Choose the root folder produced by your Harmony export.', icon=fbp_icon('INFO'))
+            return
+
+        summary = layout.box()
+        summary.label(
+            text=f"Detected: {self.detected_layers} layer(s) from {self.detected_files} media file(s)",
+            icon=fbp_icon('OUTLINER_COLLECTION'),
+        )
+        row = summary.row(align=False)
+        row.label(text=f"Sequences: {self.detected_sequences}")
+        row.label(text=f"Collections: {self.detected_collections}")
+        summary.label(text=f"Prepared timeline frames: {self.detected_exposure_frames}")
+        if self.detected_hold_frames:
+            summary.label(text=f"Numbered gaps preserved as {self.detected_hold_frames} hold frame(s)", icon=fbp_icon('FORWARD'))
+
+        layout.prop(self, 'preserve_exposure_gaps')
+        if self.detected_preview:
+            preview = layout.box()
+            preview.label(text='Detected Layers', icon=fbp_icon('OUTLINER_COLLECTION'))
+            for line in self.detected_preview.splitlines():
+                preview.label(text=line)
+            remaining = max(0, self.detected_layers - _FBP_FOLDER_PREVIEW_LIMIT)
+            if remaining:
+                preview.label(text=f"… and {remaining} more layer(s)", icon=fbp_icon('DOT'))
+
+        warning, confirmation = self._size_flags()
+        if warning:
+            box = layout.box()
+            box.alert = True
+            box.label(text='Large Toon Boom export', icon=fbp_icon('ERROR'))
+            box.label(text='The setup may contain many layers, linked images or timeline frames.')
+            if self.detected_exposure_frames >= _FBP_TOON_BOOM_WARNING_TIMELINE_FRAMES:
+                box.label(text=f"Prepared timeline length: {self.detected_exposure_frames} frames")
+            if confirmation:
+                box.prop(self, 'allow_very_large_import')
+
+        footer = layout.box()
+        footer.label(text='The export is sent to Multiplane Setup before generation.', icon=fbp_icon('INFO'))
+        footer.label(text='PNG alpha is preserved; unsupported and technical-map files are ignored.')
+        footer.label(text='Collections start collapsed for faster review.')
+
+    def cancel(self, context):
+        base = self._base()
+        if base:
+            _fbp_discard_folder_scan_cache(base)
+
+    def execute(self, context):
+        base = self._base()
+        if not base or not os.path.isdir(base):
+            self.report({'WARNING'}, 'Choose a valid Toon Boom export folder')
+            return {'CANCELLED'}
+        if not self.preflight_ready:
+            return self._open_preflight(context, base)
+
+        confirmed_token = self.detected_snapshot_token
+        rows = self._refresh(base, consume=True)
+        if not rows:
+            self.report({'WARNING'}, 'No supported image sequences or media found')
+            return {'CANCELLED'}
+        if confirmed_token and self.detected_snapshot_token != confirmed_token:
+            self.allow_very_large_import = False
+            self.report({'ERROR'}, 'Export sources changed after preview; review the import again')
+            return {'CANCELLED'}
+
+        _warning, confirmation = self._size_flags()
+        if confirmation and not self.allow_very_large_import:
+            self.report({'ERROR'}, 'Confirm the very large export before continuing')
+            return {'CANCELLED'}
+
+        stats = _fbp_prepare_toon_boom_pending_rows(
+            context,
+            base,
+            rows,
+            preserve_exposure_gaps=bool(self.preserve_exposure_gaps),
+        )
+        if not stats['layers']:
+            self.report({'WARNING'}, 'No Toon Boom layers could be prepared')
+            return {'CANCELLED'}
+        self.report(
+            {'INFO'},
+            f"Toon Boom: {stats['layers']} layer(s) sent to Multiplane Setup; "
+            f"{stats['hold_frames']} hold frame(s) preserved",
+        )
+        return {'FINISHED'}
+
+
+def _fbp_layered_cache_root(context, source_path):
+    """Prefer a persistent cache beside the layered source, then Blender data."""
+    extension = os.path.splitext(str(source_path or ""))[1].lower()
+    preferred = (
+        fbp_default_procreate_cache_root(source_path)
+        if extension == '.procreate'
+        else fbp_default_psd_cache_root(source_path)
+    )
+    try:
+        os.makedirs(preferred, exist_ok=True)
+        return preferred
+    except OSError:
+        pass
+    try:
+        fallback = bpy.utils.user_resource(
+            'DATAFILES', path=os.path.join('frame_by_plane', 'layered_cache'), create=True,
+        )
+    except FBP_DATA_ERRORS:
+        fallback = ""
+    if fallback:
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+    raise OSError("No writable persistent folder is available for extracted layered-document images")
+
+
+def _fbp_prepare_layered_pending_rows(context, source_path, extraction):
+    scene = context.scene
+    scene.fbp_creation_mode = 'MULTI'
+    scene.fbp_parent_import_path = source_path
+    scene.fbp_project_path = os.path.dirname(source_path)
+    scene.fbp_last_directory = os.path.dirname(source_path)
+    scene.fbp_pending_planes.clear()
+    color_map = {}
+    for record in extraction.records:
+        item = scene.fbp_pending_planes.add()
+        item.name = record.name
+        item.collection_name = record.collection_path
+        item.directory = extraction.output_directory
+        item.files_str = record.relative_file
+        item.follow_collection_color = bool(record.collection_path)
+        color_key = record.collection_path or f"{extraction.output_directory}::{record.name}"
+        item.fbp_color_tag = _fbp_color_tag_for_group(color_key, color_map)
+        item.source_from_layered = True
+        item.source_document = source_path
+        item.source_layer_path = record.source_layer_path
+        item.source_layer_kind = record.kind
+        item.source_layer_visible = bool(record.visible)
+        item.source_layer_opacity = max(0.0, min(1.0, float(record.opacity)))
+        item.source_blend_mode = record.blend_mode
+        item.source_is_clipping = bool(getattr(record, "is_clipping", False))
+        mask_relative_file = str(getattr(record, "mask_relative_file", "") or "")
+        item.source_mask_file = (
+            os.path.join(extraction.output_directory, mask_relative_file)
+            if mask_relative_file else ""
+        )
+        item.source_blend_supported = bool(getattr(record, "blend_supported", False))
+        item.source_cache_key = extraction.cache_key
+        item.source_preset = str(getattr(extraction, "source_format", "") or "LAYERED")
+        item.source_flattened_group = bool(record.flattened_group)
+        item.source_warnings = "\n".join(
+            str(value) for value in getattr(record, "warnings", ()) if str(value).strip()
+        )
+    scene.fbp_pending_open_collections = ""
+    _fbp_store_layered_import_report(scene, source_path, extraction)
+    _fbp_refresh_pending_tree(context)
+    return len(scene.fbp_pending_planes)
+
+
+class FBP_OT_LayeredImportReport(Operator):
+    bl_idname = "fbp.layered_import_report"
+    bl_label = "Layered Import Report"
+    bl_description = "Inspect transferred, flattened, skipped and unsupported properties from the current PSD, PSB or Procreate setup"
+
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, 'scene', None)
+        if scene is None:
+            return False
+        return any(
+            bool(getattr(item, 'source_from_layered', False))
+            for item in getattr(scene, 'fbp_pending_planes', ())
+        )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=650)
+
+    def draw(self, context):
+        scene = context.scene
+        layout = self.layout
+        source = str(getattr(scene, 'fbp_layered_report_source', '') or '')
+        source_name = os.path.basename(source) if source else 'Current Multiplane Setup'
+        source_format = str(getattr(scene, 'fbp_layered_report_format', '') or 'Layered')
+
+        header = layout.column(align=False)
+        header.label(text=source_name, icon=fbp_icon('RENDERLAYERS'))
+        details = header.row(align=False)
+        details.label(text=f"Format: {source_format}")
+        backend = str(getattr(scene, 'fbp_layered_report_backend', '') or '')
+        if backend:
+            details.label(text=f"Decoder: {backend}")
+        details.label(
+            text='Cache reused'
+            if bool(getattr(scene, 'fbp_layered_report_cache_reused', False))
+            else 'Fresh extraction'
+        )
+
+        layered_items = [
+            item for item in getattr(scene, 'fbp_pending_planes', ())
+            if bool(getattr(item, 'source_from_layered', False))
+        ]
+        selected_items = [item for item in layered_items if bool(getattr(item, 'is_selected', False))]
+        hidden = sum(not bool(getattr(item, 'source_layer_visible', True)) for item in layered_items)
+        reduced_opacity = sum(
+            float(getattr(item, 'source_layer_opacity', 1.0) or 0.0) < 0.999
+            for item in layered_items
+        )
+        editable_blends = sum(
+            bool(getattr(item, 'source_blend_supported', False))
+            and str(getattr(item, 'source_blend_mode', 'NORMAL') or 'NORMAL').upper()
+            not in {'NORMAL', 'PASS_THROUGH'}
+            for item in layered_items
+        )
+        flattened = sum(bool(getattr(item, 'source_flattened_group', False)) for item in layered_items)
+
+        stats = layout.box()
+        stats.label(text='Prepared Setup', icon=fbp_icon('INFO'))
+        grid = stats.grid_flow(columns=2, even_columns=True, even_rows=False, align=False)
+        grid.label(text=f"Prepared layers: {len(layered_items)}")
+        grid.label(text=f"Checked layers: {len(selected_items)}")
+        grid.label(text=f"Hidden layers: {hidden}")
+        grid.label(text=f"Reduced opacity: {reduced_opacity}")
+        grid.label(text=f"Editable blend modes: {editable_blends}")
+        grid.label(text=f"Flattened groups: {flattened}")
+
+        transfer = layout.box()
+        transfer.label(text='Transferred Source Data', icon=fbp_icon('NODE_MATERIAL'))
+        grid = transfer.grid_flow(columns=2, even_columns=True, even_rows=False, align=False)
+        grid.label(text=f"Blend modes: {int(getattr(scene, 'fbp_layered_report_transferred_blends', 0) or 0)}")
+        grid.label(text=f"Layer masks: {int(getattr(scene, 'fbp_layered_report_transferred_masks', 0) or 0)}")
+        grid.label(text=f"Clipping layers: {int(getattr(scene, 'fbp_layered_report_transferred_clipping', 0) or 0)}")
+        grid.label(text=f"Decoded layers: {int(getattr(scene, 'fbp_layered_report_decoded_layers', 0) or 0)}")
+
+        compatibility = layout.box()
+        compatibility.label(text='Original Extraction Compatibility', icon=fbp_icon('MOD_MASK'))
+        grid = compatibility.grid_flow(columns=2, even_columns=True, even_rows=False, align=False)
+        grid.label(text=f"Skipped layers: {int(getattr(scene, 'fbp_layered_report_skipped_layers', 0) or 0)}")
+        grid.label(text=f"Unsupported blends: {int(getattr(scene, 'fbp_layered_report_unsupported_blends', 0) or 0)}")
+        grid.label(text=f"Baked clipping: {int(getattr(scene, 'fbp_layered_report_merged_clipping', 0) or 0)}")
+        grid.label(text=f"Flattened source groups: {int(getattr(scene, 'fbp_layered_report_flattened_groups', 0) or 0)}")
+        if bool(getattr(scene, 'fbp_layered_report_fallback_preview', False)):
+            fallback = compatibility.row(align=False)
+            fallback.alert = True
+            fallback.label(text='The document used a flattened preview fallback.', icon=fbp_icon('ERROR'))
+
+        warnings = []
+        document_warnings = str(getattr(scene, 'fbp_layered_report_warnings', '') or '')
+        warnings.extend(line.strip() for line in document_warnings.splitlines() if line.strip())
+        for item in layered_items:
+            layer_path = str(
+                getattr(item, 'source_layer_path', '')
+                or getattr(item, 'name', '')
+                or 'Layer'
+            )
+            for line in str(getattr(item, 'source_warnings', '') or '').splitlines():
+                line = line.strip()
+                if line:
+                    warnings.append(f"{layer_path}: {line}")
+
+        if warnings:
+            warning_box = layout.box()
+            warning_box.label(text=f"Warnings ({len(warnings)})", icon=fbp_icon('ERROR'))
+            for line in warnings[:20]:
+                warning_box.label(text=line[:180])
+            if len(warnings) > 20:
+                warning_box.label(text=f"…and {len(warnings) - 20} more warning(s)")
+        else:
+            ok = layout.box()
+            ok.label(text='No compatibility warnings were recorded.', icon=fbp_icon('CHECKMARK'))
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+
+FBP_PSD_WARN_LAYERS = 256
+FBP_PSD_CONFIRM_LAYERS = 1000
+FBP_PSD_WARN_PIXEL_LAYERS = 500_000_000
+FBP_PSD_CONFIRM_PIXEL_LAYERS = 2_000_000_000
+
+
+class FBP_OT_ImportPSD(Operator):
+    bl_idname = "fbp.import_psd"
+    bl_label = "Import PSD / PSB"
+    bl_description = "Import Photoshop layers as a Frame By Plane Multiplane while preserving groups as Blender collections"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.psd;*.psb", options={'HIDDEN'})
+    preserve_groups: BoolProperty(
+        name="Preserve Groups as Collections",
+        description="Convert Photoshop groups into nested Blender collections",
+        default=True,
+    )
+    include_hidden: BoolProperty(
+        name="Import Hidden Layers",
+        description="Extract hidden PSD layers too and import them disabled in Blender",
+        default=False,
+    )
+    flatten_complex_groups: BoolProperty(
+        name="Flatten Complex Groups",
+        description="Flatten groups with group opacity or non-pass-through blending so their appearance is not silently misrepresented",
+        default=True,
+    )
+    reuse_cache: BoolProperty(
+        name="Reuse Extracted Layers",
+        description="Reuse persistent PNG layers when the PSD revision and import options have not changed",
+        default=True,
+    )
+    import_action: EnumProperty(
+        name="After Extraction",
+        description="Review extracted layers in Multiplane Setup or generate the complete rig immediately",
+        items=(
+            ('SETUP', "Send to Multiplane Setup", "Extract layers and open them for review in the N-panel"),
+            ('GENERATE', "Generate Multiplane", "Extract layers and immediately generate the Multiplane rig"),
+        ),
+        default='SETUP',
+    )
+    preflight_ready: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_width: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_height: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_bit_depth: IntProperty(default=8, min=1, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_layers: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_groups: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_hidden: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_clipping: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_masks: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_complex_groups: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_blend_modes: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    backend_version: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_large_import: BoolProperty(
+        name="I Understand — Continue Import",
+        description="Confirm extraction of a very large PSD/PSB that may require substantial time, memory and cache storage",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+
+    def _pixel_layer_estimate(self):
+        return int(self.detected_width) * int(self.detected_height) * max(1, int(self.detected_layers))
+
+    def _is_large_document(self):
+        estimate = self._pixel_layer_estimate()
+        return bool(
+            int(self.detected_layers) > FBP_PSD_WARN_LAYERS
+            or estimate > FBP_PSD_WARN_PIXEL_LAYERS
+        )
+
+    def _requires_large_confirmation(self):
+        estimate = self._pixel_layer_estimate()
+        return bool(
+            int(self.detected_layers) > FBP_PSD_CONFIRM_LAYERS
+            or estimate > FBP_PSD_CONFIRM_PIXEL_LAYERS
+        )
+
+    def _absolute_path(self):
+        return os.path.abspath(bpy.path.abspath(self.filepath or ""))
+
+    def _prepare_preflight(self):
+        path = self._absolute_path()
+        if not os.path.isfile(path) or os.path.splitext(path)[1].lower() not in {'.psd', '.psb'}:
+            raise ValueError("Choose a valid PSD or PSB document")
+        probe = fbp_probe_layered_document(path)
+        if not probe.valid:
+            raise ValueError("; ".join(probe.warnings) or "Invalid PSD/PSB document")
+        status = fbp_layered_backend_status()[0]
+        if not status.available:
+            raise RuntimeError(status.detail)
+        summary = fbp_inspect_psd_layers(path)
+        self.detected_width = int(summary['width'])
+        self.detected_height = int(summary['height'])
+        self.detected_bit_depth = int(probe.bit_depth or 8)
+        self.detected_layers = int(summary['layers'])
+        self.detected_groups = int(summary['groups'])
+        self.detected_hidden = int(summary['hidden_layers'])
+        self.detected_clipping = int(summary['clipping_layers'])
+        self.detected_masks = int(summary.get('mask_layers', 0))
+        self.detected_complex_groups = int(summary['complex_groups'])
+        self.detected_blend_modes = int(summary['non_normal_blend_layers'])
+        self.backend_version = str(summary['backend_version'])
+        self.preflight_ready = True
+
+    def invoke(self, context, event):
+        path = self._absolute_path()
+        if path and os.path.isfile(path):
+            try:
+                self._prepare_preflight()
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
+            return context.window_manager.invoke_props_dialog(self, width=560)
+        start = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        if start:
+            self.filepath = os.path.join(bpy.path.abspath(start), "")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def draw(self, context):
+        layout = self.layout
+        title = os.path.basename(self._absolute_path()) or "PSD / PSB"
+        layout.label(text=title, icon=fbp_icon('FILE_IMAGE'))
+        info = layout.box()
+        row = info.row(align=False)
+        row.label(text=f"Canvas: {self.detected_width} × {self.detected_height}")
+        row.label(text=f"Layers: {self.detected_layers}")
+        row.label(text=f"Groups: {self.detected_groups}")
+        info.label(text=f"Source depth: {self.detected_bit_depth}-bit")
+        if self.detected_bit_depth > 8:
+            depth_warning = info.row()
+            depth_warning.alert = True
+            depth_warning.label(text="Layer cache is converted to standard 8-bit RGBA PNG", icon=fbp_icon('INFO'))
+        if self.detected_hidden:
+            info.label(text=f"Hidden layers: {self.detected_hidden}", icon=fbp_icon('HIDE_ON'))
+        if self.detected_clipping:
+            info.label(text=f"{self.detected_clipping} clipping layer(s) will become editable Clipping Masks", icon=fbp_icon('MOD_MASK'))
+        if self.detected_masks:
+            info.label(text=f"{self.detected_masks} raster/vector mask(s) will become editable Imported Layer Masks", icon=fbp_icon('IMAGE_ALPHA'))
+        if self.detected_complex_groups:
+            info.label(text=f"{self.detected_complex_groups} complex group(s) can be flattened for safer rendering", icon=fbp_icon('INFO'))
+        if self.detected_blend_modes:
+            info.label(text=f"{self.detected_blend_modes} non-normal blend mode(s): principal modes will transfer to Layer Blend", icon=fbp_icon('NODE_MATERIAL'))
+        if self._is_large_document():
+            large = layout.box()
+            large.alert = True
+            large.label(text="Large layered document", icon=fbp_icon('ERROR'))
+            large.label(text=f"Estimated full-canvas workload: {self._pixel_layer_estimate():,} layer-pixels")
+            if self._requires_large_confirmation():
+                large.prop(self, "confirm_large_import")
+        layout.prop(self, "preserve_groups")
+        layout.prop(self, "include_hidden")
+        layout.prop(self, "flatten_complex_groups")
+        layout.prop(self, "reuse_cache")
+        _fbp_draw_import_alpha_crop_options(layout, context.scene)
+        layout.separator()
+        layout.prop(self, "import_action", expand=True)
+        footer = layout.row()
+        footer.enabled = False
+        footer.label(text=f"PSD decoder: psd-tools {self.backend_version}")
+
+    def execute(self, context):
+        if not self.preflight_ready:
+            try:
+                self._prepare_preflight()
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
+            return context.window_manager.invoke_props_dialog(self, width=560)
+
+        if self._requires_large_confirmation() and not self.confirm_large_import:
+            self.report({'WARNING'}, "Confirm the large PSD/PSB import before extraction")
+            return {'CANCELLED'}
+
+        path = self._absolute_path()
+        try:
+            extraction = fbp_extract_psd_layers(
+                path,
+                cache_root=_fbp_layered_cache_root(context, path),
+                preserve_groups=self.preserve_groups,
+                include_hidden=self.include_hidden,
+                flatten_complex_groups=self.flatten_complex_groups,
+                reuse_cache=self.reuse_cache,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.report({'ERROR'}, f"PSD import failed: {exc}")
+            return {'CANCELLED'}
+
+        prepared = _fbp_prepare_layered_pending_rows(context, path, extraction)
+        if prepared <= 0:
+            self.report({'WARNING'}, "The PSD did not produce any importable layers")
+            return {'CANCELLED'}
+
+        details = []
+        if extraction.flattened_groups:
+            details.append(f"{extraction.flattened_groups} flattened group(s)")
+        if extraction.transferred_clipping_layers:
+            details.append(f"{extraction.transferred_clipping_layers} clipping mask(s)")
+        if extraction.transferred_masks:
+            details.append(f"{extraction.transferred_masks} imported layer mask(s)")
+        if extraction.transferred_blend_modes:
+            details.append(f"{extraction.transferred_blend_modes} transferred blend mode(s)")
+        if extraction.unsupported_blend_modes:
+            details.append(f"{extraction.unsupported_blend_modes} unsupported blend mode(s)")
+        if extraction.skipped_layers:
+            details.append(f"{extraction.skipped_layers} skipped layer(s)")
+        if extraction.warnings:
+            details.append(f"{len(extraction.warnings)} compatibility warning(s)")
+        suffix = f"; {', '.join(details)}" if details else ""
+        cache_note = "reused cache" if extraction.reused_cache else "extracted PNG cache"
+
+        if self.import_action == 'SETUP':
+            context.scene.fbp_show_create_tools = True
+            self.report({'INFO'}, f"PSD: {prepared} layer(s) sent to Multiplane Setup ({cache_note}){suffix}")
+            return {'FINISHED'}
+
+        self.report({'INFO'}, f"PSD: generating {prepared} layer(s) ({cache_note}){suffix}")
         return bpy.ops.fbp.generate_multiplane()
+
+
+FBP_PROCREATE_WARN_LAYERS = 256
+FBP_PROCREATE_CONFIRM_LAYERS = 1000
+FBP_PROCREATE_WARN_PIXEL_LAYERS = 500_000_000
+FBP_PROCREATE_CONFIRM_PIXEL_LAYERS = 2_000_000_000
+
+
+class FBP_OT_ImportProcreate(Operator):
+    bl_idname = "fbp.import_procreate"
+    bl_label = "Import Procreate"
+    bl_description = "Import common Procreate layer tiles as a Frame By Plane Multiplane, with a safe flattened-preview fallback"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.procreate", options={'HIDDEN'})
+    preserve_groups: BoolProperty(
+        name="Preserve Groups as Collections",
+        description="Convert recognized Procreate groups into nested Blender collections",
+        default=True,
+    )
+    include_hidden: BoolProperty(
+        name="Import Hidden Layers",
+        description="Extract hidden Procreate layers too and import them disabled in Blender",
+        default=False,
+    )
+    fallback_to_preview: BoolProperty(
+        name="Fallback to Composite Preview",
+        description="Import the embedded QuickLook preview as one plane when individual layer tiles cannot be decoded",
+        default=True,
+    )
+    reuse_cache: BoolProperty(
+        name="Reuse Extracted Layers",
+        description="Reuse persistent PNG layers when the Procreate revision and import options have not changed",
+        default=True,
+    )
+    import_action: EnumProperty(
+        name="After Extraction",
+        description="Review extracted layers in Multiplane Setup or generate the complete rig immediately",
+        items=(
+            ('SETUP', "Send to Multiplane Setup", "Extract layers and open them for review in the N-panel"),
+            ('GENERATE', "Generate Multiplane", "Extract layers and immediately generate the Multiplane rig"),
+        ),
+        default='SETUP',
+    )
+    preflight_ready: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_width: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_height: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_layers: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_groups: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_hidden: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_clipping: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_masks: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_blend_modes: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_candidates: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_entries: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_has_preview: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_video: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    backend_version: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    confirm_large_import: BoolProperty(
+        name="I Understand — Continue Import",
+        description="Confirm extraction of a very large Procreate document that may require substantial time, memory and cache storage",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+
+    def _pixel_layer_estimate(self):
+        return int(self.detected_width) * int(self.detected_height) * max(1, int(self.detected_layers))
+
+    def _is_large_document(self):
+        estimate = self._pixel_layer_estimate()
+        return bool(
+            int(self.detected_layers) > FBP_PROCREATE_WARN_LAYERS
+            or estimate > FBP_PROCREATE_WARN_PIXEL_LAYERS
+        )
+
+    def _requires_large_confirmation(self):
+        estimate = self._pixel_layer_estimate()
+        return bool(
+            int(self.detected_layers) > FBP_PROCREATE_CONFIRM_LAYERS
+            or estimate > FBP_PROCREATE_CONFIRM_PIXEL_LAYERS
+        )
+
+    def _absolute_path(self):
+        return os.path.abspath(bpy.path.abspath(self.filepath or ""))
+
+    def _prepare_preflight(self):
+        path = self._absolute_path()
+        if not os.path.isfile(path) or os.path.splitext(path)[1].lower() != '.procreate':
+            raise ValueError("Choose a valid .procreate document")
+        probe = fbp_probe_layered_document(path)
+        if not probe.valid or probe.format != 'PROCREATE':
+            raise ValueError("; ".join(probe.warnings) or "Invalid Procreate document")
+        status = next(
+            (item for item in fbp_layered_backend_status() if item.format == 'PROCREATE'),
+            None,
+        )
+        if status is None or not status.available:
+            raise RuntimeError(status.detail if status is not None else "Procreate decoder is unavailable")
+        summary = fbp_inspect_procreate_layers(path)
+        self.detected_width = int(summary['width'])
+        self.detected_height = int(summary['height'])
+        self.detected_layers = int(summary['layers'])
+        self.detected_groups = int(summary['groups'])
+        self.detected_hidden = int(summary['hidden_layers'])
+        self.detected_clipping = int(summary.get('clipping_layers', 0))
+        self.detected_masks = int(summary.get('mask_layers', 0))
+        self.detected_blend_modes = int(summary['non_normal_blend_layers'])
+        self.detected_candidates = int(summary['decodable_layer_candidates'])
+        self.detected_entries = int(summary['archive_entries'])
+        self.detected_has_preview = bool(summary['has_preview'])
+        self.detected_video = bool(summary['video_enabled'])
+        self.backend_version = str(summary['backend_version'])
+        self.preflight_ready = True
+
+    def invoke(self, context, event):
+        path = self._absolute_path()
+        if path and os.path.isfile(path):
+            try:
+                self._prepare_preflight()
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
+            return context.window_manager.invoke_props_dialog(self, width=580)
+        start = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        if start:
+            self.filepath = os.path.join(bpy.path.abspath(start), "")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def draw(self, context):
+        layout = self.layout
+        title = os.path.basename(self._absolute_path()) or "Procreate"
+        layout.label(text=title, icon=fbp_icon('FILE_IMAGE'))
+        info = layout.box()
+        row = info.row(align=False)
+        row.label(text=f"Canvas: {self.detected_width} × {self.detected_height}")
+        row.label(text=f"Layers: {self.detected_layers}")
+        row.label(text=f"Groups: {self.detected_groups}")
+        info.label(text=f"Tile-backed layer candidates: {self.detected_candidates}")
+        info.label(text=f"Archive entries: {self.detected_entries:,}")
+        if self.detected_hidden:
+            info.label(text=f"Hidden layers: {self.detected_hidden}", icon=fbp_icon('HIDE_ON'))
+        if self.detected_clipping:
+            info.label(text=f"{self.detected_clipping} clipping layer(s) will become editable Clipping Masks", icon=fbp_icon('MOD_MASK'))
+        if self.detected_masks:
+            info.label(text=f"{self.detected_masks} Layer Mask(s) will become editable Imported Layer Masks", icon=fbp_icon('IMAGE_ALPHA'))
+        if self.detected_blend_modes:
+            info.label(text=f"{self.detected_blend_modes} non-normal blend mode(s): principal modes will transfer to Layer Blend", icon=fbp_icon('NODE_MATERIAL'))
+        if self.detected_video:
+            info.label(text="The Procreate time-lapse video is not imported", icon=fbp_icon('INFO'))
+        if not self.detected_candidates:
+            fallback = info.row()
+            fallback.alert = True
+            if self.detected_has_preview:
+                fallback.label(text="No decodable layer tile folders detected; the QuickLook preview can be used", icon=fbp_icon('INFO'))
+            else:
+                fallback.label(text="No decodable layer tiles or QuickLook preview detected", icon=fbp_icon('ERROR'))
+        notice = layout.box()
+        notice.label(text="Experimental proprietary-format decoder", icon=fbp_icon('INFO'))
+        notice.label(text="Review the extracted hierarchy in Multiplane Setup before generation.")
+        if self._is_large_document():
+            large = layout.box()
+            large.alert = True
+            large.label(text="Large layered document", icon=fbp_icon('ERROR'))
+            large.label(text=f"Estimated full-canvas workload: {self._pixel_layer_estimate():,} layer-pixels")
+            if self._requires_large_confirmation():
+                large.prop(self, "confirm_large_import")
+        layout.prop(self, "preserve_groups")
+        layout.prop(self, "include_hidden")
+        layout.prop(self, "fallback_to_preview")
+        layout.prop(self, "reuse_cache")
+        _fbp_draw_import_alpha_crop_options(layout, context.scene)
+        layout.separator()
+        layout.prop(self, "import_action", expand=True)
+        footer = layout.row()
+        footer.enabled = False
+        footer.label(text=f"Local Procreate decoder: {self.backend_version}")
+
+    def execute(self, context):
+        if not self.preflight_ready:
+            try:
+                self._prepare_preflight()
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
+            return context.window_manager.invoke_props_dialog(self, width=580)
+        if self._requires_large_confirmation() and not self.confirm_large_import:
+            self.report({'WARNING'}, "Confirm the large Procreate import before extraction")
+            return {'CANCELLED'}
+        path = self._absolute_path()
+        try:
+            extraction = fbp_extract_procreate_layers(
+                path,
+                cache_root=_fbp_layered_cache_root(context, path),
+                preserve_groups=self.preserve_groups,
+                include_hidden=self.include_hidden,
+                fallback_to_preview=self.fallback_to_preview,
+                reuse_cache=self.reuse_cache,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.report({'ERROR'}, f"Procreate import failed: {exc}")
+            return {'CANCELLED'}
+        prepared = _fbp_prepare_layered_pending_rows(context, path, extraction)
+        if prepared <= 0:
+            self.report({'WARNING'}, "The Procreate document did not produce any importable layers")
+            return {'CANCELLED'}
+        details = []
+        if extraction.fallback_preview:
+            details.append("flattened QuickLook fallback")
+        if extraction.transferred_clipping_layers:
+            details.append(f"{extraction.transferred_clipping_layers} clipping mask(s)")
+        if extraction.transferred_blend_modes:
+            details.append(f"{extraction.transferred_blend_modes} transferred blend mode(s)")
+        if extraction.unsupported_blend_modes:
+            details.append(f"{extraction.unsupported_blend_modes} unsupported blend mode(s)")
+        if extraction.skipped_layers:
+            details.append(f"{extraction.skipped_layers} undecoded layer(s)")
+        if extraction.warnings:
+            details.append(f"{len(extraction.warnings)} compatibility warning(s)")
+        suffix = f"; {', '.join(details)}" if details else ""
+        cache_note = "reused cache" if extraction.reused_cache else "extracted PNG cache"
+        if self.import_action == 'SETUP':
+            context.scene.fbp_show_create_tools = True
+            self.report({'INFO'}, f"Procreate: {prepared} layer(s) sent to Multiplane Setup ({cache_note}){suffix}")
+            return {'FINISHED'}
+        self.report({'INFO'}, f"Procreate: generating {prepared} layer(s) ({cache_note}){suffix}")
+        return bpy.ops.fbp.generate_multiplane()
+
+
+class FBP_FH_ProcreateDrop(bpy.types.FileHandler):
+    bl_idname = "FBP_FH_procreate_drop"
+    bl_label = "Frame By Plane Procreate"
+    bl_import_operator = FBP_OT_ImportProcreate.bl_idname
+    bl_file_extensions = ".procreate"
+
+    @classmethod
+    def poll_drop(cls, context):
+        area = getattr(context, "area", None)
+        return bool(area and area.type == 'VIEW_3D')
+
+
+class FBP_FH_LayeredDrop(bpy.types.FileHandler):
+    bl_idname = "FBP_FH_layered_drop"
+    bl_label = "Frame By Plane PSD / PSB"
+    bl_import_operator = FBP_OT_ImportPSD.bl_idname
+    bl_file_extensions = ";".join(sorted(ext for ext in FBP_LAYERED_EXTENSIONS if ext in {'.psd', '.psb'}))
+
+    @classmethod
+    def poll_drop(cls, context):
+        area = getattr(context, "area", None)
+        return bool(area and area.type == 'VIEW_3D')
+
+
+class FBP_OT_DropMedia(Operator):
+    """Native FileHandler target for media dragged from the operating system."""
+
+    bl_idname = "fbp.drop_media"
+    bl_label = "Import with Frame By Plane"
+    bl_description = "Import dropped media; one dropped file can also scan and import its complete parent folder"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filepath: StringProperty(
+        description="Primary media path supplied by Blender's drag-and-drop FileHandler",
+        subtype='FILE_PATH',
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    directory: StringProperty(
+        description="Base folder supplied by Blender's drag-and-drop FileHandler",
+        subtype='DIR_PATH',
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    files: CollectionProperty(
+        description="Media files supplied by Blender's drag-and-drop FileHandler",
+        type=bpy.types.OperatorFileListElement,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    source_mode: EnumProperty(
+        name="Source",
+        description="Choose whether to import only the dropped media or scan its entire parent folder",
+        items=(
+            ('DROPPED', "Dropped Media", "Use only the files dragged into Blender"),
+            ('FOLDER', "Parent Folder", "Scan the complete parent folder and its subfolders"),
+        ),
+        default='DROPPED',
+        options={'SKIP_SAVE'},
+        update=_fbp_reset_folder_import_confirmations,
+    )
+    import_mode: EnumProperty(
+        name="Import As",
+        description="Let Frame By Plane detect the correct structure or force one import type",
+        items=(
+            ('AUTO', "Auto", "One detected layer becomes a Single Plane; multiple layers become a Multiplane"),
+            ('SINGLE', "Single Plane", "Import only when the chosen media forms one still, one video or one numbered image sequence"),
+            ('MULTI', "Multiplane", "Create one plane per detected still, sequence, video, and folder layer"),
+        ),
+        default='AUTO',
+        options={'SKIP_SAVE'},
+        update=_fbp_reset_folder_import_confirmations,
+    )
+    confirm_large_folder: BoolProperty(
+        name="Import This Very Large Folder",
+        description=(
+            "Explicitly confirm importing the complete parent folder when it contains a very large "
+            "number of detected layers or source files"
+        ),
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+    confirm_single_root_only: BoolProperty(
+        name="Import Only the Root-Level Source",
+        description=(
+            "Confirm that Parent Folder should import only its single root-level source and "
+            "intentionally ignore all nested or additional detected layers"
+        ),
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+    detected_folder_layers: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_files: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_collections: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_sequences: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_stills: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_videos: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_direct_layers: IntProperty(default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_preview: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    detected_folder_snapshot_token: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+
+    def _resolved_paths(self):
+        return _fbp_resolve_dropped_paths(self.filepath, self.directory, self.files)
+
+    def _parent_folder(self, paths):
+        files = _fbp_drop_importable_files(paths)
+        if not files:
+            directories = [path for path in paths if os.path.isdir(path)]
+            return directories[0] if len(directories) == 1 else ""
+        parents = {os.path.normcase(os.path.dirname(path)): os.path.dirname(path) for path in files}
+        return next(iter(parents.values())) if len(parents) == 1 else ""
+
+    def _folder_rows(self, folder, *, consume=False):
+        if not folder or not os.path.isdir(folder):
+            return []
+        return _fbp_scan_folder_rows_cached(folder, animation=True, consume=consume)
+
+    def _update_folder_summary(self, rows):
+        summary = _fbp_folder_rows_summary(rows)
+        self.detected_folder_layers = summary['layers']
+        self.detected_folder_files = summary['files']
+        self.detected_folder_collections = summary['collections']
+        self.detected_folder_sequences = summary['sequences']
+        self.detected_folder_stills = summary['stills']
+        self.detected_folder_videos = summary['videos']
+        self.detected_folder_preview = _fbp_folder_rows_preview_text(rows)
+        base = self._parent_folder(self._resolved_paths())
+        self.detected_folder_snapshot_token = _fbp_folder_rows_token(base, rows)
+        self.detected_folder_direct_layers = len(_fbp_folder_rows_direct(base, rows))
+        return summary
+
+    def _folder_size_flags(self):
+        return _fbp_folder_import_size_flags({
+            'layers': self.detected_folder_layers,
+            'files': self.detected_folder_files,
+        })
+
+    def _invoke_folder_confirmation_if_required(self, context, rows):
+        self._update_folder_summary(rows)
+        _warning, confirmation = self._folder_size_flags()
+        if confirmation:
+            self.confirm_large_folder = False
+            return context.window_manager.invoke_props_dialog(self, width=480)
+        return self.execute(context)
+
+    def invoke(self, context, event):
+        paths = self._resolved_paths()
+        if not paths:
+            self.report({'WARNING'}, "No supported dropped media found")
+            return {'CANCELLED'}
+
+        directory_paths = [path for path in paths if os.path.isdir(path)]
+        if directory_paths:
+            self.source_mode = 'FOLDER'
+            return self._invoke_folder_confirmation_if_required(
+                context, self._folder_rows(directory_paths[0], consume=False)
+            )
+
+        parent = self._parent_folder(paths)
+        if bool(getattr(event, "alt", False)) and parent:
+            self.source_mode = 'FOLDER'
+            return self._invoke_folder_confirmation_if_required(
+                context, self._folder_rows(parent, consume=False)
+            )
+
+        # Multiple selected files already express the intended source clearly
+        # and can be classified without interrupting the drop workflow.
+        dropped_files = _fbp_drop_importable_files(paths)
+        if len(dropped_files) != 1 or not parent:
+            return self.execute(context)
+
+        # For one dropped file, offer the whole-folder workflow only when the
+        # parent contains additional importable media or nested layers.
+        folder_rows = self._folder_rows(parent)
+        summary = self._update_folder_summary(folder_rows)
+        if summary['files'] <= 1 and summary['layers'] <= 1:
+            return self.execute(context)
+
+        # Blender filters external drops by file extension before invoking a
+        # Python FileHandler. Ordinary folder paths therefore never reach this
+        # operator. Keep the exact dropped file as the safe default and expose
+        # Parent Folder explicitly in the confirmation dialog.
+        self.source_mode = 'DROPPED'
+        return context.window_manager.invoke_props_dialog(self, width=480)
+
+    def draw(self, context):
+        layout = self.layout
+        paths = self._resolved_paths()
+        dropped_files = _fbp_drop_importable_files(paths)
+        parent = self._parent_folder(paths)
+
+        layout.label(text="Frame By Plane Drop", icon=fbp_icon("IMPORT"))
+        layout.label(text=f"Dropped: {len(dropped_files)} supported file(s)")
+        if parent and self.detected_folder_layers:
+            summary = layout.box()
+            summary.label(
+                text=(
+                    f"Parent folder: {self.detected_folder_layers} layer(s) from "
+                    f"{self.detected_folder_files} file(s)"
+                ),
+                icon=fbp_icon("FILE_FOLDER"),
+            )
+            detail = summary.row(align=False)
+            detail.label(text=f"Stills: {self.detected_folder_stills}")
+            detail.label(text=f"Sequences: {self.detected_folder_sequences}")
+            detail.label(text=f"Videos: {self.detected_folder_videos}")
+            summary.label(text=f"Collection paths: {self.detected_folder_collections}")
+            if self.detected_folder_preview:
+                summary.separator()
+                for line in self.detected_folder_preview.splitlines():
+                    summary.label(text=line)
+                remaining = max(0, self.detected_folder_layers - _FBP_FOLDER_PREVIEW_LIMIT)
+                if remaining:
+                    summary.label(text=f"… and {remaining} more layer(s)")
+
+        layout.separator()
+        layout.prop(self, "source_mode", expand=True)
+        layout.prop(self, "import_mode", expand=True)
+
+        if self.source_mode == 'FOLDER':
+            resolved = _fbp_resolved_folder_import_mode(
+                self.import_mode, self.detected_folder_layers
+            )
+            layout.label(
+                text=("Result: Single Plane" if resolved == 'SINGLE' else "Result: Multiplane"),
+                icon=fbp_icon("IMAGE_DATA") if resolved == 'SINGLE' else fbp_icon("OUTLINER_COLLECTION"),
+            )
+            if self.import_mode == 'SINGLE' and self.detected_folder_layers > 1:
+                single_box = layout.box()
+                if self.detected_folder_direct_layers == 1:
+                    ignored = max(0, self.detected_folder_layers - 1)
+                    single_box.label(text="Single Plane will use the only root-level source.", icon=fbp_icon("INFO"))
+                    single_box.label(text=f"{ignored} nested or additional layer(s) will be ignored.")
+                    single_box.prop(self, "confirm_single_root_only")
+                else:
+                    single_box.alert = True
+                    single_box.label(text="Single Plane is unavailable for this parent folder.", icon=fbp_icon("ERROR"))
+                    single_box.label(text="Choose Auto/Multiplane, or import one logical source.")
+            warning, confirmation = self._folder_size_flags()
+            if warning:
+                box = layout.box()
+                box.alert = True
+                box.label(text="Large parent-folder import", icon=fbp_icon("ERROR"))
+                box.label(text="Generation may take time and consume substantial memory.")
+                if confirmation:
+                    box.prop(self, "confirm_large_folder")
+            layout.separator()
+            layout.label(text="The complete parent-folder hierarchy will be scanned.", icon=fbp_icon("INFO"))
+            layout.label(text="Direct folder drop is unavailable in Blender 5.1; use Import Folder instead.", icon=fbp_icon("INFO"))
+        elif len(dropped_files) == 1 and parent and self.detected_folder_files > 1:
+            layout.separator()
+            layout.label(text="Dropped Media is the safe default; choose Parent Folder explicitly when needed.", icon=fbp_icon("INFO"))
+        elif len(dropped_files) > 1:
+            layout.separator()
+            layout.label(text="Only the selected dropped files will be imported.", icon=fbp_icon("INFO"))
+
+        if self.source_mode == 'DROPPED' and self.import_mode == 'SINGLE' and len(dropped_files) > 1:
+            directories = {os.path.normcase(os.path.dirname(path)) for path in dropped_files}
+            grouped = []
+            if len(directories) == 1:
+                grouped = fbp_group_direct_media_into_layers(
+                    [os.path.basename(path) for path in dropped_files],
+                    clean_layer_name_from_path(os.path.dirname(dropped_files[0])),
+                )
+            if len(grouped) != 1:
+                box = layout.box()
+                box.alert = True
+                box.label(text="These files do not form one logical Single Plane source.", icon=fbp_icon("ERROR"))
+                box.label(text="Use Auto/Multiplane or drop one numbered sequence.")
+
+    def cancel(self, context):
+        paths = self._resolved_paths()
+        parent = self._parent_folder(paths)
+        if parent:
+            _fbp_discard_folder_scan_cache(parent)
+
+    def execute(self, context):
+        paths = self._resolved_paths()
+        dropped_files = _fbp_drop_importable_files(paths)
+        parent = self._parent_folder(paths)
+
+        if self.source_mode == 'FOLDER':
+            base = parent
+            if not base:
+                directories = [path for path in paths if os.path.isdir(path)]
+                base = directories[0] if len(directories) == 1 else ""
+            if not base or not os.path.isdir(base):
+                self.report({'WARNING'}, "The dropped media does not share one parent folder")
+                return {'CANCELLED'}
+
+            if (
+                self.import_mode == 'SINGLE'
+                and self.detected_folder_layers > 1
+                and self.detected_folder_direct_layers == 1
+                and not self.confirm_single_root_only
+            ):
+                _fbp_discard_folder_scan_cache(base)
+                self.report({'ERROR'}, "Confirm that only the root-level source should be imported")
+                return {'CANCELLED'}
+
+            confirmed_snapshot_token = self.detected_folder_snapshot_token
+            rows = self._folder_rows(base, consume=True)
+            self._update_folder_summary(rows)
+            if confirmed_snapshot_token and self.detected_folder_snapshot_token != confirmed_snapshot_token:
+                self.confirm_large_folder = False
+                self.confirm_single_root_only = False
+                self.report({'ERROR'}, "Parent-folder sources changed after preview; review the import again")
+                return {'CANCELLED'}
+            if (
+                self.import_mode == 'SINGLE'
+                and self.detected_folder_layers > 1
+                and self.detected_folder_direct_layers == 1
+                and not self.confirm_single_root_only
+            ):
+                self.report({'ERROR'}, "Folder sources changed; confirm the root-only Single Plane import again")
+                return {'CANCELLED'}
+            _warning, confirmation = self._folder_size_flags()
+            if confirmation and not self.confirm_large_folder:
+                self.report({'ERROR'}, "Confirm the very large parent-folder import before continuing")
+                return {'CANCELLED'}
+        else:
+            base, rows = _fbp_drop_rows_from_files(dropped_files)
+
+        if not rows:
+            self.report({'WARNING'}, "No supported images, sequences, or videos found")
+            return {'CANCELLED'}
+
+        if self.source_mode == 'FOLDER':
+            return _fbp_execute_detected_folder_import(
+                self,
+                context,
+                base,
+                rows,
+                import_mode=self.import_mode,
+            )
+
+        resolved_mode = _fbp_resolved_folder_import_mode(self.import_mode, len(rows))
+        if resolved_mode == 'SINGLE':
+            if len(rows) == 1:
+                _name, _collection, directory, filenames, _follow = rows[0]
+                return _fbp_execute_single_plane_import(self, context, directory, filenames)
+
+            # A forced Single Plane must still represent one real logical
+            # source. Do not reinterpret unrelated dropped stills or videos as
+            # frames of an image sequence merely because they share a folder.
+            directory, filenames, error = _fbp_single_plane_source_from_paths(dropped_files)
+            if error:
+                self.report({'WARNING'}, error)
+                return {'CANCELLED'}
+            return _fbp_execute_single_plane_import(self, context, directory, filenames)
+
+        if _fbp_prepare_pending_rows(context, base, rows) <= 0:
+            self.report({'WARNING'}, "No Multiplane layers could be prepared")
+            return {'CANCELLED'}
+        summary = _fbp_folder_rows_summary(rows)
+        self.report(
+            {'INFO'},
+            f"Detected {summary['layers']} layer(s) from {summary['files']} media file(s); generating Multiplane",
+        )
+        return bpy.ops.fbp.generate_multiplane()
+
+
+class FBP_FH_MediaDrop(bpy.types.FileHandler):
+    """Associate supported media drops in the 3D View with Frame By Plane."""
+
+    bl_idname = "FBP_FH_media_drop"
+    bl_label = "Frame By Plane"
+    bl_import_operator = FBP_OT_DropMedia.bl_idname
+    bl_file_extensions = ";".join(sorted(FBP_SUPPORTED_MEDIA_EXT))
+
+    @classmethod
+    def poll_drop(cls, context):
+        area = getattr(context, "area", None)
+        return bool(area and area.type == 'VIEW_3D')
 
 class FBP_OT_PopupSinglePlane(Operator):
     bl_idname = "fbp.popup_single_plane"
@@ -2228,6 +4737,7 @@ class FBP_OT_PopupSinglePlane(Operator):
         layout.prop(sc, "fbp_pre_orientation", text="Orientation")
         layout.prop(sc, "fbp_pre_shadeless", text="Emission Texture", icon=fbp_icon("LIGHT_SUN"))
         layout.prop(sc, "fbp_pre_interpolation", text="Filter")
+        _fbp_draw_import_alpha_crop_options(layout, sc)
 
     def execute(self, context):
         return bpy.ops.fbp.import_single_image('INVOKE_DEFAULT')
@@ -2251,6 +4761,7 @@ class FBP_OT_PopupSinglePlaneAnimation(Operator):
         layout.prop(sc, "fbp_pre_loop_mode", text="Playback")
         layout.prop(sc, "fbp_pre_interpolation", text="Filter")
         layout.prop(sc, "fbp_pre_orientation", text="Orientation")
+        _fbp_draw_import_alpha_crop_options(layout, sc)
 
     def execute(self, context):
         return bpy.ops.fbp.import_sequence('INVOKE_DEFAULT')
@@ -2280,6 +4791,7 @@ class FBP_OT_PopupMultiplane(Operator):
         layout.prop(sc, "fbp_pre_loop_mode", text="Playback")
         layout.prop(sc, "fbp_pre_interpolation", text="Filter")
         layout.prop(sc, "fbp_pre_orientation", text="Orientation")
+        _fbp_draw_import_alpha_crop_options(layout, sc)
         layout.separator()
         layout.prop(sc, "fbp_gen_camera", text="Generate Camera", icon=fbp_icon("VIEW_CAMERA"))
         layout.prop(sc, "fbp_layer_offset", text="Plane Distance")

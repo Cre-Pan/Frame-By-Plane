@@ -1,26 +1,28 @@
 import importlib
 
+from .constants import FBP_VERSION
+
 
 bl_info = {
     "name": "Frame By Plane",
     "author": "Alessandro Pannoli",
-    "version": (5, 8, 6),
+    "version": FBP_VERSION,
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar > Frame by Plane",
-    "description": "Animation workflow for images, sequences, videos, cutouts and multiplane setups.",
+    "description": "Animation workflow for images, sequences, videos, PSD/PSB/Procreate layers, Toon Boom exports, cutouts and multiplane setups.",
     "category": "Animation",
 }
 
 
 _MODULE_NAMES = (
-    "constants", "matrix_presets", "path_utils", "runtime", "storage_keys", "safe_tasks", "lifecycle", "effect_schema", "object_masks",
+    "constants", "matrix_presets", "path_utils", "alpha_crop", "runtime", "storage_keys", "safe_tasks", "lifecycle", "effect_schema", "object_masks",
     # Register Object properties before the Effects UI/handler. On unregister
     # the reverse order removes the frame handler before deleting its RNA props.
-    "properties", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "materials", "layers", "scene_sync",
-    "native_backend", "builder", "layered_import", "importer", "core", "drawing_plane", "handlers",
+    "properties", "compositor", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "effect_controls", "materials", "layers", "scene_sync", "persistence", "endurance", "render_parity",
+    "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural",
-    "operator_project", "operators", "ui_icons", "ui_layout", "ui", "viewport_pie", "tooltips",
+    "operator_project", "developer_tools", "operators", "ui_icons", "ui_layout", "ui", "viewport_pie", "tooltips",
 )
 
 _loaded_modules = []

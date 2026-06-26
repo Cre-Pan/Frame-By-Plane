@@ -52,7 +52,6 @@ _FBP_COLLECTION_UI_STATE_CACHE = {
 _COLLECTION_COLOR_TAGS = {f"COLOR_{index:02d}" for index in range(1, 9)}
 
 
-
 def sync_layer_collection(context):
     """Lazy scene-sync bridge without a module-import cycle."""
     from .scene_sync import sync_layer_collection as _sync
@@ -122,6 +121,34 @@ def fbp_layer_backend_type(rig):
         'PROCEDURAL_SOLID': 'PROCEDURAL_COLOR',
     }
     return aliases.get(explicit, explicit or 'UNKNOWN')
+
+
+_FBP_SAMPLEABLE_IMAGE_BACKENDS = frozenset({
+    'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE', 'CUTOUT',
+})
+
+
+def fbp_layer_has_sampleable_image(rig):
+    """Return whether relation effects can sample this layer's image texture."""
+    try:
+        return fbp_layer_backend_type(rig) in _FBP_SAMPLEABLE_IMAGE_BACKENDS
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_layer_clipping_active_hint(rig):
+    """Return the authoritative persistent Clipping Mask enabled state.
+
+    Import metadata and a stale source pointer must never keep a disabled layer
+    inside a clipping chain. Effect repair restores this flag for genuinely
+    active legacy nodes during normal stack synchronization.
+    """
+    if not rig or not is_fbp_layer_object(rig):
+        return False
+    try:
+        return bool(rig.get("fbp_effect_clipping_mask", False))
+    except FBP_DATA_ERRORS:
+        return False
 
 
 def fbp_layer_backend_label(rig):
@@ -881,8 +908,82 @@ def fbp_clipping_source_map(context, rigs=None, *, collections=None):
                 natural_sort_key(rig.name),
             ),
         )
+        clipping_flags = [
+            fbp_layer_clipping_active_hint(candidate)
+            for candidate in displayed
+        ]
         for index, rig in enumerate(displayed):
-            result[rig] = displayed[index + 1] if index + 1 < len(displayed) else None
+            source = displayed[index + 1] if index + 1 < len(displayed) else None
+            if clipping_flags[index]:
+                # Stacked clipping layers share the first non-clipping base
+                # below them instead of clipping to one another recursively.
+                source = None
+                for candidate_index in range(index + 1, len(displayed)):
+                    if not clipping_flags[candidate_index]:
+                        source = displayed[candidate_index]
+                        break
+            result[rig] = source if fbp_layer_has_sampleable_image(source) else None
+    return result
+
+
+def fbp_immediate_layer_below_map(context, rigs=None, *, collections=None):
+    """Return the sampleable image layer immediately below each rig.
+
+    Procedural Color, Gradient and Holdout layers currently have no image node
+    that the pairwise shader can sample. They intentionally break the automatic
+    relation instead of silently skipping to a more distant layer.
+    """
+    result = {}
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return result
+    collection_scope = tuple(collections or ()) if collections is not None else None
+    try:
+        if rigs is not None:
+            scene_rigs = tuple(rigs)
+        elif collection_scope is not None:
+            scene_rigs = tuple(
+                rig
+                for collection in collection_scope if collection is not None
+                for rig in iter_fbp_rigs_in_collection(collection, recursive=False)
+                if get_primary_fbp_collection(rig) == collection
+            )
+        else:
+            scene_rigs = tuple(iter_scene_fbp_rigs(scene))
+    except FBP_DATA_ERRORS:
+        return result
+    by_collection = {}
+    for rig in scene_rigs:
+        try:
+            if not rig or not is_fbp_layer_object(rig) or not object_in_scene(rig, scene):
+                continue
+            collection = get_primary_fbp_collection(rig)
+            if collection is not None:
+                by_collection.setdefault(int(collection.as_pointer()), []).append(rig)
+        except FBP_DATA_ERRORS:
+            continue
+    try:
+        depth_context = fbp_make_depth_context_cache(context)
+        depth_cache = {rig: fbp_layer_depth_value_from_cache(rig, depth_context) for rigs_in_collection in by_collection.values() for rig in rigs_in_collection}
+    except FBP_DATA_ERRORS:
+        depth_cache = {}
+    scene_order = {}
+    try:
+        scene_order = {int(rig.as_pointer()): index for index, rig in enumerate(scene_rigs) if rig is not None}
+    except FBP_DATA_ERRORS:
+        pass
+    for collection_rigs in by_collection.values():
+        displayed = sorted(
+            collection_rigs,
+            key=lambda rig: (
+                depth_cache.get(rig, 0.0),
+                scene_order.get(int(rig.as_pointer()), 1 << 30),
+                natural_sort_key(rig.name),
+            ),
+        )
+        for index, rig in enumerate(displayed):
+            source = displayed[index + 1] if index + 1 < len(displayed) else None
+            result[rig] = source if fbp_layer_has_sampleable_image(source) else None
     return result
 
 def iter_fbp_rigs_in_collection(collection, recursive=True):
@@ -911,18 +1012,6 @@ def get_child_fbp_collections(collection):
         return sort_collections_for_layer_view(bpy.context, [child for child in collection.children if collection_has_fbp_content(child, True)])
     except Exception:
         return []
-
-
-def get_top_fbp_collections(context):
-    scene_coll = context.scene.collection
-    roots = []
-    try:
-        for coll in scene_coll.children:
-            if collection_has_fbp_content(coll, True):
-                roots.append(coll)
-    except FBP_DATA_IO_ERRORS:
-        pass
-    return sort_collections_for_layer_view(context, roots)
 
 
 def get_layer_item_for_rig(context, rig):
@@ -1519,6 +1608,26 @@ def fbp_resolve_rig_from_any_object(obj, context=None):
         if getattr(obj, "is_fbp_control", False):
             return obj
         try:
+            from .effect_controls import effect_control_owner, is_effect_control
+            if is_effect_control(obj):
+                owner = effect_control_owner(obj)
+                if owner and getattr(owner, "is_fbp_control", False):
+                    return owner
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        if str(getattr(obj, "type", "") or "") == "LATTICE":
+            # Parenting is the native ownership contract and survives rig
+            # renames. The readable name tag is only a repair fallback. Older
+            # builds resolved the tag first, so a stale name could make the
+            # Effects panel disappear even while the cage was correctly parented.
+            owner = getattr(obj, "parent", None)
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
+            owner_name = str(obj.get("fbp_lattice_owner", "") or "")
+            owner = bpy.data.objects.get(owner_name) if owner_name else None
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
+        try:
             from .object_masks import find_object_mask_owner, is_object_mask_helper
             if is_object_mask_helper(obj):
                 plane = getattr(obj, "parent", None)
@@ -1542,7 +1651,6 @@ def fbp_resolve_rig_from_any_object(obj, context=None):
         return rig if rig and getattr(rig, "is_fbp_control", False) else None
     except ReferenceError:
         return None
-
 
 
 def get_selected_fbp_roots(context):
@@ -1639,10 +1747,17 @@ def update_rig_visibility(rig, layer_item=None, context=None):
         if bool(getattr(plane, "hide_render", False)) != hidden:
             plane.hide_render = hidden
         try:
-            from .geometry_nodes import fbp_apply_matte_source_visibility
-            fbp_apply_matte_source_visibility(
-                rig, scene=getattr(context, "scene", None) if context else None, restore_normal=False
+            from .geometry_nodes import (
+                fbp_apply_matte_source_visibility,
+                fbp_schedule_clipping_mask_sync,
             )
+            target_scene = getattr(context, "scene", None) if context else None
+            fbp_apply_matte_source_visibility(
+                rig, scene=target_scene, restore_normal=False
+            )
+            # Clipping Mask follows the visible alpha of its base layer.  The
+            # scheduler coalesces collection/solo operations into one repair.
+            fbp_schedule_clipping_mask_sync(target_scene)
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
         return True

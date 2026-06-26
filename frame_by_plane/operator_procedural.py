@@ -31,7 +31,6 @@ from .operator_common import (
 )
 
 
-
 class FBP_OT_CreateColorPlane(Operator):
     bl_idname = "fbp.create_color_plane"
     bl_label = "Create Color Plane"

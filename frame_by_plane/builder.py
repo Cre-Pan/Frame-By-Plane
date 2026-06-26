@@ -175,6 +175,60 @@ def fbp_native_aspect_half_extents(rig):
         return material_aspect[0], material_aspect[1]
     return 1.0, 1.0
 
+def fbp_plane_reference_bounds(rig):
+    """Return source, cropped and extended plane bounds in local XY space.
+
+    Crop is expressed in the add-on's historical 0..2 range.  The helper uses
+    the same one-pixel safety clamp as ``set_plane_mesh_extension`` so viewport
+    controls, Crop/Extend guides and the rendered mesh agree exactly.
+    """
+    base_x, base_y = fbp_native_aspect_half_extents(rig)
+    try:
+        left = max(0.0, float(getattr(rig, "fbp_extend_left", 0.0)))
+        right = max(0.0, float(getattr(rig, "fbp_extend_right", 0.0)))
+        bottom = max(0.0, float(getattr(rig, "fbp_extend_bottom", 0.0)))
+        top = max(0.0, float(getattr(rig, "fbp_extend_top", 0.0)))
+        crop_left = max(0.0, min(1.999999, float(getattr(rig, "fbp_crop_left", 0.0))))
+        crop_right = max(0.0, min(1.999999, float(getattr(rig, "fbp_crop_right", 0.0))))
+        crop_bottom = max(0.0, min(1.999999, float(getattr(rig, "fbp_crop_bottom", 0.0))))
+        crop_top = max(0.0, min(1.999999, float(getattr(rig, "fbp_crop_top", 0.0))))
+        source_width = int(rig.get("fbp_source_width", 0) or 0)
+        source_height = int(rig.get("fbp_source_height", 0) or 0)
+    except FBP_DATA_IO_ERRORS:
+        left = right = bottom = top = 0.0
+        crop_left = crop_right = crop_bottom = crop_top = 0.0
+        source_width = source_height = 0
+
+    max_horizontal_crop = (2.0 - (2.0 / max(1, source_width))) if source_width > 0 else 1.999998
+    max_vertical_crop = (2.0 - (2.0 / max(1, source_height))) if source_height > 0 else 1.999998
+    max_horizontal_crop = max(0.0, min(1.999998, max_horizontal_crop))
+    max_vertical_crop = max(0.0, min(1.999998, max_vertical_crop))
+    if crop_left + crop_right > max_horizontal_crop:
+        factor = max_horizontal_crop / max(crop_left + crop_right, 1.0e-12)
+        crop_left *= factor
+        crop_right *= factor
+    if crop_bottom + crop_top > max_vertical_crop:
+        factor = max_vertical_crop / max(crop_bottom + crop_top, 1.0e-12)
+        crop_bottom *= factor
+        crop_top *= factor
+
+    x0 = -base_x + crop_left * base_x
+    x1 = base_x - crop_right * base_x
+    y0 = -base_y + crop_bottom * base_y
+    y1 = base_y - crop_top * base_y
+    source = (-base_x, base_x, -base_y, base_y)
+    cropped = (x0, x1, y0, y1)
+    extended = (
+        x0 - left * base_x, x1 + right * base_x,
+        y0 - bottom * base_y, y1 + top * base_y,
+    )
+    uv = (
+        crop_left * 0.5, 1.0 - crop_right * 0.5,
+        crop_bottom * 0.5, 1.0 - crop_top * 0.5,
+    )
+    return source, cropped, extended, uv
+
+
 def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=0.05):
     """Keep the wire rig rectangle aligned with the cropped/extended plane bounds."""
     if not rig or not getattr(rig, 'data', None):
@@ -249,6 +303,11 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
     plane_mesh = fbp_create_rect_mesh("Mesh_Plane_" + (name or "Color_Plane"), size=2.0, with_face=True)
     plane = fbp_create_mesh_object("Plane_" + rig.name, plane_mesh, context, location=location, target_collection=target_collection)
     plane.is_fbp_plane = True
+    try:
+        if getattr(plane, "data", None) is not None:
+            plane.data["fbp_plane_mesh"] = True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     plane["fbp_parent_rig_name"] = rig.name
     plane['fbp_backend_type'] = rig.get('fbp_backend_type', 'PROCEDURAL_COLOR')
     plane.parent = rig
@@ -309,16 +368,31 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
     right = max(0.0, float(right))
     bottom = max(0.0, float(bottom))
     top = max(0.0, float(top))
-    crop_left = max(0.0, min(1.95, float(crop_left)))
-    crop_right = max(0.0, min(1.95, float(crop_right)))
-    crop_bottom = max(0.0, min(1.95, float(crop_bottom)))
-    crop_top = max(0.0, min(1.95, float(crop_top)))
-    if crop_left + crop_right > 1.98:
-        scale = 1.98 / (crop_left + crop_right)
+    crop_left = max(0.0, min(1.999999, float(crop_left)))
+    crop_right = max(0.0, min(1.999999, float(crop_right)))
+    crop_bottom = max(0.0, min(1.999999, float(crop_bottom)))
+    crop_top = max(0.0, min(1.999999, float(crop_top)))
+
+    # Keep at least one source pixel on each axis when dimensions are known.
+    # The older fixed 1.98 limit was exact only for 100-pixel images and left
+    # large transparent borders around tiny artwork on high-resolution canvases.
+    try:
+        raw_source_width = int(rig.get("fbp_source_width", 0) or 0)
+        raw_source_height = int(rig.get("fbp_source_height", 0) or 0)
+        source_width = max(1, raw_source_width) if raw_source_width > 0 else 0
+        source_height = max(1, raw_source_height) if raw_source_height > 0 else 0
+    except FBP_DATA_IO_ERRORS:
+        source_width = source_height = 0
+    max_horizontal_crop = (2.0 - (2.0 / source_width)) if source_width > 0 else 1.999998
+    max_vertical_crop = (2.0 - (2.0 / source_height)) if source_height > 0 else 1.999998
+    max_horizontal_crop = max(0.0, min(1.999998, max_horizontal_crop))
+    max_vertical_crop = max(0.0, min(1.999998, max_vertical_crop))
+    if crop_left + crop_right > max_horizontal_crop:
+        scale = max_horizontal_crop / max(crop_left + crop_right, 1e-12)
         crop_left *= scale
         crop_right *= scale
-    if crop_bottom + crop_top > 1.98:
-        scale = 1.98 / (crop_bottom + crop_top)
+    if crop_bottom + crop_top > max_vertical_crop:
+        scale = max_vertical_crop / max(crop_bottom + crop_top, 1e-12)
         crop_bottom *= scale
         crop_top *= scale
     mode = (mode or 'EDGE').upper()
@@ -342,11 +416,13 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
     x1 = base_x - (crop_right * base_x)
     y0 = -base_y + (crop_bottom * base_y)
     y1 = base_y - (crop_top * base_y)
-    simple_quad = (left <= 1e-8 and right <= 1e-8 and bottom <= 1e-8 and top <= 1e-8 and crop_left <= 1e-8 and crop_right <= 1e-8 and crop_bottom <= 1e-8 and crop_top <= 1e-8)
+    no_extension = left <= 1e-8 and right <= 1e-8 and bottom <= 1e-8 and top <= 1e-8
 
     mesh.clear_geometry()
-    if simple_quad:
-        verts = [(-base_x, -base_y, 0.0), (base_x, -base_y, 0.0), (base_x, base_y, 0.0), (-base_x, base_y, 0.0)]
+    if no_extension:
+        # Crop-only planes need one real quad. The previous 4x4 grid produced
+        # eight zero-area border faces whenever extension values were zero.
+        verts = [(x0, y0, 0.0), (x1, y0, 0.0), (x1, y1, 0.0), (x0, y1, 0.0)]
         faces = [(0, 1, 2, 3)]
         mesh.from_pydata(verts, [], faces)
         mesh.update()
@@ -358,12 +434,16 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
 
         uv_layer = mesh.uv_layers.new(name="UVMap") if not mesh.uv_layers else mesh.uv_layers.active
         if mesh.polygons:
-            coords = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+            u0 = crop_left / 2.0
+            u1 = 1.0 - (crop_right / 2.0)
+            v0 = crop_bottom / 2.0
+            v1 = 1.0 - (crop_top / 2.0)
+            coords = ((u0, v0), (u1, v0), (u1, v1), (u0, v1))
             for loop_index, uv in zip(mesh.polygons[0].loop_indices, coords, strict=True):
                 uv_layer.data[loop_index].uv = uv
             mesh.polygons[0].material_index = current_material_index
 
-        fbp_update_rig_frame_mesh_to_bounds(rig, -base_x, base_x, -base_y, base_y)
+        fbp_update_rig_frame_mesh_to_bounds(rig, x0, x1, y0, y1)
     else:
         xs = [x0 - (left * base_x), x0, x1, x1 + (right * base_x)]
         ys = [y0 - (bottom * base_y), y0, y1, y1 + (top * base_y)]
@@ -393,7 +473,7 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
         u1 = 1.0 - (crop_right / 2.0)
         v0 = crop_bottom / 2.0
         v1 = 1.0 - (crop_top / 2.0)
-        if mode == 'REPEAT':
+        if mode in {'REPEAT', 'TRANSPARENT'}:
             ux = [u0 - left / 2.0, u0, u1, u1 + right / 2.0]
             uy = [v0 - bottom / 2.0, v0, v1, v1 + top / 2.0]
         else:
@@ -503,7 +583,11 @@ def apply_fit_to_camera(context, rig, cam):
     rig.scale = (base_x * factor, base_y * factor, base_z * factor)
 
 # SECTION 06 - Image Sequence Rig Builder #
-def build_fbp_rig(context, rig_name, directory, files_list, location, color_tag='COLOR_01', target_collection=None, color_variant_index=0, follow_collection_color=True):
+def build_fbp_rig(
+    context, rig_name, directory, files_list, location, color_tag='COLOR_01',
+    target_collection=None, color_variant_index=0, follow_collection_color=True,
+    item_durations=None, source_frame_numbers=None, source_preset="",
+):
     """Create an FBP image layer using Blender's native Image Sequence backend only."""
     files_list = [str(f) for f in (files_list or []) if f]
     from .native_backend import build_native_fbp_rig
@@ -514,7 +598,16 @@ def build_fbp_rig(context, rig_name, directory, files_list, location, color_tag=
             target_collection=target_collection,
             color_variant_index=color_variant_index,
             follow_collection_color=follow_collection_color,
+            item_durations=item_durations,
         )
+        if source_preset:
+            try:
+                rig["fbp_import_preset"] = str(source_preset)
+                rig["fbp_source_frame_numbers"] = "|".join(
+                    str(int(value)) for value in (source_frame_numbers or ())
+                )
+            except FBP_DATA_IO_ERRORS:
+                pass
         if len(files_list) > 1:
             natural_order = sorted(files_list, key=natural_sort_key)
             is_reversed = files_list == list(reversed(natural_order)) and files_list != natural_order

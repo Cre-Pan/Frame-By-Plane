@@ -203,6 +203,58 @@ def fbp_order_sequence_files(files, *, reverse=False):
     return ordered
 
 
+def fbp_sequence_frame_numbers(files, folder_name=""):
+    """Return ordered numeric drawing/frame indices for one logical sequence.
+
+    The result is intentionally strict: every file must resolve to the same
+    sequence prefix and extension, numbers must be unique, and their order must
+    be strictly increasing. This makes the helper safe for animation exposure
+    presets such as Toon Boom Harmony exports without changing generic imports.
+    """
+    ordered = fbp_order_sequence_files(files, reverse=False)
+    if len(ordered) < 2:
+        return []
+
+    expected_key = None
+    numbers = []
+    for filename in ordered:
+        parsed = fbp_sequence_key_from_filename(filename, folder_name)
+        if not parsed:
+            return []
+        prefix, frame_index = parsed
+        key = _sequence_group_key(prefix, os.path.splitext(filename)[1].lower())
+        if expected_key is None:
+            expected_key = key
+        elif key != expected_key:
+            return []
+        numbers.append(int(frame_index))
+
+    if len(set(numbers)) != len(numbers):
+        return []
+    if any(current >= following for current, following in zip(numbers, numbers[1:], strict=False)):
+        return []
+    return numbers
+
+
+def fbp_sequence_exposure_durations(files, folder_name="", *, preserve_gaps=True):
+    """Return ``(durations, frame_numbers)`` for an exported drawing sequence.
+
+    When ``preserve_gaps`` is enabled, a missing numbered frame becomes a hold
+    on the previous drawing. The final drawing receives one frame because the
+    source filename alone cannot describe its out point. Non-sequences safely
+    fall back to one timeline frame per source file.
+    """
+    ordered = fbp_order_sequence_files(files, reverse=False)
+    if not ordered:
+        return [], []
+    numbers = fbp_sequence_frame_numbers(ordered, folder_name)
+    if not preserve_gaps or len(numbers) != len(ordered):
+        return [1] * len(ordered), numbers
+    durations = [max(1, following - current) for current, following in zip(numbers, numbers[1:], strict=False)]
+    durations.append(1)
+    return durations, numbers
+
+
 def fbp_expand_sequences_as_individual_planes(
     grouped_layers,
     enabled=False,
@@ -249,7 +301,7 @@ def fbp_should_flatten_leaf_folder(grouped_layers, child_dirs):
 
 
 # SECTION 01 - File system / Project scan #
-def _fbp_scan_project_tree(root):
+def _fbp_scan_project_tree(root, *, scanned_directories=None):
     """Return a one-pass importable directory snapshot.
 
     The previous project scanner repeatedly called ``os.listdir`` and recursively
@@ -273,6 +325,11 @@ def _fbp_scan_project_tree(root):
 
         media = []
         children = []
+        # Record every attempted directory, not only successfully readable ones.
+        # This lets the runtime cache notice when a previously inaccessible
+        # branch later becomes readable without the parent hierarchy changing.
+        if scanned_directories is not None:
+            scanned_directories.append(os.path.abspath(path))
         try:
             entries = list(os.scandir(path))
         except (OSError, PermissionError):
@@ -312,7 +369,13 @@ def _fbp_scan_project_tree(root):
     return scan(root)
 
 
-def fbp_scan_project_layers_for_setup(root, *, separate_sequences=False, reverse_sequences=False):
+def fbp_scan_project_layers_for_setup(
+    root,
+    *,
+    separate_sequences=False,
+    reverse_sequences=False,
+    scanned_directories=None,
+):
     """Return pending setup rows from a project folder.
 
     A leaf filesystem folder containing exactly one image sequence or one static
@@ -330,7 +393,7 @@ def fbp_scan_project_layers_for_setup(root, *, separate_sequences=False, reverse
     if not root or not os.path.isdir(root):
         return rows
 
-    tree = _fbp_scan_project_tree(root)
+    tree = _fbp_scan_project_tree(root, scanned_directories=scanned_directories)
     if not tree:
         return rows
 
@@ -849,4 +912,3 @@ def fbp_build_project_folder(
         )
 
     return generated
-

@@ -26,8 +26,6 @@ from .operator_common import (
 )
 
 
-
-
 _FBP_INVALID_RENDER_PREFIX_RE = re.compile(r'[<>:"/\\|?*\x00-\x1F]+')
 
 

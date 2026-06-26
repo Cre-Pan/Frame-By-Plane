@@ -1,11 +1,30 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-*.zip
-*.rar
+.pytest_cache/
+.mypy_cache/
+
+# Blender backups and temporary files
 *.blend1
 *.blend2
-.DS_Store
-Thumbs.db
+*.blend@
+*.bak
+*.tmp
+*.log
+
+# Frame By Plane generated data
+_fbp_update_backups/
+
+# Build output
+/dist/
+/release/
+*.zip
+*.sha256
+SHA256SUMS*.txt
+
+# Editors and operating systems
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db

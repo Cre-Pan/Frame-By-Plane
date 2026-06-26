@@ -11,10 +11,17 @@ from pathlib import Path
 from bpy.props import (
     BoolProperty,
     IntProperty,
+    StringProperty,
 )
 from bpy.types import Operator
 
 from .runtime import FBP_DATA_ERRORS, fbp_set_rna_property_silent
+from .diagnostics import (
+    diagnostic_report_messages,
+    last_diagnostic_report,
+    write_diagnostic_report,
+)
+from .render_parity import fbp_render_parity_status
 from .layers import (
     collect_project_image_paths,
     collection_has_fbp_content,
@@ -45,11 +52,21 @@ from .native_backend import (
 from .geometry_nodes import (
     fbp_add_effect,
     fbp_effect_ids_for_rig,
+    fbp_effect_runtime_diagnostics,
     fbp_effect_instance_id_for_rig,
     fbp_find_effect_modifier,
+    fbp_lattice_contract_report,
+    fbp_local_effect_mask_contract_report,
+    fbp_effect_render_guard_pre,
+    fbp_effect_render_guard_post,
+    fbp_effect_render_visible_state,
+    fbp_effect_order_warning,
+    fbp_sort_effect_stacks_transactional,
     fbp_refresh_effect_instance_ids,
     fbp_reapply_all_effects,
     fbp_sync_scene_camera_bindings,
+    fbp_sync_clipping_masks,
+    fbp_set_effect_mask_target,
     fbp_sync_effect_items,
     fbp_update_geometry_effect,
     fbp_update_shader_effect,
@@ -57,8 +74,12 @@ from .geometry_nodes import (
 from .effects_registry import (
     FBP_EFFECT_REGISTRY,
     FBP_EFFECT_REGISTRY_ISSUES,
+    FBP_BASE_EFFECT_MENU_ORDER,
+    FBP_SHADER_STAGE_ORDER,
+    FBP_3D_EFFECT_MENU_ORDER,
     fbp_effect_definition,
     fbp_effect_supported_for_rig,
+    fbp_normalize_effect_id,
 )
 from .operator_common import (
     _fbp_active_pending_index_and_collection,
@@ -66,9 +87,13 @@ from .operator_common import (
     _fbp_refresh_pending_tree,
     _fbp_select_pending_index,
 )
-from .object_masks import audit_object_masks, sync_owner_object_mask_runtime
+from .object_masks import (
+    audit_object_masks,
+    is_object_mask_helper,
+    sync_owner_object_mask_runtime,
+)
+from .effect_controls import audit_effect_controls
 from .lifecycle import lifecycle_audit
-
 
 
 class FBP_OT_RemovePendingTreeSelection(Operator):
@@ -130,7 +155,7 @@ class FBP_OT_ProjectHealthCheck(Operator):
         missing = missing_project_images()
         empty_fbp_colls = [coll.name for coll in fbp_colls if not any(True for _ in iter_fbp_rigs_in_collection(coll, True))]
         lines = [
-            "Frame by Plane - Project Health",
+            "Frame By Plane — Project Health",
             "================================",
             f"Layers: {len(rigs)}",
             f"Collections: {len(fbp_colls)}",
@@ -146,11 +171,693 @@ class FBP_OT_ProjectHealthCheck(Operator):
                 lines.append(f"...and {len(missing) - 200} more")
         else:
             lines.append("No missing files found.")
-        txt = bpy.data.texts.get("FBP_Project_Health") or bpy.data.texts.new("FBP_Project_Health")
-        txt.clear()
-        txt.write("\n".join(lines))
+        summary = f"Project Health · {len(rigs)} layers · {len(missing)} missing image(s)"
+        write_diagnostic_report(
+            context.scene, "FBP_Project_Health", lines,
+            summary=summary, status="PASS" if not missing else "WARNING",
+        )
         level = {'INFO'} if not missing else {'WARNING'}
-        self.report(level, f"Health: {len(rigs)} layers, {len(missing)} missing image(s)")
+        self.report(level, summary)
+        return {'FINISHED'}
+
+
+def _fbp_effect_stack_contract_audit(rigs, *, repair=False):
+    """Validate effect compatibility, stored stage order and recommended order.
+
+    This audit deliberately treats user-defined ordering as a warning rather
+    than corruption. Unknown tagged effects and effects that no longer support
+    their owner layer are structural issues because they cannot be rebuilt
+    deterministically by the current registry.
+    """
+    rigs = tuple(rig for rig in tuple(rigs or ()) if rig is not None)
+    stats = {
+        "effect_stack_rigs": len(rigs),
+        "effect_stack_unsupported": 0,
+        "effect_stack_unknown_tags": 0,
+        "effect_stack_order_warnings": 0,
+        "effect_stack_metadata_warnings": 0,
+        "effect_stack_repairs": 0,
+    }
+    issues = []
+    warnings = []
+    recommended = (
+        list(FBP_BASE_EFFECT_MENU_ORDER)
+        + list(FBP_SHADER_STAGE_ORDER.get("UV", ()))
+        + list(FBP_SHADER_STAGE_ORDER.get("COLOR", ()))
+        + list(FBP_SHADER_STAGE_ORDER.get("MASK", ()))
+        + list(FBP_3D_EFFECT_MENU_ORDER)
+    )
+
+    if repair:
+        out_of_order = []
+        for rig in rigs:
+            try:
+                if any(
+                    fbp_effect_order_warning(rig, effect_id)
+                    for effect_id in fbp_effect_ids_for_rig(rig)
+                ):
+                    out_of_order.append(rig)
+            except FBP_DATA_ERRORS:
+                continue
+        if out_of_order and fbp_sort_effect_stacks_transactional(
+            out_of_order, recommended
+        ):
+            stats["effect_stack_repairs"] += len(out_of_order)
+
+    for rig in rigs:
+        rig_name = str(getattr(rig, "name", "<unnamed rig>") or "<unnamed rig>")
+        try:
+            effect_ids = tuple(fbp_effect_ids_for_rig(rig))
+        except FBP_DATA_ERRORS as exc:
+            issues.append(f"{rig_name}: effect stack discovery failed: {exc}")
+            continue
+
+        for effect_id in effect_ids:
+            if not fbp_effect_supported_for_rig(rig, effect_id):
+                stats["effect_stack_unsupported"] += 1
+                issues.append(
+                    f"{rig_name}: {effect_id} is active but incompatible with this layer type"
+                )
+            warning = fbp_effect_order_warning(rig, effect_id)
+            if warning:
+                stats["effect_stack_order_warnings"] += 1
+                warnings.append(f"{rig_name}: {effect_id}: {warning}")
+
+        plane = getattr(rig, "fbp_plane_target", None)
+        if plane is not None:
+            try:
+                for modifier in tuple(getattr(plane, "modifiers", ()) or ()):
+                    if str(getattr(modifier, "type", "") or "") != "NODES":
+                        continue
+                    raw = str(modifier.get("fbp_effect_id", "") or "")
+                    group = getattr(modifier, "node_group", None)
+                    if not raw and group is not None:
+                        raw = str(group.get("fbp_effect_id", "") or "")
+                    if not raw:
+                        continue
+                    normalized = fbp_normalize_effect_id(raw)
+                    definition = fbp_effect_definition(normalized)
+                    if not definition or definition.get("kind") != "GEOMETRY":
+                        stats["effect_stack_unknown_tags"] += 1
+                        issues.append(
+                            f"{rig_name}: modifier {modifier.name!r} carries unknown effect tag {raw!r}"
+                        )
+            except FBP_DATA_ERRORS:
+                warnings.append(f"{rig_name}: geometry modifier tags could not be inspected")
+                stats["effect_stack_metadata_warnings"] += 1
+
+        for material in tuple(
+            mat for mat in tuple(getattr(getattr(plane, "data", None), "materials", ()) or ())
+            if mat is not None
+        ):
+            active_by_stage = {stage: [] for stage in FBP_SHADER_STAGE_ORDER}
+            try:
+                node_tree = getattr(material, "node_tree", None)
+                for node in tuple(getattr(node_tree, "nodes", ()) or ()):
+                    raw = str(node.get("fbp_shader_effect_id", "") or "")
+                    if not raw:
+                        continue
+                    normalized = fbp_normalize_effect_id(raw)
+                    definition = fbp_effect_definition(normalized)
+                    if not definition or definition.get("kind") != "SHADER":
+                        stats["effect_stack_unknown_tags"] += 1
+                        issues.append(
+                            f"{rig_name}: material {material.name!r} contains unknown shader effect tag {raw!r}"
+                        )
+                        continue
+                    stage = str(definition.get("stage", "") or "")
+                    if stage in active_by_stage and normalized not in active_by_stage[stage]:
+                        active_by_stage[stage].append(normalized)
+            except FBP_DATA_ERRORS:
+                warnings.append(f"{rig_name}: material {material.name!r} effect nodes could not be inspected")
+                stats["effect_stack_metadata_warnings"] += 1
+                continue
+
+            for stage, active_ids in active_by_stage.items():
+                key = f"fbp_shader_effect_order_{stage.lower()}"
+                try:
+                    raw_order = str(material.get(key, "") or "")
+                except FBP_DATA_ERRORS:
+                    raw_order = ""
+                tokens = [token for token in raw_order.split("|") if token]
+                normalized_tokens = []
+                stale_tokens = []
+                for token in tokens:
+                    normalized = fbp_normalize_effect_id(token)
+                    definition = fbp_effect_definition(normalized)
+                    if (
+                        definition.get("kind") == "SHADER"
+                        and str(definition.get("stage", "") or "") == stage
+                        and normalized in active_ids
+                    ):
+                        if normalized not in normalized_tokens:
+                            normalized_tokens.append(normalized)
+                    else:
+                        stale_tokens.append(token)
+                normalized_tokens.extend(
+                    effect_id for effect_id in active_ids
+                    if effect_id not in normalized_tokens
+                )
+                desired = "|".join(normalized_tokens)
+                if stale_tokens or desired != raw_order:
+                    stats["effect_stack_metadata_warnings"] += 1
+                    warnings.append(
+                        f"{rig_name}: {material.name}: {stage} stage order metadata is stale"
+                    )
+                    if repair:
+                        try:
+                            material[key] = desired
+                            stats["effect_stack_repairs"] += 1
+                        except FBP_DATA_ERRORS:
+                            pass
+
+        # Keep the owner-level stage mirror in sync with the evaluated material
+        # order. This metadata is used after Undo or file load before the UI list
+        # has been rebuilt.
+        if repair:
+            for stage in FBP_SHADER_STAGE_ORDER:
+                desired_ids = [
+                    effect_id for effect_id in effect_ids
+                    if (
+                        fbp_effect_definition(effect_id).get("kind") == "SHADER"
+                        and fbp_effect_definition(effect_id).get("stage") == stage
+                    )
+                ]
+                key = f"fbp_shader_effect_order_{stage.lower()}"
+                desired = "|".join(desired_ids)
+                try:
+                    if str(rig.get(key, "") or "") != desired:
+                        rig[key] = desired
+                        stats["effect_stack_repairs"] += 1
+                except FBP_DATA_ERRORS:
+                    pass
+
+    return {
+        "stats": stats,
+        "issues": tuple(issues),
+        "warnings": tuple(warnings),
+        "repaired": int(stats["effect_stack_repairs"]),
+    }
+
+
+def _fbp_rna_identity(value):
+    if value is None:
+        return None
+    try:
+        pointer = int(value.as_pointer())
+    except FBP_DATA_ERRORS:
+        pointer = 0
+    if pointer:
+        return pointer
+    try:
+        return (str(getattr(value, "name_full", getattr(value, "name", "")) or ""), id(value))
+    except FBP_DATA_ERRORS:
+        return id(value)
+
+
+def _fbp_mask_interaction_contract_audit(rigs, scene, *, repair=False, context=None, _verification=False):
+    """Validate every mask route as one interaction matrix.
+
+    The existing Shape Mask audit remains the authority for editable helper
+    meshes and private SDF images. This layer adds the relationships that only
+    become visible when mask systems interact: source-layer pointers, clipping
+    cycles, imported raster files and per-effect receiver routing.
+    """
+    rig_list = []
+    seen = set()
+    for rig in tuple(rigs or ()):
+        key = _fbp_rna_identity(rig)
+        if rig is None or key in seen:
+            continue
+        seen.add(key)
+        rig_list.append(rig)
+
+    stats = {
+        "mask_rigs": len(rig_list),
+        "mask_effects": 0,
+        "mask_source_effects": 0,
+        "mask_missing_sources": 0,
+        "mask_invalid_sources": 0,
+        "mask_source_cycles": 0,
+        "mask_imported_files": 0,
+        "mask_missing_imported_files": 0,
+        "mask_repairs": 0,
+    }
+    issues = []
+    warnings = []
+
+    # Shape Mask helpers and images are audited first because local routing may
+    # legitimately point at those mask effects.
+    object_result = audit_object_masks(
+        rig_list, repair=repair, context=context
+    )
+    stats.update(dict(object_result.get("stats", {}) or {}))
+    stats["mask_repairs"] += int(object_result.get("repaired", 0) or 0)
+    issues.extend(object_result.get("issues", ()) or ())
+    warnings.extend(object_result.get("warnings", ()) or ())
+
+    scene_object_keys = {
+        _fbp_rna_identity(obj)
+        for obj in tuple(getattr(scene, "objects", ()) or ())
+        if obj is not None
+    }
+    source_edges = {}
+    source_repairs = 0
+
+    for rig in rig_list:
+        rig_name = str(getattr(rig, "name", "<rig>") or "<rig>")
+        active_ids = tuple(fbp_effect_ids_for_rig(rig))
+
+        local_result = fbp_local_effect_mask_contract_report(
+            rig, repair=repair
+        )
+        local_stats = dict(local_result.get("stats", {}) or {})
+        for key, value in local_stats.items():
+            stats[key] = int(stats.get(key, 0) or 0) + int(value or 0)
+        stats["mask_repairs"] += int(local_result.get("repaired", 0) or 0)
+        issues.extend(local_result.get("issues", ()) or ())
+        warnings.extend(local_result.get("warnings", ()) or ())
+
+        for effect_id in active_ids:
+            definition = fbp_effect_definition(effect_id)
+            if str(definition.get("stage", "") or "").upper() != "MASK":
+                continue
+            stats["mask_effects"] += 1
+
+            if bool(definition.get("imported_mask_aware", False)):
+                stats["mask_imported_files"] += 1
+                raw_path = str(getattr(rig, "fbp_imported_mask_path", "") or "").strip()
+                resolved = ""
+                if raw_path:
+                    try:
+                        resolved = bpy.path.abspath(raw_path)
+                    except FBP_DATA_ERRORS:
+                        resolved = raw_path
+                try:
+                    imported_exists = bool(resolved and Path(resolved).is_file())
+                except (OSError, ValueError):
+                    imported_exists = False
+                if not imported_exists:
+                    stats["mask_missing_imported_files"] += 1
+                    issues.append(
+                        f"{rig_name}: Imported Layer Mask file is missing: {raw_path or '<empty path>'}"
+                    )
+
+            source_property = str(definition.get("mask_source_property", "") or "")
+            if not source_property:
+                continue
+            stats["mask_source_effects"] += 1
+            try:
+                source = getattr(rig, source_property, None)
+            except FBP_DATA_ERRORS:
+                source = None
+            if source is None:
+                stats["mask_missing_sources"] += 1
+                issues.append(
+                    f"{rig_name}: {definition.get('label', effect_id)} has no source layer"
+                )
+                continue
+
+            invalid_reason = ""
+            try:
+                if source is rig:
+                    invalid_reason = "uses its own layer as source"
+                elif not is_fbp_layer_object(source):
+                    invalid_reason = "source is not a Frame By Plane layer"
+                elif _fbp_rna_identity(source) not in scene_object_keys:
+                    invalid_reason = "source belongs to another Scene"
+                elif getattr(source, "fbp_plane_target", None) is None:
+                    invalid_reason = "source has no linked plane"
+            except FBP_DATA_ERRORS:
+                invalid_reason = "source datablock is unavailable"
+
+            if invalid_reason:
+                stats["mask_invalid_sources"] += 1
+                issues.append(
+                    f"{rig_name}: {definition.get('label', effect_id)} {invalid_reason}"
+                )
+                if repair and fbp_set_rna_property_silent(rig, source_property, None):
+                    source_repairs += 1
+                continue
+
+            # Only layer-feature masks form a recursive ownership chain.
+            # Alpha/Luma mattes merely sample another layer and may coexist on
+            # the same target with different sources, so treating them as one
+            # graph edge would overwrite valid relationships and report false
+            # cycles.
+            if bool(definition.get("layer_feature", False)):
+                source_edges[_fbp_rna_identity(rig)] = (
+                    _fbp_rna_identity(source), rig, source, effect_id
+                )
+
+    # Directed source cycles are invalid even when every pointer individually
+    # resolves. Report each cycle once and leave it for explicit user review;
+    # choosing which artistic relation to break is not a safe automatic repair.
+    reported_cycles = set()
+    for start in tuple(source_edges):
+        order = []
+        positions = {}
+        current = start
+        while current in source_edges:
+            if current in positions:
+                cycle_keys = order[positions[current]:]
+                canonical = tuple(sorted(str(item) for item in cycle_keys))
+                if canonical not in reported_cycles:
+                    reported_cycles.add(canonical)
+                    cycle_names = []
+                    for item in cycle_keys:
+                        _next_key, owner, _source, effect_id = source_edges[item]
+                        label = fbp_effect_definition(effect_id).get("label", effect_id)
+                        cycle_names.append(f"{getattr(owner, 'name', '<rig>')} [{label}]")
+                    stats["mask_source_cycles"] += 1
+                    issues.append("Mask source cycle: " + " → ".join(cycle_names + cycle_names[:1]))
+                break
+            positions[current] = len(order)
+            order.append(current)
+            current = source_edges[current][0]
+
+    stats["mask_repairs"] += source_repairs
+    if repair:
+        try:
+            fbp_sync_clipping_masks(context or bpy.context)
+        except FBP_DATA_ERRORS as exc:
+            warnings.append(f"Clipping-mask resynchronization failed: {exc}")
+
+    result = {
+        "stats": stats,
+        "issues": tuple(issues),
+        "warnings": tuple(warnings),
+        "repaired": int(stats["mask_repairs"]),
+    }
+    if repair and not _verification:
+        verification = _fbp_mask_interaction_contract_audit(
+            rig_list, scene, repair=False, context=context, _verification=True
+        )
+        verification_stats = dict(verification.get("stats", {}) or {})
+        verification_stats["mask_repairs"] = int(stats["mask_repairs"])
+        verification["stats"] = verification_stats
+        verification["repaired"] = int(stats["mask_repairs"])
+        return verification
+    return result
+
+
+def _fbp_render_contract_audit(rigs, scene, *, repair=False):
+    """Probe render-only effect state and generated helper visibility.
+
+    This does not render an image. It executes the same pre/post guard used by
+    final renders, verifies that temporary RNA changes are restored losslessly,
+    and catches helper cages that could leak into Eevee or Cycles.
+    """
+    rig_list = []
+    seen = set()
+    for rig in tuple(rigs or ()):
+        key = _fbp_rna_identity(rig)
+        if rig is None or key in seen:
+            continue
+        seen.add(key)
+        rig_list.append(rig)
+
+    stats = {
+        "render_rigs": len(rig_list),
+        "render_effects": 0,
+        "render_hidden_effects": 0,
+        "render_helpers": 0,
+        "render_helper_leaks": 0,
+        "render_guard_mutations": 0,
+        "render_restore_attempts": 0,
+        "render_restore_retries": 0,
+        "render_restore_failures": 0,
+        "render_repairs": 0,
+    }
+    issues = []
+    warnings = []
+
+    for rig in rig_list:
+        for effect_id in tuple(fbp_effect_ids_for_rig(rig)):
+            stats["render_effects"] += 1
+            if not fbp_effect_render_visible_state(rig, effect_id):
+                stats["render_hidden_effects"] += 1
+
+    for obj in tuple(getattr(scene, "objects", ()) or ()):
+        is_helper = False
+        try:
+            is_helper = is_object_mask_helper(obj)
+        except FBP_DATA_ERRORS:
+            is_helper = False
+        if not is_helper:
+            try:
+                is_helper = bool(
+                    getattr(obj, "type", "") == "LATTICE"
+                    and str(obj.get("fbp_lattice_effect", "") or "") == "LATTICE"
+                )
+            except FBP_DATA_ERRORS:
+                is_helper = False
+        if not is_helper:
+            continue
+        stats["render_helpers"] += 1
+        try:
+            leaks = not bool(getattr(obj, "hide_render", False))
+        except FBP_DATA_ERRORS:
+            leaks = True
+        if leaks:
+            stats["render_helper_leaks"] += 1
+            issues.append(f"{getattr(obj, 'name', '<helper>')}: generated helper is enabled for render")
+            if repair:
+                try:
+                    obj.hide_render = True
+                    stats["render_repairs"] += 1
+                except FBP_DATA_ERRORS:
+                    pass
+
+    backup = []
+    retry = []
+    try:
+        backup = list(fbp_effect_render_guard_pre(scene) or ())
+        stats["render_guard_mutations"] = len(backup)
+    except FBP_DATA_ERRORS as exc:
+        issues.append(f"Render preflight failed: {exc}")
+    finally:
+        if backup:
+            retry = list(backup)
+            for attempt in range(4):
+                stats["render_restore_attempts"] = attempt + 1
+                try:
+                    retry = list(fbp_effect_render_guard_post(retry) or ())
+                except FBP_DATA_ERRORS as exc:
+                    issues.append(f"Render-state restore failed: {exc}")
+                    break
+                if not retry:
+                    break
+                try:
+                    for view_layer in tuple(getattr(scene, "view_layers", ()) or ()):
+                        view_layer.update()
+                except FBP_DATA_ERRORS:
+                    pass
+                time.sleep(0.01)
+    stats["render_restore_retries"] = len(retry)
+    if retry:
+        issues.append(f"Render-state restore left {len(retry)} deferred item(s)")
+
+    # Verify every direct state backup after the post-render restore. Local-mask
+    # rebuild markers are graph operations and have no scalar value to compare.
+    for item in backup:
+        try:
+            tag = item[0]
+            restored = True
+            if tag == "NODE_MUTE":
+                _tag, node, value = item
+                restored = bool(getattr(node, "mute", False)) == bool(value)
+            elif tag == "CONSTRAINT_MUTE":
+                _tag, constraint, value = item
+                restored = bool(getattr(constraint, "mute", False)) == bool(value)
+            elif tag == "MODIFIER_INPUT":
+                _tag, modifier, identifier, value = item
+                current = modifier.get(identifier) if identifier in modifier else None
+                if hasattr(current, "__len__") and not isinstance(current, (str, bytes)):
+                    restored = tuple(current) == tuple(value) if value is not None else current is None
+                else:
+                    restored = current == value
+            if not restored:
+                stats["render_restore_failures"] += 1
+                issues.append(f"Render guard did not restore {tag}")
+        except FBP_DATA_ERRORS:
+            stats["render_restore_failures"] += 1
+            issues.append("Render guard restoration target became unavailable")
+
+    return {
+        "stats": stats,
+        "issues": tuple(issues),
+        "warnings": tuple(warnings),
+        "repaired": int(stats["render_repairs"]),
+    }
+
+
+class FBP_OT_RunEffectsContractAudit(Operator):
+    bl_idname = "fbp.run_effects_contract_audit"
+    bl_label = "Run Effects Contract Audit"
+    bl_description = "Validate effect compatibility, effect order, shader-stage metadata and unknown generated effect tags"
+
+    repair: BoolProperty(
+        name="Repair Safe Issues",
+        description="Normalize stored shader-stage order and restore the recommended effect order without deleting effects",
+        default=False,
+    )
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def execute(self, context):
+        sync_layer_collection(context)
+        rigs = [obj for obj in context.scene.objects if is_fbp_layer_object(obj)]
+        result = _fbp_effect_stack_contract_audit(rigs, repair=self.repair)
+        stats = dict(result.get("stats", {}) or {})
+        issues = list(result.get("issues", ()) or ())
+        warnings = list(result.get("warnings", ()) or ())
+        lines = [
+            "Frame By Plane — Effects Contract Audit",
+            "========================================",
+            f"Generated: {datetime.now().isoformat(timespec='seconds')}",
+            f"Scene: {getattr(context.scene, 'name', '<none>')}",
+            f"Repair requested: {'Yes' if self.repair else 'No'}",
+            "",
+            "Summary",
+            "-------",
+        ]
+        lines.extend(
+            f"{key.replace('_', ' ').title()}: {value}"
+            for key, value in stats.items()
+        )
+        lines.extend(("", "Structural issues", "-----------------"))
+        lines.extend(f"- {item}" for item in issues) if issues else lines.append("- None")
+        lines.extend(("", "Warnings", "--------"))
+        lines.extend(f"- {item}" for item in warnings) if warnings else lines.append("- None")
+        lines.extend(("", "Result", "------"))
+        lines.append("PASS" if not issues else "REVIEW REQUIRED")
+        summary = f"Effects Contract · {len(issues)} issue(s) · {len(warnings)} warning(s)"
+        write_diagnostic_report(
+            context.scene,
+            "FBP_Effects_Contract_Audit",
+            lines,
+            summary=summary,
+            status="PASS" if not issues else "WARNING",
+        )
+        self.report({'INFO'} if not issues else {'WARNING'}, summary)
+        return {'FINISHED'}
+
+
+class FBP_OT_RunMaskInteractionAudit(Operator):
+    bl_idname = "fbp.run_mask_interaction_audit"
+    bl_label = "Run Mask Interaction Audit"
+    bl_description = "Validate Shape Masks, clipping and matte sources, imported mask files and per-effect mask routing"
+
+    repair: BoolProperty(
+        name="Repair Safe Issues",
+        description="Repair helper contracts, clear invalid source pointers, restore local-mask routing and resynchronize clipping masks without deleting user media",
+        default=False,
+    )
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=480)
+
+    def execute(self, context):
+        sync_layer_collection(context)
+        rigs = [obj for obj in context.scene.objects if is_fbp_layer_object(obj)]
+        result = _fbp_mask_interaction_contract_audit(
+            rigs, context.scene, repair=self.repair, context=context
+        )
+        stats = dict(result.get("stats", {}) or {})
+        issues = list(result.get("issues", ()) or ())
+        warnings = list(result.get("warnings", ()) or ())
+        lines = [
+            "Frame By Plane — Mask Interaction Audit",
+            "=======================================",
+            f"Generated: {datetime.now().isoformat(timespec='seconds')}",
+            f"Scene: {getattr(context.scene, 'name', '<none>')}",
+            f"Repair requested: {'Yes' if self.repair else 'No'}",
+            "",
+            "Summary",
+            "-------",
+        ]
+        lines.extend(
+            f"{key.replace('_', ' ').title()}: {value}"
+            for key, value in stats.items()
+        )
+        lines.extend(("", "Structural issues", "-----------------"))
+        lines.extend(f"- {item}" for item in issues) if issues else lines.append("- None")
+        lines.extend(("", "Warnings", "--------"))
+        lines.extend(f"- {item}" for item in warnings) if warnings else lines.append("- None")
+        lines.extend(("", "Validation totals", "-----------------"))
+        lines.append(f"Structural issues: {len(issues)}")
+        lines.append(f"Warnings: {len(warnings)}")
+        lines.extend(("", "Result", "------"))
+        lines.append("PASS" if not issues else "REVIEW REQUIRED")
+        summary = f"Mask Interaction · {len(issues)} issue(s) · {len(warnings)} warning(s)"
+        write_diagnostic_report(
+            context.scene,
+            "FBP_Mask_Interaction_Audit",
+            lines,
+            summary=summary,
+            status="PASS" if not issues else "WARNING",
+        )
+        self.report({'INFO'} if not issues else {'WARNING'}, summary)
+        return {'FINISHED'}
+
+
+class FBP_OT_RunRenderContractAudit(Operator):
+    bl_idname = "fbp.run_render_contract_audit"
+    bl_label = "Run Render Contract Audit"
+    bl_description = "Probe render-only effect visibility, temporary quality overrides, restoration and generated helper render safety"
+
+    repair: BoolProperty(
+        name="Repair Safe Issues",
+        description="Disable rendering on generated mask and Lattice helpers while leaving layer visibility and artistic render choices unchanged",
+        default=False,
+    )
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=480)
+
+    def execute(self, context):
+        sync_layer_collection(context)
+        rigs = [obj for obj in context.scene.objects if is_fbp_layer_object(obj)]
+        result = _fbp_render_contract_audit(
+            rigs, context.scene, repair=self.repair
+        )
+        stats = dict(result.get("stats", {}) or {})
+        issues = list(result.get("issues", ()) or ())
+        warnings = list(result.get("warnings", ()) or ())
+        lines = [
+            "Frame By Plane — Render Contract Audit",
+            "======================================",
+            f"Generated: {datetime.now().isoformat(timespec='seconds')}",
+            f"Scene: {getattr(context.scene, 'name', '<none>')}",
+            f"Repair requested: {'Yes' if self.repair else 'No'}",
+            "",
+            "Summary",
+            "-------",
+        ]
+        lines.extend(
+            f"{key.replace('_', ' ').title()}: {value}"
+            for key, value in stats.items()
+        )
+        lines.extend(("", "Structural issues", "-----------------"))
+        lines.extend(f"- {item}" for item in issues) if issues else lines.append("- None")
+        lines.extend(("", "Warnings", "--------"))
+        lines.extend(f"- {item}" for item in warnings) if warnings else lines.append("- None")
+        lines.extend(("", "Validation totals", "-----------------"))
+        lines.append(f"Structural issues: {len(issues)}")
+        lines.append(f"Warnings: {len(warnings)}")
+        lines.extend(("", "Result", "------"))
+        lines.append("PASS" if not issues else "REVIEW REQUIRED")
+        summary = f"Render Contract · {len(issues)} issue(s) · {len(warnings)} warning(s)"
+        write_diagnostic_report(
+            context.scene,
+            "FBP_Render_Contract_Audit",
+            lines,
+            summary=summary,
+            status="PASS" if not issues else "WARNING",
+        )
+        self.report({'INFO'} if not issues else {'WARNING'}, summary)
         return {'FINISHED'}
 
 
@@ -181,6 +888,7 @@ class FBP_OT_DeepAddonAudit(Operator):
             "native_duration_mismatch": 0, "native_timing_drivers": 0,
             "native_timing_self_checks": 0, "native_timing_self_failures": 0,
             "duplicate_file_wrappers": 0,
+            "lattice_effects": 0, "lattice_failures": 0, "lattice_warnings": 0,
             "repaired": 0,
         }
         instance_owners = {}
@@ -197,6 +905,14 @@ class FBP_OT_DeepAddonAudit(Operator):
         stats["repaired"] += int(lifecycle_result.get("repaired", 0) or 0)
         issues.extend(lifecycle_result.get("issues", ()) or ())
         warnings.extend(lifecycle_result.get("warnings", ()) or ())
+
+        effect_stack_result = _fbp_effect_stack_contract_audit(
+            rigs, repair=self.repair
+        )
+        stats.update(dict(effect_stack_result.get("stats", {}) or {}))
+        stats["repaired"] += int(effect_stack_result.get("repaired", 0) or 0)
+        issues.extend(effect_stack_result.get("issues", ()) or ())
+        warnings.extend(effect_stack_result.get("warnings", ()) or ())
 
         if self.repair:
             for rig in rigs:
@@ -225,6 +941,16 @@ class FBP_OT_DeepAddonAudit(Operator):
                     )
             effect_ids = tuple(fbp_effect_ids_for_rig(rig))
             stats["effects"] += len(effect_ids)
+            lattice_result = fbp_lattice_contract_report(rig, repair=self.repair)
+            if bool(lattice_result.get("active", False)):
+                stats["lattice_effects"] += 1
+                stats["repaired"] += int(lattice_result.get("repaired", 0) or 0)
+                lattice_issues = tuple(lattice_result.get("issues", ()) or ())
+                lattice_warnings = tuple(lattice_result.get("warnings", ()) or ())
+                stats["lattice_failures"] += len(lattice_issues)
+                stats["lattice_warnings"] += len(lattice_warnings)
+                issues.extend(f"{rig_name}: Lattice: {message}" for message in lattice_issues)
+                warnings.extend(f"{rig_name}: Lattice: {message}" for message in lattice_warnings)
             for effect_id in effect_ids:
                 definition = fbp_effect_definition(effect_id)
                 kind = str(definition.get("kind", ""))
@@ -287,29 +1013,39 @@ class FBP_OT_DeepAddonAudit(Operator):
                 stats["duplicate_instance_ids"] += len(owners) - 1
                 issues.append(f"Duplicate effect instance id {instance_id}: {', '.join(owners)}")
 
-        # Shape Masks own editable helper meshes and private SDF images in
-        # addition to their shader nodes. Audit those generated contracts as a
-        # first-class subsystem so a visually broken mask cannot receive PASS.
-        if self.repair:
-            repaired_masks = audit_object_masks(
-                rigs, repair=True, context=context
-            )
-            mask_result = audit_object_masks(
-                rigs, repair=False, context=context
-            )
-            stats["repaired"] += int(repaired_masks.get("repaired", 0) or 0)
-            mask_stats = dict(mask_result.get("stats", {}) or {})
-            mask_stats["mask_repairs"] = int(
-                repaired_masks.get("repaired", 0) or 0
-            )
-        else:
-            mask_result = audit_object_masks(
-                rigs, repair=False, context=context
-            )
-            mask_stats = dict(mask_result.get("stats", {}) or {})
-        stats.update(mask_stats)
+        # Treat masks as one interaction matrix: editable Shape Mask helpers,
+        # source-layer track mattes, imported mask files and per-effect routing
+        # can each be valid alone while their relationship is broken.
+        mask_result = _fbp_mask_interaction_contract_audit(
+            rigs, scene, repair=self.repair, context=context
+        )
+        stats.update(dict(mask_result.get("stats", {}) or {}))
+        stats["repaired"] += int(mask_result.get("repaired", 0) or 0)
         issues.extend(mask_result.get("issues", ()) or ())
         warnings.extend(mask_result.get("warnings", ()) or ())
+
+        render_result = _fbp_render_contract_audit(
+            rigs, scene, repair=self.repair
+        )
+        stats.update(dict(render_result.get("stats", {}) or {}))
+        stats["repaired"] += int(render_result.get("repaired", 0) or 0)
+        issues.extend(render_result.get("issues", ()) or ())
+        warnings.extend(render_result.get("warnings", ()) or ())
+
+        if self.repair:
+            repaired_controls = audit_effect_controls(scene, repair=True, context=context)
+            control_result = audit_effect_controls(scene, repair=False, context=context)
+            stats["repaired"] += int(repaired_controls.get("repaired", 0) or 0)
+            control_stats = dict(control_result.get("stats", {}) or {})
+            control_stats["control_repairs"] = int(
+                repaired_controls.get("repaired", 0) or 0
+            )
+        else:
+            control_result = audit_effect_controls(scene, repair=False, context=context)
+            control_stats = dict(control_result.get("stats", {}) or {})
+        stats.update(control_stats)
+        issues.extend(control_result.get("issues", ()) or ())
+        warnings.extend(control_result.get("warnings", ()) or ())
 
         cache_repair = fbp_native_media_cache_report(repair=self.repair)
         if self.repair:
@@ -419,11 +1155,13 @@ class FBP_OT_DeepAddonAudit(Operator):
         lines.extend(("", "Result", "------"))
         lines.append("PASS" if not issues else "REVIEW REQUIRED")
 
-        text = bpy.data.texts.get("FBP_Deep_Addon_Audit") or bpy.data.texts.new("FBP_Deep_Addon_Audit")
-        text.clear()
-        text.write("\n".join(lines))
+        summary = f"Deep Audit · {len(issues)} issue(s) · {len(warnings)} warning(s)"
+        write_diagnostic_report(
+            scene, "FBP_Deep_Addon_Audit", lines,
+            summary=summary, status="PASS" if not issues else "WARNING",
+        )
         level = {'INFO'} if not issues else {'WARNING'}
-        self.report(level, f"Audit: {len(issues)} issue(s), {len(warnings)} warning(s); report saved in Text Editor")
+        self.report(level, summary)
         return {'FINISHED'}
 
 class FBP_OT_RunLifecycleAudit(Operator):
@@ -462,20 +1200,19 @@ class FBP_OT_RunLifecycleAudit(Operator):
         lines.append(f"Warnings: {len(warnings)}")
         lines.extend(("", "Result", "------"))
         lines.append("PASS" if not issues else "REVIEW REQUIRED")
-        text = bpy.data.texts.get("FBP_Lifecycle_Audit") or bpy.data.texts.new("FBP_Lifecycle_Audit")
-        text.clear()
-        text.write("\n".join(lines))
-        self.report(
-            {'INFO'} if not issues else {'WARNING'},
-            f"Lifecycle: {len(issues)} issue(s), {len(warnings)} warning(s)",
+        summary = f"Lifecycle · {len(issues)} issue(s) · {len(warnings)} warning(s)"
+        write_diagnostic_report(
+            context.scene, "FBP_Lifecycle_Audit", lines,
+            summary=summary, status="PASS" if not issues else "WARNING",
         )
+        self.report({'INFO'} if not issues else {'WARNING'}, summary)
         return {'FINISHED'}
 
 
-class FBP_OT_RunLTSReleaseGate(Operator):
-    bl_idname = "fbp.run_lts_release_gate"
-    bl_label = "Run LTS Release Gate"
-    bl_description = "Run lifecycle, native backend and Deep Add-on audits and produce one strict release-readiness report"
+class FBP_OT_RunReleaseGate(Operator):
+    bl_idname = "fbp.run_release_gate"
+    bl_label = "Run Release Gate"
+    bl_description = "Run lifecycle, native backend, effects, masks, render contracts, optional rendered-image parity, persistence, Undo/Redo and Deep Add-on audits"
 
     require_native_layers: BoolProperty(
         name="Require Native Layers",
@@ -487,13 +1224,27 @@ class FBP_OT_RunLTSReleaseGate(Operator):
         description="Treat audit warnings as release blockers for the regression project",
         default=True,
     )
+    require_persistence_verification: BoolProperty(
+        name="Require Save / Reopen Verification",
+        description="Require a captured persistence baseline that has been verified after the .blend was reopened",
+        default=True,
+    )
+    require_undo_redo_verification: BoolProperty(
+        name="Require Undo / Redo Verification",
+        description="Require a process-local endurance baseline verified after at least one real Undo and one real Redo",
+        default=False,
+    )
+    require_render_parity_verification: BoolProperty(
+        name="Require Eevee / Cycles Parity",
+        description="Require a current PASS from the rendered-image parity audit. The result becomes stale when the Scene frame, camera, layer transforms or effect stack changes",
+        default=False,
+    )
 
     def invoke(self, context, _event):
         return context.window_manager.invoke_props_dialog(self, width=460)
 
     def execute(self, context):
         failures = []
-        reports = []
         native_rigs = [
             obj for obj in context.scene.objects
             if is_fbp_layer_object(obj)
@@ -512,7 +1263,6 @@ class FBP_OT_RunLTSReleaseGate(Operator):
         lifecycle_result = bpy.ops.fbp.run_lifecycle_audit(repair=False)
         lifecycle_text = bpy.data.texts.get("FBP_Lifecycle_Audit")
         lifecycle_report = lifecycle_text.as_string() if lifecycle_text else ""
-        reports.append(("Lifecycle Audit", lifecycle_report))
         if "FINISHED" not in lifecycle_result or "Structural issues: 0" not in lifecycle_report:
             failures.append("Lifecycle Audit did not pass")
 
@@ -521,43 +1271,112 @@ class FBP_OT_RunLTSReleaseGate(Operator):
         )
         native_text = bpy.data.texts.get("FBP_Native_Backend_Regression")
         native_report = native_text.as_string() if native_text else ""
-        reports.append(("Native Backend Regression", native_report))
         if "FINISHED" not in native_result or "REVIEW REQUIRED" in native_report:
             failures.append("Native Backend Regression did not pass")
         if self.require_native_layers and "Native layers: 0" in native_report:
             failures.append("The current Scene contains no native media layers")
 
+        effects_result = bpy.ops.fbp.run_effects_contract_audit(repair=False)
+        effects_text = bpy.data.texts.get("FBP_Effects_Contract_Audit")
+        effects_report = effects_text.as_string() if effects_text else ""
+        if "FINISHED" not in effects_result or "REVIEW REQUIRED" in effects_report:
+            failures.append("Effects Contract Audit did not pass")
+        if self.require_zero_warnings and "Effect Stack Order Warnings: 0" not in effects_report:
+            failures.append("Effects Contract Audit contains order warnings")
+        if self.require_zero_warnings and "Effect Stack Metadata Warnings: 0" not in effects_report:
+            failures.append("Effects Contract Audit contains metadata warnings")
+
+        mask_result = bpy.ops.fbp.run_mask_interaction_audit(repair=False)
+        mask_text = bpy.data.texts.get("FBP_Mask_Interaction_Audit")
+        mask_report = mask_text.as_string() if mask_text else ""
+        if "FINISHED" not in mask_result or "Structural issues: 0" not in mask_report:
+            failures.append("Mask Interaction Audit did not pass")
+        if self.require_zero_warnings and "Warnings: 0" not in mask_report:
+            failures.append("Mask Interaction Audit contains warnings")
+
+        render_result = bpy.ops.fbp.run_render_contract_audit(repair=False)
+        render_text = bpy.data.texts.get("FBP_Render_Contract_Audit")
+        render_report = render_text.as_string() if render_text else ""
+        if "FINISHED" not in render_result or "Structural issues: 0" not in render_report:
+            failures.append("Render Contract Audit did not pass")
+        if self.require_zero_warnings and "Warnings: 0" not in render_report:
+            failures.append("Render Contract Audit contains warnings")
+
+        parity_state = fbp_render_parity_status(
+            context.scene, check_stale=self.require_render_parity_verification
+        )
+        parity_status = str(parity_state.get("status", "NOT_RUN") or "NOT_RUN")
+        parity_stale = bool(parity_state.get("stale", False))
+        if self.require_render_parity_verification:
+            if parity_status != "PASS":
+                failures.append("Eevee/Cycles rendered-image parity has not passed")
+            elif parity_stale:
+                failures.append("Eevee/Cycles rendered-image parity result is stale")
+
+        persistence_report = ""
+        if self.require_persistence_verification:
+            persistence_result = bpy.ops.fbp.run_persistence_audit(
+                action='VERIFY', require_reopen=True
+            )
+            persistence_text = bpy.data.texts.get("FBP_Persistence_Audit")
+            persistence_report = persistence_text.as_string() if persistence_text else ""
+            if (
+                "FINISHED" not in persistence_result
+                or "Structural issues: 0" not in persistence_report
+                or "Reopen confirmed: Yes" not in persistence_report
+            ):
+                failures.append("Persistence save/reopen verification did not pass")
+
+        endurance_report = ""
+        if self.require_undo_redo_verification:
+            endurance_result = bpy.ops.fbp.run_undo_endurance_audit(
+                action='VERIFY', minimum_undo_events=1, minimum_redo_events=1
+            )
+            endurance_text = bpy.data.texts.get("FBP_Undo_Redo_Endurance")
+            endurance_report = endurance_text.as_string() if endurance_text else ""
+            if (
+                "FINISHED" not in endurance_result
+                or "Structural issues: 0" not in endurance_report
+            ):
+                failures.append("Undo/Redo endurance verification did not pass")
+
         deep_result = bpy.ops.fbp.deep_addon_audit(repair=False)
         deep_text = bpy.data.texts.get("FBP_Deep_Addon_Audit")
         deep_report = deep_text.as_string() if deep_text else ""
-        reports.append(("Deep Add-on Audit", deep_report))
         if "FINISHED" not in deep_result or "Structural issues: 0" not in deep_report:
             failures.append("Deep Add-on Audit did not pass")
         if self.require_zero_warnings and "Warnings: 0" not in deep_report:
             failures.append("Deep Add-on Audit contains warnings")
 
         lines = [
-            "Frame By Plane — LTS Release Gate",
+            "Frame By Plane — Release Gate",
             "=================================",
             f"Generated: {datetime.now().isoformat(timespec='seconds')}",
             f"Scene: {getattr(context.scene, 'name', '<none>')}",
             f"Require native layers: {'Yes' if self.require_native_layers else 'No'}",
             f"Require zero warnings: {'Yes' if self.require_zero_warnings else 'No'}",
+            f"Require save/reopen verification: {'Yes' if self.require_persistence_verification else 'No'}",
+            f"Require Undo/Redo verification: {'Yes' if self.require_undo_redo_verification else 'No'}",
+            f"Require Eevee/Cycles parity: {'Yes' if self.require_render_parity_verification else 'No'}",
             f"Full native timeline probe: {'Yes' if full_timeline_probe else 'No · dedicated Native Regression scene required'}",
             "",
             "Automated in-file gates",
             "-----------------------",
             f"Lifecycle Audit: {'PASS' if 'Structural issues: 0' in lifecycle_report else 'FAIL'}",
             f"Native Backend Regression: {'PASS' if 'REVIEW REQUIRED' not in native_report else 'FAIL'}",
+            f"Effects Contract Audit: {'PASS' if 'REVIEW REQUIRED' not in effects_report else 'FAIL'}",
+            f"Mask Interaction Audit: {'PASS' if 'Structural issues: 0' in mask_report else 'FAIL'}",
+            f"Render Contract Audit: {'PASS' if 'Structural issues: 0' in render_report else 'FAIL'}",
+            f"Eevee/Cycles Parity: {('NOT REQUIRED' if not self.require_render_parity_verification else ('PASS' if (parity_status == 'PASS' and not parity_stale) else 'FAIL'))}",
+            f"Persistence Audit: {'PASS' if (not self.require_persistence_verification or ('Structural issues: 0' in persistence_report and 'Reopen confirmed: Yes' in persistence_report)) else 'FAIL'}",
+            f"Undo/Redo Endurance: {'PASS' if (not self.require_undo_redo_verification or 'Structural issues: 0' in endurance_report) else 'FAIL'}",
             f"Deep Add-on Audit: {'PASS' if 'Structural issues: 0' in deep_report else 'FAIL'}",
             "",
             "External release matrix",
             "-----------------------",
-            "- Enable/disable/reload cycles: run tests/run_reload_regression.py",
-            "- 50 Undo/Redo cycles: run tests/run_undo_regression.py",
-            "- Shape Mask save/reopen: run tests/run_mask_save_reopen.py",
-            "- CPU render smoke: run tests/run_render_smoke.py",
-            "- Windows/macOS/Linux installation tests remain platform-specific",
+            "- Undo/Redo uses a baseline-assisted interactive round trip when required above",
+            "- Eevee/Cycles rendered-image parity is captured by Render Parity when required above",
+            "- Enable/disable/reload and Windows/macOS/Linux installation tests remain platform-specific",
             "",
             "Failures",
             "--------",
@@ -565,14 +1384,147 @@ class FBP_OT_RunLTSReleaseGate(Operator):
         lines.extend(f"- {item}" for item in failures) if failures else lines.append("- None")
         lines.extend(("", "Result", "------"))
         lines.append("PASS" if not failures else "REVIEW REQUIRED")
-        text = bpy.data.texts.get("FBP_LTS_Release_Gate") or bpy.data.texts.new("FBP_LTS_Release_Gate")
-        text.clear()
-        text.write("\n".join(lines))
-        self.report(
-            {'INFO'} if not failures else {'WARNING'},
-            "LTS gate passed" if not failures else f"LTS gate: {len(failures)} blocker(s)",
+        summary = "Release Gate · PASS" if not failures else f"Release Gate · {len(failures)} blocker(s)"
+        write_diagnostic_report(
+            context.scene, "FBP_Release_Gate", lines,
+            summary=summary, status="PASS" if not failures else "WARNING",
         )
+        self.report({'INFO'} if not failures else {'WARNING'}, summary)
         return {'FINISHED'}
+
+
+class FBP_OT_OpenLastDiagnosticReport(Operator):
+    bl_idname = "fbp.open_last_diagnostic_report"
+    bl_label = "Open Last Report"
+    bl_description = "Open the most recently generated Frame By Plane diagnostic report in the current area"
+
+    @classmethod
+    def poll(cls, context):
+        text, _summary, _status, _timestamp = last_diagnostic_report(getattr(context, "scene", None))
+        return text is not None and getattr(context, "area", None) is not None
+
+    def execute(self, context):
+        text, summary, _status, _timestamp = last_diagnostic_report(context.scene)
+        if text is None:
+            self.report({'WARNING'}, "No diagnostic report is available yet")
+            return {'CANCELLED'}
+        area = getattr(context, "area", None)
+        if area is None:
+            self.report({'WARNING'}, "No editor area is available for the report")
+            return {'CANCELLED'}
+        try:
+            area.type = 'TEXT_EDITOR'
+            space = getattr(area.spaces, "active", None)
+            if space is not None:
+                space.text = text
+                if hasattr(space, "show_word_wrap"):
+                    space.show_word_wrap = True
+            self.report({'INFO'}, summary or text.name)
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            self.report({'WARNING'}, f"Could not open report: {exc}")
+            return {'CANCELLED'}
+
+
+class FBP_OT_CopyLastDiagnosticReport(Operator):
+    bl_idname = "fbp.copy_last_diagnostic_report"
+    bl_label = "Copy Last Report"
+    bl_description = "Copy the complete most recent Frame By Plane diagnostic report to the clipboard"
+
+    @classmethod
+    def poll(cls, context):
+        text, _summary, _status, _timestamp = last_diagnostic_report(getattr(context, "scene", None))
+        return text is not None
+
+    def execute(self, context):
+        text, summary, _status, _timestamp = last_diagnostic_report(context.scene)
+        if text is None:
+            self.report({'WARNING'}, "No diagnostic report is available yet")
+            return {'CANCELLED'}
+        try:
+            context.window_manager.clipboard = text.as_string()
+            self.report({'INFO'}, f"Copied: {summary or text.name}")
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            self.report({'WARNING'}, f"Could not copy report: {exc}")
+            return {'CANCELLED'}
+
+
+class FBP_OT_OpenDiagnosticReport(Operator):
+    bl_idname = "fbp.open_diagnostic_report"
+    bl_label = "Open Diagnostic Report"
+    bl_description = "Open this specific Frame By Plane diagnostic report in the current area"
+
+    report_name: StringProperty(
+        name="Report",
+        description="Internal Text datablock containing the diagnostic report",
+        default="",
+        options={'HIDDEN'},
+    )
+
+    def execute(self, context):
+        report_name = str(self.report_name or "").strip()
+        text = bpy.data.texts.get(report_name) if report_name else None
+        if text is None:
+            self.report({'WARNING'}, "This diagnostic report has not been generated yet")
+            return {'CANCELLED'}
+        area = getattr(context, "area", None)
+        if area is None:
+            self.report({'WARNING'}, "No editor area is available for the report")
+            return {'CANCELLED'}
+        try:
+            area.type = 'TEXT_EDITOR'
+            space = getattr(area.spaces, "active", None)
+            if space is not None:
+                space.text = text
+                if hasattr(space, "show_word_wrap"):
+                    space.show_word_wrap = True
+            self.report({'INFO'}, report_name)
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            self.report({'WARNING'}, f"Could not open report: {exc}")
+            return {'CANCELLED'}
+
+
+class FBP_OT_CopyDiagnosticMessages(Operator):
+    bl_idname = "fbp.copy_diagnostic_messages"
+    bl_label = "Copy Diagnostic Messages"
+    bl_description = "Copy only the actionable error and warning messages from this diagnostic report"
+
+    report_name: StringProperty(
+        name="Report",
+        description="Internal Text datablock containing the diagnostic report",
+        default="",
+        options={'HIDDEN'},
+    )
+    full_report: BoolProperty(
+        name="Full Report",
+        description="Copy the complete report instead of only actionable messages",
+        default=False,
+        options={'HIDDEN'},
+    )
+
+    def execute(self, context):
+        report_name = str(self.report_name or "").strip()
+        text = bpy.data.texts.get(report_name) if report_name else None
+        if text is None:
+            self.report({'WARNING'}, "This diagnostic report has not been generated yet")
+            return {'CANCELLED'}
+        try:
+            if self.full_report:
+                payload = text.as_string()
+            else:
+                messages = diagnostic_report_messages(text)
+                if not messages:
+                    self.report({'INFO'}, "This report contains no error or warning messages")
+                    return {'CANCELLED'}
+                payload = "\n".join(f"- {message}" for message in messages)
+            context.window_manager.clipboard = payload
+            self.report({'INFO'}, f"Copied diagnostic messages from {report_name}")
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            self.report({'WARNING'}, f"Could not copy diagnostic messages: {exc}")
+            return {'CANCELLED'}
 
 
 class FBP_OT_RelinkFromProjectRoot(Operator):
@@ -747,6 +1699,8 @@ class FBP_OT_ProfileEffects(Operator):
                 pass
             ui_sync_ms = (time.perf_counter_ns() - ui_sync_started) / 1_000_000.0
 
+        runtime_diagnostics_before = fbp_effect_runtime_diagnostics(scene)
+
         mask_runtime_started = time.perf_counter_ns()
         mask_runtime_updates = 0
         for rig in rigs:
@@ -799,6 +1753,12 @@ class FBP_OT_ProfileEffects(Operator):
             if memory_before and memory_after else 0.0
         )
         measured_at = datetime.now().isoformat(timespec='seconds')
+        runtime_diagnostics_after = fbp_effect_runtime_diagnostics(scene)
+        try:
+            from .safe_tasks import scheduled_task_count
+            pending_safe_tasks = int(scheduled_task_count())
+        except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+            pending_safe_tasks = 0
 
         scene['fbp_effect_profile_timestamp'] = measured_at
         scene['fbp_effect_profile_samples'] = int(len(measurements))
@@ -812,6 +1772,14 @@ class FBP_OT_ProfileEffects(Operator):
         scene['fbp_effect_profile_discovery_ms'] = float(effect_discovery_ms)
         scene['fbp_effect_profile_ui_sync_ms'] = float(ui_sync_ms)
         scene['fbp_effect_profile_mask_runtime_ms'] = float(mask_runtime_ms)
+        scene['fbp_effect_profile_frame_sync_rigs'] = int(
+            runtime_diagnostics_after.get('geometry_source_sync_rigs', 0)
+            + runtime_diagnostics_after.get('shader_source_sync_rigs', 0)
+        )
+        scene['fbp_effect_profile_held_step_skips'] = int(
+            runtime_diagnostics_after.get('held_step_skips', 0)
+            - runtime_diagnostics_before.get('held_step_skips', 0)
+        )
 
         lines = [
             "Frame by Plane Effects Profiler",
@@ -830,6 +1798,12 @@ class FBP_OT_ProfileEffects(Operator):
             f"- Effect discovery: {effect_discovery_ms:.3f} ms",
             f"- Active Effects UI mirror: {ui_sync_ms:.3f} ms",
             f"- Shape Mask runtime pass: {mask_runtime_ms:.3f} ms ({mask_runtime_updates} update(s))",
+            f"- Effect rigs requiring Geometry source sync: {runtime_diagnostics_after.get('geometry_source_sync_rigs', 0)}",
+            f"- Effect rigs requiring Shader source sync: {runtime_diagnostics_after.get('shader_source_sync_rigs', 0)}",
+            f"- Animated effect contracts: {runtime_diagnostics_after.get('animated_effects', 0)}",
+            f"- Active Evolution contracts: {runtime_diagnostics_after.get('evolve_effects', 0)}",
+            f"- Held Evolution updates skipped during profile: {max(0, runtime_diagnostics_after.get('held_step_skips', 0) - runtime_diagnostics_before.get('held_step_skips', 0))}",
+            f"- Pending safe tasks after profile: {pending_safe_tasks}",
             "",
             "Frame + depsgraph update timing:",
             f"- Average: {average_ms:.3f} ms",
@@ -844,11 +1818,12 @@ class FBP_OT_ProfileEffects(Operator):
             "Per-sample timings:",
         ]
         lines.extend(f"- {index + 1:02d}: {value:.3f} ms" for index, value in enumerate(measurements))
-        text = bpy.data.texts.get("FBP_Effects_Profiler_Report") or bpy.data.texts.new("FBP_Effects_Profiler_Report")
-        text.clear()
-        text.write("\n".join(lines))
-
-        self.report({'INFO'}, f"Effects profile: {average_ms:.2f} ms average · {rss_mb:.1f} MiB")
+        summary = f"Effects Profiler · {average_ms:.2f} ms average · {rss_mb:.1f} MiB"
+        write_diagnostic_report(
+            context.scene, "FBP_Effects_Profiler_Report", lines,
+            summary=summary, status="INFO",
+        )
+        self.report({'INFO'}, summary)
         return {'FINISHED'}
 
 class FBP_OT_RunNativeBackendRegression(Operator):
@@ -965,13 +1940,12 @@ class FBP_OT_RunNativeBackendRegression(Operator):
         lines.extend(f"- {message}" for message in warnings) if warnings else lines.append("- None")
         lines.extend(("", "Result", "------", "PASS" if not issues else "REVIEW REQUIRED"))
 
-        report = bpy.data.texts.get("FBP_Native_Backend_Regression") or bpy.data.texts.new("FBP_Native_Backend_Regression")
-        report.clear()
-        report.write("\n".join(lines))
-        self.report(
-            {'INFO'} if not issues else {'WARNING'},
-            f"Native regression: {len(issues)} issue(s), {samples} timeline sample(s)",
+        summary = f"Native Backend · {len(issues)} issue(s) · {samples} timeline sample(s)"
+        write_diagnostic_report(
+            context.scene, "FBP_Native_Backend_Regression", lines,
+            summary=summary, status="PASS" if not issues else "WARNING",
         )
+        self.report({'INFO'} if not issues else {'WARNING'}, summary)
         return {'FINISHED'}
 
 
@@ -1256,9 +2230,11 @@ class FBP_OT_CreateNativeRegressionScene(Operator):
         ]
         lines.extend(f"- {item}" for item in failures) if failures else lines.append("- None")
         lines.extend(("", "Result", "------", "PASS" if not failures else "REVIEW REQUIRED"))
-        report = bpy.data.texts.get("FBP_Native_Regression_Scene_Report") or bpy.data.texts.new("FBP_Native_Regression_Scene_Report")
-        report.clear()
-        report.write("\n".join(lines))
+        write_diagnostic_report(
+            new_scene, "FBP_Native_Regression_Scene_Report", lines,
+            summary=f"Native Regression Scene · {len(failures)} failure(s)",
+            status="PASS" if not failures else "WARNING",
+        )
 
         if old_scene is not None and self.replace_existing:
             try:
@@ -1294,6 +2270,12 @@ def _fbp_regression_safe_defaults(rig, _effect_id):
         "fbp_wind_subdivision": 2,
         "fbp_mesh_wiggle_subdivisions": 2,
         "fbp_stop_motion_resolution": 8,
+        "fbp_shadow_mode": "OUTER",
+        "fbp_shadow_blend_mode": "MULTIPLY",
+        "fbp_shadow_offset_x": 0.035,
+        "fbp_shadow_offset_y": -0.035,
+        "fbp_shadow_blur": 0.025,
+        "fbp_shadow_opacity": 0.7,
     }
     for name, value in values.items():
         if hasattr(rig, name):
@@ -1361,10 +2343,27 @@ class FBP_OT_CreateEffectRegressionScene(Operator):
         root = bpy.data.collections.new("FBP Regression")
         root["fbp_regression_generated"] = True
         new_scene.collection.children.link(root)
+
+        # Camera-aware BASE effects are covered in the same registry loop as every
+        # other effect, so the regression Scene must own a camera before that loop.
+        camera_data = bpy.data.cameras.new("FBP Regression Camera")
+        camera = bpy.data.objects.new("FBP Regression Camera", camera_data)
+        root.objects.link(camera)
+        camera["fbp_regression_generated"] = True
+        camera.location = (0.0, 0.0, 35.0)
+        camera_data.type = 'ORTHO'
+        camera_data.ortho_scale = 24.0
+        new_scene.camera = camera
+
         source_collection = bpy.data.collections.new("00 - Source Types")
         image_collection = bpy.data.collections.new("01 - Image Effects")
         mesh_collection = bpy.data.collections.new("02 - Mesh Effects")
-        for collection in (source_collection, image_collection, mesh_collection):
+        combination_collection = bpy.data.collections.new("03 - Combination Stacks")
+        mask_interaction_collection = bpy.data.collections.new("04 - Mask Interaction")
+        for collection in (
+            source_collection, image_collection, mesh_collection,
+            combination_collection, mask_interaction_collection,
+        ):
             collection["fbp_regression_generated"] = True
             root.children.link(collection)
 
@@ -1431,6 +2430,7 @@ class FBP_OT_CreateEffectRegressionScene(Operator):
         image_index = 0
         mesh_index = 0
         failures = []
+        last_rig_by_collection = {}
         for effect_id, definition in FBP_EFFECT_REGISTRY.items():
             kind = str(definition.get("kind", "") or "")
             category = str(definition.get("category", "") or "")
@@ -1456,6 +2456,16 @@ class FBP_OT_CreateEffectRegressionScene(Operator):
                 plane = getattr(rig, "fbp_plane_target", None)
                 if plane:
                     plane["fbp_regression_generated"] = True
+                    plane.is_fbp_plane = True
+                    try:
+                        if getattr(plane, "data", None) is not None:
+                            plane.data["fbp_plane_mesh"] = True
+                    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                        pass
+                    plane["fbp_parent_rig_name"] = str(rig.name)
+                    # Keep the relation explicit in generated regression scenes;
+                    # this also exercises the same contract used by mesh effects.
+                    rig.fbp_plane_target = plane
                 _fbp_regression_safe_defaults(rig, effect_id)
                 if not fbp_effect_supported_for_rig(rig, effect_id):
                     failures.append(f"{label}: unsupported by regression image source")
@@ -1463,13 +2473,209 @@ class FBP_OT_CreateEffectRegressionScene(Operator):
                 if not fbp_add_effect(rig, effect_id):
                     failures.append(f"{label}: add returned false")
                     continue
+                # Verify immediately while the exact rig and effect are still
+                # known. This exposes builder/modifier failures in the scene
+                # report instead of leaving the later aggregate coverage check
+                # with only a missing effect id.
+                if effect_id not in fbp_effect_ids_for_rig(rig):
+                    failures.append(
+                        f"{label}: effect was added but is not discoverable on its generated rig"
+                    )
+                    continue
+                source_property = str(definition.get("mask_source_property", "") or "")
+                if source_property and source_rigs:
+                    source_index = 1 if len(test_files) > 1 and len(source_rigs) > 1 else 0
+                    source_candidate = source_rigs[source_index]
+                    if bool(definition.get("layer_feature", False)):
+                        source_candidate = last_rig_by_collection.get(
+                            str(getattr(collection, "name", "") or ""),
+                            source_candidate,
+                        )
+                    fbp_set_rna_property_silent(
+                        rig, source_property, source_candidate
+                    )
+                if bool(definition.get("imported_mask_aware", False)):
+                    fbp_set_rna_property_silent(
+                        rig, "fbp_imported_mask_path", paths[0]
+                    )
                 if kind == "GEOMETRY":
                     fbp_update_geometry_effect(rig, effect_id)
                 elif kind == "SHADER":
                     fbp_update_shader_effect(rig, effect_id)
                 built.append(rig)
+                last_rig_by_collection[str(getattr(collection, "name", "") or "")] = rig
             except Exception as exc:
                 failures.append(f"{label}: {exc}")
+
+
+        # Curated multi-effect stacks exercise the interactions that individual
+        # one-effect samples cannot reveal. Every effect remains registry- and
+        # source-checked so a renamed or temporarily unavailable effect reports
+        # a precise regression failure instead of aborting the whole scene.
+        combination_specs = (
+            ("UV + Color", ("PIXELATE", "SWIRL", "CHROMATIC_ABERRATION", "VIGNETTE"), False),
+            ("Print Finish", ("BRIGHTNESS_CONTRAST", "DUOTONE", "HALFTONE", "GRAIN"), False),
+            ("Local Effect Masks", ("VIGNETTE", "SQUARE_MASK", "COLOR_MASK", "GRADIENT_MASK", "NOISE_MASK"), False),
+            ("Mesh Deformation", ("LATTICE", "MESH_WIGGLE", "THICKNESS"), False),
+            ("Paper Surface", ("CUTOUT_OUTLINE", "FELT_FUZZ"), False),
+            ("Shadow & Alpha", ("SHADOW", "RIM", "COLOR_MASK"), False),
+            ("Animated Stress", ("PIXELATE", "ASCII_MATRIX", "WIND_BENDER"), True),
+        )
+        combination_built = 0
+        combination_base_y = -(
+            max((image_index + 4) // 5, (mesh_index + 4) // 5) * 3.2 + 10.0
+        )
+        for combo_index, (label, effect_stack, animated_source) in enumerate(combination_specs):
+            x = (combo_index % 3) * 5.0 - 5.0
+            y = combination_base_y - (combo_index // 3) * 3.6
+            test_files = filenames if animated_source else [filenames[0]]
+            try:
+                rig = build_native_fbp_rig(
+                    context,
+                    f"STACK - {label}",
+                    directory,
+                    test_files,
+                    (x, y, 0.0),
+                    target_collection=combination_collection,
+                )
+                rig["fbp_regression_generated"] = True
+                plane = getattr(rig, "fbp_plane_target", None)
+                if plane is not None:
+                    plane["fbp_regression_generated"] = True
+                added_ids = []
+                for effect_id in effect_stack:
+                    if effect_id not in FBP_EFFECT_REGISTRY:
+                        failures.append(f"{label}: missing registered effect {effect_id}")
+                        continue
+                    if not fbp_effect_supported_for_rig(rig, effect_id):
+                        failures.append(f"{label}: {effect_id} is unsupported by this source")
+                        continue
+                    _fbp_regression_safe_defaults(rig, effect_id)
+                    if not fbp_add_effect(rig, effect_id):
+                        failures.append(f"{label}: could not add {effect_id}")
+                        continue
+                    definition = fbp_effect_definition(effect_id)
+                    if definition.get("kind") == "GEOMETRY":
+                        fbp_update_geometry_effect(rig, effect_id)
+                    elif definition.get("kind") == "SHADER":
+                        fbp_update_shader_effect(rig, effect_id)
+                    added_ids.append(effect_id)
+                if not added_ids:
+                    failures.append(f"{label}: no effect in the stack could be created")
+                    continue
+                if label == "Local Effect Masks" and "VIGNETTE" in added_ids:
+                    for mask_id in ("SQUARE_MASK", "COLOR_MASK", "GRADIENT_MASK", "NOISE_MASK"):
+                        if mask_id in added_ids:
+                            fbp_set_effect_mask_target(rig, mask_id, "VIGNETTE")
+                elif label == "Shadow & Alpha" and {"COLOR_MASK", "SHADOW"}.issubset(added_ids):
+                    fbp_set_effect_mask_target(rig, "COLOR_MASK", "SHADOW")
+                recommended = (
+                    list(FBP_BASE_EFFECT_MENU_ORDER)
+                    + list(FBP_SHADER_STAGE_ORDER.get("UV", ()))
+                    + list(FBP_SHADER_STAGE_ORDER.get("COLOR", ()))
+                    + list(FBP_SHADER_STAGE_ORDER.get("MASK", ()))
+                    + list(FBP_3D_EFFECT_MENU_ORDER)
+                )
+                fbp_sort_effect_stacks_transactional([rig], recommended)
+                order_issues = [
+                    f"{effect_id}: {fbp_effect_order_warning(rig, effect_id)}"
+                    for effect_id in added_ids
+                    if fbp_effect_order_warning(rig, effect_id)
+                ]
+                failures.extend(f"{label}: {message}" for message in order_issues)
+                built.append(rig)
+                combination_built += 1
+            except Exception as exc:
+                failures.append(f"{label}: {exc}")
+
+        # Build a real source/target matte relationship. Individual mask samples
+        # verify node construction; this pair exercises animated source binding,
+        # clipping projection, imported raster masks and local effect routing in
+        # one saveable setup.
+        mask_interaction_built = 0
+        try:
+            pair_y = combination_base_y - ((len(combination_specs) + 2) // 3) * 3.6 - 1.0
+            matte_source = build_native_fbp_rig(
+                context,
+                "MASK SOURCE - Animated",
+                directory,
+                filenames,
+                (-2.6, pair_y, 0.0),
+                target_collection=mask_interaction_collection,
+            )
+            matte_target = build_native_fbp_rig(
+                context,
+                "MASK TARGET - Interaction Matrix",
+                directory,
+                [filenames[0]],
+                (2.6, pair_y, 1.0),
+                target_collection=mask_interaction_collection,
+            )
+            for generated in (matte_source, matte_target):
+                generated["fbp_regression_generated"] = True
+                generated_plane = getattr(generated, "fbp_plane_target", None)
+                if generated_plane is not None:
+                    generated_plane["fbp_regression_generated"] = True
+
+            interaction_effects = (
+                "BRIGHTNESS_CONTRAST",
+                "CLIPPING_MASK",
+                "IMPORTED_MASK",
+                "ALPHA_MATTE",
+                "LUMA_MATTE",
+            )
+            interaction_added = []
+            for effect_id in interaction_effects:
+                if not fbp_effect_supported_for_rig(matte_target, effect_id):
+                    failures.append(f"Mask Interaction Matrix: unsupported effect {effect_id}")
+                    continue
+                _fbp_regression_safe_defaults(matte_target, effect_id)
+                if not fbp_add_effect(matte_target, effect_id):
+                    failures.append(f"Mask Interaction Matrix: could not add {effect_id}")
+                    continue
+                interaction_added.append(effect_id)
+
+            for property_name in (
+                "fbp_clipping_mask_source",
+                "fbp_alpha_matte_source",
+                "fbp_luma_matte_source",
+            ):
+                fbp_set_rna_property_silent(
+                    matte_target, property_name, matte_source
+                )
+            fbp_set_rna_property_silent(
+                matte_target, "fbp_imported_mask_path", paths[0]
+            )
+            if "BRIGHTNESS_CONTRAST" in interaction_added:
+                for mask_id in ("ALPHA_MATTE", "LUMA_MATTE"):
+                    if mask_id in interaction_added:
+                        fbp_set_effect_mask_target(
+                            matte_target, mask_id, "BRIGHTNESS_CONTRAST"
+                        )
+            for effect_id in interaction_added:
+                definition = fbp_effect_definition(effect_id)
+                if definition.get("kind") == "SHADER":
+                    fbp_update_shader_effect(matte_target, effect_id)
+            fbp_sync_clipping_masks(
+                context, collections=(mask_interaction_collection,)
+            )
+            if getattr(matte_target, "fbp_clipping_mask_source", None) is not matte_source:
+                failures.append(
+                    "Mask Interaction Matrix: Clipping Mask source binding did not persist"
+                )
+
+            mask_audit = _fbp_mask_interaction_contract_audit(
+                (matte_source, matte_target), new_scene,
+                repair=False, context=context,
+            )
+            failures.extend(
+                f"Mask Interaction Matrix: {message}"
+                for message in (mask_audit.get("issues", ()) or ())
+            )
+            built.extend((matte_source, matte_target))
+            mask_interaction_built = 2
+        except Exception as exc:
+            failures.append(f"Mask Interaction Matrix: {exc}")
 
         # Remove only unused FILE wrappers created while probing the generated
         # regression sources. Sequence datablocks and all user-owned images are
@@ -1492,15 +2698,26 @@ class FBP_OT_CreateEffectRegressionScene(Operator):
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
                 pass
 
-        # Camera points down the local -Z axis onto the XY layout.
-        camera_data = bpy.data.cameras.new("FBP Regression Camera")
-        camera = bpy.data.objects.new("FBP Regression Camera", camera_data)
-        root.objects.link(camera)
-        camera["fbp_regression_generated"] = True
-        camera.location = (0.0, -8.0, 35.0)
-        camera_data.type = 'ORTHO'
-        rows = max(1, (max(image_index, mesh_index) + 4) // 5)
-        camera_data.ortho_scale = max(24.0, rows * 7.0 + 12.0)
+        # Reframe the camera created before effect construction so camera-aware
+        # effects and final visual inspection use the same Scene contract.
+        positions = []
+        for rig in built:
+            try:
+                positions.append((float(rig.location.x), float(rig.location.y)))
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        if positions:
+            xs, ys = zip(*positions)
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+        else:
+            min_x, max_x, min_y, max_y = -8.0, 8.0, -8.0, 8.0
+        center_x = (min_x + max_x) * 0.5
+        center_y = (min_y + max_y) * 0.5
+        width = max(1.0, max_x - min_x)
+        height = max(1.0, max_y - min_y)
+        camera.location = (center_x, center_y, 35.0)
+        camera_data.ortho_scale = max(24.0, height + 7.0, width / 1.55 + 7.0)
         new_scene.camera = camera
 
         for obj in new_scene.objects:
@@ -1517,18 +2734,31 @@ class FBP_OT_CreateEffectRegressionScene(Operator):
         sync_layer_collection(context)
 
         lines = [
-            "Frame by Plane Effects Regression Scene",
+            "Frame By Plane — Effects Regression Scene",
             "=======================================",
             f"Source rigs: {len(source_rigs)}",
-            f"Effect rigs: {max(0, len(built) - len(source_rigs))}",
-            f"Failures: {len(failures)}",
+            f"Effect rigs: {max(0, len(built) - len(source_rigs) - combination_built - mask_interaction_built)}",
+            f"Combination stacks: {combination_built}/{len(combination_specs)}",
+            f"Mask interaction layers: {mask_interaction_built}/2",
             f"Temporary sources: {temp_root}",
             "",
+            "Failures",
+            "--------",
         ]
         lines.extend(f"- {item}" for item in failures)
-        text = bpy.data.texts.get("FBP_Effects_Regression_Report") or bpy.data.texts.new("FBP_Effects_Regression_Report")
-        text.clear()
-        text.write("\n".join(lines))
+        if not failures:
+            lines.append("- None")
+        lines.extend((
+            "",
+            "Result",
+            "------",
+            "PASS" if not failures else "WARNING",
+        ))
+        write_diagnostic_report(
+            new_scene, "FBP_Effects_Regression_Report", lines,
+            summary=f"Effects Regression Scene · {len(failures)} failure(s)",
+            status="PASS" if not failures else "WARNING",
+        )
         if old_scene is not None and self.replace_existing:
             try:
                 bpy.data.scenes.remove(old_scene)
@@ -1541,4 +2771,3 @@ class FBP_OT_CreateEffectRegressionScene(Operator):
             f"Regression scene: {len(built)} layers, {len(failures)} issue(s)",
         )
         return {'FINISHED'}
-

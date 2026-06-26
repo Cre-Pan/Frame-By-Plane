@@ -47,13 +47,6 @@ def invalidate_file_exists_cache(path=None):
         _UI_FILE_EXISTS_CACHE.pop(os.path.normcase(absolute), None)
 
 
-def clear_file_exists_cache():
-    """Clear cached UI file-status results after explicit relink/import work."""
-    invalidate_file_exists_cache()
-
-
-
-
 def natural_sort_key(s):
     """Human sorting for filenames: A1, A2, A12 instead of A1, A12, A2."""
     name = os.path.basename(str(s))
@@ -92,5 +85,3 @@ def clean_layer_name_from_path(path):
     base = os.path.basename(str(path).rstrip(os.sep))
     stem, ext = os.path.splitext(base)
     return stem if ext else base
-
-

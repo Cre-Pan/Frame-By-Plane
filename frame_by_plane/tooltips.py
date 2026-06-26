@@ -8,7 +8,6 @@ place without mixing documentation text into implementation modules.
 from __future__ import annotations
 
 
-
 # Context-sensitive actions keep their class ``description()`` method. These
 # strings are used for the remaining operators and as a readable fallback.
 EXACT_TOOLTIPS = {
@@ -28,6 +27,21 @@ EXACT_TOOLTIPS = {
     ),
     "fbp.list_action": (
         "Run the requested Frames-list edit, such as move, duplicate, delete or reverse, on the checked entries. Frame durations move with their media and the native sequence backend is rebuilt only after the logical list changes."
+    ),
+    "fbp.open_effect_masks": (
+        "Open the mask editor for this effect on the selected Frame By Plane layers. Existing masks remain attached and the operation changes only the Effects-panel editing target."
+    ),
+    "fbp.close_effect_masks": (
+        "Close the per-effect mask editor and return to the normal Effects Stack. Attached masks, assignments and mask parameters remain unchanged."
+    ),
+    "fbp.add_effect_mask": (
+        "Add the selected compatible mask to this effect across the current layer selection. Assignment is transactional: if one layer cannot be updated, all touched layers are restored."
+    ),
+    "fbp.open_effect_toolbar_menu": (
+        "Open the selected Effects Stack menu for adding effects, managing Effect Groups or running stack-wide actions. Opening the menu does not modify any layer."
+    ),
+    "fbp.toggle_clipping_mask": (
+        "Enable or disable Clipping Mask for this layer. When enabled, the layer uses the alpha of the physically lower compatible layer in the same collection; alphabetical display sorting does not change the source."
     ),
     # Cutout Plane
     "fbp.import_drawing_plane": (
@@ -76,7 +90,34 @@ EXACT_TOOLTIPS = {
         "Remove every Frame By Plane effect from all selected layers and restore their base material and geometry state. This is undoable, but custom node groups remain available in the effect library."
     ),
     "fbp.reset_active_effect": (
-        "Restore the active effect on every selected compatible layer to its registered default values. Effect order, viewport visibility and render visibility are preserved unless the effect definition requires rebuilding."
+        "Restore the active effect on every selected compatible layer to its registered defaults. For Lattice this is also the single recovery action: it removes an incomplete setup, refits the cage to the current plane and rebuilds the Lattice and mesh-detail modifiers."
+    ),
+    "fbp.setup_lattice_camera_flatten": (
+        "Create or repair the planar cage, switch it to Camera Flatten and calculate a camera-relative correction using the active Perspective or Orthographic Scene Camera. The action is unavailable when no supported camera is active."
+    ),
+    "fbp.select_lattice_helper": (
+        "Reveal and select the generated planar Lattice cage without changing its deformation. Object Mode transforms remain locked; use Edit Cage to move individual control points."
+    ),
+    "fbp.edit_lattice_helper": (
+        "Select the generated planar cage and enter Lattice Edit Mode with all control points deselected. Select one point to move one corner or loop intersection, or press A to transform the entire cage."
+    ),
+    "fbp.finish_lattice_editing": (
+        "Exit Lattice Edit Mode, return to Object Mode and restore selection to the owning Frame By Plane layer while keeping the deformation intact."
+    ),
+    "fbp.update_lattice_flatten": (
+        "Recalculate Camera Flatten immediately from the active supported Scene Camera and the layer's current transform. This does not bake or disable live updating."
+    ),
+    "fbp.bake_lattice_flatten": (
+        "Bake the current camera correction into the cage, stop live recalculation and return the Lattice to normal Freeform deformation so the layer can continue to be animated."
+    ),
+    "fbp.freeze_lattice_flatten": (
+        "Freeze the current Camera Flatten result into editable Lattice points, stop live recalculation and enter a state suitable for manual cage editing."
+    ),
+    "fbp.reset_effect_control": (
+        "Reset only the spatial values represented by this effect's viewport helper, such as center, angle, distance, range or softness. Other effect settings, stack order and visibility remain unchanged."
+    ),
+    "fbp.repair_effect_controls": (
+        "Audit the current Scene for missing, duplicated, stale or orphaned Frame By Plane viewport controls, safely repair recoverable contracts and write a detailed report to the Text Editor."
     ),
     "fbp.sort_effect_stack": (
         "Reorder active effects into Frame By Plane's recommended processing order: base and UV stages first, color stages next, then mesh effects. Parameters and visibility states are preserved."
@@ -213,7 +254,7 @@ EXACT_TOOLTIPS = {
         "Create one Frame By Plane rig from the chosen image or video, or one animated plane from multiple selected images. Uses Blender's native image or movie texture backend."
     ),
     "fbp.import_folder_multiplane": (
-        "Choose a folder and create a Multiplane Setup from its supported media and subfolders. The setup can be reviewed before actual scene generation."
+        "Choose a folder, reuse the last import folder or read a copied folder path. Frame By Plane scans supported images, numbered image sequences, videos and subfolders, then opens a confirmation preview with counts and the first detected layer names. Auto Detect creates one Single Plane for one logical layer or a Multiplane for several layers. Forced Single Plane is accepted only for one real root-level still, video or numbered sequence. When additional layers would be ignored, a separate root-only confirmation is required. The reviewed folder snapshot fingerprints both the detected structure and lightweight source-file metadata, so generation stops if files are renamed, removed, replaced or edited before import. Dialog-only choices reuse the current preview instead of rechecking every source file, while confirmation always performs the final validation. Very large imports require explicit confirmation. Blender 5.1 does not pass ordinary dropped folders to extension File Handlers, so use this action or drop any supported media file from the target folder."
     ),
     "fbp.popup_single_plane": (
         "Open the compact Image Plane setup, then choose a still image, image sequence or video. Advanced defaults remain available in the Frame By Plane N-panel."
@@ -354,7 +395,22 @@ EXACT_TOOLTIPS = {
         "Inspect the current project for missing media, broken rig-plane links, invalid collections and common Frame By Plane consistency problems, then show a non-destructive report."
     ),
     "fbp.deep_addon_audit": (
-        "Run an extended diagnostic over registered effects, editable Shape Mask helpers and SDF images, native media bindings, material contracts, camera links, generated datablocks and scene ownership. Intended for troubleshooting and release testing."
+        "Run an extended diagnostic over effect-stack contracts, the complete mask interaction matrix, render-only state restoration, native media bindings, material contracts, camera links, generated datablocks and scene ownership. Safe repair restores only recoverable generated relationships."
+    ),
+    "fbp.run_effects_contract_audit": (
+        "Validate every active effect against its owner layer, detect unknown generated tags, inspect shader-stage order metadata and report stacks that differ from the recommended compatible order. Optional repair normalizes metadata and ordering without deleting effects."
+    ),
+    "fbp.run_mask_interaction_audit": (
+        "Validate editable Shape Mask helpers and private images, clipping and matte source pointers, imported raster mask paths, source cycles and per-effect mask receiver wiring. Safe repair restores generated contracts and clears only invalid pointers."
+    ),
+    "fbp.run_render_parity_audit": (
+        "Render the active Scene frame at a compact diagnostic resolution in Eevee and Cycles, compare premultiplied RGBA pixels and verify that real renders restore every tracked viewport, effect, modifier and shader-node state. Scene render settings are restored afterwards."
+    ),
+    "fbp.run_render_contract_audit": (
+        "Execute the same temporary effect-state guard used by final rendering, verify lossless restoration of node, modifier and constraint values, and ensure generated Shape Mask and Lattice helpers cannot appear in Eevee or Cycles."
+    ),
+    "fbp.run_release_gate": (
+        "Run lifecycle, native backend, effects, mask-interaction, render-contract, optional Eevee/Cycles pixel parity, persistence, Undo/Redo and Deep Add-on checks as one strict pre-release gate. Platform installation and add-on reload tests remain external."
     ),
     "fbp.relink_from_project_root": (
         "Search recursively inside the configured Project Folder for missing image and video filenames, then relink unambiguous matches without moving or renaming files."
@@ -378,7 +434,7 @@ EXACT_TOOLTIPS = {
         "Create a separate diagnostic scene covering static images, variable-duration One Shot, Loop, Ping-Pong, reversed rows, transparent rows, shared media sources, long sequences, mixed resolutions and missing-file recovery."
     ),
     "fbp.create_effect_regression_scene": (
-        "Create a separate test scene with representative source planes and one sample for every registered effect. Use it to compare viewport, Eevee, Cycles, Undo/Redo and future releases."
+        "Create a separate test scene with representative source planes, one sample for every registered effect, local per-effect masks and a real animated source/target matte matrix. Use it to compare viewport, render, Undo/Redo, save/reopen and future releases."
     ),
     "fbp.repair_render_state": (
         "Validate and repair native media bindings, timing, UV layers, material slots, material indices and render-sensitive effect state before rendering. Source image files are not modified."
@@ -493,7 +549,9 @@ MENU_TOOLTIPS = {
     "FBP_MT_object_masks": "Add Alpha Matte or Luma Matte effects from the dedicated Mask Stack.",
     "FBP_MT_object_effects_2d": "Browse compatible base, UV and image-processing effects for the selected Frame By Plane layers.",
     "FBP_MT_object_effects_3d": "Browse compatible Geometry Nodes and mesh effects for the selected Frame By Plane layers.",
-    "FBP_MT_frame_by_plane_add": "Create an Image Plane, Multiplane project, Cutout Plane, Color Plane, Gradient Plane or Holdout Plane from Blender's Add menu.",
+    "FBP_MT_frame_by_plane_add": "Create the primary Frame By Plane layer types from Blender's Add menu. Secondary folder, PSD/PSB, Procreate and Toon Boom imports are grouped in the final More submenu.",
+    "FBP_MT_frame_by_plane_more": "Open secondary import workflows for folders, copied folder paths, the last-used folder, PSD/PSB, Procreate and Toon Boom exports.",
+    "FBP_MT_layer_blend_dropdown": "Choose a principal PSD or Procreate-style layer blend mode from a compact multi-column submenu. The current shared mode is marked with a check.",
     "FBP_MT_object_holdout": "Open alpha-aware holdout operations for selected Frame By Plane layers, including selected-only, inverse selection and material restoration workflows.",
 }
 
@@ -537,20 +595,3 @@ def apply_tooltips(modules) -> None:
             # A custom classmethod description is already context-sensitive;
             # keep it and only provide a static fallback for API inspection.
             cls.bl_description = _expanded_description(cls, module_name, bl_idname)
-
-
-def audit_tooltips(modules):
-    """Return missing or suspiciously short Frame By Plane descriptions."""
-    missing = []
-    for module in modules:
-        for cls in vars(module).values():
-            if not isinstance(cls, type):
-                continue
-            bl_idname = str(getattr(cls, "bl_idname", "") or "")
-            if not (bl_idname.startswith("fbp.") or bl_idname in MENU_TOOLTIPS):
-                continue
-            has_dynamic = callable(cls.__dict__.get("description"))
-            description = str(getattr(cls, "bl_description", "") or "").strip()
-            if not has_dynamic and len(description) < 80:
-                missing.append((bl_idname, description))
-    return missing

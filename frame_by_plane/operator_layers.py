@@ -9,8 +9,13 @@ from bpy.props import (
 )
 from bpy.types import Operator
 
-from .constants import fbp_icon
-from .effects_registry import FBP_EFFECT_CLIPPING_MASK, fbp_effect_definition
+from .constants import (
+    FBP_LAYER_BLEND_MENU_ITEMS,
+    fbp_icon, fbp_layer_blend_label, fbp_layer_blend_mode_columns,
+)
+from .effects_registry import (
+    FBP_EFFECT_CLIPPING_MASK, FBP_EFFECT_LAYER_BLEND, fbp_effect_definition,
+)
 from .path_utils import natural_sort_key
 from .builder import apply_fit_to_camera
 from .layers import (
@@ -19,7 +24,7 @@ from .layers import (
     ensure_object_in_active_collection,
     fbp_active_layer_index,
     fbp_clipping_source_map,
-    fbp_layer_backend_type,
+    fbp_layer_has_sampleable_image,
     fbp_layer_depth_value_from_cache,
     fbp_make_depth_context_cache,
     find_layer_collection,
@@ -54,6 +59,215 @@ from .operator_common import (
     fbp_jump_timeline_to_sequence_row,
 )
 
+
+_FBP_LAYER_BLEND_ENABLED_KEY = str(
+    fbp_effect_definition(FBP_EFFECT_LAYER_BLEND).get(
+        "enabled_key", "fbp_effect_layer_blend"
+    ) or "fbp_effect_layer_blend"
+)
+
+
+def _fbp_layer_blend_target_rigs(context, rig_name=""):
+    """Resolve one UIList layer or the current viewport FBP selection."""
+    name = str(rig_name or "")
+    if name:
+        rig = bpy.data.objects.get(name)
+        return [rig] if rig and is_fbp_layer_object(rig) else []
+    return [rig for rig in get_selected_fbp_roots(context) if is_fbp_layer_object(rig)]
+
+
+def _fbp_layer_blend_mode_for_rig(rig):
+    if not rig or not is_fbp_layer_object(rig):
+        return "NORMAL"
+    try:
+        if not bool(rig.get(_FBP_LAYER_BLEND_ENABLED_KEY, False)):
+            return "NORMAL"
+        return str(getattr(rig, "fbp_layer_blend_mode", "MULTIPLY") or "MULTIPLY").upper()
+    except FBP_DATA_ERRORS:
+        return "NORMAL"
+
+
+def _fbp_apply_layer_blend_mode(context, rigs, mode):
+    """Apply one blend mode without invoking another Blender operator.
+
+    This shared path keeps every Layer Blend entry point identical, including
+    relation refresh, Undo data and multi-layer editing.
+    """
+    mode = str(mode or "NORMAL").upper()
+    changed = 0
+    unchanged = 0
+    skipped = 0
+    try:
+        from .geometry_nodes import (
+            fbp_add_effect, fbp_effect_is_active, fbp_remove_effect,
+            fbp_schedule_clipping_mask_sync, fbp_sync_effect_items,
+            fbp_update_shader_effect,
+        )
+    except (ImportError, AttributeError) as exc:
+        fbp_warn("Could not load Layer Blend operators", exc)
+        return changed, unchanged, max(1, len(tuple(rigs or ())))
+
+    rigs = tuple(rigs or ())
+    for rig in rigs:
+        try:
+            active = bool(fbp_effect_is_active(rig, FBP_EFFECT_LAYER_BLEND))
+            current_mode = _fbp_layer_blend_mode_for_rig(rig)
+            if mode == "NORMAL":
+                if not active and not bool(rig.get(_FBP_LAYER_BLEND_ENABLED_KEY, False)):
+                    unchanged += 1
+                    continue
+                if fbp_remove_effect(rig, FBP_EFFECT_LAYER_BLEND, sync_items=False):
+                    fbp_sync_effect_items(rig)
+                    changed += 1
+                else:
+                    skipped += 1
+                continue
+
+            if active and current_mode == mode:
+                unchanged += 1
+                continue
+
+            fbp_set_rna_property_silent(rig, "fbp_layer_blend_mode", mode)
+            if not active:
+                if not fbp_add_effect(
+                    rig, FBP_EFFECT_LAYER_BLEND,
+                    inherit_active_group=False, sync_items=False,
+                ):
+                    skipped += 1
+                    continue
+            fbp_update_shader_effect(
+                rig, FBP_EFFECT_LAYER_BLEND,
+                property_names={"fbp_layer_blend_mode"},
+            )
+            fbp_sync_effect_items(rig)
+            changed += 1
+        except FBP_DATA_ERRORS as exc:
+            skipped += 1
+            fbp_warn(f"Could not set Layer Blend on {getattr(rig, 'name', 'layer')}", exc)
+
+    if changed:
+        relation_collections = []
+        seen_collections = set()
+        for rig in rigs:
+            collection = get_primary_fbp_collection(rig)
+            if collection is None:
+                continue
+            try:
+                key = int(collection.as_pointer())
+            except FBP_DATA_ERRORS:
+                key = id(collection)
+            if key in seen_collections:
+                continue
+            seen_collections.add(key)
+            relation_collections.append(collection)
+        fbp_schedule_clipping_mask_sync(
+            getattr(context, "scene", None),
+            collections=tuple(relation_collections) if relation_collections else None,
+        )
+    return changed, unchanged, skipped
+
+
+class FBP_OT_SetLayerBlendMode(Operator):
+    bl_idname = "fbp.set_layer_blend_mode"
+    bl_label = "Set Layer Blend Mode"
+    bl_description = "Apply this blend mode to the chosen Frame By Plane layer, or to all selected Frame By Plane layers"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: EnumProperty(
+        name="Blend Mode",
+        items=FBP_LAYER_BLEND_MENU_ITEMS,
+        default="NORMAL",
+        options={'SKIP_SAVE'},
+    )
+    rig_name: StringProperty(name="Layer", default="", options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        rigs = _fbp_layer_blend_target_rigs(context, self.rig_name)
+        if not rigs:
+            self.report({'WARNING'}, "Select a Frame By Plane layer")
+            return {'CANCELLED'}
+        mode = str(self.mode or "NORMAL").upper()
+        changed, unchanged, skipped = _fbp_apply_layer_blend_mode(context, rigs, mode)
+        if changed:
+            self.report({'INFO'}, f"{fbp_layer_blend_label(mode)}: {changed} layer(s)")
+            return {'FINISHED'}
+        if unchanged and not skipped:
+            self.report({'INFO'}, f"Selected layer(s) already use {fbp_layer_blend_label(mode)}")
+            return {'FINISHED'}
+        self.report({'WARNING'}, "Layer Blend is unavailable for the selected layer type")
+        return {'CANCELLED'}
+
+
+class FBP_OT_ShowLayerBlendMenu(Operator):
+    bl_idname = "fbp.show_layer_blend_menu"
+    bl_label = "Blend"
+    bl_description = "Choose a Procreate-style blend mode for this layer or the selected Frame By Plane layers"
+    bl_options = {'INTERNAL'}
+
+    rig_name: StringProperty(name="Layer", default="", options={'SKIP_SAVE'})
+
+    def invoke(self, context, _event):
+        rigs = _fbp_layer_blend_target_rigs(context, self.rig_name)
+        if not rigs:
+            self.report({'WARNING'}, "Select a Frame By Plane layer")
+            return {'CANCELLED'}
+
+        exact_name = str(self.rig_name or "")
+        target_names = tuple(str(getattr(rig, "name", "") or "") for rig in rigs)
+        modes = {_fbp_layer_blend_mode_for_rig(rig) for rig in rigs}
+        common_mode = next(iter(modes)) if len(modes) == 1 else ""
+        target_text = target_names[0] if len(target_names) == 1 else f"{len(target_names)} selected layers"
+
+        def draw_popup(menu, _popup_context):
+            layout = menu.layout
+            layout.label(text=target_text, icon='NODE_MATERIAL')
+            if not common_mode:
+                layout.label(text="Mixed blend modes", icon='INFO')
+
+            grid = layout.row(align=False)
+            for definitions in fbp_layer_blend_mode_columns():
+                column = grid.column(align=False)
+                for definition in definitions:
+                    mode = str(definition.get("id", "NORMAL") or "NORMAL")
+                    short = str(definition.get("short", "N") or "N")
+                    label = str(definition.get("label", mode.title()) or mode.title())
+                    icon = (
+                        'CHECKMARK' if common_mode == mode
+                        else str(definition.get("icon", "NODE_MATERIAL") or "NODE_MATERIAL")
+                    )
+                    op = column.operator(
+                        'fbp.set_layer_blend_mode',
+                        text=f"{short}   {label}",
+                        icon=icon,
+                    )
+                    op.mode = mode
+                    op.rig_name = exact_name
+
+            if len(rigs) == 1 and common_mode != "NORMAL":
+                rig = rigs[0]
+                layout.separator()
+                layout.prop(rig, "fbp_layer_blend_factor", text="Blend Opacity", slider=True)
+                source = getattr(rig, "fbp_layer_blend_source", None)
+                if source is not None:
+                    select_source = layout.operator(
+                        "fbp.select_layer_relation_source",
+                        text=f"Select Source: {getattr(source, 'name', 'Layer')}",
+                        icon='RESTRICT_SELECT_OFF',
+                    )
+                    select_source.rig_name = rig.name
+                    select_source.relation = 'BLEND'
+                else:
+                    layout.label(text="No compatible image layer below", icon='ERROR')
+
+        try:
+            context.window_manager.popup_menu(draw_popup, title="Blend", icon='NODE_MATERIAL')
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not open Layer Blend menu", exc)
+            return {'CANCELLED'}
+
+    def execute(self, context):
+        return self.invoke(context, None)
 
 
 class FBP_OT_RecreateObjectMaskHelper(Operator):
@@ -146,6 +360,143 @@ class FBP_OT_EditObjectMaskHelper(Operator):
             return {'CANCELLED'}
 
 
+class FBP_OT_SelectLayerRelationSource(Operator):
+    bl_idname = "fbp.select_layer_relation_source"
+    bl_label = "Select Source Layer"
+    bl_description = "Select the layer currently used as the automatic Blend or Clipping source"
+    bl_options = {'UNDO'}
+
+    rig_name: StringProperty(name="Layer", options={'SKIP_SAVE'})
+    relation: EnumProperty(
+        name="Relation",
+        items=(
+            ('BLEND', "Layer Blend", "Select the image layer used as the Layer Blend base"),
+            ('CLIPPING', "Clipping Mask", "Select the image layer supplying the clipping alpha"),
+        ),
+        default='BLEND',
+        options={'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def description(cls, context, properties):
+        relation = str(getattr(properties, "relation", "BLEND") or "BLEND")
+        rig = bpy.data.objects.get(str(getattr(properties, "rig_name", "") or ""))
+        prop_name = "fbp_clipping_mask_source" if relation == 'CLIPPING' else "fbp_layer_blend_source"
+        source = getattr(rig, prop_name, None) if rig else None
+        if source is not None:
+            return f"Select source layer {getattr(source, 'name', 'Layer')}"
+        return "No automatic source layer is currently available"
+
+    def execute(self, context):
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        if not rig or not is_fbp_layer_object(rig):
+            return {'CANCELLED'}
+        prop_name = (
+            "fbp_clipping_mask_source"
+            if str(self.relation or "BLEND") == 'CLIPPING'
+            else "fbp_layer_blend_source"
+        )
+        source = getattr(rig, prop_name, None)
+        if source is None or not is_fbp_layer_object(source):
+            self.report({'WARNING'}, "No source layer is currently available")
+            return {'CANCELLED'}
+        if not object_in_view_layer(source, context):
+            if not ensure_object_in_active_collection(source, context):
+                sync_layer_collection(context)
+                self.report({'WARNING'}, "Source layer is not in the active View Layer")
+                return {'CANCELLED'}
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            source.select_set(True)
+            context.view_layer.objects.active = source
+            for index, item in enumerate(context.scene.fbp_layers):
+                try:
+                    if item.obj == source:
+                        context.scene.fbp_layer_stack_index = index
+                        break
+                except ReferenceError:
+                    continue
+            self.report({'INFO'}, f"Selected source layer: {source.name}")
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not select relation source", exc)
+            return {'CANCELLED'}
+
+
+class FBP_OT_RepairLayerRelation(Operator):
+    bl_idname = "fbp.repair_layer_relation"
+    bl_label = "Repair Layer Relation"
+    bl_description = (
+        "Safely rebuild and rebind the selected Clipping Mask or Layer Blend "
+        "after reordering, duplication, Undo/Redo or a partial node rebuild"
+    )
+    bl_options = {'REGISTER'}
+
+    rig_name: StringProperty(name="Layer", options={'SKIP_SAVE'})
+    relation: EnumProperty(
+        name="Relation",
+        items=(
+            ('CLIPPING', "Clipping Mask", "Repair this layer's automatic clipping source"),
+            ('BLEND', "Layer Blend", "Repair this layer's automatic blend source"),
+        ),
+        default='CLIPPING',
+        options={'SKIP_SAVE'},
+    )
+
+    def execute(self, context):
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        if rig is None or not is_fbp_layer_object(rig):
+            self.report({'WARNING'}, "Frame By Plane layer is no longer available")
+            return {'CANCELLED'}
+
+        effect_id = (
+            FBP_EFFECT_CLIPPING_MASK
+            if str(self.relation or 'CLIPPING') == 'CLIPPING'
+            else FBP_EFFECT_LAYER_BLEND
+        )
+        try:
+            from .geometry_nodes import (
+                fbp_effect_is_active,
+                fbp_schedule_clipping_mask_sync,
+            )
+            if not fbp_effect_is_active(rig, effect_id):
+                self.report({'WARNING'}, "This layer relation is not active")
+                return {'CANCELLED'}
+            collection = get_primary_fbp_collection(rig)
+            fbp_schedule_clipping_mask_sync(
+                getattr(context, "scene", None),
+                collections=(collection,) if collection is not None else None,
+            )
+            relation_label = "Clipping Mask" if effect_id == FBP_EFFECT_CLIPPING_MASK else "Layer Blend"
+            self.report({'INFO'}, f"{relation_label} repair queued safely")
+            return {'FINISHED'}
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Could not repair layer relation", exc)
+            self.report({'WARNING'}, "Could not queue the relation repair")
+            return {'CANCELLED'}
+
+
+class FBP_OT_RepairAllLayerRelations(Operator):
+    bl_idname = "fbp.repair_all_layer_relations"
+    bl_label = "Repair Layer Relations"
+    bl_description = (
+        "Safely rescan every active Clipping Mask and Layer Blend in the current scene, "
+        "clear stale sources and rebuild incomplete relation nodes"
+    )
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        try:
+            from .geometry_nodes import fbp_schedule_clipping_mask_sync
+            fbp_schedule_clipping_mask_sync(getattr(context, "scene", None), collections=None)
+            self.report({'INFO'}, "Layer relation repair queued for the current scene")
+            return {'FINISHED'}
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Could not repair scene layer relations", exc)
+            self.report({'WARNING'}, "Could not queue the scene relation repair")
+            return {'CANCELLED'}
+
+
 class FBP_OT_ToggleClippingMask(Operator):
     bl_idname = "fbp.toggle_clipping_mask"
     bl_label = "Toggle Clipping Mask"
@@ -209,15 +560,28 @@ class FBP_OT_ToggleClippingMask(Operator):
                 collections=(collection,) if collection else None,
             ).get(rig)
             if source is None:
-                self.report({'WARNING'}, "This layer has no layer directly below it in the same collection")
+                self.report({'WARNING'}, "This layer has no compatible image layer directly below it in the same collection")
                 return {'CANCELLED'}
-            if fbp_layer_backend_type(source) not in {
-                'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE', 'CUTOUT'
-            }:
+            if not fbp_layer_has_sampleable_image(source):
                 self.report({'WARNING'}, "The layer below has no image alpha available for clipping")
                 return {'CANCELLED'}
 
             previous_source = getattr(rig, 'fbp_clipping_mask_source', None)
+            previous_projection = bool(getattr(rig, 'fbp_clipping_mask_use_source_transform', True))
+            previous_camera_projection = bool(getattr(rig, 'fbp_clipping_mask_use_camera_projection', True))
+            # Manually created clipping masks operate in the spatial plane domain
+            # by default. This makes opaque rectangular photos clip visibly to
+            # the source plane bounds instead of sampling an all-white normalized UV.
+            fbp_set_rna_property_silent(
+                rig, 'fbp_clipping_mask_use_source_transform', True
+            )
+            fbp_set_rna_property_silent(
+                rig, 'fbp_clipping_mask_use_camera_projection', True
+            )
+            try:
+                rig['fbp_clipping_projection_version'] = 3
+            except FBP_DATA_IO_ERRORS:
+                pass
             # Bind the source before creating the shader node. This prevents a
             # transient unbound mask and lets initial socket synchronization use
             # the correct alpha source immediately.
@@ -228,8 +592,23 @@ class FBP_OT_ToggleClippingMask(Operator):
                 fbp_set_rna_property_silent(
                     rig, 'fbp_clipping_mask_source', previous_source
                 )
+                fbp_set_rna_property_silent(
+                    rig, 'fbp_clipping_mask_use_source_transform', previous_projection
+                )
+                fbp_set_rna_property_silent(
+                    rig, 'fbp_clipping_mask_use_camera_projection', previous_camera_projection
+                )
                 self.report({'WARNING'}, "Could not add Clipping Mask")
                 return {'CANCELLED'}
+            # Defer relation binding until this UI operator has returned. The
+            # effect group may have been removed/recreated in the same event;
+            # traversing its ImageUser RNA immediately can dereference a stale
+            # node wrapper in Blender 5.1.
+            from .geometry_nodes import fbp_schedule_clipping_mask_sync
+            fbp_schedule_clipping_mask_sync(
+                getattr(context, "scene", None),
+                collections=(collection,) if collection else None,
+            )
             self.report({'INFO'}, f"Clipped to {source.name}")
             return {'FINISHED'}
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
@@ -892,6 +1271,7 @@ class FBP_OT_ReverseSelectedLayerOrder(Operator):
             for left, right in zip(
                 ordered[:len(ordered) // 2],
                 reversed(ordered[(len(ordered) + 1) // 2:]),
+                strict=True,
             ):
                 swap_layer_depth_only(
                     context,

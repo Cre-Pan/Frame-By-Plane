@@ -1,7 +1,18 @@
 # Security Policy
 
-Frame by Plane is a local Blender add-on. It does not require network access.
+## Supported version
 
-The add-on reads image files from project folders and can write rendered frames to disk.
+Security fixes are applied to the current public Frame By Plane release line.
 
-If you discover a security issue, please do not publish sensitive details publicly before the maintainer has had time to review it.
+## Reporting a vulnerability
+
+Please do not publish sensitive vulnerability details in a public issue.
+
+Report them privately to **pannoli312@gmail.com** with:
+
+- A clear description of the issue.
+- Reproduction steps or a minimal file.
+- Blender and Frame By Plane versions.
+- Potential impact.
+
+You will receive confirmation after the report has been reviewed.

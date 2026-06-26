@@ -96,6 +96,15 @@ def fbp_cancel_safe_tasks():
         pass
 
 
+def fbp_restore_pending_whats_new_prompt():
+    """Restore update notes if Undo or file loading retired their timer."""
+    try:
+        from .feedback import fbp_schedule_whats_new_prompt
+        return bool(fbp_schedule_whats_new_prompt(delay=0.0))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def fbp_remove_handlers_by_name(handler_list, *names):
     """Remove previously registered handlers by function name.
 
@@ -185,11 +194,6 @@ def fbp_deferred_post_undo_sync():
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
             try:
-                from .native_backend import fbp_repair_native_sequence_timing_scene
-                fbp_repair_native_sequence_timing_scene(context.scene)
-            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                pass
-            try:
                 pending = getattr(context.scene, "fbp_pending_planes", None)
                 pending_rows = getattr(context.scene, "fbp_pending_tree_rows", None)
                 if (pending is not None and len(pending)) or (
@@ -252,8 +256,6 @@ def fbp_deferred_scene_sync():
     return None
 
 
-
-
 def fbp_deferred_camera_projection_sync():
     """Refresh camera-aware modifier inputs from Blender's safe timer context."""
     if fbp_undo_is_active() or fbp_render_is_active():
@@ -263,11 +265,13 @@ def fbp_deferred_camera_projection_sync():
         scene = getattr(bpy.context, "scene", None)
         if scene is not None:
             _geometry_nodes.fbp_sync_scene_camera_bindings(scene)
+            # Clipping Mask owns shader-side camera matrices rather than the
+            # Geometry Nodes camera contract. Refresh both systems when the
+            # active camera, projection type or camera datablock changes.
+            _geometry_nodes.fbp_sync_clipping_masks(bpy.context)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not refresh camera-aware effects", exc)
     return None
-
-
 
 
 def fbp_render_guard_watchdog():
@@ -363,6 +367,16 @@ def fbp_camera_projection_notify():
 
 def fbp_scene_change_notify():
     """Message-bus callback: run as soon as the active Window.scene changes."""
+    if bool(fbp_runtime_get("fbp_pause_managed_timers", False)):
+        return
+    try:
+        resume_after = float(
+            fbp_runtime_get("fbp_managed_timers_resume_after", 0.0) or 0.0
+        )
+    except (TypeError, ValueError):
+        resume_after = 0.0
+    if resume_after > time.monotonic():
+        return
     if fbp_undo_is_active() or fbp_render_is_active():
         return
     fbp_register_timer_once(fbp_deferred_scene_sync, 0.12)
@@ -425,6 +439,12 @@ def fbp_undo_pre_handler(scene):
     # post-undo sync rebuilds those visual caches from Blender's idle loop.
 
 
+@bpy.app.handlers.persistent
+def fbp_redo_pre_handler(scene):
+    """Use the same Main-replacement guard for Redo as for Undo."""
+    fbp_undo_pre_handler(scene)
+
+
 def fbp_deferred_release_undo_guard():
     """Release only after the most recent undo_post grace period has elapsed.
 
@@ -443,22 +463,21 @@ def fbp_deferred_release_undo_guard():
         return min(0.35, max(0.05, remaining))
     fbp_set_undo_guard(False)
     fbp_register_timer_once(fbp_deferred_post_undo_sync, 0.25)
+    # Undo clears all one-shot safe tasks. Restore unseen release notes only
+    # after Blender has finished replacing the previous state.
+    fbp_restore_pending_whats_new_prompt()
     return None
 
 
-@bpy.app.handlers.persistent
-def fbp_undo_post_handler(scene):
-    # Do not sync immediately inside undo_post. Schedule a deferred release of the
-    # guard, then rebuild UI caches after Blender has completed undo decode.
+def _fbp_history_post_handler():
+    """Schedule one safe post-history refresh after Undo or Redo."""
     now = time.monotonic()
     fbp_runtime_set("fbp_undo_release_not_before", now + 0.35)
     if not fbp_register_timer_once(fbp_deferred_release_undo_guard, 0.35):
         # False normally means the deduplicated timer is already registered. If
-        # Blender rejected registration, fail closed: the persistent watchdog
-        # releases the guard from an idle timer instead of unlocking inside the
-        # undo_post callback itself. Tighten its deadline so recovery is prompt.
+        # Blender rejected registration, fail closed and let the watchdog recover.
         try:
-            timer_registered = bpy.app.timers.is_registered(
+            timer_registered = fbp_timer_is_registered(
                 fbp_deferred_release_undo_guard
             )
         except FBP_DATA_ERRORS:
@@ -467,8 +486,30 @@ def fbp_undo_post_handler(scene):
             fbp_runtime_set("fbp_undo_guard_deadline", now + 5.0)
             fbp_warn_once(
                 "undo_release_timer_unavailable",
-                "Undo release timer was unavailable; the persistent watchdog will recover it",
+                "Undo/Redo release timer was unavailable; the persistent watchdog will recover it",
             )
+
+
+@bpy.app.handlers.persistent
+def fbp_undo_post_handler(scene):
+    # Count only completed history operations. The endurance baseline stores no
+    # RNA pointers and therefore remains valid while Blender replaces Main.
+    try:
+        from .endurance import fbp_note_undo_event
+        fbp_note_undo_event(scene)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    _fbp_history_post_handler()
+
+
+@bpy.app.handlers.persistent
+def fbp_redo_post_handler(scene):
+    try:
+        from .endurance import fbp_note_redo_event
+        fbp_note_redo_event(scene)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    _fbp_history_post_handler()
 
 
 # Textured playback remains visible. The frame-change handler is used only by
@@ -478,34 +519,114 @@ def fbp_undo_post_handler(scene):
 _FBP_SCENE_MSGBUS_OWNER = globals().get("_FBP_SCENE_MSGBUS_OWNER", object())
 
 
-def fbp_register_timer_once(callback, first_interval, *, persistent=False, restart=False):
-    """Register one current timer callback and retire stale reload generations."""
+def _fbp_timer_registry_key(callback):
     callback_name = str(getattr(callback, "__name__", "") or id(callback))
     callback_module = str(getattr(callback, "__module__", "") or "")
-    key = f"{callback_module}.{callback_name}"
+    return f"{callback_module}.{callback_name}"
+
+
+def fbp_timer_is_registered(callback):
+    """Return whether the callback's current managed timer generation is live."""
+    if callback is None:
+        return False
+    key = _fbp_timer_registry_key(callback)
+    managed = _FBP_REGISTERED_TIMERS.get(key, callback)
+    try:
+        return bool(bpy.app.timers.is_registered(managed))
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_prune_timer_registry():
+    """Remove completed timer generations from runtime bookkeeping."""
+    removed = 0
+    for key, callback in tuple(_FBP_REGISTERED_TIMERS.items()):
+        try:
+            registered = bool(bpy.app.timers.is_registered(callback))
+        except FBP_DATA_ERRORS:
+            registered = False
+        if not registered:
+            _FBP_REGISTERED_TIMERS.pop(key, None)
+            removed += 1
+    return removed
+
+
+def fbp_register_timer_once(callback, first_interval, *, persistent=False, restart=False):
+    """Register one current timer callback and retire stale reload generations.
+
+    Blender unregisters a timer automatically when its callback returns ``None``.
+    The managed wrapper mirrors that lifecycle in ``_FBP_REGISTERED_TIMERS`` so
+    completed one-shot repairs never appear as stale lifecycle entries.
+    """
+    key = _fbp_timer_registry_key(callback)
     try:
         previous = _FBP_REGISTERED_TIMERS.get(key)
-        if previous is not None and previous is not callback:
+        if previous is not None:
             try:
-                if bpy.app.timers.is_registered(previous):
+                previous_registered = bool(bpy.app.timers.is_registered(previous))
+            except FBP_DATA_ERRORS:
+                previous_registered = False
+            previous_source = getattr(previous, "__fbp_timer_source__", previous)
+            same_generation = previous_source is callback
+            if previous_registered and same_generation and not restart:
+                return False
+            if previous_registered:
+                try:
                     bpy.app.timers.unregister(previous)
-            except FBP_DATA_ERRORS:
-                pass
-        if bpy.app.timers.is_registered(callback):
-            if not restart:
-                _FBP_REGISTERED_TIMERS[key] = callback
-                return False
-            try:
+                except FBP_DATA_ERRORS:
+                    return False
+            _FBP_REGISTERED_TIMERS.pop(key, None)
+
+        # Retire a direct pre-wrapper registration left by an older in-place reload.
+        try:
+            if bpy.app.timers.is_registered(callback):
+                if not restart:
+                    _FBP_REGISTERED_TIMERS[key] = callback
+                    return False
                 bpy.app.timers.unregister(callback)
-            except FBP_DATA_ERRORS:
-                _FBP_REGISTERED_TIMERS[key] = callback
-                return False
+        except FBP_DATA_ERRORS:
+            pass
+
+        def managed_callback():
+            # The Developer Tool removes complete temporary Scene graphs. Pause
+            # every managed add-on timer while that transaction is active and for
+            # a short grace period afterwards, preventing callbacks from reading
+            # RNA wrappers whose IDs are being freed by Blender.
+            if bool(fbp_runtime_get("fbp_pause_managed_timers", False)):
+                return 0.25
+            try:
+                resume_after = float(
+                    fbp_runtime_get("fbp_managed_timers_resume_after", 0.0) or 0.0
+                )
+            except (TypeError, ValueError):
+                resume_after = 0.0
+            now = time.monotonic()
+            if resume_after > now:
+                return max(0.05, min(0.5, resume_after - now))
+            try:
+                next_interval = callback()
+            except Exception as exc:
+                if _FBP_REGISTERED_TIMERS.get(key) is managed_callback:
+                    _FBP_REGISTERED_TIMERS.pop(key, None)
+                try:
+                    fbp_warn(f"Timer {getattr(callback, '__name__', callback)} failed", exc)
+                except FBP_DATA_ERRORS:
+                    pass
+                return None
+            if next_interval is None and _FBP_REGISTERED_TIMERS.get(key) is managed_callback:
+                _FBP_REGISTERED_TIMERS.pop(key, None)
+            return next_interval
+
+        managed_callback.__name__ = str(getattr(callback, "__name__", "fbp_managed_timer"))
+        managed_callback.__module__ = str(getattr(callback, "__module__", __name__))
+        managed_callback.__doc__ = getattr(callback, "__doc__", None)
+        managed_callback.__fbp_timer_source__ = callback
         bpy.app.timers.register(
-            callback,
+            managed_callback,
             first_interval=max(0.0, float(first_interval)),
             persistent=bool(persistent),
         )
-        _FBP_REGISTERED_TIMERS[key] = callback
+        _FBP_REGISTERED_TIMERS[key] = managed_callback
         return True
     except FBP_DATA_ERRORS as exc:
         _FBP_REGISTERED_TIMERS.pop(key, None)
@@ -554,6 +675,11 @@ def fbp_subscribe_scene_msgbus():
 def fbp_load_pre_handler(_dummy):
     """Retire Python runtime state without mutating the Main being destroyed."""
     fbp_set_undo_guard(True, timeout=_FBP_LOAD_FAILSAFE_SECONDS)
+    try:
+        from .endurance import fbp_clear_undo_endurance_runtime
+        fbp_clear_undo_endurance_runtime()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     fbp_cancel_safe_tasks()
     try:
         _scene_sync.fbp_reset_deferred_sync_state()
@@ -596,6 +722,17 @@ def fbp_register_object_mask_runtime_timer():
 @bpy.app.handlers.persistent
 def fbp_load_post_handler(_dummy):
     fbp_set_undo_guard(False)
+    # Persistence baselines use a saved generation counter in addition to a
+    # process-local token. This proves that Verify Reopened File actually ran
+    # after Blender replaced Main, even when the same application session is
+    # used to close and reopen the .blend.
+    for scene in tuple(getattr(bpy.data, "scenes", ()) or ()):
+        try:
+            scene["fbp_persistence_load_generation"] = int(
+                scene.get("fbp_persistence_load_generation", 0) or 0
+            ) + 1
+        except FBP_DATA_ERRORS:
+            continue
     # Existing .blend scenes keep their stored project settings. Mark them as
     # initialized before the deferred scene-sync timer runs; only Scenes created
     # after load receive the Add-on Preferences defaults automatically.
@@ -637,9 +774,27 @@ def fbp_load_post_handler(_dummy):
     fbp_register_timer_once(fbp_undo_guard_watchdog, 2.0, persistent=True)
     fbp_register_object_mask_runtime_timer()
 
+    # Heal Lattice contracts from older releases after the new Main and all
+    # Object PointerProperties are stable. The repair runs once, never from
+    # depsgraph evaluation or panel drawing.
+    try:
+        from .geometry_nodes import fbp_repair_existing_lattice_contracts
+        fbp_register_timer_once(fbp_repair_existing_lattice_contracts, 0.18)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+    # load_pre retires all one-shot timers while Main is being replaced. If the
+    # current release has not been viewed yet, schedule it again immediately.
+    fbp_restore_pending_whats_new_prompt()
+
 
 # SECTION 01 - Register handlers / timers #
 def register():
+    # Recover from an interrupted Developer Tool run or in-place extension reload.
+    # No process-local maintenance guard may survive a fresh registration.
+    fbp_runtime_set("fbp_pause_managed_timers", False)
+    fbp_runtime_set("fbp_managed_timers_resume_after", 0.0)
+    fbp_prune_timer_registry()
     # Retire runtime data left by an in-place extension reload before any handler
     # can observe identities or pointers from the previous module generation.
     fbp_clear_effect_runtime_caches()
@@ -690,6 +845,15 @@ def register():
     bpy.app.handlers.undo_pre.append(fbp_undo_pre_handler)
     bpy.app.handlers.undo_post.append(fbp_undo_post_handler)
 
+    redo_pre = getattr(bpy.app.handlers, "redo_pre", None)
+    redo_post = getattr(bpy.app.handlers, "redo_post", None)
+    if redo_pre is not None:
+        fbp_remove_handlers_by_name(redo_pre, "fbp_redo_pre_handler")
+        redo_pre.append(fbp_redo_pre_handler)
+    if redo_post is not None:
+        fbp_remove_handlers_by_name(redo_post, "fbp_redo_post_handler")
+        redo_post.append(fbp_redo_post_handler)
+
     for _handlers, _handler in ((bpy.app.handlers.load_pre, fbp_load_pre_handler), (bpy.app.handlers.load_post, fbp_load_post_handler)):
         fbp_remove_handlers_by_name(_handlers, getattr(_handler, "__name__", ""))
         _handlers.append(_handler)
@@ -698,6 +862,8 @@ def register():
 # SECTION 02 - Unregister handlers / timers #
 def unregister():
     fbp_set_undo_guard(False)
+    fbp_runtime_set("fbp_pause_managed_timers", False)
+    fbp_runtime_set("fbp_managed_timers_resume_after", 0.0)
     can_mutate_ids = False
     # If the extension is disabled during a managed render, restore temporary
     # viewport/effect overrides before runtime backups are cleared.
@@ -772,7 +938,19 @@ def unregister():
                     pass
 
 
-    for _handlers, _name in ((bpy.app.handlers.undo_pre, "fbp_undo_pre_handler"), (bpy.app.handlers.undo_post, "fbp_undo_post_handler"), (bpy.app.handlers.load_pre, "fbp_load_pre_handler"), (bpy.app.handlers.load_post, "fbp_load_post_handler")):
+    history_handlers = [
+        (bpy.app.handlers.undo_pre, "fbp_undo_pre_handler"),
+        (bpy.app.handlers.undo_post, "fbp_undo_post_handler"),
+        (bpy.app.handlers.load_pre, "fbp_load_pre_handler"),
+        (bpy.app.handlers.load_post, "fbp_load_post_handler"),
+    ]
+    redo_pre = getattr(bpy.app.handlers, "redo_pre", None)
+    redo_post = getattr(bpy.app.handlers, "redo_post", None)
+    if redo_pre is not None:
+        history_handlers.append((redo_pre, "fbp_redo_pre_handler"))
+    if redo_post is not None:
+        history_handlers.append((redo_post, "fbp_redo_post_handler"))
+    for _handlers, _name in history_handlers:
         for _h in list(_handlers):
             if getattr(_h, "__name__", "") == _name:
                 try:

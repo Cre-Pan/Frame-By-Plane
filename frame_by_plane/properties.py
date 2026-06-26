@@ -7,8 +7,10 @@ from bpy.props import (
     CollectionProperty, PointerProperty, EnumProperty
 )
 from bpy.types import PropertyGroup, AddonPreferences
-
-from .constants import COLOR_ENUM_ITEMS, COLLECTION_COLOR_ENUM_ITEMS, fbp_icon
+from .constants import (
+    COLOR_ENUM_ITEMS, COLLECTION_COLOR_ENUM_ITEMS, FBP_LAYER_BLEND_MODE_ITEMS,
+    FBP_PUBLIC_VERSION_STRING, FBP_RELEASE_SUMMARY, FBP_VERSION_STRING, fbp_icon,
+)
 from .matrix_presets import ASCII_ATLAS_COLUMNS, ASCII_TEXT_GLYPH_LIMIT, ascii_enum_items
 
 from .storage_keys import fbp_effect_storage_key
@@ -208,6 +210,25 @@ def update_collection_color_variants_cb(self, context):
     _call_layers("sync_collection_colors_to_rigs", target_context)
 
 
+def update_effects_index_cb(self, context):
+    """Reveal only the spatial controls owned by the newly active effect."""
+    try:
+        from .effect_controls import schedule_active_effect_controls
+        schedule_active_effect_controls(context, select_active=True)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def update_effect_controls_enabled_cb(self, context):
+    try:
+        from .effect_controls import hide_rig_effect_controls, schedule_active_effect_controls
+        if bool(getattr(self, "fbp_effect_controls_enabled", True)):
+            schedule_active_effect_controls(context)
+        else:
+            hide_rig_effect_controls(self)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
 
 def update_effects_view_cb(self, context):
     """Select the first visible effect when switching between the Image, Mask and Mesh stacks."""
@@ -293,6 +314,20 @@ class FBP_AddonPreferences(AddonPreferences):
         description="Use lightweight shadeless materials for newly imported image layers",
         default=True,
     )
+    default_import_crop_alpha: BoolProperty(
+        name="Crop Transparent Borders",
+        description=(
+            "Automatically remove fully transparent outer pixels from newly imported images, "
+            "image sequences, PSD/PSB layers and Procreate layers while keeping the rig origin "
+            "at the center of the original canvas"
+        ),
+        default=False,
+    )
+    default_import_crop_alpha_padding: IntProperty(
+        name="Alpha Crop Padding",
+        description="Transparent-border margin retained around automatically cropped visible pixels",
+        default=0, min=0, soft_max=32, max=256,
+    )
     default_orientation: EnumProperty(description="Default orientation of newly generated planes: vertical artwork facing the camera or horizontal planes parallel to the ground.", name="Default Plane Orientation", items=ORIENTATION_ITEMS, default='VERT')
     default_layer_offset: FloatProperty(
         name="Default Plane Distance",
@@ -371,7 +406,7 @@ class FBP_AddonPreferences(AddonPreferences):
     default_show_project_tools: BoolProperty(
         name="Expand Project Import",
         description="Show the advanced project import section expanded by default",
-        default=True,
+        default=False,
     )
     default_show_gradient_ramp: BoolProperty(
         name="Expand Gradient Color Ramp",
@@ -463,6 +498,22 @@ class FBP_AddonPreferences(AddonPreferences):
         options={'HIDDEN'},
     )
 
+    whats_new_enabled: BoolProperty(
+        name="Show What's New after Updates",
+        description="Show the local release-notes popup once after each newly installed Frame By Plane version. No telemetry or project data is collected",
+        default=True,
+    )
+    whats_new_last_seen_version: StringProperty(
+        name="Last Viewed What's New Version",
+        default="",
+        options={'HIDDEN'},
+    )
+    whats_new_last_shown_time: FloatProperty(
+        name="Last What's New Time",
+        default=0.0,
+        options={'HIDDEN'},
+    )
+
     review_reminders_enabled: BoolProperty(
         name="Show Friendly Review Reminders",
         description="Allow Frame By Plane to show an occasional optional review reminder only after real use. No telemetry or project data is collected",
@@ -482,8 +533,8 @@ class FBP_AddonPreferences(AddonPreferences):
         layout = self.layout
 
         release = layout.box()
-        release.label(text="Frame By Plane 5.8.4", icon='CHECKMARK')
-        release.label(text="Viewport Pie Menu layout, universal object controls and quick effects")
+        release.label(text=f"Frame By Plane {FBP_VERSION_STRING}", icon=fbp_icon('CHECKMARK'))
+        release.label(text=FBP_RELEASE_SUMMARY)
 
         project = layout.box()
         project.label(text="Project and File Browser Defaults", icon='OUTLINER')
@@ -498,10 +549,15 @@ class FBP_AddonPreferences(AddonPreferences):
         row.prop(self, "default_scene_fps")
         sequence.prop(self, "default_playback")
         sequence.prop(self, "default_interpolation")
-        row = sequence.row(align=True)
+        row = sequence.row(align=False)
         row.prop(self, "default_emission")
         row.prop(self, "default_orientation")
-        row = sequence.row(align=True)
+        row = sequence.row(align=False)
+        row.prop(self, "default_import_crop_alpha")
+        padding = row.row(align=False)
+        padding.enabled = bool(self.default_import_crop_alpha)
+        padding.prop(self, "default_import_crop_alpha_padding", text="Padding")
+        row = sequence.row(align=False)
         row.prop(self, "default_layer_offset")
         row.prop(self, "default_fit_to_camera")
         sequence.prop(self, "default_track_camera")
@@ -572,20 +628,26 @@ class FBP_AddonPreferences(AddonPreferences):
         transform.prop(self, "default_gradient_rotation")
 
         feedback = layout.box()
-        feedback.label(text="Feedback and Reviews", icon='INFO')
+        feedback.label(text="Updates, Feedback and Reviews", icon=fbp_icon('MESH_MONKEY'))
+        feedback.prop(self, "whats_new_enabled")
+        whats_new = feedback.row()
+        op = whats_new.operator("fbp.whats_new_prompt", text=f"{FBP_PUBLIC_VERSION_STRING} What’s New", icon=fbp_icon('PRESET'))
+        op.force = True
+        feedback.separator()
         feedback.prop(self, "review_reminders_enabled")
-        info = feedback.column(align=True)
+        info = feedback.column(align=False)
         info.enabled = False
-        info.label(text="Shown only after real use — never at Blender startup.")
+        info.label(text="What's New appears once per exact extension version.")
+        info.label(text="Review reminders appear only after real use, never at startup.")
         info.label(text="No telemetry, project data or automatic messages are sent.")
         row = feedback.row(align=True)
-        row.operator("fbp.open_review_page", text="Review Page :)", icon='CHECKMARK')
-        row.operator("fbp.open_support_page", text="Support", icon='URL')
+        row.operator("fbp.open_review_page", text="Review Page", icon=fbp_icon('CHECKMARK'))
+        row.operator("fbp.open_support_page", text="Support", icon=fbp_icon('URL'))
 
         layout.separator()
         row = layout.row()
         row.scale_y = 1.2
-        row.operator("fbp.apply_preferences_to_scene", icon='CHECKMARK', text="Apply Defaults to Current Scene")
+        row.operator("fbp.apply_preferences_to_scene", icon=fbp_icon('CHECKMARK'), text="Apply Defaults to Current Scene")
 
 
 def fbp_get_addon_preferences(context=None):
@@ -636,6 +698,8 @@ def fbp_apply_preferences_to_scene(scene, *, force=False, context=None):
         "fbp_creation_mode": getattr(prefs, "default_creation_mode", 'SINGLE'),
         "fbp_pre_duration": getattr(prefs, "default_frame_duration", 2),
         "fbp_pre_shadeless": getattr(prefs, "default_emission", True),
+        "fbp_import_crop_alpha": getattr(prefs, "default_import_crop_alpha", False),
+        "fbp_import_crop_alpha_padding": getattr(prefs, "default_import_crop_alpha_padding", 0),
         "fbp_pre_loop_mode": getattr(prefs, "default_playback", 'NONE'),
         "fbp_pre_interpolation": getattr(prefs, "default_interpolation", 'Closest'),
         "fbp_pre_orientation": getattr(prefs, "default_orientation", 'VERT'),
@@ -655,7 +719,7 @@ def fbp_apply_preferences_to_scene(scene, *, force=False, context=None):
         "fbp_show_previews": getattr(prefs, "default_show_previews", False),
         "fbp_show_color_previews": getattr(prefs, "default_show_color_previews", True),
         "fbp_sort_layers_alpha": getattr(prefs, "default_sort_layers_alpha", False),
-        "fbp_show_project_tools": getattr(prefs, "default_show_project_tools", True),
+        "fbp_show_project_tools": getattr(prefs, "default_show_project_tools", False),
         "fbp_show_gradient_ramp": getattr(prefs, "default_show_gradient_ramp", True),
         "fbp_show_gradient_transform": getattr(prefs, "default_show_gradient_transform", True),
         "fbp_alpha_render_method": getattr(prefs, "default_alpha_render_method", 'AUTO'),
@@ -797,7 +861,6 @@ def update_mesh_wiggle_enabled_cb(self, context):
     return _call_geometry_nodes('update_mesh_wiggle_enabled_cb', self, context)
 
 
-
 def update_mesh_wiggle_shade_smooth_cb(self, context):
     return _call_geometry_nodes('update_mesh_wiggle_setting_cb', self, context, 'fbp_mesh_wiggle_shade_smooth')
 
@@ -838,16 +901,19 @@ def update_mesh_wiggle_subdivisions_cb(self, context):
     return _call_geometry_nodes('update_mesh_wiggle_setting_cb', self, context, 'fbp_mesh_wiggle_subdivisions')
 
 
-
-
 def _make_effect_update_callback(effect_id, prop_name):
     """Create a small RNA update callback for a registered FBP effect property."""
     def _update(self, context):
-        return _call_geometry_nodes(
+        result = _call_geometry_nodes(
             'update_effect_setting_cb', self, context, effect_id, prop_name
         )
+        try:
+            from .effect_controls import sync_controls_from_properties
+            sync_controls_from_properties(self, effect_id, create=False)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        return result
     return _update
-
 
 
 update_uv_distortion_scale_cb = _make_effect_update_callback('UV_DISTORTION', 'fbp_uv_distortion_scale')
@@ -855,6 +921,56 @@ update_uv_distortion_amount_cb = _make_effect_update_callback('UV_DISTORTION', '
 update_pixelate_resolution_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_resolution')
 update_pixelate_height_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_height')
 update_pixelate_grid_mode_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_grid_mode')
+update_pixelate_rotation_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_rotation')
+update_pixelate_offset_x_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_offset_x')
+update_pixelate_offset_y_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_offset_y')
+update_swirl_center_x_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_center_x')
+update_swirl_center_y_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_center_y')
+update_swirl_radius_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_radius')
+update_swirl_angle_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_angle')
+update_swirl_factor_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_factor')
+update_bulge_pinch_center_x_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_center_x')
+update_bulge_pinch_center_y_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_center_y')
+update_bulge_pinch_radius_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_radius')
+update_bulge_pinch_strength_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_strength')
+update_bulge_pinch_factor_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_factor')
+update_lens_warp_center_x_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_center_x')
+update_lens_warp_center_y_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_center_y')
+update_lens_warp_distortion_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_distortion')
+update_lens_warp_zoom_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_zoom')
+update_lens_warp_factor_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_factor')
+update_wave_warp_amplitude_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_amplitude')
+update_wave_warp_frequency_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_frequency')
+update_wave_warp_phase_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_phase')
+update_wave_warp_angle_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_angle')
+update_wave_warp_factor_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_factor')
+update_wave_warp_speed_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_speed')
+update_ripple_distortion_center_x_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_center_x')
+update_ripple_distortion_center_y_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_center_y')
+update_ripple_distortion_amplitude_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_amplitude')
+update_ripple_distortion_frequency_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_frequency')
+update_ripple_distortion_phase_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_phase')
+update_ripple_distortion_radius_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_radius')
+update_ripple_distortion_falloff_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_falloff')
+update_ripple_distortion_factor_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_factor')
+update_ripple_distortion_speed_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_speed')
+update_kaleidoscope_center_x_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_center_x')
+update_kaleidoscope_center_y_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_center_y')
+update_kaleidoscope_segments_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_segments')
+update_kaleidoscope_rotation_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_rotation')
+update_kaleidoscope_factor_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_factor')
+update_hex_pixelate_cells_x_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_cells_x')
+update_hex_pixelate_cells_y_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_cells_y')
+update_hex_pixelate_rotation_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_rotation')
+update_hex_pixelate_factor_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_factor')
+update_mosaic_jitter_cells_x_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_cells_x')
+update_mosaic_jitter_cells_y_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_cells_y')
+update_mosaic_jitter_rotation_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_rotation')
+update_mosaic_jitter_amount_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_amount')
+update_mosaic_jitter_offset_x_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_offset_x')
+update_mosaic_jitter_offset_y_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_offset_y')
+update_mosaic_jitter_seed_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_seed')
+update_mosaic_jitter_factor_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_factor')
 update_depth_blur_mode_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_mode')
 update_depth_blur_manual_radius_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_manual_radius')
 update_depth_blur_max_radius_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_max_radius')
@@ -864,6 +980,87 @@ update_depth_blur_focus_range_cb = _make_effect_update_callback('DEPTH_BLUR', 'f
 update_depth_blur_falloff_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_falloff')
 update_depth_blur_near_strength_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_near_strength')
 update_depth_blur_far_strength_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_far_strength')
+update_gaussian_blur_radius_x_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_radius_x')
+update_gaussian_blur_radius_y_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_radius_y')
+update_gaussian_blur_samples_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_samples')
+update_gaussian_blur_factor_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_factor')
+update_directional_blur_angle_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_angle')
+update_directional_blur_distance_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_distance')
+update_directional_blur_samples_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_samples')
+update_directional_blur_factor_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_factor')
+update_triangle_blur_radius_cb = _make_effect_update_callback('TRIANGLE_BLUR', 'fbp_triangle_blur_radius')
+update_triangle_blur_samples_cb = _make_effect_update_callback('TRIANGLE_BLUR', 'fbp_triangle_blur_samples')
+update_triangle_blur_factor_cb = _make_effect_update_callback('TRIANGLE_BLUR', 'fbp_triangle_blur_factor')
+update_tilt_shift_position_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_position')
+update_tilt_shift_width_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_width')
+update_tilt_shift_angle_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_angle')
+update_tilt_shift_radius_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_radius')
+update_tilt_shift_factor_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_factor')
+update_unsharp_radius_cb = _make_effect_update_callback('UNSHARP_MASK', 'fbp_unsharp_radius')
+update_unsharp_amount_cb = _make_effect_update_callback('UNSHARP_MASK', 'fbp_unsharp_amount')
+update_unsharp_factor_cb = _make_effect_update_callback('UNSHARP_MASK', 'fbp_unsharp_factor')
+update_edge_detect_width_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_width')
+update_edge_detect_strength_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_strength')
+update_edge_detect_threshold_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_threshold')
+update_edge_detect_softness_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_softness')
+update_edge_detect_color_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_color')
+update_edge_detect_factor_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_factor')
+update_smooth_toon_levels_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_levels')
+update_smooth_toon_softness_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_softness')
+update_smooth_toon_factor_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_factor')
+update_adaptive_threshold_radius_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_radius')
+update_adaptive_threshold_offset_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_offset')
+update_adaptive_threshold_softness_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_softness')
+update_adaptive_threshold_invert_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_invert')
+update_adaptive_threshold_factor_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_factor')
+update_false_color_dark_cb = _make_effect_update_callback('FALSE_COLOR', 'fbp_false_color_dark')
+update_false_color_light_cb = _make_effect_update_callback('FALSE_COLOR', 'fbp_false_color_light')
+update_false_color_factor_cb = _make_effect_update_callback('FALSE_COLOR', 'fbp_false_color_factor')
+update_chromatic_aberration_distance_cb = _make_effect_update_callback('CHROMATIC_ABERRATION', 'fbp_chromatic_aberration_distance')
+update_chromatic_aberration_angle_cb = _make_effect_update_callback('CHROMATIC_ABERRATION', 'fbp_chromatic_aberration_angle')
+update_chromatic_aberration_factor_cb = _make_effect_update_callback('CHROMATIC_ABERRATION', 'fbp_chromatic_aberration_factor')
+update_ink_width_cb = _make_effect_update_callback('INK', 'fbp_ink_width')
+update_ink_threshold_cb = _make_effect_update_callback('INK', 'fbp_ink_threshold')
+update_ink_softness_cb = _make_effect_update_callback('INK', 'fbp_ink_softness')
+update_ink_strength_cb = _make_effect_update_callback('INK', 'fbp_ink_strength')
+update_ink_color_cb = _make_effect_update_callback('INK', 'fbp_ink_color')
+update_ink_paper_color_cb = _make_effect_update_callback('INK', 'fbp_ink_paper_color')
+update_ink_preserve_color_cb = _make_effect_update_callback('INK', 'fbp_ink_preserve_color')
+update_ink_factor_cb = _make_effect_update_callback('INK', 'fbp_ink_factor')
+update_edge_work_radius_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_radius')
+update_edge_work_thickness_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_thickness')
+update_edge_work_strength_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_strength')
+update_edge_work_threshold_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_threshold')
+update_edge_work_softness_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_softness')
+update_edge_work_color_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_color')
+update_edge_work_factor_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_factor')
+update_pencil_sketch_radius_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_radius')
+update_pencil_sketch_contrast_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_contrast')
+update_pencil_sketch_graphite_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_graphite')
+update_pencil_sketch_paper_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_paper')
+update_pencil_sketch_color_amount_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_color_amount')
+update_pencil_sketch_factor_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_factor')
+update_poster_edges_levels_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_levels')
+update_poster_edges_softness_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_softness')
+update_poster_edges_width_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_width')
+update_poster_edges_strength_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_strength')
+update_poster_edges_threshold_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_threshold')
+update_poster_edges_color_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_color')
+update_poster_edges_factor_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_factor')
+update_crosshatch_scale_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_scale')
+update_crosshatch_rotation_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_rotation')
+update_crosshatch_line_width_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_line_width')
+update_crosshatch_levels_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_levels')
+update_crosshatch_ink_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_ink')
+update_crosshatch_paper_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_paper')
+update_crosshatch_preserve_color_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_preserve_color')
+update_crosshatch_factor_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_factor')
+update_emboss_angle_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_angle')
+update_emboss_distance_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_distance')
+update_emboss_strength_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_strength')
+update_emboss_bias_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_bias')
+update_emboss_color_amount_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_color_amount')
+update_emboss_factor_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_factor')
 update_alpha_matte_source_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_source')
 update_alpha_matte_factor_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_factor')
 update_alpha_matte_invert_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_invert')
@@ -890,11 +1087,18 @@ update_clipping_mask_source_cb = _make_effect_update_callback('CLIPPING_MASK', '
 update_clipping_mask_factor_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_factor')
 update_clipping_mask_invert_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_invert')
 update_clipping_mask_use_source_transform_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_use_source_transform')
+update_clipping_mask_use_camera_projection_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_use_camera_projection')
 update_clipping_mask_uv_offset_x_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_offset_x')
 update_clipping_mask_uv_offset_y_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_offset_y')
 update_clipping_mask_uv_scale_x_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_scale_x')
 update_clipping_mask_uv_scale_y_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_scale_y')
 update_clipping_mask_uv_rotation_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_rotation')
+update_imported_mask_path_cb = _make_effect_update_callback('IMPORTED_MASK', 'fbp_imported_mask_path')
+update_imported_mask_factor_cb = _make_effect_update_callback('IMPORTED_MASK', 'fbp_imported_mask_factor')
+update_imported_mask_invert_cb = _make_effect_update_callback('IMPORTED_MASK', 'fbp_imported_mask_invert')
+update_layer_blend_source_cb = _make_effect_update_callback('LAYER_BLEND', 'fbp_layer_blend_source')
+update_layer_blend_mode_cb = _make_effect_update_callback('LAYER_BLEND', 'fbp_layer_blend_mode')
+update_layer_blend_factor_cb = _make_effect_update_callback('LAYER_BLEND', 'fbp_layer_blend_factor')
 update_square_mask_object_cb = _make_effect_update_callback('SQUARE_MASK', 'fbp_square_mask_object')
 update_square_mask_factor_cb = _make_effect_update_callback('SQUARE_MASK', 'fbp_square_mask_factor')
 update_square_mask_invert_cb = _make_effect_update_callback('SQUARE_MASK', 'fbp_square_mask_invert')
@@ -912,6 +1116,17 @@ update_color_mask_tolerance_cb = _make_effect_update_callback('COLOR_MASK', 'fbp
 update_color_mask_softness_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_softness')
 update_color_mask_factor_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_factor')
 update_color_mask_invert_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_invert')
+update_luminance_mask_minimum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_minimum')
+update_luminance_mask_maximum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_maximum')
+update_luminance_mask_softness_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_softness')
+update_luminance_mask_factor_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_factor')
+update_luminance_mask_invert_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_invert')
+update_channel_mask_channel_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_channel')
+update_channel_mask_minimum_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_minimum')
+update_channel_mask_maximum_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_maximum')
+update_channel_mask_softness_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_softness')
+update_channel_mask_factor_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_factor')
+update_channel_mask_invert_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_invert')
 update_gradient_mask_type_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_type')
 update_gradient_mask_center_x_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_center_x')
 update_gradient_mask_center_y_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_center_y')
@@ -1073,6 +1288,18 @@ update_brightness_contrast_contrast_cb = _make_effect_update_callback('BRIGHTNES
 update_invert_factor_cb = _make_effect_update_callback('INVERT', 'fbp_invert_factor')
 update_threshold_value_cb = _make_effect_update_callback('THRESHOLD', 'fbp_threshold_value')
 update_posterize_steps_cb = _make_effect_update_callback('POSTERIZE', 'fbp_posterize_steps')
+update_solarize_threshold_cb = _make_effect_update_callback('SOLARIZE', 'fbp_solarize_threshold')
+update_solarize_softness_cb = _make_effect_update_callback('SOLARIZE', 'fbp_solarize_softness')
+update_solarize_factor_cb = _make_effect_update_callback('SOLARIZE', 'fbp_solarize_factor')
+update_tritone_shadows_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_shadows')
+update_tritone_midtones_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_midtones')
+update_tritone_highlights_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_highlights')
+update_tritone_midpoint_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_midpoint')
+update_tritone_factor_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_factor')
+update_film_fade_color_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_color')
+update_film_fade_amount_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_amount')
+update_film_fade_desaturation_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_desaturation')
+update_film_fade_contrast_loss_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_contrast_loss')
 update_solid_mask_color_cb = _make_effect_update_callback('SOLID_MASK', 'fbp_solid_mask_color')
 update_solid_mask_factor_cb = _make_effect_update_callback('SOLID_MASK', 'fbp_solid_mask_factor')
 update_stop_motion_resolution_cb = _make_effect_update_callback('STOP_MOTION_CRUMPLE', 'fbp_stop_motion_resolution')
@@ -1083,7 +1310,10 @@ update_wind_speed_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_spe
 update_wind_subdivision_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_subdivision')
 update_wind_stepped_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_stepped')
 update_wind_pin_edge_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_pin_edge')
+update_wind_pin_strength_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_pin_strength')
+update_wind_pin_vertex_group_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_pin_vertex_group')
 update_wind_motion_mode_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_motion_mode')
+update_wind_ripple_direction_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_ripple_direction')
 update_wind_wave_count_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_wave_count')
 update_wind_wave_amplitude_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_wave_amplitude')
 update_wind_wave_speed_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_wave_speed')
@@ -1096,27 +1326,42 @@ update_wind_gust_strength_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_
 update_wind_direction_space_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_direction_space')
 update_wind_direction_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_direction')
 update_wind_preview_falloff_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_preview_falloff')
-update_mesh_ripple_viewport_subdivision_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_viewport_subdivision')
-update_mesh_ripple_playback_subdivision_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_playback_subdivision')
-update_mesh_ripple_render_subdivision_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_render_subdivision')
-update_mesh_ripple_direction_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_direction')
-update_mesh_ripple_amplitude_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_amplitude')
-update_mesh_ripple_frequency_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_frequency')
-update_mesh_ripple_speed_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_speed')
-update_mesh_ripple_phase_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_phase')
-update_mesh_ripple_stepped_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_stepped')
-update_mesh_ripple_pin_borders_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_pin_borders')
-update_mesh_ripple_border_falloff_cb = _make_effect_update_callback('MESH_RIPPLE', 'fbp_mesh_ripple_border_falloff')
-update_paper_curl_viewport_subdivision_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_viewport_subdivision')
-update_paper_curl_playback_subdivision_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_playback_subdivision')
-update_paper_curl_render_subdivision_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_render_subdivision')
-update_paper_curl_edge_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_edge')
-update_paper_curl_progress_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_progress')
-update_paper_curl_angle_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_angle')
-update_paper_curl_radius_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_radius')
-update_paper_curl_width_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_width')
-update_paper_curl_lift_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_lift')
-update_paper_curl_reverse_cb = _make_effect_update_callback('PAPER_CURL', 'fbp_paper_curl_reverse')
+def update_lattice_effect_cb(self, context):
+    return _call_geometry_nodes('update_lattice_effect_cb', self, context)
+
+
+def update_lattice_mesh_detail_cb(self, context):
+    return _call_geometry_nodes('update_lattice_mesh_detail_cb', self, context)
+
+
+def update_lattice_grid_preset_cb(self, context):
+    return _call_geometry_nodes('update_lattice_grid_preset_cb', self, context)
+
+
+def update_lattice_custom_loops_u_cb(self, context):
+    return _call_geometry_nodes('update_lattice_custom_loops_cb', self, context, 'U')
+
+
+def update_lattice_custom_loops_v_cb(self, context):
+    return _call_geometry_nodes('update_lattice_custom_loops_cb', self, context, 'V')
+
+
+def update_lattice_loop_link_cb(self, context):
+    return _call_geometry_nodes('update_lattice_loop_link_cb', self, context)
+
+
+def update_lattice_camera_settings_cb(self, context):
+    return _call_geometry_nodes('update_lattice_camera_settings_cb', self, context)
+
+
+def update_lattice_visibility_cb(self, context):
+    return _call_geometry_nodes('update_lattice_visibility_cb', self, context)
+
+
+def update_lattice_interpolation_cb(self, context):
+    return _call_geometry_nodes('update_lattice_interpolation_cb', self, context)
+
+
 update_cutout_outline_viewport_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_viewport_resolution')
 update_cutout_outline_playback_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_playback_resolution')
 update_cutout_outline_render_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_render_resolution')
@@ -1124,13 +1369,29 @@ update_cutout_outline_alpha_threshold_cb = _make_effect_update_callback('CUTOUT_
 update_cutout_outline_width_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_width')
 update_cutout_outline_offset_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_offset')
 update_cutout_outline_color_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_color')
+update_cutout_outline_show_image_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_show_image')
+update_cutout_outline_wiggle_amount_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_wiggle_amount')
+update_cutout_outline_wiggle_scale_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_wiggle_scale')
+update_cutout_outline_wiggle_phase_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_wiggle_phase')
 update_camera_scale_lock_reference_distance_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_distance')
 update_camera_scale_lock_reference_lens_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_lens')
 update_camera_scale_lock_reference_sensor_width_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_sensor_width')
 update_camera_scale_lock_influence_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_influence')
-update_camera_billboard_mode_cb = _make_effect_update_callback('CAMERA_BILLBOARD', 'fbp_camera_billboard_mode')
-update_camera_billboard_flip_cb = _make_effect_update_callback('CAMERA_BILLBOARD', 'fbp_camera_billboard_flip')
-update_camera_billboard_offset_cb = _make_effect_update_callback('CAMERA_BILLBOARD', 'fbp_camera_billboard_offset')
+def _update_camera_track_cb(self, context):
+    if fbp_undo_guard_active():
+        return
+    try:
+        from .geometry_nodes import fbp_update_track_to_camera
+        fbp_update_track_to_camera(self, getattr(context, 'scene', None))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn('Could not update Track to Camera', exc)
+
+update_camera_billboard_mode_cb = _update_camera_track_cb
+update_camera_billboard_flip_cb = _update_camera_track_cb
+update_camera_billboard_influence_cb = _update_camera_track_cb
+update_camera_billboard_offset_cb = _update_camera_track_cb
+update_mirror_x_cb = _make_effect_update_callback('MIRROR', 'fbp_mirror_x')
+update_mirror_y_cb = _make_effect_update_callback('MIRROR', 'fbp_mirror_y')
 update_thickness_viewport_pixels_x_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_viewport_pixels_x')
 update_thickness_viewport_pixels_y_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_viewport_pixels_y')
 update_thickness_playback_pixels_x_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_playback_pixels_x')
@@ -1139,7 +1400,10 @@ update_thickness_render_pixels_x_cb = _make_effect_update_callback('THICKNESS', 
 update_thickness_render_pixels_y_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_render_pixels_y')
 update_thickness_grid_mode_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_grid_mode')
 update_thickness_follow_pixelate_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_follow_pixelate')
+update_thickness_safe_grid_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_safe_grid')
 update_thickness_amount_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_amount')
+update_thickness_mode_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_mode')
+update_thickness_array_count_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_array_count')
 update_thickness_alpha_threshold_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_alpha_threshold')
 update_thickness_direction_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_direction')
 update_thickness_side_material_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_side_material')
@@ -1161,21 +1425,39 @@ update_felt_alpha_resolution_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp
 update_color_isolate_target_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_target')
 update_color_isolate_tolerance_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_tolerance')
 update_color_isolate_falloff_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_falloff')
+update_color_isolate_factor_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_factor')
+update_white_balance_temperature_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_temperature')
+update_white_balance_tint_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_tint')
+update_white_balance_factor_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_factor')
+update_curves_factor_cb = _make_effect_update_callback('CURVES', 'fbp_curves_factor')
 update_duotone_shadows_cb = _make_effect_update_callback('DUOTONE', 'fbp_duotone_shadows')
 update_duotone_highlights_cb = _make_effect_update_callback('DUOTONE', 'fbp_duotone_highlights')
 update_recolor_factor_cb = _make_effect_update_callback('RECOLOR', 'fbp_recolor_factor')
 update_paper_fiber_scale_cb = _make_effect_update_callback('PAPER_FIBERS', 'fbp_paper_fiber_scale')
 update_paper_fiber_intensity_cb = _make_effect_update_callback('PAPER_FIBERS', 'fbp_paper_fiber_intensity')
 update_paper_fiber_phase_cb = _make_effect_update_callback('PAPER_FIBERS', 'fbp_paper_fiber_phase')
+update_gradient_light_center_x_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_center_x')
+update_gradient_light_center_y_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_center_y')
 update_gradient_light_angle_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_angle')
 update_gradient_light_strength_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_strength')
 update_gradient_shadow_position_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_shadow_position')
 update_gradient_softness_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_softness')
 update_gradient_shadow_color_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_shadow_color')
 update_rim_width_cb = _make_effect_update_callback('RIM', 'fbp_rim_width')
+update_rim_offset_x_cb = _make_effect_update_callback('RIM', 'fbp_rim_offset_x')
+update_rim_offset_y_cb = _make_effect_update_callback('RIM', 'fbp_rim_offset_y')
+update_rim_rotation_cb = _make_effect_update_callback('RIM', 'fbp_rim_rotation')
+update_rim_blur_cb = _make_effect_update_callback('RIM', 'fbp_rim_blur')
 update_rim_softness_cb = _make_effect_update_callback('RIM', 'fbp_rim_softness')
 update_rim_intensity_cb = _make_effect_update_callback('RIM', 'fbp_rim_intensity')
 update_rim_color_cb = _make_effect_update_callback('RIM', 'fbp_rim_color')
+update_shadow_mode_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_mode')
+update_shadow_blend_mode_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_blend_mode')
+update_shadow_offset_x_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_offset_x')
+update_shadow_offset_y_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_offset_y')
+update_shadow_blur_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_blur')
+update_shadow_opacity_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_opacity')
+update_shadow_color_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_color')
 update_gobo_pattern_scale_cb = _make_effect_update_callback('GOBO_SHADOWS', 'fbp_gobo_pattern_scale')
 update_gobo_rotation_cb = _make_effect_update_callback('GOBO_SHADOWS', 'fbp_gobo_rotation')
 update_gobo_sharpness_cb = _make_effect_update_callback('GOBO_SHADOWS', 'fbp_gobo_sharpness')
@@ -1696,6 +1978,88 @@ class FBP_PendingPlaneItem(PropertyGroup):
         default=True,
     )
     fbp_color_tag: EnumProperty(name="Color Tag", description="Color tag to assign to the generated rig and collection", items=COLOR_ENUM_ITEMS, default='COLOR_01')
+    source_from_layered: BoolProperty(
+        name="Layered Document Source",
+        description="Internal flag indicating that this setup row was extracted from a layered source document",
+        default=False,
+    )
+    source_document: StringProperty(
+        name="Source Document",
+        description="Original layered document that produced this cached image",
+        subtype='FILE_PATH',
+        default="",
+    )
+    source_layer_path: StringProperty(
+        name="Source Layer Path",
+        description="Original group and layer path inside the layered document",
+        default="",
+    )
+    source_layer_kind: StringProperty(
+        name="Source Layer Type",
+        description="Original layered-document source type such as PSD pixel, smart object, Procreate pixel or preview fallback",
+        default="",
+    )
+    source_layer_visible: BoolProperty(
+        name="Source Layer Visible",
+        description="Visibility stored in the original layered document",
+        default=True,
+    )
+    source_layer_opacity: FloatProperty(
+        name="Source Layer Opacity",
+        description="Effective opacity inherited from the source layer and its parent groups",
+        default=1.0, min=0.0, max=1.0,
+    )
+    source_blend_mode: StringProperty(
+        name="Source Blend Mode",
+        description="Source blend mode stored for diagnostics and future material mapping",
+        default="NORMAL",
+    )
+    source_is_clipping: BoolProperty(
+        name="Source Clipping Layer",
+        description="Original layered-document layer was clipped to the alpha of the layer below",
+        default=False,
+    )
+    source_mask_file: StringProperty(
+        name="Source Layer Mask",
+        description="Extracted full-canvas raster mask associated with this source layer",
+        subtype='FILE_PATH',
+        default="",
+    )
+    source_blend_supported: BoolProperty(
+        name="Transfer Source Blend",
+        description="Source blend mode has a supported Frame By Plane material mapping",
+        default=False,
+    )
+    source_cache_key: StringProperty(
+        name="Source Revision",
+        description="Revision key of the layered document used to create this cached PNG",
+        default="",
+    )
+    source_preset: StringProperty(
+        name="Import Preset",
+        description="Source workflow preset used to prepare this Multiplane Setup row",
+        default="",
+    )
+    source_frame_numbers_str: StringProperty(
+        name="Source Frame Numbers",
+        description="Internal ordered source drawing/frame numbers preserved by animation export presets",
+        default="",
+    )
+    source_durations_str: StringProperty(
+        name="Source Exposures",
+        description="Internal per-frame exposure durations prepared before Multiplane generation",
+        default="",
+    )
+    source_flattened_group: BoolProperty(
+        name="Flattened PSD Group",
+        description="Whether this plane represents a complex PSD group flattened to preserve its appearance",
+        default=False,
+    )
+    source_warnings: StringProperty(
+        name="Layer Import Warnings",
+        description="Compatibility notes produced while extracting this PSD, PSB or Procreate layer",
+        default="",
+    )
 
 
 class FBP_PendingTreeRowItem(PropertyGroup):
@@ -1742,8 +2106,19 @@ class FBP_GenerationRenameItem(PropertyGroup):
     is_renamed: BoolProperty(description="Whether this reported sequence has already been repaired by the safe rename operation.", name="Renamed", default=False, options={'SKIP_SAVE'})
 
 
-
 # SECTION 02 - Scene / Collection / Object property registration #
+
+
+def update_experimental_compositor_cb(self, _context):
+    """Keep the experimental Compositor tab inaccessible while disabled."""
+    try:
+        if (
+            not bool(getattr(self, "fbp_experimental_compositor", False))
+            and str(getattr(self, "fbp_settings_section", "PROJECT") or "PROJECT") == "COMPOSITOR"
+        ):
+            self.fbp_settings_section = 'MAINTENANCE'
+    except FBP_DATA_ERRORS:
+        pass
 
 def register_properties():
     bpy.types.Scene.fbp_last_directory = StringProperty(name="Last Folder", description="Last folder used by Frame by Plane file browsers", subtype='DIR_PATH', default="")
@@ -1863,9 +2238,36 @@ def register_properties():
     bpy.types.Scene.fbp_pending_tree_rows = CollectionProperty(description="Flattened runtime rows used to display the collapsible Multiplane Setup hierarchy efficiently.", type=FBP_PendingTreeRowItem, options={'SKIP_SAVE'})
     bpy.types.Scene.fbp_pending_tree_rows_idx = IntProperty(name="Setup Tree Row", description="Active visual row in the Multiplane Setup tree UIList", default=0, options={'SKIP_SAVE'})
     bpy.types.Scene.fbp_pending_collection_name = StringProperty(name="Collection", description="Name used when creating a new Multiplane Setup collection", default="New Collection")
+    bpy.types.Scene.fbp_layered_report_source = StringProperty(name="Layered Import Source", description="Original PSD, PSB or Procreate document represented by the current Multiplane Setup report", subtype='FILE_PATH', default="")
+    bpy.types.Scene.fbp_layered_report_format = StringProperty(name="Layered Import Format", description="Source layered-document format used by the current import report", default="")
+    bpy.types.Scene.fbp_layered_report_backend = StringProperty(name="Layered Import Backend", description="Decoder version used to extract the current layered-document setup", default="")
+    bpy.types.Scene.fbp_layered_report_cache_reused = BoolProperty(name="Reused Layer Cache", description="Whether the current layered import reused a previously extracted PNG cache", default=False)
+    bpy.types.Scene.fbp_layered_report_fallback_preview = BoolProperty(name="Flattened Preview Fallback", description="Whether the layered document had to fall back to one flattened preview image", default=False)
+    bpy.types.Scene.fbp_layered_report_skipped_layers = IntProperty(name="Skipped Source Layers", description="Number of source layers that could not produce an importable image", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_flattened_groups = IntProperty(name="Flattened Source Groups", description="Number of complex source groups flattened to preserve their appearance", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_merged_clipping = IntProperty(name="Baked Clipping Layers", description="Number of clipping layers baked into raster fallbacks instead of transferred as editable clipping", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_decoded_layers = IntProperty(name="Decoded Source Layers", description="Number of independently decoded source layers", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_transferred_blends = IntProperty(name="Transferred Blend Modes", description="Number of source blend modes mapped to Frame By Plane layer blending", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_transferred_masks = IntProperty(name="Transferred Masks", description="Number of source masks extracted as editable Frame By Plane masks", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_transferred_clipping = IntProperty(name="Transferred Clipping Layers", description="Number of source clipping relations transferred as editable Frame By Plane clipping", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_unsupported_blends = IntProperty(name="Unsupported Blend Modes", description="Number of source blend modes preserved only as metadata because no reliable mapping was available", default=0, min=0)
+    bpy.types.Scene.fbp_layered_report_warnings = StringProperty(name="Layered Import Warnings", description="Document-level compatibility notes from the current layered import", default="")
     bpy.types.Scene.fbp_pre_duration = IntProperty(
         name="Duration (Frames)", description="Default duration assigned to each imported image frame", default=2, min=1)
     bpy.types.Scene.fbp_pre_shadeless = BoolProperty(name="Shadeless", description="Use lightweight emission materials so image planes are not affected by scene lighting", default=True)
+    bpy.types.Scene.fbp_import_crop_alpha = BoolProperty(
+        name="Crop Transparent Borders",
+        description=(
+            "At import, crop only fully transparent outer pixels while preserving the original full-canvas pivot and layer alignment. "
+            "Image sequences use the union of every frame; videos are left unchanged"
+        ),
+        default=False,
+    )
+    bpy.types.Scene.fbp_import_crop_alpha_padding = IntProperty(
+        name="Alpha Crop Padding",
+        description="Number of transparent pixels retained around the detected alpha bounds; zero crops exactly to every pixel with alpha greater than zero",
+        default=0, min=0, soft_max=32, max=256,
+    )
     bpy.types.Scene.fbp_pre_loop_mode = EnumProperty(description="Default playback behavior assigned to newly generated animated Image Planes: play once, loop continuously or alternate forward and backward.",
         name="Playback",
         items=PLAYBACK_ITEMS,
@@ -1891,11 +2293,21 @@ def register_properties():
             ('DISPLAY', "Display", "Layer-list thumbnails, sorting and scene workflow options"),
             ('CAMERA', "Camera", "Camera projection and frame ratio"),
             ('RENDER', "Render", "Background render controls"),
-            ('MAINTENANCE', "Tools", "Repair, relink and diagnostics"),
+            ('COMPOSITOR', "Compositor", "Experimental global post-processing compositor; enable Experimental Features in Settings > Tools"),
+            ('MAINTENANCE', "Tools", "Repair and recovery tools with the locked autonomous Developer Tool"),
         ],
         default='PROJECT',
     )
-    bpy.types.Scene.fbp_show_project_tools = BoolProperty(name="Project Import", description="Show advanced project and folder import controls", default=True)
+    bpy.types.Scene.fbp_show_project_tools = BoolProperty(name="Project Import", description="Show advanced project and folder import controls", default=False)
+    bpy.types.Scene.fbp_experimental_compositor = BoolProperty(
+        name="Experimental Features",
+        description=(
+            "Enable access to experimental Frame By Plane features. Currently this unlocks the Compositor settings tab; "
+            "disable it to hide and prevent selection of that section"
+        ),
+        default=False,
+        update=update_experimental_compositor_cb,
+    )
     bpy.types.Scene.fbp_color_plane_type = EnumProperty(
         name="Plane Type",
         description="Choose what kind of camera-ratio plane to create",
@@ -2024,15 +2436,24 @@ def register_properties():
     bpy.types.Object.fbp_gradient_rotation = FloatProperty(name="Gradient Rotation", description="Rotate this Gradient Plane's procedural mapping around the local center in degrees without rotating the object.", default=0.0, soft_min=-180.0, soft_max=180.0, update=update_gradient_mapping_cb)
     bpy.types.Object.fbp_show_gradient_ramp = BoolProperty(name="Show Gradient Ramp", description="Show the advanced ColorRamp controls for this plane", default=True)
     bpy.types.Object.fbp_show_gradient_transform = BoolProperty(name="Show Gradient Position", description="Show the gradient position, scale and rotation controls for this plane", default=True)
-    bpy.types.Object.fbp_extend_mode = EnumProperty(name="Extend Mode", description="How the added border geometry samples the original image", items=[('EDGE', "Edge Pixel", "Clamp added geometry to the cropped image edge"), ('REPEAT', "Repeat Texture", "Repeat the texture into the added geometry")], default='EDGE', update=update_extend_mode_cb)
+    bpy.types.Object.fbp_extend_mode = EnumProperty(
+        name="Extend Mode",
+        description="How added border geometry samples pixels outside the original image",
+        items=[
+            ('EDGE', "Edge Pixel", "Clamp added geometry to the nearest image-edge pixel"),
+            ('TRANSPARENT', "Transparent", "Keep added geometry transparent outside the image; recommended for outer shadows and glows"),
+            ('REPEAT', "Repeat Texture", "Repeat the texture into the added geometry"),
+        ],
+        default='EDGE', update=update_extend_mode_cb,
+    )
     bpy.types.Object.fbp_extend_left = FloatProperty(name="Left", description="Extend the left edge after crop without scaling the image center", default=0.0, min=0.0, soft_min=0.0, soft_max=1.0, step=1, precision=3, update=update_object_padding_cb)
     bpy.types.Object.fbp_extend_right = FloatProperty(name="Right", description="Extend the right edge after crop without scaling the image center", default=0.0, min=0.0, soft_min=0.0, soft_max=1.0, step=1, precision=3, update=update_object_padding_cb)
     bpy.types.Object.fbp_extend_top = FloatProperty(name="Top", description="Extend the top edge after crop without scaling the image center", default=0.0, min=0.0, soft_min=0.0, soft_max=1.0, step=1, precision=3, update=update_object_padding_cb)
     bpy.types.Object.fbp_extend_bottom = FloatProperty(name="Bottom", description="Extend the bottom edge after crop without scaling the image center", default=0.0, min=0.0, soft_min=0.0, soft_max=1.0, step=1, precision=3, update=update_object_padding_cb)
-    bpy.types.Object.fbp_crop_left = FloatProperty(name="Left", description="Crop the left edge before extension is applied", default=0.0, min=0.0, max=1.95, update=update_object_padding_cb)
-    bpy.types.Object.fbp_crop_right = FloatProperty(name="Right", description="Crop the right edge before extension is applied", default=0.0, min=0.0, max=1.95, update=update_object_padding_cb)
-    bpy.types.Object.fbp_crop_top = FloatProperty(name="Top", description="Crop the top edge before extension is applied", default=0.0, min=0.0, max=1.95, update=update_object_padding_cb)
-    bpy.types.Object.fbp_crop_bottom = FloatProperty(name="Bottom", description="Crop the bottom edge before extension is applied", default=0.0, min=0.0, max=1.95, update=update_object_padding_cb)
+    bpy.types.Object.fbp_crop_left = FloatProperty(name="Left", description="Crop the left edge before extension is applied", default=0.0, min=0.0, max=1.999999, update=update_object_padding_cb)
+    bpy.types.Object.fbp_crop_right = FloatProperty(name="Right", description="Crop the right edge before extension is applied", default=0.0, min=0.0, max=1.999999, update=update_object_padding_cb)
+    bpy.types.Object.fbp_crop_top = FloatProperty(name="Top", description="Crop the top edge before extension is applied", default=0.0, min=0.0, max=1.999999, update=update_object_padding_cb)
+    bpy.types.Object.fbp_crop_bottom = FloatProperty(name="Bottom", description="Crop the bottom edge before extension is applied", default=0.0, min=0.0, max=1.999999, update=update_object_padding_cb)
     bpy.types.Object.fbp_effects = CollectionProperty(
         type=FBP_EffectItem,
         description="Runtime list of geometry and shader effects shared by the selected Frame by Plane layers",
@@ -2040,7 +2461,11 @@ def register_properties():
     bpy.types.Object.fbp_effects_index = IntProperty(
         name="Active Effect",
         description="Selected effect in the Frame by Plane effect stack",
-        default=0, min=0, options={'SKIP_SAVE'})
+        default=0, min=0, options={'SKIP_SAVE'}, update=update_effects_index_cb)
+    bpy.types.Object.fbp_effect_controls_enabled = BoolProperty(
+        name="Effect Controls",
+        description="Show a selectable viewport control for the active spatial effect",
+        default=True, update=update_effect_controls_enabled_cb)
     bpy.types.Object.fbp_effects_signature = StringProperty(description="Internal cache signature of the current effect stack, used to avoid unnecessary UI synchronization and node-tree rebuilds.",
         name="Effect Stack Signature", default="", options={'SKIP_SAVE'})
     bpy.types.Object.fbp_effect_groups = CollectionProperty(
@@ -2114,30 +2539,34 @@ def register_properties():
     bpy.types.Object.fbp_stop_motion_resolution = IntProperty(description="Subdivision level used before the Stop Motion Crumple deformation. Higher values preserve finer bends but increase viewport and render cost.", name="Resolution", default=5, min=0, max=6, update=update_stop_motion_resolution_cb)
     bpy.types.Object.fbp_stop_motion_strength = FloatProperty(description="Maximum displacement applied by Stop Motion Crumple. Increase for stronger paper-like deformation; zero keeps the plane flat.", name="Strength", default=0.05, min=0.0, soft_max=1.0, precision=3, update=update_stop_motion_strength_cb)
     bpy.types.Object.fbp_stop_motion_step_frames = IntProperty(description="Number of timeline frames each Stop Motion Crumple pose is held before a new deterministic deformation is evaluated.", name="Step Frames", default=3, min=1, soft_max=24, update=update_stop_motion_step_frames_cb)
-    bpy.types.Object.fbp_wind_bend_amount = FloatProperty(description="Overall amount and direction of Wind Bender deformation. Positive and negative values bend the free side in opposite directions.", name="Bend Amount", default=0.5, soft_min=-2.0, soft_max=2.0, precision=3, update=update_wind_bend_amount_cb)
-    bpy.types.Object.fbp_wind_speed = FloatProperty(description="Animation speed used by Wind Bender. Negative values reverse temporal direction; zero freezes the current wind phase.", name="Wind Speed", default=2.0, soft_min=-20.0, soft_max=20.0, precision=3, update=update_wind_speed_cb)
+    bpy.types.Object.fbp_wind_bend_amount = FloatProperty(description="Overall amount and direction of Mesh Motion deformation. Positive and negative values bend the free side in opposite directions.", name="Bend Amount", default=0.5, soft_min=-2.0, soft_max=2.0, precision=3, update=update_wind_bend_amount_cb)
+    bpy.types.Object.fbp_wind_speed = FloatProperty(description="Animation speed used by Mesh Motion. Negative values reverse temporal direction; zero freezes the current wind phase.", name="Wind Speed", default=2.0, soft_min=-20.0, soft_max=20.0, precision=3, update=update_wind_speed_cb)
     bpy.types.Object.fbp_wind_pin_edge = EnumProperty(
-        name="Pin Edge", description="Side that remains attached while the remaining plane moves",
-        items=(
-            ('LEFT', "Left", "Attach the left edge"),
-            ('RIGHT', "Right", "Attach the right edge"),
-            ('BOTTOM', "Bottom", "Attach the bottom edge"),
-            ('TOP', "Top", "Attach the top edge"),
-        ), default='LEFT', update=update_wind_pin_edge_cb)
+        name="Pin Mode", description="Pin one evaluated mesh border, all borders, or a named vertex group. Evaluated bounds automatically follow Crop and Extend.",
+        items=(('LEFT', "Left", "Pin the left border"), ('RIGHT', "Right", "Pin the right border"), ('BOTTOM', "Bottom", "Pin the bottom border"), ('TOP', "Top", "Pin the top border"), ('ALL', "All Borders", "Pin all four evaluated borders"), ('VERTEX_GROUP', "Vertex Group", "Use a vertex group where weight one is fully pinned")),
+        default='LEFT', update=update_wind_pin_edge_cb)
+    bpy.types.Object.fbp_wind_pin_strength = FloatProperty(
+        name="Pin Strength", description="Blend between unpinned motion and the selected border or vertex-group pinning.",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_wind_pin_strength_cb)
+    bpy.types.Object.fbp_wind_pin_vertex_group = StringProperty(
+        name="Vertex Group", description="Name of the vertex group used when Pin Mode is Vertex Group. Weight one is pinned; zero remains free.",
+        default="", update=update_wind_pin_vertex_group_cb)
     bpy.types.Object.fbp_wind_motion_mode = EnumProperty(
-        name="Motion Mode", description="Choose a global sway or waves that travel across the plane",
-        items=(
-            ('SWAY', "Sway", "Oscillate the plane back and forth from the pinned edge"),
-            ('FLOW', "Flowing Waves", "Move sine waves from the pinned edge toward the free edge"),
-        ), default='SWAY', update=update_wind_motion_mode_cb)
+        name="Behavior", description="Choose a broad sway, traveling flag waves, or a directional/radial ripple.",
+        items=(('SWAY', "Sway", "Bend the free area as one broad motion"), ('FLOW', "Flow", "Generate traveling flag-like waves"), ('RIPPLE', "Ripple", "Generate directional or radial surface ripples")),
+        default='SWAY', update=update_wind_motion_mode_cb)
+    bpy.types.Object.fbp_wind_ripple_direction = EnumProperty(
+        name="Ripple Direction", description="Coordinate used by Ripple behavior.",
+        items=(('X', "Horizontal", "Waves travel across local X"), ('Y', "Vertical", "Waves travel across local Y"), ('RADIAL', "Radial", "Waves expand from the evaluated mesh center")),
+        default='X', update=update_wind_ripple_direction_cb)
     bpy.types.Object.fbp_wind_wave_count = FloatProperty(
         name="Wave Count", description="Number of waves distributed between pinned and free edge",
         default=2.0, min=0.0, soft_max=10.0, max=40.0, update=update_wind_wave_count_cb)
-    bpy.types.Object.fbp_wind_wave_amplitude = FloatProperty(description="Strength of traveling waves layered over the main Wind Bender deformation.",
+    bpy.types.Object.fbp_wind_wave_amplitude = FloatProperty(description="Strength of traveling waves layered over the main Mesh Motion deformation.",
         name="Wave Amplitude", default=0.12, min=0.0, soft_max=1.0, max=10.0, update=update_wind_wave_amplitude_cb)
-    bpy.types.Object.fbp_wind_wave_speed = FloatProperty(description="Speed and direction of traveling waves in Wind Bender. Negative values make waves move backward.",
+    bpy.types.Object.fbp_wind_wave_speed = FloatProperty(description="Speed and direction of traveling waves in Mesh Motion. Negative values make waves move backward.",
         name="Wave Speed", default=2.0, soft_min=-20.0, soft_max=20.0, update=update_wind_wave_speed_cb)
-    bpy.types.Object.fbp_wind_phase = FloatProperty(description="Manual phase offset for Wind Bender waves. Animate this value to control motion independently from automatic Scene Time.",
+    bpy.types.Object.fbp_wind_phase = FloatProperty(description="Manual phase offset for Mesh Motion waves. Animate this value to control motion independently from automatic Scene Time.",
         name="Phase", default=0.0, soft_min=-6.283185, soft_max=6.283185, subtype='ANGLE', update=update_wind_phase_cb)
     bpy.types.Object.fbp_wind_turbulence = FloatProperty(
         name="Turbulence", description="Small irregular motion layered over the main deformation",
@@ -2149,7 +2578,7 @@ def register_properties():
         name="Falloff", description="Shape how strongly the pinned edge stays fixed",
         default=1.5, min=0.1, max=8.0, update=update_wind_falloff_cb)
     bpy.types.Object.fbp_wind_noise_scale = FloatProperty(
-        name="Noise Scale", description="Size of the turbulence pattern used by Wind Bender. Lower values produce broad gusts; higher values create smaller local variations.",
+        name="Noise Scale", description="Size of the turbulence pattern used by Mesh Motion. Lower values produce broad gusts; higher values create smaller local variations.",
         default=3.0, min=0.01, soft_max=20.0, max=100.0, update=update_wind_noise_scale_cb)
     bpy.types.Object.fbp_wind_gust_strength = FloatProperty(
         name="Gust Strength", description="Amount of slow irregular gust variation layered over the main wind cycle to reduce visibly repetitive motion.",
@@ -2184,8 +2613,8 @@ def register_properties():
         name="Subdivisions", description="Number of points along every strand; increase for smooth, tightly curled wool",
         default=3, min=2, soft_max=24, max=64, options={'ANIMATABLE'}, update=update_felt_subdivisions_cb)
     bpy.types.Object.fbp_felt_curl_amount = FloatProperty(
-        name="Curl Amount", description="Number and intensity of curls along each strand",
-        default=1.0, min=0.0, soft_max=5.0, max=12.0, precision=3,
+        name="Curl Turns", description="Curl frequency and intensity. The response accelerates toward the upper range so fibers can coil back around themselves.",
+        default=1.0, min=0.0, soft_max=8.0, max=24.0, precision=3,
         options={'ANIMATABLE'}, update=update_felt_curl_amount_cb)
     bpy.types.Object.fbp_felt_fuzz_radius = FloatProperty(description="Radius of each generated Felt Fuzz strand. Very small values create fine fibers; larger values produce thick yarn-like strands.",
         name="Fuzz Radius", default=0.0005, min=0.00001, soft_min=0.0005,
@@ -2196,86 +2625,96 @@ def register_properties():
     bpy.types.Object.fbp_felt_alpha_threshold = FloatProperty(description="Minimum source alpha required to generate Felt Fuzz. Increase this value to keep fibers away from soft or partially transparent edges.", name="Alpha Threshold", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_felt_alpha_threshold_cb)
     bpy.types.Object.fbp_felt_alpha_resolution = IntProperty(name="Alpha Resolution", description="Subdivision detail used only to sample the image alpha for fiber placement", default=2, min=2, max=6, update=update_felt_alpha_resolution_cb)
 
-    bpy.types.Object.fbp_wind_subdivision = IntProperty(description="Mesh subdivision level used by Wind Bender. Higher values bend more smoothly but increase viewport and render evaluation time.", name="Subdivision", default=4, min=0, max=6, update=update_wind_subdivision_cb)
+    bpy.types.Object.fbp_wind_subdivision = IntProperty(description="Mesh subdivision level used by Mesh Motion. Higher values bend more smoothly but increase viewport and render evaluation time.", name="Subdivision", default=4, min=0, max=6, update=update_wind_subdivision_cb)
     bpy.types.Object.fbp_wind_stepped = IntProperty(description="Number of frames each Wind Bender deformation state is held. Set to 1 for continuous per-frame motion.", name="Stepped", default=1, min=1, soft_max=24, update=update_wind_stepped_cb)
 
     # 4.9 Geometry effect quality contract reference implementation.
-    bpy.types.Object.fbp_mesh_ripple_viewport_subdivision = IntProperty(
-        name="Viewport Subdivision", description="Subdivision detail used for this effect in the interactive viewport. Lower values improve editing speed while render detail remains independent.",
-        default=4, min=0, max=7, update=update_mesh_ripple_viewport_subdivision_cb)
-    bpy.types.Object.fbp_mesh_ripple_playback_subdivision = IntProperty(
-        name="Playback Subdivision", description="Temporary mesh detail used during timeline playback",
-        default=2, min=0, max=7, update=update_mesh_ripple_playback_subdivision_cb)
-    bpy.types.Object.fbp_mesh_ripple_render_subdivision = IntProperty(
-        name="Render Subdivision", description="Mesh detail temporarily used for final rendering",
-        default=5, min=0, max=7, update=update_mesh_ripple_render_subdivision_cb)
-    bpy.types.Object.fbp_mesh_ripple_direction = EnumProperty(description="Direction in which Mesh Ripple waves travel across the plane: local horizontal, local vertical or radially from the center.",
-        name="Direction", items=(('X', "Horizontal", "Waves travel along local X"),
-                                  ('Y', "Vertical", "Waves travel along local Y"),
-                                  ('RADIAL', "Radial", "Waves expand from the plane center")),
-        default='X', update=update_mesh_ripple_direction_cb)
-    bpy.types.Object.fbp_mesh_ripple_amplitude = FloatProperty(description="Maximum distance Mesh Ripple displaces the plane away from its original surface.",
-        name="Amplitude", default=0.08, min=0.0, soft_max=1.0, max=10.0,
-        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_mesh_ripple_amplitude_cb)
-    bpy.types.Object.fbp_mesh_ripple_frequency = FloatProperty(description="Number and density of Mesh Ripple waves across the plane. Higher values create tighter, more frequent ripples.",
-        name="Frequency", default=3.0, min=0.0, soft_max=20.0, max=100.0,
-        precision=3, options={'ANIMATABLE'}, update=update_mesh_ripple_frequency_cb)
-    bpy.types.Object.fbp_mesh_ripple_speed = FloatProperty(description="Temporal speed of Mesh Ripple animation. Negative values reverse wave movement; zero freezes the phase.",
-        name="Speed", default=1.0, soft_min=-10.0, soft_max=10.0, precision=3,
-        options={'ANIMATABLE'}, update=update_mesh_ripple_speed_cb)
-    bpy.types.Object.fbp_mesh_ripple_phase = FloatProperty(description="Manual angular phase offset for Mesh Ripple. Animate this value for direct, keyframe-controlled wave motion.",
-        name="Phase", default=0.0, soft_min=-6.283185, soft_max=6.283185,
-        subtype='ANGLE', options={'ANIMATABLE'}, update=update_mesh_ripple_phase_cb)
-    bpy.types.Object.fbp_mesh_ripple_stepped = IntProperty(
-        name="Stepped", description="Hold each deformation pose for this many frames",
-        default=1, min=1, soft_max=24, max=1000, options={'ANIMATABLE'}, update=update_mesh_ripple_stepped_cb)
-    bpy.types.Object.fbp_mesh_ripple_pin_borders = FloatProperty(
-        name="Pin Borders", description="Strength used to pin the original plane border while the effect deforms the interior, helping preserve the silhouette and neighboring alignment.",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_mesh_ripple_pin_borders_cb)
-    bpy.types.Object.fbp_mesh_ripple_border_falloff = FloatProperty(
-        name="Border Falloff", description="Width of the soft transition between pinned border vertices and fully deformed interior geometry.",
-        default=0.15, min=0.001, soft_max=0.5, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_mesh_ripple_border_falloff_cb)
 
     # 4.9.2 Paper Curl uses the shared Geometry Nodes quality contract.
-    bpy.types.Object.fbp_paper_curl_viewport_subdivision = IntProperty(
-        name="Viewport Subdivision", description="Subdivision detail used for this effect in the interactive viewport. Lower values improve editing speed while render detail remains independent.",
-        default=4, min=0, max=7, update=update_paper_curl_viewport_subdivision_cb)
-    bpy.types.Object.fbp_paper_curl_playback_subdivision = IntProperty(
-        name="Playback Subdivision", description="Temporary mesh detail used during timeline playback",
-        default=2, min=0, max=7, update=update_paper_curl_playback_subdivision_cb)
-    bpy.types.Object.fbp_paper_curl_render_subdivision = IntProperty(
-        name="Render Subdivision", description="Mesh detail temporarily used for final rendering",
-        default=5, min=0, max=7, update=update_paper_curl_render_subdivision_cb)
-    bpy.types.Object.fbp_paper_curl_edge = EnumProperty(description="Choose the plane edge from which Paper Curl begins. Progress moves the curled region inward from this side.",
-        name="Curl Edge", items=(('LEFT', "Left", "Curl inward from the left edge"),
-                                  ('RIGHT', "Right", "Curl inward from the right edge"),
-                                  ('BOTTOM', "Bottom", "Curl inward from the bottom edge"),
-                                  ('TOP', "Top", "Curl inward from the top edge")),
-        default='TOP', update=update_paper_curl_edge_cb)
-    bpy.types.Object.fbp_paper_curl_progress = FloatProperty(
-        name="Progress", description="How far the curled region travels across the plane",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_paper_curl_progress_cb)
-    bpy.types.Object.fbp_paper_curl_angle = FloatProperty(description="Total rotation applied to the curled Paper edge. Larger values roll the sheet farther around the curl radius.",
-        name="Curl Angle", default=2.35619449, min=0.0, max=6.28318531, subtype='ANGLE',
-        options={'ANIMATABLE'}, update=update_paper_curl_angle_cb)
-    bpy.types.Object.fbp_paper_curl_radius = FloatProperty(description="Radius of the Paper Curl bend. Small values create a tight fold; large values create a broad, gentle roll.",
-        name="Curl Radius", default=0.15, min=0.0, soft_max=1.0, max=10.0,
-        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_paper_curl_radius_cb)
-    bpy.types.Object.fbp_paper_curl_width = FloatProperty(
-        name="Curl Width", description="Width of the transition from flat paper to the curled edge",
-        default=0.28, min=0.001, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_paper_curl_width_cb)
-    bpy.types.Object.fbp_paper_curl_lift = FloatProperty(
-        name="Lift", description="Extra displacement applied near the Paper Curl edge, increasing separation from the original plane without changing curl direction.",
-        default=0.02, soft_min=-0.5, soft_max=0.5, max=10.0, min=-10.0,
-        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_paper_curl_lift_cb)
-    bpy.types.Object.fbp_paper_curl_reverse = BoolProperty(
-        name="Reverse Curl", description="Curl behind the plane instead of toward its local front",
-        default=False, options={'ANIMATABLE'}, update=update_paper_curl_reverse_cb)
 
     # Reusable alpha-to-geometry contract reference effect.
+    bpy.types.Object.fbp_lattice_object = PointerProperty(name="Lattice", description="Native editable Lattice cage generated around the linked Frame By Plane plane. Deform it in Edit Mode; Object Mode transforms are locked for stability.", type=bpy.types.Object)
+    bpy.types.Object.fbp_lattice_mode = EnumProperty(
+        name="Mode",
+        description="Use the Lattice as a manually editable cage or bake the current camera-space perspective onto a plane parallel to the active camera",
+        items=[
+            ('FREEFORM', 'Freeform', 'Edit the native Lattice control points in Edit Mode; select all points to move, rotate or scale the full cage'),
+            ('CAMERA_FLATTEN', 'Camera Flatten', 'Bake the plane perspective into the Lattice so the deformed surface becomes parallel to the active camera'),
+        ],
+        default='FREEFORM',
+        update=update_lattice_camera_settings_cb,
+    )
+    bpy.types.Object.fbp_lattice_flatten_influence = FloatProperty(
+        name="Flatten Influence",
+        description="Blend between the original 3D plane and the camera-parallel flattened result while preserving its current camera projection",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_lattice_camera_settings_cb,
+    )
+    bpy.types.Object.fbp_lattice_live_update = BoolProperty(
+        name="Live Update",
+        description="Recalculate Camera Flatten while the plane, its parents or the active camera move. Disable it to keep the current Lattice shape as a lightweight baked correction",
+        default=True, update=update_lattice_camera_settings_cb,
+    )
+    bpy.types.Object.fbp_lattice_show_cage = BoolProperty(
+        name="Show Cage",
+        description="Show the non-rendering Lattice cage in the viewport while the effect is enabled",
+        default=True, update=update_lattice_visibility_cb,
+    )
+    bpy.types.Object.fbp_lattice_grid_preset = EnumProperty(
+        name="Cage Grid",
+        description="Choose the number of internal planar control loops. Corners uses only the four corner points; the numbered presets count internal loops rather than corner points",
+        items=[
+            ('CORNERS', 'Corners', 'Four corner points with no internal control loops'),
+            ('BASIC', 'Basic (1 × 1)', 'One internal control loop on each axis'),
+            ('LOOPS_2', '2 × 2', 'Two internal control loops on each axis'),
+            ('LOOPS_4', '4 × 4', 'Four internal control loops on each axis'),
+            ('CUSTOM', 'Custom', 'Set horizontal and vertical internal loop counts independently or keep them linked'),
+        ],
+        default='LOOPS_2', update=update_lattice_grid_preset_cb,
+    )
+    bpy.types.Object.fbp_lattice_link_loops = BoolProperty(
+        name="Link Loop Counts",
+        description="Keep horizontal and vertical custom loop counts equal. Disable the chain to create rectangular grids such as 2 × 6 or 4 × 1",
+        default=True, update=update_lattice_loop_link_cb,
+    )
+    bpy.types.Object.fbp_lattice_custom_loops_u = IntProperty(
+        name="Horizontal Loops",
+        description="Number of internal vertical control loops across the plane. Corner points are added automatically and are not included in this value",
+        default=6, min=0, max=62, soft_max=16, update=update_lattice_custom_loops_u_cb,
+    )
+    bpy.types.Object.fbp_lattice_custom_loops_v = IntProperty(
+        name="Vertical Loops",
+        description="Number of internal horizontal control loops across the plane. Corner points are added automatically and are not included in this value",
+        default=6, min=0, max=62, soft_max=16, update=update_lattice_custom_loops_v_cb,
+    )
+    bpy.types.Object.fbp_lattice_mesh_detail_mode = EnumProperty(
+        name="Mesh Detail",
+        description="Automatically derive the deformable plane density from the cage grid, or set Blender Simple Subdivision levels manually",
+        items=[
+            ('AUTO', 'Automatic', 'Choose enough mesh subdivisions from the cage grid and Density setting'),
+            ('CUSTOM', 'Custom', 'Set Blender Simple Subdivision levels directly'),
+        ],
+        default='AUTO', update=update_lattice_mesh_detail_cb,
+    )
+    bpy.types.Object.fbp_lattice_mesh_density = EnumProperty(
+        name="Density",
+        description="Target deformable mesh density relative to the number of planar Lattice cells",
+        items=[
+            ('MATCH', 'Match Cage', 'Use approximately one deformable face segment for each cage cell'),
+            ('DOUBLE', '2× Cage', 'Use approximately twice as many deformable face segments as cage cells'),
+            ('QUADRUPLE', '4× Cage', 'Use approximately four times as many deformable face segments as cage cells'),
+        ],
+        default='DOUBLE', update=update_lattice_mesh_detail_cb,
+    )
+    bpy.types.Object.fbp_lattice_mesh_subdivisions = IntProperty(
+        name="Subdivision Levels",
+        description="Custom Blender Simple Subdivision levels applied before the Lattice. Each level doubles the mesh segments per axis",
+        default=2, min=0, max=6, soft_max=4, update=update_lattice_mesh_detail_cb,
+    )
+    bpy.types.Object.fbp_lattice_points_u = IntProperty(name="Cage Columns", description="Number of planar control-point columns along the plane local X axis. Changing it rebuilds the cage and resets current point edits.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    bpy.types.Object.fbp_lattice_points_v = IntProperty(name="Cage Rows", description="Number of planar control-point rows along the plane local Y axis. Changing it rebuilds the cage and resets current point edits.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    bpy.types.Object.fbp_lattice_points_w = IntProperty(name="Planar Depth", description="Legacy compatibility value. Frame By Plane Lattice cages now always use one depth layer so each visible point is selected only once.", default=1, min=1, max=1, update=update_lattice_effect_cb)
+    bpy.types.Object.fbp_lattice_interpolation = EnumProperty(name="Interpolation", description="Interpolation used between Lattice control points. This can be changed without resetting the current deformation.", items=[('LINEAR','Linear','Linear interpolation'),('CARDINAL','Cardinal','Cardinal interpolation'),('CATMULL_ROM','Catmull-Rom','Catmull-Rom interpolation'),('BSPLINE','B-Spline','Smooth B-Spline interpolation')], default='BSPLINE', update=update_lattice_interpolation_cb)
     bpy.types.Object.fbp_cutout_outline_viewport_resolution = IntProperty(
         name="Viewport Alpha Detail", description="Subdivision level used to trace the alpha silhouette while editing",
         default=4, min=0, max=8, update=update_cutout_outline_viewport_resolution_cb)
@@ -2291,15 +2730,20 @@ def register_properties():
         update=update_cutout_outline_alpha_threshold_cb)
     bpy.types.Object.fbp_cutout_outline_width = FloatProperty(
         name="Outline Width", description="World-space radius of the generated Cutout Outline geometry. Larger values create a thicker visible border around the source alpha silhouette.",
-        default=0.012, min=0.00001, soft_max=0.1, max=10.0, subtype='DISTANCE', precision=5,
+        default=0.012, min=0.00001, soft_max=0.25, max=10.0, subtype='DISTANCE', precision=5,
         options={'ANIMATABLE'}, update=update_cutout_outline_width_cb)
     bpy.types.Object.fbp_cutout_outline_offset = FloatProperty(
         name="Offset", description="Move the outline along the plane local Z axis",
         default=0.001, min=-10.0, max=10.0, soft_min=-0.1, soft_max=0.1,
         subtype='DISTANCE', precision=5, options={'ANIMATABLE'}, update=update_cutout_outline_offset_cb)
-    bpy.types.Object.fbp_cutout_outline_color = FloatVectorProperty(description="RGBA color assigned to the generated Cutout Outline geometry.",
+    bpy.types.Object.fbp_cutout_outline_color = FloatVectorProperty(
+        description="RGBA color assigned to the generated Cutout Outline geometry.",
         name="Outline Color", subtype='COLOR', size=4, min=0.0, max=1.0,
         default=(0.02, 0.02, 0.02, 1.0), update=update_cutout_outline_color_cb)
+    bpy.types.Object.fbp_cutout_outline_show_image = BoolProperty(name="Show Image", description="Keep the original image visible together with the generated outline.", default=True, update=update_cutout_outline_show_image_cb)
+    bpy.types.Object.fbp_cutout_outline_wiggle_amount = FloatProperty(name="Wiggle Line", description="Procedural displacement applied to the generated outline. Zero keeps the contour perfectly stable.", default=0.0, min=0.0, soft_max=0.05, max=10.0, subtype='DISTANCE', update=update_cutout_outline_wiggle_amount_cb)
+    bpy.types.Object.fbp_cutout_outline_wiggle_scale = FloatProperty(name="Wiggle Scale", description="Spatial frequency of the Cutout Outline line wiggle.", default=8.0, min=0.01, soft_max=64.0, max=1000.0, update=update_cutout_outline_wiggle_scale_cb)
+    bpy.types.Object.fbp_cutout_outline_wiggle_phase = FloatProperty(name="Wiggle Phase", description="Animation phase used by Cutout Outline Evolution.", default=0.0, soft_min=-10.0, soft_max=10.0, min=-100000.0, max=100000.0, update=update_cutout_outline_wiggle_phase_cb)
 
 
     # Camera-space foundation reference effect.
@@ -2327,20 +2771,30 @@ def register_properties():
         default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
         update=update_camera_scale_lock_influence_cb)
 
-    # 4.9.7 stabilized camera-space vector contract reference effect.
-    bpy.types.Object.fbp_camera_billboard_mode = EnumProperty(description="Choose how the plane automatically faces the camera: full facing, axis-constrained facing or disabled behavior depending on the selected mode.",
-        name="Facing Mode",
-        items=(('FULL', "Full", "Face the camera on both local axes"),
-               ('HORIZONTAL', "Horizontal", "Rotate only across the local horizontal axis"),
-               ('VERTICAL', "Vertical", "Rotate only across the local vertical axis")),
+    bpy.types.Object.fbp_camera_billboard_mode = EnumProperty(
+        description="Choose whether the complete Frame By Plane rig tracks the camera freely or keeps one local axis locked.",
+        name="Tracking Mode",
+        items=(('FULL', "Full", "Track the camera with full rig rotation"),
+               ('HORIZONTAL', "Horizontal", "Keep the rig vertical while tracking horizontally"),
+               ('VERTICAL', "Vertical", "Keep the rig horizontal while tracking vertically")),
         default='FULL', update=update_camera_billboard_mode_cb)
     bpy.types.Object.fbp_camera_billboard_flip = BoolProperty(
-        name="Flip", description="Flip the generated geometry orientation and normals when the effect faces away from the expected camera or lighting direction.",
+        name="Face Away", description="Track the opposite local Z direction when the layer faces away from the camera.",
         default=False, options={'ANIMATABLE'}, update=update_camera_billboard_flip_cb)
+    bpy.types.Object.fbp_camera_billboard_influence = FloatProperty(
+        name="Influence", description="Blend between the original rig rotation and full camera tracking.",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_camera_billboard_influence_cb)
+    # Kept for project compatibility with the former Geometry Nodes billboard.
     bpy.types.Object.fbp_camera_billboard_offset = FloatProperty(
-        name="Camera Offset", description="Move generated geometry toward or away from the camera",
+        name="Legacy Camera Offset", description="Legacy value retained when opening projects created before Track to Camera used a rig constraint.",
         default=0.0, min=-10000.0, max=10000.0, soft_min=-1.0, soft_max=1.0,
-        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_camera_billboard_offset_cb)
+        subtype='DISTANCE', precision=4, options={'HIDDEN'}, update=update_camera_billboard_offset_cb)
+    bpy.types.Object.fbp_mirror_x = BoolProperty(
+        name="Mirror X", description="Mirror the plane horizontally around the rig pivot.",
+        default=True, options={'ANIMATABLE'}, update=update_mirror_x_cb)
+    bpy.types.Object.fbp_mirror_y = BoolProperty(
+        name="Mirror Y", description="Mirror the plane vertically around the rig pivot.",
+        default=False, options={'ANIMATABLE'}, update=update_mirror_y_cb)
 
     bpy.types.Object.fbp_thickness_viewport_pixels_x = IntProperty(
         name="Viewport Alpha Pixels X", description="Exact horizontal alpha samples used by Extrude while editing",
@@ -2372,6 +2826,17 @@ def register_properties():
         name="Follow Pixelate",
         description="When Pixelate is present, use its effective X by Y grid for the Extrude silhouette",
         default=True, update=update_thickness_follow_pixelate_cb)
+    bpy.types.Object.fbp_thickness_safe_grid = BoolProperty(
+        name="Safe Grid Limits",
+        description="Limit the effective Extrude alpha grid per quality profile to avoid multi-million-cell geometry. Disable only for deliberate high-resolution final work.",
+        default=True, update=update_thickness_safe_grid_cb)
+    bpy.types.Object.fbp_thickness_mode = EnumProperty(
+        name="Method", description="Volume creates real alpha-derived side walls; Array repeats the complete textured plane through the chosen depth.",
+        items=(('VOLUME', "Volume", "Generate front, back and alpha-derived side walls"), ('ARRAY', "Array", "Create a fake extrusion from repeated textured planes")),
+        default='VOLUME', update=update_thickness_mode_cb)
+    bpy.types.Object.fbp_thickness_array_count = IntProperty(
+        name="Array Copies", description="Number of textured plane copies distributed across the Extrude depth in Array mode.",
+        default=12, min=2, soft_max=48, max=128, update=update_thickness_array_count_cb)
     bpy.types.Object.fbp_thickness_amount = FloatProperty(description="Depth of the Extrude side walls. Zero removes the generated volume.", name="Thickness", default=0.02, min=0.0, soft_max=0.25, max=10.0, precision=4, subtype='DISTANCE', options={'ANIMATABLE'}, update=update_thickness_amount_cb)
     bpy.types.Object.fbp_thickness_direction = FloatProperty(name="Direction", description="-1 extrudes behind the plane; +1 extrudes toward local front", default=-1.0, min=-1.0, max=1.0, options={'ANIMATABLE'}, update=update_thickness_direction_cb)
     bpy.types.Object.fbp_thickness_side_material = PointerProperty(description="Optional material assigned to Extrude side faces. Leave empty to use the side color instead.", name="Side Material", type=bpy.types.Material, update=update_thickness_side_material_cb)
@@ -2408,6 +2873,64 @@ def register_properties():
     bpy.types.Object.fbp_pixelate_height = IntProperty(
         name="Pixels Y", description="Vertical number of pixel cells used in Exact Grid mode, for example 10 in a 16 by 10 grid or 1080 in a 1920 by 1080 grid",
         default=36, min=1, soft_max=2048, max=8192, update=update_pixelate_height_cb)
+    bpy.types.Object.fbp_pixelate_rotation = FloatProperty(name="Rotation", description="Rotate the complete Pixelate sampling grid around the image center.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_pixelate_rotation_cb)
+    bpy.types.Object.fbp_pixelate_offset_x = FloatProperty(name="Offset X", description="Move the Pixelate grid horizontally without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-1.0, max=1.0, update=update_pixelate_offset_x_cb)
+    bpy.types.Object.fbp_pixelate_offset_y = FloatProperty(name="Offset Y", description="Move the Pixelate grid vertically without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-1.0, max=1.0, update=update_pixelate_offset_y_cb)
+
+    bpy.types.Object.fbp_swirl_center_x = FloatProperty(name="Center X", description="Horizontal center of the Swirl in normalized image coordinates.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_swirl_center_x_cb)
+    bpy.types.Object.fbp_swirl_center_y = FloatProperty(name="Center Y", description="Vertical center of the Swirl in normalized image coordinates.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_swirl_center_y_cb)
+    bpy.types.Object.fbp_swirl_radius = FloatProperty(name="Radius", description="Normalized radius affected by Swirl.", default=0.5, min=0.001, soft_max=1.5, max=4.0, update=update_swirl_radius_cb)
+    bpy.types.Object.fbp_swirl_angle = FloatProperty(name="Angle", description="Maximum twist at the center of Swirl.", default=3.141592654, min=-25.13274123, max=25.13274123, subtype='ANGLE', update=update_swirl_angle_cb)
+    bpy.types.Object.fbp_swirl_factor = FloatProperty(name="Factor", description="Blend between the original and swirled UV coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_swirl_factor_cb)
+
+    bpy.types.Object.fbp_bulge_pinch_center_x = FloatProperty(name="Center X", description="Horizontal center of the Bulge or Pinch.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_bulge_pinch_center_x_cb)
+    bpy.types.Object.fbp_bulge_pinch_center_y = FloatProperty(name="Center Y", description="Vertical center of the Bulge or Pinch.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_bulge_pinch_center_y_cb)
+    bpy.types.Object.fbp_bulge_pinch_radius = FloatProperty(name="Radius", description="Normalized radius affected by Bulge or Pinch.", default=0.5, min=0.001, soft_max=1.5, max=4.0, update=update_bulge_pinch_radius_cb)
+    bpy.types.Object.fbp_bulge_pinch_strength = FloatProperty(name="Strength", description="Positive values bulge the image outward; negative values pinch it inward.", default=0.5, min=-2.0, max=2.0, update=update_bulge_pinch_strength_cb)
+    bpy.types.Object.fbp_bulge_pinch_factor = FloatProperty(name="Factor", description="Blend between original and Bulge or Pinch distortion.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_bulge_pinch_factor_cb)
+
+    bpy.types.Object.fbp_lens_warp_center_x = FloatProperty(name="Center X", description="Horizontal optical center of Lens Warp.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_lens_warp_center_x_cb)
+    bpy.types.Object.fbp_lens_warp_center_y = FloatProperty(name="Center Y", description="Vertical optical center of Lens Warp.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_lens_warp_center_y_cb)
+    bpy.types.Object.fbp_lens_warp_distortion = FloatProperty(name="Distortion", description="Barrel or pincushion radial distortion. Positive and negative values bend in opposite directions.", default=0.0, min=-4.0, max=4.0, update=update_lens_warp_distortion_cb)
+    bpy.types.Object.fbp_lens_warp_zoom = FloatProperty(name="Zoom", description="Compensating zoom applied after radial Lens Warp.", default=1.0, min=0.01, soft_max=2.0, max=8.0, update=update_lens_warp_zoom_cb)
+    bpy.types.Object.fbp_lens_warp_factor = FloatProperty(name="Factor", description="Blend between original and lens-warped UV coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_lens_warp_factor_cb)
+
+    bpy.types.Object.fbp_wave_warp_amplitude = FloatProperty(name="Amplitude", description="Maximum normalized displacement produced by Wave Warp.", default=0.025, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, update=update_wave_warp_amplitude_cb)
+    bpy.types.Object.fbp_wave_warp_frequency = FloatProperty(name="Frequency", description="Number of Wave Warp oscillations across the image.", default=6.0, min=0.01, soft_max=32.0, max=256.0, update=update_wave_warp_frequency_cb)
+    bpy.types.Object.fbp_wave_warp_phase = FloatProperty(name="Phase", description="Animation phase of Wave Warp.", default=0.0, soft_min=-6.283185307, soft_max=6.283185307, min=-1000.0, max=1000.0, subtype='ANGLE', update=update_wave_warp_phase_cb)
+    bpy.types.Object.fbp_wave_warp_angle = FloatProperty(name="Angle", description="Direction of the Wave Warp bands.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_wave_warp_angle_cb)
+    bpy.types.Object.fbp_wave_warp_factor = FloatProperty(name="Factor", description="Blend between original and Wave distortion.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_wave_warp_factor_cb)
+    bpy.types.Object.fbp_wave_warp_speed = FloatProperty(name="Speed", description="Multiplier applied to automatic Wave Evolution. Zero freezes the animation.", default=1.0, min=-20.0, max=20.0, update=update_wave_warp_speed_cb)
+
+    bpy.types.Object.fbp_ripple_distortion_center_x = FloatProperty(name="Center X", description="Horizontal center of Ripple Distortion.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_ripple_distortion_center_x_cb)
+    bpy.types.Object.fbp_ripple_distortion_center_y = FloatProperty(name="Center Y", description="Vertical center of Ripple Distortion.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_ripple_distortion_center_y_cb)
+    bpy.types.Object.fbp_ripple_distortion_amplitude = FloatProperty(name="Amplitude", description="Maximum radial UV displacement produced by Ripple Distortion.", default=0.02, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, update=update_ripple_distortion_amplitude_cb)
+    bpy.types.Object.fbp_ripple_distortion_frequency = FloatProperty(name="Frequency", description="Number of radial ripple oscillations per normalized image unit.", default=12.0, min=0.01, soft_max=64.0, max=512.0, update=update_ripple_distortion_frequency_cb)
+    bpy.types.Object.fbp_ripple_distortion_phase = FloatProperty(name="Phase", description="Animation phase of Ripple Distortion.", default=0.0, soft_min=-6.283185307, soft_max=6.283185307, min=-1000.0, max=1000.0, subtype='ANGLE', update=update_ripple_distortion_phase_cb)
+    bpy.types.Object.fbp_ripple_distortion_radius = FloatProperty(name="Radius", description="Normalized maximum radius reached by Ripple Distortion.", default=0.75, min=0.001, soft_max=1.5, max=4.0, update=update_ripple_distortion_radius_cb)
+    bpy.types.Object.fbp_ripple_distortion_falloff = FloatProperty(name="Falloff", description="How rapidly Ripple Distortion fades near its outer radius.", default=1.0, min=0.05, soft_max=4.0, max=8.0, update=update_ripple_distortion_falloff_cb)
+    bpy.types.Object.fbp_ripple_distortion_factor = FloatProperty(name="Factor", description="Blend between original and circular Wave coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_ripple_distortion_factor_cb)
+    bpy.types.Object.fbp_ripple_distortion_speed = FloatProperty(name="Speed", description="Multiplier applied to automatic circular Wave Evolution. Zero freezes the animation.", default=1.0, min=-20.0, max=20.0, update=update_ripple_distortion_speed_cb)
+
+    bpy.types.Object.fbp_kaleidoscope_center_x = FloatProperty(name="Center X", description="Horizontal center of the Kaleidoscope.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_kaleidoscope_center_x_cb)
+    bpy.types.Object.fbp_kaleidoscope_center_y = FloatProperty(name="Center Y", description="Vertical center of the Kaleidoscope.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_kaleidoscope_center_y_cb)
+    bpy.types.Object.fbp_kaleidoscope_segments = IntProperty(name="Segments", description="Number of mirrored radial Kaleidoscope segments.", default=6, min=1, soft_max=24, max=64, update=update_kaleidoscope_segments_cb)
+    bpy.types.Object.fbp_kaleidoscope_rotation = FloatProperty(name="Rotation", description="Rotate the Kaleidoscope segment pattern.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_kaleidoscope_rotation_cb)
+    bpy.types.Object.fbp_kaleidoscope_factor = FloatProperty(name="Factor", description="Blend between original and Kaleidoscope mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_kaleidoscope_factor_cb)
+
+    bpy.types.Object.fbp_hex_pixelate_cells_x = IntProperty(name="Cells X", description="Horizontal resolution of the staggered Hex Pixelate grid.", default=48, min=1, soft_max=512, max=8192, update=update_hex_pixelate_cells_x_cb)
+    bpy.types.Object.fbp_hex_pixelate_cells_y = IntProperty(name="Cells Y", description="Vertical resolution of the staggered Hex Pixelate grid.", default=32, min=1, soft_max=512, max=8192, update=update_hex_pixelate_cells_y_cb)
+    bpy.types.Object.fbp_hex_pixelate_rotation = FloatProperty(name="Rotation", description="Rotate the staggered Hex Pixelate grid around the image center.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_hex_pixelate_rotation_cb)
+    bpy.types.Object.fbp_hex_pixelate_factor = FloatProperty(name="Factor", description="Blend between original and Hex Pixelate mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_hex_pixelate_factor_cb)
+
+    bpy.types.Object.fbp_mosaic_jitter_cells_x = IntProperty(name="Cells X", description="Horizontal number of Mosaic Jitter blocks.", default=32, min=1, soft_max=512, max=8192, update=update_mosaic_jitter_cells_x_cb)
+    bpy.types.Object.fbp_mosaic_jitter_cells_y = IntProperty(name="Cells Y", description="Vertical number of Mosaic Jitter blocks.", default=18, min=1, soft_max=512, max=8192, update=update_mosaic_jitter_cells_y_cb)
+    bpy.types.Object.fbp_mosaic_jitter_rotation = FloatProperty(name="Rotation", description="Rotate the Mosaic Jitter grid around the image center without rotating the plane.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_mosaic_jitter_rotation_cb)
+    bpy.types.Object.fbp_mosaic_jitter_amount = FloatProperty(name="Jitter", description="Random sample displacement measured in cell widths. Values above one can overlap neighboring blocks.", default=0.6, min=0.0, soft_max=2.0, max=4.0, update=update_mosaic_jitter_amount_cb)
+    bpy.types.Object.fbp_mosaic_jitter_offset_x = FloatProperty(name="Offset X", description="Move the Mosaic Jitter grid horizontally without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, update=update_mosaic_jitter_offset_x_cb)
+    bpy.types.Object.fbp_mosaic_jitter_offset_y = FloatProperty(name="Offset Y", description="Move the Mosaic Jitter grid vertically without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, update=update_mosaic_jitter_offset_y_cb)
+    bpy.types.Object.fbp_mosaic_jitter_seed = IntProperty(name="Seed", description="Random pattern seed used by Mosaic Jitter.", default=0, min=-100000, max=100000, update=update_mosaic_jitter_seed_cb)
+    bpy.types.Object.fbp_mosaic_jitter_factor = FloatProperty(name="Factor", description="Blend between original and Mosaic Jitter mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_mosaic_jitter_factor_cb)
     bpy.types.Object.fbp_depth_blur_mode = EnumProperty(
         name="Blur Mode",
         description="Use a fixed manual radius or derive the radius from camera-space distance to the focus plane",
@@ -2447,6 +2970,52 @@ def register_properties():
         name="Far Strength", description="Multiplier applied to layers farther than the focus plane",
         default=1.0, min=0.0, max=2.0, soft_max=1.0, subtype='FACTOR',
         update=update_depth_blur_far_strength_cb)
+    bpy.types.Object.fbp_gaussian_blur_radius_x = FloatProperty(
+        name="Radius X",
+        description="Horizontal Gaussian blur radius measured in source-image pixels. Zero disables horizontal spreading",
+        default=4.0, min=0.0, soft_max=64.0, max=256.0, precision=2,
+        update=update_gaussian_blur_radius_x_cb)
+    bpy.types.Object.fbp_gaussian_blur_radius_y = FloatProperty(
+        name="Radius Y",
+        description="Vertical Gaussian blur radius measured in source-image pixels. Zero disables vertical spreading",
+        default=4.0, min=0.0, soft_max=64.0, max=256.0, precision=2,
+        update=update_gaussian_blur_radius_y_cb)
+    bpy.types.Object.fbp_gaussian_blur_samples = IntProperty(
+        description="Number of balanced texture samples used by Gaussian Blur. Higher values hide visible copies and create a smoother result at greater shader cost.",
+        name="Samples", default=17, min=3, max=25, soft_min=5, soft_max=25, step=2,
+        update=update_gaussian_blur_samples_cb)
+    bpy.types.Object.fbp_gaussian_blur_factor = FloatProperty(
+        name="Factor",
+        description="Blend between the original layer and the alpha-safe Gaussian blur result",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_gaussian_blur_factor_cb)
+    bpy.types.Object.fbp_directional_blur_control_x = FloatProperty(
+        name="Control X",
+        description="Normalized horizontal viewport position of the Directional Blur controller; moving the helper updates this value without changing the sampled blur center",
+        default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0)
+    bpy.types.Object.fbp_directional_blur_control_y = FloatProperty(
+        name="Control Y",
+        description="Normalized vertical viewport position of the Directional Blur controller; moving the helper updates this value without changing the sampled blur center",
+        default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0)
+    bpy.types.Object.fbp_directional_blur_angle = FloatProperty(
+        name="Angle",
+        description="Direction of the blur streak. Zero points horizontally along the image X axis",
+        default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE',
+        update=update_directional_blur_angle_cb)
+    bpy.types.Object.fbp_directional_blur_distance = FloatProperty(
+        name="Distance",
+        description="Total centered directional blur distance measured in source-image pixels",
+        default=12.0, min=0.0, soft_max=128.0, max=512.0, precision=2,
+        update=update_directional_blur_distance_cb)
+    bpy.types.Object.fbp_directional_blur_samples = IntProperty(
+        description="Number of centered texture copies used by Directional Blur. Higher values smooth long motion streaks while increasing shader cost.",
+        name="Samples", default=17, min=3, max=25, soft_min=5, soft_max=25, step=2,
+        update=update_directional_blur_samples_cb)
+    bpy.types.Object.fbp_directional_blur_factor = FloatProperty(
+        name="Factor",
+        description="Blend between the original layer and the alpha-safe directional blur result",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_directional_blur_factor_cb)
     bpy.types.Object.fbp_alpha_matte_source = PointerProperty(
         name="Source Layer", description="Frame By Plane image or sequence whose alpha channel masks this layer. The source is sampled in normalized UV space",
         type=bpy.types.Object, poll=_fbp_mask_source_poll, update=update_alpha_matte_source_cb)
@@ -2546,6 +3115,53 @@ def register_properties():
     bpy.types.Object.fbp_color_mask_invert = BoolProperty(
         name="Invert", description="Use colors outside the selected range",
         default=False, update=update_color_mask_invert_cb)
+    bpy.types.Object.fbp_luminance_mask_minimum = FloatProperty(
+        name="Minimum", description="Lowest source luminance included by Luminance Mask. Minimum and Maximum are automatically ordered if their values cross",
+        default=0.2, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_luminance_mask_minimum_cb)
+    bpy.types.Object.fbp_luminance_mask_maximum = FloatProperty(
+        name="Maximum", description="Highest source luminance included by Luminance Mask. Minimum and Maximum are automatically ordered if their values cross",
+        default=0.8, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_luminance_mask_maximum_cb)
+    bpy.types.Object.fbp_luminance_mask_softness = FloatProperty(
+        name="Softness", description="Feather the lower and upper edges of the selected luminance interval",
+        default=0.1, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_luminance_mask_softness_cb)
+    bpy.types.Object.fbp_luminance_mask_factor = FloatProperty(
+        name="Factor", description="Blend between the unmasked result and Luminance Mask",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_luminance_mask_factor_cb)
+    bpy.types.Object.fbp_luminance_mask_invert = BoolProperty(
+        name="Invert", description="Use luminance values outside the selected interval",
+        default=False, update=update_luminance_mask_invert_cb)
+    bpy.types.Object.fbp_channel_mask_channel = EnumProperty(
+        name="Channel", description="Source channel evaluated by Channel Mask",
+        items=[
+            ('RED', "Red", "Use the source red channel"),
+            ('GREEN', "Green", "Use the source green channel"),
+            ('BLUE', "Blue", "Use the source blue channel"),
+            ('ALPHA', "Alpha", "Use the source alpha channel without multiplying it twice"),
+            ('LUMINANCE', "Luminance", "Use perceptual source luminance"),
+        ], default='LUMINANCE', update=update_channel_mask_channel_cb)
+    bpy.types.Object.fbp_channel_mask_minimum = FloatProperty(
+        name="Minimum", description="Lowest selected value in the chosen source channel; Minimum and Maximum are ordered automatically",
+        default=0.2, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_channel_mask_minimum_cb)
+    bpy.types.Object.fbp_channel_mask_maximum = FloatProperty(
+        name="Maximum", description="Highest selected value in the chosen source channel; Minimum and Maximum are ordered automatically",
+        default=0.8, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_channel_mask_maximum_cb)
+    bpy.types.Object.fbp_channel_mask_softness = FloatProperty(
+        name="Softness", description="Feather the lower and upper edges of the selected channel interval",
+        default=0.1, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_channel_mask_softness_cb)
+    bpy.types.Object.fbp_channel_mask_factor = FloatProperty(
+        name="Factor", description="Blend between the unmasked result and Channel Mask",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_channel_mask_factor_cb)
+    bpy.types.Object.fbp_channel_mask_invert = BoolProperty(
+        name="Invert", description="Use source-channel values outside the selected interval",
+        default=False, update=update_channel_mask_invert_cb)
     bpy.types.Object.fbp_gradient_mask_type = EnumProperty(
         name="Type", description="Gradient shape used by the mask",
         items=[
@@ -2625,8 +3241,12 @@ def register_properties():
         default=False, update=update_clipping_mask_invert_cb)
     bpy.types.Object.fbp_clipping_mask_use_source_transform = BoolProperty(
         name="Use Source Transform",
-        description="Project through the source plane so its position, rotation and scale affect the clipping result. Disable for Procreate-style normalized clipping",
-        default=False, update=update_clipping_mask_use_source_transform_cb)
+        description="Project through the source plane so its position, rotation, scale and cropped bounds define the clipping result. Disable only for full-canvas layered imports",
+        default=True, update=update_clipping_mask_use_source_transform_cb)
+    bpy.types.Object.fbp_clipping_mask_use_camera_projection = BoolProperty(
+        name="Camera Projection",
+        description="Project the source alpha through the active camera so clipping remains aligned in perspective and orthographic camera views",
+        default=True, update=update_clipping_mask_use_camera_projection_cb)
     bpy.types.Object.fbp_clipping_mask_uv_offset_x = FloatProperty(
         name="Offset X", description="Move the sampled clipping alpha horizontally in UV space",
         default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_clipping_mask_uv_offset_x_cb)
@@ -2642,6 +3262,26 @@ def register_properties():
     bpy.types.Object.fbp_clipping_mask_uv_rotation = FloatProperty(
         name="Rotation", description="Rotate the clipping alpha around the center of its sampled UV space",
         default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_clipping_mask_uv_rotation_cb)
+
+    bpy.types.Object.fbp_imported_mask_path = StringProperty(
+        name="Imported Mask", description="Full-canvas raster layer mask extracted from a PSD or another layered document",
+        subtype='FILE_PATH', default="", update=update_imported_mask_path_cb)
+    bpy.types.Object.fbp_imported_mask_factor = FloatProperty(
+        name="Factor", description="Blend between the original alpha and imported layer mask",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_imported_mask_factor_cb)
+    bpy.types.Object.fbp_imported_mask_invert = BoolProperty(
+        name="Invert", description="Invert the imported layer mask",
+        default=False, update=update_imported_mask_invert_cb)
+
+    bpy.types.Object.fbp_layer_blend_source = PointerProperty(
+        name="Layer Below", description="Image layer directly below this one, used automatically as the blend base",
+        type=bpy.types.Object, poll=_fbp_mask_source_poll, update=update_layer_blend_source_cb)
+    bpy.types.Object.fbp_layer_blend_mode = EnumProperty(
+        name="Blend Mode", description="Blend this layer against the image layer below",
+        items=FBP_LAYER_BLEND_MODE_ITEMS, default='MULTIPLY', update=update_layer_blend_mode_cb)
+    bpy.types.Object.fbp_layer_blend_factor = FloatProperty(
+        name="Factor", description="Strength of the transferred layer blend mode",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_layer_blend_factor_cb)
 
     bpy.types.Object.fbp_square_mask_object = PointerProperty(
         name="Mask Shape", description="Editable Square Shape Mask helper. Select it and enter Edit Mode to change the silhouette",
@@ -3002,13 +3642,131 @@ def register_properties():
     bpy.types.Object.fbp_threshold_value = FloatProperty(description="Luminance cutoff used to separate pixels into black and white regions. Values below the threshold become dark.", name="Threshold", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_threshold_value_cb)
     bpy.types.Object.fbp_posterize_steps = FloatProperty(description="Number of discrete color levels retained per channel by Posterize. Lower values create stronger graphic banding.",
         name="Color Steps", default=4.0, min=2.0, soft_max=64.0, precision=0, update=update_posterize_steps_cb)
+    bpy.types.Object.fbp_solarize_threshold = FloatProperty(
+        description="Luminance level above which Solarize begins to invert the image.",
+        name="Threshold", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_solarize_threshold_cb)
+    bpy.types.Object.fbp_solarize_softness = FloatProperty(
+        description="Width of the transition around the Solarize threshold. Zero produces a sharp photographic solarization boundary.",
+        name="Softness", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_solarize_softness_cb)
+    bpy.types.Object.fbp_solarize_factor = FloatProperty(
+        description="Blend between the original image and the solarized result.",
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_solarize_factor_cb)
+    bpy.types.Object.fbp_tritone_shadows = FloatVectorProperty(
+        description="Color assigned to the darkest source luminance values by Tritone.",
+        name="Shadows Tone", subtype='COLOR', size=4, min=0.0, max=1.0,
+        default=(0.02, 0.03, 0.08, 1.0), update=update_tritone_shadows_cb)
+    bpy.types.Object.fbp_tritone_midtones = FloatVectorProperty(
+        description="Color assigned around the editable Tritone midpoint.",
+        name="Midtones Tone", subtype='COLOR', size=4, min=0.0, max=1.0,
+        default=(0.55, 0.20, 0.22, 1.0), update=update_tritone_midtones_cb)
+    bpy.types.Object.fbp_tritone_highlights = FloatVectorProperty(
+        description="Color assigned to the brightest source luminance values by Tritone.",
+        name="Highlights Tone", subtype='COLOR', size=4, min=0.0, max=1.0,
+        default=(1.0, 0.86, 0.55, 1.0), update=update_tritone_highlights_cb)
+    bpy.types.Object.fbp_tritone_midpoint = FloatProperty(
+        description="Luminance position of the Tritone midtone color. Lower values expand highlights; higher values expand shadows.",
+        name="Midpoint", default=0.5, min=0.01, max=0.99, subtype='FACTOR', update=update_tritone_midpoint_cb)
+    bpy.types.Object.fbp_tritone_factor = FloatProperty(
+        description="Blend between the original image and the Tritone mapping.",
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_tritone_factor_cb)
+    bpy.types.Object.fbp_film_fade_color = FloatVectorProperty(
+        description="Color cast introduced by Film Fade. Warm brown, amber or faded cyan tones reproduce different aged-film stocks.",
+        name="Fade Color", subtype='COLOR', size=4, min=0.0, max=1.0,
+        default=(0.72, 0.48, 0.28, 1.0), update=update_film_fade_color_cb)
+    bpy.types.Object.fbp_film_fade_amount = FloatProperty(
+        description="Overall strength of Film Fade, including tint, desaturation and contrast compression.",
+        name="Amount", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=update_film_fade_amount_cb)
+    bpy.types.Object.fbp_film_fade_desaturation = FloatProperty(
+        description="How strongly Film Fade removes color as Amount increases.",
+        name="Desaturation", default=0.45, min=0.0, max=1.0, subtype='FACTOR', update=update_film_fade_desaturation_cb)
+    bpy.types.Object.fbp_film_fade_contrast_loss = FloatProperty(
+        description="How strongly Film Fade compresses highlights and shadows toward middle grey.",
+        name="Contrast Loss", default=0.30, min=0.0, max=1.0, subtype='FACTOR', update=update_film_fade_contrast_loss_cb)
+    bpy.types.Object.fbp_triangle_blur_radius = FloatProperty(name="Radius", description="Triangle Blur radius measured in source-image pixels.", default=8.0, min=0.0, soft_max=128.0, max=512.0, update=update_triangle_blur_radius_cb)
+    bpy.types.Object.fbp_triangle_blur_samples = IntProperty(name="Samples", description="Number of active Triangle Blur texture samples.", default=17, min=3, max=25, update=update_triangle_blur_samples_cb)
+    bpy.types.Object.fbp_triangle_blur_factor = FloatProperty(name="Factor", description="Blend between source and Triangle Blur.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_triangle_blur_factor_cb)
+    bpy.types.Object.fbp_tilt_shift_position = FloatProperty(name="Focus Position", description="Position of the sharp Tilt Shift band along its rotated normal axis.", default=0.5, min=-1.0, max=2.0, soft_min=0.0, soft_max=1.0, update=update_tilt_shift_position_cb)
+    bpy.types.Object.fbp_tilt_shift_width = FloatProperty(name="Focus Width", description="Width of the sharp Tilt Shift band measured perpendicular to its angle.", default=0.25, min=0.001, max=2.0, soft_max=1.0, update=update_tilt_shift_width_cb)
+    bpy.types.Object.fbp_tilt_shift_angle = FloatProperty(name="Focus Angle", description="Rotate the sharp Tilt Shift band across the image. The yellow center control and blue/orange boundary controls edit this value directly.", default=0.0, subtype='ANGLE', update=update_tilt_shift_angle_cb)
+    bpy.types.Object.fbp_tilt_shift_radius = FloatProperty(name="Blur Radius", description="Maximum Tilt Shift blur radius in source-image pixels.", default=16.0, min=0.0, soft_max=128.0, max=512.0, update=update_tilt_shift_radius_cb)
+    bpy.types.Object.fbp_tilt_shift_factor = FloatProperty(name="Factor", description="Blend between source and Tilt Shift result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_tilt_shift_factor_cb)
+    bpy.types.Object.fbp_unsharp_radius = FloatProperty(name="Radius", description="Neighbor sampling radius used by Unsharp Mask.", default=1.0, min=0.0, max=32.0, update=update_unsharp_radius_cb)
+    bpy.types.Object.fbp_unsharp_amount = FloatProperty(name="Amount", description="Strength of sharpened local detail.", default=1.0, min=0.0, max=4.0, update=update_unsharp_amount_cb)
+    bpy.types.Object.fbp_unsharp_factor = FloatProperty(name="Factor", description="Blend between source and sharpened image.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_unsharp_factor_cb)
+    bpy.types.Object.fbp_edge_detect_width = FloatProperty(name="Width", description="Edge sampling distance in source-image pixels.", default=1.0, min=0.0, max=32.0, update=update_edge_detect_width_cb)
+    bpy.types.Object.fbp_edge_detect_strength = FloatProperty(name="Strength", description="Multiplier applied to detected edge contrast.", default=2.0, min=0.0, max=10.0, update=update_edge_detect_strength_cb)
+    bpy.types.Object.fbp_edge_detect_threshold = FloatProperty(name="Threshold", description="Minimum Sobel edge magnitude retained.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_threshold_cb)
+    bpy.types.Object.fbp_edge_detect_softness = FloatProperty(name="Softness", description="Smooth transition width around the edge threshold.", default=0.04, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_softness_cb)
+    bpy.types.Object.fbp_edge_detect_color = FloatVectorProperty(name="Edge Color", description="Color applied to detected edges.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0,0.0,0.0,1.0), update=update_edge_detect_color_cb)
+    bpy.types.Object.fbp_edge_detect_factor = FloatProperty(name="Factor", description="Blend between source and Edge Detect.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_factor_cb)
+    bpy.types.Object.fbp_smooth_toon_levels = FloatProperty(name="Levels", description="Number of tonal bands retained by Smooth Toon.", default=6.0, min=2.0, max=64.0, precision=0, update=update_smooth_toon_levels_cb)
+    bpy.types.Object.fbp_smooth_toon_softness = FloatProperty(name="Softness", description="Blend quantized bands back toward the source for smoother transitions.", default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=update_smooth_toon_softness_cb)
+    bpy.types.Object.fbp_smooth_toon_factor = FloatProperty(name="Factor", description="Blend between source and Smooth Toon.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_smooth_toon_factor_cb)
+    bpy.types.Object.fbp_adaptive_threshold_radius = FloatProperty(name="Radius", description="Neighborhood radius used to calculate local luminance.", default=4.0, min=0.0, max=64.0, update=update_adaptive_threshold_radius_cb)
+    bpy.types.Object.fbp_adaptive_threshold_offset = FloatProperty(name="Offset", description="Bias added to local luminance before thresholding.", default=0.0, min=-1.0, max=1.0, update=update_adaptive_threshold_offset_cb)
+    bpy.types.Object.fbp_adaptive_threshold_softness = FloatProperty(name="Softness", description="Soft transition around the adaptive threshold.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_adaptive_threshold_softness_cb)
+    bpy.types.Object.fbp_adaptive_threshold_invert = BoolProperty(name="Invert", description="Swap black and white regions in the adaptive threshold result.", default=False, update=update_adaptive_threshold_invert_cb)
+    bpy.types.Object.fbp_adaptive_threshold_factor = FloatProperty(name="Factor", description="Blend between source and adaptive threshold result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_adaptive_threshold_factor_cb)
+    bpy.types.Object.fbp_false_color_dark = FloatVectorProperty(name="Dark Color", description="Color mapped to dark source luminance.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0,0.05,0.3,1.0), update=update_false_color_dark_cb)
+    bpy.types.Object.fbp_false_color_light = FloatVectorProperty(name="Light Color", description="Color mapped to bright source luminance.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0,0.65,0.05,1.0), update=update_false_color_light_cb)
+    bpy.types.Object.fbp_false_color_factor = FloatProperty(name="Factor", description="Blend between source and False Color mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_false_color_factor_cb)
+    bpy.types.Object.fbp_chromatic_aberration_distance = FloatProperty(name="Distance", description="Opposite red and blue channel offset measured in source-image pixels.", default=3.0, min=0.0, max=128.0, update=update_chromatic_aberration_distance_cb)
+    bpy.types.Object.fbp_chromatic_aberration_angle = FloatProperty(name="Angle", description="Direction of the chromatic channel separation.", default=0.0, subtype='ANGLE', update=update_chromatic_aberration_angle_cb)
+    bpy.types.Object.fbp_chromatic_aberration_factor = FloatProperty(name="Factor", description="Blend between source and Chromatic Aberration.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_chromatic_aberration_factor_cb)
+    bpy.types.Object.fbp_ink_width = FloatProperty(name="Width", description="Sobel sampling distance used to extract ink lines, measured in source-image pixels.", default=1.0, min=0.0, max=32.0, update=update_ink_width_cb)
+    bpy.types.Object.fbp_ink_threshold = FloatProperty(name="Threshold", description="Minimum edge magnitude converted into ink.", default=0.045, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_threshold_cb)
+    bpy.types.Object.fbp_ink_softness = FloatProperty(name="Softness", description="Feather the ink threshold for smoother or rougher line transitions.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_softness_cb)
+    bpy.types.Object.fbp_ink_strength = FloatProperty(name="Strength", description="Multiply the detected edge response before thresholding.", default=2.5, min=0.0, max=16.0, update=update_ink_strength_cb)
+    bpy.types.Object.fbp_ink_color = FloatVectorProperty(name="Ink Color", description="Color applied to extracted ink lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.015,0.01,0.008,1.0), update=update_ink_color_cb)
+    bpy.types.Object.fbp_ink_paper_color = FloatVectorProperty(name="Paper Color", description="Base paper color used when Preserve Color is reduced.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.94,0.90,0.80,1.0), update=update_ink_paper_color_cb)
+    bpy.types.Object.fbp_ink_preserve_color = FloatProperty(name="Preserve Color", description="Blend the original image color into the paper base before applying ink lines.", default=0.20, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_preserve_color_cb)
+    bpy.types.Object.fbp_ink_factor = FloatProperty(name="Factor", description="Blend between the original image and the complete Ink treatment.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_factor_cb)
+    bpy.types.Object.fbp_edge_work_radius = FloatProperty(name="Radius", description="Inner local-average radius used by Edge Work, measured in source-image pixels.", default=1.5, min=0.0, max=64.0, update=update_edge_work_radius_cb)
+    bpy.types.Object.fbp_edge_work_thickness = FloatProperty(name="Thickness", description="Distance between the inner and outer luminance scales used to form broad illustrated edges.", default=4.0, min=0.0, max=128.0, update=update_edge_work_thickness_cb)
+    bpy.types.Object.fbp_edge_work_strength = FloatProperty(name="Strength", description="Multiplier applied to the difference between the two local luminance scales.", default=5.0, min=0.0, max=32.0, update=update_edge_work_strength_cb)
+    bpy.types.Object.fbp_edge_work_threshold = FloatProperty(name="Threshold", description="Minimum Edge Work response retained.", default=0.025, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_work_threshold_cb)
+    bpy.types.Object.fbp_edge_work_softness = FloatProperty(name="Softness", description="Feather the Edge Work threshold.", default=0.06, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_work_softness_cb)
+    bpy.types.Object.fbp_edge_work_color = FloatVectorProperty(name="Edge Color", description="Color applied to Edge Work lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02,0.015,0.01,1.0), update=update_edge_work_color_cb)
+    bpy.types.Object.fbp_edge_work_factor = FloatProperty(name="Factor", description="Blend between source and Edge Work.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_work_factor_cb)
+    bpy.types.Object.fbp_pencil_sketch_radius = FloatProperty(name="Radius", description="Local luminance blur radius controlling Pencil Sketch line size.", default=6.0, min=0.0, max=128.0, update=update_pencil_sketch_radius_cb)
+    bpy.types.Object.fbp_pencil_sketch_contrast = FloatProperty(name="Contrast", description="Darken and strengthen generated graphite marks.", default=1.6, min=0.0, max=8.0, update=update_pencil_sketch_contrast_cb)
+    bpy.types.Object.fbp_pencil_sketch_graphite = FloatVectorProperty(name="Graphite Color", description="Color used for dark pencil marks.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.03,0.025,0.02,1.0), update=update_pencil_sketch_graphite_cb)
+    bpy.types.Object.fbp_pencil_sketch_paper = FloatVectorProperty(name="Paper Color", description="Color used for unmarked paper regions.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.96,0.93,0.84,1.0), update=update_pencil_sketch_paper_cb)
+    bpy.types.Object.fbp_pencil_sketch_color_amount = FloatProperty(name="Color Amount", description="Reintroduce source color beneath the graphite shading.", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_pencil_sketch_color_amount_cb)
+    bpy.types.Object.fbp_pencil_sketch_factor = FloatProperty(name="Factor", description="Blend between source and Pencil Sketch.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_pencil_sketch_factor_cb)
+    bpy.types.Object.fbp_poster_edges_levels = FloatProperty(name="Levels", description="Number of smooth color bands retained before outlines are applied.", default=5.0, min=2.0, max=64.0, precision=0, update=update_poster_edges_levels_cb)
+    bpy.types.Object.fbp_poster_edges_softness = FloatProperty(name="Band Softness", description="Transition softness between posterized color bands.", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_poster_edges_softness_cb)
+    bpy.types.Object.fbp_poster_edges_width = FloatProperty(name="Edge Width", description="Sobel edge sampling distance in source-image pixels.", default=1.0, min=0.0, max=32.0, update=update_poster_edges_width_cb)
+    bpy.types.Object.fbp_poster_edges_strength = FloatProperty(name="Edge Strength", description="Multiplier applied to Poster Edges outlines.", default=2.8, min=0.0, max=16.0, update=update_poster_edges_strength_cb)
+    bpy.types.Object.fbp_poster_edges_threshold = FloatProperty(name="Edge Threshold", description="Minimum Poster Edges outline magnitude retained.", default=0.045, min=0.0, max=1.0, subtype='FACTOR', update=update_poster_edges_threshold_cb)
+    bpy.types.Object.fbp_poster_edges_color = FloatVectorProperty(name="Edge Color", description="Outline color used by Poster Edges.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.01,0.008,0.006,1.0), update=update_poster_edges_color_cb)
+    bpy.types.Object.fbp_poster_edges_factor = FloatProperty(name="Factor", description="Blend between source and Poster Edges.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_poster_edges_factor_cb)
+    bpy.types.Object.fbp_crosshatch_scale = FloatProperty(name="Scale", description="Density of procedural hatch lines across the source canvas.", default=72.0, min=1.0, soft_max=400.0, max=2000.0, update=update_crosshatch_scale_cb)
+    bpy.types.Object.fbp_crosshatch_rotation = FloatProperty(name="Rotation", description="Rotate all Crosshatch directions around the image center.", default=0.0, subtype='ANGLE', update=update_crosshatch_rotation_cb)
+    bpy.types.Object.fbp_crosshatch_line_width = FloatProperty(name="Line Width", description="Thickness of each hatch line inside its repeating cell.", default=0.10, min=0.001, max=0.49, subtype='FACTOR', update=update_crosshatch_line_width_cb)
+    bpy.types.Object.fbp_crosshatch_levels = IntProperty(name="Levels", description="Maximum number of hatch directions used in progressively darker regions.", default=4, min=1, max=4, update=update_crosshatch_levels_cb)
+    bpy.types.Object.fbp_crosshatch_ink = FloatVectorProperty(name="Ink Color", description="Color used for Crosshatch lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02,0.015,0.01,1.0), update=update_crosshatch_ink_cb)
+    bpy.types.Object.fbp_crosshatch_paper = FloatVectorProperty(name="Paper Color", description="Base color used behind Crosshatch lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.95,0.91,0.80,1.0), update=update_crosshatch_paper_cb)
+    bpy.types.Object.fbp_crosshatch_preserve_color = FloatProperty(name="Preserve Color", description="Blend original image color into the Crosshatch paper base.", default=0.10, min=0.0, max=1.0, subtype='FACTOR', update=update_crosshatch_preserve_color_cb)
+    bpy.types.Object.fbp_crosshatch_factor = FloatProperty(name="Factor", description="Blend between source and Crosshatch.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_crosshatch_factor_cb)
+    bpy.types.Object.fbp_emboss_angle = FloatProperty(name="Angle", description="Direction of the opposing samples that create the embossed relief.", default=0.78539816339, subtype='ANGLE', update=update_emboss_angle_cb)
+    bpy.types.Object.fbp_emboss_distance = FloatProperty(name="Distance", description="Distance between opposing Emboss samples in source-image pixels.", default=2.0, min=0.0, max=128.0, update=update_emboss_distance_cb)
+    bpy.types.Object.fbp_emboss_strength = FloatProperty(name="Strength", description="Contrast multiplier applied to directional relief.", default=2.0, min=-8.0, max=8.0, update=update_emboss_strength_cb)
+    bpy.types.Object.fbp_emboss_bias = FloatProperty(name="Bias", description="Middle-grey resting value of the embossed relief.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_emboss_bias_cb)
+    bpy.types.Object.fbp_emboss_color_amount = FloatProperty(name="Color Amount", description="Blend source color into the grayscale embossed relief.", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_emboss_color_amount_cb)
+    bpy.types.Object.fbp_emboss_factor = FloatProperty(name="Factor", description="Blend between source and Emboss.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_emboss_factor_cb)
     bpy.types.Object.fbp_solid_mask_color = FloatVectorProperty(description="RGBA color blended over the source by Solid Mask.",
         name="Mask Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.0, 1.0), update=update_solid_mask_color_cb)
     bpy.types.Object.fbp_solid_mask_factor = FloatProperty(description="Blend amount between the original source and Solid Mask color. Zero keeps the source; one outputs only the mask color.",
         name="Mask Factor", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_solid_mask_factor_cb)
     bpy.types.Object.fbp_color_isolate_target = FloatVectorProperty(description="Color that Color Isolate keeps or emphasizes while suppressing colors outside the tolerance range.", name="Target Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.0, 0.0, 1.0), update=update_color_isolate_target_cb)
-    bpy.types.Object.fbp_color_isolate_tolerance = FloatProperty(description="Maximum color distance considered a match to the target color. Higher values include a broader range of hues.", name="Tolerance", default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_tolerance_cb)
+    bpy.types.Object.fbp_color_isolate_tolerance = FloatProperty(description="Maximum color distance considered a match to the target color. Higher values include a broader range of hues.", name="Tolerance", default=0.12, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_tolerance_cb)
     bpy.types.Object.fbp_color_isolate_falloff = FloatProperty(description="Soft transition width around the Color Isolate tolerance boundary. Higher values create smoother masks.", name="Falloff", default=0.1, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_falloff_cb)
+    bpy.types.Object.fbp_color_isolate_factor = FloatProperty(description="Blend between the original image and Color Isolate.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_factor_cb)
+    bpy.types.Object.fbp_white_balance_temperature = FloatProperty(name="Temperature", description="Shift white balance from cold blue at negative values to warm amber at positive values.", default=0.0, min=-1.0, max=1.0, update=update_white_balance_temperature_cb)
+    bpy.types.Object.fbp_white_balance_tint = FloatProperty(name="Tint", description="Shift white balance from green at negative values to magenta at positive values.", default=0.0, min=-1.0, max=1.0, update=update_white_balance_tint_cb)
+    bpy.types.Object.fbp_white_balance_factor = FloatProperty(name="Factor", description="Blend between the original image and White Balance correction.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_white_balance_factor_cb)
+    bpy.types.Object.fbp_curves_factor = FloatProperty(name="Factor", description="Blend between the original image and the RGB Curves result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_curves_factor_cb)
     bpy.types.Object.fbp_duotone_shadows = FloatVectorProperty(description="RGBA color mapped to dark source values by Duotone.", name="Shadows Tone", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.2, 1.0), update=update_duotone_shadows_cb)
     bpy.types.Object.fbp_duotone_highlights = FloatVectorProperty(description="RGBA color mapped to bright source values by Duotone.", name="Highlights Tone", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.8, 0.6, 1.0), update=update_duotone_highlights_cb)
     bpy.types.Object.fbp_recolor_factor = FloatProperty(
@@ -3017,15 +3775,74 @@ def register_properties():
     bpy.types.Object.fbp_paper_fiber_scale = FloatProperty(description="Spatial frequency of Paper Fibers. Higher values produce finer, more numerous fibers.", name="Fiber Scale", default=140.0, min=0.01, soft_max=3000.0, precision=1, update=update_paper_fiber_scale_cb)
     bpy.types.Object.fbp_paper_fiber_intensity = FloatProperty(description="Strength of Paper Fibers mixed into the source image.", name="Intensity", default=0.40, min=0.0, max=1.0, subtype='FACTOR', update=update_paper_fiber_intensity_cb)
     bpy.types.Object.fbp_paper_fiber_phase = FloatProperty(description="Fourth-dimensional noise coordinate used to animate or select a different Paper Fibers pattern.", name="Animate (W)", default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, update=update_paper_fiber_phase_cb)
+    bpy.types.Object.fbp_gradient_light_center_x = FloatProperty(description="Horizontal center of the Gradient controller in source-image UV space. Move the paired viewport controls to reposition it freely across the cropped image.", name="Center X", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_gradient_light_center_x_cb)
+    bpy.types.Object.fbp_gradient_light_center_y = FloatProperty(description="Vertical center of the Gradient controller in source-image UV space. Move the paired viewport controls to reposition it freely across the cropped image.", name="Center Y", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_gradient_light_center_y_cb)
     bpy.types.Object.fbp_gradient_light_angle = FloatProperty(description="Direction of Gradient Light across the plane, expressed as an angle.", name="Light Angle", default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_gradient_light_angle_cb)
     bpy.types.Object.fbp_gradient_light_strength = FloatProperty(description="Blend between the original source and the directional Color Ramp lighting.", name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_gradient_light_strength_cb)
     bpy.types.Object.fbp_gradient_shadow_position = FloatProperty(description="Offset of the Gradient Light shadow boundary across the plane.", name="Shadow Position", default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_gradient_shadow_position_cb)
     bpy.types.Object.fbp_gradient_softness = FloatProperty(description="Width of the Gradient Light transition between lit and shadowed regions.", name="Softness", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_gradient_softness_cb)
     bpy.types.Object.fbp_gradient_shadow_color = FloatVectorProperty(description="RGBA color mixed into the shadow side of Gradient Light.", name="Shadow Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.05, 1.0), update=update_gradient_shadow_color_cb)
     bpy.types.Object.fbp_rim_width = FloatProperty(description="UV sampling distance used to find the source alpha edge. Larger values create a wider rim.", name="Width", default=0.012, min=0.00001, soft_max=0.1, max=0.5, precision=5, update=update_rim_width_cb)
+    bpy.types.Object.fbp_rim_offset_x = FloatProperty(description="Move the generated rim horizontally in UV space while preserving the source layer position.", name="Offset X", default=0.0, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, precision=4, update=update_rim_offset_x_cb)
+    bpy.types.Object.fbp_rim_offset_y = FloatProperty(description="Move the generated rim vertically in UV space while preserving the source layer position.", name="Offset Y", default=0.0, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, precision=4, update=update_rim_offset_y_cb)
+    bpy.types.Object.fbp_rim_rotation = FloatProperty(description="Rotate the Rim offset direction in the local space of the plane. This value is driven by rotating the viewport control.", name="Rotation", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_rim_rotation_cb)
+    bpy.types.Object.fbp_rim_blur = FloatProperty(description="Increase the spatial alpha sampling radius to create a genuinely broader and softer inner rim.", name="Blur", default=0.0, min=0.0, soft_max=0.1, max=0.5, precision=4, update=update_rim_blur_cb)
     bpy.types.Object.fbp_rim_softness = FloatProperty(description="Softness of the colored rim transition.", name="Softness", default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=update_rim_softness_cb)
     bpy.types.Object.fbp_rim_intensity = FloatProperty(description="Opacity and strength of the colored rim.", name="Intensity", default=1.0, min=0.0, soft_max=2.0, max=2.0, update=update_rim_intensity_cb)
     bpy.types.Object.fbp_rim_color = FloatVectorProperty(description="RGBA color applied to the generated rim.", name="Rim Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.35, 0.05, 1.0), update=update_rim_color_cb)
+    bpy.types.Object.fbp_shadow_mode = EnumProperty(
+        name="Shadow Type",
+        description="Choose whether the blurred offset alpha is drawn outside the source silhouette or carved inside its visible alpha",
+        items=[
+            ('OUTER', 'Outer', 'Place the shadow outside the source alpha silhouette'),
+            ('INNER', 'Inner', 'Place the shadow inside the source alpha silhouette'),
+        ],
+        default='OUTER', update=update_shadow_mode_cb,
+    )
+    bpy.types.Object.fbp_shadow_blend_mode = EnumProperty(
+        name="Blend Mode",
+        description="Blend the shadow color with the current layer color. This affects the layer effect itself; blending against layers behind the plane is controlled by Layer Blend",
+        items=[
+            ('NORMAL', 'Normal', 'Use the selected Shadow Color without additional color blending'),
+            ('MULTIPLY', 'Multiply', 'Darken the layer with the shadow color'),
+            ('SCREEN', 'Screen', 'Lighten the layer with the shadow color'),
+            ('OVERLAY', 'Overlay', 'Increase contrast using the shadow color'),
+            ('SOFT_LIGHT', 'Soft Light', 'Apply a softer contrast blend'),
+            ('HARD_LIGHT', 'Hard Light', 'Apply a stronger contrast blend'),
+            ('ADD', 'Add', 'Add the shadow color to the layer'),
+            ('DIFFERENCE', 'Difference', 'Use the absolute difference from the shadow color'),
+        ],
+        default='NORMAL', update=update_shadow_blend_mode_cb,
+    )
+    bpy.types.Object.fbp_shadow_offset_x = FloatProperty(
+        name="Position X",
+        description="Move the shadow horizontally in image UV space without moving the source layer",
+        default=0.025, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0,
+        precision=4, update=update_shadow_offset_x_cb,
+    )
+    bpy.types.Object.fbp_shadow_offset_y = FloatProperty(
+        name="Position Y",
+        description="Move the shadow vertically in image UV space without moving the source layer",
+        default=-0.025, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0,
+        precision=4, update=update_shadow_offset_y_cb,
+    )
+    bpy.types.Object.fbp_shadow_blur = FloatProperty(
+        name="Blur",
+        description="Radius of the alpha sampling kernel used to soften the shadow edge",
+        default=0.02, min=0.0, soft_max=0.12, max=0.5, precision=4,
+        update=update_shadow_blur_cb,
+    )
+    bpy.types.Object.fbp_shadow_opacity = FloatProperty(
+        name="Opacity",
+        description="Maximum opacity of the generated inner or outer shadow",
+        default=0.65, min=0.0, max=1.0, subtype='FACTOR', update=update_shadow_opacity_cb,
+    )
+    bpy.types.Object.fbp_shadow_color = FloatVectorProperty(
+        name="Shadow Color",
+        description="Color used by the generated shadow. Overall transparency is controlled by Opacity",
+        subtype='COLOR', size=4, min=0.0, max=1.0,
+        default=(0.0, 0.0, 0.0, 1.0), update=update_shadow_color_cb,
+    )
     bpy.types.Object.fbp_gobo_pattern_scale = FloatProperty(description="Spatial scale of the procedural Gobo Shadows pattern. Higher values create smaller projected shapes.", name="Pattern Scale", default=10.0, min=0.001, soft_max=100.0, precision=3, update=update_gobo_pattern_scale_cb)
     bpy.types.Object.fbp_gobo_rotation = FloatProperty(description="Rotate the Gobo Shadows pattern around the plane center.", name="Rotation Angle", default=0.5, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_gobo_rotation_cb)
     bpy.types.Object.fbp_gobo_sharpness = FloatProperty(description="Hardness of Gobo Shadows pattern edges. Lower values blur transitions; higher values create crisp shapes.", name="Sharpness", default=0.8, min=0.0, max=1.0, subtype='FACTOR', update=update_gobo_sharpness_cb)

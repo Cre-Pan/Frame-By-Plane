@@ -60,6 +60,7 @@ from .layers import (
 _FBP_SYNCING_FRAME_MATERIAL_POINTERS = set()
 _FBP_SUPPRESS_IMAGE_DURATION_CB = False
 _FBP_PROCEDURAL_SCENE_CACHE_SECONDS = 1.0
+_FBP_PROCEDURAL_SCENE_CACHE_LIMIT = 16
 _FBP_PROCEDURAL_TIMING_CACHE = globals().get("_FBP_PROCEDURAL_TIMING_CACHE", {})
 if not isinstance(_FBP_PROCEDURAL_TIMING_CACHE, dict):
     _FBP_PROCEDURAL_TIMING_CACHE = {}
@@ -69,24 +70,43 @@ if not isinstance(_FBP_NATIVE_SCENE_RANGE_CACHE, dict):
 
 
 def _fbp_procedural_rig_cache_key(rig):
-    """Return a runtime-only key that does not retain Blender RNA objects."""
+    """Return a runtime-only sequence-timing key without retaining RNA objects.
+
+    The logical row count is part of the key so an added or removed frame can
+    never reuse a cumulative timing table created for the previous list size.
+    Explicit invalidation still handles duration edits and arbitrary reorders.
+    """
     try:
         return (
             int(rig.as_pointer()),
             str(getattr(rig, "name_full", getattr(rig, "name", "")) or ""),
+            len(getattr(rig, "fbp_images", ()) or ()),
         )
     except FBP_DATA_ERRORS:
-        return (0, "")
+        return (0, "", 0)
 
 
 def fbp_invalidate_procedural_rig_cache(rig=None):
-    """Invalidate cached cumulative timing for one rig or for the whole Main."""
+    """Invalidate cached cumulative sequence timing for one rig or all rigs.
+
+    The historical function name is retained for internal compatibility, but
+    this cache is also used by native image-sequence REC indicators. Remove all
+    row-count variants for the same RNA object so structural edits cannot leave
+    stale entries behind.
+    """
     if rig is None:
         _FBP_PROCEDURAL_TIMING_CACHE.clear()
         return
     key = _fbp_procedural_rig_cache_key(rig)
-    if key and key[0]:
-        _FBP_PROCEDURAL_TIMING_CACHE.pop(key, None)
+    if not key or not key[0]:
+        return
+    identity = key[:2]
+    for cached_key in tuple(_FBP_PROCEDURAL_TIMING_CACHE):
+        try:
+            if tuple(cached_key[:2]) == identity:
+                _FBP_PROCEDURAL_TIMING_CACHE.pop(cached_key, None)
+        except (TypeError, IndexError):
+            _FBP_PROCEDURAL_TIMING_CACHE.pop(cached_key, None)
 
 
 def fbp_clear_procedural_runtime_caches():
@@ -168,7 +188,7 @@ def _fbp_build_procedural_timing(rig):
 
 
 def _fbp_procedural_timing(rig):
-    """Return cumulative timing, cached only while timing cannot be animated."""
+    """Return cumulative logical-row timing used by playback and REC UI."""
     if _fbp_procedural_timing_is_dynamic(rig):
         return _fbp_build_procedural_timing(rig)
     key = _fbp_procedural_rig_cache_key(rig)
@@ -185,7 +205,7 @@ def _fbp_procedural_timing(rig):
 
 
 def fbp_invalidate_procedural_scene_cache(scene=None):
-    """Invalidate the lightweight pure-native playback fast-path cache."""
+    """Invalidate cached frame-handler state for one Scene or the whole Main."""
     cache = dict(fbp_runtime_get("fbp_procedural_scene_cache", {}) or {})
     if scene is None:
         cache.clear()
@@ -198,17 +218,24 @@ def fbp_invalidate_procedural_scene_cache(scene=None):
     fbp_runtime_set("fbp_procedural_scene_cache", cache)
 
 
-def _fbp_scene_has_procedural_rows_cached(scene):
-    """Avoid scanning every native rig on every viewport playback frame."""
+def _fbp_scene_frame_state_cached(scene):
+    """Cache the frame-handler state without retaining Blender RNA objects.
+
+    Native ImageUser sequences do not need Python playback writes, but their
+    moving REC marker still needs a Sidebar redraw. Keeping both flags in the
+    existing short-lived scene cache avoids a full Scene scan on every frame.
+    """
     if not scene:
-        return False
+        return False, False
     try:
         scene_key = fbp_obj_runtime_key(scene)
         object_count = len(scene.objects)
     except FBP_DATA_ERRORS:
-        return True
+        # A conservative result keeps playback/UI responsive while Blender is
+        # replacing data during load or Undo.
+        return True, True
     if scene_key is None:
-        return True
+        return True, True
 
     now = time.monotonic()
     cache = dict(fbp_runtime_get("fbp_procedural_scene_cache", {}) or {})
@@ -217,17 +244,25 @@ def _fbp_scene_has_procedural_rows_cached(scene):
         if (
             int(entry.get("object_count", -1)) == object_count
             and "rig_names" in entry
+            and "has_frame_rows" in entry
             and now - float(entry.get("checked_at", 0.0) or 0.0)
             <= _FBP_PROCEDURAL_SCENE_CACHE_SECONDS
         ):
-            return bool(entry.get("has_procedural", False))
+            return (
+                bool(entry.get("has_procedural", False)),
+                bool(entry.get("has_frame_rows", False)),
+            )
     except (AttributeError, TypeError, ValueError):
         pass
 
     rig_names = []
+    has_frame_rows = False
     for rig in iter_scene_fbp_rigs(scene):
         try:
-            if fbp_rig_uses_procedural_color(rig) and len(getattr(rig, "fbp_images", ())) > 0:
+            row_count = len(getattr(rig, "fbp_images", ()))
+            if row_count > 1:
+                has_frame_rows = True
+            if fbp_rig_uses_procedural_color(rig) and row_count > 0:
                 rig_names.append(str(getattr(rig, "name", "") or ""))
         except FBP_DATA_ERRORS:
             continue
@@ -237,13 +272,25 @@ def _fbp_scene_has_procedural_rows_cached(scene):
         "object_count": object_count,
         "checked_at": now,
         "has_procedural": has_procedural,
+        "has_frame_rows": has_frame_rows,
         "rig_names": rig_names,
     }
     # Bound cache growth across temporary Scenes without retaining RNA objects.
-    if len(cache) > 16:
-        cache = dict(sorted(cache.items(), key=lambda item: item[1].get("checked_at", 0.0), reverse=True)[:16])
+    if len(cache) > _FBP_PROCEDURAL_SCENE_CACHE_LIMIT:
+        cache = dict(
+            sorted(
+                cache.items(),
+                key=lambda item: item[1].get("checked_at", 0.0),
+                reverse=True,
+            )[:_FBP_PROCEDURAL_SCENE_CACHE_LIMIT]
+        )
     fbp_runtime_set("fbp_procedural_scene_cache", cache)
-    return has_procedural
+    return has_procedural, has_frame_rows
+
+
+def _fbp_scene_has_procedural_rows_cached(scene):
+    """Return whether procedural rows require Python frame synchronization."""
+    return _fbp_scene_frame_state_cached(scene)[0]
 
 
 def _fbp_cached_procedural_scene_rigs(scene):
@@ -292,11 +339,11 @@ def fbp_rig_uses_procedural_color(rig):
 
 
 def fbp_sequence_index_at_frame(rig, frame=None):
-    """Evaluate the visible procedural row using cumulative cached timing.
+    """Evaluate the visible logical row using cumulative cached timing.
 
-    Static timing uses ``bisect`` over a precomputed cumulative timeline. Only
-    rigs whose duration values are animated rebuild the small timing table every
-    frame; ordinary transform animation keeps the fast cached path.
+    The same evaluator drives procedural playback and the native-sequence REC
+    marker. Static timing uses ``bisect`` over a precomputed cumulative table;
+    duration edits and row mutations explicitly invalidate that table.
     """
     if frame is None:
         scene = _fbp_scene_for_rig(rig)
@@ -491,16 +538,46 @@ def fbp_update_sequence_scene(scene=None, frame=None):
         if scene_key is None:
             raise ValueError("Scene has no runtime identity")
         cache = dict(fbp_runtime_get("fbp_procedural_scene_cache", {}) or {})
+        # Preserve the native-sequence REC/UI flag written by
+        # ``_fbp_scene_frame_state_cached``. Replacing the entry without this
+        # field made the next frame miss the cache and rescan every FBP rig.
+        previous_entry = cache.get(scene_key, {})
+        try:
+            has_frame_rows_is_cached = "has_frame_rows" in previous_entry
+            has_frame_rows = bool(previous_entry.get("has_frame_rows", False))
+        except (AttributeError, TypeError, ValueError):
+            has_frame_rows_is_cached = False
+            has_frame_rows = False
+        if not has_frame_rows_is_cached:
+            # Direct callers may reach this updater before the frame-state
+            # reader. Compute the flag once so the newly written entry never
+            # suppresses REC redraw for native sequences.
+            for rig in iter_scene_fbp_rigs(scene):
+                try:
+                    if len(getattr(rig, "fbp_images", ())) > 1:
+                        has_frame_rows = True
+                        break
+                except FBP_DATA_ERRORS:
+                    continue
         cache[scene_key] = {
             "object_count": len(scene.objects),
             "checked_at": time.monotonic(),
             "has_procedural": has_procedural_rigs,
+            "has_frame_rows": has_frame_rows,
             "rig_names": tuple(
                 str(getattr(rig, "name", "") or "")
                 for rig in procedural_rigs
                 if rig is not None
             ),
         }
+        if len(cache) > _FBP_PROCEDURAL_SCENE_CACHE_LIMIT:
+            cache = dict(
+                sorted(
+                    cache.items(),
+                    key=lambda item: item[1].get("checked_at", 0.0),
+                    reverse=True,
+                )[:_FBP_PROCEDURAL_SCENE_CACHE_LIMIT]
+            )
         fbp_runtime_set("fbp_procedural_scene_cache", cache)
     except FBP_DATA_ERRORS:
         pass
@@ -544,6 +621,10 @@ def _fbp_scene_for_rig(rig, preferred=None):
 
 
 def fbp_rebuild_sequence_backend_from_rig(rig):
+    # Rebuild entry points are structural timing boundaries for every backend,
+    # including native sequences whose REC marker is evaluated in Python.
+    fbp_invalidate_procedural_rig_cache(rig)
+    fbp_invalidate_procedural_scene_cache(_fbp_scene_for_rig(rig))
     if bool(getattr(rig, "fbp_is_drawing_plane", False)):
         try:
             from .drawing_plane import fbp_ensure_drawing_material, fbp_apply_drawing_index
@@ -561,10 +642,7 @@ def fbp_rebuild_sequence_backend_from_rig(rig):
             return False
     if fbp_rig_uses_procedural_color(rig):
         # Rebuild/refresh entry points are structural mutation boundaries, never
-        # the per-frame hot path. Discard any cumulative timing from the previous
-        # row order before evaluating the current frame.
-        fbp_invalidate_procedural_rig_cache(rig)
-        fbp_invalidate_procedural_scene_cache()
+        # the per-frame hot path.
         scene = _fbp_scene_for_rig(rig)
         return fbp_apply_procedural_color_frame(rig, getattr(scene, 'frame_current', 1) if scene else 1)
     try:
@@ -576,6 +654,10 @@ def fbp_rebuild_sequence_backend_from_rig(rig):
 
 
 def fbp_refresh_sequence_backend_from_rig(rig):
+    # Fast refreshes may follow duration edits, reorder operations or restored
+    # snapshots. Discard stale logical timing before validating the backend.
+    fbp_invalidate_procedural_rig_cache(rig)
+    fbp_invalidate_procedural_scene_cache(_fbp_scene_for_rig(rig))
     if bool(getattr(rig, "fbp_is_drawing_plane", False)):
         try:
             from .drawing_plane import fbp_ensure_drawing_material, fbp_apply_drawing_index
@@ -591,18 +673,10 @@ def fbp_refresh_sequence_backend_from_rig(rig):
             fbp_warn("Cutout Plane refresh skipped", exc)
             return False
     if fbp_rig_uses_procedural_color(rig):
-        fbp_invalidate_procedural_rig_cache(rig)
-        fbp_invalidate_procedural_scene_cache()
         scene = _fbp_scene_for_rig(rig)
         return fbp_apply_procedural_color_frame(rig, getattr(scene, 'frame_current', 1) if scene else 1)
     try:
         from . import native_backend
-        if native_backend.fbp_rig_has_unsupported_native_contract(rig):
-            # Frame By Plane 5.1.x and early 5.2.x may contain the obsolete
-            # ImageUser contract that resolves missing sequence files. Rebuild
-            # transactionally from the rig rows instead of asking the user to
-            # delete and reimport a still-recoverable layer.
-            return bool(native_backend.rebuild_native_sequence_from_rig(rig))
         if native_backend.fbp_refresh_native_sequence_from_rig(rig):
             return True
         return bool(native_backend.rebuild_native_sequence_from_rig(rig))
@@ -621,7 +695,14 @@ def fbp_replace_sequence_backend(rig, directory, files):
         return False
     try:
         from . import native_backend
-        return bool(native_backend.replace_native_sequence(rig, directory, files))
+        fbp_invalidate_procedural_rig_cache(rig)
+        fbp_invalidate_procedural_scene_cache(_fbp_scene_for_rig(rig))
+        replaced = bool(native_backend.replace_native_sequence(rig, directory, files))
+        if replaced:
+            fbp_invalidate_procedural_rig_cache(rig)
+            fbp_invalidate_procedural_scene_cache(_fbp_scene_for_rig(rig))
+            fbp_tag_view3d_ui_redraw()
+        return replaced
     except Exception as exc:
         fbp_warn("Could not replace Native Image Sequence", exc)
         return False
@@ -644,7 +725,6 @@ def fbp_native_sequence_files_from_rig(rig):
         return "", []
 
 
-
 def fbp_rig_native_sequence_needs_rename(rig):
     """True if the selected rig uses filenames that may fail as a native Image Sequence."""
     directory, files = fbp_native_sequence_files_from_rig(rig)
@@ -662,6 +742,13 @@ def do_update_animation(rig):
     """Refresh only the animation backend owned by this layer type."""
     if not rig or not getattr(rig, "is_fbp_control", False):
         return False
+
+    # REC and frame-list indicators use the same logical timing table for every
+    # sequence backend. Invalidate before backend-specific work so Duration,
+    # Start, Playback and multi-edit changes are visible in the same UI beat.
+    fbp_invalidate_procedural_rig_cache(rig)
+    scene = _fbp_scene_for_rig(rig)
+    fbp_invalidate_procedural_scene_cache(scene)
     backend = fbp_layer_backend_type(rig)
 
     if backend == 'CUTOUT':
@@ -676,9 +763,6 @@ def do_update_animation(rig):
     if backend.startswith('PROCEDURAL_'):
         # Procedural planes use a small cumulative-duration cache and a material
         # slot switch. Native media and Cutout caches must remain untouched.
-        fbp_invalidate_procedural_rig_cache(rig)
-        fbp_invalidate_procedural_scene_cache()
-        scene = _fbp_scene_for_rig(rig)
         frame = getattr(scene, 'frame_current', 1) if scene else 1
         return bool(fbp_apply_procedural_color_frame(rig, frame))
 
@@ -817,8 +901,6 @@ def fbp_refresh_active_procedural_preview(rig):
     return True
 
 
-
-
 def fbp_collection_item_owner_rig(item, procedural_only=False):
     """Return the Object ID that owns an Object.fbp_images row.
 
@@ -879,7 +961,6 @@ def fbp_find_rig_for_procedural_frame_item(item, context=None):
     owner = fbp_collection_item_owner_rig(item, procedural_only=True)
     owner_index = fbp_collection_item_index(owner, item)
     return (owner, owner_index) if owner and owner_index >= 0 else (None, -1)
-
 
 
 def fbp_set_solid_material_color(mat, color):
@@ -998,6 +1079,12 @@ def update_object_padding_cb(self, context):
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
             try:
+                from .effect_controls import schedule_active_effect_controls, sync_crop_extend_bounds_guide
+                sync_crop_extend_bounds_guide(rig)
+                schedule_active_effect_controls(context)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+            try:
                 from .geometry_nodes import fbp_sync_mattes_for_source_bounds
                 fbp_sync_mattes_for_source_bounds(
                     rig,
@@ -1045,6 +1132,7 @@ def update_loop_mode_cb(self, context):
             fbp_set_rna_property_silent(rig, "fbp_loop_mode", value)
     for rig in targets:
         do_update_animation(rig)
+    fbp_tag_view3d_ui_redraw()
 
 
 def update_start_frame_cb(self, context):
@@ -1057,6 +1145,7 @@ def update_start_frame_cb(self, context):
             fbp_set_rna_property_silent(rig, "fbp_start_frame", value)
     for rig in targets:
         do_update_animation(rig)
+    fbp_tag_view3d_ui_redraw()
 
 def update_emission_cb(self, context):
     if fbp_is_silent_property_update(self):
@@ -1139,6 +1228,8 @@ def update_global_duration_cb(self, context):
 
     for rig in changed_rigs or eligible_targets:
         do_update_animation(rig)
+    if changed_rigs or eligible_targets:
+        fbp_tag_view3d_ui_redraw()
 
 
 def fbp_find_rig_for_image_item(image_item, context=None):
@@ -1147,7 +1238,6 @@ def fbp_find_rig_for_image_item(image_item, context=None):
         return None
     owner = fbp_collection_item_owner_rig(image_item)
     return owner if owner and fbp_collection_item_index(owner, image_item) >= 0 else None
-
 
 
 def update_image_duration_cb(self, context):
@@ -1162,6 +1252,7 @@ def update_image_duration_cb(self, context):
         if backend not in {'NATIVE_SEQUENCE', 'PROCEDURAL_COLOR', 'PROCEDURAL_GRADIENT'}:
             return
         do_update_animation(rig)
+        fbp_tag_view3d_ui_redraw()
     except Exception as exc:
         fbp_warn("Image row duration update skipped", exc)
 
@@ -1366,8 +1457,6 @@ def apply_camera_ratio_settings(scene):
 def fbp_is_rendering_now():
     """Return True unless Blender is confirmed idle for datablock mutation."""
     return fbp_render_mutation_blocked()
-
-
 
 
 def _fbp_scene_is_native_render_passthrough(scene):
@@ -1846,8 +1935,6 @@ def fbp_render_guard_abandon():
     _fbp_clear_render_runtime_state()
 
 
-
-
 # ── HANDLERS ─────────────────────────────────────────────────────────────────
 
 
@@ -1883,8 +1970,35 @@ def _fbp_schedule_native_coverage_refresh_if_scene_range_changed(scene):
     if len(_FBP_NATIVE_SCENE_RANGE_CACHE) > 32:
         for stale_key in tuple(_FBP_NATIVE_SCENE_RANGE_CACHE)[:-32]:
             _FBP_NATIVE_SCENE_RANGE_CACHE.pop(stale_key, None)
-    if previous is None or previous == signature:
+    if previous == signature:
         return False
+
+    if previous is None:
+        # The cache can be initialized after a user has already extended the
+        # Scene range. Validate once so the first frame change still repairs an
+        # insufficient native coverage contract instead of silently accepting it.
+        try:
+            from .native_backend import fbp_native_rig_contract_issues
+            requires_refresh = any(
+                fbp_layer_backend_type(rig) == 'NATIVE_SEQUENCE'
+                and "native Image/ImageUser/F-Curve contract is invalid"
+                in fbp_native_rig_contract_issues(rig, check_files=False)
+                for rig in iter_scene_fbp_rigs(scene)
+            )
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            requires_refresh = False
+        if not requires_refresh:
+            return False
+    else:
+        previous_start, previous_end = previous
+        range_expanded = (
+            int(signature[0]) < int(previous_start)
+            or int(signature[1]) > int(previous_end)
+        )
+        # A narrower Scene range is already covered by the existing F-Curves.
+        # Skipping the rebuild avoids needless material/keyframe churn.
+        if not range_expanded:
+            return False
 
     scene_key, scene_name = key
 
@@ -1926,9 +2040,13 @@ def fbp_frame_change_handler(scene):
     render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
     if not render_guard_active:
         _fbp_schedule_native_coverage_refresh_if_scene_range_changed(scene)
-    needs_procedural = bool(
-        fbp_runtime_get("fbp_render_needs_procedural_frame_sync", False)
-    ) if render_guard_active else _fbp_scene_has_procedural_rows_cached(scene)
+    if render_guard_active:
+        needs_procedural = bool(
+            fbp_runtime_get("fbp_render_needs_procedural_frame_sync", False)
+        )
+        needs_frame_ui = False
+    else:
+        needs_procedural, needs_frame_ui = _fbp_scene_frame_state_cached(scene)
     needs_drawing = bool(
         fbp_runtime_get("fbp_render_needs_drawing_frame_sync", False)
     ) if render_guard_active else False
@@ -1945,6 +2063,8 @@ def fbp_frame_change_handler(scene):
             needs_drawing = False
 
     if not needs_procedural and not needs_drawing:
+        if needs_frame_ui and not fbp_is_rendering_now():
+            fbp_tag_view3d_ui_redraw()
         return
 
     changed = False
@@ -1973,7 +2093,7 @@ def fbp_frame_change_handler(scene):
                 exc,
             )
 
-    if (changed or has_procedural_rigs) and not fbp_is_rendering_now():
+    if (changed or has_procedural_rigs or needs_frame_ui) and not fbp_is_rendering_now():
         fbp_tag_view3d_ui_redraw()
     return
 
@@ -2028,7 +2148,6 @@ def update_scene_gradient_preview_cb(self, context):
         return
     except Exception as exc:
         fbp_warn("Could not schedule gradient preview update", exc)
-
 
 
 # ── PROPERTY REGISTRATION MOVED TO properties.py ───────────────────────────────
@@ -2265,7 +2384,6 @@ def fbp_normalize_sequence_entry(entry, rig=None):
     return data
 
 
-
 def fbp_insert_sequence_entry(rig, entry, material, insert_at=None):
     """Insert one normalized sequence entry and rebuild through the shared path."""
     plane = getattr(rig, 'fbp_plane_target', None)
@@ -2442,6 +2560,13 @@ def fbp_apply_sequence_entries_to_rig(rig, entries):
                 except FBP_DATA_IO_ERRORS:
                     pass
 
+        # CollectionProperty add/remove/move operations do not emit a parent
+        # Object update callback. Explicitly invalidate the shared timing cache
+        # so REC reflects the new list immediately, even when the backend itself
+        # was refreshed successfully.
+        fbp_invalidate_procedural_rig_cache(rig)
+        fbp_invalidate_procedural_scene_cache(_fbp_scene_for_rig(rig))
+
     def restore_previous_state():
         populate_state(old_entries)
         rig.fbp_images_index = max(
@@ -2570,10 +2695,12 @@ def fbp_apply_sequence_entries_to_rig(rig, entries):
             ])
         except Exception as exc:
             fbp_warn("Could not clean replaced procedural materials", exc)
+    try:
+        fbp_tag_view3d_ui_redraw()
+    except FBP_DATA_ERRORS:
+        pass
     return True
-
 
 
 # Fast Import is invoked directly inside the operator execute methods.
 # Avoid monkey-patching operator methods at module load.
-

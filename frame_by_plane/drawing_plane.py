@@ -556,7 +556,7 @@ def fbp_sync_drawing_texture_settings(rig):
     try:
         texture.interpolation = str(getattr(rig, 'fbp_interpolation', 'Closest') or 'Closest')
         extension_mode = str(getattr(rig, 'fbp_extend_mode', 'EDGE') or 'EDGE').upper()
-        texture.extension = 'REPEAT' if extension_mode == 'REPEAT' else 'EXTEND'
+        texture.extension = 'REPEAT' if extension_mode == 'REPEAT' else ('CLIP' if extension_mode == 'TRANSPARENT' else 'EXTEND')
         return True
     except FBP_DATA_ERRORS:
         return False
@@ -1219,7 +1219,8 @@ def fbp_apply_drawing_index(rig, scene=None, *, force=False):
         if getattr(texture, "interpolation", None) != interpolation:
             texture.interpolation = interpolation
             changed = True
-        expected_extension = 'REPEAT' if str(getattr(rig, 'fbp_extend_mode', 'EDGE') or 'EDGE').upper() == 'REPEAT' else 'EXTEND'
+        extension_mode = str(getattr(rig, 'fbp_extend_mode', 'EDGE') or 'EDGE').upper()
+        expected_extension = 'REPEAT' if extension_mode == 'REPEAT' else ('CLIP' if extension_mode == 'TRANSPARENT' else 'EXTEND')
         if getattr(texture, 'extension', None) != expected_extension:
             texture.extension = expected_extension
             changed = True
@@ -1465,55 +1466,13 @@ def fbp_sync_drawing_scene(scene, *, force=False):
     return changed
 
 
-def _mark_managed_cutout_item_if_safe(rig, item):
-    """Upgrade legacy 5.1.2 entries only when the Image has no external users."""
-    try:
-        if bool(getattr(item, "managed_image", False)):
-            return False
-        image = getattr(item, "image", None)
-        if image is None:
-            return False
-        if bool(getattr(image, "packed_file", None)) or bool(getattr(image, "is_dirty", False)):
-            return False
-        if str(getattr(image, "source", "") or "") == "GENERATED":
-            return False
-        path = str(getattr(item, "filepath", "") or "")
-        absolute = os.path.abspath(bpy.path.abspath(path)) if path else ""
-        if not absolute or not os.path.isfile(absolute):
-            return False
-        expected_users = 1  # the persistent item.image pointer
-        texture = _drawing_texture(rig)
-        if texture is not None and getattr(texture, "image", None) is image:
-            expected_users += 1
-        if int(getattr(image, "users", expected_users) or 0) > expected_users:
-            return False
-        item.managed_image = True
-        try:
-            image[DRAWING_MANAGED_IMAGE_KEY] = True
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
-            pass
-        try:
-            item.source_width = max(0, int(image.size[0]))
-            item.source_height = max(0, int(image.size[1]))
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, IndexError):
-            pass
-        return True
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        return False
-
-
 def fbp_refresh_drawing_scene(scene):
-    """Refresh ranges and safely migrate legacy Cutout buffer ownership."""
+    """Refresh current Cutout Plane frame ranges and material state."""
     changed = False
-    migrated = False
     for rig in _drawing_rigs_for_scene(scene):
-        for item in getattr(rig, "fbp_images", ()):
-            migrated = _mark_managed_cutout_item_if_safe(rig, item) or migrated
         changed = fbp_update_drawing_index_ui(rig) or changed
         changed = fbp_apply_drawing_index(rig, scene, force=True) or changed
-    if migrated:
-        _schedule_drawing_buffer_trim()
-    return changed or migrated
+    return changed
 
 
 def fbp_depsgraph_schedule_drawing_updates(scene, candidate_rigs):
@@ -1707,6 +1666,11 @@ def build_drawing_plane(context, directory, files, *, name=None, interpolation="
         plane_mesh = fbp_create_rect_mesh(f"Mesh_Plane_{rig_name}", size=2.0, with_face=True)
         plane = fbp_create_mesh_object(f"Plane_{rig_name}", plane_mesh, context, location=location, target_collection=target_collection)
         plane.is_fbp_plane = True
+        try:
+            if getattr(plane, "data", None) is not None:
+                plane.data["fbp_plane_mesh"] = True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
         plane["fbp_parent_rig_name"] = rig.name
         plane["fbp_native_backend"] = True
         plane["fbp_backend_type"] = "CUTOUT"
@@ -2079,7 +2043,6 @@ class FBP_OT_ReplaceDrawingImage(Operator, ImportHelper):
             fbp_warn("Could not replace Cutout Plane image", exc)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-
 
 
 class FBP_OT_DrawingIndexStep(Operator):
