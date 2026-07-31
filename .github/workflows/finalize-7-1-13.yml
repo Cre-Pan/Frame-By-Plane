@@ -23,6 +23,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin release/7.1.11-lts
+          git reset --hard origin/release/7.1.11-lts
           python - <<'PY'
           from pathlib import Path
           replacements = {
@@ -34,6 +36,8 @@ jobs:
               path = Path(filename)
               text = path.read_text(encoding='utf-8')
               for old, new in pairs:
+                  if new in text:
+                      continue
                   if old not in text:
                       raise SystemExit(f'Missing expected version marker in {filename}: {old}')
                   text = text.replace(old, new, 1)
@@ -72,6 +76,7 @@ Frame By Plane 7.1.13 is a registration and runtime hotfix for the 7.1 LTS line.
           Path('frame_by_plane/RELEASE_NOTES_7.1.11.md').unlink(missing_ok=True)
           PY
           rm -f release-patches/7.1.13-metadata.ready .github/workflows/finalize-7-1-13.yml
+          python tools/verify_python_symbols.py
           python -m compileall -q frame_by_plane
           find frame_by_plane -type d -name __pycache__ -prune -exec rm -rf {} +
           find frame_by_plane -name '*.pyc' -delete
@@ -84,4 +89,11 @@ Frame By Plane 7.1.13 is a registration and runtime hotfix for the 7.1 LTS line.
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Finalize Frame By Plane 7.1.13 LTS"
-          git push origin HEAD:release/7.1.11-lts
+          for attempt in 1 2 3; do
+            git pull --rebase origin release/7.1.11-lts
+            if git push origin HEAD:release/7.1.11-lts; then
+              exit 0
+            fi
+            sleep $((attempt * 2))
+          done
+          exit 1
