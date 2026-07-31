@@ -1,0 +1,39 @@
+name: Apply 7.1.11 live preview fix
+
+on:
+  push:
+    branches:
+      - "release/7.1.11-lts"
+    paths:
+      - "release-patches/7.1.11-live-preview.patch"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/7.1.11-lts
+          fetch-depth: 0
+      - name: Apply and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="release-patches/7.1.11-live-preview.patch"
+          [[ "$(wc -c < "$PATCH" | tr -d ' ')" == "6797" ]]
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          rm "$PATCH"
+          python tools/verify_repository.py
+          python -m compileall -q frame_by_plane
+          find frame_by_plane -type d -name __pycache__ -prune -exec rm -rf {} +
+          find frame_by_plane -name '*.pyc' -delete
+          rm .github/workflows/apply-7-1-11-live-preview.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix Scrub Bar live preference redraw"
+          git push origin HEAD:release/7.1.11-lts
