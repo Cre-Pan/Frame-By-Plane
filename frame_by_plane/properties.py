@@ -525,6 +525,22 @@ def update_show_previews_cb(self, context):
         fbp_warn("Could not clear Frame By Plane thumbnail previews", exc)
 
 
+def update_alpha_render_method_cb(self, context):
+    """Apply the selected alpha method to every owned FBP material in this Scene."""
+    if fbp_is_silent_property_update(self) or fbp_undo_guard_active():
+        return
+    try:
+        from .materials import fbp_refresh_material_render_methods
+        fbp_refresh_material_render_methods(scene=self)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not update Frame By Plane alpha rendering", exc)
+    fbp_request_redraw(
+        context,
+        area_types={'VIEW_3D', 'PROPERTIES'},
+        all_windows=True,
+    )
+
+
 def update_collection_color_variants_cb(self, context):
     """Apply the current variant mode immediately to this Scene's layers."""
     if self is None:
@@ -7101,11 +7117,11 @@ def _clear_runtime_ui_rows_before_unregister():
                 rows = getattr(scene, attr, None)
                 if rows is not None:
                     rows.clear()
-            except FBP_DATA_IO_ERRORS:
+            except FBP_DATA_ERRORS:
                 pass
         try:
             scene.fbp_layer_tree_signature = ''
-        except FBP_DATA_IO_ERRORS:
+        except FBP_DATA_ERRORS:
             pass
 
 
