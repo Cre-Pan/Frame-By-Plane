@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "7.1.13"
+version = "7.1.11"
 name = "Frame By Plane"
 tagline = "Image-plane animation workflow for Blender"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
