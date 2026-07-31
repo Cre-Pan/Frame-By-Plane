@@ -4,14 +4,13 @@ on:
   push:
     branches:
       - "release/7.1.11-lts"
-    paths:
-      - "release-patches/7.1.13-metadata.ready"
 
 permissions:
   contents: write
 
 jobs:
   finalize:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +74,7 @@ Frame By Plane 7.1.13 is a registration and runtime hotfix for the 7.1 LTS line.
           Path('release-notes/7.1.11.md').unlink(missing_ok=True)
           Path('frame_by_plane/RELEASE_NOTES_7.1.11.md').unlink(missing_ok=True)
           PY
-          rm -f release-patches/7.1.13-metadata.ready .github/workflows/finalize-7-1-13.yml
+          rm -f .github/workflows/finalize-7-1-13.yml
           python tools/verify_python_symbols.py
           python -m compileall -q frame_by_plane
           find frame_by_plane -type d -name __pycache__ -prune -exec rm -rf {} +
