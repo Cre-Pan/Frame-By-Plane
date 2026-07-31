@@ -11,16 +11,16 @@ Import images, image sequences, folders, PSD files and Procreate projects as con
 - 🎬 Native image-sequence playback with Loop, Ping-Pong and One Shot modes.
 - 🗂️ Single-plane and multiplane imports from images, folders and layered projects.
 - 🧩 PSD and Procreate layer workflows with alpha preservation.
-- 🎨 62 built-in effects covering distortion, blur, color, stylization, masks and utilities.
+- 🎨 Built-in effects for distortion, blur, color, stylization, masks and utilities.
 - 🌓 Layer blend modes inspired by common painting and compositing applications.
 - ✂️ Cutout, alpha-aware geometry and 2.5D depth tools.
-- 🎥 Camera, project, render and sequence controls designed for animation.
+- 🎥 Camera, projector, render and sequence controls designed for animation.
 - 🧪 Integrated diagnostics, regression checks and release-gate tools.
 - 📦 Separate lightweight packages for Windows, macOS and Linux.
 
 ## Requirements
 
-- **Blender 5.1.2 or newer**
+- **Blender 5.2.x**
 - Supported packages:
   - Windows x64
   - Windows ARM64
@@ -38,11 +38,11 @@ Import images, image sequences, folders, PSD files and Procreate projects as con
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-6.1.0-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-6.1.0-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-6.1.0-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-6.1.0-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-6.1.0-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-7.1.10-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-7.1.10-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-7.1.10-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-7.1.10-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-7.1.10-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub’s automatically generated **Source code (zip)** archive. Use one of the installable release assets listed above.
