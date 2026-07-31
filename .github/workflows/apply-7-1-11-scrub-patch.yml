@@ -5,7 +5,7 @@ on:
     branches:
       - "release/7.1.11-lts"
     paths:
-      - "release-patches/7.1.11-scrub.patch"
+      - "release-patches/7.1.11-scrub.patch.part*"
 
 permissions:
   contents: write
@@ -24,14 +24,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PATCH="release-patches/7.1.11-scrub.patch"
-          if [[ ! -f "$PATCH" ]]; then
+          shopt -s nullglob
+          PARTS=(release-patches/7.1.11-scrub.patch.part*)
+          if (( ${#PARTS[@]} == 0 )); then
             echo "Patch already consumed"
             exit 0
           fi
+          PATCH="${RUNNER_TEMP}/7.1.11-scrub.patch"
+          cat "${PARTS[@]}" > "$PATCH"
           git apply --check "$PATCH"
           git apply "$PATCH"
-          rm "$PATCH"
+          rm -f "${PARTS[@]}"
           python tools/verify_repository.py
           python -m compileall -q frame_by_plane
           find frame_by_plane -type d -name __pycache__ -prune -exec rm -rf {} +
