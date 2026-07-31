@@ -1,0 +1,187 @@
+rd-library release packaging for all five supported platforms.
++- Added strict platform wheel isolation and package CRC validation.
++- Added tag-to-manifest version checks before publication.
++- Added identical common-payload verification across platform packages.
++- Added automatic SHA-256 generation for every release archive.
++- Added clean source packaging with development reports excluded from installable ZIP files.
++
++## GitHub automation
++
++- Tag pushes matching `v*.*.*` can validate, build, attest and publish a GitHub Release automatically.
++- Releases are created as drafts first, assets are uploaded, and publication happens only after every gate succeeds.
++- Existing published releases are never overwritten by the workflow.
++- Manual workflow runs can build artifacts without publishing them.
++
++## Repository validation
++
++- Updated GitHub Actions to current Node 24-compatible official actions.
++- Added release-note, support-policy and manifest synchronization checks.
++- Added reproducible package generation to pull-request validation.
++- Added regression coverage for Scrub Bar magnet geometry, transition easing, the Preferences icon and Grease Pencil frame `0`.
++
++## Support policy
++
++- Blender support remains 5.2.x.
++- The 7.1 line is frozen for broad feature development after this release.
++- Any later 7.1 patch should contain only confirmed regressions or release-infrastructure fixes.
+diff --git a/frame_by_plane/STATIC_AUDIT_7.1.10.json b/frame_by_plane/STATIC_AUDIT_7.1.10.json
+deleted file mode 100644
+index b127510..0000000
+--- a/frame_by_plane/STATIC_AUDIT_7.1.10.json
++++ /dev/null
+@@ -1,25 +0,0 @@
+-{
+-  "bl_idname_count": 521,
+-  "direct_timer_registrations": [
+-    {
+-      "file": "runtime_scheduler.py",
+-      "line": 677
+-    }
+-  ],
+-  "duplicate_bl_idnames": {},
+-  "invalid_png": [],
+-  "menu_reference_count": 47,
+-  "missing_fbp_menus": [],
+-  "missing_fbp_operators": [],
+-  "operator_reference_count": 598,
+-  "parse_errors": [],
+-  "png_count": 107,
+-  "python_files_production": 94,
+-  "python_files_total": 99,
+-  "version": "7.1.10",
+-  "version_checks": {
+-    "manifest": true,
+-    "runtime": true,
+-    "support_policy": true
+-  }
+-}
+\ No newline at end of file
+diff --git a/frame_by_plane/blender_manifest.toml b/frame_by_plane/blender_manifest.toml
+index c17cd86..e812f30 100644
+--- a/frame_by_plane/blender_manifest.toml
++++ b/frame_by_plane/blender_manifest.toml
+@@ -1,7 +1,7 @@
+ schema_version = "1.0.0"
+ 
+ id = "frame_by_plane"
+-version = "7.1.10"
++version = "7.1.11"
+ name = "Frame By Plane"
+ tagline = "Image-plane animation workflow for Blender"
+ maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
+@@ -44,3 +44,23 @@ wheels = [
+ [permissions]
+ files = "Read media and write layered, animation and render caches"
+ clipboard = "Import media paths and copy diagnostic reports to the clipboard"
++
++[build]
++paths_exclude_pattern = [
++  "README.md",
++  "__pycache__/",
++  ".*",
++  "*.zip",
++  "*.blend1",
++  "*.bak",
++  "_fbp_update_backups/",
++  "RELEASE_NOTES_*.md",
++  "FRAME_BY_PLANE_*_BUILD_REPORT.md",
++  "FRAME_BY_PLANE_*_ROADMAP_STATUS.md",
++  "STATIC_AUDIT_*.json",
++  "PACKAGE_VALIDATION_*.json",
++  "tests/",
++  "*.sha256",
++  "*.log",
++  "*.diff",
++]
+diff --git a/frame_by_plane/constants.py b/frame_by_plane/constants.py
+index 458980d..7165725 100644
+--- a/frame_by_plane/constants.py
++++ b/frame_by_plane/constants.py
+@@ -14,7 +14,7 @@ from .support_policy import (
+ 
+ # Release metadata lives here so the add-on header, preferences and local
+ # What's New UI cannot silently drift apart during incremental releases.
+-FBP_VERSION = (7, 1, 10)
++FBP_VERSION = (7, 1, 11)
+ FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
+ FBP_VERSION_FAMILY = ".".join(str(part) for part in FBP_VERSION[:2])
+ 
+diff --git a/frame_by_plane/grease_pencil_bridge.py b/frame_by_plane/grease_pencil_bridge.py
+index ad6b662..aff7ff0 100644
+--- a/frame_by_plane/grease_pencil_bridge.py
++++ b/frame_by_plane/grease_pencil_bridge.py
+@@ -1165,7 +1165,7 @@ def _set_active_gp_brush_stroke_type(context=None, mode="STROKE"):
+ def _gp_mask_curve_count(canvas, scene=None, *, rebuild_index=False):
+     try:
+         target_scene = _scene_for_canvas(canvas, scene)
+-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
++        frame_number = _scene_current_frame_number(target_scene, 1)
+         _exposure_key, exposure_state = _canvas_exposure_state(
+             canvas,
+             frame_number,
+@@ -1381,7 +1381,7 @@ def _canvas_stroke_count_signature(
+         _sync_gp_mask_authored_curve_state(canvas, scene=scene)
+     try:
+         target_scene = _scene_for_canvas(canvas, scene)
+-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
++        frame_number = _scene_current_frame_number(target_scene, 1)
+         _exposure_key, exposure_state = _canvas_exposure_state(canvas, frame_number)
+     except FBP_DATA_ERRORS:
+         return (), (0, 0)
+@@ -3453,6 +3453,23 @@ def _ensure_gp_layer(canvas):
+         return None
+ 
+ 
++def _coerce_frame_number(value, default=1):
++    """Coerce a frame value while preserving valid frame zero."""
++    try:
++        return int(default) if value is None else int(value)
++    except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
++        return int(default)
++
++
++def _scene_current_frame_number(scene, default=1):
++    """Return ``Scene.frame_current`` without treating frame zero as missing."""
++    try:
++        value = getattr(scene, "frame_current", None)
++    except (AttributeError, ReferenceError):
++        value = None
++    return _coerce_frame_number(value, default)
++
++
+ def _ensure_gp_current_keyframe(canvas, context=None, *, frame_number=None):
+     """Ensure the active Grease Pencil layer has a blank drawing on the current frame.
+ 
+@@ -3469,7 +3486,7 @@ def _ensure_gp_current_keyframe(canvas, context=None, *, frame_number=None):
+     if frame_number is None:
+         try:
+             scene = getattr(context, "scene", None) if context is not None else getattr(bpy.context, "scene", None)
+-            frame_number = int(getattr(scene, "frame_current", 1) or 1)
++            frame_number = _scene_current_frame_number(scene, 1)
+         except FBP_DATA_ERRORS:
+             frame_number = 1
+     try:
+@@ -4031,7 +4048,7 @@ def _gp_material_visibility_signature(canvas):
+ def _canvas_geometry(canvas, rig, bounds=None, *, frame_number=None, scene=None, exposure_state=None):
+     """GP Mask v2 geometry extraction with evaluated/live fallback."""
+     target_scene = _scene_for_canvas(canvas, scene)
+-    frame = int(frame_number if frame_number is not None else getattr(target_scene, "frame_current", 1) or 1)
++    frame = _coerce_frame_number(frame_number, _scene_current_frame_number(target_scene, 1))
+     bounds = bounds if bounds is not None else _plane_bounds(rig)
+     if exposure_state is None:
+         _key, exposure_state = _canvas_exposure_state(canvas, frame)
+@@ -4150,8 +4167,8 @@ def _geometry_signature(canvas, rig, polygons, polylines, resolution, bounds=Non
+         f"{float(getattr(canvas, 'fbp_gp_mask_threshold', 0.5)):.8f}",
+         "1" if bool(getattr(canvas, "fbp_gp_reveal_enabled", False)) else "0",
+         str(getattr(canvas, "fbp_gp_reveal_mode", "REVEAL")),
+-        str(int(getattr(canvas, "fbp_gp_reveal_start", 1) or 1)),
+-        str(int(getattr(canvas, "fbp_gp_reveal_end", 24) or 24)),
++        str(_coerce_frame_number(getattr(canvas, "fbp_gp_reveal_start", None), 1)),
++        str(_coerce_frame_number(getattr(canvas, "fbp_gp_reveal_end", None), 24)),
+         str(getattr(canvas, "fbp_gp_reveal_direction", "LEFT_RIGHT")),
+         "1" if bool(getattr(canvas, "fbp_gp_reveal_invert", False)) else "0",
+         f"{float(getattr(canvas, 'fbp_gp_reveal_feather', 0.05)):.8f}",
+@@ -4209,10 +4226,10 @@ def _reveal_progress(canvas, frame_number=None):
+     if not bool(getattr(canvas, "fbp_gp_reveal_enabled", False)):
+         return None
+     if frame_ 
