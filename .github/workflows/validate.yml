@@ -26,6 +26,9 @@ jobs:
       - name: Validate repository metadata
         run: python tools/verify_repository.py
 
+      - name: Validate Python symbols and RNA callbacks
+        run: python tools/verify_python_symbols.py
+
       - name: Compile Python sources
         run: python -m compileall -q frame_by_plane
 
