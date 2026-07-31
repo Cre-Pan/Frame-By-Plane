@@ -21,7 +21,7 @@ import zipfile
 import zlib
 
 
-FBP_PROCREATE_DECODER_VERSION = "1.3"
+FBP_PROCREATE_DECODER_VERSION = "1.4"
 
 # Hard safety limits for malformed or hostile archives. These values are high
 # enough for normal illustration documents while preventing unbounded plist
@@ -30,6 +30,7 @@ FBP_PROCREATE_MAX_ARCHIVE_OBJECTS = 250_000
 FBP_PROCREATE_MAX_HIERARCHY_DEPTH = 256
 FBP_PROCREATE_MAX_DOCUMENT_ARCHIVE_BYTES = 128 * 1024 * 1024
 FBP_PROCREATE_MAX_PREVIEW_BYTES = 256 * 1024 * 1024
+FBP_PROCREATE_MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024
 FBP_PROCREATE_MAX_CANVAS_PIXELS = 300_000_000
 
 
@@ -99,6 +100,8 @@ class FBP_ProcreateInspection:
     archive_entries: int = 0
     has_preview: bool = False
     video_enabled: bool = False
+    video_members: int = 0
+    video_bytes: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -149,6 +152,7 @@ class FBP_ProcreateDocument:
         self._source_counter = 0
         self._warning_set: set[str] = set()
         self._preview_name = ""
+        self._video_members: tuple[str, ...] = ()
         try:
             self._load()
         except Exception:
@@ -179,6 +183,11 @@ class FBP_ProcreateDocument:
         )
         self._preview_name = self._find_member(
             "QuickLook/Preview.png", "QuickLook/preview.png", "composite.png"
+        )
+        video_exts = {".mp4", ".mov", ".m4v", ".avi", ".webm", ".mkv"}
+        self._video_members = tuple(
+            name for name in self._names
+            if os.path.splitext(name.replace("\\", "/"))[1].lower() in video_exts
         )
         archive_name = self._find_member("Document.archive", "document.archive")
         if not archive_name:
@@ -795,6 +804,55 @@ class FBP_ProcreateDocument:
                 continue
         return None
 
+    def video_members(self) -> tuple[str, ...]:
+        """Return complete embedded movie members, never internal unknown segments."""
+        return tuple(self._video_members)
+
+    def extract_time_lapse(self, destination_directory: str) -> str:
+        """Extract one complete embedded movie to a safe cache path.
+
+        Procreate archives may contain proprietary segmented video data. Frame By
+        Plane extracts only one ordinary movie member with a recognized extension;
+        ambiguous multi-member payloads remain untouched.
+        """
+        if self._zip is None or len(self._video_members) != 1:
+            return ""
+        member = self._video_members[0]
+        try:
+            info = self._zip.getinfo(member)
+            size = int(info.file_size)
+            if size <= 0 or size > FBP_PROCREATE_MAX_VIDEO_BYTES:
+                self._warn_once("Embedded time-lapse video exceeds the safe size limit")
+                return ""
+            extension = os.path.splitext(member)[1].lower()
+            os.makedirs(destination_directory, exist_ok=True)
+            target = os.path.join(destination_directory, f"procreate_time_lapse{extension}")
+            temp = target + ".tmp"
+            written = 0
+            try:
+                with self._zip.open(member, "r") as source, open(temp, "wb") as output:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > FBP_PROCREATE_MAX_VIDEO_BYTES:
+                            raise ValueError("Embedded time-lapse video exceeded the safe size limit while streaming")
+                        output.write(chunk)
+                if written != size:
+                    raise ValueError(f"Embedded time-lapse size mismatch ({written} of {size} bytes)")
+                os.replace(temp, target)
+                return target
+            finally:
+                if os.path.exists(temp):
+                    try:
+                        os.remove(temp)
+                    except OSError:
+                        pass
+        except (KeyError, OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+            self._warn_once(f"Embedded time-lapse video could not be extracted: {exc}")
+            return ""
+
     def inspect(self) -> FBP_ProcreateInspection:
         summary = FBP_ProcreateInspection(
             width=int(self.width),
@@ -804,6 +862,11 @@ class FBP_ProcreateDocument:
             archive_entries=len(self._names),
             has_preview=bool(self._preview_name or self._quicklook_name),
             video_enabled=bool(self.video_enabled),
+            video_members=len(self._video_members),
+            video_bytes=sum(
+                max(0, int(self._zip.getinfo(name).file_size))
+                for name in self._video_members
+            ) if self._zip is not None else 0,
             warnings=list(self.warnings),
         )
         for node, _parents in self.iter_layers(include_groups=True):

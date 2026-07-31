@@ -1,45 +1,314 @@
-"""Frame By Plane viewport Pie Menu.
-
-The menu replaces Blender's default Z shading pie while the extension is
-active. It keeps the core viewport shading controls and adds compact actions
-that work with both ordinary Blender objects and Frame By Plane layers.
-"""
+"""Native Blender Frame By Plane viewport radial menu."""
 
 import time
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty
+from bpy.app.handlers import persistent
+from bpy.props import EnumProperty, IntProperty, StringProperty
 from bpy.types import Menu, Operator
 
-from .runtime import fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
+from .managed_timers import fbp_register_timer_once, fbp_unregister_managed_timer
+from .runtime import (
+    fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS,
+    fbp_render_mutation_blocked, fbp_undo_guard_active,
+    fbp_depsgraph_quiet_for,
+)
+from .registration import (
+    append_handler_once,
+    register_classes,
+    remove_handlers_by_name,
+    unregister_classes,
+)
+from .shortcut_runtime import (
+    addon_keymap,
+    refresh_keymap_registration,
+    remove_matching_keymap_items,
+    shortcut_enabled,
+    unregister_keymap_items,
+)
+from .ui_style import configure_layout, hint_row, section_gap, section_header
+from .ui_icons import effect_enum_icon, effect_icon_kwargs, ui_icon_kwargs
 
 
 _FBP_VIEWPORT_PIE_KEYMAPS = globals().get("_FBP_VIEWPORT_PIE_KEYMAPS", [])
 _QUICK_EFFECT_PREF_NAMES = tuple(f"pie_quick_effect_{index}" for index in range(1, 6))
+_QUICK_MASK_PREF_NAMES = tuple(f"pie_quick_mask_{index}" for index in range(1, 6))
+_QUICK_MASK_DEFAULTS = (
+    "SHAPE_MASK",
+    "GREASE_PENCIL_MASK",
+    "COLOR_MASK",
+    "",
+    "",
+)
 _QUICK_EFFECT_FALLBACK = (
     ('NONE', "Empty Slot", "Do not show an effect in this quick slot", 'ADD', 0),
 )
-_QUICK_EFFECT_ENUM_CACHE = globals().get("_QUICK_EFFECT_ENUM_CACHE", [])
-_QUICK_EFFECT_ENUM_SIGNATURE = globals().get("_QUICK_EFFECT_ENUM_SIGNATURE", None)
+_QUICK_EFFECT_ENUM_CACHE = globals().get("_QUICK_EFFECT_ENUM_CACHE", {})
+if not isinstance(_QUICK_EFFECT_ENUM_CACHE, dict):
+    _QUICK_EFFECT_ENUM_CACHE = {}
+_QUICK_EFFECT_ENUM_SIGNATURE = globals().get("_QUICK_EFFECT_ENUM_SIGNATURE", {})
+if not isinstance(_QUICK_EFFECT_ENUM_SIGNATURE, dict):
+    _QUICK_EFFECT_ENUM_SIGNATURE = {}
 _QUICK_EFFECT_ENUM_REFRESH_TIME = float(globals().get("_QUICK_EFFECT_ENUM_REFRESH_TIME", 0.0) or 0.0)
 _QUICK_EFFECT_ENUM_REFRESH_SECONDS = 2.0
+_QUICK_MASK_ENUM_CACHE = globals().get("_QUICK_MASK_ENUM_CACHE", [])
+_QUICK_MASK_ENUM_SIGNATURE = globals().get("_QUICK_MASK_ENUM_SIGNATURE", None)
 _FBP_LAST_LOCKED_RIG_NAMES = globals().get("_FBP_LAST_LOCKED_RIG_NAMES", [])
 _FBP_LAST_SELECTABILITY_NAMES = globals().get("_FBP_LAST_SELECTABILITY_NAMES", [])
 _FBP_LAST_HIDDEN_OBJECT_NAMES = globals().get("_FBP_LAST_HIDDEN_OBJECT_NAMES", [])
-
 _PIE_ICON_SCALE_X = 1.25
 _PIE_ICON_SCALE_Y = 1.25
 _PIE_BUTTON_SCALE_Y = 1.25
-_PIE_PRIMARY_BUTTON_WIDTH = 6.5
+_PIE_BRANCH_GAP_FACTOR = 0.6
+_PIE_OVERFLOW_UI_UNITS = 5.5
+_PIE_OVERFLOW_SCALE_X = 4.25
+_PIE_SOUTH_LIST_UI_UNITS = 9.0
+_PIE_SOUTH_LIST_ROWS = 8
+_PIE_SOUTH_TOP_PAD_ROWS = 6
+_PIE_SOUTH_SCALE_Y = 1.0
+
+
+def _pie_text_width(label, *, minimum=5.5, maximum=12.5):
+    """Return a compact native Blender UI width for one Pie button."""
+    text = str(label or "")
+    return max(float(minimum), min(float(maximum), 2.05 + len(text) * 0.32))
 
 
 def _pie_icon_cell(layout, *, enabled=True):
-    """Create one compact icon cell without adding extra internal spacing."""
     cell = layout.row(align=True)
     cell.scale_x = _PIE_ICON_SCALE_X
     cell.scale_y = _PIE_ICON_SCALE_Y
     cell.enabled = bool(enabled)
     return cell
+
+
+def _pie_fixed_button_row(layout, label, *, enabled=True):
+    wrapper = layout.row(align=False)
+    wrapper.alignment = "CENTER"
+    button = wrapper.row(align=False)
+    button.alignment = "CENTER"
+    button.ui_units_x = _pie_text_width(
+        label,
+        minimum=6.0,
+        maximum=_PIE_SOUTH_LIST_UI_UNITS,
+    )
+    button.scale_y = _PIE_BUTTON_SCALE_Y
+    button.enabled = bool(enabled)
+    return button
+
+
+def _pie_pad_south_list(layout, used_rows):
+    """Keep the two south branches top-aligned while content grows downward."""
+    for _index in range(max(0, _PIE_SOUTH_LIST_ROWS - int(used_rows or 0))):
+        spacer = layout.row(align=False)
+        # Real action/icon rows use the native 1.25 control height. Matching
+        # that height here keeps the branch footprint identical when a spacer
+        # is replaced by a configured quick effect.
+        spacer.scale_y = _PIE_BUTTON_SCALE_Y
+        spacer.label(text="")
+
+
+def _pie_start_south_list(layout, title, icon):
+    """Lower a fixed-height south list without changing its growth direction.
+
+    Pie sectors are vertically centred by Blender. Tail padding alone therefore
+    pins the visible title too close to the radial centre. A matching fixed
+    spacer before both lists moves their visible top down while the constant
+    content-plus-tail footprint still makes entries grow only downward.
+    """
+    # Six leading rows keep the visible content below the radial controls.
+    # Blender centres the complete pie sector, so every two fixed spacers move
+    # the visible top by roughly one native row. Compacting the
+    # entire fixed-height branch keeps the maximum eight-row configuration
+    # inside the viewport without changing the alignment between both sides.
+    layout.scale_y = _PIE_SOUTH_SCALE_Y
+    for _index in range(_PIE_SOUTH_TOP_PAD_ROWS):
+        spacer = layout.row(align=False)
+        spacer.label(text="")
+    title_row = layout.row(align=True)
+    title_row.alignment = "CENTER"
+    title_row.label(text=str(title or ""), icon=str(icon or "NONE"))
+    return title_row
+
+
+def _pie_mask_label(label):
+    """Remove the redundant Mask suffix inside the titled Masks sector."""
+    value = str(label or "").strip()
+    if value.casefold().endswith(" mask"):
+        value = value[:-5].rstrip()
+    return value
+
+
+_CURSOR_ON_CAMERA_ENABLED_KEY = "fbp_cursor_on_camera_enabled"
+_CURSOR_ON_CAMERA_LAST_CURSOR_KEY = "fbp_cursor_on_camera_last_cursor"
+_CURSOR_ON_CAMERA_CAMERA_KEY = "fbp_cursor_on_camera_camera_pointer"
+_CURSOR_ON_CAMERA_EPSILON = 1.0e-6
+_CURSOR_ON_CAMERA_TIMER_INTERVAL = 0.12
+
+
+def _vector_triplet(value):
+    try:
+        return (float(value[0]), float(value[1]), float(value[2]))
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return (0.0, 0.0, 0.0)
+
+
+def _triplet_distance_sq(a, b):
+    ax, ay, az = _vector_triplet(a)
+    bx, by, bz = _vector_triplet(b)
+    return (ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2
+
+
+def _cursor_on_camera_is_enabled(scene):
+    try:
+        return bool(scene.get(_CURSOR_ON_CAMERA_ENABLED_KEY, False))
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _cursor_on_camera_set_enabled(scene, enabled):
+    if scene is None:
+        return False
+    try:
+        scene[_CURSOR_ON_CAMERA_ENABLED_KEY] = bool(enabled)
+        if not enabled:
+            scene.pop(_CURSOR_ON_CAMERA_LAST_CURSOR_KEY, None)
+            scene.pop(_CURSOR_ON_CAMERA_CAMERA_KEY, None)
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _active_camera_location(scene):
+    camera = getattr(scene, "camera", None)
+    if camera is None or getattr(camera, "type", None) != 'CAMERA':
+        return None, None
+    try:
+        return camera, camera.matrix_world.translation.copy()
+    except FBP_DATA_ERRORS:
+        return camera, None
+
+
+def _cursor_on_camera_pointer_token(camera):
+    """Return a stable IDProperty-safe token for the active camera.
+
+    RNA pointers are pointer-sized integers. On Windows 64-bit they can exceed
+    Blender IDProperty's C-int storage range when assigned as plain ints to a
+    Scene custom property. Store them as strings to avoid OverflowError while
+    still keeping a useful debug/repair token.
+    """
+    if camera is None:
+        return ""
+    try:
+        return str(int(camera.as_pointer()))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OverflowError):
+        return str(getattr(camera, "name", "") or "")
+
+
+def _write_cursor_on_camera_state(scene, camera, location):
+    try:
+        scene.cursor.location = location
+        scene[_CURSOR_ON_CAMERA_LAST_CURSOR_KEY] = list(_vector_triplet(location))
+        scene[_CURSOR_ON_CAMERA_CAMERA_KEY] = _cursor_on_camera_pointer_token(camera)
+        return True
+    except FBP_DATA_ERRORS + (OverflowError,):
+        return False
+
+
+def _sync_cursor_on_camera_scene(scene, *, force=False):
+    """Keep Scene.cursor locked to the active camera until the user moves it.
+
+    Blender does not expose a dedicated 3D-cursor moved callback. A lightweight
+    timer polls only while the feature is enabled. If the current cursor no
+    longer matches the last position written by Frame By Plane, the user has
+    moved it manually and the link is disabled immediately.
+    """
+    if scene is None or not _cursor_on_camera_is_enabled(scene):
+        return False
+    camera, target = _active_camera_location(scene)
+    if camera is None or target is None:
+        _cursor_on_camera_set_enabled(scene, False)
+        return False
+    try:
+        cursor_location = scene.cursor.location.copy()
+    except FBP_DATA_ERRORS:
+        _cursor_on_camera_set_enabled(scene, False)
+        return False
+    try:
+        last_cursor = scene.get(_CURSOR_ON_CAMERA_LAST_CURSOR_KEY, None)
+    except FBP_DATA_ERRORS:
+        last_cursor = None
+    if last_cursor is not None and _triplet_distance_sq(cursor_location, last_cursor) > _CURSOR_ON_CAMERA_EPSILON:
+        _cursor_on_camera_set_enabled(scene, False)
+        return False
+    if force or last_cursor is None or _triplet_distance_sq(target, last_cursor) > _CURSOR_ON_CAMERA_EPSILON:
+        return _write_cursor_on_camera_state(scene, camera, target)
+    return True
+
+
+def _cursor_on_camera_any_enabled():
+    try:
+        return any(_cursor_on_camera_is_enabled(scene) for scene in bpy.data.scenes)
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _cursor_on_camera_timer():
+    if fbp_undo_guard_active() or fbp_render_mutation_blocked():
+        return _CURSOR_ON_CAMERA_TIMER_INTERVAL if _cursor_on_camera_any_enabled() else None
+    if not fbp_depsgraph_quiet_for(0.12):
+        return _CURSOR_ON_CAMERA_TIMER_INTERVAL if _cursor_on_camera_any_enabled() else None
+    any_enabled = False
+    try:
+        scenes = tuple(bpy.data.scenes)
+    except FBP_DATA_ERRORS:
+        scenes = ()
+    for scene in scenes:
+        if _cursor_on_camera_is_enabled(scene):
+            any_enabled = True
+            _sync_cursor_on_camera_scene(scene)
+    return _CURSOR_ON_CAMERA_TIMER_INTERVAL if any_enabled else None
+
+
+def _ensure_cursor_on_camera_timer():
+    try:
+        fbp_register_timer_once(
+            _cursor_on_camera_timer, 0.05, persistent=True
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+@persistent
+def _cursor_on_camera_frame_handler(scene, *args):
+    del args
+    if fbp_undo_guard_active() or fbp_render_mutation_blocked():
+        return
+    if _cursor_on_camera_is_enabled(scene):
+        _ensure_cursor_on_camera_timer()
+
+
+def _register_cursor_on_camera_runtime():
+    if not append_handler_once(
+        bpy.app.handlers.frame_change_post,
+        _cursor_on_camera_frame_handler,
+        module_suffix="viewport_pie",
+    ):
+        raise RuntimeError("Could not register the Cursor on Camera frame handler")
+    if _cursor_on_camera_any_enabled():
+        _ensure_cursor_on_camera_timer()
+
+
+def _unregister_cursor_on_camera_runtime():
+    remove_handlers_by_name(
+        bpy.app.handlers.frame_change_post,
+        "_cursor_on_camera_frame_handler",
+        module_suffix="viewport_pie",
+    )
+    try:
+        fbp_unregister_managed_timer(_cursor_on_camera_timer)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def _view3d_space(context):
@@ -53,6 +322,40 @@ def _selected_fbp_rigs(context):
         return list(get_selected_fbp_roots(context))
     except FBP_DATA_ERRORS:
         return []
+
+
+def _object_is_explicitly_selected(context, obj):
+    """Reject Blender's stale active object after Select None."""
+    if obj is None:
+        return False
+    selected = tuple(getattr(context, "selected_objects", ()) or ())
+    if obj not in selected:
+        return False
+    try:
+        return bool(obj.select_get())
+    except FBP_DATA_ERRORS:
+        return True
+
+
+def _active_gp_drawing_canvas(context):
+    """Return the selected FBP Grease Pencil drawing canvas, if any.
+
+    Grease Pencil canvases can resolve back to their owner rig.  The Pie Menu
+    must nevertheless treat the canvas as the active artistic target so image
+    masks/effects are not offered against its owner by accident.
+    """
+    canvas = getattr(context, "active_object", None)
+    if canvas is None:
+        canvas = getattr(context, "object", None)
+    if not _object_is_explicitly_selected(context, canvas):
+        return None
+    if str(getattr(canvas, "type", "") or "").upper() != "GREASEPENCIL":
+        return None
+    try:
+        from .grease_pencil_bridge import is_gp_drawing_canvas
+        return canvas if is_gp_drawing_canvas(canvas) else None
+    except FBP_DATA_ERRORS:
+        return None
 
 
 def _resolve_fbp_rig(obj, context=None):
@@ -306,6 +609,10 @@ def _pie_selection_state(context):
         "selectable_generic": selectable_generic,
         "selectability_enabled": bool(planes or selectable_generic),
         "selectability_locked": bool(selectability_states) and all(selectability_states),
+        "selectability_active": (
+            bool(selectability_states)
+            and all(not state for state in selectability_states)
+        ),
         "holdout_rigs": holdout_rigs,
         "generic_holdout": generic_holdout,
         "holdout_enabled": bool(holdout_rigs or generic_holdout),
@@ -315,112 +622,200 @@ def _pie_selection_state(context):
 
 def _addon_preferences(context=None):
     try:
-        from .properties import fbp_get_addon_preferences
+        from .interface_preferences import fbp_get_addon_preferences
         return fbp_get_addon_preferences(context)
     except FBP_DATA_ERRORS:
         return None
 
 
-def _quick_effect_enum_items(_self=None, _context=None):
-    global _QUICK_EFFECT_ENUM_CACHE
-    global _QUICK_EFFECT_ENUM_SIGNATURE
+def _curated_quick_effect_rows(category):
+    """Return one category in the add-menu's curated section order."""
+    from .effects_registry import (
+        FBP_EFFECT_CROP,
+        FBP_EFFECT_EXTEND,
+        FBP_EFFECT_REGISTRY,
+        FBP_IMAGE_EFFECT_MENU_SECTIONS,
+        FBP_MESH_EFFECT_MENU_SECTIONS,
+        fbp_effect_family_definition,
+        fbp_refresh_custom_effect_registry,
+    )
+
+    category = str(category or "2D").upper()
+    fbp_refresh_custom_effect_registry(force=False)
+    sections = (
+        FBP_MESH_EFFECT_MENU_SECTIONS
+        if category == "3D"
+        else FBP_IMAGE_EFFECT_MENU_SECTIONS
+    )
+    rows = []
+    seen = set()
+
+    def append_effect(section_label, effect_id):
+        effect_id = str(effect_id or "")
+        definition = FBP_EFFECT_REGISTRY.get(effect_id, {}) or {}
+        actual_category = str(definition.get("category", "2D") or "2D").upper()
+        normalized_category = "2D" if actual_category == "BASE" else actual_category
+        if (
+            not effect_id
+            or effect_id in seen
+            or effect_id in {FBP_EFFECT_CROP, FBP_EFFECT_EXTEND}
+            or normalized_category != category
+            or bool(definition.get("custom_invalid", False))
+            or bool(definition.get("custom_hidden", False))
+        ):
+            return
+        seen.add(effect_id)
+        label = str(definition.get("label", effect_id) or effect_id)
+        icon = str(definition.get("icon", "SHADERFX") or "SHADERFX")
+        rows.append((section_label, effect_id, label, icon))
+
+    for section_label, _section_icon, tokens in sections:
+        for token in tokens:
+            token = str(token or "")
+            if token.startswith("FAMILY:"):
+                family = fbp_effect_family_definition(token.split(":", 1)[1])
+                for effect_id, _variant_label in tuple(family.get("variants", ()) or ()):
+                    append_effect(section_label, effect_id)
+            else:
+                append_effect(section_label, token)
+
+    # User effects and future registry additions remain available after the
+    # built-in sections instead of being lost when the curated menu evolves.
+    tail = []
+    for effect_id, definition in FBP_EFFECT_REGISTRY.items():
+        actual_category = str(definition.get("category", "2D") or "2D").upper()
+        normalized_category = "2D" if actual_category == "BASE" else actual_category
+        if effect_id in seen or normalized_category != category:
+            continue
+        if bool(definition.get("custom_invalid", False)) or bool(definition.get("custom_hidden", False)):
+            continue
+        tail.append((str(definition.get("label", effect_id) or effect_id).casefold(), effect_id))
+    for _sort_label, effect_id in sorted(tail):
+        append_effect("User Effects", effect_id)
+    return rows
+
+
+def _quick_effect_enum_items_for_category(category):
     global _QUICK_EFFECT_ENUM_REFRESH_TIME
-
-    fallback = list(_QUICK_EFFECT_FALLBACK)
+    category = str(category or "2D").upper()
     now = time.monotonic()
-    if (
-        _QUICK_EFFECT_ENUM_CACHE
-        and now - _QUICK_EFFECT_ENUM_REFRESH_TIME < _QUICK_EFFECT_ENUM_REFRESH_SECONDS
-    ):
-        return _QUICK_EFFECT_ENUM_CACHE
-
+    cached = _QUICK_EFFECT_ENUM_CACHE.get(category)
+    if cached and now - _QUICK_EFFECT_ENUM_REFRESH_TIME < _QUICK_EFFECT_ENUM_REFRESH_SECONDS:
+        return cached
     try:
-        from .effects_registry import (
-            FBP_EFFECT_CROP,
-            FBP_EFFECT_EXTEND,
-            FBP_EFFECT_REGISTRY,
-            fbp_refresh_custom_effect_registry,
-        )
+        rows = _curated_quick_effect_rows(category)
+        signature = tuple(rows)
+        if not cached or signature != _QUICK_EFFECT_ENUM_SIGNATURE.get(category):
+            items = list(_QUICK_EFFECT_FALLBACK)
+            for enum_index, (section, effect_id, label, icon) in enumerate(rows, start=1):
+                items.append((
+                    effect_id,
+                    f"{section} · {label}",
+                    f"Use {label} in this quick slot",
+                    icon,
+                    enum_index,
+                ))
+            _QUICK_EFFECT_ENUM_CACHE[category] = items
+            _QUICK_EFFECT_ENUM_SIGNATURE[category] = signature
+    except FBP_DATA_ERRORS:
+        _QUICK_EFFECT_ENUM_CACHE.setdefault(category, list(_QUICK_EFFECT_FALLBACK))
+        _QUICK_EFFECT_ENUM_SIGNATURE.setdefault(category, ())
+    _QUICK_EFFECT_ENUM_REFRESH_TIME = now
+    return _QUICK_EFFECT_ENUM_CACHE[category]
 
-        fbp_refresh_custom_effect_registry(force=False)
-        category_order = {"MASK": 0, "2D": 1, "BASE": 1, "3D": 2}
-        rows = []
-        for effect_id, definition in FBP_EFFECT_REGISTRY.items():
-            if effect_id in {FBP_EFFECT_CROP, FBP_EFFECT_EXTEND}:
+
+def _quick_effect_2d_enum_items(_self=None, _context=None):
+    return _quick_effect_enum_items_for_category("2D")
+
+
+def _quick_effect_3d_enum_items(_self=None, _context=None):
+    return _quick_effect_enum_items_for_category("3D")
+
+
+def _quick_mask_enum_items(_self=None, _context=None):
+    global _QUICK_MASK_ENUM_SIGNATURE
+    from .effects_registry import (
+        FBP_EFFECT_COLOR_MASK,
+        FBP_EFFECT_REGISTRY,
+        FBP_MASK_EFFECT_MENU_SECTIONS,
+    )
+
+    essentials = (
+        ("CLIPPING_MASK", "Clipping", "Clip to the nearest compatible layer below", effect_enum_icon("CLIPPING_MASK", "MOD_MASK")),
+        ("SHAPE_MASK", "Shapes", "Choose Square, Circle or Triangle when used", effect_enum_icon("SHAPE_MASK", "SURFACE_NCURVE")),
+        ("GREASE_PENCIL_MASK", "Grease Pencil", "Draw an editable Grease Pencil mask", effect_enum_icon("GREASE_PENCIL_MASK", "OUTLINER_OB_GREASEPENCIL")),
+        (FBP_EFFECT_COLOR_MASK, "Color", "Mask pixels around a sampled color", effect_enum_icon(FBP_EFFECT_COLOR_MASK, FBP_EFFECT_REGISTRY.get(FBP_EFFECT_COLOR_MASK, {}).get("icon", "COLOR"))),
+    )
+    rows = [("Essential", *row) for row in essentials]
+    seen = {row[0] for row in essentials}
+    skip_tokens = {"GREASE_PENCIL_MASK_CONTROL", "SQUARE_MASK", "CIRCLE_MASK", "TRIANGLE_MASK"}
+    for section, _icon, tokens in FBP_MASK_EFFECT_MENU_SECTIONS:
+        for effect_id in tokens:
+            effect_id = str(effect_id or "")
+            if effect_id in skip_tokens or effect_id in seen or effect_id.startswith("FAMILY:"):
                 continue
+            definition = FBP_EFFECT_REGISTRY.get(effect_id, {}) or {}
             if not definition or bool(definition.get("custom_invalid", False)):
                 continue
-            label = str(definition.get("label", effect_id) or effect_id)
-            category = str(definition.get("category", "2D") or "2D").upper()
-            if category not in {"MASK", "2D", "BASE", "3D"}:
-                continue
-            display_category = "2D" if category == "BASE" else category.title()
-            icon = str(definition.get("icon", "MODIFIER") or "MODIFIER")
-            rows.append(
-                (
-                    category_order.get(category, 9),
-                    label.casefold(),
-                    effect_id,
-                    display_category,
-                    label,
-                    icon,
-                )
-            )
-        rows.sort()
-        signature = tuple(
-            (effect_id, display_category, label, icon)
-            for _order, _sort_label, effect_id, display_category, label, icon in rows
-        )
-        if not _QUICK_EFFECT_ENUM_CACHE or signature != _QUICK_EFFECT_ENUM_SIGNATURE:
-            items = list(fallback)
-            for enum_index, (
-                _order,
-                _sort_label,
+            seen.add(effect_id)
+            rows.append((
+                section,
                 effect_id,
-                display_category,
-                label,
+                _pie_mask_label(
+                    definition.get("label", effect_id) or effect_id
+                ),
+                f"Use {definition.get('label', effect_id)} in this quick mask slot",
+                effect_enum_icon(effect_id, definition.get("icon", "MOD_MASK")),
+            ))
+    signature = tuple(rows)
+    if not _QUICK_MASK_ENUM_CACHE or signature != _QUICK_MASK_ENUM_SIGNATURE:
+        _QUICK_MASK_ENUM_CACHE[:] = list(_QUICK_EFFECT_FALLBACK)
+        for enum_index, (section, effect_id, label, description, icon) in enumerate(rows, start=1):
+            _QUICK_MASK_ENUM_CACHE.append((
+                effect_id,
+                f"{section} · {label}",
+                description,
                 icon,
-            ) in enumerate(rows, start=1):
-                items.append(
-                    (
-                        effect_id,
-                        f"{display_category} · {label}",
-                        f"Use {label} in this quick slot",
-                        icon,
-                        enum_index,
-                    )
-                )
-            _QUICK_EFFECT_ENUM_CACHE = items
-            _QUICK_EFFECT_ENUM_SIGNATURE = signature
-    except FBP_DATA_ERRORS:
-        if not _QUICK_EFFECT_ENUM_CACHE:
-            _QUICK_EFFECT_ENUM_CACHE = fallback
-            _QUICK_EFFECT_ENUM_SIGNATURE = ()
-
-    _QUICK_EFFECT_ENUM_REFRESH_TIME = now
-    return _QUICK_EFFECT_ENUM_CACHE
+                enum_index,
+            ))
+        _QUICK_MASK_ENUM_SIGNATURE = signature
+    return _QUICK_MASK_ENUM_CACHE
 
 
-def _store_quick_effect_slot(owner, context, index):
+def _store_quick_effect_preference(context, index, effect_id):
+    """Persist one quick-effect slot without staging ten temporary enums."""
     prefs = _addon_preferences(context)
-    if prefs is None:
-        return
-    attr = f"slot_{index}"
-    pref_name = _QUICK_EFFECT_PREF_NAMES[index - 1]
-    value = str(getattr(owner, attr, 'NONE') or 'NONE')
+    if prefs is None or not 1 <= int(index) <= len(_QUICK_EFFECT_PREF_NAMES):
+        return False
+    value = str(effect_id or "").strip()
+    if value == "NONE":
+        value = ""
     try:
-        setattr(prefs, pref_name, "" if value == 'NONE' else value)
+        setattr(prefs, _QUICK_EFFECT_PREF_NAMES[int(index) - 1], value)
+        return True
     except FBP_DATA_IO_ERRORS:
-        pass
+        return False
 
 
-def _reset_quick_effect_slots(owner, _context):
-    """Clear staged quick slots; saved preferences change only after Apply."""
-    if not bool(getattr(owner, "reset_slots", False)):
-        return
+def _clear_all_quick_effect_preferences(context):
+    changed = False
     for index in range(1, 6):
-        setattr(owner, f"slot_{index}", 'NONE')
-    owner.reset_slots = False
+        changed = _store_quick_effect_preference(context, index, "") or changed
+    return changed
+
+
+def _store_quick_mask_preference(context, index, mask_id):
+    prefs = _addon_preferences(context)
+    if prefs is None or not 1 <= int(index) <= len(_QUICK_MASK_PREF_NAMES):
+        return False
+    value = str(mask_id or "").strip()
+    if value == "NONE":
+        value = ""
+    try:
+        setattr(prefs, _QUICK_MASK_PREF_NAMES[int(index) - 1], value)
+        return True
+    except FBP_DATA_IO_ERRORS:
+        return False
 
 
 class FBP_OT_SetViewportShading(Operator):
@@ -428,7 +823,7 @@ class FBP_OT_SetViewportShading(Operator):
     bl_label = "Set Viewport Shading"
     bl_description = "Change the active 3D View shading mode"
 
-    mode: EnumProperty(
+    mode: EnumProperty(description='Operation mode for this viewport quick tool. Example: choose whether the command adds, removes, previews, repairs or applies settings.', 
         name="Shading",
         items=(
             ('WIREFRAME', "Wireframe", "Display scene geometry as wireframes"),
@@ -450,8 +845,10 @@ class FBP_OT_SetViewportShading(Operator):
         try:
             shading = space.shading
             shading.type = self.mode
-            if self.mode == 'SOLID':
-                shading.color_type = 'MATERIAL'
+            # ``color_type`` and the other per-mode settings belong to the
+            # viewport, not to this mode switch. Keeping them untouched makes
+            # Solid return to the previous Textured/Random configuration after
+            # a trip through Material Preview or Rendered.
             return {'FINISHED'}
         except FBP_DATA_ERRORS as exc:
             fbp_warn("Could not change viewport shading", exc)
@@ -571,6 +968,12 @@ class FBP_OT_ToggleRenderTransparency(Operator):
             return {'CANCELLED'}
         try:
             render.film_transparent = not bool(render.film_transparent)
+            # The transparent film is only visible in Rendered shading. Match
+            # every other effect-facing Pie action by revealing its result once,
+            # while leaving subsequent manual shading changes untouched.
+            space = _view3d_space(context)
+            if space is not None:
+                space.shading.type = 'RENDERED'
             return {'FINISHED'}
         except FBP_DATA_ERRORS as exc:
             fbp_warn("Could not toggle render transparency", exc)
@@ -894,87 +1297,482 @@ class FBP_OT_ToggleSelectedHoldout(Operator):
             return {'CANCELLED'}
 
 
-class FBP_OT_QuickEffectsPopup(Operator):
-    bl_idname = "fbp.quick_effects_popup"
-    bl_label = "Quick Effects"
-    bl_description = "Choose up to five favorite Frame By Plane masks or 2D/3D effects"
+class FBP_OT_ToggleCursorOnCamera(Operator):
+    bl_idname = "fbp.toggle_cursor_on_camera"
+    bl_label = "Cursor On Camera"
+    bl_description = "Attach the 3D cursor to the active camera until the cursor is moved manually"
+    bl_options = {'REGISTER', 'UNDO'}
 
-    slot_1: EnumProperty(
-        name="Slot 1",
-        items=_quick_effect_enum_items,
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, "scene", None)
+        camera = getattr(scene, "camera", None) if scene else None
+        return bool(scene and camera and getattr(camera, "type", None) == 'CAMERA')
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        if scene is None:
+            return {'CANCELLED'}
+        try:
+            if _cursor_on_camera_is_enabled(scene):
+                _cursor_on_camera_set_enabled(scene, False)
+                self.report({'INFO'}, "Cursor On Camera disabled")
+                return {'FINISHED'}
+            camera, target = _active_camera_location(scene)
+            if camera is None or target is None:
+                self.report({'WARNING'}, "No active camera available")
+                return {'CANCELLED'}
+            _cursor_on_camera_set_enabled(scene, True)
+            if not _write_cursor_on_camera_state(scene, camera, target):
+                _cursor_on_camera_set_enabled(scene, False)
+                self.report({'WARNING'}, "Could not attach cursor to camera")
+                return {'CANCELLED'}
+            _ensure_cursor_on_camera_timer()
+            self.report({'INFO'}, "Cursor On Camera enabled")
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not toggle Cursor On Camera", exc)
+            return {'CANCELLED'}
+
+
+class FBP_OT_SetQuickImageEffectSlot(Operator):
+    bl_idname = "fbp.set_quick_image_effect_slot"
+    bl_label = "Set Image Effect Slot"
+    bl_description = "Assign an Image effect to this Z Pie Menu slot"
+    bl_options = {'INTERNAL'}
+
+    slot_index: IntProperty(default=1, min=1, max=5, options={'SKIP_SAVE'})
+    effect_id: EnumProperty(
+        name="Image Effect",
+        items=_quick_effect_2d_enum_items,
         options={'SKIP_SAVE'},
     )
-    slot_2: EnumProperty(
-        name="Slot 2",
-        items=_quick_effect_enum_items,
+
+    def execute(self, context):
+        return (
+            {'FINISHED'}
+            if _store_quick_effect_preference(context, self.slot_index, self.effect_id)
+            else {'CANCELLED'}
+        )
+
+
+class FBP_OT_SetQuickMeshEffectSlot(Operator):
+    bl_idname = "fbp.set_quick_mesh_effect_slot"
+    bl_label = "Set Mesh Effect Slot"
+    bl_description = "Assign a Mesh effect to this Z Pie Menu slot"
+    bl_options = {'INTERNAL'}
+
+    slot_index: IntProperty(default=1, min=1, max=5, options={'SKIP_SAVE'})
+    effect_id: EnumProperty(
+        name="Mesh Effect",
+        items=_quick_effect_3d_enum_items,
         options={'SKIP_SAVE'},
     )
-    slot_3: EnumProperty(
-        name="Slot 3",
-        items=_quick_effect_enum_items,
-        options={'SKIP_SAVE'},
-    )
-    slot_4: EnumProperty(
-        name="Slot 4",
-        items=_quick_effect_enum_items,
-        options={'SKIP_SAVE'},
-    )
-    slot_5: EnumProperty(
-        name="Slot 5",
-        items=_quick_effect_enum_items,
-        options={'SKIP_SAVE'},
-    )
-    reset_slots: BoolProperty(
-        name="Reset",
-        description="Clear all five staged quick-effect slots",
-        default=False,
-        update=_reset_quick_effect_slots,
-        options={'SKIP_SAVE'},
-    )
+
+    def execute(self, context):
+        return (
+            {'FINISHED'}
+            if _store_quick_effect_preference(context, self.slot_index, self.effect_id)
+            else {'CANCELLED'}
+        )
+
+
+class FBP_OT_ClearQuickEffectSlot(Operator):
+    bl_idname = "fbp.clear_quick_effect_slot"
+    bl_label = "Clear Slot"
+    bl_description = "Remove the effect assigned to this quick slot"
+    bl_options = {'INTERNAL'}
+
+    slot_index: IntProperty(default=1, min=1, max=5, options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        return (
+            {'FINISHED'}
+            if _store_quick_effect_preference(context, self.slot_index, "")
+            else {'CANCELLED'}
+        )
+
+
+class FBP_OT_ResetQuickEffectSlots(Operator):
+    bl_idname = "fbp.reset_quick_effect_slots"
+    bl_label = "Reset Quick Effect Slots"
+    bl_description = "Clear all five quick-effect slots"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        return {'FINISHED'} if _clear_all_quick_effect_preferences(context) else {'CANCELLED'}
+
+
+class FBP_OT_SetQuickMaskSlot(Operator):
+    bl_idname = "fbp.set_quick_mask_slot"
+    bl_label = "Set Favourite Mask"
+    bl_options = {'INTERNAL'}
+
+    slot_index: IntProperty(default=1, min=1, max=5, options={'SKIP_SAVE'})
+    mask_id: StringProperty(default="", options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        return (
+            {'FINISHED'}
+            if _store_quick_mask_preference(
+                context, self.slot_index, self.mask_id
+            )
+            else {'CANCELLED'}
+        )
+
+
+class FBP_OT_ResetQuickMaskSlots(Operator):
+    bl_idname = "fbp.reset_quick_mask_slots"
+    bl_label = "Reset Favourite Masks"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        changed = False
+        for index in range(1, 6):
+            changed = _store_quick_mask_preference(context, index, "") or changed
+        return {'FINISHED'} if changed else {'CANCELLED'}
+
+
+class FBP_OT_QuickMaskLibraryPopup(Operator):
+    bl_idname = "fbp.quick_mask_library_popup"
+    bl_label = "Choose Favourite Mask"
+    bl_options = {'INTERNAL'}
+
+    slot_index: IntProperty(default=1, min=1, max=5, options={'SKIP_SAVE'})
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_popup(self, width=620)
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        from .geometry_nodes import _fbp_draw_effect_add_columns
+        _fbp_draw_effect_add_columns(
+            layout,
+            context,
+            "MASK",
+            max_columns=2,
+            quick_slot_index=self.slot_index,
+            quick_kind="MASK",
+        )
+        layer = layout.column(align=False)
+        layer.label(text="Layer", icon="RENDERLAYERS")
+        clipping = layer.operator(
+            FBP_OT_SetQuickMaskSlot.bl_idname,
+            text="Clipping",
+            **effect_icon_kwargs("CLIPPING_MASK", "MOD_MASK"),
+        )
+        clipping.slot_index = self.slot_index
+        clipping.mask_id = "CLIPPING_MASK"
+        clear = layout.operator(
+            FBP_OT_SetQuickMaskSlot.bl_idname,
+            text="Clear Slot",
+            icon="X",
+        )
+        clear.slot_index = self.slot_index
+        clear.mask_id = ""
+
+    def execute(self, _context):
+        return {'FINISHED'}
+
+
+class FBP_OT_QuickMasksPopup(Operator):
+    bl_idname = "fbp.quick_masks_popup"
+    bl_label = "Favourite Masks"
+    bl_description = "Choose up to five masks shown in the south-west Z Pie Menu sector"
+    bl_options = {'INTERNAL'}
 
     @classmethod
     def poll(cls, context):
         return _view3d_space(context) is not None
 
     def invoke(self, context, _event):
-        valid_ids = {item[0] for item in _quick_effect_enum_items(self, context)}
+        return context.window_manager.invoke_props_dialog(
+            self,
+            width=460,
+            confirm_text="Done",
+        )
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        section_header(layout, "Favourite Masks", icon="MOD_MASK")
+        hint_row(
+            layout,
+            "Choose each slot from the same compact library used by Add Mask.",
+            icon="INFO",
+        )
         prefs = _addon_preferences(context)
-        for index, pref_name in enumerate(_QUICK_EFFECT_PREF_NAMES, start=1):
-            stored = str(getattr(prefs, pref_name, "") or "") if prefs is not None else ""
-            setattr(self, f"slot_{index}", stored if stored in valid_ids else 'NONE')
+        slots = layout.grid_flow(
+            row_major=True, columns=2, even_columns=True, even_rows=True,
+            align=True,
+        )
+        for index in range(1, 6):
+            mask_id = (
+                str(
+                    getattr(
+                        prefs,
+                        _QUICK_MASK_PREF_NAMES[index - 1],
+                        _QUICK_MASK_DEFAULTS[index - 1],
+                    )
+                    or ""
+                )
+                if prefs is not None else ""
+            )
+            label = "Empty Slot"
+            icon = "ADD"
+            icon_value = 0
+            for item in _quick_mask_enum_items(self, context):
+                if item[0] == mask_id:
+                    label = (
+                        str(item[1])
+                        .replace("Â·", "·")
+                        .rsplit("·", 1)[-1]
+                        .strip()
+                    )
+                    enum_icon = item[3] or "MOD_MASK"
+                    if isinstance(enum_icon, int):
+                        icon_value = int(enum_icon)
+                    else:
+                        icon = str(enum_icon)
+                    break
+            op = slots.operator(
+                FBP_OT_QuickMaskLibraryPopup.bl_idname,
+                text=f"{index}. {label}",
+                **({"icon_value": icon_value} if icon_value else {"icon": icon}),
+            )
+            op.slot_index = index
+        section_gap(layout)
+        layout.operator(
+            FBP_OT_ResetQuickMaskSlots.bl_idname,
+            text="Reset Slots",
+            icon='FILE_REFRESH',
+        )
+
+    def execute(self, _context):
+        return {'FINISHED'}
+
+
+class FBP_OT_QuickEffectsPopup(Operator):
+    bl_idname = "fbp.quick_effects_popup"
+    bl_label = "Favourite Effects"
+    bl_description = "Choose up to five effects shown in the south-east Z Pie Menu sector"
+    bl_options = {'INTERNAL'}
+
+    def invoke(self, context, _event):
         return context.window_manager.invoke_props_dialog(
             self,
             width=520,
-            confirm_text="Apply",
+            confirm_text="Done",
         )
 
-    def draw(self, _context):
-        layout = self.layout
-
-        slots = layout.column(align=False)
-        slots.scale_y = 1.12
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        section_header(layout, "Favourite Effects", icon="SHADERFX")
+        hint_row(
+            layout,
+            "Choose Image or Mesh, then pick from the normal Add Effect library.",
+            icon="INFO",
+        )
+        prefs = _addon_preferences(context)
         for index in range(1, 6):
-            slots.prop(
-                self,
-                f"slot_{index}",
-                text=f"Quick Effect {index}",
+            effect_id, label, icon = _quick_effect_slot_presentation(
+                context,
+                index,
+                prefs=prefs,
             )
-
-        layout.separator()
-        footer = layout.row(align=False)
-        footer.alignment = 'LEFT'
-        footer.prop(
-            self,
-            "reset_slots",
-            text="Reset",
-            icon='LOOP_BACK',
-            toggle=True,
+            row = layout.row(align=True)
+            row.label(text=f"{index}. {label}", icon=icon)
+            image = row.operator(
+                FBP_OT_QuickEffectLibraryPopup.bl_idname,
+                text="Image",
+                icon="IMAGE_BACKGROUND",
+            )
+            image.slot_index = index
+            image.category = "2D"
+            mesh = row.operator(
+                FBP_OT_QuickEffectLibraryPopup.bl_idname,
+                text="Mesh",
+                icon="MESH_DATA",
+            )
+            mesh.slot_index = index
+            mesh.category = "3D"
+            clear = row.row(align=True)
+            clear.enabled = bool(effect_id)
+            clear_op = clear.operator(
+                FBP_OT_ClearQuickEffectSlot.bl_idname,
+                text="",
+                icon="X",
+            )
+            clear_op.slot_index = index
+        section_gap(layout)
+        layout.operator(
+            FBP_OT_ResetQuickEffectSlots.bl_idname,
+            text="Reset Slots",
+            icon="FILE_REFRESH",
         )
 
-    def execute(self, context):
-        for index in range(1, 6):
-            _store_quick_effect_slot(self, context, index)
+    def execute(self, _context):
         return {'FINISHED'}
+
+
+class FBP_OT_QuickEffectLibraryPopup(Operator):
+    bl_idname = "fbp.quick_effect_library_popup"
+    bl_label = "Choose Quick Effect"
+    bl_options = {'INTERNAL'}
+
+    slot_index: IntProperty(default=1, min=1, max=5, options={'SKIP_SAVE'})
+    category: EnumProperty(
+        items=(
+            ("2D", "Image", "Image and shader effects"),
+            ("3D", "Mesh", "Geometry Nodes effects"),
+        ),
+        default="2D",
+        options={'SKIP_SAVE'},
+    )
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_popup(self, width=680)
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        from .geometry_nodes import _fbp_draw_effect_add_columns
+        _fbp_draw_effect_add_columns(
+            layout,
+            context,
+            self.category,
+            max_columns=2,
+            quick_slot_index=self.slot_index,
+            quick_kind="EFFECT",
+        )
+
+    def execute(self, _context):
+        return {'FINISHED'}
+
+
+def _quick_effect_slot_presentation(context, index, *, prefs=None):
+    if prefs is None:
+        prefs = _addon_preferences(context)
+    try:
+        effect_id = str(
+            getattr(prefs, _QUICK_EFFECT_PREF_NAMES[int(index) - 1], "") or ""
+        ).strip()
+    except (AttributeError, IndexError, TypeError, ValueError):
+        effect_id = ""
+    if not effect_id:
+        return "", "Empty Slot", "ADD"
+    try:
+        from .effects_registry import fbp_effect_definition
+        definition = fbp_effect_definition(effect_id) or {}
+    except FBP_DATA_ERRORS:
+        definition = {}
+    return (
+        effect_id,
+        str(definition.get("label", effect_id) or effect_id),
+        str(definition.get("icon", "MODIFIER") or "MODIFIER"),
+    )
+
+
+def _draw_quick_effect_slot_menu(menu, context, index):
+    layout = configure_layout(menu.layout)
+    effect_id, label, icon = _quick_effect_slot_presentation(context, index)
+    layout.label(text=label, icon=icon)
+    layout.separator()
+    image = layout.operator(
+        FBP_OT_QuickEffectLibraryPopup.bl_idname,
+        text="Image",
+        icon="IMAGE_BACKGROUND",
+    )
+    image.slot_index = index
+    image.category = "2D"
+    mesh = layout.operator(
+        FBP_OT_QuickEffectLibraryPopup.bl_idname,
+        text="Mesh",
+        icon="MESH_DATA",
+    )
+    mesh.slot_index = index
+    mesh.category = "3D"
+    if effect_id:
+        layout.separator()
+        clear = layout.operator(
+            FBP_OT_ClearQuickEffectSlot.bl_idname,
+            text="Clear Slot",
+            icon="X",
+        )
+        clear.slot_index = index
+
+
+class FBP_MT_QuickEffectSlot1(Menu):
+    bl_idname = "FBP_MT_quick_effect_slot_1"
+    bl_label = "Slot 1"
+
+    def draw(self, context):
+        _draw_quick_effect_slot_menu(self, context, 1)
+
+
+class FBP_MT_QuickEffectSlot2(Menu):
+    bl_idname = "FBP_MT_quick_effect_slot_2"
+    bl_label = "Slot 2"
+
+    def draw(self, context):
+        _draw_quick_effect_slot_menu(self, context, 2)
+
+
+class FBP_MT_QuickEffectSlot3(Menu):
+    bl_idname = "FBP_MT_quick_effect_slot_3"
+    bl_label = "Slot 3"
+
+    def draw(self, context):
+        _draw_quick_effect_slot_menu(self, context, 3)
+
+
+class FBP_MT_QuickEffectSlot4(Menu):
+    bl_idname = "FBP_MT_quick_effect_slot_4"
+    bl_label = "Slot 4"
+
+    def draw(self, context):
+        _draw_quick_effect_slot_menu(self, context, 4)
+
+
+class FBP_MT_QuickEffectSlot5(Menu):
+    bl_idname = "FBP_MT_quick_effect_slot_5"
+    bl_label = "Slot 5"
+
+    def draw(self, context):
+        _draw_quick_effect_slot_menu(self, context, 5)
+
+
+_QUICK_EFFECT_SLOT_MENUS = (
+    FBP_MT_QuickEffectSlot1,
+    FBP_MT_QuickEffectSlot2,
+    FBP_MT_QuickEffectSlot3,
+    FBP_MT_QuickEffectSlot4,
+    FBP_MT_QuickEffectSlot5,
+)
+
+
+class FBP_MT_QuickEffectSlots(Menu):
+    bl_idname = "FBP_MT_quick_effect_slots"
+    bl_label = "Quick Effects"
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        prefs = _addon_preferences(context)
+        slots = layout.grid_flow(
+            row_major=True, columns=2, even_columns=True, even_rows=True,
+            align=True,
+        )
+        for index, menu_class in enumerate(_QUICK_EFFECT_SLOT_MENUS, start=1):
+            _effect_id, _label, icon = _quick_effect_slot_presentation(
+                context,
+                index,
+                prefs=prefs,
+            )
+            slots.menu(menu_class.bl_idname, text=f"Slot {index}", icon=icon)
+        layout.separator()
+        layout.operator(
+            FBP_OT_ResetQuickEffectSlots.bl_idname,
+            text="Reset Slots",
+            icon="FILE_REFRESH",
+        )
 
 
 def _configured_quick_effect_ids(context):
@@ -982,23 +1780,339 @@ def _configured_quick_effect_ids(context):
     prefs = _addon_preferences(context)
     if prefs is None:
         return ()
+    try:
+        from .effects_registry import fbp_effect_definition
+    except (ImportError, AttributeError):
+        fbp_effect_definition = None
     effect_ids = []
     seen = set()
     for pref_name in _QUICK_EFFECT_PREF_NAMES:
         effect_id = str(getattr(prefs, pref_name, "") or "").strip()
         if not effect_id or effect_id == 'NONE' or effect_id in seen:
             continue
+        if fbp_effect_definition is not None:
+            category = str((fbp_effect_definition(effect_id) or {}).get("category", "") or "").upper()
+            if category not in {"BASE", "2D", "3D"}:
+                continue
         seen.add(effect_id)
         effect_ids.append(effect_id)
     return tuple(effect_ids)
 
 
+def _configured_quick_mask_ids(context):
+    """Return unique saved mask tokens, preserving the requested defaults."""
+    prefs = _addon_preferences(context)
+    mask_ids = []
+    seen = set()
+    for index, pref_name in enumerate(_QUICK_MASK_PREF_NAMES):
+        fallback = _QUICK_MASK_DEFAULTS[index]
+        mask_id = str(getattr(prefs, pref_name, fallback) or "").strip() if prefs is not None else fallback
+        if not mask_id or mask_id == 'NONE' or mask_id in seen:
+            continue
+        seen.add(mask_id)
+        mask_ids.append(mask_id)
+    return tuple(mask_ids)
+
+
+def _pie_operation_finished(result):
+    return bool({"FINISHED", "RUNNING_MODAL"}.intersection(set(result or ())))
+
+
+def _pie_reveal_effects(context, view, *, material_preview=False, preserve_active=False):
+    view = str(view or "2D").upper()
+    if view not in {"2D", "MASK", "3D"}:
+        view = "2D"
+    try:
+        context.scene.fbp_effects_view = view
+    except FBP_DATA_ERRORS:
+        pass
+    if material_preview:
+        space = _view3d_space(context)
+        shading = getattr(space, "shading", None) if space is not None else None
+        try:
+            shading_type = str(getattr(shading, "type", "SOLID") or "SOLID") if shading is not None else ""
+            if shading is not None and shading_type not in {"MATERIAL", "RENDERED"}:
+                shading.type = "MATERIAL"
+        except FBP_DATA_ERRORS:
+            pass
+    if preserve_active:
+        # Grease Pencil Mask enters native Paint Mode.  Calling the regular
+        # panel-opening operator here would immediately switch back to Object
+        # Mode and reselect the FBP rig, which made Z > Grease Pencil Mask look
+        # as if Draw Mode had failed whenever Crop/Expand controls were active.
+        for area in tuple(getattr(getattr(context, "screen", None), "areas", ()) or ()):
+            if str(getattr(area, "type", "") or "") != "PROPERTIES":
+                continue
+            try:
+                area.spaces.active.context = "MODIFIER"
+                area.tag_redraw()
+            except FBP_DATA_ERRORS:
+                continue
+        return
+    try:
+        bpy.ops.fbp.open_effects_masks(view=view)
+    except FBP_DATA_ERRORS:
+        pass
+
+
+class FBP_OT_PieAddEffect(Operator):
+    bl_idname = "fbp.pie_add_effect"
+    bl_label = "Add Favourite Effect"
+    bl_description = "Add this favourite and reveal its Image, Mask or Mesh panel"
+    bl_options = {'REGISTER'}
+
+    effect_id: StringProperty(
+        name="Effect ID",
+        description="Stable effect identifier selected from the Z Pie Menu",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def description(cls, _context, properties):
+        try:
+            from .effects_registry import fbp_effect_definition
+            effect_id = str(getattr(properties, "effect_id", "") or "")
+            definition = fbp_effect_definition(effect_id) or {}
+            label = str(definition.get("label", effect_id) or effect_id)
+            detail = str(definition.get("description", "") or "").strip()
+            return f"Add {label}" + (f"\n{detail}" if detail else "")
+        except FBP_DATA_ERRORS:
+            return cls.bl_description
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_selected_fbp_rigs(context))
+
+    def execute(self, context):
+        try:
+            from .effects_registry import fbp_effect_definition, fbp_normalize_effect_id
+            effect_id = fbp_normalize_effect_id(self.effect_id)
+            definition = fbp_effect_definition(effect_id) or {}
+            if not definition:
+                return {'CANCELLED'}
+            result = bpy.ops.fbp.add_effect(effect_id=effect_id)
+            if not _pie_operation_finished(result):
+                return {'CANCELLED'}
+            category = str(definition.get("category", "2D") or "2D").upper()
+            view = "3D" if category == "3D" else ("MASK" if category == "MASK" else "2D")
+            _pie_reveal_effects(
+                context,
+                view,
+                material_preview=category in {"BASE", "2D", "MASK"},
+            )
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not add favourite effect from the viewport Pie", exc)
+            return {'CANCELLED'}
+
+
+class FBP_OT_PieAddGreasePencilMask(Operator):
+    bl_idname = "fbp.pie_add_grease_pencil_mask"
+    bl_label = "Grease Pencil Mask"
+    bl_description = "Create an editable Grease Pencil mask and reveal the Mask panel"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_selected_fbp_rigs(context))
+
+    def execute(self, context):
+        try:
+            result = bpy.ops.fbp.add_grease_pencil_mask()
+            if not _pie_operation_finished(result):
+                return {'CANCELLED'}
+            _pie_reveal_effects(
+                context, "MASK", material_preview=True, preserve_active=True,
+            )
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not add Grease Pencil Mask from the viewport Pie", exc)
+            return {'CANCELLED'}
+
+
+class FBP_OT_PieToggleClippingMask(Operator):
+    bl_idname = "fbp.pie_toggle_clipping_mask"
+    bl_label = "Clipping Mask"
+    bl_description = "Toggle Clipping Mask consistently across selected layers and reveal Masks"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_selected_fbp_rigs(context))
+
+    def execute(self, context):
+        rigs = _selected_fbp_rigs(context)
+        if not rigs:
+            return {'CANCELLED'}
+        try:
+            from .layers import fbp_layer_clipping_active_hint
+            states = {
+                rig: bool(fbp_layer_clipping_active_hint(rig))
+                for rig in rigs
+            }
+            enable = not all(states.values())
+            changed = 0
+            for rig, active in states.items():
+                if active == enable:
+                    continue
+                result = bpy.ops.fbp.toggle_clipping_mask(rig_name=rig.name)
+                changed += int(_pie_operation_finished(result))
+            if not changed:
+                return {'CANCELLED'}
+            _pie_reveal_effects(context, "MASK", material_preview=True)
+            return {'FINISHED'}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not toggle Clipping Mask from the viewport Pie", exc)
+            return {'CANCELLED'}
+
+
+def _pie_shape_mask_ids():
+    """Return the compact default shape-mask set."""
+    from .effects_registry import (
+        FBP_EFFECT_CIRCLE_MASK,
+        FBP_EFFECT_SQUARE_MASK,
+    )
+    return (
+        FBP_EFFECT_CIRCLE_MASK,
+        FBP_EFFECT_SQUARE_MASK,
+    )
+
+
+def _draw_pie_mask_action(layout, context, mask_id, rigs):
+    mask_id = str(mask_id or "").upper()
+    if mask_id == "CLIPPING_MASK":
+        try:
+            from .layers import fbp_layer_clipping_active_hint
+            from .ui_icons import clipping_mask_icon_kwargs
+
+            active = bool(rigs) and all(
+                fbp_layer_clipping_active_hint(rig) for rig in rigs
+            )
+            row = _pie_fixed_button_row(
+                layout,
+                "Clipping",
+                enabled=bool(rigs),
+            )
+            row.operator(
+                "fbp.pie_toggle_clipping_mask",
+                text="Clipping",
+                **clipping_mask_icon_kwargs(active),
+            )
+        except (ImportError,) + FBP_DATA_ERRORS:
+            layout.label(text="Clipping", icon="MOD_MASK")
+        return
+    if mask_id == "SHAPE_MASK":
+        row = layout.row(align=True)
+        row.enabled = bool(rigs)
+        row.alignment = "CENTER"
+        row.scale_x = _PIE_ICON_SCALE_X
+        row.scale_y = _PIE_ICON_SCALE_Y
+        try:
+            from .effects_registry import fbp_effect_definition
+
+            for effect_id in _pie_shape_mask_ids():
+                definition = fbp_effect_definition(effect_id) or {}
+                op = row.operator(
+                    "fbp.pie_add_effect",
+                    text="",
+                    **effect_icon_kwargs(effect_id, definition.get("icon", "MOD_MASK")),
+                )
+                op.effect_id = effect_id
+        except (ImportError,) + FBP_DATA_ERRORS:
+            row.label(text="", icon="SURFACE_NCURVE")
+        return
+    if mask_id == "GREASE_PENCIL_MASK":
+        row = _pie_icon_cell(layout, enabled=bool(rigs))
+        row.operator(
+            "fbp.pie_add_grease_pencil_mask",
+            text="",
+            **effect_icon_kwargs("GREASE_PENCIL_MASK", "OUTLINER_OB_GREASEPENCIL"),
+        )
+        return
+    try:
+        from .effects_registry import (
+            fbp_effect_definition,
+            fbp_effect_supported_for_rig,
+        )
+        from .geometry_nodes import fbp_effect_is_active
+
+        definition = fbp_effect_definition(mask_id) or {}
+        if not definition:
+            return
+        label = _pie_mask_label(
+            definition.get("label", mask_id) or mask_id
+        )
+        row = _pie_fixed_button_row(
+            layout,
+            label,
+            enabled=bool(
+                rigs
+                and all(
+                    fbp_effect_supported_for_rig(rig, mask_id)
+                    for rig in rigs
+                )
+                and not all(
+                    fbp_effect_is_active(rig, mask_id) for rig in rigs
+                )
+            ),
+        )
+        op = row.operator(
+            "fbp.pie_add_effect",
+            text=label,
+            **effect_icon_kwargs(mask_id, definition.get("icon", "MOD_MASK")),
+        )
+        op.effect_id = mask_id
+    except (ImportError,) + FBP_DATA_ERRORS:
+        pass
+
+
+class FBP_OT_CallViewportPie(Operator):
+    """Open the native Blender Frame By Plane viewport Pie."""
+
+    bl_idname = "fbp.call_viewport_pie"
+    bl_label = "Viewport Pie"
+    bl_description = "Open the native Frame By Plane viewport Pie Menu"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(
+            _view3d_space(context) is not None
+            and str(getattr(getattr(context, "region", None), "type", "") or "")
+            == "WINDOW"
+        )
+
+    def _open(self):
+        try:
+            menu_result = bpy.ops.wm.call_menu_pie(
+                name=FBP_MT_ViewportPie.bl_idname
+            )
+            if (
+                "CANCELLED" in menu_result
+                and not {"FINISHED", "RUNNING_MODAL"}.intersection(menu_result)
+            ):
+                return {"CANCELLED"}
+            return {"FINISHED"}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not open the native viewport Pie Menu", exc)
+            return {"CANCELLED"}
+
+    def invoke(self, _context, _event):
+        return self._open()
+
+    def execute(self, _context):
+        return self._open()
+
+
 class FBP_MT_ViewportPie(Menu):
+    """Native Blender viewport Pie."""
+
     bl_idname = "FBP_MT_viewport_pie"
     bl_label = "Viewport"
 
     def draw(self, context):
-        layout = self.layout
+        layout = configure_layout(self.layout)
         space = _view3d_space(context)
         if space is None:
             layout.label(text="Open this menu from a 3D View")
@@ -1007,263 +2121,362 @@ class FBP_MT_ViewportPie(Menu):
         pie = layout.menu_pie()
         shading = space.shading
         state = _pie_selection_state(context)
-        rigs = state["rigs"]
+        gp_canvas = _active_gp_drawing_canvas(context)
+        plane_rigs = () if gp_canvas is not None else state["rigs"]
+        prefs = _addon_preferences(context)
+        north_content = str(
+            getattr(prefs, "pie_north_content", "CURSOR_PIVOT")
+            or "CURSOR_PIVOT"
+        )
+        show_south_actions = bool(
+            getattr(prefs, "pie_show_south_actions", True)
+        )
+        show_masks = bool(getattr(prefs, "pie_show_masks", True))
+        show_effects = bool(getattr(prefs, "pie_show_effects", True))
 
-        # 1 — WEST: Wireframe
+        # WEST — Wireframe
         split = pie.split()
-        wire_wrap = split.row(align=False)
-        wire_wrap.alignment = 'CENTER'
-        wire = wire_wrap.row(align=False)
-        wire.emboss = 'PIE_MENU'
-        wire.scale_y = _PIE_BUTTON_SCALE_Y
-        wire.ui_units_x = _PIE_PRIMARY_BUTTON_WIDTH
-        op = wire.operator(
-            "fbp.set_viewport_shading",
+        wire = split.row(align=False)
+        wire.alignment = "CENTER"
+        button = wire.row(align=False)
+        button.emboss = "PIE_MENU"
+        button.scale_y = _PIE_BUTTON_SCALE_Y
+        button.ui_units_x = _pie_text_width("Wireframe")
+        op = button.operator(
+            FBP_OT_SetViewportShading.bl_idname,
             text="Wireframe",
-            icon='SHADING_WIRE',
-            depress=shading.type == 'WIREFRAME',
+            icon="SHADING_WIRE",
+            depress=shading.type == "WIREFRAME",
         )
-        op.mode = 'WIREFRAME'
+        op.mode = "WIREFRAME"
 
-        # 2 — EAST: Material Preview
+        # EAST — Material Preview. Keep the four principal shading modes in
+        # separate native Pie sectors so Blender preserves their radial spacing.
         split = pie.split()
-        material_wrap = split.row(align=False)
-        material_wrap.alignment = 'CENTER'
-        material = material_wrap.row(align=False)
-        material.emboss = 'PIE_MENU'
-        material.scale_y = _PIE_BUTTON_SCALE_Y
-        material.ui_units_x = _PIE_PRIMARY_BUTTON_WIDTH
-        op = material.operator(
-            "fbp.set_viewport_shading",
+        material = split.row(align=False)
+        material.alignment = "CENTER"
+        button = material.row(align=False)
+        button.emboss = "PIE_MENU"
+        button.scale_y = _PIE_BUTTON_SCALE_Y
+        button.ui_units_x = _pie_text_width("Material")
+        op = button.operator(
+            FBP_OT_SetViewportShading.bl_idname,
             text="Material",
-            icon='SHADING_TEXTURE',
-            depress=shading.type == 'MATERIAL',
+            icon="MATERIAL",
+            depress=shading.type == "MATERIAL",
         )
-        op.mode = 'MATERIAL'
+        op.mode = "MATERIAL"
 
-        # 3 — SOUTH: Hide, Solo, Lock / Selectability, Holdout
+        # SOUTH — Hide, Solo, Lock / Selectability, Holdout
         split = pie.split()
-        action_col = split.column(align=False)
-        action_col.alignment = 'CENTER'
-
-        first_row = action_col.row(align=True)
-        first_row.alignment = 'CENTER'
-        first_row.emboss = 'NORMAL'
-
-        hide_active = state["hide_active"]
-        cell = _pie_icon_cell(first_row, enabled=state["hide_enabled"])
-        cell.operator(
-            "fbp.toggle_selected_visibility",
-            text="",
-            icon='HIDE_ON' if hide_active else 'HIDE_OFF',
-            depress=hide_active,
-        )
-
         solo_active = space.local_view is not None
-        cell = _pie_icon_cell(
-            first_row,
-            enabled=bool(solo_active or getattr(context, "selected_objects", None)),
+        solo_enabled = bool(
+            solo_active or tuple(getattr(context, "selected_objects", ()) or ())
         )
-        cell.operator(
-            "fbp.toggle_local_view_with_lights",
-            text="",
-            icon='OUTLINER_OB_LIGHT' if solo_active else 'LIGHT',
-            depress=solo_active,
-        )
+        if not show_south_actions:
+            split.separator()
+        else:
+            actions = split.column(align=False)
+            actions.alignment = "CENTER"
+            first = actions.row(align=True)
+            first.alignment = "CENTER"
+            first.emboss = "NORMAL"
 
-        lock_active = state["lock_active"]
-        cell = _pie_icon_cell(first_row, enabled=state["lock_enabled"])
-        cell.operator(
-            "fbp.toggle_selected_lock",
-            text="",
-            icon='DECORATE_LOCKED' if lock_active else 'DECORATE_UNLOCKED',
-            depress=lock_active,
-        )
+            hide_active = state["hide_active"]
+            cell = _pie_icon_cell(first, enabled=state["hide_enabled"])
+            cell.operator(
+                FBP_OT_ToggleSelectedVisibility.bl_idname,
+                text="",
+                icon="HIDE_ON" if hide_active else "HIDE_OFF",
+                depress=hide_active,
+            )
+            cell = _pie_icon_cell(first, enabled=solo_enabled)
+            cell.operator(
+                FBP_OT_ToggleLocalViewWithLights.bl_idname,
+                text="",
+                icon="OUTLINER_OB_LIGHT" if solo_active else "LIGHT",
+                depress=solo_active,
+            )
+            lock_active = state["lock_active"]
+            cell = _pie_icon_cell(first, enabled=state["lock_enabled"])
+            cell.operator(
+                FBP_OT_ToggleSelectedLock.bl_idname,
+                text="",
+                icon=(
+                    "DECORATE_LOCKED"
+                    if lock_active
+                    else "DECORATE_UNLOCKED"
+                ),
+                depress=lock_active,
+            )
 
-        second_row = action_col.row(align=True)
-        second_row.alignment = 'CENTER'
-        second_row.emboss = 'NORMAL'
+            second = actions.row(align=True)
+            second.alignment = "CENTER"
+            second.emboss = "NORMAL"
+            selectability_active = state["selectability_active"]
+            cell = _pie_icon_cell(
+                second,
+                enabled=state["selectability_enabled"],
+            )
+            cell.operator(
+                FBP_OT_ToggleSelectedSelectability.bl_idname,
+                text="",
+                icon=(
+                    "RESTRICT_SELECT_OFF"
+                    if selectability_active
+                    else "RESTRICT_SELECT_ON"
+                ),
+                depress=selectability_active,
+            )
+            holdout_active = state["holdout_active"]
+            cell = _pie_icon_cell(second, enabled=state["holdout_enabled"])
+            cell.operator(
+                FBP_OT_ToggleSelectedHoldout.bl_idname,
+                text="",
+                depress=holdout_active,
+                **ui_icon_kwargs("menu.holdout_plane", fallback="CLIPUV_HLT"),
+            )
 
-        selectability_locked = state["selectability_locked"]
-        cell = _pie_icon_cell(second_row, enabled=state["selectability_enabled"])
-        cell.operator(
-            "fbp.toggle_selected_selectability",
-            text="",
-            icon='RESTRICT_SELECT_ON' if selectability_locked else 'RESTRICT_SELECT_OFF',
-            depress=selectability_locked,
-        )
-
-        holdout_active = state["holdout_active"]
-        cell = _pie_icon_cell(second_row, enabled=state["holdout_enabled"])
-        cell.operator(
-            "fbp.toggle_selected_holdout",
-            text="",
-            icon='CLIPUV_HLT' if holdout_active else 'CLIPUV_DEHLT',
-            depress=holdout_active,
-        )
-
-        # 4 — NORTH: Pivot Point icons
+        # NORTH — configurable Cursor, Pivot or Orientation controls
         split = pie.split()
-        pivot_row = split.row(align=True)
-        pivot_row.emboss = 'NORMAL'
-        pivot_row.alignment = 'CENTER'
-        pivot_row.scale_x = _PIE_ICON_SCALE_X
-        pivot_row.scale_y = _PIE_ICON_SCALE_Y
-        tool_settings = context.tool_settings
-        pivot_row.prop_enum(
-            tool_settings,
-            "transform_pivot_point",
-            'CURSOR',
-            text="",
-            icon='PIVOT_CURSOR',
-        )
-        pivot_row.prop_enum(
-            tool_settings,
-            "transform_pivot_point",
-            'MEDIAN_POINT',
-            text="",
-            icon='PIVOT_MEDIAN',
-        )
-        pivot_row.prop_enum(
-            tool_settings,
-            "transform_pivot_point",
-            'INDIVIDUAL_ORIGINS',
-            text="",
-            icon='PIVOT_INDIVIDUAL',
-        )
+        if north_content == "HIDDEN":
+            split.separator()
+        else:
+            north = split.column(align=False)
+            north.alignment = "CENTER"
+            if (
+                north_content == "CURSOR_PIVOT"
+                and getattr(context.scene, "camera", None) is not None
+            ):
+                cursor = north.row(align=False)
+                cursor.alignment = "CENTER"
+                button = cursor.row(align=False)
+                button.emboss = "NORMAL"
+                button.scale_y = _PIE_BUTTON_SCALE_Y
+                button.ui_units_x = _pie_text_width("Cursor On Camera")
+                button.operator(
+                    FBP_OT_ToggleCursorOnCamera.bl_idname,
+                    text="Cursor On Camera",
+                    icon="PIVOT_CURSOR",
+                    depress=_cursor_on_camera_is_enabled(context.scene),
+                )
+            if north_content in {"CURSOR_PIVOT", "PIVOT"}:
+                pivot = north.row(align=True)
+                pivot.emboss = "NORMAL"
+                pivot.alignment = "CENTER"
+                pivot.scale_x = _PIE_ICON_SCALE_X
+                pivot.scale_y = _PIE_ICON_SCALE_Y
+                for value, icon in (
+                    ("CURSOR", "PIVOT_CURSOR"),
+                    ("MEDIAN_POINT", "PIVOT_MEDIAN"),
+                    ("INDIVIDUAL_ORIGINS", "PIVOT_INDIVIDUAL"),
+                ):
+                    pivot.prop_enum(
+                        context.tool_settings,
+                        "transform_pivot_point",
+                        value,
+                        text="",
+                        icon=icon,
+                    )
+            elif north_content == "ORIENTATION":
+                orientation = north.row(align=False)
+                orientation.alignment = "CENTER"
+                button = orientation.row(align=False)
+                button.emboss = "NORMAL"
+                button.scale_y = _PIE_BUTTON_SCALE_Y
+                button.ui_units_x = _pie_text_width("Orientation")
+                button.prop(
+                    context.scene.transform_orientation_slots[0],
+                    "type",
+                    text="Orientation",
+                    icon="ORIENTATION_GLOBAL",
+                )
 
-        # 5 — NORTH-WEST: Flat, Random + Texture, and Solid
+        # NORTH-WEST — compact display helpers above; Flat sits beside Solid.
         split = pie.split()
-        col = split.column(align=False)
+        solid_branch = split.column(align=False)
+        solid_branch.alignment = "CENTER"
 
-        flat_active = shading.type == 'SOLID' and shading.light == 'FLAT'
-        flat_wrap = col.row(align=False)
-        flat_wrap.alignment = 'CENTER'
-        flat = flat_wrap.row(align=False)
-        flat.emboss = 'NORMAL'
-        flat.scale_y = _PIE_BUTTON_SCALE_Y
-        flat.operator(
-            "fbp.toggle_flat_viewport_lighting",
-            text="Flat",
-            icon='AREA_DOCK',
-            depress=flat_active,
+        display = solid_branch.row(align=True)
+        display.alignment = "CENTER"
+        random_cell = _pie_icon_cell(display)
+        random_cell.operator(
+            FBP_OT_ToggleRandomViewportColor.bl_idname,
+            text="",
+            icon="GEOMETRY_SET",
+            depress=(shading.type == "SOLID" and shading.color_type == "RANDOM"),
+        )
+        textured_cell = _pie_icon_cell(display)
+        textured_cell.operator(
+            FBP_OT_ToggleTextureViewportShading.bl_idname,
+            text="",
+            icon="NODE_TEXTURE",
+            depress=(shading.type == "SOLID" and shading.color_type == "TEXTURE"),
         )
 
-        texture_active = shading.type == 'SOLID' and shading.color_type == 'TEXTURE'
-        random_active = shading.type == 'SOLID' and shading.color_type == 'RANDOM'
-
-        tex_rand_row = col.row(align=True)
-        tex_rand_row.emboss = 'NORMAL'
-        tex_rand_row.alignment = 'CENTER'
-        tex_rand_row.scale_y = _PIE_BUTTON_SCALE_Y
-        tex_rand_row.operator(
-            "fbp.toggle_random_viewport_color",
-            text="Random",
-            icon='GEOMETRY_SET',
-            depress=random_active,
+        solid_branch.separator(factor=_PIE_BRANCH_GAP_FACTOR)
+        solid = solid_branch.row(align=False)
+        solid.alignment = "CENTER"
+        flat_cell = _pie_icon_cell(solid)
+        flat_cell.operator(
+            FBP_OT_ToggleFlatViewportLighting.bl_idname,
+            text="",
+            icon="IMAGE_RGB",
+            depress=(shading.type == "SOLID" and shading.light == "FLAT"),
         )
-        tex_rand_row.operator(
-            "fbp.set_texture_viewport_shading",
-            text="Texture",
-            icon='FILE_IMAGE' if texture_active else 'SEQ_PREVIEW',
-            depress=texture_active,
-        )
-
-        solid_wrap = col.row(align=False)
-        solid_wrap.alignment = 'CENTER'
-        solid = solid_wrap.row(align=False)
-        solid.emboss = 'PIE_MENU'
-        solid.scale_y = _PIE_BUTTON_SCALE_Y
-        solid.ui_units_x = _PIE_PRIMARY_BUTTON_WIDTH
-        op = solid.operator(
-            "fbp.set_viewport_shading",
+        button = solid.row(align=False)
+        button.emboss = "PIE_MENU"
+        button.scale_y = _PIE_BUTTON_SCALE_Y
+        button.ui_units_x = _pie_text_width("Solid")
+        op = button.operator(
+            FBP_OT_SetViewportShading.bl_idname,
             text="Solid",
-            icon='SHADING_SOLID',
-            depress=shading.type == 'SOLID' and shading.color_type == 'MATERIAL',
+            icon="SHADING_SOLID",
+            depress=shading.type == "SOLID",
         )
-        op.mode = 'SOLID'
+        op.mode = "SOLID"
 
-        # 6 — NORTH-EAST: Transparent above Rendered + Viewport Compositor
+        # NORTH-EAST — two equal square helpers, separated from Rendered.
         split = pie.split()
-        render_col = split.column(align=False)
-        render_col.alignment = 'CENTER'
-
+        rendered = split.column(align=False)
+        rendered.alignment = "CENTER"
+        rendered_tools = rendered.row(align=False)
+        rendered_tools.alignment = "CENTER"
         render = getattr(context.scene, "render", None)
-        transparent_enabled = bool(
-            render is not None
-            and hasattr(render, "film_transparent")
-            and render.film_transparent
+        transparency_active = bool(
+            render and hasattr(render, "film_transparent") and render.film_transparent
         )
-        transparent_wrap = render_col.row(align=False)
-        transparent_wrap.alignment = 'CENTER'
-        transparent = transparent_wrap.row(align=False)
-        transparent.emboss = 'NORMAL'
-        transparent.scale_y = _PIE_BUTTON_SCALE_Y
-        transparent.enabled = bool(render and hasattr(render, "film_transparent"))
-        transparent.operator(
-            "fbp.toggle_render_transparency",
-            text="Transparent",
-            icon='TEXTURE',
-            depress=transparent_enabled,
+        transparency = _pie_icon_cell(
+            rendered_tools,
+            enabled=bool(render and hasattr(render, "film_transparent")),
         )
-
-        main_row = render_col.row(align=False)
-        main_row.alignment = 'CENTER'
-
-        rendered = main_row.row(align=False)
-        rendered.emboss = 'PIE_MENU'
-        rendered.scale_y = _PIE_BUTTON_SCALE_Y
-        rendered.ui_units_x = _PIE_PRIMARY_BUTTON_WIDTH
-        op = rendered.operator(
-            "fbp.set_viewport_shading",
-            text="Rendered",
-            icon='SHADING_RENDERED',
-            depress=shading.type == 'RENDERED',
+        transparency.operator(
+            FBP_OT_ToggleRenderTransparency.bl_idname,
+            text="",
+            icon="TEXTURE",
+            depress=transparency_active,
         )
-        op.mode = 'RENDERED'
-
-        compositor_enabled = bool(
-            hasattr(shading, "use_compositor")
-            and shading.use_compositor == 'ALWAYS'
+        compositor_active = bool(
+            hasattr(shading, "use_compositor") and shading.use_compositor == "ALWAYS"
         )
-        cell = _pie_icon_cell(
-            main_row,
+        compositor = _pie_icon_cell(
+            rendered_tools,
             enabled=hasattr(shading, "use_compositor"),
         )
-        cell.emboss = 'NORMAL'
-        cell.operator(
-            "fbp.toggle_viewport_compositor",
+        compositor.operator(
+            FBP_OT_ToggleViewportCompositor.bl_idname,
             text="",
-            icon='CAMERA_STEREO',
-            depress=compositor_enabled,
+            icon="CAMERA_STEREO",
+            depress=compositor_active,
         )
 
-        # 7 — SOUTH-WEST: Mask library
-        split = pie.split()
-        mask_wrap = split.row(align=False)
-        mask_wrap.alignment = 'CENTER'
-        mask = mask_wrap.row(align=False)
-        mask.emboss = 'NORMAL'
-        mask.scale_y = _PIE_BUTTON_SCALE_Y
-        mask.enabled = bool(rigs)
-        op = mask.operator(
-            "wm.call_menu",
-            text="Mask",
-            icon='SURFACE_NCURVE',
+        rendered.separator(factor=_PIE_BRANCH_GAP_FACTOR)
+        rendered_main = rendered.row(align=False)
+        rendered_main.alignment = "CENTER"
+        button = rendered_main.row(align=False)
+        button.emboss = "PIE_MENU"
+        button.scale_y = _PIE_BUTTON_SCALE_Y
+        button.ui_units_x = _pie_text_width("Rendered")
+        op = button.operator(
+            FBP_OT_SetViewportShading.bl_idname,
+            text="Rendered",
+            icon="SHADING_RENDERED",
+            depress=shading.type == "RENDERED",
         )
-        op.name = "FBP_MT_object_masks"
+        op.mode = "RENDERED"
 
-        # 8 — SOUTH-EAST: Crop, Expand and Quick Effects
+        # SOUTH-WEST — compact mask tools; shape and GP masks share one row.
         split = pie.split()
-        col = split.column(align=False)
-        col.emboss = 'NORMAL'
+        if not show_masks or not plane_rigs:
+            split.separator()
+        else:
+            mask_column = split.column(align=False)
+            mask_column.alignment = "CENTER"
+            _pie_start_south_list(mask_column, "Masks", "MOD_MASK")
+            used_mask_rows = 0
+            quick_masks = _configured_quick_mask_ids(context)
+            compact_tokens = {"SHAPE_MASK", "GREASE_PENCIL_MASK"}
+            compact = mask_column.row(align=False)
+            compact.alignment = "CENTER"
+            try:
+                from .effects_registry import fbp_effect_definition
+                for effect_id in _pie_shape_mask_ids():
+                    definition = fbp_effect_definition(effect_id) or {}
+                    cell = _pie_icon_cell(compact, enabled=bool(plane_rigs))
+                    op = cell.operator(
+                        FBP_OT_PieAddEffect.bl_idname,
+                        text="",
+                        **effect_icon_kwargs(effect_id, definition.get("icon", "MOD_MASK")),
+                    )
+                    op.effect_id = effect_id
+            except (ImportError,) + FBP_DATA_ERRORS:
+                pass
+            gp_cell = _pie_icon_cell(compact, enabled=bool(plane_rigs))
+            gp_cell.operator(
+                FBP_OT_PieAddGreasePencilMask.bl_idname,
+                text="",
+                **effect_icon_kwargs("GREASE_PENCIL_MASK", "OUTLINER_OB_GREASEPENCIL"),
+            )
+            used_mask_rows += 1
 
+            for mask_id in quick_masks:
+                if mask_id in compact_tokens:
+                    continue
+                _draw_pie_mask_action(mask_column, context, mask_id, plane_rigs)
+                used_mask_rows += 1
+
+            overflow = mask_column.row(align=False)
+            overflow.alignment = "CENTER"
+            button = _pie_icon_cell(overflow)
+            button.menu(
+                "FBP_MT_object_masks",
+                text="",
+                icon="COLLAPSEMENU",
+            )
+            used_mask_rows += 1
+            # Tail padding, after the overflow button, fixes the title at the
+            # same height as Effects and lets entries grow downward.
+            _pie_pad_south_list(mask_column, used_mask_rows)
+
+        # SOUTH-EAST — fixed-width effect actions followed by favourite slots.
+        split = pie.split()
+        if not show_effects:
+            split.separator()
+            return
+        if gp_canvas is not None:
+            effects = split.column(align=False)
+            effects.alignment = "CENTER"
+            _pie_start_south_list(effects, "Effects", "SHADERFX")
+            gp_row = _pie_fixed_button_row(
+                effects, "Grease Pencil Effects"
+            )
+            gp_row.menu(
+                "FBP_MT_gp_native_effects",
+                text="Grease Pencil Effects",
+                icon="OUTLINER_OB_GREASEPENCIL",
+            )
+            overflow = effects.row(align=False)
+            overflow.alignment = "CENTER"
+            _pie_icon_cell(overflow).menu(
+                "FBP_MT_pie_effect_domains",
+                text="",
+                icon="COLLAPSEMENU",
+            )
+            _pie_pad_south_list(effects, 2)
+            return
+        if not plane_rigs:
+            split.separator()
+            return
+
+        column = split.column(align=False)
+        column.alignment = "CENTER"
+        _pie_start_south_list(column, "Effects", "SHADERFX")
         try:
             from .effects_registry import (
                 fbp_effect_definition,
                 fbp_effect_supported_for_rig,
             )
-        except FBP_DATA_ERRORS:
+        except (ImportError,) + FBP_DATA_ERRORS:
             fbp_effect_definition = None
             fbp_effect_supported_for_rig = None
 
@@ -1275,58 +2488,113 @@ class FBP_MT_ViewportPie(Menu):
                     continue
                 quick_effects.append((effect_id, definition))
 
-        # Pie sectors expand around their anchor. Reserving one invisible row above
-        # for every configured effect keeps Crop/Expand fixed and makes the visible
-        # list grow downward instead of climbing upward.
-        for _effect_id, _definition in quick_effects:
-            spacer = col.row(align=False)
-            spacer.scale_y = _PIE_BUTTON_SCALE_Y
-            spacer.label(text="")
-
-        effects_col = col.column(align=False)
-        effects_col.scale_y = _PIE_BUTTON_SCALE_Y
-        effects_col.enabled = bool(rigs)
-        effects_col.operator(
-            "fbp.popup_crop",
+        used_effect_rows = 0
+        action_row = _pie_fixed_button_row(column, "Crop")
+        op = action_row.operator(
+            "fbp.focus_crop_extend",
             text="Crop",
-            icon='FULLSCREEN_EXIT',
+            icon="FULLSCREEN_EXIT",
         )
-        effects_col.operator(
-            "fbp.popup_extend",
+        op.mode = "CROP"
+        used_effect_rows += 1
+
+        action_row = _pie_fixed_button_row(column, "Expand")
+        op = action_row.operator(
+            "fbp.focus_crop_extend",
             text="Expand",
-            icon='FULLSCREEN_ENTER',
+            icon="FULLSCREEN_ENTER",
         )
+        op.mode = "EXTEND"
+        used_effect_rows += 1
 
         for effect_id, definition in quick_effects:
             label = str(definition.get("label", effect_id) or effect_id)
-            icon = str(definition.get("icon", "MODIFIER") or "MODIFIER")
-            effect_row = effects_col.row(align=False)
-            effect_row.enabled = bool(
-                rigs
-                and fbp_effect_supported_for_rig is not None
-                and any(
-                    fbp_effect_supported_for_rig(rig, effect_id)
-                    for rig in rigs
-                )
+            icon = str(definition.get("icon", "SHADERFX") or "SHADERFX")
+            effect_row = _pie_fixed_button_row(
+                column,
+                label,
+                enabled=bool(
+                    fbp_effect_supported_for_rig is not None
+                    and any(
+                        fbp_effect_supported_for_rig(rig, effect_id)
+                        for rig in plane_rigs
+                    )
+                ),
             )
             op = effect_row.operator(
-                "fbp.add_effect",
+                FBP_OT_PieAddEffect.bl_idname,
                 text=label,
                 icon=icon,
             )
             op.effect_id = effect_id
-
-        quick_row = col.row(align=False)
-        quick_row.alignment = 'CENTER'
-        cell = _pie_icon_cell(quick_row)
-        cell.emboss = 'NORMAL'
-        cell.operator(
-            "fbp.quick_effects_popup",
+            used_effect_rows += 1
+        overflow = column.row(align=False)
+        overflow.alignment = "CENTER"
+        button = _pie_icon_cell(overflow)
+        button.menu(
+            "FBP_MT_pie_effect_domains",
             text="",
-            icon='COLLAPSEMENU',
+            icon="COLLAPSEMENU",
         )
+        used_effect_rows += 1
+        _pie_pad_south_list(column, used_effect_rows)
+
+
+class FBP_OT_ToggleLayerEditMode(Operator):
+    """Tab workflow for FBP rigs: expose only the useful Object/Edit toggle."""
+
+    bl_idname = "fbp.toggle_layer_edit_mode"
+    bl_label = "Edit Frame By Plane"
+    bl_description = "Edit the mesh card owned by the selected Frame By Plane rig"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            return str(getattr(getattr(context, "area", None), "type", "") or "") == "VIEW_3D"
+        except FBP_DATA_ERRORS:
+            return False
+
+    def execute(self, context):
+        active = getattr(context, "active_object", None)
+        if active is None:
+            return {"PASS_THROUGH"}
+        try:
+            if bool(getattr(active, "is_fbp_plane", False)):
+                plane = active
+            elif bool(getattr(active, "is_fbp_control", False)):
+                plane = getattr(active, "fbp_plane_target", None)
+            else:
+                return {"PASS_THROUGH"}
+            if plane is None or str(getattr(plane, "type", "") or "") != "MESH":
+                return {"PASS_THROUGH"}
+            if str(getattr(plane, "mode", "OBJECT") or "OBJECT").upper() == "EDIT":
+                if bpy.ops.object.mode_set.poll():
+                    bpy.ops.object.mode_set(mode="OBJECT")
+                    return {"FINISHED"}
+                return {"CANCELLED"}
+            if str(getattr(active, "mode", "OBJECT") or "OBJECT").upper() != "OBJECT" and bpy.ops.object.mode_set.poll():
+                bpy.ops.object.mode_set(mode="OBJECT")
+            for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+                try:
+                    obj.select_set(False)
+                except FBP_DATA_ERRORS:
+                    pass
+            plane.hide_set(False)
+            plane.hide_viewport = False
+            plane.select_set(True)
+            context.view_layer.objects.active = plane
+            if bpy.ops.object.mode_set.poll():
+                bpy.ops.object.mode_set(mode="EDIT")
+                return {"FINISHED"}
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not toggle Frame By Plane Edit Mode", exc)
+        return {"PASS_THROUGH"}
 
 _CLASSES = (
+    FBP_OT_ToggleLayerEditMode,
+    FBP_OT_CallViewportPie,
+    FBP_MT_ViewportPie,
     FBP_OT_SetViewportShading,
     FBP_OT_ToggleRandomViewportColor,
     FBP_OT_ToggleTextureViewportShading,
@@ -1338,72 +2606,119 @@ _CLASSES = (
     FBP_OT_ToggleSelectedLock,
     FBP_OT_ToggleSelectedSelectability,
     FBP_OT_ToggleSelectedHoldout,
+    FBP_OT_ToggleCursorOnCamera,
+    FBP_OT_PieAddEffect,
+    FBP_OT_PieAddGreasePencilMask,
+    FBP_OT_PieToggleClippingMask,
+    FBP_OT_SetQuickImageEffectSlot,
+    FBP_OT_SetQuickMeshEffectSlot,
+    FBP_OT_QuickEffectLibraryPopup,
+    FBP_OT_ClearQuickEffectSlot,
+    FBP_OT_ResetQuickEffectSlots,
+    FBP_OT_SetQuickMaskSlot,
+    FBP_OT_ResetQuickMaskSlots,
+    FBP_OT_QuickMaskLibraryPopup,
+    FBP_OT_QuickMasksPopup,
     FBP_OT_QuickEffectsPopup,
-    FBP_MT_ViewportPie,
+    *_QUICK_EFFECT_SLOT_MENUS,
+    FBP_MT_QuickEffectSlots,
 )
 
 
 def _unregister_keymaps():
-    while _FBP_VIEWPORT_PIE_KEYMAPS:
-        km, kmi = _FBP_VIEWPORT_PIE_KEYMAPS.pop()
-        try:
-            km.keymap_items.remove(kmi)
-        except FBP_DATA_IO_ERRORS:
-            pass
+    unregister_keymap_items(_FBP_VIEWPORT_PIE_KEYMAPS)
 
 
-def _remove_stale_pie_keymaps(keymap):
-    """Remove exact stale addon entries left by an interrupted hot reload."""
-    for item in tuple(getattr(keymap, "keymap_items", ()) or ()):
-        try:
-            if item.idname != 'wm.call_menu_pie':
-                continue
-            if str(getattr(item.properties, "name", "") or "") != FBP_MT_ViewportPie.bl_idname:
-                continue
-            keymap.keymap_items.remove(item)
-        except FBP_DATA_IO_ERRORS:
-            continue
+def _is_owned_pie_item(item):
+    try:
+        identifier = str(getattr(item, 'idname', '') or '')
+        return identifier == FBP_OT_CallViewportPie.bl_idname
+    except FBP_DATA_IO_ERRORS:
+        return False
 
 
 def _register_keymaps():
     _unregister_keymaps()
-    wm = getattr(bpy.context, "window_manager", None)
-    keyconfigs = getattr(wm, "keyconfigs", None) if wm else None
-    addon_config = getattr(keyconfigs, "addon", None) if keyconfigs else None
-    if addon_config is None:
-        return
-    default_config = getattr(keyconfigs, "default", None)
-    for keymap_name in ('3D View', 'Mesh', 'Sculpt', 'Vertex Paint', 'Image Paint'):
-        try:
-            reference = default_config.keymaps.get(keymap_name) if default_config else None
-            space_type = getattr(reference, "space_type", 'VIEW_3D') or 'VIEW_3D'
-            region_type = getattr(reference, "region_type", 'WINDOW') or 'WINDOW'
-            km = addon_config.keymaps.new(
-                name=keymap_name,
-                space_type=space_type,
-                region_type=region_type,
+
+    if shortcut_enabled('shortcut_tab_layer_edit'):
+        # The operator consumes Tab only for an FBP rig/card and returns
+        # PASS_THROUGH for ordinary Blender objects.
+        for keymap_name in ('Object Mode', 'Mesh'):
+            keymap = addon_keymap(
+                keymap_name,
+                fallback_space_type='VIEW_3D',
+                fallback_region_type='WINDOW',
             )
-            _remove_stale_pie_keymaps(km)
-            kmi = km.keymap_items.new('wm.call_menu_pie', type='Z', value='PRESS')
-            kmi.properties.name = FBP_MT_ViewportPie.bl_idname
-            _FBP_VIEWPORT_PIE_KEYMAPS.append((km, kmi))
-        except FBP_DATA_ERRORS as exc:
-            fbp_warn(
-                f"Could not register the Frame By Plane Z Pie Menu in {keymap_name}",
-                exc,
+            if keymap is None:
+                continue
+            remove_matching_keymap_items(
+                keymap,
+                lambda item: str(getattr(item, 'idname', '') or '')
+                == FBP_OT_ToggleLayerEditMode.bl_idname,
             )
+            try:
+                item = keymap.keymap_items.new(
+                    FBP_OT_ToggleLayerEditMode.bl_idname,
+                    type='TAB',
+                    value='PRESS',
+                )
+                _FBP_VIEWPORT_PIE_KEYMAPS.append((keymap, item))
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f'Could not register Frame By Plane Tab shortcut in {keymap_name}', exc)
+
+    if shortcut_enabled('shortcut_viewport_pie'):
+        for keymap_name in (
+            '3D View',
+            'Mesh',
+            'Sculpt',
+            'Vertex Paint',
+            'Image Paint',
+            'Grease Pencil',
+            'Grease Pencil Edit Mode',
+            'Grease Pencil Draw Mode',
+            'Grease Pencil Sculpt Mode',
+            'Grease Pencil Weight Paint',
+            'Grease Pencil Vertex Paint',
+        ):
+            keymap = addon_keymap(
+                keymap_name,
+                fallback_space_type='VIEW_3D',
+                fallback_region_type='WINDOW',
+            )
+            if keymap is None:
+                continue
+            remove_matching_keymap_items(keymap, _is_owned_pie_item)
+            try:
+                item = keymap.keymap_items.new(
+                    FBP_OT_CallViewportPie.bl_idname,
+                    type='Z',
+                    value='PRESS',
+                )
+                _FBP_VIEWPORT_PIE_KEYMAPS.append((keymap, item))
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f'Could not register the Frame By Plane Z Pie Menu in {keymap_name}', exc)
+
+
+def refresh_keymaps():
+    """Public hook used by Add-on Preferences after a shortcut toggle changes."""
+    return refresh_keymap_registration(_register_keymaps)
 
 
 def register():
-    for cls in _CLASSES:
-        bpy.utils.register_class(cls)
-    _register_keymaps()
+    if bool(getattr(bpy.app, "background", False)):
+        return
+    register_classes(_CLASSES)
+    try:
+        _register_cursor_on_camera_runtime()
+        _register_keymaps()
+    except Exception:
+        _unregister_keymaps()
+        _unregister_cursor_on_camera_runtime()
+        unregister_classes(_CLASSES)
+        raise
 
 
 def unregister():
     _unregister_keymaps()
-    for cls in reversed(_CLASSES):
-        try:
-            bpy.utils.unregister_class(cls)
-        except FBP_DATA_IO_ERRORS:
-            pass
+    _unregister_cursor_on_camera_runtime()
+    unregister_classes(_CLASSES)

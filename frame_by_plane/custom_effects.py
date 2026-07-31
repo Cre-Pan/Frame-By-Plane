@@ -1,7 +1,7 @@
 """User-defined node-group effects for Frame By Plane.
 
 A custom effect is an ordinary local Geometry Nodes or Shader node group tagged
-with a compact Frame by Plane contract.  The node group remains the user's
+with a compact Frame By Plane contract.  The node group remains the user's
 source of truth: editing it updates every layer that uses the effect, while
 per-layer socket values stay on the modifier or group-node instance.
 """
@@ -15,6 +15,9 @@ from bpy.types import Operator
 
 from .constants import fbp_icon
 from .runtime import fbp_warn, FBP_DATA_ERRORS
+from .registration import register_interactive_classes, unregister_classes
+from .ui_style import configure_layout, hint_row, section_gap, section_header
+from .ui_context import resolve_node_editor_area
 
 
 CUSTOM_EFFECT_PREFIX = "CUSTOM_"
@@ -37,7 +40,7 @@ KEY_UV_INPUT = "fbp_custom_effect_uv_input"
 _CUSTOM_REFRESH_TIME = 0.0
 _CUSTOM_EFFECT_IDS = set()
 _CUSTOM_GROUP_NAMES = {}
-_CUSTOM_GROUP_REFS = {}
+_CUSTOM_GROUP_REFS = {}  # effect id -> latest known node-group name
 _CUSTOM_GROUP_SIGNATURES = {}
 _CUSTOM_GROUP_COUNT = -1
 _CUSTOM_DEFINITION_CACHE = {}
@@ -205,7 +208,7 @@ def validate_custom_effect_group(node_group):
     if getattr(node_group, "library", None) is not None:
         return False, "Linked node groups are read-only; make the group local first", {}
     if bool(node_group.get("fbp_private_effect_group", False)):
-        return False, "Private Frame by Plane node-group copies cannot be registered", {}
+        return False, "Private Frame By Plane node-group copies cannot be registered", {}
     kind = _group_kind(node_group)
     if not kind:
         return False, "Only Geometry Nodes and Shader node groups are supported", {}
@@ -343,7 +346,7 @@ def tag_custom_effect_group(node_group, label, icon, description="", category="A
     _CUSTOM_GROUP_NAMES[effect_id] = str(
         getattr(node_group, "name_full", getattr(node_group, "name", "")) or ""
     )
-    _CUSTOM_GROUP_REFS[effect_id] = node_group
+    _CUSTOM_GROUP_REFS[effect_id] = str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or "")
     _CUSTOM_GROUP_SIGNATURES[effect_id] = _custom_definition_signature(node_group)
     _CUSTOM_GROUP_MISS_CACHE.pop(effect_id, None)
     _CUSTOM_DEFINITION_CACHE.pop(effect_id, None)
@@ -351,7 +354,7 @@ def tag_custom_effect_group(node_group, label, icon, description="", category="A
 
 
 def custom_effect_definition(node_group, schema_version):
-    """Build a live registry entry without migrating or rebuilding old data.
+    """Build a live registry entry without rebuilding unrelated data.
 
     Invalid registered groups remain in the registry as removable placeholders.
     This prevents an edited/broken node interface from making an existing effect
@@ -461,116 +464,6 @@ def custom_effect_definition(node_group, schema_version):
     return effect_id, definition
 
 
-def _missing_custom_effect_definition(effect_id, label, kind, schema_version):
-    kind = str(kind or "").upper()
-    if kind not in {"GEOMETRY", "SHADER"}:
-        return None
-    label = str(label or "Missing Custom Effect")
-    token = effect_id[len(CUSTOM_EFFECT_PREFIX):].lower()
-    definition = {
-        "label": label,
-        "icon": "MODIFIER" if kind == "GEOMETRY" else "NODETREE",
-        "kind": kind,
-        "category": "3D" if kind == "GEOMETRY" else "2D",
-        "description": "The source custom node group is missing",
-        "performance": "USER",
-        "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
-        "source_names": (),
-        "canonical_name": "",
-        "custom_group_name": "",
-        "asset_id": f"frame_by_plane.user.{token}",
-        "enabled_key": f"fbp_custom_effect_enabled_{token}",
-        "modifier_name": f"FBP • {label}",
-        "property_map": {},
-        "extra_properties": (),
-        "builtin": False,
-        "custom": True,
-        "custom_hidden": True,
-        "custom_invalid": True,
-        "custom_error": "Source custom node group is missing",
-        "schema_version": int(schema_version),
-        "alpha_aware": False,
-        "private_group": False,
-    }
-    if kind == "SHADER":
-        definition.update({
-            "stage": "COLOR",
-            "input_socket": "",
-            "output_socket": "",
-            "alpha_input_socket": "",
-            "alpha_output_socket": "",
-            "uv_input_socket": "",
-            "supports_input_source": False,
-        })
-    return definition
-
-
-def _discover_orphan_custom_effects(schema_version, known_ids):
-    """Recover removable placeholders after add-on reload or forced unlink."""
-    found = {}
-    try:
-        for obj in bpy.data.objects:
-            for modifier in getattr(obj, "modifiers", ()):
-                effect_id = str(modifier.get("fbp_effect_id", "") or "")
-                if not is_custom_effect_id(effect_id) or effect_id in known_ids:
-                    continue
-                label = str(getattr(modifier, "name", "") or "Missing Custom Effect")
-                if label.startswith("FBP • "):
-                    label = label[6:]
-                definition = _missing_custom_effect_definition(
-                    effect_id, label, "GEOMETRY", schema_version
-                )
-                if definition:
-                    found.setdefault(effect_id, definition)
-    except FBP_DATA_ERRORS:
-        pass
-    try:
-        for material in bpy.data.materials:
-            node_tree = getattr(material, "node_tree", None)
-            for node in getattr(node_tree, "nodes", ()) if node_tree else ():
-                effect_id = str(node.get("fbp_shader_effect_id", "") or "")
-                if not is_custom_effect_id(effect_id) or effect_id in known_ids:
-                    continue
-                label = str(
-                    getattr(node, "label", "")
-                    or getattr(node, "name", "")
-                    or "Missing Custom Effect"
-                )
-                if label.startswith("FBP Effect • "):
-                    label = label[13:]
-                definition = _missing_custom_effect_definition(
-                    effect_id, label, "SHADER", schema_version
-                )
-                if definition:
-                    found.setdefault(effect_id, definition)
-    except FBP_DATA_ERRORS:
-        pass
-    return found
-
-
-def _custom_effect_in_use(effect_id):
-    """Return whether a missing definition still has removable scene instances."""
-    effect_id = str(effect_id or "")
-    if not effect_id:
-        return False
-    try:
-        for obj in bpy.data.objects:
-            for modifier in getattr(obj, "modifiers", ()):
-                if str(modifier.get("fbp_effect_id", "") or "") == effect_id:
-                    return True
-    except FBP_DATA_ERRORS:
-        pass
-    try:
-        for material in bpy.data.materials:
-            node_tree = getattr(material, "node_tree", None)
-            for node in getattr(node_tree, "nodes", ()) if node_tree else ():
-                if str(node.get("fbp_shader_effect_id", "") or "") == effect_id:
-                    return True
-    except FBP_DATA_ERRORS:
-        pass
-    return False
-
-
 def _custom_group_is_live(effect_id, node_group):
     if node_group is None:
         return False
@@ -588,7 +481,11 @@ def _custom_group_is_live(effect_id, node_group):
 def _tracked_custom_groups_unchanged(group_count):
     if int(group_count) != int(_CUSTOM_GROUP_COUNT):
         return False
-    for effect_id, node_group in tuple(_CUSTOM_GROUP_REFS.items()):
+    for effect_id, group_name in tuple(_CUSTOM_GROUP_REFS.items()):
+        try:
+            node_group = bpy.data.node_groups.get(str(group_name or ""))
+        except FBP_DATA_ERRORS:
+            return False
         if not _custom_group_is_live(effect_id, node_group):
             return False
         try:
@@ -658,34 +555,19 @@ def refresh_custom_effect_registry(registry, schema_version, force=False):
             current_group_names[effect_id] = str(
                 getattr(node_group, "name_full", getattr(node_group, "name", "")) or ""
             )
-            current_group_refs[effect_id] = node_group
+            current_group_refs[effect_id] = str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or "")
             current_group_signatures[effect_id] = signature
 
-    if force:
-        for effect_id, definition in _discover_orphan_custom_effects(
-            schema_version, set(current)
-        ).items():
-            current.setdefault(effect_id, definition)
+    # Aggressive branch: do not recover orphan custom-effect placeholders by
+    # scanning every Object and Material. Missing custom groups disappear from
+    # the live registry until explicitly re-registered.
 
     tracked_ids = set(current)
     for effect_id in tuple(_CUSTOM_EFFECT_IDS):
         if effect_id in current:
             continue
-        previous = registry.get(effect_id)
-        if (
-            isinstance(previous, dict)
-            and bool(previous.get("custom", False))
-            and _custom_effect_in_use(effect_id)
-        ):
-            missing = dict(previous)
-            missing["custom_invalid"] = True
-            missing["custom_hidden"] = True
-            missing["custom_error"] = "Source custom node group is missing"
-            registry[effect_id] = missing
-            tracked_ids.add(effect_id)
-        else:
-            registry.pop(effect_id, None)
-            _CUSTOM_DEFINITION_CACHE.pop(effect_id, None)
+        registry.pop(effect_id, None)
+        _CUSTOM_DEFINITION_CACHE.pop(effect_id, None)
     for effect_id, definition in current.items():
         registry[effect_id] = definition
     _CUSTOM_EFFECT_IDS = tracked_ids
@@ -712,7 +594,11 @@ def find_custom_effect_group(effect_id):
     effect_id = str(effect_id or "")
     if not is_custom_effect_id(effect_id):
         return None
-    node_group = _CUSTOM_GROUP_REFS.get(effect_id)
+    ref_name = str(_CUSTOM_GROUP_REFS.get(effect_id, "") or "")
+    try:
+        node_group = bpy.data.node_groups.get(ref_name) if ref_name else None
+    except FBP_DATA_ERRORS:
+        node_group = None
     if _custom_group_is_live(effect_id, node_group):
         return node_group
     _CUSTOM_GROUP_REFS.pop(effect_id, None)
@@ -722,7 +608,7 @@ def find_custom_effect_group(effect_id):
     if cached_name:
         node_group = bpy.data.node_groups.get(cached_name)
         if _custom_group_is_live(effect_id, node_group):
-            _CUSTOM_GROUP_REFS[effect_id] = node_group
+            _CUSTOM_GROUP_REFS[effect_id] = str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or "")
             return node_group
         _CUSTOM_GROUP_NAMES.pop(effect_id, None)
 
@@ -736,7 +622,7 @@ def find_custom_effect_group(effect_id):
                 _CUSTOM_GROUP_NAMES[effect_id] = str(
                     getattr(node_group, "name_full", getattr(node_group, "name", "")) or ""
                 )
-                _CUSTOM_GROUP_REFS[effect_id] = node_group
+                _CUSTOM_GROUP_REFS[effect_id] = str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or "")
                 _CUSTOM_GROUP_SIGNATURES[effect_id] = _custom_definition_signature(node_group)
                 _CUSTOM_GROUP_MISS_CACHE.pop(effect_id, None)
                 return node_group
@@ -776,7 +662,7 @@ def refresh_one_custom_effect_definition(registry, effect_id, schema_version):
     definition = result[1]
     registry[effect_id] = definition
     _CUSTOM_DEFINITION_CACHE[effect_id] = (signature, definition)
-    _CUSTOM_GROUP_REFS[effect_id] = node_group
+    _CUSTOM_GROUP_REFS[effect_id] = str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or "")
     _CUSTOM_GROUP_SIGNATURES[effect_id] = signature
     _CUSTOM_GROUP_NAMES[effect_id] = str(
         getattr(node_group, "name_full", getattr(node_group, "name", "")) or ""
@@ -822,7 +708,7 @@ def _active_edit_tree(context):
 
 
 def _selected_fbp_rigs(context):
-    """Resolve selected Frame by Plane rigs without creating an import cycle."""
+    """Resolve selected Frame By Plane rigs without creating an import cycle."""
     try:
         from .layers import get_selected_rigs
         return [rig for rig in list(get_selected_rigs(context) or []) if rig]
@@ -1013,32 +899,13 @@ def _select_custom_effect_plane(context, rig):
     return plane
 
 
-def _node_editor_area(context):
-    area = getattr(context, "area", None)
-    if area is not None and getattr(area, "type", "") == "NODE_EDITOR":
-        return area
-    screen = getattr(context, "screen", None)
-    for candidate in tuple(getattr(screen, "areas", ()) or ()):
-        if getattr(candidate, "type", "") == "NODE_EDITOR":
-            return candidate
-    if area is not None and getattr(area, "type", "") in {
-        "VIEW_3D",
-        "PROPERTIES",
-    }:
-        try:
-            area.type = "NODE_EDITOR"
-            return area
-        except FBP_DATA_ERRORS:
-            pass
-    return None
-
 
 def _open_custom_effect_nodes(context, rig, effect_id, node_group):
     """Open the source group when a usable UI area is available."""
     plane = _select_custom_effect_plane(context, rig)
     if plane is None:
         return False
-    area = _node_editor_area(context)
+    area = resolve_node_editor_area(context)
     if area is None:
         return False
     try:
@@ -1169,7 +1036,7 @@ class FBP_OT_CreateCustomNodeEffect(Operator):
     def execute(self, context):
         rigs = _selected_fbp_rigs(context)
         if not rigs:
-            self.report({"WARNING"}, "Select a Frame by Plane layer first")
+            self.report({"WARNING"}, "Select a Frame By Plane layer first")
             return {"CANCELLED"}
         kind = str(self.kind or "AUTO").upper()
         if kind == "AUTO":
@@ -1270,7 +1137,7 @@ class FBP_OT_EditCustomNodeEffectNodes(Operator):
         if not rigs or node_group is None:
             self.report(
                 {"WARNING"},
-                "Custom effect or Frame by Plane layer is unavailable",
+                "Custom effect or Frame By Plane layer is unavailable",
             )
             return {"CANCELLED"}
         if not _open_custom_effect_nodes(context, rigs[0], self.effect_id, node_group):
@@ -1285,7 +1152,7 @@ class FBP_OT_EditCustomNodeEffectNodes(Operator):
 class FBP_OT_RegisterCustomNodeEffect(Operator):
     bl_idname = "fbp.register_custom_node_effect"
     bl_label = "Register Custom Node Effect"
-    bl_description = "Register a local Shader or Geometry node group as a reusable Frame by Plane effect"
+    bl_description = "Register a local Shader or Geometry node group as a reusable Frame By Plane effect"
     bl_options = {"REGISTER", "UNDO"}
 
     effect_id: StringProperty(description="Internal stable identifier of the Frame By Plane effect targeted by this action.", default="", options={"SKIP_SAVE"})
@@ -1297,7 +1164,7 @@ class FBP_OT_RegisterCustomNodeEffect(Operator):
     )
     effect_name: StringProperty(
         name="Effect Name",
-        description="Name displayed in the Frame by Plane Effects panel",
+        description="Name displayed in the Frame By Plane Effects panel",
         default="Custom Effect",
     )
     effect_icon: EnumProperty(
@@ -1333,7 +1200,8 @@ class FBP_OT_RegisterCustomNodeEffect(Operator):
         return context.window_manager.invoke_props_dialog(self, width=460)
 
     def draw(self, _context):
-        layout = self.layout
+        layout = configure_layout(self.layout)
+        section_header(layout, "Custom Effect", icon="NODETREE")
         group_row = layout.row()
         group_row.enabled = not bool(self.effect_id)
         group_row.prop_search(self, "node_group", bpy.data, "node_groups", text="Node Group")
@@ -1343,9 +1211,12 @@ class FBP_OT_RegisterCustomNodeEffect(Operator):
         selected = bpy.data.node_groups.get(self.node_group)
         if selected:
             valid, message, contract = validate_custom_effect_group(selected)
+            section_gap(layout)
             info = layout.box()
-            info.label(
-                text=("Geometry Nodes effect" if contract.get("kind") == "GEOMETRY" else "Shader color effect") if valid else "Invalid node contract",
+            configure_layout(info)
+            section_header(
+                info,
+                ("Geometry Nodes Effect" if contract.get("kind") == "GEOMETRY" else "Shader Color Effect") if valid else "Invalid Node Contract",
                 icon="CHECKMARK" if valid else "ERROR",
             )
             if message:
@@ -1356,8 +1227,7 @@ class FBP_OT_RegisterCustomNodeEffect(Operator):
                     info.label(text=f"Alpha: {contract.get('alpha_input')} → {contract.get('alpha_output')}")
                 if contract.get("uv_input"):
                     info.label(text=f"UV: {contract.get('uv_input')}")
-            asset_hint = layout.box()
-            asset_hint.label(text="Optional: mark this node group as an Asset for reuse in other files", icon="ASSET_MANAGER")
+            hint_row(layout, "Optional: mark this node group as an Asset for reuse in other files.", icon="ASSET_MANAGER")
 
     def execute(self, _context):
         node_group = bpy.data.node_groups.get(self.node_group)
@@ -1420,12 +1290,8 @@ classes = (
 )
 
 
-def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
-
-
-def unregister():
+def clear_custom_effect_runtime_cache():
+    """Drop Custom Effects runtime caches before Undo, file load or reload."""
     global _CUSTOM_REFRESH_TIME, _CUSTOM_REGISTRY_REFRESH_CALLBACK, _CUSTOM_GROUP_COUNT
     _CUSTOM_REFRESH_TIME = 0.0
     _CUSTOM_GROUP_COUNT = -1
@@ -1436,8 +1302,12 @@ def unregister():
     _CUSTOM_GROUP_SIGNATURES.clear()
     _CUSTOM_GROUP_MISS_CACHE.clear()
     _CUSTOM_DEFINITION_CACHE.clear()
-    for cls in reversed(classes):
-        try:
-            bpy.utils.unregister_class(cls)
-        except FBP_DATA_ERRORS:
-            pass
+
+
+def register():
+    register_interactive_classes(classes)
+
+
+def unregister():
+    clear_custom_effect_runtime_cache()
+    unregister_classes(classes)

@@ -1,0 +1,25 @@
+{
+  "bl_idname_count": 521,
+  "direct_timer_registrations": [
+    {
+      "file": "runtime_scheduler.py",
+      "line": 677
+    }
+  ],
+  "duplicate_bl_idnames": {},
+  "invalid_png": [],
+  "menu_reference_count": 47,
+  "missing_fbp_menus": [],
+  "missing_fbp_operators": [],
+  "operator_reference_count": 598,
+  "parse_errors": [],
+  "png_count": 107,
+  "python_files_production": 94,
+  "python_files_total": 99,
+  "version": "7.1.10",
+  "version_checks": {
+    "manifest": true,
+    "runtime": true,
+    "support_policy": true
+  }
+}

@@ -14,7 +14,7 @@ from .runtime import (
     FBP_DATA_ERRORS,
     FBP_DATA_IO_ERRORS,
     fbp_warn as _runtime_warn, fbp_set_rna_property_silent,
-    fbp_action_fcurves, fbp_remove_action_fcurves,
+    fbp_action_fcurves, fbp_remove_action_fcurves, fbp_creation_start_frame,
 )
 from .layers import set_collection_color_tag, apply_collection_color_to_rig
 from .scene_sync import sync_layer_collection
@@ -157,21 +157,26 @@ def _configure_material_surface(mat, opacity=1.0, has_alpha=True):
         pass
     opacity = max(0.0, min(1.0, float(opacity)))
     try:
-        mat.diffuse_color = (mat.diffuse_color[0], mat.diffuse_color[1], mat.diffuse_color[2], opacity)
+        current = tuple(mat.diffuse_color)
+        target = (current[0], current[1], current[2], opacity)
+        if any(abs(float(a) - float(b)) > 1.0e-6 for a, b in zip(current, target, strict=True)):
+            mat.diffuse_color = target
     except FBP_DATA_IO_ERRORS:
         pass
-    render_method = 'BLENDED' if has_alpha or opacity < 0.999 else 'OPAQUE'
-    for attr, value in (
-        ('surface_render_method', render_method),
-        ('blend_method', 'HASHED' if render_method == 'DITHERED' else ('BLEND' if render_method == 'BLENDED' else 'OPAQUE')),
-        ('show_transparent_back', True),
-        ('use_screen_refraction', False),
-    ):
-        if hasattr(mat, attr):
-            try:
-                setattr(mat, attr, value)
-            except FBP_DATA_IO_ERRORS:
-                pass
+    # Blender 5.2 exposes only DITHERED and BLENDED. FBP's user-facing Opaque
+    # mode is implemented in the shader graph by materials.py.
+    render_method = 'DITHERED'
+    try:
+        if str(mat.surface_render_method) != render_method:
+            mat.surface_render_method = render_method
+        overlap = bool(render_method == 'BLENDED')
+        if bool(mat.use_transparency_overlap) != overlap:
+            mat.use_transparency_overlap = overlap
+        threshold = 0.003 if render_method == 'DITHERED' else 0.0
+        if abs(float(mat.alpha_threshold) - threshold) > 1.0e-6:
+            mat.alpha_threshold = threshold
+    except FBP_DATA_IO_ERRORS:
+        pass
 
 
 def _abspath(path):
@@ -297,7 +302,7 @@ def _native_frame_number_from_name(name):
     match = matches[-1]
     try:
         index = int(match.group(0))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return None, "", "", 0
     return index, stem[:match.start()], stem[match.end():], len(match.group(0))
 
@@ -378,7 +383,24 @@ def _native_sequence_needs_rename(files):
 
 def _native_proxy_cache_root(source_directory):
     """Return a persistent writable cache root for native sequence proxies."""
-    candidates = [Path(str(source_directory or "")) / ".frame_by_plane_cache"]
+    source_root = Path(str(source_directory or "")) / ".frame_by_plane_cache"
+
+    def writable_root(root):
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / '.fbp_write_test'
+            probe.write_text('ok', encoding='utf-8')
+            probe.unlink(missing_ok=True)
+            return root
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+
+    # Media-local cache is deterministic and normally writable. Avoid asking
+    # Blender to create its user datafiles directory unless this first choice
+    # actually fails (important for portable/restricted installations).
+    root = writable_root(source_root)
+    if root is not None:
+        return root
     try:
         user_root = bpy.utils.user_resource(
             'DATAFILES',
@@ -386,18 +408,9 @@ def _native_proxy_cache_root(source_directory):
             create=True,
         )
         if user_root:
-            candidates.append(Path(user_root))
+            return writable_root(Path(user_root))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
         pass
-    for root in candidates:
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            probe = root / '.fbp_write_test'
-            probe.write_text('ok', encoding='utf-8')
-            probe.unlink(missing_ok=True)
-            return root
-        except Exception:
-            continue
     return None
 
 
@@ -411,7 +424,7 @@ def _ensure_native_sequence_proxy(directory, files):
     """
     directory = str(directory or "")
     files = _valid_files(directory, files)
-    if len(files) <= 1:
+    if not files:
         return "", []
     extensions = {os.path.splitext(name)[1].lower() for name in files}
     if len(extensions) != 1:
@@ -425,7 +438,7 @@ def _ensure_native_sequence_proxy(directory, files):
     cache_dir = root / digest
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError):
         return "", []
 
     extension = next(iter(extensions))
@@ -501,22 +514,24 @@ def _texture_extension_from_fbp_mode(extension_mode):
     transparent black, allowing outer shadows/glows to use enlarged geometry
     without smearing edge pixels.
     """
-    mode = str(extension_mode or 'EDGE').upper()
+    mode = str(extension_mode or 'MIRROR').upper()
     if mode == 'REPEAT':
         return 'REPEAT'
+    if mode == 'MIRROR':
+        return 'MIRROR'
     if mode == 'TRANSPARENT':
         return 'CLIP'
     return 'EXTEND'
 
 
-def _playback_signature(row_paths, transparent_flags, durations, loop_mode, frame_start, extension_mode='EDGE'):
+def _playback_signature(row_paths, transparent_flags, durations, loop_mode, frame_start, extension_mode='MIRROR'):
     payload = {
         "paths": [os.path.normcase(os.path.abspath(_abspath(path))) if path else "" for path in row_paths],
         "transparent": [bool(value) for value in transparent_flags],
         "durations": [max(1, int(value)) for value in durations],
         "loop_mode": str(loop_mode or 'NONE'),
         "frame_start": int(frame_start),
-        "extension_mode": str(extension_mode or 'EDGE'),
+        "extension_mode": str(extension_mode or 'MIRROR'),
     }
     return hashlib.sha1(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf-8', errors='surrogatepass')
@@ -686,6 +701,17 @@ def _native_frame_offset_curve_is_intact(
     return _curve_points_match(curve, expected, 'LINEAR')
 
 
+def _native_visibility_value_at(
+    timeline_frame, *, frame_start, row_count, durations, loop_mode, flags,
+):
+    elapsed = int(timeline_frame) - int(frame_start)
+    row_index = _source_index_at_elapsed(
+        elapsed, int(row_count), durations, loop_mode
+    )
+    bounded_index = max(0, min(int(row_count) - 1, row_index))
+    return 0.0 if flags[bounded_index] else 1.0
+
+
 def _native_visibility_curve_is_intact(
     mat, *, row_count, durations, loop_mode, frame_start, transparent_flags, scene=None,
     hold_start=None, hold_end=None,
@@ -711,13 +737,6 @@ def _native_visibility_curve_is_intact(
     if hold_in > int(frame_start) or hold_out < int(frame_start):
         return False
 
-    def visibility_at(timeline_frame):
-        elapsed = int(timeline_frame) - frame_start
-        row_index = _source_index_at_elapsed(
-            elapsed, row_count, durations, loop_mode
-        )
-        return 0.0 if flags[max(0, min(row_count - 1, row_index))] else 1.0
-
     key_frames = {hold_in, hold_out, frame_start}
     elapsed_min = hold_in - frame_start + 1
     elapsed_max = hold_out - frame_start
@@ -725,9 +744,21 @@ def _native_visibility_curve_is_intact(
         row_count, durations, loop_mode, elapsed_min, elapsed_max
     ):
         timeline_frame = frame_start + elapsed
-        if visibility_at(timeline_frame - 1) != visibility_at(timeline_frame):
+        if _native_visibility_value_at(
+                timeline_frame - 1, frame_start=frame_start, row_count=row_count,
+                durations=durations, loop_mode=loop_mode, flags=flags,
+            ) != _native_visibility_value_at(
+                timeline_frame, frame_start=frame_start, row_count=row_count,
+                durations=durations, loop_mode=loop_mode, flags=flags,
+            ):
             key_frames.add(timeline_frame)
-    expected = {frame: visibility_at(frame) for frame in key_frames}
+    expected = {
+        frame: _native_visibility_value_at(
+            frame, frame_start=frame_start, row_count=row_count,
+            durations=durations, loop_mode=loop_mode, flags=flags,
+        )
+        for frame in key_frames
+    }
     return _curve_points_match(curve, expected, 'CONSTANT')
 
 
@@ -897,7 +928,7 @@ def _native_playback_nodes_are_intact(
     expected_path = os.path.normcase(first_path)
     expected_media_key = _native_media_key(first_path, expected_source)
     expected_interpolation = str(mat.get("fbp_interpolation", "Closest") or "Closest")
-    extension_mode = str(mat.get("fbp_native_extension_mode", "EDGE") or "EDGE")
+    extension_mode = str(mat.get("fbp_native_extension_mode", "MIRROR") or "MIRROR")
     expected_extension = _texture_extension_from_fbp_mode(extension_mode)
     row_count = max(1, len(transparent_flags))
     normalized_durations = [max(1, int(value)) for value in (durations or [1] * row_count)][:row_count]
@@ -1041,7 +1072,7 @@ def fbp_rig_native_sequence_needs_rename(rig):
     return _native_sequence_needs_rename(files)
 
 
-def _prepare_native_sequence_payload(directory, files):
+def _prepare_native_sequence_payload(directory, files, *, force_sequence=False):
     """Return a Blender-safe runtime sequence without touching source files.
 
     Source rows may come from different folders after using Import Frame. Blender
@@ -1051,7 +1082,10 @@ def _prepare_native_sequence_payload(directory, files):
     files = _valid_files(directory, files)
     if not files:
         return str(directory or ""), [], 1, False, False
-    if len(files) <= 1 or _is_video_sequence_payload(directory, files):
+    is_video = _is_video_sequence_payload(directory, files)
+    if len(files) <= 1 and not (force_sequence and not is_video):
+        return str(directory or ""), files, 1, False, False
+    if is_video:
         return str(directory or ""), files, 1, False, False
 
     resolved_paths = []
@@ -1066,7 +1100,11 @@ def _prepare_native_sequence_payload(directory, files):
         if path
     }
     mixed_directories = len(parent_dirs) > 1
-    needs_proxy = mixed_directories or _native_sequence_needs_rename(files)
+    needs_proxy = (
+        mixed_directories
+        or _native_sequence_needs_rename(files)
+        or (bool(force_sequence) and len(files) == 1)
+    )
     if needs_proxy:
         proxy_directory, proxy_files = _ensure_native_sequence_proxy(directory, files)
         if proxy_directory and proxy_files:
@@ -1092,7 +1130,7 @@ def _sequence_json(directory, files):
     }
     try:
         return json.dumps(data, ensure_ascii=False)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return ""
 
 
@@ -1472,13 +1510,40 @@ def _native_playback_plan_from_rig(rig):
             return None
         source_paths = [real_paths[0]]
     else:
-        existing_mat = _native_material_from_rig(rig)
-        existing_directory, existing_files = _source_sequence_from_material(existing_mat)
-        existing_paths = unique_paths(
-            str(_media_path(existing_directory, name))
-            for name in existing_files
-        ) if existing_directory and existing_files else []
-        source_paths = list(existing_paths)
+        # A one-row still image has no reusable immutable sequence. Keeping the
+        # previous material's source set after a renamed relink can assign index
+        # 1 to a runtime payload containing only the new file at index 0.
+        if len(rows) == 1 and len(real_paths) == 1:
+            source_paths = [real_paths[0]]
+        else:
+            existing_mat = _native_material_from_rig(rig)
+            existing_directory, existing_files = _source_sequence_from_material(existing_mat)
+            existing_paths = unique_paths(
+                str(_media_path(existing_directory, name))
+                for name in existing_files
+            ) if existing_directory and existing_files else []
+            row_directories = {os.path.normcase(os.path.dirname(path)) for path in real_paths}
+            source_paths = list(existing_paths)
+            # A project-wide relink usually moves the complete sequence while
+            # preserving filenames. Prefer the matching files in the new row
+            # directory instead of appending them to the stale immutable source
+            # set, which would unnecessarily create a mixed-folder proxy.
+            if existing_paths and len(row_directories) == 1:
+                relocated_directory = os.path.dirname(real_paths[0])
+                relocated_paths = [
+                    os.path.join(relocated_directory, os.path.basename(path))
+                    for path in existing_paths
+                ]
+                relocated_keys = {
+                    os.path.normcase(os.path.abspath(path))
+                    for path in relocated_paths
+                    if os.path.isfile(path)
+                }
+                if (
+                    len(relocated_keys) == len(existing_paths)
+                    and row_keys.issubset(relocated_keys)
+                ):
+                    source_paths = relocated_paths
 
         # On the first build, discover the complete numeric image sequence when
         # all rows belong to one folder. This preserves unused source frames for
@@ -1645,7 +1710,7 @@ def _normalized_image_aspect(width, height):
     try:
         width = float(width)
         height = float(height)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return 1.0, 1.0
     if width <= 0.0 or height <= 0.0:
         return 1.0, 1.0
@@ -1684,7 +1749,7 @@ def _store_native_aspect_on_rig(rig, width, height, preview_path=""):
     return ax, ay
 
 
-def _sync_rig_frame_from_plane_bounds(rig, margin=0.05):
+def _sync_rig_frame_from_plane_bounds(rig, margin=None):
     """Make the controller frame read the actual child plane mesh bounds."""
     plane = getattr(rig, 'fbp_plane_target', None) if rig else None
     if not plane or not getattr(plane, 'data', None):
@@ -1709,7 +1774,7 @@ def _refresh_native_geometry(rig):
             rig,
             getattr(rig, 'fbp_extend_left', 0.0), getattr(rig, 'fbp_extend_right', 0.0),
             getattr(rig, 'fbp_extend_bottom', 0.0), getattr(rig, 'fbp_extend_top', 0.0),
-            getattr(rig, 'fbp_extend_mode', 'EDGE'),
+            getattr(rig, 'fbp_extend_mode', 'MIRROR'),
             getattr(rig, 'fbp_crop_left', 0.0), getattr(rig, 'fbp_crop_right', 0.0),
             getattr(rig, 'fbp_crop_bottom', 0.0), getattr(rig, 'fbp_crop_top', 0.0),
         )
@@ -1718,6 +1783,90 @@ def _refresh_native_geometry(rig):
     except Exception as exc:
         _warn("Could not refresh native aspect/crop/extend geometry", exc)
         return False
+
+
+def fbp_refresh_native_media_dimensions(rig):
+    """Refresh source dimensions and aspect geometry after an Image reload.
+
+    Native timing refreshes intentionally avoid rebuilding geometry when only
+    frame durations change. A file edited outside Blender can, however, change
+    its pixel dimensions while retaining the same path and playback signature.
+    Mirror the live Image size back to the owned material/rig and rebuild only
+    the plane bounds, Crop and Extend geometry when the dimensions changed.
+    """
+    if not rig or not fbp_rig_uses_native_sequence(rig):
+        return False
+    plane = getattr(rig, "fbp_plane_target", None)
+    mesh = getattr(plane, "data", None) if plane else None
+    if mesh is None:
+        return False
+
+    source_image = None
+    source_material = None
+    for material in tuple(getattr(mesh, "materials", ()) or ()):
+        if not material or not bool(material.get("fbp_native_sequence", False)):
+            continue
+        nodes = fbp_native_sequence_nodes(material)
+        source_image = next(
+            (getattr(node, "image", None) for node in nodes if getattr(node, "image", None) is not None),
+            None,
+        )
+        if source_image is not None:
+            source_material = material
+            break
+    if source_image is None or source_material is None:
+        return False
+
+    try:
+        width, height = (int(value or 0) for value in source_image.size[:2])
+    except FBP_DATA_ERRORS:
+        width = height = 0
+    if width <= 0 or height <= 0:
+        first_path = next(
+            (
+                str(_abspath(getattr(item, "filepath", "") or ""))
+                for item in tuple(getattr(rig, "fbp_images", ()) or ())
+                if not bool(getattr(item, "is_empty", False))
+                and str(getattr(item, "filepath", "") or "")
+            ),
+            "",
+        )
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(first_path) as source:
+                width, height = (int(value or 0) for value in source.size[:2])
+        except (ImportError, OSError, TypeError, ValueError):
+            width = height = 0
+    if width <= 0 or height <= 0:
+        return False
+
+    try:
+        previous_width = int(rig.get("fbp_source_width", 0) or 0)
+        previous_height = int(rig.get("fbp_source_height", 0) or 0)
+    except FBP_DATA_ERRORS:
+        previous_width = previous_height = 0
+
+    try:
+        source_image["fbp_source_width"] = width
+        source_image["fbp_source_height"] = height
+        source_material["fbp_source_width"] = width
+        source_material["fbp_source_height"] = height
+    except FBP_DATA_IO_ERRORS:
+        pass
+
+    aspect_x, aspect_y = _normalized_image_aspect(width, height)
+    try:
+        # Refresh must never reset the artist's Object transform. Unlike initial
+        # import, only the source metadata and child mesh aspect are updated.
+        rig["fbp_source_width"] = width
+        rig["fbp_source_height"] = height
+        rig["fbp_native_aspect_x"] = float(aspect_x)
+        rig["fbp_native_aspect_y"] = float(aspect_y)
+    except FBP_DATA_IO_ERRORS:
+        pass
+    if width == previous_width and height == previous_height:
+        return True
+    return bool(_refresh_native_geometry(rig))
 
 def _sequence_from_material(mat):
     """Return only the explicit current-contract logical sequence payload."""
@@ -1788,12 +1937,15 @@ def _normalize_rig_movie_loop_mode(rig, loop_mode):
 def fbp_native_sequence_nodes(mat):
     """Return image texture nodes owned by a native FBP sequence material."""
     nodes = []
-    if not mat or not getattr(mat, "use_nodes", False) or not getattr(mat, "node_tree", None):
+    if not mat or not getattr(mat, "node_tree", None):
         return nodes
     try:
-        for node in mat.node_tree.nodes:
-            if getattr(node, "type", None) == 'TEX_IMAGE' and bool(node.get("fbp_native_sequence_node", False)):
-                nodes.append(node)
+        nodes.extend(
+            node
+            for node in mat.node_tree.nodes
+            if getattr(node, "type", None) == 'TEX_IMAGE'
+            and bool(node.get("fbp_native_sequence_node", False))
+        )
     except FBP_DATA_IO_ERRORS:
         pass
     return nodes
@@ -1846,7 +1998,7 @@ def fbp_sync_native_texture_settings(rig):
         return False
 
     interpolation = str(getattr(rig, 'fbp_interpolation', 'Closest') or 'Closest')
-    extension_mode = str(getattr(rig, 'fbp_extend_mode', 'EDGE') or 'EDGE')
+    extension_mode = str(getattr(rig, 'fbp_extend_mode', 'MIRROR') or 'MIRROR')
     expected_extension = _texture_extension_from_fbp_mode(extension_mode)
     rows = list(getattr(rig, 'fbp_images', ()) or ())
     default_duration = max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1))
@@ -1911,7 +2063,42 @@ def fbp_sync_native_texture_settings(rig):
         return False
     return found
 
-def fbp_native_rig_contract_issues(rig, *, check_files=True):
+def fbp_native_material_owner_counts(objects=None):
+    """Count object material-slot owners in one pass.
+
+    Native contract validation used to scan every object once per layer.  A
+    scene with many planes therefore paid O(layers * objects) work before a
+    render.  The caller can now build this index once and share it across all
+    layer checks.  Repeated slots on the same object count as one owner.
+    """
+    counts = {}
+    try:
+        source = objects if objects is not None else bpy.data.objects
+        for obj in source:
+            try:
+                data = getattr(obj, "data", None)
+                slots = getattr(data, "materials", None) if data is not None else None
+                if slots is None:
+                    continue
+                seen = set()
+                for mat in slots:
+                    if mat is None:
+                        continue
+                    pointer = int(mat.as_pointer())
+                    if not pointer or pointer in seen:
+                        continue
+                    seen.add(pointer)
+                    counts[pointer] = int(counts.get(pointer, 0)) + 1
+            except FBP_DATA_ERRORS:
+                continue
+    except FBP_DATA_ERRORS:
+        return {}
+    return counts
+
+
+def fbp_native_rig_contract_issues(
+    rig, *, check_files=True, material_owner_counts=None
+):
     """Return render-blocking problems for one current native layer."""
     issues = []
     plane = getattr(rig, "fbp_plane_target", None) if rig else None
@@ -1953,15 +2140,10 @@ def fbp_native_rig_contract_issues(rig, *, check_files=True):
         # example Felt Fuzz reuses the plane material for generated fibres).
         # Count actual object material-slot owners instead, otherwise valid
         # effects are falsely reported as cross-plane material sharing.
-        material_owners = set()
-        for obj in bpy.data.objects:
-            data = getattr(obj, "data", None)
-            slots = getattr(data, "materials", None) if data is not None else None
-            if slots is None:
-                continue
-            if any(slot == mat for slot in slots):
-                material_owners.add(obj.as_pointer())
-        if len(material_owners) > 1:
+        if material_owner_counts is None:
+            material_owner_counts = fbp_native_material_owner_counts()
+        owner_count = int(material_owner_counts.get(int(mat.as_pointer()), 0))
+        if owner_count > 1:
             issues.append("native material is shared by multiple planes")
     except FBP_DATA_ERRORS:
         issues.append("native material ownership is unreadable")
@@ -1990,7 +2172,7 @@ def fbp_native_rig_contract_issues(rig, *, check_files=True):
         duration_default = max(1, int(getattr(rig, "fbp_global_duration", 1) or 1))
         loop_mode = str(getattr(rig, "fbp_loop_mode", "NONE") or "NONE")
         frame_start = int(getattr(rig, "fbp_start_frame", 1) or 1)
-        extension_mode = str(getattr(rig, "fbp_extend_mode", "EDGE") or "EDGE")
+        extension_mode = str(getattr(rig, "fbp_extend_mode", "MIRROR") or "MIRROR")
     except FBP_DATA_ERRORS:
         issues.append("native playback settings are unreadable")
         return issues
@@ -2028,8 +2210,14 @@ def fbp_native_rig_contract_issues(rig, *, check_files=True):
     return issues
 
 
-def fbp_native_rig_render_ready(rig, *, check_files=True):
-    return not fbp_native_rig_contract_issues(rig, check_files=check_files)
+def fbp_native_rig_render_ready(
+    rig, *, check_files=True, material_owner_counts=None
+):
+    return not fbp_native_rig_contract_issues(
+        rig,
+        check_files=check_files,
+        material_owner_counts=material_owner_counts,
+    )
 
 
 def fbp_native_timing_self_test():
@@ -2057,12 +2245,12 @@ def fbp_native_timing_self_test():
     )
     expect(
         "Loop source order",
-        [_source_index_at_elapsed(value, 3, durations, 'REPEAT') for value in range(0, 12)],
+        [_source_index_at_elapsed(value, 3, durations, 'REPEAT') for value in range(12)],
         [0, 0, 1, 1, 1, 2, 0, 0, 1, 1, 1, 2],
     )
     expect(
         "Ping-Pong source order",
-        [_source_index_at_elapsed(value, 3, durations, 'PINGPONG') for value in range(0, 12)],
+        [_source_index_at_elapsed(value, 3, durations, 'PINGPONG') for value in range(12)],
         [0, 0, 1, 1, 1, 2, 1, 1, 1, 0, 0, 1],
     )
     expect(
@@ -2527,9 +2715,10 @@ def _simplified_linear_key_values(key_frames, value_at):
     whose two surrounding slopes are mathematically identical. Holds, hard
     jumps, reordered frames and cycle boundaries therefore remain untouched.
     """
-    points = []
-    for frame in sorted({int(value) for value in key_frames}):
-        points.append((frame, int(value_at(frame))))
+    points = [
+        (frame, int(value_at(frame)))
+        for frame in sorted({int(value) for value in key_frames})
+    ]
     simplified = []
     for point in points:
         simplified.append(point)
@@ -2544,7 +2733,7 @@ def _simplified_linear_key_values(key_frames, value_at):
             if (value_b - value_a) * right_span != (value_c - value_b) * left_span:
                 break
             simplified.pop(-2)
-    return {frame: value for frame, value in simplified}
+    return dict(simplified)
 
 
 def _source_index_at_elapsed(elapsed, file_count, durations, loop_mode):
@@ -2773,11 +2962,6 @@ def _install_visibility_mask_keyframes(value_node, *, row_count=1, frame_start=1
     except Exception:
         data_path = None
 
-    def visibility_at(timeline_frame):
-        elapsed = int(timeline_frame) - frame_start
-        row_index = _source_index_at_elapsed(elapsed, row_count, durations, loop_mode)
-        return 0.0 if flags[max(0, min(row_count - 1, row_index))] else 1.0
-
     try:
         key_frames = {hold_in, hold_out, frame_start}
         elapsed_min = hold_in - frame_start + 1
@@ -2786,11 +2970,20 @@ def _install_visibility_mask_keyframes(value_node, *, row_count=1, frame_start=1
             row_count, durations, loop_mode, elapsed_min, elapsed_max
         ):
             timeline_frame = frame_start + elapsed
-            if visibility_at(timeline_frame - 1) != visibility_at(timeline_frame):
+            if _native_visibility_value_at(
+                timeline_frame - 1, frame_start=frame_start, row_count=row_count,
+                durations=durations, loop_mode=loop_mode, flags=flags,
+            ) != _native_visibility_value_at(
+                timeline_frame, frame_start=frame_start, row_count=row_count,
+                durations=durations, loop_mode=loop_mode, flags=flags,
+            ):
                 key_frames.add(timeline_frame)
 
         for timeline_frame in sorted(key_frames):
-            output.default_value = visibility_at(timeline_frame)
+            output.default_value = _native_visibility_value_at(
+                timeline_frame, frame_start=frame_start, row_count=row_count,
+                durations=durations, loop_mode=loop_mode, flags=flags,
+            )
             if data_path:
                 value_node.id_data.keyframe_insert(data_path=data_path, frame=timeline_frame)
             else:
@@ -2802,7 +2995,11 @@ def _install_visibility_mask_keyframes(value_node, *, row_count=1, frame_start=1
                     for point in curve.keyframe_points:
                         point.interpolation = 'CONSTANT'
         owner_scene = scene or _scene_for_rig()
-        output.default_value = visibility_at(getattr(owner_scene, 'frame_current', frame_start))
+        output.default_value = _native_visibility_value_at(
+            getattr(owner_scene, 'frame_current', frame_start),
+            frame_start=frame_start, row_count=row_count, durations=durations,
+            loop_mode=loop_mode, flags=flags,
+        )
         return True
     except Exception as exc:
         _warn("Could not bake transparent-frame visibility", exc)
@@ -2814,7 +3011,7 @@ def _install_visibility_mask_keyframes(value_node, *, row_count=1, frame_start=1
 
 
 def _ensure_visibility_mask_nodes(mat, alpha_source, *, row_count=1, frame_start=1, durations=None, loop_mode='NONE', transparent_flags=None, scene=None):
-    if not mat or not getattr(mat, 'use_nodes', False):
+    if not mat or not getattr(mat, 'node_tree', None):
         return None
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
@@ -2884,7 +3081,7 @@ def _link_once(links, from_socket, to_socket):
     try:
         links.new(from_socket, to_socket)
         return True
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -2899,12 +3096,13 @@ def _reapply_fbp_effects(rig):
         _warn('Could not reapply Frame by Plane effects', exc)
 
 def _discard_failed_native_material(mat):
-    """Remove a newly-created, unused native material after transactional failure."""
+    """Quarantine a failed material; explicit Orphan Purge owns ID deletion."""
     if not mat:
         return
     try:
         if int(getattr(mat, "users", 0) or 0) == 0:
-            bpy.data.materials.remove(mat)
+            mat["fbp_orphan_candidate"] = True
+            mat.use_fake_user = False
     except FBP_DATA_ERRORS:
         pass
 
@@ -2950,7 +3148,7 @@ def create_native_sequence_material(
     frame_start=1,
     frame_duration_per_image=1,
     loop_mode='NONE',
-    extension_mode='EDGE',
+    extension_mode='MIRROR',
     source_directory=None,
     source_files=None,
     source_indices=None,
@@ -3028,6 +3226,10 @@ def create_native_sequence_material(
         runtime_directory, runtime_files, native_frame_base, _needs_rename, uses_proxy = _prepare_native_sequence_payload(
             source_directory,
             source_files,
+            # A still plus one or more logical transparent rows must be loaded
+            # as an Image Sequence. Mirror the still to FBP_0001.ext so Blender
+            # never derives a missing numeric filename and displays magenta.
+            force_sequence=bool(row_count > 1 and not source_is_video),
         )
         if not runtime_files:
             raise FileNotFoundError("No valid source sequence supplied for native sequence material")
@@ -3076,7 +3278,6 @@ def create_native_sequence_material(
     try:
         mat = bpy.data.materials.new(_unique_material_name(mat_name))
         mat["fbp_owned"] = True
-        mat.use_nodes = True
         _configure_material_surface(mat, opacity, has_alpha=True)
 
         mat["fbp_native_sequence"] = True
@@ -3105,11 +3306,11 @@ def create_native_sequence_material(
             initial_durations,
             loop_mode,
             int(frame_start),
-            str(extension_mode or 'EDGE'),
+            str(extension_mode or 'MIRROR'),
         )
         mat["fbp_native_frame_start"] = int(frame_start)
         mat["fbp_native_loop_mode"] = loop_mode
-        mat["fbp_native_extension_mode"] = str(extension_mode or 'EDGE')
+        mat["fbp_native_extension_mode"] = str(extension_mode or 'MIRROR')
         nodes = mat.node_tree.nodes
         links = mat.node_tree.links
         nodes.clear()
@@ -3297,6 +3498,7 @@ def create_native_sequence_material(
         ):
             _discard_failed_native_material(mat)
             raise RuntimeError("Native material failed its post-build render contract validation")
+        _configure_material_surface(mat, opacity, has_alpha=True)
         return mat
     except Exception:
         _discard_failed_native_material(mat)
@@ -3323,7 +3525,7 @@ def rebuild_native_sequence_material(mat, *, use_emission=None, opacity=None, in
     if loop_mode is None:
         loop_mode = mat.get("fbp_native_loop_mode", 'NONE')
     if extension_mode is None:
-        extension_mode = mat.get("fbp_native_extension_mode", 'EDGE')
+        extension_mode = mat.get("fbp_native_extension_mode", 'MIRROR')
     row_count = max(1, int(mat.get("fbp_native_frame_count", len(files)) or len(files) or 1))
     source_directory, source_files = _source_sequence_from_material(mat)
     source_indices = _source_indices_from_material(mat, row_count)
@@ -3385,7 +3587,7 @@ def fbp_refresh_native_sequence_from_rig(rig):
         loop_mode = _normalize_rig_movie_loop_mode(
             rig, getattr(rig, "fbp_loop_mode", 'NONE')
         )
-        extension_mode = str(getattr(rig, "fbp_extend_mode", 'EDGE'))
+        extension_mode = str(getattr(rig, "fbp_extend_mode", 'MIRROR'))
         rig_rows = list(getattr(rig, 'fbp_images', []))
         if not rig_rows:
             return False
@@ -3675,7 +3877,7 @@ def fbp_native_sequence_order_matches_rig(rig):
 def fbp_repair_native_sequence_timing_scene(scene=None):
     """Repair damaged timing on current native sequence contracts only.
 
-    Old 5.1.x/early 5.2.x contracts are intentionally not migrated here. This
+    Non-current material contracts are intentionally not converted here. This
     lightweight load-time pass only validates current Frame By Plane sequence
     materials and refreshes them when their ImageUser coverage or offset curve
     no longer matches the rig rows.
@@ -3768,7 +3970,7 @@ def fbp_repair_native_sequence_timing_scene(scene=None):
     return repaired
 
 
-def _assign_layer_props(rig, scene, *, color_tag='COLOR_01', color_variant_index=0, target_collection=None, follow_collection_color=True):
+def _assign_layer_props(rig, scene, *, color_tag='NONE', color_variant_index=0, target_collection=None, follow_collection_color=True):
     rig.is_fbp_control = True
     rig.hide_render = True
     rig.display_type = 'WIRE'
@@ -3854,7 +4056,7 @@ def _apply_import_alpha_crop(rig, crop_result):
             getattr(rig, "fbp_extend_right", 0.0),
             getattr(rig, "fbp_extend_bottom", 0.0),
             getattr(rig, "fbp_extend_top", 0.0),
-            getattr(rig, "fbp_extend_mode", "EDGE"),
+            getattr(rig, "fbp_extend_mode", "MIRROR"),
             crop_left, crop_right, crop_bottom, crop_top,
         ))
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
@@ -3875,7 +4077,7 @@ def _apply_import_alpha_crop(rig, crop_result):
 
 
 def build_native_fbp_rig(
-    context, rig_name, directory, files_list, location, color_tag='COLOR_01',
+    context, rig_name, directory, files_list, location, color_tag='NONE',
     target_collection=None, color_variant_index=0, follow_collection_color=True,
     item_durations=None,
 ):
@@ -3933,7 +4135,7 @@ def build_native_fbp_rig(
             rig, scene, color_tag=color_tag, color_variant_index=color_variant_index,
             target_collection=target_collection, follow_collection_color=follow_collection_color,
         )
-        rig.fbp_start_frame = int(scene.frame_current)
+        rig.fbp_start_frame = fbp_creation_start_frame(scene, context)
         fbp_apply_creation_orientation(rig, scene)
 
         plane_mesh = fbp_create_rect_mesh("Mesh_Plane_" + rig_name, size=2.0, with_face=True)
@@ -3970,7 +4172,7 @@ def build_native_fbp_rig(
             frame_start=getattr(rig, 'fbp_start_frame', scene.frame_current),
             frame_duration_per_image=getattr(rig, 'fbp_global_duration', 1),
             loop_mode=getattr(rig, 'fbp_loop_mode', 'NONE'),
-            extension_mode=getattr(rig, 'fbp_extend_mode', 'EDGE'),
+            extension_mode=getattr(rig, 'fbp_extend_mode', 'MIRROR'),
             row_paths=row_paths,
             item_durations=normalized_durations,
             scene=context.scene,
@@ -4048,6 +4250,11 @@ def build_native_fbp_rig(
 
         context.view_layer.objects.active = rig
         rig.select_set(True)
+        try:
+            from .ownership import tag_layer_contract
+            tag_layer_contract(rig)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
         return rig
     except Exception:
         _discard_failed_native_layer(
@@ -4265,7 +4472,7 @@ def rebuild_native_sequence_from_rig(rig):
             frame_start=getattr(rig, 'fbp_start_frame', 1),
             frame_duration_per_image=getattr(rig, 'fbp_global_duration', 1),
             loop_mode=getattr(rig, 'fbp_loop_mode', 'NONE'),
-            extension_mode=getattr(rig, 'fbp_extend_mode', 'EDGE'),
+            extension_mode=getattr(rig, 'fbp_extend_mode', 'MIRROR'),
             source_directory=plan["source_directory"],
             source_files=plan["source_files"],
             source_indices=plan["source_indices"],
@@ -4316,7 +4523,7 @@ def rebuild_native_sequence_from_rig(rig):
         _warn('Could not clean replaced native sequence materials', exc)
     return True
 
-def replace_native_sequence(rig, directory, files):
+def replace_native_sequence(rig, directory, files, item_durations=None):
     """Replace a native sequence transactionally while preserving the old rig on failure."""
     if not rig or not getattr(rig, 'fbp_plane_target', None):
         return False
@@ -4381,22 +4588,30 @@ def replace_native_sequence(rig, directory, files):
             frame_start=getattr(rig, 'fbp_start_frame', 1),
             frame_duration_per_image=getattr(rig, 'fbp_global_duration', 1),
             loop_mode=getattr(rig, 'fbp_loop_mode', 'NONE'),
-            extension_mode=getattr(rig, 'fbp_extend_mode', 'EDGE'),
+            extension_mode=getattr(rig, 'fbp_extend_mode', 'MIRROR'),
             scene=_scene_for_rig(rig),
         )
         if not new_material:
             raise RuntimeError('native sequence material creation returned no material')
 
-        replacement_rows = []
-        for filename in files:
-            replacement_rows.append({
+        normalized_durations = [
+            max(1, int(value)) for value in (item_durations or ())
+        ]
+        replacement_rows = [
+            {
                 'name': str(filename),
-                'duration': max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1)),
+                'duration': (
+                    normalized_durations[index]
+                    if index < len(normalized_durations)
+                    else max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1))
+                ),
                 'is_selected': True,
                 'is_empty': False,
                 'filepath': str(Path(directory) / filename),
                 'procedural_kind': 'AUTO',
-            })
+            }
+            for index, filename in enumerate(files)
+        ]
         populate_rows(replacement_rows)
         rig.fbp_images_index = 0
 

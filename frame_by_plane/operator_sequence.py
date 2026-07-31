@@ -1,10 +1,12 @@
-"""Focused Frame by Plane operator module."""
+"""Focused Frame By Plane operator module."""
 
 import bpy
 import math
 import mathutils
 import os
+import uuid
 from bpy.props import (
+    BoolProperty,
     CollectionProperty,
     EnumProperty,
     IntProperty,
@@ -12,32 +14,49 @@ from bpy.props import (
 )
 from bpy.types import Operator
 
-from .constants import fbp_icon
+from .constants import fbp_icon, FBP_SUPPORTED_IMAGE_EXT, FBP_SUPPORTED_VIDEO_EXT
+from .builder import fbp_prepare_media_source
+from .pillow_media import fbp_optimize_sequence_entries
+from .ui_style import configure_layout, section_header
 from .path_utils import is_supported_media_file, is_supported_video_file, natural_sort_key
 from .materials import (
     do_update_emission,
     do_update_opacity,
     fbp_create_procedural_frame_material_for_rig,
     fbp_copy_material_slots_unique,
+    fbp_procedural_frame_display_name,
 )
 from .layers import (
     _safe_layer_obj,
     ensure_object_in_active_collection,
     fbp_active_layer_index,
     fbp_procedural_kind_from_material,
+    fbp_procedural_layer_type,
+    fbp_set_procedural_metadata,
     get_primary_fbp_collection,
     get_selected_fbp_roots,
     get_selected_rigs,
     is_fbp_layer_object,
     fbp_layer_backend_type,
     object_in_view_layer,
+    invalidate_preview_path,
+    iter_scene_fbp_rigs,
 )
 from .scene_sync import (
     delete_fbp_rigs,
     fbp_remove_plane_datablock,
     sync_layer_collection,
 )
-from .runtime import fbp_set_rna_property_silent, fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
+from .runtime import (
+    fbp_set_rna_property_silent, fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS,
+    fbp_tag_redraw, fbp_obj_runtime_token, fbp_find_id_by_runtime_key,
+)
+from .transactions import FBPTransaction
+from .ui_list_state import (
+    ensure_item_identity,
+    ensure_unique_item_identities,
+    index_for_identity,
+)
 from .core import (
     do_update_animation,
     do_update_track,
@@ -47,12 +66,160 @@ from .core import (
     fbp_insert_sequence_entry,
     fbp_load_active_procedural_frame_to_rig,
     fbp_rebuild_sequence_backend_from_rig,
+    fbp_set_solid_material_color,
     fbp_refresh_sequence_backend_from_rig,
     fbp_sequence_entries_from_rig,
 )
+from .shortcut_runtime import alt_modifier_name
 from .operator_common import (
+    FBP_VerticalDragModalMixin,
     fbp_jump_timeline_to_sequence_row,
 )
+
+
+def _fbp_requested_procedural_frame_kind(rig):
+    """Return the explicit Color/Gradient kind requested by the current UI state."""
+    if not rig:
+        return 'SOLID'
+    mode = str(getattr(rig, 'fbp_color_plane_mode', 'SOLID') or 'SOLID')
+    if mode == 'GRADIENT':
+        return 'GRADIENT'
+    if mode == 'HOLDOUT':
+        return 'HOLDOUT'
+    if mode == 'SOLID':
+        return 'SOLID'
+    stable = fbp_procedural_layer_type(rig)
+    return stable if stable in {'SOLID', 'GRADIENT', 'HOLDOUT'} else 'SOLID'
+
+
+class FBP_OT_SetColorPlaneMode(Operator):
+    bl_idname = "fbp.set_color_plane_mode"
+    bl_label = "Set Procedural Type"
+    bl_description = "Switch the selected procedural plane between Color and Gradient"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: StringProperty(description="Procedural plane mode to activate", default="SOLID")
+
+    def execute(self, context):
+        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        if not rig:
+            rigs = get_selected_rigs(context)
+            rig = rigs[0] if rigs else None
+        if not rig or not getattr(rig, "fbp_is_color_plane", False):
+            self.report({'WARNING'}, "Select one Color or Gradient Plane first")
+            return {'CANCELLED'}
+        mode = self.mode if self.mode in {'SOLID', 'GRADIENT'} else 'SOLID'
+        try:
+            rig.fbp_color_plane_mode = mode
+            rig['fbp_procedural_layer_type'] = mode
+            rig['fbp_backend_type'] = 'PROCEDURAL_GRADIENT' if mode == 'GRADIENT' else 'PROCEDURAL_COLOR'
+            plane = getattr(rig, 'fbp_plane_target', None)
+            if plane:
+                plane['fbp_backend_type'] = rig['fbp_backend_type']
+        except Exception as exc:
+            fbp_warn("Could not change procedural Color Plane mode", exc)
+            self.report({'ERROR'}, "Could not change procedural type")
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class FBP_OT_GradientController(Operator):
+    bl_idname = "fbp.gradient_controller"
+    bl_label = "Gradient Controller"
+    bl_description = f"Use another selected Empty, or create one, to animate the Gradient position; {alt_modifier_name()}-click unlinks the current controller"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def _rig(self, context):
+        active = getattr(context, "object", None)
+        if active is not None and bool(getattr(active, "is_fbp_control", False)):
+            return active
+        rigs = get_selected_rigs(context)
+        return rigs[0] if rigs else None
+
+    def invoke(self, context, event):
+        rig = self._rig(context)
+        if rig is None or not bool(getattr(rig, "fbp_is_color_plane", False)):
+            self.report({'WARNING'}, "Select one Color or Gradient Plane")
+            return {'CANCELLED'}
+        if bool(getattr(event, "alt", False)) and getattr(rig, "fbp_gradient_controller", None) is not None:
+            rig.fbp_gradient_controller = None
+            self.report({'INFO'}, "Gradient controller unlinked")
+            return {'FINISHED'}
+        return self.execute(context)
+
+    def execute(self, context):
+        rig = self._rig(context)
+        if rig is None or not bool(getattr(rig, "fbp_is_color_plane", False)):
+            self.report({'WARNING'}, "Select one Color or Gradient Plane")
+            return {'CANCELLED'}
+        if str(getattr(rig, "fbp_color_plane_mode", "SOLID") or "SOLID") != "GRADIENT":
+            self.report({'WARNING'}, "Select a Gradient frame first")
+            return {'CANCELLED'}
+
+        controller = getattr(rig, "fbp_gradient_controller", None)
+        if controller is not None:
+            for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+                obj.select_set(False)
+            controller.hide_viewport = False
+            controller.hide_set(False)
+            controller.select_set(True)
+            context.view_layer.objects.active = controller
+            self.report({'INFO'}, "Gradient controller selected; keyframe its Location")
+            return {'FINISHED'}
+
+        controller = next(
+            (
+                obj for obj in tuple(getattr(context, "selected_objects", ()) or ())
+                if obj is not rig and getattr(obj, "type", "") == "EMPTY"
+            ),
+            None,
+        )
+        plane = getattr(rig, "fbp_plane_target", None)
+        vertices = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
+        try:
+            xs = [float(vertex.co.x) for vertex in vertices]
+            ys = [float(vertex.co.y) for vertex in vertices]
+            width = max(1.0e-6, max(xs) - min(xs))
+            height = max(1.0e-6, max(ys) - min(ys))
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            width = height = 1.0
+
+        created = controller is None
+        if created:
+            controller = bpy.data.objects.new(f"{rig.name} · Gradient Controller", None)
+            collection = next(iter(getattr(rig, "users_collection", ()) or ()), context.scene.collection)
+            collection.objects.link(controller)
+            controller.empty_display_type = 'SPHERE'
+            controller.empty_display_size = max(0.05, min(width, height) * 0.08)
+            controller.parent = plane or rig
+            controller.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+            controller.location = (
+                float(getattr(rig, "fbp_gradient_offset_x", 0.0)) * width,
+                float(getattr(rig, "fbp_gradient_offset_y", 0.0)) * height,
+                0.006,
+            )
+        elif controller.parent is not (plane or rig):
+            world_matrix = controller.matrix_world.copy()
+            controller.parent = plane or rig
+            controller.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+            controller.matrix_world = world_matrix
+
+        controller["fbp_gradient_controller"] = True
+        controller["fbp_gradient_controller_owner"] = str(rig.name)
+        rig.fbp_gradient_controller = controller
+        try:
+            from .materials import fbp_bind_gradient_controller_drivers
+            fbp_bind_gradient_controller_drivers(rig, controller)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            fbp_warn("Could not bind Gradient controller drivers", exc)
+            return {'CANCELLED'}
+
+        for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+            obj.select_set(False)
+        controller.select_set(True)
+        context.view_layer.objects.active = controller
+        self.report({'INFO'}, "Created Gradient controller" if created else "Linked selected Empty to Gradient")
+        return {'FINISHED'}
 
 
 class FBP_OT_UpdateAnimation(Operator):
@@ -64,6 +231,314 @@ class FBP_OT_UpdateAnimation(Operator):
     def execute(self, context):
         for rig in get_selected_rigs(context):
             do_update_animation(rig)
+        return {'FINISHED'}
+
+
+def _fbp_source_image_nodes_for_rig(rig):
+    """Return only media-source texture nodes, never effect/mask textures."""
+    plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    mesh = getattr(plane, "data", None) if plane else None
+    materials = tuple(getattr(mesh, "materials", ()) or ()) if mesh else ()
+    result = []
+    seen = set()
+    for material in materials:
+        tree = getattr(material, "node_tree", None) if material else None
+        for node in tuple(getattr(tree, "nodes", ()) or ()) if tree else ():
+            if str(getattr(node, "type", "") or "") != "TEX_IMAGE":
+                continue
+            try:
+                owned_source = bool(
+                    node.get("fbp_native_sequence_node", False)
+                    or node.get("fbp_drawing_image_node", False)
+                )
+            except FBP_DATA_ERRORS:
+                owned_source = False
+            if not owned_source:
+                continue
+            try:
+                key = int(node.as_pointer())
+            except FBP_DATA_ERRORS:
+                key = id(node)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append((material, node))
+    return tuple(result)
+
+
+def _fbp_media_images_for_rig(rig):
+    """Return unique source Image datablocks referenced by one media layer."""
+    images = []
+    seen = set()
+    for _material, node in _fbp_source_image_nodes_for_rig(rig):
+        image = getattr(node, "image", None)
+        if image is None:
+            continue
+        try:
+            key = int(image.as_pointer())
+        except FBP_DATA_ERRORS:
+            key = id(image)
+        if key in seen:
+            continue
+        seen.add(key)
+        images.append(image)
+    return tuple(images)
+
+
+def _fbp_existing_absolute_path(path):
+    try:
+        absolute = os.path.normpath(bpy.path.abspath(str(path or "")))
+        return absolute if absolute and os.path.isfile(absolute) else ""
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _fbp_adopt_relinked_media_paths(rig):
+    """Mirror Blender-side relinks back into persistent FBP frame rows.
+
+    Find Missing Files and manual Image Editor relinks update ``Image.filepath``
+    but not Frame By Plane's logical sequence rows. Without this reconciliation,
+    a refresh rebuild can reapply the stale missing path. Only unambiguous source
+    layouts are adopted; generated proxy sequences remain untouched.
+    """
+    backend = fbp_layer_backend_type(rig)
+    rows = tuple(getattr(rig, "fbp_images", ()) or ())
+    if not rows or backend not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'CUTOUT'}:
+        return 0
+
+    source_nodes = _fbp_source_image_nodes_for_rig(rig)
+    live_paths = []
+    proxy_source = False
+    for material, node in source_nodes:
+        try:
+            proxy_source = proxy_source or bool(material.get("fbp_native_uses_proxy", False))
+        except FBP_DATA_ERRORS:
+            pass
+        image = getattr(node, "image", None)
+        live = _fbp_existing_absolute_path(getattr(image, "filepath", "") if image else "")
+        if live and live not in live_paths:
+            live_paths.append(live)
+    if not live_paths or proxy_source:
+        return 0
+
+    real_indices = [
+        index for index, item in enumerate(rows)
+        if not bool(getattr(item, "is_empty", False))
+    ]
+    if not real_indices:
+        return 0
+
+    replacements = {}
+    if backend == 'NATIVE_IMAGE' and len(real_indices) == 1:
+        replacements[real_indices[0]] = live_paths[0]
+    elif backend == 'CUTOUT':
+        active = max(0, min(len(rows) - 1, int(getattr(rig, "fbp_images_index", 0) or 0)))
+        if active in real_indices:
+            replacements[active] = live_paths[0]
+    elif backend == 'NATIVE_SEQUENCE':
+        first_index = real_indices[0]
+        first_name = os.path.basename(str(getattr(rows[first_index], "filepath", "") or ""))
+        live = next(
+            (path for path in live_paths if os.path.basename(path).casefold() == first_name.casefold()),
+            "",
+        )
+        if live:
+            directory = os.path.dirname(live)
+            candidate = {
+                index: os.path.join(
+                    directory,
+                    os.path.basename(str(getattr(rows[index], "filepath", "") or "")),
+                )
+                for index in real_indices
+            }
+            if all(_fbp_existing_absolute_path(path) for path in candidate.values()):
+                replacements = candidate
+
+    changed = 0
+    old_preview = str(getattr(rig, "fbp_preview_path", "") or "")
+    new_preview = old_preview
+    for index, new_path in replacements.items():
+        item = rows[index]
+        old_path = str(getattr(item, "filepath", "") or "")
+        old_absolute = os.path.normcase(os.path.normpath(bpy.path.abspath(old_path))) if old_path else ""
+        new_absolute = os.path.normcase(os.path.normpath(new_path))
+        if old_absolute == new_absolute:
+            continue
+        invalidate_preview_path(old_path)
+        invalidate_preview_path(new_path)
+        item.filepath = new_path
+        new_name = os.path.basename(new_path)
+        if new_name and str(getattr(item, "name", "") or "") != new_name:
+            item.name = new_name
+        if old_preview and old_absolute == os.path.normcase(os.path.normpath(bpy.path.abspath(old_preview))):
+            new_preview = new_path
+        changed += 1
+    if changed and new_preview != old_preview:
+        rig.fbp_preview_path = new_preview
+    return changed
+
+
+def _fbp_refresh_media_rig(rig, *, seen_images=None):
+    backend = fbp_layer_backend_type(rig) if rig else ""
+    if backend not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE', 'CUTOUT'}:
+        return None
+    seen_images = seen_images if seen_images is not None else set()
+    relinked = _fbp_adopt_relinked_media_paths(rig)
+    for item in tuple(getattr(rig, "fbp_images", ()) or ()):
+        path = str(getattr(item, "filepath", "") or "")
+        if path:
+            invalidate_preview_path(path)
+
+    reloaded = 0
+    sources = 0
+    failures = 0
+    for image in _fbp_media_images_for_rig(rig):
+        try:
+            key = int(image.as_pointer())
+        except FBP_DATA_ERRORS:
+            key = id(image)
+        if key in seen_images:
+            continue
+        seen_images.add(key)
+        try:
+            source = str(getattr(image, "source", "") or "")
+            if source not in {'FILE', 'SEQUENCE', 'MOVIE'}:
+                continue
+            sources += 1
+            if source == 'SEQUENCE' and not bool(getattr(image, "has_data", False)):
+                continue
+            image.reload()
+            reloaded += 1
+        except FBP_DATA_ERRORS as exc:
+            failures += 1
+            fbp_warn(f"Could not refresh media datablock '{getattr(image, 'name', 'Image')}'", exc)
+
+    rebuilt = bool(fbp_refresh_sequence_backend_from_rig(rig))
+    if backend in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE'}:
+        try:
+            from .native_backend import fbp_refresh_native_media_dimensions
+            fbp_refresh_native_media_dimensions(rig)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            failures += 1
+            fbp_warn("Could not refresh media aspect geometry", exc)
+    try:
+        do_update_animation(rig)
+    except FBP_DATA_ERRORS:
+        pass
+    return {
+        "backend": backend,
+        "relinked": relinked,
+        "reloaded": reloaded,
+        "rebuilt": rebuilt,
+        "failures": failures,
+        "sources": sources,
+        "ok": bool(rebuilt or reloaded or relinked or sources),
+    }
+
+
+class FBP_OT_RefreshMedia(Operator):
+    bl_idname = "fbp.refresh_media"
+    bl_label = "Refresh Media"
+    bl_description = (
+        "Reload the current image, movie or complete image sequence from disk; "
+        "also rebuild the native source when frame paths were relinked"
+    )
+    # Reloading external files is not an undoable Blender data edit. Avoid
+    # inserting a misleading history step before the user's next Ctrl+Z.
+    bl_options = {'REGISTER'}
+
+    rig_name: StringProperty(
+        name="Layer",
+        description="Exact Frame By Plane layer to refresh",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        rigs = get_selected_rigs(context)
+        return bool(rigs and any(
+            fbp_layer_backend_type(rig) in {
+                'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE', 'CUTOUT'
+            }
+            for rig in rigs
+        ))
+
+    def execute(self, context):
+        rig = bpy.data.objects.get(str(self.rig_name or "")) if self.rig_name else None
+        if rig is None or not is_fbp_layer_object(rig):
+            rigs = get_selected_rigs(context)
+            rig = rigs[0] if rigs else None
+        stats = _fbp_refresh_media_rig(rig)
+        if stats is None:
+            self.report({'WARNING'}, "Select an image, sequence, movie or Cutout Plane")
+            return {'CANCELLED'}
+        fbp_tag_redraw(context, all_windows=True)
+        if not stats["ok"]:
+            self.report({'ERROR'}, "Media refresh failed; check the source paths")
+            return {'CANCELLED'}
+        label = "sequence" if stats["backend"] == 'NATIVE_SEQUENCE' else (
+            "movie" if stats["backend"] == 'NATIVE_MOVIE' else "image"
+        )
+        message = f"Refreshed {label}"
+        if stats["relinked"]:
+            message += f" · {stats['relinked']} relinked path{'s' if stats['relinked'] != 1 else ''}"
+        if stats["reloaded"]:
+            message += f" · {stats['reloaded']} datablock{'s' if stats['reloaded'] != 1 else ''}"
+        if stats["failures"]:
+            message += f" · {stats['failures']} failed"
+        self.report({'WARNING'} if stats["failures"] else {'INFO'}, message)
+        return {'FINISHED'}
+
+
+class FBP_OT_RefreshAllMedia(Operator):
+    bl_idname = "fbp.refresh_all_media"
+    bl_label = "Refresh All Media"
+    bl_description = (
+        "Reload every Frame By Plane image, sequence, movie and Cutout source in the scene; "
+        "shared Blender image datablocks are reloaded only once"
+    )
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, 'scene', None)
+        return bool(scene and any(
+            fbp_layer_backend_type(rig) in {
+                'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE', 'CUTOUT'
+            }
+            for rig in iter_scene_fbp_rigs(scene, fallback=True)
+        ))
+
+    def execute(self, context):
+        rigs = [
+            rig for rig in iter_scene_fbp_rigs(context.scene, fallback=True)
+            if fbp_layer_backend_type(rig) in {
+                'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE', 'CUTOUT'
+            }
+        ]
+        seen_images = set()
+        refreshed = relinked = reloaded = failures = 0
+        for rig in rigs:
+            stats = _fbp_refresh_media_rig(rig, seen_images=seen_images)
+            if stats is None:
+                continue
+            refreshed += int(bool(stats["ok"]))
+            relinked += int(stats["relinked"])
+            reloaded += int(stats["reloaded"])
+            failures += int(stats["failures"])
+        fbp_tag_redraw(context, all_windows=True)
+        if not refreshed:
+            self.report({'ERROR'}, "No Frame By Plane media could be refreshed")
+            return {'CANCELLED'}
+        message = f"Refreshed {refreshed}/{len(rigs)} media layer{'s' if len(rigs) != 1 else ''}"
+        if reloaded:
+            message += f" · {reloaded} datablock{'s' if reloaded != 1 else ''}"
+        if relinked:
+            message += f" · {relinked} relinked path{'s' if relinked != 1 else ''}"
+        if failures:
+            message += f" · {failures} failed"
+        self.report({'WARNING'} if failures else {'INFO'}, message)
         return {'FINISHED'}
 
 class FBP_OT_Transform(Operator):
@@ -98,26 +573,26 @@ class FBP_OT_Transform(Operator):
 class FBP_OT_PopupTransform(Operator):
     bl_idname = "fbp.popup_transform"
     bl_label = "Transform Layer"
-    bl_description = "Open transform tools for the selected Frame by Plane layer"
+    bl_description = "Open transform tools for the selected Frame By Plane layer"
     bl_options = {'REGISTER', 'UNDO'}
 
     def invoke(self, context, event):
         if not get_selected_rigs(context):
-            self.report({'WARNING'}, "Select a Frame by Plane layer first")
+            self.report({'WARNING'}, "Select a Frame By Plane layer first")
             return {'CANCELLED'}
         return context.window_manager.invoke_props_dialog(self, width=360)
 
     def draw(self, context):
         rig = get_selected_rigs(context)[0]
-        layout = self.layout
-        layout.label(text=rig.name, icon=fbp_icon("EMPTY_ARROWS"))
+        layout = configure_layout(self.layout)
+        section_header(layout, rig.name, icon=fbp_icon("EMPTY_ARROWS"))
         col = layout.column(align=True)
         row = col.row(align=True)
-        row.operator("fbp.transform", text="Horizontal / Vertical", icon=fbp_icon("FILE_REFRESH")).mode = 'TOGGLE_ROT'
+        row.operator("fbp.transform", text="Horizontal / Vertical", icon=fbp_icon("RENDER_SWAP_DIMENSIONS")).mode = 'TOGGLE_ROT'
         row.operator("fbp.transform", text="To Ground", icon=fbp_icon("GRID")).mode = 'TO_GROUND'
         row = col.row(align=True)
         row.operator("fbp.transform", text="Reset Rotation", icon=fbp_icon("FILE_REFRESH")).mode = 'RESET_ROT'
-        row.operator("fbp.transform", text="Reset Scale", icon=fbp_icon("FULLSCREEN_ENTER")).mode = 'RESET_SCALE'
+        row.operator("fbp.transform", text="Reset Scale", icon=fbp_icon("FILE_REFRESH")).mode = 'RESET_SCALE'
 
     def execute(self, context):
         return {'FINISHED'}
@@ -147,7 +622,7 @@ class FBP_OT_UpdateOpacity(Operator):
 class FBP_OT_UpdateTrack(Operator):
     bl_idname  = "fbp.update_track"
     bl_label   = "Update Track"
-    bl_description = "Update camera tracking constraints on selected Frame by Plane rigs"
+    bl_description = "Update camera tracking constraints on selected Frame By Plane rigs"
     bl_options = {'UNDO', 'INTERNAL'}
 
     def execute(self, context):
@@ -192,6 +667,253 @@ class FBP_OT_SelectImageExclusive(Operator):
         # dependency-graph work to a list-selection action.
         return {'FINISHED'}
 
+
+class FBP_OT_DragSequenceFrame(FBP_VerticalDragModalMixin, Operator):
+    bl_idname = "fbp.drag_sequence_frame"
+    bl_label = "Drag Frame"
+    bl_description = "Drag vertically to reorder this Color/Gradient animation frame and jump the timeline to it"
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL', 'BLOCKING'}
+
+    rig_name: StringProperty(
+        name="Layer",
+        description="Frame By Plane layer that owns this frame row",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+    index: IntProperty(
+        name="Frame",
+        description="Frame row to drag",
+        default=-1,
+        options={'SKIP_SAVE'},
+    )
+
+    def _redraw(self, context):
+        fbp_tag_redraw(context, area_types={'VIEW_3D', 'PROPERTIES'})
+
+    def _resolve_drag_index(self, entries=None):
+        rig = getattr(self, '_rig', None)
+        if rig is None:
+            return -1
+        if entries is None:
+            entries = getattr(rig, 'fbp_images', ())
+        identity = str(getattr(self, '_drag_uid', '') or '')
+        if identity:
+            for index, entry in enumerate(entries or ()):
+                if str(getattr(entry, 'stable_id', '') or '') == identity:
+                    return index
+                if isinstance(entry, dict) and str(entry.get('stable_id', '') or '') == identity:
+                    return index
+        index = int(getattr(self, '_index', -1))
+        return index if 0 <= index < len(entries or ()) else -1
+
+    def _select_row(self, context):
+        rig = getattr(self, '_rig', None)
+        index = self._resolve_drag_index()
+        if rig is None or index < 0:
+            return
+        try:
+            self._index = index
+            fbp_set_rna_property_silent(rig, 'fbp_images_index', index)
+            for i, item in enumerate(rig.fbp_images):
+                item.is_selected = (i == index)
+            if getattr(rig, 'fbp_is_color_plane', False):
+                fbp_load_active_procedural_frame_to_rig(rig)
+            fbp_jump_timeline_to_sequence_row(context, rig, index)
+        except FBP_DATA_IO_ERRORS as exc:
+            fbp_warn('Could not select dragged frame row', exc)
+
+    def _move_once(self, context, direction):
+        rig = getattr(self, '_rig', None)
+        if rig is None or not getattr(rig, 'fbp_plane_target', None):
+            return False
+        backend_type = fbp_layer_backend_type(rig)
+        if backend_type in {'CUTOUT', 'NATIVE_MOVIE'}:
+            return False
+        entries = fbp_sequence_entries_from_rig(rig)
+        count = len(entries)
+        source = self._resolve_drag_index(entries)
+        if count <= 1 or not (0 <= source < count):
+            return False
+        target = source - 1 if direction == 'UP' else source + 1
+        if not (0 <= target < count):
+            return False
+        entries[source], entries[target] = entries[target], entries[source]
+        try:
+            if not fbp_apply_sequence_entries_to_rig(rig, entries):
+                return False
+            self._index = target
+            fbp_set_rna_property_silent(rig, 'fbp_images_index', target)
+            if getattr(rig, 'fbp_is_color_plane', False):
+                fbp_load_active_procedural_frame_to_rig(rig)
+            do_update_animation(rig)
+            fbp_jump_timeline_to_sequence_row(context, rig, target)
+            return True
+        except FBP_DATA_IO_ERRORS as exc:
+            fbp_warn('Could not drag-reorder frame', exc)
+            return False
+
+    def _cancel_drag(self, context):
+        """Restore the entire frame list once instead of replaying inverse moves."""
+        rig = getattr(self, '_rig', None)
+        snapshot = getattr(self, '_original_entries', None)
+        if rig is None or snapshot is None:
+            return False
+        try:
+            restored_entries = [dict(entry) for entry in snapshot]
+            if not fbp_apply_sequence_entries_to_rig(rig, restored_entries):
+                return False
+            active_uid = str(getattr(self, '_original_active_uid', '') or '')
+            active_index = -1
+            if active_uid:
+                for index, entry in enumerate(getattr(rig, 'fbp_images', ()) or ()):
+                    if str(getattr(entry, 'stable_id', '') or '') == active_uid:
+                        active_index = index
+                        break
+            if active_index < 0:
+                active_index = max(0, min(
+                    int(getattr(self, '_original_active_index', 0) or 0),
+                    max(0, len(getattr(rig, 'fbp_images', ())) - 1),
+                ))
+            fbp_set_rna_property_silent(rig, 'fbp_images_index', active_index)
+            if getattr(rig, 'fbp_is_color_plane', False):
+                fbp_load_active_procedural_frame_to_rig(rig)
+            do_update_animation(rig)
+            scene = getattr(context, 'scene', None)
+            original_frame = getattr(self, '_original_scene_frame', None)
+            if scene is not None and original_frame is not None:
+                scene.frame_set(int(original_frame))
+            self._index = self._resolve_drag_index()
+            return True
+        except FBP_DATA_IO_ERRORS as exc:
+            fbp_warn('Could not restore cancelled frame drag', exc)
+            return False
+
+    def invoke(self, context, event):
+        rig = bpy.data.objects.get(str(getattr(self, 'rig_name', '') or ''))
+        if not rig or not getattr(rig, 'is_fbp_control', False):
+            return {'CANCELLED'}
+        if not (0 <= int(getattr(self, 'index', -1)) < len(getattr(rig, 'fbp_images', []))):
+            return {'CANCELLED'}
+        ensure_unique_item_identities(getattr(rig, 'fbp_images', ()), 'stable_id')
+        self._rig = rig
+        self._index = int(self.index)
+        self._drag_uid = ensure_item_identity(rig.fbp_images[self._index], 'stable_id')
+        self._original_entries = [
+            dict(entry) for entry in fbp_sequence_entries_from_rig(rig)
+        ]
+        self._original_active_index = int(getattr(rig, 'fbp_images_index', 0) or 0)
+        self._original_active_uid = (
+            str(getattr(rig.fbp_images[self._original_active_index], 'stable_id', '') or '')
+            if 0 <= self._original_active_index < len(rig.fbp_images)
+            else ''
+        )
+        self._original_scene_frame = int(getattr(context.scene, 'frame_current', 0) or 0)
+        self._anchor_y = int(getattr(event, 'mouse_y', 0) or 0)
+        self._history = []
+        self._did_change = False
+        self._finish_on_release = str(getattr(event, 'value', '') or '') in {'PRESS', 'CLICK_DRAG'}
+        self._saw_drag_motion = False
+        try:
+            ui_scale = float(context.preferences.system.ui_scale)
+        except FBP_DATA_ERRORS:
+            ui_scale = 1.0
+        self._threshold = max(10, int(round(18.0 * ui_scale)))
+        self._select_row(context)
+        try:
+            if not self._begin_modal_mutation():
+                raise RuntimeError("Could not acquire the UIList modal mutation guard")
+            context.window_manager.modal_handler_add(self)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            try:
+                self._end_modal_mutation()
+            except Exception:
+                pass
+            fbp_warn("Could not start UIList drag", exc)
+            return {'CANCELLED'}
+        try:
+            context.window.cursor_modal_set('SCROLL_Y')
+        except FBP_DATA_ERRORS:
+            pass
+        self._redraw(context)
+        return {'RUNNING_MODAL'}
+
+class FBP_OT_ConvertColorPlaneToAnimation(Operator):
+    bl_idname = "fbp.convert_color_plane_to_animation"
+    bl_label = "Convert to Color Animation"
+    bl_description = "Turn the selected static Color or Gradient plane into a one-frame procedural animation list"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        if not rig:
+            rigs = get_selected_rigs(context)
+            rig = rigs[0] if rigs else None
+        if not rig or not getattr(rig, "fbp_plane_target", None):
+            self.report({'WARNING'}, "Select one Frame By Plane color layer first")
+            return {'CANCELLED'}
+        if not getattr(rig, "fbp_is_color_plane", False):
+            self.report({'WARNING'}, "Convert to Color Animation is available only for Color and Gradient planes")
+            return {'CANCELLED'}
+        if not fbp_color_plane_can_have_frames(rig):
+            self.report({'WARNING'}, "Holdout planes are static masks and cannot have animation frames")
+            return {'CANCELLED'}
+        if len(getattr(rig, "fbp_images", [])) > 0:
+            self.report({'INFO'}, "This Color plane already has animation frames")
+            return {'FINISHED'}
+
+        desired_kind = _fbp_requested_procedural_frame_kind(rig)
+        if desired_kind == 'HOLDOUT':
+            self.report({'WARNING'}, "Holdout planes are static masks and cannot have animation frames")
+            return {'CANCELLED'}
+
+        # Convert must follow the visible Color/Gradient choice, not stale material
+        # metadata. If the material disagrees with the UI state, rebuild it before
+        # creating the first row so a Color plane cannot become a Gradient frame.
+        if getattr(rig, 'fbp_color_plane_mode', 'SOLID') != desired_kind:
+            fbp_set_rna_property_silent(rig, 'fbp_color_plane_mode', desired_kind)
+
+        # Build the first list material from the visible button state instead of
+        # reusing the static plane material. Reusing the static material is unsafe
+        # after switching Gradient -> Color because old ColorRamp nodes can remain
+        # in the shader even when metadata has been reset to SOLID.
+        try:
+            source_mat, _source_label, _is_empty = fbp_create_procedural_frame_material_for_rig(rig, 1)
+        except Exception as exc:
+            fbp_warn("Could not create first procedural animation material", exc)
+            source_mat = None
+        if not source_mat:
+            self.report({'ERROR'}, "Could not create the first procedural frame")
+            return {'CANCELLED'}
+
+        fbp_set_procedural_metadata(source_mat, desired_kind)
+        label = fbp_procedural_frame_display_name(
+            rig, source_mat, desired_kind
+        )
+        entry = {
+            "name": label,
+            "duration": max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1)),
+            "is_selected": True,
+            "is_empty": False,
+            "filepath": "",
+            "procedural_kind": desired_kind,
+            "material": source_mat,
+        }
+        if not fbp_apply_sequence_entries_to_rig(rig, [entry]):
+            self.report({'ERROR'}, "Could not convert the Color plane to animation")
+            return {'CANCELLED'}
+        rig.fbp_images_index = 0
+        try:
+            if len(rig.fbp_images):
+                rig.fbp_images[0].is_selected = True
+        except FBP_DATA_ERRORS:
+            pass
+        fbp_load_active_procedural_frame_to_rig(rig)
+        do_update_animation(rig)
+        fbp_jump_timeline_to_sequence_row(context, rig, 0)
+        self.report({'INFO'}, f"Created one {label} animation frame")
+        return {'FINISHED'}
+
+
 class FBP_OT_InsertImagesAfterSelected(Operator):
     bl_idname      = "fbp.insert_images_after_selected"
     bl_label       = "Insert Frame"
@@ -213,7 +935,7 @@ class FBP_OT_InsertImagesAfterSelected(Operator):
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
         if not rig or not rig.fbp_plane_target:
-            self.report({'WARNING'}, "Select one Frame by Plane rig first")
+            self.report({'WARNING'}, "Select one Frame By Plane rig first")
             return {'CANCELLED'}
         if getattr(rig, "fbp_is_color_plane", False) and not fbp_color_plane_can_have_frames(rig):
             self.report({'WARNING'}, "Holdout planes are static masks and cannot have animation frames")
@@ -224,20 +946,29 @@ class FBP_OT_InsertImagesAfterSelected(Operator):
             return {'CANCELLED'}
 
 
-        requested_kind = None
         if self.frame_mode == 'COLOR':
             requested_kind = 'SOLID'
         elif self.frame_mode == 'GRADIENT':
             requested_kind = 'GRADIENT'
+        else:
+            requested_kind = _fbp_requested_procedural_frame_kind(rig)
+            if requested_kind == 'HOLDOUT':
+                self.report({'WARNING'}, "Holdout planes are static masks and cannot have animation frames")
+                return {'CANCELLED'}
 
         old_mode = getattr(rig, 'fbp_color_plane_mode', 'SOLID')
-        if requested_kind:
-            # Silent assignment avoids rebuilding the active frame just because
-            # the user chooses which kind of new frame to insert. Abort instead
-            # of creating a material with the wrong type if the RNA write fails.
-            if not fbp_set_rna_property_silent(rig, 'fbp_color_plane_mode', requested_kind):
-                self.report({'ERROR'}, "Could not change the procedural frame type")
-                return {'CANCELLED'}
+        # Silent assignment avoids rebuilding the active frame just because
+        # the user chooses which kind of new frame to insert. Abort instead
+        # of creating a material with the wrong type if the RNA write fails.
+        if (
+            str(getattr(rig, "fbp_color_plane_mode", "SOLID") or "SOLID")
+            != requested_kind
+            and not fbp_set_rna_property_silent(
+                rig, "fbp_color_plane_mode", requested_kind
+            )
+        ):
+            self.report({'ERROR'}, "Could not change the procedural frame type")
+            return {'CANCELLED'}
 
         try:
             mat, label, is_empty = fbp_create_procedural_frame_material_for_rig(
@@ -248,7 +979,7 @@ class FBP_OT_InsertImagesAfterSelected(Operator):
             self.report({'ERROR'}, "Could not create the procedural frame material")
             return {'CANCELLED'}
         finally:
-            if requested_kind and not fbp_set_rna_property_silent(
+            if old_mode != requested_kind and not fbp_set_rna_property_silent(
                 rig, 'fbp_color_plane_mode', old_mode
             ):
                 self.report({'WARNING'}, "The previous procedural plane type could not be restored")
@@ -257,9 +988,8 @@ class FBP_OT_InsertImagesAfterSelected(Operator):
             self.report({'ERROR'}, "Could not create the procedural frame material")
             return {'CANCELLED'}
 
-        kind = requested_kind or fbp_procedural_kind_from_material(
-            mat, getattr(rig, 'fbp_color_plane_mode', 'SOLID')
-        )
+        fbp_set_procedural_metadata(mat, requested_kind)
+        kind = requested_kind
         entry = {
             "name": label,
             "duration": max(1, int(getattr(rig, 'fbp_global_duration', 1))),
@@ -271,6 +1001,7 @@ class FBP_OT_InsertImagesAfterSelected(Operator):
         result = fbp_insert_sequence_entry(rig, entry, mat, None)
         if result < 0:
             return {'CANCELLED'}
+        fbp_jump_timeline_to_sequence_row(context, rig, result)
 
         self.report({'INFO'}, f"Inserted {label}")
         return {'FINISHED'}
@@ -281,11 +1012,53 @@ class FBP_OT_InsertLinkedImageAfterSelected(Operator):
     bl_description = "Import a new image frame after the active frame or after the last checked frame"
     bl_options     = {'REGISTER', 'UNDO'}
 
+    rig_name: StringProperty(
+        name="Layer",
+        description="Frame By Plane layer captured before the file browser opens",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    rig_key: StringProperty(
+        name="Layer Runtime ID",
+        description="Runtime identity used to resolve a renamed layer safely",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    anchor_uid: StringProperty(
+        name="Insert After Row ID",
+        description="Persistent frame identity used as the insertion anchor",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
     filepath:  StringProperty(description="Selected media file path returned by Blender's file browser.", subtype='FILE_PATH')
     directory: StringProperty(description="Folder currently selected in Blender's file browser.", subtype='DIR_PATH')
     files:     CollectionProperty(description="Files selected in Blender's file browser for this import or replacement action.", type=bpy.types.OperatorFileListElement)
 
     def invoke(self, context, event):
+        del event
+        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        if not rig:
+            rigs = get_selected_rigs(context)
+            rig = rigs[0] if rigs else None
+        if not rig or not getattr(rig, 'fbp_plane_target', None):
+            return {'CANCELLED'}
+        ensure_unique_item_identities(getattr(rig, 'fbp_images', ()), 'stable_id')
+        self.rig_name = str(getattr(rig, 'name', '') or '')
+        self.rig_key = fbp_obj_runtime_token(rig)
+        items = getattr(rig, 'fbp_images', ())
+        checked = [index for index, item in enumerate(items) if bool(getattr(item, 'is_selected', False))]
+        if checked:
+            anchor_index = checked[-1]
+        elif items:
+            anchor_index = max(0, min(
+                int(getattr(rig, 'fbp_images_index', 0) or 0), len(items) - 1,
+            ))
+        else:
+            anchor_index = -1
+        self.anchor_uid = (
+            str(getattr(items[anchor_index], 'stable_id', '') or '')
+            if anchor_index >= 0 else ''
+        )
         path = context.scene.fbp_project_path or context.scene.fbp_last_directory
         if path:
             self.directory = path
@@ -293,12 +1066,16 @@ class FBP_OT_InsertLinkedImageAfterSelected(Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
-        if not rig:
+        rig = fbp_find_id_by_runtime_key(
+            bpy.data.objects, self.rig_key, self.rig_name,
+        ) if self.rig_key else None
+        if not rig and not self.rig_key:
+            rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        if not rig and not self.rig_key:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
         if not rig or not rig.fbp_plane_target:
-            self.report({'WARNING'}, "Select one Frame by Plane rig first")
+            self.report({'WARNING'}, "Select one Frame By Plane rig first")
             return {'CANCELLED'}
         backend_type = fbp_layer_backend_type(rig)
         if backend_type not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE'}:
@@ -323,22 +1100,58 @@ class FBP_OT_InsertLinkedImageAfterSelected(Operator):
             return {'CANCELLED'}
 
         context.scene.fbp_last_directory = self.directory
-        img_path = os.path.join(self.directory, chosen)
-        entry = {
-            "name": chosen,
-            "duration": max(1, int(getattr(rig, 'fbp_global_duration', 1))),
-            "is_selected": True,
-            "is_empty": False,
-            "filepath": img_path,
-            "procedural_kind": "AUTO",
-        }
-        insert_at = fbp_insert_sequence_entry(rig, entry, None)
-        if insert_at < 0:
+        try:
+            source_directory, source_files, durations, prepared_media = (
+                fbp_prepare_media_source(context, self.directory, [chosen])
+            )
+        except Exception as exc:
+            fbp_warn("Could not prepare imported frame media", exc)
+            self.report({'ERROR'}, f"Could not import {chosen}: {exc}")
+            return {'CANCELLED'}
+
+        default_duration = max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1))
+        durations = list(durations or ())
+        new_entries = [
+            {
+                "name": filename,
+                "duration": durations[index] if index < len(durations) else default_duration,
+                "is_selected": True,
+                "is_empty": False,
+                "filepath": os.path.join(source_directory, filename),
+                "procedural_kind": "AUTO",
+            }
+            for index, filename in enumerate(source_files)
+        ]
+        entries = fbp_sequence_entries_from_rig(rig)
+        anchor_index = index_for_identity(
+            getattr(rig, 'fbp_images', ()), 'stable_id', self.anchor_uid,
+            default=-1,
+        )
+        if anchor_index >= 0:
+            insert_at = anchor_index + 1
+        elif not self.anchor_uid:
+            checked = [index for index, data in enumerate(entries) if bool(data.get("is_selected", False))]
+            if checked:
+                insert_at = checked[-1] + 1
+            else:
+                current = int(getattr(rig, "fbp_images_index", 0) or 0)
+                insert_at = min(max(current, 0), len(entries) - 1) + 1 if entries else 0
+        else:
+            self.report({'WARNING'}, "The insertion frame no longer exists")
+            return {'CANCELLED'}
+        entries[insert_at:insert_at] = new_entries
+        if not fbp_apply_sequence_entries_to_rig(rig, entries):
             self.report({'WARNING'}, "Could not rebuild native image sequence")
             return {'CANCELLED'}
+        rig.fbp_images_index = insert_at
+        first_path = new_entries[0]["filepath"]
         if not rig.fbp_preview_path:
-            rig.fbp_preview_path = img_path
-        self.report({'INFO'}, f"Imported {chosen}")
+            rig.fbp_preview_path = first_path
+        fbp_jump_timeline_to_sequence_row(context, rig, insert_at)
+        if prepared_media is not None and prepared_media.animated:
+            self.report({'INFO'}, f"Imported {len(new_entries)} animated frames from {chosen}")
+        else:
+            self.report({'INFO'}, f"Imported {chosen}")
         return {'FINISHED'}
 
 class FBP_OT_InsertTransparentFrame(Operator):
@@ -353,26 +1166,46 @@ class FBP_OT_InsertTransparentFrame(Operator):
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
         if not rig or not getattr(rig, "fbp_plane_target", None):
-            self.report({'WARNING'}, "Select one Frame by Plane layer first")
+            self.report({'WARNING'}, "Select one Frame By Plane layer first")
             return {'CANCELLED'}
         backend_type = fbp_layer_backend_type(rig)
-        if backend_type not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE'}:
-            self.report({'WARNING'}, "Transparent frames are available only for image planes and image sequences")
+        is_color_plane = bool(getattr(rig, "fbp_is_color_plane", False))
+        if not is_color_plane and backend_type not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE'}:
+            self.report({'WARNING'}, "Transparent frames are available only for image and Color Plane sequences")
             return {'CANCELLED'}
 
+        material = None
+        if is_color_plane:
+            old_mode = getattr(rig, 'fbp_color_plane_mode', 'SOLID')
+            fbp_set_rna_property_silent(rig, 'fbp_color_plane_mode', 'SOLID')
+            try:
+                material, _label, _is_empty = fbp_create_procedural_frame_material_for_rig(
+                    rig, len(getattr(rig, 'fbp_images', ())) + 1
+                )
+                if material:
+                    fbp_set_procedural_metadata(material, 'SOLID')
+                    fbp_set_solid_material_color(material, (0.0, 0.0, 0.0, 0.0))
+                    material.diffuse_color = (0.0, 0.0, 0.0, 0.0)
+            finally:
+                if old_mode != 'SOLID':
+                    fbp_set_rna_property_silent(rig, 'fbp_color_plane_mode', old_mode)
+            if material is None:
+                self.report({'ERROR'}, "Could not create a transparent Color Plane frame")
+                return {'CANCELLED'}
         entry = {
-            "name": "Transparent Frame",
+            "name": "Alpha",
             "duration": max(1, int(getattr(rig, 'fbp_global_duration', 1) or 1)),
             "is_selected": True,
             "is_empty": True,
             "filepath": "",
-            "procedural_kind": "AUTO",
+            "procedural_kind": "AUTO" if not is_color_plane else "SOLID",
         }
-        insert_at = fbp_insert_sequence_entry(rig, entry, None)
+        insert_at = fbp_insert_sequence_entry(rig, entry, material)
         if insert_at < 0:
             self.report({'WARNING'}, "Could not insert transparent frame")
             return {'CANCELLED'}
-        self.report({'INFO'}, "Transparent frame added")
+        fbp_jump_timeline_to_sequence_row(context, rig, insert_at)
+        self.report({'INFO'}, "Alpha frame added")
         return {'FINISHED'}
 
 
@@ -384,11 +1217,42 @@ class FBP_OT_LinkImageFrame(Operator):
 
     index:     IntProperty(description="Zero-based index of the frame, drawing, layer or setup entry targeted by this action.", default=-1)
     rig_name:  StringProperty(description="Name of the Frame By Plane control rig targeted by this action. Stored only long enough to resolve the object safely.", default="")
+    rig_key: StringProperty(
+        name="Layer Runtime ID",
+        description="Runtime identity used to resolve a renamed layer safely",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    frame_uid: StringProperty(
+        name="Frame Row ID",
+        description="Persistent frame identity captured before the file browser opens",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
     filepath:  StringProperty(description="Selected media file path returned by Blender's file browser.", subtype='FILE_PATH')
     directory: StringProperty(description="Folder currently selected in Blender's file browser.", subtype='DIR_PATH')
     files:     CollectionProperty(description="Files selected in Blender's file browser for this import or replacement action.", type=bpy.types.OperatorFileListElement)
+    filter_glob: StringProperty(
+        description="Show only media compatible with this layer backend",
+        default=";".join(f"*{ext}" for ext in sorted(FBP_SUPPORTED_IMAGE_EXT)),
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
 
     def invoke(self, context, event):
+        del event
+        rig = bpy.data.objects.get(self.rig_name) if self.rig_name else None
+        if rig is None:
+            rigs = get_selected_rigs(context)
+            rig = rigs[0] if rigs else None
+        if rig is None or not (0 <= int(self.index) < len(getattr(rig, 'fbp_images', ()))):
+            return {'CANCELLED'}
+        self.rig_name = str(getattr(rig, 'name', '') or '')
+        self.rig_key = fbp_obj_runtime_token(rig)
+        ensure_unique_item_identities(getattr(rig, 'fbp_images', ()), 'stable_id')
+        self.frame_uid = str(getattr(rig.fbp_images[int(self.index)], 'stable_id', '') or '')
+        backend_type = fbp_layer_backend_type(rig) if rig is not None else 'NATIVE_IMAGE'
+        extensions = FBP_SUPPORTED_VIDEO_EXT if backend_type == 'NATIVE_MOVIE' else FBP_SUPPORTED_IMAGE_EXT
+        self.filter_glob = ";".join(f"*{ext}" for ext in sorted(extensions))
         path = context.scene.fbp_project_path or context.scene.fbp_last_directory
         if path:
             self.directory = path
@@ -396,18 +1260,26 @@ class FBP_OT_LinkImageFrame(Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        rig = bpy.data.objects.get(self.rig_name) if self.rig_name else None
-        if not rig or not getattr(rig, "is_fbp_control", False):
+        rig = fbp_find_id_by_runtime_key(
+            bpy.data.objects, self.rig_key, self.rig_name,
+        ) if self.rig_key else (bpy.data.objects.get(self.rig_name) if self.rig_name else None)
+        if (not rig or not getattr(rig, "is_fbp_control", False)) and not self.rig_key:
             rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
-        if not rig:
+        if not rig and not self.rig_key:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
         if not rig or not rig.fbp_plane_target:
-            self.report({'WARNING'}, "Select one Frame by Plane rig first")
+            self.report({'WARNING'}, "The target Frame By Plane layer no longer exists")
             return {'CANCELLED'}
-        if not (0 <= self.index < len(rig.fbp_images)):
+        resolved_index = index_for_identity(
+            rig.fbp_images, 'stable_id', self.frame_uid, default=-1,
+        )
+        if resolved_index < 0 and not self.frame_uid:
+            resolved_index = int(self.index)
+        if not (0 <= resolved_index < len(rig.fbp_images)):
             self.report({'WARNING'}, "Invalid frame index")
             return {'CANCELLED'}
+        self.index = resolved_index
         backend_type = fbp_layer_backend_type(rig)
         if backend_type not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE'}:
             self.report({'WARNING'}, "Only native image and movie rows can be relinked")
@@ -426,12 +1298,54 @@ class FBP_OT_LinkImageFrame(Operator):
         if not chosen:
             self.report({'WARNING'}, "No supported image or video selected")
             return {'CANCELLED'}
-        if is_supported_video_file(chosen) and len(rig.fbp_images) != 1:
+        chosen_is_video = is_supported_video_file(chosen)
+        if backend_type == 'NATIVE_MOVIE' and not chosen_is_video:
+            self.report({'WARNING'}, "Movie Plane rows accept video files only")
+            return {'CANCELLED'}
+        if backend_type != 'NATIVE_MOVIE' and chosen_is_video:
+            self.report({'WARNING'}, "Image Plane rows accept image files only")
+            return {'CANCELLED'}
+        if chosen_is_video and len(rig.fbp_images) != 1:
             self.report({'WARNING'}, "A video must remain a standalone one-row Movie Plane")
             return {'CANCELLED'}
 
         context.scene.fbp_last_directory = self.directory
-        img_path = os.path.join(self.directory, chosen)
+        try:
+            source_directory, source_files, _durations, prepared_media = (
+                fbp_prepare_media_source(context, self.directory, [chosen])
+            )
+        except Exception as exc:
+            fbp_warn("Could not prepare relinked media", exc)
+            self.report({'ERROR'}, f"Could not link {chosen}: {exc}")
+            return {'CANCELLED'}
+        if len(source_files) != 1:
+            if backend_type == 'NATIVE_MOVIE':
+                self.report({'WARNING'}, "Use Replace Sequence to convert a Movie Plane to animated image frames")
+                return {'CANCELLED'}
+            entries = fbp_sequence_entries_from_rig(rig)
+            durations = list(_durations or ())
+            fallback_duration = max(1, int(entries[self.index].get("duration", 1) or 1))
+            replacement_entries = [
+                {
+                    "name": filename,
+                    "duration": durations[index] if index < len(durations) else fallback_duration,
+                    "is_selected": True,
+                    "is_empty": False,
+                    "filepath": os.path.join(source_directory, filename),
+                    "procedural_kind": "AUTO",
+                }
+                for index, filename in enumerate(source_files)
+            ]
+            entries[self.index:self.index + 1] = replacement_entries
+            if not fbp_apply_sequence_entries_to_rig(rig, entries):
+                self.report({'WARNING'}, "Could not replace this row with animated media")
+                return {'CANCELLED'}
+            fbp_set_rna_property_silent(rig, 'fbp_images_index', self.index)
+            if not rig.fbp_preview_path:
+                rig.fbp_preview_path = replacement_entries[0]["filepath"]
+            self.report({'INFO'}, f"Replaced one row with {len(replacement_entries)} frames from {chosen}")
+            return {'FINISHED'}
+        img_path = os.path.join(source_directory, source_files[0])
 
         item = rig.fbp_images[self.index]
         previous = {
@@ -458,33 +1372,46 @@ class FBP_OT_LinkImageFrame(Operator):
                     fbp_warn("Could not restore native backend after failed frame relink")
             except Exception as exc:
                 fbp_warn("Could not restore native backend after failed frame relink", exc)
-
-        item.name = chosen
-        item.filepath = img_path
-        item.is_empty = False
-        item.is_selected = True
-        fbp_set_rna_property_silent(rig, 'fbp_images_index', self.index)
-
-        if not rig.fbp_preview_path:
-            rig.fbp_preview_path = img_path
+            return True
 
         try:
-            if not (
-                fbp_refresh_sequence_backend_from_rig(rig)
-                or fbp_rebuild_sequence_backend_from_rig(rig)
-            ):
-                restore_row()
-                self.report({'WARNING'}, "Could not rebuild image sequence backend")
-                return {'CANCELLED'}
+            with FBPTransaction(
+                f"Relink frame {self.index + 1}",
+                kind="MEDIA_RELINK",
+                journal_owner=rig,
+                context={
+                    "frame_uid": self.frame_uid,
+                    "index": self.index,
+                    "source": previous['filepath'],
+                    "destination": img_path,
+                },
+            ) as transaction:
+                transaction.defer_rollback(
+                    restore_row,
+                    label="restore media row and native backend",
+                )
+                transaction.checkpoint("UPDATE_ROW")
+                item.name = chosen if prepared_media is not None else source_files[0]
+                item.filepath = img_path
+                item.is_empty = False
+                item.is_selected = True
+                fbp_set_rna_property_silent(rig, 'fbp_images_index', self.index)
+                if not rig.fbp_preview_path:
+                    rig.fbp_preview_path = img_path
+
+                transaction.checkpoint("REBUILD_BACKEND")
+                if not (
+                    fbp_refresh_sequence_backend_from_rig(rig)
+                    or fbp_rebuild_sequence_backend_from_rig(rig)
+                ):
+                    raise RuntimeError("Could not rebuild image sequence backend")
+                transaction.checkpoint("VALIDATED")
+                transaction.commit()
         except Exception as exc:
-            restore_row()
             fbp_warn("Could not rebuild image sequence backend after relinking", exc)
             self.report({'WARNING'}, "Could not rebuild image sequence backend")
             return {'CANCELLED'}
 
-        # The transactional rebuild already uses the current timing, emission and
-        # opacity settings. Repeating all three updates here only rebuilt/validated
-        # the same material a second time.
         self.report({'INFO'}, f"Linked {chosen}")
         return {'FINISHED'}
 
@@ -540,6 +1467,7 @@ class FBP_OT_ListAction(Operator):
             "is_empty": bool(getattr(item, "is_empty", False)),
             "filepath": str(getattr(item, "filepath", "") or ""),
             "procedural_kind": str(getattr(item, "procedural_kind", "AUTO") or "AUTO"),
+            "stable_id": str(getattr(item, "stable_id", "") or "") or uuid.uuid4().hex,
         }
 
     def _apply_items(self, rig, items, new_index=None):
@@ -618,6 +1546,8 @@ class FBP_OT_ListAction(Operator):
 
 
     def execute(self, context):
+        changed = False
+        feedback_given = False
         for rig in get_selected_rigs(context):
             if not getattr(rig, "fbp_plane_target", None):
                 continue
@@ -627,6 +1557,7 @@ class FBP_OT_ListAction(Operator):
                 continue
             if backend_type == 'NATIVE_MOVIE':
                 self.report({'WARNING'}, "Movie Planes use one source row and do not support frame-list edits")
+                feedback_given = True
                 continue
 
             if getattr(rig, "fbp_is_color_plane", False):
@@ -651,16 +1582,24 @@ class FBP_OT_ListAction(Operator):
                 image_data = [self._snapshot_item(item) for item in rig.fbp_images]
 
             idx = max(0, min(getattr(rig, "fbp_images_index", 0), len(image_data) - 1))
+            active_stable_id = str(image_data[idx].get("stable_id", "") or "") if image_data else ""
 
             if self.action == 'REMOVE':
                 remove_indices = self._selected_indices(image_data) or ([idx] if idx < len(image_data) else [])
                 if backend_type in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE'} and len(remove_indices) >= len(image_data):
                     self.report({'WARNING'}, "An image plane must keep at least one frame")
+                    feedback_given = True
                     continue
                 for i in reversed(remove_indices):
                     if 0 <= i < len(image_data):
                         del image_data[i]
-                self._apply_items(rig, image_data, min(idx, len(image_data) - 1) if image_data else 0)
+                new_index = next((
+                    row_index for row_index, data in enumerate(image_data)
+                    if active_stable_id and str(data.get("stable_id", "") or "") == active_stable_id
+                ), min(idx, len(image_data) - 1) if image_data else 0)
+                applied = self._apply_items(rig, image_data, new_index)
+                changed = applied or changed
+                feedback_given = (not applied) or feedback_given
 
             elif self.action in {'MOVE_TOP', 'MOVE_UP', 'MOVE_DOWN', 'MOVE_BOTTOM'}:
                 action_indices = self._action_indices(image_data, idx)
@@ -689,12 +1628,15 @@ class FBP_OT_ListAction(Operator):
                     self._move_indices_bottom(image_data, action_indices)
 
                 new_index = self._active_index_after_reorder(image_data, active_entry, idx)
-                self._apply_items(rig, image_data, new_index)
+                applied = self._apply_items(rig, image_data, new_index)
+                changed = applied or changed
+                feedback_given = (not applied) or feedback_given
 
             elif self.action == 'DUPLICATE_SELECTED':
                 selected_indices = self._selected_indices(image_data)
                 if not selected_indices:
                     self.report({'WARNING'}, "No checked frames to duplicate")
+                    feedback_given = True
                     continue
                 insert_at = selected_indices[-1] + 1
                 # After duplication, only the new duplicated rows stay checked.
@@ -705,12 +1647,18 @@ class FBP_OT_ListAction(Operator):
                 else:
                     duplicates = [dict(image_data[i]) for i in selected_indices]
                     for dup in duplicates:
+                        dup["stable_id"] = uuid.uuid4().hex
                         dup["is_selected"] = True
                 image_data[insert_at:insert_at] = duplicates
-                self._apply_items(rig, image_data, insert_at)
+                applied = self._apply_items(rig, image_data, insert_at)
+                changed = applied or changed
+                feedback_given = (not applied) or feedback_given
 
-
-        return {'FINISHED'}
+        if changed:
+            return {'FINISHED'}
+        if not feedback_given:
+            self.report({'INFO'}, "No frame-list changes were needed")
+        return {'CANCELLED'}
 
 def _fbp_strict_sequence_direction(entries, fallback=False):
     """Return the natural numbered-sequence direction when it is unambiguous."""
@@ -845,22 +1793,165 @@ class FBP_OT_ReverseSequence(Operator):
         self.report({'WARNING'}, "Select a sequence with at least two frames")
         return {'CANCELLED'}
 
+
+class FBP_OT_OptimizeSequenceFrames(Operator):
+    bl_idname = "fbp.optimize_sequence_frames"
+    bl_label = "Analyze and Consolidate Holds"
+    bl_description = (
+        "Analyze decoded pixels, merge consecutive identical frames into holds, "
+        "and replace fully transparent files with logical empty frames"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    collapse_duplicates: BoolProperty(
+        name="Consolidate Exact Holds",
+        description=(
+            "Merge only consecutive pixel-identical frames and add their durations; "
+            "source image files are not deleted or changed"
+        ),
+        default=True,
+    )
+    replace_transparent: BoolProperty(
+        name="Use Logical Transparent Frames",
+        description=(
+            "Replace fully transparent image rows with Frame By Plane empty intervals; "
+            "source files remain untouched"
+        ),
+        default=True,
+    )
+    alpha_threshold: IntProperty(
+        name="Transparent Alpha Threshold",
+        description="Treat a frame as empty only when every alpha value is at or below this byte value",
+        default=0,
+        min=0,
+        max=255,
+    )
+    rig_name: StringProperty(
+        name="Sequence Layer",
+        description="Layer captured before the analysis dialog opens",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    rig_key: StringProperty(
+        name="Sequence Layer Runtime ID",
+        description="Runtime identity used to resolve a renamed layer safely",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    @staticmethod
+    def _active_rig(context):
+        obj = getattr(context, "object", None)
+        if obj and getattr(obj, "is_fbp_control", False):
+            return obj
+        rigs = get_selected_rigs(context)
+        return rigs[0] if rigs else None
+
+    def _resolved_rig(self, context):
+        if self.rig_key:
+            return fbp_find_id_by_runtime_key(
+                bpy.data.objects, self.rig_key, self.rig_name,
+            )
+        if self.rig_name:
+            return bpy.data.objects.get(self.rig_name)
+        return self._active_rig(context)
+
+    def invoke(self, context, event):
+        del event
+        rig = self._active_rig(context)
+        if not rig or fbp_layer_backend_type(rig) not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE'}:
+            self.report({'WARNING'}, "Select one image or image-sequence layer")
+            return {'CANCELLED'}
+        if not len(getattr(rig, "fbp_images", ())):
+            self.report({'WARNING'}, "The selected layer has no image frames")
+            return {'CANCELLED'}
+        self.rig_name = str(getattr(rig, "name", "") or "")
+        self.rig_key = fbp_obj_runtime_token(rig)
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        rig = self._resolved_rig(context)
+        section_header(layout, "Sequence Analysis", icon=fbp_icon("IMAGE_DATA"))
+        if rig:
+            layout.label(text=f"{rig.name}: {len(rig.fbp_images)} frame(s)")
+        layout.prop(self, "collapse_duplicates")
+        layout.prop(self, "replace_transparent")
+        threshold = layout.row(align=True)
+        threshold.enabled = self.replace_transparent
+        threshold.prop(self, "alpha_threshold")
+        layout.separator()
+        layout.label(text="Comparison is exact after RGBA decoding.", icon=fbp_icon("INFO"))
+        layout.label(text="Timing is preserved; source files are never modified.", icon=fbp_icon("LOCKED"))
+
+    def execute(self, context):
+        if not self.collapse_duplicates and not self.replace_transparent:
+            self.report({'WARNING'}, "Enable at least one optimization")
+            return {'CANCELLED'}
+        rig = self._resolved_rig(context)
+        if not rig or fbp_layer_backend_type(rig) not in {'NATIVE_IMAGE', 'NATIVE_SEQUENCE'}:
+            self.report({'WARNING'}, "The sequence layer no longer exists")
+            return {'CANCELLED'}
+
+        entries = fbp_sequence_entries_from_rig(rig)
+        old_index = int(getattr(rig, "fbp_images_index", 0) or 0)
+        before_duration = sum(max(1, int(entry.get("duration", 1) or 1)) for entry in entries)
+        try:
+            optimized, stats = fbp_optimize_sequence_entries(
+                entries,
+                collapse_duplicates=bool(self.collapse_duplicates),
+                replace_transparent=bool(self.replace_transparent),
+                alpha_threshold=int(self.alpha_threshold),
+                path_resolver=lambda path: os.path.abspath(bpy.path.abspath(path)),
+            )
+        except Exception as exc:
+            fbp_warn("Sequence image analysis failed", exc)
+            self.report({'ERROR'}, f"Sequence analysis failed: {exc}")
+            return {'CANCELLED'}
+
+        after_duration = sum(max(1, int(entry.get("duration", 1) or 1)) for entry in optimized)
+        if after_duration != before_duration:
+            self.report({'ERROR'}, "Sequence optimization was cancelled because timing changed")
+            return {'CANCELLED'}
+        if stats.unreadable_paths:
+            self.report({'WARNING'}, f"Skipped {len(stats.unreadable_paths)} missing or unreadable frame(s)")
+        if not stats.collapsed_rows and not stats.transparent_rows:
+            self.report({'INFO'}, "Analysis complete: no exact holds or transparent files to consolidate")
+            return {'FINISHED'}
+        if not fbp_apply_sequence_entries_to_rig(rig, optimized):
+            self.report({'ERROR'}, "Could not rebuild the optimized sequence; original rows were restored")
+            return {'CANCELLED'}
+
+        fbp_set_rna_property_silent(
+            rig,
+            "fbp_images_index",
+            max(0, min(old_index, len(optimized) - 1)),
+        )
+        fbp_tag_redraw(context)
+        self.report(
+            {'INFO'},
+            f"Consolidated {stats.collapsed_rows} duplicate frame(s) and "
+            f"{stats.transparent_rows} transparent frame(s); timing preserved",
+        )
+        return {'FINISHED'}
+
+
 class FBP_OT_PopupSequenceSettings(Operator):
     bl_idname = "fbp.popup_sequence_settings"
     bl_label = "Timing / Sequence Settings"
-    bl_description = "Open timing and sequence controls for the selected Frame by Plane layer"
+    bl_description = "Open timing and sequence controls for the selected Frame By Plane layer"
     bl_options = {'REGISTER', 'UNDO'}
 
     def invoke(self, context, event):
         if not get_selected_rigs(context):
-            self.report({'WARNING'}, "Select a Frame by Plane layer first")
+            self.report({'WARNING'}, "Select a Frame By Plane layer first")
             return {'CANCELLED'}
         return context.window_manager.invoke_props_dialog(self, width=420)
 
     def draw(self, context):
         rig = get_selected_rigs(context)[0]
-        layout = self.layout
-        layout.label(text=rig.name, icon=fbp_icon("TIME"))
+        layout = configure_layout(self.layout)
+        section_header(layout, rig.name, icon=fbp_icon("TIME"))
         row = layout.row(align=True)
         row.prop(rig, "fbp_start_frame", text="Start")
         row.operator("fbp.set_current_frame", text="", icon=fbp_icon("EYEDROPPER"))
@@ -1050,6 +2141,11 @@ class FBP_OT_DuplicateSelectedLayers(Operator):
                         fbp_assign_effect_layer_seed(new_rig, effect_id, force=True)
                     fbp_update_mesh_wiggle_modifier(new_rig)
                     fbp_reapply_all_effects(new_rig)
+                    try:
+                        from .object_masks import clone_object_mask_helpers
+                        clone_object_mask_helpers(rig, new_rig, context=context)
+                    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                        pass
                     fbp_sync_effect_items(new_rig)
                 except FBP_DATA_ERRORS:
                     pass
@@ -1105,7 +2201,7 @@ class FBP_OT_DuplicateSelectedLayers(Operator):
 class FBP_OT_MergeSelectedToActiveSequence(Operator):
     bl_idname = "fbp.merge_selected_to_active_sequence"
     bl_label = "Convert to Single Animated Plane"
-    bl_description = "Merge selected Frame by Plane layers into the active layer sequence and delete the others"
+    bl_description = "Merge selected Frame By Plane layers into the active layer sequence and delete the others"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -1113,14 +2209,14 @@ class FBP_OT_MergeSelectedToActiveSequence(Operator):
         if active and getattr(active, "is_fbp_plane", False) and getattr(active.parent, "is_fbp_control", False):
             active = active.parent
         if not active or not is_fbp_layer_object(active):
-            self.report({'WARNING'}, "Make the target Frame by Plane rig active")
+            self.report({'WARNING'}, "Make the target Frame By Plane rig active")
             return {'CANCELLED'}
         rigs = get_selected_fbp_roots(context)
         if active not in rigs:
             rigs.append(active)
         rigs = sorted(set(rigs), key=lambda r: (getattr(r, "fbp_depth_order", 0), natural_sort_key(r.name)))
         if len(rigs) < 2:
-            self.report({'WARNING'}, "Select at least two Frame by Plane layers")
+            self.report({'WARNING'}, "Select at least two Frame By Plane layers")
             return {'CANCELLED'}
         backend_types = {fbp_layer_backend_type(rig) for rig in rigs}
         if 'CUTOUT' in backend_types or 'NATIVE_MOVIE' in backend_types:
@@ -1213,7 +2309,7 @@ class FBP_OT_SplitSelectedImagesToNewPlane(Operator):
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
         if not rig or not getattr(rig, "fbp_plane_target", None):
-            self.report({'WARNING'}, "Select one Frame by Plane rig")
+            self.report({'WARNING'}, "Select one Frame By Plane rig")
             return {'CANCELLED'}
         backend_type = fbp_layer_backend_type(rig)
         if backend_type in {'CUTOUT', 'NATIVE_MOVIE'}:
@@ -1295,7 +2391,23 @@ class FBP_OT_DeleteSequence(Operator):
     )
 
     def execute(self, context):
-        exact_target = bpy.data.objects.get(str(getattr(self, 'rig_name', '') or ''))
+        # A Grease Pencil canvas represents a child row of an FBP layer, not
+        # the layer itself. Never resolve it back to the owner for deletion,
+        # including explicit name-based actions from the Layer List.
+        target_name = str(getattr(self, 'rig_name', '') or '')
+        try:
+            from .grease_pencil_bridge import delete_gp_canvas, is_gp_canvas
+            canvas = bpy.data.objects.get(target_name) if target_name else getattr(context, 'object', None)
+            if is_gp_canvas(canvas):
+                deleted, users, error = delete_gp_canvas(context, canvas)
+                if not deleted:
+                    self.report({'ERROR'}, error or 'Could not delete the Grease Pencil canvas')
+                    return {'CANCELLED'}
+                self.report({'INFO'}, f"Deleted Grease Pencil canvas and detached {users} mask user{'s' if users != 1 else ''}")
+                return {'FINISHED'}
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        exact_target = bpy.data.objects.get(target_name)
         selected_rigs = (
             [exact_target]
             if exact_target and is_fbp_layer_object(exact_target)
@@ -1325,6 +2437,12 @@ class FBP_OT_DeleteOrDefault(Operator):
     bl_options     = {'UNDO'}
 
     def invoke(self, context, event):
+        try:
+            from .grease_pencil_bridge import is_gp_canvas
+            if is_gp_canvas(getattr(context, 'object', None)):
+                return bpy.ops.fbp.delete_grease_pencil_canvas('INVOKE_DEFAULT')
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
         roots = get_selected_fbp_roots(context)
         if roots:
             deleted = delete_fbp_rigs(context, roots)
