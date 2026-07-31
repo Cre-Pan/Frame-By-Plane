@@ -1,0 +1,87 @@
+name: Finalize 7.1.13 metadata
+
+on:
+  push:
+    branches:
+      - "release/7.1.11-lts"
+    paths:
+      - "release-patches/7.1.13-metadata.ready"
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/7.1.11-lts
+          fetch-depth: 0
+
+      - name: Synchronize 7.1.13 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          replacements = {
+              'frame_by_plane/blender_manifest.toml': [('version = "7.1.11"', 'version = "7.1.13"')],
+              'frame_by_plane/constants.py': [('FBP_VERSION = (7, 1, 11)', 'FBP_VERSION = (7, 1, 13)')],
+              'frame_by_plane/support_policy.py': [('FBP_LTS_TARGET_VERSION = "7.1.11"', 'FBP_LTS_TARGET_VERSION = "7.1.13"')],
+          }
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              text = path.read_text(encoding='utf-8')
+              for old, new in pairs:
+                  if old not in text:
+                      raise SystemExit(f'Missing expected version marker in {filename}: {old}')
+                  text = text.replace(old, new, 1)
+              path.write_text(text, encoding='utf-8')
+
+          notes = '''# Frame By Plane 7.1.13 LTS
+
+Frame By Plane 7.1.13 is a registration and runtime hotfix for the 7.1 LTS line.
+
+## Registration fixes
+
+- Added the missing `update_alpha_render_method_cb` Scene-property callback.
+- Retains the corrected Shift+A and shortcut Preferences callbacks.
+- Audited every RNA `update`, `get`, `set`, `items`, `poll` and `search` callback symbol.
+
+## Additional NameError fixes
+
+- Corrected teardown error handling that referenced an unimported exception tuple.
+- Fixed Generic Mesh effect reporting that referenced an undefined effect definition.
+- Fixed scoped Geometry Nodes updates that referenced an undefined previous node group.
+
+## Existing 7.1 improvements
+
+- Smooth Mouse Magnet behavior for the persistent Scrub Bar.
+- Correct Grease Pencil frame `0` and negative-frame handling.
+- Correct custom Scrub Bar Preferences icon and immediate live redraw.
+
+## Support
+
+- Blender 5.2.x.
+- Windows x64/ARM64, macOS Intel/Apple Silicon and Linux x64.
+'''
+          Path('release-notes/7.1.13.md').write_text(notes, encoding='utf-8')
+          Path('frame_by_plane/RELEASE_NOTES_7.1.13.md').write_text(notes, encoding='utf-8')
+          Path('release-notes/7.1.11.md').unlink(missing_ok=True)
+          Path('frame_by_plane/RELEASE_NOTES_7.1.11.md').unlink(missing_ok=True)
+          PY
+          rm -f release-patches/7.1.13-metadata.ready .github/workflows/finalize-7-1-13.yml
+          python -m compileall -q frame_by_plane
+          find frame_by_plane -type d -name __pycache__ -prune -exec rm -rf {} +
+          find frame_by_plane -name '*.pyc' -delete
+
+      - name: Commit metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Finalize Frame By Plane 7.1.13 LTS"
+          git push origin HEAD:release/7.1.11-lts
