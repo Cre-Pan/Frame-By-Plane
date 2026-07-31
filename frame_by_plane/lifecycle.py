@@ -1,4 +1,4 @@
-"""Lifecycle, ownership and release-readiness diagnostics for Frame By Plane.
+"""Lifecycle, ownership and runtime diagnostics for Frame By Plane.
 
 The module keeps imports of mutation-heavy add-on modules lazy. It can therefore
 be registered near the bottom of the dependency graph and used by diagnostics
@@ -11,6 +11,7 @@ import time
 
 import bpy
 
+from .registration import _handler_module_matches
 from .runtime import (
     FBP_DATA_ERRORS,
     FBP_RENDER_BUSY,
@@ -18,6 +19,7 @@ from .runtime import (
     FBP_RENDER_UNKNOWN,
     fbp_obj_runtime_key,
     fbp_render_state,
+    fbp_runtime_callbacks_enabled,
     fbp_runtime_get,
     fbp_runtime_set,
     fbp_undo_guard_active,
@@ -26,30 +28,92 @@ from .runtime import (
 
 
 _HANDLER_SPECS = (
-    ("frame_change_pre", "fbp_frame_change_handler", 0),
-    ("frame_change_post", "fbp_frame_change_handler", 1),
-    ("depsgraph_update_post", "fbp_depsgraph_native_ops_handler", 1),
-    ("render_init", "fbp_render_guard_pre", 1),
-    ("render_pre", "fbp_render_guard_pre", 0),
-    ("render_post", "fbp_render_guard_complete", 0),
-    ("render_cancel", "fbp_render_guard_complete", 1),
-    ("render_complete", "fbp_render_guard_complete", 1),
-    ("undo_pre", "fbp_undo_pre_handler", 1),
-    ("undo_post", "fbp_undo_post_handler", 1),
-    ("load_pre", "fbp_load_pre_handler", 1),
-    ("load_post", "fbp_load_post_handler", 1),
+    ("frame_change_pre", "fbp_frame_change_handler", 1, "core"),
+    ("frame_change_post", "fbp_frame_change_handler", 0, "core"),
+    ("frame_change_post", "fbp_shape_mask_frame_change_post", 0, "object_masks"),
+    ("frame_change_pre", "fbp_effect_evolve_frame_change", 1, "geometry_nodes"),
+    ("animation_playback_pre", "fbp_effect_playback_pre", 1, "geometry_nodes"),
+    ("animation_playback_post", "fbp_effect_playback_post", 1, "geometry_nodes"),
+    ("frame_change_post", "_fbp_motion_frame_change", 1, "motion_runtime"),
+    ("load_post", "_fbp_motion_load_post", 1, "motion_runtime"),
+    ("depsgraph_update_pre", "fbp_gp_depsgraph_update_pre", 1, "grease_pencil_bridge"),
+    ("frame_change_post", "fbp_gp_frame_change", 1, "grease_pencil_bridge"),
+    ("load_post", "fbp_gp_load_post", 1, "grease_pencil_bridge"),
+    ("frame_change_post", "_frame_change_guard", 1, "grease_pencil_limited_loop"),
+    ("load_post", "_load_post_guard", 1, "grease_pencil_limited_loop"),
+    ("frame_change_post", "_cursor_on_camera_frame_handler", 1, "viewport_pie"),
+    ("depsgraph_update_post", "fbp_depsgraph_native_ops_handler", 1, "scene_sync"),
+    ("depsgraph_update_post", "effect_controls_depsgraph_update", 0, "effect_controls"),
+    ("depsgraph_update_post", "fbp_gp_depsgraph_update", 0, "grease_pencil_bridge"),
+    ("depsgraph_update_post", "_depsgraph_auto_timing_sync", 0, "grease_pencil_workflow"),
+    ("depsgraph_update_post", "_fbp_motion_depsgraph_update", 0, "motion_runtime"),
+    ("render_init", "fbp_render_guard_pre", 1, "core"),
+    ("render_pre", "fbp_render_guard_pre", 0, "core"),
+    ("render_pre", "fbp_shape_mask_render_pre", 0, "object_masks"),
+    ("render_post", "fbp_render_guard_complete", 0, "core"),
+    ("render_cancel", "fbp_render_guard_complete", 1, "core"),
+    ("render_complete", "fbp_render_guard_complete", 1, "core"),
+    ("undo_pre", "fbp_undo_pre_handler", 1, "handlers"),
+    ("undo_post", "fbp_undo_post_handler", 1, "handlers"),
+    ("load_pre", "fbp_load_pre_handler", 1, "handlers"),
+    ("load_post", "fbp_load_post_handler", 1, "handlers"),
+    (
+        "load_post",
+        "fbp_performance_load_post",
+        1,
+        "performance_dashboard",
+    ),
+    ("load_post", "fbp_compositor_sets_load_post", 1, "compositor_sets"),
+    ("depsgraph_update_post", "fbp_compositor_sets_depsgraph_post", 0, "compositor_sets"),
 ) + (
-    (("redo_pre", "fbp_redo_pre_handler", 1),)
+    (("redo_pre", "fbp_redo_pre_handler", 1, "handlers"),)
     if getattr(bpy.app.handlers, "redo_pre", None) is not None else ()
 ) + (
-    (("redo_post", "fbp_redo_post_handler", 1),)
+    (("redo_post", "fbp_redo_post_handler", 1, "handlers"),)
     if getattr(bpy.app.handlers, "redo_post", None) is not None else ()
 )
 
 
-def _handler_count(handler_list, name):
+
+_UNSAFE_RENDER_CALLBACKS = (
+    ("render_init", "fbp_gp_cycles_render_pre", "grease_pencil_bridge"),
+    ("render_init", "fbp_gp_cycles_render_setup", "grease_pencil_bridge"),
+    ("render_pre", "fbp_gp_cycles_render_pre", "grease_pencil_bridge"),
+    ("render_pre", "fbp_gp_cycles_render_setup", "grease_pencil_bridge"),
+    ("render_pre", "fbp_shape_mask_render_pre", "object_masks"),
+    ("render_cancel", "fbp_gp_cycles_render_complete", "grease_pencil_bridge"),
+    ("render_complete", "fbp_gp_cycles_render_complete", "grease_pencil_bridge"),
+    ("frame_change_post", "fbp_shape_mask_frame_change_post", "object_masks"),
+)
+
+_BACKGROUND_DISABLED_HANDLERS = frozenset({
+    ("depsgraph_update_post", "fbp_depsgraph_native_ops_handler"),
+    ("undo_pre", "fbp_undo_pre_handler"),
+    ("undo_post", "fbp_undo_post_handler"),
+    ("redo_pre", "fbp_redo_pre_handler"),
+    ("redo_post", "fbp_redo_post_handler"),
+    ("load_pre", "fbp_load_pre_handler"),
+    ("animation_playback_pre", "fbp_effect_playback_pre"),
+    ("animation_playback_post", "fbp_effect_playback_post"),
+    ("load_post", "_fbp_motion_load_post"),
+    ("depsgraph_update_pre", "fbp_gp_depsgraph_update_pre"),
+    ("load_post", "fbp_gp_load_post"),
+    ("frame_change_post", "_frame_change_guard"),
+    ("load_post", "_load_post_guard"),
+    ("frame_change_post", "_cursor_on_camera_frame_handler"),
+})
+
+def _handler_count(handler_list, name, module_suffix):
     try:
-        return sum(1 for item in tuple(handler_list) if getattr(item, "__name__", "") == name)
+        return sum(
+            1
+            for item in tuple(handler_list)
+            if getattr(item, "__name__", "") == name
+            and _handler_module_matches(
+                str(getattr(item, "__module__", "") or ""),
+                module_suffix,
+            )
+        )
     except FBP_DATA_ERRORS:
         return -1
 
@@ -70,7 +134,7 @@ def _timer_registered(callback):
     if callback is None:
         return False
     try:
-        from .handlers import fbp_timer_is_registered
+        from .managed_timers import fbp_timer_is_registered
         return bool(fbp_timer_is_registered(callback))
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         try:
@@ -89,9 +153,104 @@ def _repair_runtime_services():
     if fbp_undo_guard_active() or fbp_render_state(include_guard=False) != FBP_RENDER_IDLE:
         return False, "Blender is not idle; lifecycle services were not rebuilt"
     try:
-        from . import handlers
+        from . import (
+            compositor_sets,
+            geometry_nodes,
+            grease_pencil_bridge,
+            grease_pencil_limited_loop,
+            handlers,
+            motion_runtime,
+            performance_dashboard,
+        )
+        from .registration import append_handler_once, remove_handlers_by_name
 
         handlers.register()
+        # Retire unsafe render callbacks from any replaced module generation
+        # generations. This registration path is idempotent and does not touch
+        # RNA classes or datablocks.
+        grease_pencil_bridge._register_handlers()
+
+        callbacks = (
+            (
+                bpy.app.handlers.load_post,
+                compositor_sets.fbp_compositor_sets_load_post,
+                "compositor_sets",
+                True,
+            ),
+            (
+                bpy.app.handlers.load_post,
+                performance_dashboard.fbp_performance_load_post,
+                "performance_dashboard",
+                True,
+            ),
+            (
+                bpy.app.handlers.frame_change_pre,
+                geometry_nodes.fbp_effect_evolve_frame_change,
+                "geometry_nodes",
+                True,
+            ),
+            (
+                bpy.app.handlers.animation_playback_pre,
+                geometry_nodes.fbp_effect_playback_pre,
+                "geometry_nodes",
+                not bool(getattr(bpy.app, "background", False)),
+            ),
+            (
+                bpy.app.handlers.animation_playback_post,
+                geometry_nodes.fbp_effect_playback_post,
+                "geometry_nodes",
+                not bool(getattr(bpy.app, "background", False)),
+            ),
+            (
+                bpy.app.handlers.frame_change_post,
+                motion_runtime._fbp_motion_frame_change,
+                "motion_runtime",
+                True,
+            ),
+            (
+                bpy.app.handlers.load_post,
+                motion_runtime._fbp_motion_load_post,
+                "motion_runtime",
+                not bool(getattr(bpy.app, "background", False)),
+            ),
+            (
+                bpy.app.handlers.frame_change_post,
+                grease_pencil_limited_loop._frame_change_guard,
+                "grease_pencil_limited_loop",
+                not bool(getattr(bpy.app, "background", False)),
+            ),
+            (
+                bpy.app.handlers.load_post,
+                grease_pencil_limited_loop._load_post_guard,
+                "grease_pencil_limited_loop",
+                not bool(getattr(bpy.app, "background", False)),
+            ),
+        )
+        if not bool(getattr(bpy.app, "background", False)):
+            from . import viewport_pie
+            callbacks += ((
+                bpy.app.handlers.frame_change_post,
+                viewport_pie._cursor_on_camera_frame_handler,
+                "viewport_pie",
+                True,
+            ),)
+        failed = []
+        for handler_list, callback, module_suffix, enabled in callbacks:
+            if enabled:
+                if not append_handler_once(
+                    handler_list,
+                    callback,
+                    module_suffix=module_suffix,
+                ):
+                    failed.append(str(getattr(callback, "__name__", callback)))
+            else:
+                remove_handlers_by_name(
+                    handler_list,
+                    str(getattr(callback, "__name__", "") or ""),
+                    module_suffix=module_suffix,
+                )
+        if failed:
+            return False, "Could not restore handlers: " + ", ".join(failed)
         return True, ""
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not rebuild Frame By Plane lifecycle services", exc)
@@ -99,13 +258,17 @@ def _repair_runtime_services():
 
 
 def _audit_handlers(stats, issues):
-    for list_name, callback_name, expected in _HANDLER_SPECS:
+    for list_name, callback_name, expected, module_suffix in _HANDLER_SPECS:
+        if bool(getattr(bpy.app, "background", False)) and (
+            list_name, callback_name
+        ) in _BACKGROUND_DISABLED_HANDLERS:
+            expected = 0
         handler_list = getattr(bpy.app.handlers, list_name, None)
         if handler_list is None:
             stats["handler_api_missing"] += 1
             issues.append(f"Handler API unavailable: bpy.app.handlers.{list_name}")
             continue
-        count = _handler_count(handler_list, callback_name)
+        count = _handler_count(handler_list, callback_name, module_suffix)
         stats["handler_callbacks"] += max(0, count)
         if count < 0:
             stats["handler_query_failures"] += 1
@@ -116,21 +279,43 @@ def _audit_handlers(stats, issues):
                 f"Handler mismatch: {list_name}/{callback_name} has {count}, expected {expected}"
             )
 
+    for list_name, callback_name, module_suffix in _UNSAFE_RENDER_CALLBACKS:
+        handler_list = getattr(bpy.app.handlers, list_name, None)
+        if handler_list is None:
+            continue
+        count = _handler_count(handler_list, callback_name, module_suffix)
+        if count > 0:
+            stats["unsafe_render_callbacks"] += count
+            issues.append(
+                f"Unsafe stale callback: {list_name}/{callback_name} has {count}"
+            )
+
 
 def _audit_timers(stats, issues, warnings, *, repair=False):
     try:
-        from . import handlers, object_masks, safe_tasks, scene_sync
+        from . import effect_controls, handlers, managed_timers, object_masks, runtime_scheduler, safe_tasks, scene_sync
     except (ImportError, AttributeError) as exc:
         stats["timer_query_failures"] += 1
         issues.append(f"Could not import lifecycle timer modules: {exc}")
         return 0
 
-    required = (
-        ("render guard watchdog", handlers.fbp_render_guard_watchdog),
-        ("Undo guard watchdog", handlers.fbp_undo_guard_watchdog),
-        ("orphan cleanup safety timer", scene_sync.cleanup_orphan_fbp_planes_timer),
-        ("Shape Mask runtime timer", object_masks.object_mask_runtime_timer),
-    )
+    if bool(getattr(bpy.app, "background", False)):
+        required = ()
+    else:
+        required_items = [
+            ("render guard watchdog", handlers.fbp_render_guard_watchdog),
+            ("Undo guard watchdog", handlers.fbp_undo_guard_watchdog),
+            ("orphan cleanup safety timer", scene_sync.cleanup_orphan_fbp_planes_timer),
+        ]
+        if effect_controls.effect_controls_runtime_service_required():
+            required_items.append(
+                ("effect-control visibility timer", effect_controls._selection_visibility_timer)
+            )
+        if object_masks.object_mask_runtime_service_required():
+            required_items.append(
+                ("Shape Mask runtime timer", object_masks.object_mask_runtime_timer)
+            )
+        required = tuple(required_items)
     for label, callback in required:
         stats["timers_checked"] += 1
         if _timer_registered(callback):
@@ -143,10 +328,10 @@ def _audit_timers(stats, issues, warnings, *, repair=False):
     # automatically. Mirror that state before auditing so a previous callback
     # generation cannot survive only as bookkeeping noise.
     try:
-        handlers.fbp_prune_timer_registry()
+        managed_timers.fbp_prune_timer_registry()
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
-    registry = getattr(handlers, "_FBP_REGISTERED_TIMERS", {})
+    registry = managed_timers.fbp_managed_timer_registry_snapshot()
     stale_registry_keys = []
     try:
         for key, callback in tuple(registry.items()):
@@ -162,9 +347,16 @@ def _audit_timers(stats, issues, warnings, *, repair=False):
             "Stale timer registry entries: " + ", ".join(sorted(str(item) for item in stale_registry_keys)[:20])
         )
         if repair:
-            for key in stale_registry_keys:
-                registry.pop(key, None)
+            managed_timers.fbp_prune_timer_registry()
 
+    # Reconcile the compatibility facade before inspecting its private maps.
+    # Low-level scheduler cancellation is intentionally supported by lifecycle
+    # repair and maintenance; completed/cancelled tasks must not survive as stale facade
+    # metadata and become false structural issues.
+    try:
+        safe_tasks.scheduled_task_count()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     keys = getattr(safe_tasks, "_SCHEDULED_KEYS", set())
     runners = getattr(safe_tasks, "_SCHEDULED_RUNNERS", {})
     generations = getattr(safe_tasks, "_SCHEDULED_GENERATIONS", {})
@@ -184,22 +376,60 @@ def _audit_timers(stats, issues, warnings, *, repair=False):
             except FBP_DATA_ERRORS:
                 pass
     else:
-        for key, runner in tuple(runners.items()):
-            if not _timer_registered(runner):
+        for key in tuple(runner_set):
+            if not runtime_scheduler.task_is_scheduled(key):
                 stats["safe_task_unregistered_runners"] += 1
-                issues.append(f"Safe task has no registered timer: {key}")
+                issues.append(f"Safe task is missing from the central scheduler: {key}")
         if repair and stats["safe_task_unregistered_runners"]:
             try:
                 safe_tasks.clear_scheduled()
             except FBP_DATA_ERRORS:
                 pass
+
+    scheduler_state = runtime_scheduler.scheduler_snapshot()
+    stats["scheduler_accepting_tasks"] = int(bool(scheduler_state.get("accepting_tasks", False)))
+    stats["scheduler_pending"] = int(scheduler_state.get("pending", 0) or 0)
+    stats["scheduler_dispatchers"] = int(bool(scheduler_state.get("dispatcher_registered", False)))
+    if fbp_runtime_callbacks_enabled() and not stats["scheduler_accepting_tasks"]:
+        stats["timer_mismatches"] += 1
+        issues.append("Runtime callbacks are enabled while the central scheduler is quiesced")
+        if repair:
+            try:
+                runtime_scheduler.register()
+            except FBP_DATA_ERRORS:
+                pass
+    if stats["scheduler_pending"] and not stats["scheduler_dispatchers"]:
+        stats["timer_mismatches"] += 1
+        issues.append("Central runtime scheduler has pending work but no Blender timer")
+        if repair:
+            runtime_scheduler.clear_tasks()
+            safe_tasks.clear_scheduled()
+            managed_timers.fbp_clear_managed_timers()
     return len(stale_registry_keys)
 
 
 def _audit_runtime_guards(stats, issues, warnings, *, repair=False):
     now = time.monotonic()
-    undo_active = bool(fbp_undo_guard_active())
+    try:
+        from .handlers import fbp_history_runtime_snapshot
+        history_state = fbp_history_runtime_snapshot()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        history_state = {
+            "active": bool(fbp_undo_guard_active()),
+            "cleanup_pending": bool(fbp_runtime_get("fbp_history_cleanup_pending", False)),
+            "managed_timers_paused": bool(fbp_runtime_get("fbp_pause_managed_timers", False)),
+        }
+    undo_active = bool(history_state.get("active", False))
+    cleanup_pending = bool(history_state.get("cleanup_pending", False))
     stats["undo_guard_active"] = int(undo_active)
+    stats["history_cleanup_pending"] = int(cleanup_pending)
+    stats["history_state_quiescent"] = int(not undo_active and not cleanup_pending)
+    stats["managed_timers_paused"] = int(bool(history_state.get("managed_timers_paused", False)))
+    if cleanup_pending and not undo_active:
+        stats["orphaned_history_cleanup"] += 1
+        issues.append("History cleanup is pending without an active Undo/load guard")
+        if repair:
+            fbp_runtime_set("fbp_history_cleanup_pending", False)
     if undo_active:
         try:
             deadline = float(fbp_runtime_get("fbp_undo_guard_deadline", 0.0) or 0.0)
@@ -246,14 +476,18 @@ def _audit_runtime_guards(stats, issues, warnings, *, repair=False):
 
 def _audit_scene_ownership(scene, stats, issues, warnings, *, repair=False):
     try:
-        from .geometry_nodes import fbp_effect_ids_for_rig, fbp_sync_effect_items
+        from .geometry_nodes import (
+            fbp_effect_ids_for_rig,
+            fbp_effect_instance_records_for_rig,
+            fbp_sync_effect_items,
+        )
         from .layers import is_fbp_layer_object
     except (ImportError, AttributeError) as exc:
         stats["ownership_query_failures"] += 1
         issues.append(f"Could not import ownership diagnostics: {exc}")
         return
 
-    scenes = tuple(bpy.data.scenes)
+    scenes = tuple(getattr(bpy.data, "scenes", ()) or ())
     plane_claims = {}
     for candidate_scene in scenes:
         rigs = []
@@ -307,10 +541,32 @@ def _audit_scene_ownership(scene, stats, issues, warnings, *, repair=False):
 
             actual_ids = tuple(fbp_effect_ids_for_rig(rig))
             try:
-                ui_ids = tuple(str(getattr(item, "effect_id", "") or "") for item in rig.fbp_effects)
+                records = tuple(
+                    fbp_effect_instance_records_for_rig(
+                        rig,
+                        effect_ids=actual_ids,
+                        ensure=False,
+                        sync_storage=False,
+                    )
+                    or ()
+                )
+                desired_ui_ids = tuple(
+                    str(record.get("effect_id", "") or "")
+                    for record in records
+                    if str(record.get("effect_id", "") or "")
+                )
+                if not desired_ui_ids:
+                    desired_ui_ids = actual_ids
+                ui_ids = tuple(
+                    str(getattr(item, "effect_id", "") or "")
+                    for item in rig.fbp_effects
+                    if str(getattr(item, "row_type", "EFFECT") or "EFFECT") == "EFFECT"
+                    and str(getattr(item, "effect_id", "") or "")
+                )
             except FBP_DATA_ERRORS:
+                desired_ui_ids = actual_ids
                 ui_ids = ()
-            if ui_ids != actual_ids:
+            if ui_ids != desired_ui_ids:
                 stats["effect_ui_mismatches"] += 1
                 warnings.append(
                     f"{candidate_scene.name}/{rig_name}: transient Effects UI mirror differs from the stored stack"
@@ -350,6 +606,7 @@ def lifecycle_audit(scene=None, *, repair=False):
         "handler_mismatches": 0,
         "handler_api_missing": 0,
         "handler_query_failures": 0,
+        "unsafe_render_callbacks": 0,
         "timers_checked": 0,
         "timers_registered": 0,
         "timer_mismatches": 0,
@@ -361,6 +618,10 @@ def lifecycle_audit(scene=None, *, repair=False):
         "safe_task_unregistered_runners": 0,
         "undo_guard_active": 0,
         "stale_undo_guards": 0,
+        "history_cleanup_pending": 0,
+        "history_state_quiescent": 0,
+        "orphaned_history_cleanup": 0,
+        "managed_timers_paused": 0,
         "render_guard_active": 0,
         "render_state_idle": 0,
         "render_state_busy": 0,
@@ -399,13 +660,20 @@ def lifecycle_audit(scene=None, *, repair=False):
     if repair:
         # Re-audit externally visible services after repair; leave scene-specific
         # warnings untouched because UI mirrors are transient by design.
-        post_stats = dict(stats)
+        post_stats = dict.fromkeys(stats, 0)
         post_issues = []
         _audit_handlers(post_stats, post_issues)
-        if not post_issues and stats["handler_mismatches"]:
-            stats["lifecycle_repairs"] += stats["handler_mismatches"]
-            issues = [item for item in issues if not item.startswith("Handler mismatch:")]
+        repaired_handlers = int(stats["handler_mismatches"]) + int(
+            stats["unsafe_render_callbacks"]
+        )
+        if not post_issues and repaired_handlers:
+            stats["lifecycle_repairs"] += repaired_handlers
+            issues = [
+                item for item in issues
+                if not item.startswith(("Handler mismatch:", "Unsafe stale callback:"))
+            ]
             stats["handler_mismatches"] = 0
+            stats["unsafe_render_callbacks"] = 0
 
     return {
         "stats": stats,
@@ -414,13 +682,6 @@ def lifecycle_audit(scene=None, *, repair=False):
         "repaired": int(stats.get("lifecycle_repairs", 0) or 0),
     }
 
-
-def register():
-    pass
-
-
-def unregister():
-    pass
 
 
 __all__ = ("lifecycle_audit",)

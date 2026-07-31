@@ -1,0 +1,53 @@
+# Frame By Plane — Blender 5.2 LTS regression runner
+
+Use an official Blender **5.2.x Stable** executable. The launcher rejects other major/minor versions.
+
+```bash
+python tests/run_blender_lts.py --blender /path/to/blender --all
+```
+
+On Windows:
+
+```powershell
+py tests\run_blender_lts.py `
+  --blender "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" `
+  --all
+```
+
+Suites:
+
+- `background`: complete register/unregister and in-place reload cycles, scheduler teardown, managed collection/Layer Tree lifecycle, Undo/Redo, native GP effect creation/removal, Generic Mesh ownership, compositor artist-node/link preservation, save/reopen and a tiny Workbench render.
+- `interactive`: 300 View3D sidebar redraws with nested collections and a GP canvas, then update/reload while Preferences is open and automatic What’s New scheduling.
+
+## Result handling
+
+The launcher does **not** trust Blender's process exit code alone. Blender can exit with code `0` even when one or more Python tests failed. The generated JSON report is parsed and the launcher returns failure unless both conditions are true:
+
+1. Blender exited normally;
+2. the suite report contains `"passed": true`.
+
+Each run preserves:
+
+- `stdout.log`;
+- `stderr.log`;
+- the temporary Blender user directory;
+- test `.blend` files and renders;
+- the suite JSON report.
+
+Default timeouts are 15 minutes for background and 20 minutes for interactive tests. Override them with `--background-timeout` and `--interactive-timeout`.
+
+On headless Linux, the interactive suite automatically uses `xvfb-run` when available. Without a display server or `xvfb-run`, it fails explicitly instead of hanging.
+
+## Official `bpy 5.2` module
+
+The background suite can also run without the Blender desktop executable when
+the official Blender Foundation `bpy==5.2.0` wheel is installed in Python 3.13:
+
+```bash
+python tests/run_bpy_lts.py
+```
+
+This mode covers RNA registration, data operations, Grease Pencil backends,
+Generic Mesh validation, Compositor contracts, save/reopen and background
+rendering. It cannot replace the interactive suite for View3D redraw, detached
+Preferences windows, splash focus or GPU/UI behavior.

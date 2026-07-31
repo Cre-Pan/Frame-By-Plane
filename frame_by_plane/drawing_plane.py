@@ -17,23 +17,57 @@ from pathlib import Path
 
 import bpy
 import bpy.utils.previews
-from bpy.props import CollectionProperty, EnumProperty, StringProperty
-from bpy.types import Operator, UIList
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
+from bpy.types import Menu, Operator, UIList
 from bpy_extras.io_utils import ImportHelper
 
-from .constants import fbp_icon, preview_collections
+from .constants import preview_collections
+from .registration import register_interactive_classes, unregister_classes
+from .ui_icons import ui_icon_value, ui_label_icon_kwargs
 from .layers import (
     load_preview, get_selected_rigs, sync_layer_collection,
+    fbp_set_ui_units_x,
     thumbnail_background_state, invalidate_preview_path,
 )
 from .path_utils import natural_sort_key, is_supported_media_file, is_supported_video_file, is_technical_map_file
+from .ui_list_state import invoke_with_selection_modifiers
 from .runtime import (
     FBP_DATA_ERRORS,
     fbp_find_action_fcurve,
+    fbp_find_id_by_runtime_key,
     fbp_obj_runtime_key,
+    fbp_obj_runtime_token,
     fbp_set_rna_property_silent,
     fbp_render_mutation_blocked,
+    fbp_creation_start_frame,
     fbp_warn,
+)
+from .ui_style import (
+    FBP_UI_LIST_MIN_ROWS,
+    adaptive_row,
+    configure_layout,
+    empty_state,
+    section_gap,
+    section_header,
+)
+from .ui_list_state import (
+    clear_anchor,
+    ensure_item_identity,
+    ensure_unique_item_identities,
+    index_for_identity,
+    resolve_anchor_index,
+    restore_active_index,
+    store_anchor,
+    transient_get,
+)
+from .ui_list_state import mark_ui_list_draw
+from .interface_preferences import (
+    fbp_draw_uilist_spacer,
+    fbp_draw_uilist_header,
+    fbp_filter_uilist_items,
+    fbp_uilist_icon_order,
+    fbp_uilist_is_spacer,
+    fbp_uilist_visible_columns,
 )
 
 
@@ -63,7 +97,6 @@ _DRAWING_PREVIEW_QUEUED: set[tuple[str, str]] = set()
 _DRAWING_PREVIEW_READY: set[tuple[str, str]] = set()
 _DRAWING_PREVIEW_READY_ORDER = deque()
 _DRAWING_IMAGE_HOT = deque(maxlen=24)
-_DRAWING_BUFFER_TRIM_DELAY = 1.5
 _DRAWING_PREVIEW_BATCH = 3
 _DRAWING_PREVIEW_QUEUE_LIMIT = 128
 _DRAWING_PREVIEW_READY_LIMIT = 512
@@ -118,24 +151,6 @@ def clear_drawing_preview_runtime_state():
     _DRAWING_PREVIEW_READY.clear()
     _DRAWING_PREVIEW_READY_ORDER.clear()
 
-
-def _drawing_playback_active():
-    """Return True while any visible Blender screen is playing animation.
-
-    Buffer eviction touches native image/GPU caches and can be noticeably more
-    expensive than the actual Cutout Plane frame swap. Keep the trim timer
-    pending during playback instead of repeatedly freeing images that the next
-    frame may need again.
-    """
-    try:
-        window_manager = getattr(getattr(bpy, "context", None), "window_manager", None)
-        for window in getattr(window_manager, "windows", ()) or ():
-            screen = getattr(window, "screen", None)
-            if screen and bool(getattr(screen, "is_animation_playing", False)):
-                return True
-    except FBP_DATA_ERRORS:
-        pass
-    return False
 
 
 def clear_drawing_composite_previews():
@@ -266,7 +281,8 @@ def _drawing_preview_queue_timer():
         image_path, scene_name = _DRAWING_PREVIEW_QUEUE.popleft()
         key = (image_path, scene_name)
         _DRAWING_PREVIEW_QUEUED.discard(key)
-        scene = bpy.data.scenes.get(scene_name) if scene_name else getattr(bpy.context, "scene", None)
+        scenes = getattr(bpy.data, "scenes", None)
+        scene = scenes.get(scene_name) if scene_name and scenes is not None else getattr(bpy.context, "scene", None)
         try:
             load_preview(image_path, scene=scene, force_square=True)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
@@ -393,7 +409,6 @@ def fbp_build_drawing_material(mat, image, *, interpolation="Closest", use_emiss
     mat["fbp_drawing_material"] = True
     mat["fbp_use_emission"] = bool(use_emission)
     mat["fbp_opacity"] = max(0.0, min(1.0, float(opacity)))
-    mat.use_nodes = True
     configure_fbp_material_surface(mat, opacity, has_alpha=True)
 
     nodes = mat.node_tree.nodes
@@ -471,6 +486,7 @@ def fbp_build_drawing_material(mat, image, *, interpolation="Closest", use_emiss
         if specular:
             specular.default_value = 0.0
         links.new(shader.outputs[0], output.inputs[0])
+    configure_fbp_material_surface(mat, opacity, has_alpha=True)
     return mat
 
 
@@ -555,8 +571,8 @@ def fbp_sync_drawing_texture_settings(rig):
         return False
     try:
         texture.interpolation = str(getattr(rig, 'fbp_interpolation', 'Closest') or 'Closest')
-        extension_mode = str(getattr(rig, 'fbp_extend_mode', 'EDGE') or 'EDGE').upper()
-        texture.extension = 'REPEAT' if extension_mode == 'REPEAT' else ('CLIP' if extension_mode == 'TRANSPARENT' else 'EXTEND')
+        extension_mode = str(getattr(rig, 'fbp_extend_mode', 'MIRROR') or 'MIRROR').upper()
+        texture.extension = 'REPEAT' if extension_mode == 'REPEAT' else ('MIRROR' if extension_mode == 'MIRROR' else ('CLIP' if extension_mode == 'TRANSPARENT' else 'EXTEND'))
         return True
     except FBP_DATA_ERRORS:
         return False
@@ -708,7 +724,7 @@ def _drawing_buffer_usage_snapshot(*, include_library=False):
     expected_users = {}
     candidates = {}
     try:
-        for scene in bpy.data.scenes:
+        for scene in tuple(getattr(bpy.data, "scenes", ()) or ()):
             for rig in _drawing_rigs_for_scene(scene):
                 texture = _drawing_texture(rig)
                 texture_image = getattr(texture, "image", None) if texture else None
@@ -762,123 +778,24 @@ def _touch_drawing_image(image):
 
 
 def _free_managed_cutout_buffer(image, image_path=""):
-    """Drop CPU/GPU buffers while retaining the persistent Image datablock."""
-    if image is None or fbp_render_mutation_blocked():
-        return False
-    try:
-        if not bool(image.get(DRAWING_MANAGED_IMAGE_KEY, False)):
-            return False
-        if bool(getattr(image, "packed_file", None)) or bool(getattr(image, "is_dirty", False)):
-            return False
-        if str(getattr(image, "source", "") or "").upper() != "FILE":
-            return False
-        absolute = os.path.abspath(bpy.path.abspath(image_path)) if image_path else ""
-        if not absolute or not os.path.isfile(absolute):
-            return False
-        try:
-            image.gl_free()
-        except FBP_DATA_ERRORS:
-            pass
-        if bool(getattr(image, "has_data", False)):
-            try:
-                image.buffers_free()
-            except FBP_DATA_ERRORS:
-                pass
-        return True
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, OSError):
-        return False
+    """Retain Cutout buffers under Blender 5.2.
 
+    Eevee can acquire image buffers from worker threads while Python timers are
+    running on the main thread. Calling ``gl_free`` or ``buffers_free`` here can
+    invalidate the same buffer mid-sync and cause a native access violation.
+    Blender's own texture cache now owns eviction; FBP only releases references.
+    """
+    del image, image_path
+    return False
 
 def _release_cutout_image_if_unused(image, image_path="", *, managed=False):
-    """Release an unused Cutout image buffer without deleting its datablock.
-
-    Blender 5.1 can become unstable when an add-on removes Image datablocks
-    around Undo, file replacement or native cache teardown. Match the native
-    sequence backend safety policy: detach the library slot, release only the
-    managed buffers while Blender is confirmed idle, and leave the zero-user
-    Image to Blender's explicit orphan purge.
-    """
-    if image is None or not managed or fbp_render_mutation_blocked():
-        return False
-    try:
-        if not bool(image.get(DRAWING_MANAGED_IMAGE_KEY, False)):
-            return False
-        if bool(getattr(image, "packed_file", None)) or bool(getattr(image, "is_dirty", False)):
-            return False
-        if str(getattr(image, "source", "") or "").upper() != "FILE":
-            return False
-        absolute = os.path.abspath(bpy.path.abspath(image_path)) if image_path else ""
-        if not absolute or not os.path.isfile(absolute):
-            return False
-        external_users = int(getattr(image, "users", 0) or 0) - int(bool(getattr(image, "use_fake_user", False)))
-        if external_users > 0:
-            return False
-        try:
-            image.gl_free()
-        except FBP_DATA_ERRORS:
-            pass
-        if bool(getattr(image, "has_data", False)):
-            try:
-                image.buffers_free()
-            except FBP_DATA_ERRORS:
-                pass
-        return True
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        return False
-
-
-def _drawing_buffer_trim_timer():
-    if fbp_render_mutation_blocked() or _drawing_playback_active():
-        # Returning a positive interval keeps schedule_once's deduplication key
-        # alive and prevents one new global scan from being queued each frame.
-        # Native image buffers must also remain untouched while Blender renders.
-        return 0.75
-    active, expected_users, candidates = _drawing_buffer_usage_snapshot(
-        include_library=True
-    )
-    hot = set(_DRAWING_IMAGE_HOT)
-    for name, (image, item) in candidates.items():
-        try:
-            if name in active or name in hot:
-                continue
-            if bool(getattr(image, "packed_file", None)) or bool(getattr(image, "is_dirty", False)):
-                continue
-            if str(getattr(image, "source", "") or "").upper() != "FILE":
-                continue
-            allowed_users = int(expected_users.get(name, 0)) + int(bool(getattr(image, "use_fake_user", False)))
-            if int(getattr(image, "users", allowed_users) or 0) > allowed_users:
-                # The Image is also used outside Cutout Plane; do not evict a
-                # buffer that another material/editor may need immediately.
-                continue
-            path = str(getattr(item, "filepath", "") or "")
-            absolute = os.path.abspath(bpy.path.abspath(path)) if path else ""
-            if not absolute or not os.path.isfile(absolute):
-                continue
-            try:
-                image.gl_free()
-            except FBP_DATA_ERRORS:
-                pass
-            if bool(getattr(image, "has_data", False)):
-                try:
-                    image.buffers_free()
-                except FBP_DATA_ERRORS:
-                    pass
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-            continue
-    return None
-
+    """Leave zero-user Cutout Image buffers to Blender's native cache."""
+    del image, image_path, managed
+    return False
 
 def _schedule_drawing_buffer_trim():
-    try:
-        from .safe_tasks import schedule_once
-        return bool(schedule_once(
-            "drawing.buffer.trim",
-            _drawing_buffer_trim_timer,
-            first_interval=_DRAWING_BUFFER_TRIM_DELAY,
-        ))
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        return False
-
+    """Use Blender 5.2's native image cache instead of Python buffer eviction."""
+    return False
 
 def _image_for_item(item, *, allow_load=None):
     if item is None:
@@ -927,9 +844,9 @@ def _image_for_item(item, *, allow_load=None):
         # share this first-frame filepath. Cutout owns an independent FILE ID.
         image = existing or bpy.data.images.load(absolute, check_existing=False)
         if str(getattr(image, "source", "") or "").upper() != "FILE":
-            image.source = "FILE"
-            image.filepath = absolute
-            image.reload()
+            # Never retarget/reload an existing Image datablock that Eevee may
+            # still sample. Allocate a private FILE wrapper instead.
+            image = bpy.data.images.load(absolute, check_existing=False)
         _remember_loaded_image_path(absolute, image)
         item.image = image
         item.image_name = image.name
@@ -1147,9 +1064,11 @@ def _remap_drawing_keyframes(rig, mapping):
         return False
     snapshots = []
     try:
-        for curve in curves:
-            for point in curve.keyframe_points:
-                snapshots.append((point, float(point.co[1]), str(getattr(point, "interpolation", "CONSTANT"))))
+        snapshots.extend(
+            (point, float(point.co[1]), str(getattr(point, "interpolation", "CONSTANT")))
+            for curve in curves
+            for point in curve.keyframe_points
+        )
         for curve in curves:
             for point in curve.keyframe_points:
                 old_value = int(round(float(point.co[1])))
@@ -1206,7 +1125,10 @@ def fbp_apply_drawing_index(rig, scene=None, *, force=False):
     changed = False
     try:
         image_changed = getattr(texture, "image", None) is not image
-        if force or image_changed:
+        # Reassigning the same Image datablock still emits a shading notifier in
+        # Blender and restarts Cycles progressive rendering. ``force`` therefore
+        # repairs surrounding state but never performs a same-pointer image write.
+        if image_changed:
             texture.image = image
             changed = True
         _touch_drawing_image(image)
@@ -1219,8 +1141,8 @@ def fbp_apply_drawing_index(rig, scene=None, *, force=False):
         if getattr(texture, "interpolation", None) != interpolation:
             texture.interpolation = interpolation
             changed = True
-        extension_mode = str(getattr(rig, 'fbp_extend_mode', 'EDGE') or 'EDGE').upper()
-        expected_extension = 'REPEAT' if extension_mode == 'REPEAT' else ('CLIP' if extension_mode == 'TRANSPARENT' else 'EXTEND')
+        extension_mode = str(getattr(rig, 'fbp_extend_mode', 'MIRROR') or 'MIRROR').upper()
+        expected_extension = 'REPEAT' if extension_mode == 'REPEAT' else ('MIRROR' if extension_mode == 'MIRROR' else ('CLIP' if extension_mode == 'TRANSPARENT' else 'EXTEND'))
         if getattr(texture, 'extension', None) != expected_extension:
             texture.extension = expected_extension
             changed = True
@@ -1284,8 +1206,10 @@ def fbp_select_drawing_from_list(rig, context=None):
 
 
 def _resolve_scheduled_drawing(scene_name, rig_name, rig_key):
-    scene = bpy.data.scenes.get(scene_name) if scene_name else getattr(bpy.context, "scene", None)
-    rig = bpy.data.objects.get(rig_name) if rig_name else None
+    scenes = getattr(bpy.data, "scenes", None)
+    objects = getattr(bpy.data, "objects", None)
+    scene = scenes.get(scene_name) if scene_name and scenes is not None else getattr(bpy.context, "scene", None)
+    rig = objects.get(rig_name) if rig_name and objects is not None else None
     if not scene or not rig or not fbp_is_drawing_rig(rig):
         return None, None
     if rig_key and _drawing_key(rig) != rig_key:
@@ -1419,20 +1343,14 @@ def _drawing_rigs_for_scene(scene):
 
     rigs = []
     try:
-        # The scene layer cache already contains only Frame By Plane roots, so
-        # this scales with FBP layers rather than every object in a large scene.
-        for item in getattr(scene, "fbp_layers", ()):
-            rig = getattr(item, "obj", None)
-            if rig is not None and fbp_is_drawing_rig(rig):
-                try:
-                    if scene.objects.get(str(getattr(rig, "name", "") or "")) == rig:
-                        rigs.append(rig)
-                except FBP_DATA_ERRORS:
-                    continue
-        # During the first sync tick the layer cache may still be empty. Keep a
-        # self-healing fallback so old files and freshly duplicated rigs work.
-        if not rigs and layer_count == 0:
-            rigs = [obj for obj in scene.objects if fbp_is_drawing_rig(obj)]
+        # Aggressive branch: Drawing Plane discovery trusts the synchronized
+        # Frame By Plane layer cache and never scans the full scene here.
+        from .layers import iter_scene_fbp_rigs
+        rigs.extend(
+            rig
+            for rig in iter_scene_fbp_rigs(scene)
+            if rig is not None and fbp_is_drawing_rig(rig)
+        )
     except FBP_DATA_ERRORS:
         return ()
     rigs = tuple(rigs)
@@ -1565,9 +1483,7 @@ def _load_library_image(path, image_index=None):
         existing = None
     image = existing or bpy.data.images.load(absolute, check_existing=False)
     if str(getattr(image, "source", "") or "").upper() != "FILE":
-        image.source = "FILE"
-        image.filepath = absolute
-        image.reload()
+        image = bpy.data.images.load(absolute, check_existing=False)
     _remember_loaded_image_path(absolute, image)
     managed = existing is None
     if image_index is not None and key:
@@ -1651,7 +1567,7 @@ def build_drawing_plane(context, directory, files, *, name=None, interpolation="
         _assign_layer_props(rig, scene, target_collection=target_collection)
         rig.fbp_loop_mode = "NONE"
         rig.fbp_global_duration = 1
-        rig.fbp_start_frame = int(scene.frame_current)
+        rig.fbp_start_frame = fbp_creation_start_frame(scene, context)
         # Set filtering before enabling the Cutout flag so its update callback
         # cannot try to rebuild a material that does not exist yet.
         rig.fbp_interpolation = interpolation if interpolation in {"Closest", "Linear"} else "Closest"
@@ -1813,11 +1729,22 @@ class FBP_OT_ImportDrawingPlane(Operator, ImportHelper):
         return {"RUNNING_MODAL"}
 
     def draw(self, context):
-        layout = self.layout
-        layout.label(text="Cutout Plane Setup", icon=fbp_icon('OUTLINER_OB_ARMATURE'))
-        row = layout.row(align=True)
+        layout = configure_layout(self.layout)
+        settings = layout.box()
+        configure_layout(settings)
+        section_header(settings, "Plane Settings", icon="TOOL_SETTINGS")
+        row = settings.row(align=False)
         row.prop_enum(self, "interpolation", 'Closest', text="Pixel", icon='ALIASED')
         row.prop_enum(self, "interpolation", 'Linear', text="Smooth", icon='ANTIALIASED')
+        row = adaptive_row(settings, context, align=False)
+        row.prop(context.scene, "fbp_pre_orientation", text="")
+        row.prop(
+            context.scene,
+            "fbp_pre_track_cam",
+            text="Track Camera",
+            icon="CON_CAMERASOLVER",
+            toggle=True,
+        )
 
     def execute(self, context):
         directory = os.path.abspath(bpy.path.abspath(self.directory or ""))
@@ -1855,14 +1782,44 @@ class FBP_OT_AddDrawingImages(Operator, ImportHelper):
     filter_glob: StringProperty(description="File-browser filter restricting selection to media formats supported by this operation.", default="*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.tga;*.bmp;*.webp;*.exr", options={"HIDDEN"})
     files: CollectionProperty(description="Files selected in Blender's file browser for this import or replacement action.", type=bpy.types.OperatorFileListElement)
     directory: StringProperty(description="Folder currently selected in Blender's file browser.", subtype="DIR_PATH")
+    rig_name: StringProperty(
+        name="Drawing Plane",
+        description="Drawing Plane captured before the file browser opens",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    rig_key: StringProperty(
+        name="Drawing Plane Runtime ID",
+        description="Runtime identity used to resolve a renamed Drawing Plane safely",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
 
     @classmethod
     def poll(cls, context):
         return _selected_drawing_rig(context) is not None
 
-    def execute(self, context):
+    def invoke(self, context, event):
+        del event
         rig = _selected_drawing_rig(context)
         if rig is None:
+            return {"CANCELLED"}
+        self.rig_name = str(getattr(rig, "name", "") or "")
+        self.rig_key = fbp_obj_runtime_token(rig)
+        path = context.scene.fbp_last_directory or context.scene.fbp_project_path
+        if path:
+            self.directory = path
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        rig = fbp_find_id_by_runtime_key(
+            bpy.data.objects, self.rig_key, self.rig_name,
+        ) if self.rig_key else bpy.data.objects.get(str(self.rig_name or ""))
+        if rig is None and not self.rig_key and not self.rig_name:
+            rig = _selected_drawing_rig(context)
+        if not fbp_is_drawing_rig(rig):
+            self.report({"WARNING"}, "The Cutout Plane no longer exists")
             return {"CANCELLED"}
         directory = os.path.abspath(bpy.path.abspath(self.directory or ""))
         names = [item.name for item in self.files]
@@ -1957,16 +1914,60 @@ class FBP_OT_ReplaceDrawingImage(Operator, ImportHelper):
 
     filename_ext = ""
     filter_glob: StringProperty(description="File-browser filter restricting selection to media formats supported by this operation.", default="*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.tga;*.bmp;*.webp;*.exr", options={"HIDDEN"})
+    rig_name: StringProperty(
+        name="Drawing Plane",
+        description="Drawing Plane captured before the file browser opens",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    rig_key: StringProperty(
+        name="Drawing Plane Runtime ID",
+        description="Runtime identity used to resolve a renamed Drawing Plane safely",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    drawing_uid: StringProperty(
+        name="Drawing Row ID",
+        description="Persistent drawing identity captured before the file browser opens",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
 
     @classmethod
     def poll(cls, context):
         rig = _selected_drawing_rig(context)
         return bool(rig and len(rig.fbp_images) > 0)
 
-    def execute(self, context):
+    def invoke(self, context, event):
+        del event
         rig = _selected_drawing_rig(context)
-        index = int(getattr(rig, "fbp_images_index", 0) or 0) if rig else -1
+        if not rig or len(getattr(rig, "fbp_images", ())) == 0:
+            return {"CANCELLED"}
+        ensure_unique_item_identities(rig.fbp_images, "stable_id")
+        index = max(0, min(
+            int(getattr(rig, "fbp_images_index", 0) or 0),
+            len(rig.fbp_images) - 1,
+        ))
+        self.rig_name = str(getattr(rig, "name", "") or "")
+        self.rig_key = fbp_obj_runtime_token(rig)
+        self.drawing_uid = str(getattr(rig.fbp_images[index], "stable_id", "") or "")
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        rig = fbp_find_id_by_runtime_key(
+            bpy.data.objects, self.rig_key, self.rig_name,
+        ) if self.rig_key else bpy.data.objects.get(str(getattr(self, "rig_name", "") or ""))
+        if not fbp_is_drawing_rig(rig) and not self.rig_key:
+            rig = _selected_drawing_rig(context)
+        index = index_for_identity(
+            getattr(rig, "fbp_images", ()), "stable_id", self.drawing_uid,
+            default=-1,
+        ) if rig else -1
+        if index < 0 and rig is not None and not self.drawing_uid:
+            index = int(getattr(rig, "fbp_images_index", 0) or 0)
         if not rig or not (0 <= index < len(rig.fbp_images)):
+            self.report({"WARNING"}, "The drawing row no longer exists")
             return {"CANCELLED"}
         path = os.path.abspath(bpy.path.abspath(self.filepath or ""))
         if (
@@ -1994,11 +1995,9 @@ class FBP_OT_ReplaceDrawingImage(Operator, ImportHelper):
         try:
             invalidate_drawing_preview_path(old_state["filepath"])
             invalidate_drawing_preview_path(path)
+            # _load_library_image already resolves a ready datablock. Reloading it in place
+            # can invalidate an image buffer while the viewport/render engine is sampling it.
             image, managed_image = _load_library_image(path)
-            try:
-                image.reload()
-            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-                pass
             item.filepath = path
             item.image = image
             item.image_name = image.name
@@ -2048,6 +2047,7 @@ class FBP_OT_ReplaceDrawingImage(Operator, ImportHelper):
 class FBP_OT_DrawingIndexStep(Operator):
     bl_idname = "fbp.drawing_index_step"
     bl_label = "Change Drawing"
+    bl_description = 'Show the previous or next drawing in the active Cutout Plane library'
     bl_options = {"REGISTER", "UNDO"}
 
     direction: StringProperty(description="Requested movement or step direction for this action, such as previous, next, up or down.", default="NEXT")
@@ -2067,14 +2067,48 @@ class FBP_OT_DrawingIndexStep(Operator):
 class FBP_OT_SetDrawingIndex(Operator):
     bl_idname = "fbp.set_drawing_index"
     bl_label = "Set Drawing"
+    bl_description = 'Show this drawing in the active Cutout Plane and update the current pose index'
     bl_options = {"REGISTER", "UNDO"}
 
     index: bpy.props.IntProperty(description="Zero-based index of the frame, drawing, layer or setup entry targeted by this action.", default=0, min=0)
+    use_shift: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+    use_ctrl: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        return invoke_with_selection_modifiers(self, context, event)
 
     def execute(self, context):
         rig = _selected_drawing_rig(context)
         if not rig:
             return {"CANCELLED"}
+        ensure_unique_item_identities(rig.fbp_images, "stable_id")
+        item_index = max(0, min(int(self.index) - 1, len(rig.fbp_images) - 1))
+        anchor_index_key = "_fbp_drawing_selection_anchor"
+        anchor_uid_key = "_fbp_drawing_selection_anchor_uid"
+        anchor = resolve_anchor_index(
+            rig, anchor_index_key, anchor_uid_key, rig.fbp_images,
+            "stable_id", fallback=item_index,
+        )
+        lo, hi = sorted((anchor, item_index))
+        for row_index, item in enumerate(rig.fbp_images):
+            if self.use_shift:
+                target = (lo <= row_index <= hi) or (
+                    self.use_ctrl and bool(getattr(item, "is_selected", False))
+                )
+            elif self.use_ctrl:
+                target = (
+                    not bool(getattr(item, "is_selected", False))
+                    if row_index == item_index
+                    else bool(getattr(item, "is_selected", False))
+                )
+            else:
+                target = row_index == item_index
+            item.is_selected = target
+        if not self.use_shift:
+            store_anchor(
+                rig, anchor_index_key, anchor_uid_key, rig.fbp_images,
+                "stable_id", item_index,
+            )
         fbp_set_drawing_index(
             rig,
             self.index,
@@ -2112,11 +2146,29 @@ def _clear_drawing_slot(rig, index, scene=None):
     return True
 
 
+class FBP_MT_DrawingListActions(Menu):
+    bl_idname = "FBP_MT_drawing_list_actions"
+    bl_label = "Drawing List Actions"
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        rig = _selected_drawing_rig(context)
+        has_items = bool(rig and len(rig.fbp_images))
+        replace = layout.row(align=True)
+        replace.enabled = has_items
+        replace.operator("fbp.replace_drawing_image", text="Replace Drawing", icon="FILE_REFRESH")
+        remove = layout.row(align=True)
+        remove.enabled = has_items
+        remove.operator("fbp.remove_drawing", text="Remove Drawing", icon="TRASH")
+
+
 class FBP_OT_RemoveDrawing(Operator):
     bl_idname = "fbp.remove_drawing"
     bl_label = "Remove Drawing"
     bl_description = "Remove and remap the selected drawing; driven libraries preserve the numeric slot as Empty"
     bl_options = {"REGISTER", "UNDO"}
+
+    index: IntProperty(name="Drawing Index", default=-1, options={"SKIP_SAVE"})
 
     @classmethod
     def poll(cls, context):
@@ -2125,7 +2177,8 @@ class FBP_OT_RemoveDrawing(Operator):
 
     def execute(self, context):
         rig = _selected_drawing_rig(context)
-        index = int(getattr(rig, "fbp_images_index", 0) or 0)
+        requested_index = int(getattr(self, "index", -1) or -1)
+        index = requested_index if requested_index >= 0 else int(getattr(rig, "fbp_images_index", 0) or 0)
         if not rig or not (0 <= index < len(rig.fbp_images)):
             return {"CANCELLED"}
         if _drawing_has_driver(rig):
@@ -2135,7 +2188,15 @@ class FBP_OT_RemoveDrawing(Operator):
             self.report({"ERROR"}, "Could not clear the driven Drawing slot")
             return {"CANCELLED"}
 
+        ensure_unique_item_identities(rig.fbp_images, "stable_id")
+        active_index = max(0, min(
+            int(getattr(rig, "fbp_images_index", 0) or 0),
+            len(rig.fbp_images) - 1,
+        ))
+        active_uid = ensure_item_identity(rig.fbp_images[active_index], "stable_id")
         removed_item = rig.fbp_images[index]
+        removed_uid = ensure_item_identity(removed_item, "stable_id")
+        anchor_uid = str(transient_get(rig, "_fbp_drawing_selection_anchor_uid", "") or "")
         removed_path = str(getattr(removed_item, "filepath", "") or "")
         removed_image = getattr(removed_item, "image", None)
         removed_managed = bool(getattr(removed_item, "managed_image", False))
@@ -2151,9 +2212,25 @@ class FBP_OT_RemoveDrawing(Operator):
         _remap_current_drawing(rig, remap)
         rig.fbp_images.remove(index)
         fbp_refresh_drawing_aspect_warning(rig)
-        fbp_set_rna_property_silent(
-            rig, "fbp_images_index", min(index, max(0, len(rig.fbp_images) - 1))
-        )
+        if rig.fbp_images:
+            new_active_index = restore_active_index(
+                rig.fbp_images, "stable_id",
+                "" if active_uid == removed_uid else active_uid,
+                fallback=min(index, len(rig.fbp_images) - 1),
+            )
+            fbp_set_rna_property_silent(rig, "fbp_images_index", new_active_index)
+            if anchor_uid == removed_uid:
+                store_anchor(
+                    rig, "_fbp_drawing_selection_anchor",
+                    "_fbp_drawing_selection_anchor_uid", rig.fbp_images,
+                    "stable_id", new_active_index,
+                )
+        else:
+            fbp_set_rna_property_silent(rig, "fbp_images_index", 0)
+            clear_anchor(
+                rig, "_fbp_drawing_selection_anchor",
+                "_fbp_drawing_selection_anchor_uid",
+            )
         fbp_update_drawing_index_ui(rig)
         fbp_apply_drawing_index(rig, context.scene, force=True)
         _release_cutout_image_if_unused(removed_image, removed_path, managed=removed_managed)
@@ -2176,7 +2253,12 @@ class FBP_OT_MoveDrawing(Operator):
 
     def execute(self, context):
         rig = _selected_drawing_rig(context)
+        ensure_unique_item_identities(rig.fbp_images, "stable_id")
         index = int(getattr(rig, "fbp_images_index", 0) or 0)
+        active_uid = (
+            ensure_item_identity(rig.fbp_images[index], "stable_id")
+            if 0 <= index < len(rig.fbp_images) else ""
+        )
         target = index - 1 if self.direction == "UP" else index + 1
         if not rig or not (0 <= index < len(rig.fbp_images)) or not (0 <= target < len(rig.fbp_images)):
             return {"CANCELLED"}
@@ -2198,7 +2280,10 @@ class FBP_OT_MoveDrawing(Operator):
             return {"CANCELLED"}
         _remap_current_drawing(rig, remap)
         rig.fbp_images.move(index, target)
-        fbp_set_rna_property_silent(rig, "fbp_images_index", target)
+        fbp_set_rna_property_silent(
+            rig, "fbp_images_index",
+            restore_active_index(rig.fbp_images, "stable_id", active_uid, fallback=target),
+        )
         fbp_update_drawing_index_ui(rig)
         fbp_apply_drawing_index(rig, context.scene, force=True)
         return {"FINISHED"}
@@ -2206,14 +2291,22 @@ class FBP_OT_MoveDrawing(Operator):
 
 class FBP_UL_DrawingList(UIList):
     bl_idname = "FBP_UL_DrawingList"
+    _PROFILE = "DRAWINGS"
+
+    def filter_items(self, context, data, propname):
+        return fbp_filter_uilist_items(
+            context, getattr(data, propname, ()), self._PROFILE,
+            self.bitflag_filter_item, attributes=("name", "filepath"),
+        )
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        mark_ui_list_draw()
         del active_data, active_propname
         rig = data
         row = layout.row(align=True)
         path = str(getattr(item, "filepath", "") or "")
         is_empty = bool(getattr(item, "is_empty", False))
-        show_previews = bool(getattr(context.scene, 'fbp_show_previews', False))
+        show_previews = bool(getattr(context.scene, "fbp_show_previews", False))
         current_index = fbp_drawing_index(rig)
         preview = None
         if show_previews:
@@ -2221,29 +2314,39 @@ class FBP_UL_DrawingList(UIList):
                 load_empty_drawing_preview(rig, scene=context.scene)
                 if is_empty
                 else load_drawing_preview(
-                    rig,
-                    path,
-                    scene=context.scene,
+                    rig, path, scene=context.scene,
                     deferred=current_index != index + 1,
                 ) if path else None
             )
-        op = row.operator(
-            "fbp.set_drawing_index",
-            text="",
-            icon="RADIOBUT_ON" if current_index == index + 1 else "RADIOBUT_OFF",
-            emboss=False,
+        fallback_icon = (
+            "IMAGE_ALPHA" if is_empty
+            else "TIME" if show_previews and path
+            else "IMAGE_DATA"
         )
-        op.index = index + 1
-        if preview:
-            row.label(text="", icon_value=preview.icon_id)
-        else:
-            fallback_icon = (
-                "IMAGE_ALPHA" if is_empty
-                else "TIME" if show_previews and path
-                else "IMAGE_DATA"
-            )
-            row.label(text="", icon=fallback_icon)
-        row.prop(item, "name", text=f"{index + 1}", emboss=False)
+        visible = set(fbp_uilist_visible_columns(context, self._PROFILE))
+        for key in fbp_uilist_icon_order(context, self._PROFILE):
+            if key not in visible:
+                continue
+            if fbp_uilist_is_spacer(key):
+                fbp_draw_uilist_spacer(row)
+                continue
+            if key == "current":
+                op = row.operator(
+                    "fbp.set_drawing_index", text="",
+                    icon="RADIOBUT_ON" if current_index == index + 1 else "RADIOBUT_OFF",
+                    emboss=False,
+                )
+                op.index = index + 1
+            elif key == "preview":
+                if preview:
+                    row.label(text="", icon_value=preview.icon_id)
+                else:
+                    row.label(text="", icon=fallback_icon)
+            elif key == "label":
+                row.prop(item, "name", text=f"{index + 1}", emboss=False)
+            elif key == "remove":
+                remove = row.operator("fbp.remove_drawing", text="", icon="TRASH", emboss=False)
+                remove.index = index
 
 
 def _current_preview(rig, scene=None):
@@ -2257,6 +2360,7 @@ def _current_preview(rig, scene=None):
 
 
 def draw_drawing_plane_ui(layout, context, rig):
+    configure_layout(layout)
     frame = int(getattr(context.scene, "frame_current", 1) or 1)
     drawing_index = fbp_drawing_index(rig)
     drawing_count = fbp_drawing_count(rig)
@@ -2265,9 +2369,12 @@ def draw_drawing_plane_ui(layout, context, rig):
         fbp_schedule_drawing_sync(rig, context.scene, key_delay=0.075)
 
     box = layout.box()
-    row = box.row(align=False)
+    configure_layout(box)
+    section_header(box, "Cutout Layer", icon="MESH_DATA", icon_value=ui_icon_value("menu.cutout_plane"))
+    row = box.row(align=True)
     row.prop(rig, "fbp_color_tag", text="")
-    row.prop(rig, "fbp_layer_name", text="", icon="OUTLINER_OB_ARMATURE")
+    row.prop(rig, "fbp_rig_shape", text="", icon_only=True)
+    row.prop(rig, "fbp_layer_name", text="", **ui_label_icon_kwargs("menu.cutout_plane", fallback="MESH_DATA"))
     row.operator("fbp.add_drawing_images", text="", icon="ADD")
 
     row = box.row(align=True)
@@ -2281,9 +2388,10 @@ def draw_drawing_plane_ui(layout, context, rig):
     # The active Cutout preview is always available. The global thumbnail toggle
     # now controls only compact UIList thumbnails, which keeps the main editing
     # feedback predictable while still allowing large libraries to stay light.
+    section_gap(layout)
     preview_box = layout.box()
-    preview_header = preview_box.row(align=False)
-    preview_header.label(text="Active Drawing", icon="IMAGE_DATA")
+    configure_layout(preview_box)
+    preview_header = section_header(preview_box, "Active Drawing", icon="IMAGE_DATA", align=True)
     count_label = preview_header.row()
     count_label.alignment = "RIGHT"
     count_label.label(text=f"{drawing_index} / {drawing_count}")
@@ -2294,10 +2402,13 @@ def draw_drawing_plane_ui(layout, context, rig):
     if preview:
         preview_column.template_icon(icon_value=preview.icon_id, scale=8.0)
     else:
-        empty = preview_column.row(align=True)
-        empty.alignment = "CENTER"
-        empty.scale_y = 4.0
-        empty.label(text="Preview unavailable", icon="IMAGE_ALPHA")
+        empty_state(
+            preview_column,
+            "Preview unavailable",
+            "Replace the missing drawing or reload its source file.",
+            icon="IMAGE_ALPHA",
+            boxed=False,
+        )
     label_row = preview_column.row(align=True)
     label_row.alignment = "CENTER"
     label_row.label(text=name)
@@ -2314,9 +2425,10 @@ def draw_drawing_plane_ui(layout, context, rig):
     next_op.direction = "NEXT"
     slider.prop(rig, "fbp_drawing_auto_key", text="", icon="RECORD_ON", toggle=True)
 
+    section_gap(layout)
     library = layout.box()
-    header = library.row(align=True)
-    header.label(text="Cutout Library", icon="FILE_IMAGE")
+    configure_layout(library)
+    header = section_header(library, "Cutout Library", icon="FILE_IMAGE", count=drawing_count, align=True)
     header.prop(
         context.scene,
         "fbp_show_previews",
@@ -2329,31 +2441,32 @@ def draw_drawing_plane_ui(layout, context, rig):
         warning.alert = True
         warning.label(text="Different aspect ratios will stretch to the first drawing", icon="ERROR")
 
-    row = library.row()
-    row.template_list("FBP_UL_DrawingList", "", rig, "fbp_images", rig, "fbp_images_index", rows=6)
+    list_box = fbp_draw_uilist_header(library, context, "DRAWINGS")
+    row = list_box.row()
+    row.template_list(
+        "FBP_UL_DrawingList", "",
+        rig, "fbp_images",
+        rig, "fbp_images_index",
+        rows=FBP_UI_LIST_MIN_ROWS,
+    )
     controls = row.column(align=True)
-    controls.operator("fbp.add_drawing_images", text="", icon="ADD")
+    fbp_set_ui_units_x(controls, 1.0)
+    controls.menu("FBP_MT_drawing_list_actions", text="", icon="COLLAPSEMENU")
+    controls.separator()
 
     count = drawing_count
     selected_index = int(getattr(rig, "fbp_images_index", 0) or 0)
-    replace_row = controls.row(align=True)
-    replace_row.enabled = count > 0
-    replace_row.operator("fbp.replace_drawing_image", text="", icon="FILE_REFRESH")
-    controls.separator()
-
-    up_row = controls.row(align=True)
+    movement = controls.column(align=True)
+    up_row = movement.row(align=True)
     up_row.enabled = count > 1 and selected_index > 0
-    up = up_row.operator("fbp.move_drawing", text="", icon="TRIA_UP")
+    up = up_row.operator("fbp.move_drawing", text="", icon="SORT_DESC")
     up.direction = "UP"
-    down_row = controls.row(align=True)
+    down_row = movement.row(align=True)
     down_row.enabled = count > 1 and selected_index < count - 1
-    down = down_row.operator("fbp.move_drawing", text="", icon="TRIA_DOWN")
+    down = down_row.operator("fbp.move_drawing", text="", icon="SORT_ASC")
     down.direction = "DOWN"
     controls.separator()
-
-    remove_row = controls.row(align=True)
-    remove_row.enabled = count > 0
-    remove_row.operator("fbp.remove_drawing", text="", icon="TRASH")
+    controls.operator("fbp.add_drawing_images", text="", icon="ADD")
 
 
 classes = (
@@ -2364,20 +2477,16 @@ classes = (
     FBP_OT_SetDrawingIndex,
     FBP_OT_RemoveDrawing,
     FBP_OT_MoveDrawing,
+    FBP_MT_DrawingListActions,
     FBP_UL_DrawingList,
 )
 
 
 def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
+    register_interactive_classes(classes)
 
 
 def unregister():
     clear_drawing_runtime_cache()
     clear_drawing_composite_previews()
-    for cls in reversed(classes):
-        try:
-            bpy.utils.unregister_class(cls)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
-            pass
+    unregister_classes(classes)

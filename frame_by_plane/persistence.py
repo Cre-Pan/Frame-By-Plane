@@ -23,10 +23,11 @@ from .geometry_nodes import (
     fbp_capture_effect_state_snapshot,
     fbp_effect_ids_for_rig,
     fbp_effect_instance_id_for_rig,
+    fbp_effect_stack_v2_snapshot,
     fbp_effect_mask_raw_target,
     fbp_lattice_contract_report,
 )
-from .layers import fbp_layer_backend_type, is_fbp_layer_object
+from .layers import fbp_layer_backend_type, iter_scene_fbp_rigs
 from .object_masks import (
     FBP_OBJECT_MASK_SHAPES,
     KEY_IMAGE_NAME as FBP_OBJECT_MASK_IMAGE_NAME_KEY,
@@ -38,7 +39,7 @@ from .scene_sync import sync_layer_collection
 
 
 # SECTION - Persistence / save-reopen contract #
-_FBP_PERSISTENCE_SCHEMA = 1
+_FBP_PERSISTENCE_SCHEMA = 2
 _FBP_PERSISTENCE_BASELINE_TEXT = "FBP_Persistence_Baseline"
 _FBP_PERSISTENCE_SCENE_ID_KEY = "fbp_persistence_scene_id"
 _FBP_PERSISTENCE_TEXT_KEY = "fbp_persistence_text"
@@ -59,6 +60,10 @@ _FBP_PERSISTENCE_LAYER_PROPERTIES = (
     "fbp_is_vertical",
     "fbp_sequence_reversed",
     "fbp_color_tag",
+    "fbp_rig_shape",
+    "fbp_rig_shape_expand",
+    "fbp_rig_shape_fit_mode",
+    "fbp_sequence_show_frames",
     "fbp_depth_order",
     "fbp_loop_mode",
     "fbp_use_emission",
@@ -243,17 +248,16 @@ def _fbp_persistence_fcurve_contract(curve):
     if driver is not None:
         variables = []
         for variable in tuple(getattr(driver, "variables", ()) or ()):
-            targets = []
-            for target in tuple(getattr(variable, "targets", ()) or ()):
-                targets.append(
-                    {
-                        "id": str(getattr(getattr(target, "id", None), "name", "") or ""),
-                        "data_path": str(getattr(target, "data_path", "") or ""),
-                        "bone_target": str(getattr(target, "bone_target", "") or ""),
-                        "transform_type": str(getattr(target, "transform_type", "") or ""),
-                        "transform_space": str(getattr(target, "transform_space", "") or ""),
-                    }
-                )
+            targets = [
+                {
+                    "id": str(getattr(getattr(target, "id", None), "name", "") or ""),
+                    "data_path": str(getattr(target, "data_path", "") or ""),
+                    "bone_target": str(getattr(target, "bone_target", "") or ""),
+                    "transform_type": str(getattr(target, "transform_type", "") or ""),
+                    "transform_space": str(getattr(target, "transform_space", "") or ""),
+                }
+                for target in tuple(getattr(variable, "targets", ()) or ())
+            ]
             variables.append(
                 {
                     "name": str(getattr(variable, "name", "") or ""),
@@ -300,24 +304,23 @@ def _fbp_persistence_animation_contract(owner):
         drivers = []
     nla_tracks = []
     for track in tuple(getattr(animation_data, "nla_tracks", ()) or ()):
-        strips = []
-        for strip in tuple(getattr(track, "strips", ()) or ()):
-            strips.append(
-                {
-                    "name": str(getattr(strip, "name", "") or ""),
-                    "type": str(getattr(strip, "type", "") or ""),
-                    "action": str(getattr(getattr(strip, "action", None), "name", "") or ""),
-                    "frame_start": round(float(getattr(strip, "frame_start", 0.0) or 0.0), 7),
-                    "frame_end": round(float(getattr(strip, "frame_end", 0.0) or 0.0), 7),
-                    "action_frame_start": round(float(getattr(strip, "action_frame_start", 0.0) or 0.0), 7),
-                    "action_frame_end": round(float(getattr(strip, "action_frame_end", 0.0) or 0.0), 7),
-                    "scale": round(float(getattr(strip, "scale", 1.0) or 1.0), 7),
-                    "repeat": round(float(getattr(strip, "repeat", 1.0) or 1.0), 7),
-                    "blend_type": str(getattr(strip, "blend_type", "") or ""),
-                    "extrapolation": str(getattr(strip, "extrapolation", "") or ""),
-                    "mute": bool(getattr(strip, "mute", False)),
-                }
-            )
+        strips = [
+            {
+                "name": str(getattr(strip, "name", "") or ""),
+                "type": str(getattr(strip, "type", "") or ""),
+                "action": str(getattr(getattr(strip, "action", None), "name", "") or ""),
+                "frame_start": round(float(getattr(strip, "frame_start", 0.0) or 0.0), 7),
+                "frame_end": round(float(getattr(strip, "frame_end", 0.0) or 0.0), 7),
+                "action_frame_start": round(float(getattr(strip, "action_frame_start", 0.0) or 0.0), 7),
+                "action_frame_end": round(float(getattr(strip, "action_frame_end", 0.0) or 0.0), 7),
+                "scale": round(float(getattr(strip, "scale", 1.0) or 1.0), 7),
+                "repeat": round(float(getattr(strip, "repeat", 1.0) or 1.0), 7),
+                "blend_type": str(getattr(strip, "blend_type", "") or ""),
+                "extrapolation": str(getattr(strip, "extrapolation", "") or ""),
+                "mute": bool(getattr(strip, "mute", False)),
+            }
+            for strip in tuple(getattr(track, "strips", ()) or ())
+        ]
         nla_tracks.append(
             {
                 "name": str(getattr(track, "name", "") or ""),
@@ -536,6 +539,9 @@ def _fbp_persistence_rig_contract(rig):
             "hide_render": bool(getattr(plane, "hide_render", False)) if plane else None,
         },
         "effects": effects,
+        "effect_stack_v2": _fbp_persistence_json_value(
+            fbp_effect_stack_v2_snapshot(rig, ensure=False)
+        ),
         "relations": {
             "clipping": _fbp_persistence_relation(rig, "fbp_clipping_mask_source"),
             "alpha_matte": _fbp_persistence_relation(rig, "fbp_alpha_matte_source"),
@@ -548,7 +554,7 @@ def _fbp_persistence_rig_contract(rig):
 
 
 def _fbp_build_persistence_contract(scene, *, prepare_ids=False):
-    rigs = [obj for obj in scene.objects if is_fbp_layer_object(obj)]
+    rigs = list(iter_scene_fbp_rigs(scene, fallback=True))
     rigs.sort(key=lambda item: str(getattr(item, "name", "") or ""))
     assigned_ids = _fbp_prepare_persistence_ids(rigs) if prepare_ids else 0
     # Persistent IDs keep the comparison stable when a layer is renamed; a
@@ -601,7 +607,7 @@ def _fbp_persistence_diff(expected, current, path="contract", output=None, limit
     if isinstance(expected, (list, tuple)) and isinstance(current, (list, tuple)):
         if len(expected) != len(current):
             output.append(f"{path}: length changed from {len(expected)} to {len(current)}")
-        for index, (left, right) in enumerate(zip(expected, current)):
+        for index, (left, right) in enumerate(zip(expected, current, strict=False)):
             _fbp_persistence_diff(left, right, f"{path}[{index}]", output, limit)
             if len(output) >= limit:
                 return output

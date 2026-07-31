@@ -14,8 +14,9 @@ import bpy.utils.previews
 import mathutils
 
 from .constants import (
-    STRIP_COLORS_DICT, preview_collections, fbp_icon, fbp_strip_icon,
-    fbp_collection_color_icon,
+    FBP_ARTIST_COLOR_TAGS, STRIP_COLORS_DICT, preview_collections, fbp_icon,
+    fbp_strip_icon, fbp_collection_color_icon, fbp_normalize_artist_color_tag,
+    fbp_shared_artist_color_tag,
 )
 from .path_utils import (
     natural_sort_key, is_supported_video_file, is_supported_media_file,
@@ -26,11 +27,15 @@ from .materials import (
     fbp_apply_holdout_materials_to_rig, restore_original_materials_from_holdout,
     rig_holdout_is_active,
 )
+from .ui_icons import layer_custom_icon_value
 from .runtime import (
     FBP_DATA_ERRORS,
     FBP_DATA_IO_ERRORS,
     fbp_runtime_set, fbp_warn, fbp_set_rna_property_silent,
+    fbp_request_redraw, fbp_undo_guard_active,
+    fbp_object_name as _object_name
 )
+from .service_registry import call_service
 
 
 _FBP_SYNCING_PROCEDURAL_PREVIEW_ITEMS = set()
@@ -45,11 +50,166 @@ _FBP_LAYER_VIEW_TAGGED_COLLECTIONS = set()
 _FBP_LAYER_VIEW_DIRECT_COLLECTIONS = set()
 _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS = set()
 _FBP_LAYER_VIEW_CACHE_INITIALIZED = False
-_FBP_COLLECTION_UI_STATE_CACHE = {
-    "context_key": None,
-    "states": {},
-}
-_COLLECTION_COLOR_TAGS = {f"COLOR_{index:02d}" for index in range(1, 9)}
+_COLLECTION_COLOR_TAGS = FBP_ARTIST_COLOR_TAGS - {"NONE"}
+_FBP_LAYER_BACKEND_CACHE = globals().get("_FBP_LAYER_BACKEND_CACHE", {})
+_FBP_LAYER_BACKEND_CACHE_LIMIT = 2048
+_FBP_RESOLVE_RIG_CACHE = globals().get("_FBP_RESOLVE_RIG_CACHE", {})
+if not isinstance(_FBP_RESOLVE_RIG_CACHE, dict):
+    _FBP_RESOLVE_RIG_CACHE = {}
+_FBP_RESOLVE_RIG_CACHE_SECONDS = 0.08
+_FBP_RESOLVE_RIG_CACHE_LIMIT = 4096
+_FBP_SELECTED_ROOTS_CACHE = globals().get("_FBP_SELECTED_ROOTS_CACHE", {})
+if not isinstance(_FBP_SELECTED_ROOTS_CACHE, dict):
+    _FBP_SELECTED_ROOTS_CACHE = {}
+_FBP_SELECTED_ROOTS_CACHE_SECONDS = 0.08
+_FBP_SELECTED_ROOTS_CACHE_LIMIT = 512
+_EFFECT_CONTROL_API = None
+_GP_CANVAS_API = None
+_OBJECT_MASK_API = None
+_MOTION_HELPER_API = None
+
+
+def _object_pointer(obj):
+    try:
+        return int(obj.as_pointer()) if obj is not None else 0
+    except FBP_DATA_ERRORS:
+        return 0
+
+
+def _idprop_string(obj, key):
+    try:
+        return str(obj.get(key, "") or "") if obj is not None else ""
+    except FBP_DATA_ERRORS:
+        return ""
+
+
+def _effect_control_api():
+    global _EFFECT_CONTROL_API
+    if _EFFECT_CONTROL_API is not None:
+        return _EFFECT_CONTROL_API
+    try:
+        from .effect_controls import effect_control_owner, is_effect_control
+        _EFFECT_CONTROL_API = (is_effect_control, effect_control_owner)
+        return _EFFECT_CONTROL_API
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _gp_canvas_api():
+    global _GP_CANVAS_API
+    if _GP_CANVAS_API is not None:
+        return _GP_CANVAS_API
+    try:
+        from .grease_pencil_bridge import gp_canvas_owner, is_gp_canvas
+        _GP_CANVAS_API = (is_gp_canvas, gp_canvas_owner)
+        return _GP_CANVAS_API
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _object_mask_api():
+    global _OBJECT_MASK_API
+    if _OBJECT_MASK_API is not None:
+        return _OBJECT_MASK_API
+    try:
+        from .object_masks import find_object_mask_controller_owner, is_object_mask_controller
+        _OBJECT_MASK_API = (is_object_mask_controller, find_object_mask_controller_owner)
+        return _OBJECT_MASK_API
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _motion_helper_api():
+    global _MOTION_HELPER_API
+    if _MOTION_HELPER_API is not None:
+        return _MOTION_HELPER_API
+    try:
+        from .motion_runtime import is_motion_helper, motion_helper_owner
+        _MOTION_HELPER_API = (is_motion_helper, motion_helper_owner)
+        return _MOTION_HELPER_API
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _resolve_cache_key(obj, context=None):
+    try:
+        parent = getattr(obj, "parent", None)
+        grandparent = getattr(parent, "parent", None) if parent is not None else None
+        scene = getattr(context, "scene", None) if context is not None else None
+        return (
+            _object_pointer(scene),
+            _object_pointer(obj),
+            _object_name(obj),
+            str(getattr(obj, "type", "") or ""),
+            bool(getattr(obj, "is_fbp_control", False)),
+            bool(getattr(obj, "is_fbp_plane", False)),
+            _object_pointer(parent),
+            _object_name(parent),
+            bool(getattr(parent, "is_fbp_control", False)) if parent is not None else False,
+            _object_pointer(grandparent),
+            _object_name(grandparent),
+            bool(getattr(grandparent, "is_fbp_control", False)) if grandparent is not None else False,
+            _idprop_string(obj, "fbp_parent_rig_name"),
+            _idprop_string(obj, "fbp_lattice_owner"),
+            _idprop_string(obj, "fbp_effect_control_owner"),
+            bool(obj.get("fbp_gradient_controller", False)) if obj is not None else False,
+            _idprop_string(obj, "fbp_gradient_controller_owner"),
+            _idprop_string(obj, "fbp_gp_owner_name"),
+            _idprop_string(obj, "fbp_object_mask_owner_name"),
+            bool(obj.get("fbp_is_object_mask_bounds_handle", False)) if obj is not None else False,
+            _idprop_string(obj, "fbp_object_mask_handle_role"),
+            _idprop_string(obj, "fbp_motion_helper_target_name"),
+            _idprop_string(obj, "fbp_motion_helper_item_uid"),
+            bool(obj.get("fbp_motion_helper", False)) if obj is not None else False,
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _resolve_cached_rig(name, pointer=0, context=None):
+    if not name and not pointer:
+        return None
+    name = str(name or "")
+    pointer = int(pointer or 0)
+
+    def _valid_rig(rig):
+        try:
+            return bool(
+                rig is not None
+                and getattr(rig, "is_fbp_control", False)
+                and (not pointer or _object_pointer(rig) == pointer)
+            )
+        except FBP_DATA_ERRORS:
+            return False
+
+    objects = getattr(getattr(context, "scene", None), "objects", None) if context is not None else None
+    scene_rig = None
+    try:
+        scene_rig = objects.get(name) if objects is not None and name else None
+        if _valid_rig(scene_rig):
+            return scene_rig
+    except FBP_DATA_ERRORS:
+        scene_rig = None
+    try:
+        data_rig = bpy.data.objects.get(name) if name else None
+        if data_rig is not scene_rig and _valid_rig(data_rig):
+            return data_rig
+    except FBP_DATA_ERRORS:
+        pass
+    return None
+
+
+def _cache_resolved_rig(cache_key, rig):
+    if cache_key is None:
+        return rig
+    if len(_FBP_RESOLVE_RIG_CACHE) >= _FBP_RESOLVE_RIG_CACHE_LIMIT and cache_key not in _FBP_RESOLVE_RIG_CACHE:
+        _FBP_RESOLVE_RIG_CACHE.clear()
+    _FBP_RESOLVE_RIG_CACHE[cache_key] = (
+        time.monotonic(),
+        _object_name(rig),
+        _object_pointer(rig),
+    )
+    return rig
 
 
 def sync_layer_collection(context):
@@ -69,28 +229,94 @@ def is_fbp_layer_object(obj):
     return is_fbp_image_rig(obj)
 
 
+def _fbp_layer_backend_cache_key(rig):
+    try:
+        plane = getattr(rig, 'fbp_plane_target', None)
+        mesh = getattr(plane, 'data', None) if plane else None
+        materials = getattr(mesh, 'materials', ()) if mesh else ()
+        material_key = tuple(
+            (
+                int(material.as_pointer()),
+                str(getattr(material, 'name', '') or ''),
+                bool(material.get('fbp_drawing_material', False)),
+                bool(material.get('fbp_native_sequence', False)),
+                bool(material.get('fbp_native_video', False)),
+                bool(material.get('fbp_native_static_image', False)),
+            )
+            for material in tuple(materials or ())
+            if material is not None
+        )
+        return (
+            int(rig.as_pointer()),
+            str(getattr(rig, 'name', '') or ''),
+            bool(getattr(rig, 'is_fbp_control', False)),
+            bool(getattr(rig, 'fbp_is_drawing_plane', False)),
+            bool(getattr(rig, 'fbp_is_color_plane', False)),
+            str(getattr(rig, 'fbp_color_plane_mode', 'SOLID') or 'SOLID'),
+            str(rig.get('fbp_backend_type', '') or ''),
+            material_key,
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def clear_layer_backend_cache():
+    _FBP_LAYER_BACKEND_CACHE.clear()
+    _FBP_RESOLVE_RIG_CACHE.clear()
+    _FBP_SELECTED_ROOTS_CACHE.clear()
+    return True
+
+
+def clear_layer_runtime_caches():
+    """Clear hot UI/runtime caches after undo, load or add-on reload."""
+    global _EFFECT_CONTROL_API, _GP_CANVAS_API, _OBJECT_MASK_API, _MOTION_HELPER_API
+    clear_layer_backend_cache()
+    try:
+        call_service("layers.invalidate_tree_snapshot")
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    _EFFECT_CONTROL_API = None
+    _GP_CANVAS_API = None
+    _OBJECT_MASK_API = None
+    _MOTION_HELPER_API = None
+    return True
+
+
+def _fbp_cache_layer_backend(cache_key, backend):
+    if cache_key is None:
+        return backend
+    if len(_FBP_LAYER_BACKEND_CACHE) >= _FBP_LAYER_BACKEND_CACHE_LIMIT and cache_key not in _FBP_LAYER_BACKEND_CACHE:
+        _FBP_LAYER_BACKEND_CACHE.clear()
+    _FBP_LAYER_BACKEND_CACHE[cache_key] = backend
+    return backend
+
+
 def fbp_layer_backend_type(rig):
     """Return the effective backend used by one Frame by Plane layer.
 
-    The result is inferred from live flags/materials first, so old files without
-    the explicit ``fbp_backend_type`` metadata are classified correctly. Keeping
+    The result is inferred from live flags/materials first and then from the
+    explicit 7.1 ``fbp_backend_type`` metadata. Keeping
     this distinction centralized prevents native sequence caches, procedural
     timing caches and Cutout image buffers from being touched by unrelated plane
     types.
     """
+    cache_key = _fbp_layer_backend_cache_key(rig)
+    cached = _FBP_LAYER_BACKEND_CACHE.get(cache_key) if cache_key is not None else None
+    if cached is not None:
+        return cached
     if not is_fbp_layer_object(rig):
-        return 'UNKNOWN'
+        return _fbp_cache_layer_backend(cache_key, 'UNKNOWN')
     try:
         if bool(getattr(rig, 'fbp_is_drawing_plane', False)):
-            return 'CUTOUT'
+            return _fbp_cache_layer_backend(cache_key, 'CUTOUT')
         if bool(getattr(rig, 'fbp_is_color_plane', False)):
             mode = str(getattr(rig, 'fbp_color_plane_mode', 'SOLID') or 'SOLID').upper()
-            return {
+            return _fbp_cache_layer_backend(cache_key, {
                 'GRADIENT': 'PROCEDURAL_GRADIENT',
                 'HOLDOUT': 'PROCEDURAL_HOLDOUT',
-            }.get(mode, 'PROCEDURAL_COLOR')
+            }.get(mode, 'PROCEDURAL_COLOR'))
     except FBP_DATA_ERRORS:
-        return 'UNKNOWN'
+        return _fbp_cache_layer_backend(cache_key, 'UNKNOWN')
 
     plane = getattr(rig, 'fbp_plane_target', None)
     mesh = getattr(plane, 'data', None) if plane else None
@@ -99,13 +325,13 @@ def fbp_layer_backend_type(rig):
             if not material:
                 continue
             if bool(material.get('fbp_drawing_material', False)):
-                return 'CUTOUT'
+                return _fbp_cache_layer_backend(cache_key, 'CUTOUT')
             if bool(material.get('fbp_native_sequence', False)):
                 if bool(material.get('fbp_native_video', False)):
-                    return 'NATIVE_MOVIE'
+                    return _fbp_cache_layer_backend(cache_key, 'NATIVE_MOVIE')
                 if bool(material.get('fbp_native_static_image', False)):
-                    return 'NATIVE_IMAGE'
-                return 'NATIVE_SEQUENCE'
+                    return _fbp_cache_layer_backend(cache_key, 'NATIVE_IMAGE')
+                return _fbp_cache_layer_backend(cache_key, 'NATIVE_SEQUENCE')
     except FBP_DATA_ERRORS:
         pass
 
@@ -113,18 +339,15 @@ def fbp_layer_backend_type(rig):
         explicit = str(rig.get('fbp_backend_type', '') or '').upper()
     except FBP_DATA_ERRORS:
         explicit = ''
-    aliases = {
-        'DRAWING': 'CUTOUT',
-        'STATIC_IMAGE': 'NATIVE_IMAGE',
-        'IMAGE_SEQUENCE': 'NATIVE_SEQUENCE',
-        'MOVIE': 'NATIVE_MOVIE',
-        'PROCEDURAL_SOLID': 'PROCEDURAL_COLOR',
-    }
-    return aliases.get(explicit, explicit or 'UNKNOWN')
+    return _fbp_cache_layer_backend(cache_key, explicit or 'UNKNOWN')
 
 
 _FBP_SAMPLEABLE_IMAGE_BACKENDS = frozenset({
     'NATIVE_IMAGE', 'NATIVE_SEQUENCE', 'NATIVE_MOVIE', 'CUTOUT',
+})
+_FBP_LAYER_BLEND_SOURCE_BACKENDS = frozenset({
+    *_FBP_SAMPLEABLE_IMAGE_BACKENDS,
+    'PROCEDURAL_COLOR',
 })
 
 
@@ -136,16 +359,68 @@ def fbp_layer_has_sampleable_image(rig):
         return False
 
 
+def fbp_layer_is_blend_source(rig):
+    """Return whether Layer Blend can read this layer without rasterizing it.
+
+    Image-backed layers are sampled through their Image Texture. Flat Color
+    Plane frames are transferred as an RGBA value by the Layer Blend v2 group.
+    Gradient and Holdout planes remain excluded because a single color cannot
+    represent their spatial shader result faithfully.
+    """
+    try:
+        backend = fbp_layer_backend_type(rig)
+        if backend not in _FBP_LAYER_BLEND_SOURCE_BACKENDS:
+            return False
+        if backend != 'PROCEDURAL_COLOR':
+            return True
+        plane = getattr(rig, "fbp_plane_target", None)
+        mesh = getattr(plane, "data", None) if plane else None
+        materials = getattr(mesh, "materials", None) if mesh else None
+        if not materials or len(materials) == 0:
+            return False
+        if len(getattr(rig, "fbp_images", ()) or ()):
+            # A mixed procedural sequence is valid only while its current frame
+            # is a flat color/transparent row. The synchronizer refreshes this
+            # decision when the timeline changes.
+            try:
+                from .core import fbp_sequence_index_at_frame
+                scene = next(iter(tuple(getattr(rig, "users_scene", ()) or ())), None)
+                index = fbp_sequence_index_at_frame(
+                    rig, getattr(scene, "frame_current", 1) if scene else 1
+                )
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                index = int(getattr(rig, "fbp_images_index", 0) or 0)
+            if index < 0:
+                return True
+            index = max(0, min(int(index), len(materials) - 1))
+            return fbp_procedural_kind_for_item(rig, index, 'SOLID') == 'SOLID'
+        return fbp_procedural_kind_from_material(
+            materials[0], getattr(rig, "fbp_color_plane_mode", "SOLID")
+        ) == 'SOLID'
+    except FBP_DATA_ERRORS:
+        return False
+
+
 def fbp_layer_clipping_active_hint(rig):
     """Return the authoritative persistent Clipping Mask enabled state.
 
     Import metadata and a stale source pointer must never keep a disabled layer
     inside a clipping chain. Effect repair restores this flag for genuinely
-    active legacy nodes during normal stack synchronization.
+    active generated nodes during normal stack synchronization.
     """
-    if not rig or not is_fbp_layer_object(rig):
-        return False
     try:
+        try:
+            from .grease_pencil_bridge import is_gp_drawing_canvas
+            if is_gp_drawing_canvas(rig):
+                # Native Grease Pencil does not participate in the same shader
+                # alpha contract as Frame By Plane mesh planes. Treat GP/Plane
+                # clipping as unavailable until the dedicated proxy/raster
+                # pipeline is implemented, instead of exposing a broken chain.
+                return False
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        if not rig or not is_fbp_layer_object(rig):
+            return False
         return bool(rig.get("fbp_effect_clipping_mask", False))
     except FBP_DATA_ERRORS:
         return False
@@ -153,7 +428,7 @@ def fbp_layer_clipping_active_hint(rig):
 
 def fbp_layer_backend_label(rig):
     return {
-        'NATIVE_IMAGE': 'Image Plane',
+        'NATIVE_IMAGE': 'Single Plane',
         'NATIVE_SEQUENCE': 'Sequence',
         'NATIVE_MOVIE': 'Video Plane',
         'CUTOUT': 'Cutout Plane',
@@ -163,24 +438,23 @@ def fbp_layer_backend_label(rig):
     }.get(fbp_layer_backend_type(rig), 'Frame By Plane Layer')
 
 
-def safe_collection_color_tag(collection, fallback='COLOR_09'):
+def safe_collection_color_tag(collection, fallback='NONE'):
     try:
         tag = getattr(collection, 'color_tag', 'NONE')
         return tag if tag in _COLLECTION_COLOR_TAGS else fallback
-    except Exception:
+    except FBP_DATA_ERRORS:
         return fallback
 
 
 def set_collection_color_tag(collection, color_tag):
     """Assign a valid Blender Collection color tag.
 
-    Collection tags support NONE and COLOR_01..COLOR_08. Frame by Plane's
-    COLOR_09 is the neutral layer grey, so it maps to NONE for collections.
+    Collection tags support NONE and COLOR_01..COLOR_07. Brown/Grey are not exposed as artist-facing Frame By Plane color tags.
     """
     if not collection:
         return
     tag = str(color_tag or 'NONE')
-    if tag == 'COLOR_09':
+    if tag in {'COLOR_08', 'COLOR_09'}:
         tag = 'NONE'
     if tag != 'NONE' and tag not in _COLLECTION_COLOR_TAGS:
         return
@@ -192,6 +466,8 @@ def set_collection_color_tag(collection, color_tag):
 
 def make_color_variant(color_tag, index=0):
     """Return a clearly readable depth variant while preserving the tag hue."""
+    if str(color_tag or '').upper() == 'NONE':
+        return (1.0, 1.0, 1.0, 1.0)
     base = STRIP_COLORS_DICT.get(color_tag, STRIP_COLORS_DICT['COLOR_09'])
     r, g, b, a = base
     h, s, v = colorsys.rgb_to_hsv(r, g, b)
@@ -246,11 +522,81 @@ def move_object_to_collection(obj, collection):
                 pass
 
 
+def fbp_active_work_collection(context):
+    """Return the collection an artist is currently working in.
+
+    Preference order:
+    1. The active Layer List group or selected row collection.
+    2. The selected/active Frame By Plane object's primary collection.
+    3. Blender's active context collection.
+    4. The scene master collection.
+
+    This keeps procedural Color/Gradient/Holdout planes in the same collection
+    the user is editing instead of sending them to a global Color Planes folder.
+    """
+    scene = getattr(context, "scene", None) if context is not None else None
+    if scene is None:
+        return None
+
+    def _collection_from_name(name):
+        name = str(name or "")
+        return bpy.data.collections.get(name) if name else None
+
+    try:
+        rows = getattr(scene, "fbp_layer_tree_rows", ())
+        index = int(getattr(scene, "fbp_layer_tree_rows_idx", -1))
+        if 0 <= index < len(rows):
+            row = rows[index]
+            row_type = str(getattr(row, "row_type", "") or "")
+            if row_type == "GROUP":
+                collection = _collection_from_name(getattr(row, "collection_name", ""))
+                if collection is not None:
+                    return collection
+            if row_type in {"LAYER", "GP_CANVAS"}:
+                obj_name = (
+                    str(getattr(row, "rig_name", "") or "")
+                    or str(getattr(row, "canvas_name", "") or "")
+                    or str(getattr(row, "name", "") or "")
+                )
+                obj = bpy.data.objects.get(obj_name)
+                collection = get_primary_fbp_collection(obj) if obj is not None else None
+                if collection is not None:
+                    return collection
+    except FBP_DATA_ERRORS:
+        pass
+
+    try:
+        active = getattr(getattr(context, "view_layer", None), "objects", None)
+        active_obj = getattr(active, "active", None) if active is not None else None
+        collection = get_primary_fbp_collection(active_obj) if active_obj is not None else None
+        if collection is not None:
+            return collection
+    except FBP_DATA_ERRORS:
+        pass
+
+    try:
+        for obj in tuple(getattr(context, "selected_objects", ()) or ()):  # viewport selection fallback
+            collection = get_primary_fbp_collection(obj)
+            if collection is not None:
+                return collection
+    except FBP_DATA_ERRORS:
+        pass
+
+    try:
+        collection = getattr(context, "collection", None)
+        if collection is not None:
+            return collection
+    except FBP_DATA_ERRORS:
+        pass
+
+    return getattr(scene, "collection", None)
+
+
 def get_primary_fbp_collection(obj):
     """Resolve one canonical collection from the object's live links.
 
-    ``fbp_collection_name`` is only a hint: old files or manual Outliner moves
-    can leave it pointing to a collection that no longer owns the layer.
+    ``fbp_collection_name`` is only a hint: manual Outliner moves can leave it
+    pointing to a collection that no longer owns the layer.
     """
     if not obj:
         return None
@@ -287,9 +633,9 @@ def is_layer_item_visible_in_collections(context, item):
     except TypeError:
         try:
             return bool(rig.visible_get())
-        except Exception:
+        except FBP_DATA_ERRORS:
             return object_in_scene(rig, context.scene)
-    except Exception:
+    except FBP_DATA_ERRORS:
         return object_in_scene(rig, context.scene)
 
 
@@ -311,13 +657,13 @@ def visible_layer_indices(context, same_collection_as=None):
 
 
 def fbp_active_layer_index(scene):
-    """Resolve the active layer from the virtual tree, then legacy fallback."""
+    """Resolve the active layer from the virtual tree or its synchronized index."""
     if scene is None:
         return -1
     try:
-        legacy_index = int(getattr(scene, "fbp_layer_stack_index", -1))
+        fallback_index = int(getattr(scene, "fbp_layer_stack_index", -1))
     except FBP_DATA_ERRORS:
-        legacy_index = -1
+        fallback_index = -1
     try:
         layers = getattr(scene, "fbp_layers", ())
         tree_index = int(getattr(scene, "fbp_layer_tree_rows_idx", -1))
@@ -331,8 +677,8 @@ def fbp_active_layer_index(scene):
                     expected_name = str(getattr(row, "rig_name", "") or "")
                     if rig and (not expected_name or rig.name == expected_name):
                         return candidate
-        if 0 <= legacy_index < len(layers):
-            return legacy_index
+        if 0 <= fallback_index < len(layers):
+            return fallback_index
     except FBP_DATA_ERRORS:
         pass
     return -1
@@ -343,11 +689,12 @@ def apply_collection_color_to_layer(obj, color_tag=None, variant_index=None, pus
         return
     coll = get_primary_fbp_collection(obj)
     if color_tag is None and coll:
-        color_tag = safe_collection_color_tag(coll, getattr(obj, 'fbp_color_tag', 'COLOR_09'))
-    if color_tag not in STRIP_COLORS_DICT:
-        color_tag = getattr(obj, 'fbp_color_tag', 'COLOR_09')
-        if color_tag not in STRIP_COLORS_DICT:
-            color_tag = 'COLOR_09'
+        color_tag = safe_collection_color_tag(coll, getattr(obj, 'fbp_color_tag', 'NONE'))
+    color_tag = str(color_tag or 'NONE')
+    if color_tag != 'NONE' and color_tag not in STRIP_COLORS_DICT:
+        color_tag = getattr(obj, 'fbp_color_tag', 'NONE')
+        if color_tag != 'NONE' and color_tag not in STRIP_COLORS_DICT:
+            color_tag = 'NONE'
     if getattr(obj, 'fbp_color_tag', None) != color_tag:
         try:
             fbp_set_rna_property_silent(obj, 'fbp_color_tag', color_tag)
@@ -445,149 +792,126 @@ def collection_is_hidden_in_view_layer(context, collection):
     return False
 
 
-def _fbp_collection_ui_context_key(context=None):
-    """Return a draw-local key without retaining Blender RNA references."""
-    context = context or getattr(bpy, "context", None)
-    scene = getattr(context, "scene", None) if context else None
-    view_layer = getattr(context, "view_layer", None) if context else None
-    if scene is None or view_layer is None:
-        return None
-    try:
-        return (
-            int(scene.as_pointer()),
-            str(getattr(scene, "name_full", getattr(scene, "name", "")) or ""),
-            int(view_layer.as_pointer()),
-            str(getattr(view_layer, "name", "") or ""),
-        )
-    except FBP_DATA_ERRORS:
-        return None
+def fbp_build_canonical_collection_tree(scene):
+    """Return one deterministic single-parent view of the Scene collection graph.
 
+    Blender permits the same Collection datablock to be linked below multiple
+    parents.  The Layer List can only display one hierarchy path, so every
+    collection-row operation must use the same canonical breadth-first tree as
+    the UI builder.  The shallowest scene path wins; sibling order breaks ties.
 
-def _fbp_collection_ui_collection_key(collection):
-    if collection is None:
-        return None
-    try:
-        return (
-            int(collection.as_pointer()),
-            str(getattr(collection, "name_full", getattr(collection, "name", "")) or ""),
-        )
-    except FBP_DATA_ERRORS:
-        return None
-
-
-def fbp_clear_collection_ui_state_cache():
-    """Drop immutable collection-row aggregates after a UI mutation."""
-    _FBP_COLLECTION_UI_STATE_CACHE["context_key"] = None
-    _FBP_COLLECTION_UI_STATE_CACHE["states"] = {}
-
-
-def fbp_prime_collection_ui_state_cache(context, tree_cache=None):
-    """Precompute all collection-row booleans once for the current UI draw.
-
-    A collection row exposes several computed BoolProperties (solo, holdout,
-    selection, rig lock and plane lock). Blender can query each property more
-    than once while drawing the same row. Without this snapshot, every query
-    recursively traversed the collection tree and repeatedly resolved the same
-    rigs. Only immutable keys and scalar values are kept globally; Blender RNA
-    objects remain local to this function.
+    The returned dictionaries are local snapshots and never retain RNA objects
+    beyond the current operation/draw.
     """
-    context_key = _fbp_collection_ui_context_key(context)
-    if context_key is None or not isinstance(tree_cache, dict):
-        fbp_clear_collection_ui_state_cache()
-        return {}
-
-    collections = tree_cache.get("collections", {}) or {}
-    descendant_keys = tree_cache.get("descendant_rig_keys", {}) or {}
-    rig_by_key = tree_cache.get("rig_by_key", {}) or {}
-    layer_item_by_key = tree_cache.get("layer_item_by_key", {}) or {}
-    states = {}
-
-    # Resolve expensive Blender state once per rig. Parent/child collections can
-    # reference the same descendants, so doing this inside the collection loop
-    # would repeat ViewLayer membership, material holdout and selection queries.
-    rig_states = {}
-    for rig_key, rig in rig_by_key.items():
-        if rig is None:
-            continue
-        try:
-            item = layer_item_by_key.get(rig_key)
-            plane = getattr(rig, "fbp_plane_target", None)
-            rig_states[rig_key] = {
-                "rig": rig,
-                "plane": plane,
-                "in_view": object_in_view_layer(rig, context),
-                "plane_in_view": bool(plane and object_in_view_layer(plane, context)),
-                "selected": bool(rig.select_get()),
-                "locked": bool(getattr(rig, "hide_select", False)),
-                "plane_locked": bool(plane and getattr(plane, "hide_select", True)),
-                "solo": bool(item and getattr(item, "solo", False)),
-                "visible": bool(getattr(rig, "fbp_is_visible", True)),
-                "holdout": bool(rig_holdout_is_active(rig)),
-            }
-        except FBP_DATA_ERRORS:
-            continue
-
-    for collection_key, collection in collections.items():
-        rig_keys = tuple(descendant_keys.get(collection_key, ()) or ())
-        if not rig_keys:
-            continue
-        member_states = [rig_states.get(key) for key in rig_keys]
-        member_states = [state for state in member_states if state is not None]
-        if not member_states:
-            continue
-
-        try:
-            hidden = collection_is_hidden_in_view_layer(context, collection)
-            all_locked = all(state["locked"] for state in member_states)
-            plane_states = [state for state in member_states if state["plane"] is not None]
-            all_planes_locked = bool(
-                plane_states and all(state["plane_locked"] for state in plane_states)
-            )
-            all_selected = all(state["selected"] for state in member_states)
-            visible_states = [state for state in member_states if state["in_view"]]
-            visible_all_selected = bool(
-                visible_states and all(state["selected"] for state in visible_states)
-            )
-            all_solo = all(state["solo"] for state in member_states)
-            any_holdout = any(state["holdout"] for state in member_states)
-            visible_plane_states = [state for state in plane_states if state["plane_in_view"]]
-            visible_planes_locked = bool(
-                visible_plane_states
-                and all(state["plane_locked"] for state in visible_plane_states)
-            )
-            rows_disabled = bool(
-                hidden
-                or all_locked
-                or all(not state["visible"] for state in member_states)
-            )
-        except FBP_DATA_ERRORS:
-            continue
-
-        states[collection_key] = {
-            "visible": not hidden,
-            "selected": all_selected,
-            "selected_visible": visible_all_selected,
-            "solo": all_solo,
-            "locked": all_locked,
-            "plane_locked": all_planes_locked,
-            "plane_locked_visible": visible_planes_locked,
-            "holdout": any_holdout,
-            "rows_disabled": rows_disabled,
+    root = getattr(scene, "collection", None) if scene is not None else None
+    if root is None:
+        return {
+            "root": None,
+            "root_key": None,
+            "collections": {},
+            "children": {},
+            "parent_by_key": {},
         }
 
-    _FBP_COLLECTION_UI_STATE_CACHE["context_key"] = context_key
-    _FBP_COLLECTION_UI_STATE_CACHE["states"] = states
-    return states
+    def key(collection):
+        if collection is None:
+            return None
+        try:
+            return int(collection.as_pointer())
+        except FBP_DATA_ERRORS:
+            return id(collection)
+
+    root_key = key(root)
+    collections = {root_key: root}
+    children = {}
+    parent_by_key = {root_key: None}
+    queue = [root]
+    index = 0
+    while index < len(queue):
+        parent = queue[index]
+        index += 1
+        parent_key = key(parent)
+        canonical_children = []
+        try:
+            raw_children = tuple(getattr(parent, "children", ()) or ())
+        except FBP_DATA_ERRORS:
+            raw_children = ()
+        for child in raw_children:
+            child_key = key(child)
+            if child_key is None or child_key == root_key:
+                continue
+            # The first breadth-first occurrence is the canonical path.
+            if child_key in parent_by_key:
+                continue
+            parent_by_key[child_key] = parent_key
+            collections[child_key] = child
+            canonical_children.append(child)
+            queue.append(child)
+        children[parent_key] = tuple(canonical_children)
+
+    return {
+        "root": root,
+        "root_key": root_key,
+        "collections": collections,
+        "children": children,
+        "parent_by_key": parent_by_key,
+    }
 
 
-def _fbp_cached_collection_ui_state(collection, context=None):
-    context_key = _fbp_collection_ui_context_key(context)
-    if context_key is None or context_key != _FBP_COLLECTION_UI_STATE_CACHE.get("context_key"):
-        return None
-    collection_key = _fbp_collection_ui_collection_key(collection)
-    if collection_key is None:
-        return None
-    return (_FBP_COLLECTION_UI_STATE_CACHE.get("states", {}) or {}).get(collection_key)
+def fbp_canonical_collection_descendants(scene, collection, *, include_self=True):
+    """Return the collection's descendants from the canonical Layer List tree."""
+    if collection is None:
+        return []
+    tree = fbp_build_canonical_collection_tree(scene)
+    collections = tree.get("collections", {}) or {}
+    child_map = tree.get("children", {}) or {}
+    try:
+        start_key = int(collection.as_pointer())
+    except FBP_DATA_ERRORS:
+        start_key = id(collection)
+    if start_key not in collections:
+        # Datablocks outside the Scene tree can still be queried during undo or
+        # deletion.  Keep a safe raw fallback instead of returning stale state.
+        result = []
+        seen = set()
+        stack = [collection]
+        while stack:
+            current = stack.pop()
+            if current is None:
+                continue
+            try:
+                current_key = int(current.as_pointer())
+            except FBP_DATA_ERRORS:
+                current_key = id(current)
+            if current_key in seen:
+                continue
+            seen.add(current_key)
+            result.append(current)
+            try:
+                stack.extend(reversed(tuple(getattr(current, "children", ()) or ())))
+            except FBP_DATA_ERRORS:
+                pass
+        return result if include_self else result[1:]
+
+    result = []
+    seen = set()
+    stack = [start_key]
+    while stack:
+        current_key = stack.pop()
+        if current_key in seen:
+            continue
+        seen.add(current_key)
+        current = collections.get(current_key)
+        if current is not None:
+            result.append(current)
+        child_keys = []
+        for child in child_map.get(current_key, ()):
+            try:
+                child_keys.append(int(child.as_pointer()))
+            except FBP_DATA_ERRORS:
+                child_keys.append(id(child))
+        stack.extend(reversed(child_keys))
+    return result if include_self else result[1:]
 
 
 def fbp_reset_layer_view_cache_state():
@@ -597,7 +921,7 @@ def fbp_reset_layer_view_cache_state():
     _FBP_LAYER_VIEW_DIRECT_COLLECTIONS.clear()
     _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS.clear()
     _FBP_LAYER_VIEW_CACHE_INITIALIZED = False
-    fbp_clear_collection_ui_state_cache()
+    call_service("layers.invalidate_tree_snapshot", None, default=None)
 
 
 def _clear_layer_view_collection_flags(collection):
@@ -612,20 +936,18 @@ def _clear_layer_view_collection_flags(collection):
 
 
 def fbp_rebuild_layer_view_cache(context):
-    """Pre-compute which collections contain Frame by Plane rigs.
+    """Pre-compute canonical collection membership for Layer List consumers.
 
-    Layer UI draw functions read these cached booleans instead of recursively
-    scanning collection trees every redraw.
+    The cache follows the same single-parent tree shown by the UIList and
+    includes both mesh planes and GP Drawing Planes.  This avoids duplicate views
+    and project diagnostics reporting content below a second, non-displayed
+    parent when a Blender Collection is linked more than once.
     """
     if not context or not getattr(context, "scene", None):
         return
     global _FBP_LAYER_VIEW_CACHE_INITIALIZED
-    sc = context.scene
+    scene = context.scene
 
-    # The old implementation rewrote two ID properties on every collection on
-    # every sync. Besides scaling poorly, those writes can trigger unnecessary
-    # depsgraph/notifier work. Clear all stale properties once per loaded Main,
-    # then touch only collections tagged by the previous active-scene rebuild.
     try:
         if not _FBP_LAYER_VIEW_CACHE_INITIALIZED:
             collections_to_clear = tuple(bpy.data.collections)
@@ -637,11 +959,8 @@ def fbp_rebuild_layer_view_cache(context):
             )
         for collection in collections_to_clear:
             _clear_layer_view_collection_flags(collection)
-        # Scene master collections are not guaranteed to resolve through
-        # bpy.data.collections on every Blender version. There are normally only
-        # a handful of Scenes, so clear those roots explicitly as well.
-        for scene in getattr(bpy.data, "scenes", ()):
-            _clear_layer_view_collection_flags(getattr(scene, "collection", None))
+        for datablock_scene in getattr(bpy.data, "scenes", ()):
+            _clear_layer_view_collection_flags(getattr(datablock_scene, "collection", None))
     except FBP_DATA_ERRORS as exc:
         fbp_warn("Could not reset layer view cache", exc)
         return
@@ -651,75 +970,82 @@ def fbp_rebuild_layer_view_cache(context):
     _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS.clear()
     _FBP_LAYER_VIEW_CACHE_INITIALIZED = True
 
-    parent_map = {}
-    try:
-        stack = [sc.collection]
-        seen = set()
-        while stack:
-            parent = stack.pop()
-            if parent is None:
-                continue
-            parent_name = str(getattr(parent, "name", "") or "")
-            if parent_name in seen:
-                continue
-            seen.add(parent_name)
-            for child in getattr(parent, "children", ()):
-                child_name = str(getattr(child, "name", "") or "")
-                if child_name:
-                    parent_map.setdefault(child_name, []).append(parent)
-                stack.append(child)
-    except FBP_DATA_ERRORS as exc:
-        fbp_warn("Could not map layer collection hierarchy", exc)
-        parent_map = {}
+    tree = fbp_build_canonical_collection_tree(scene)
+    collections = tree.get("collections", {}) or {}
+    parent_by_key = tree.get("parent_by_key", {}) or {}
 
-    def mark_collection(coll):
-        stack = [coll]
+    def collection_key(collection):
+        try:
+            return int(collection.as_pointer())
+        except FBP_DATA_ERRORS:
+            return id(collection)
+
+    def mark_collection(collection):
+        current = collection
         seen = set()
-        while stack:
-            current = stack.pop()
-            if not current or current.name in seen:
-                continue
-            seen.add(current.name)
+        while current is not None:
+            key = collection_key(current)
+            if key in seen:
+                break
+            seen.add(key)
             try:
                 current["fbp_has_fbp_content_recursive"] = True
-                _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.add(current.name)
-                _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS.add(current.name)
+                name = str(getattr(current, "name", "") or "")
+                if name:
+                    _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.add(name)
+                    _FBP_LAYER_VIEW_RECURSIVE_COLLECTIONS.add(name)
             except FBP_DATA_IO_ERRORS:
                 pass
-            for parent in parent_map.get(current.name, []):
-                stack.append(parent)
+            parent_key = parent_by_key.get(key)
+            if parent_key is None or parent_key == key:
+                break
+            current = collections.get(parent_key)
 
-    # A collection can contain hundreds of layers. Mark each collection and its
-    # ancestors once instead of rewriting the same ID properties once per layer.
     direct_collections = {}
-    for item in getattr(sc, "fbp_layers", []):
+    for item in getattr(scene, "fbp_layers", ()) or ():
         try:
             rig = item.obj
-            if not rig or not is_fbp_layer_object(rig) or not object_in_scene(rig, sc):
+            if not rig or not is_fbp_layer_object(rig) or not object_in_scene(rig, scene):
                 continue
             collection = get_primary_fbp_collection(rig)
-            if collection is None:
-                continue
-            direct_collections[int(collection.as_pointer())] = collection
+            if collection is not None:
+                direct_collections[collection_key(collection)] = collection
         except FBP_DATA_ERRORS:
             continue
         except Exception as exc:
             fbp_warn("Could not resolve layer collection for UI cache", exc)
 
+    try:
+        from .fbp_index import iter_scene_gp_canvases
+        from .grease_pencil_bridge import is_gp_drawing_canvas
+        for canvas in iter_scene_gp_canvases(scene, kind="DRAWING", fallback=True):
+            if canvas is None or not is_gp_drawing_canvas(canvas):
+                continue
+            collection = get_primary_fbp_collection(canvas)
+            if collection is not None:
+                direct_collections[collection_key(collection)] = collection
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
     for collection in direct_collections.values():
         try:
             collection["fbp_has_fbp_content"] = True
-            _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.add(collection.name)
-            _FBP_LAYER_VIEW_DIRECT_COLLECTIONS.add(collection.name)
+            name = str(getattr(collection, "name", "") or "")
+            if name:
+                _FBP_LAYER_VIEW_TAGGED_COLLECTIONS.add(name)
+                _FBP_LAYER_VIEW_DIRECT_COLLECTIONS.add(name)
             mark_collection(collection)
         except FBP_DATA_IO_ERRORS as exc:
             fbp_warn("Could not cache layer collection", exc)
 
     fbp_runtime_set("fbp_layer_cache_dirty", False, context)
 
-
 def fbp_mark_layer_cache_dirty(context=None):
     fbp_runtime_set("fbp_layer_cache_dirty", True, context)
+    try:
+        call_service("layers.invalidate_tree_snapshot", context)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def collection_has_fbp_content(collection, recursive=True):
@@ -791,7 +1117,7 @@ def fbp_clipping_source_map(context, rigs=None, *, collections=None):
 
     Clipping follows physical camera depth, never the optional alphabetical UI
     view. Each layer is assigned through its canonical FBP collection so a
-    legacy object linked into multiple Blender collections cannot acquire an
+    object linked into multiple Blender collections cannot acquire an
     unstable or cross-collection source. ``collections`` optionally limits the
     calculation to collections affected by one reorder operation.
 
@@ -818,55 +1144,116 @@ def fbp_clipping_source_map(context, rigs=None, *, collections=None):
             return result
 
     try:
-        if rigs is not None:
-            scene_rigs = tuple(rigs)
-        elif collection_scope is not None:
-            scoped_rigs = []
-            seen_rigs = set()
-            for collection in collection_scope:
+        from .grease_pencil_bridge import is_gp_drawing_canvas
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        is_gp_drawing_canvas = lambda _obj: False
+
+    def is_clipping_stack_candidate(obj):
+        """Only FBP mesh layers participate in shader clipping chains.
+
+        Drawing Planes are visible Layer List items, but their native Grease
+        Pencil draw pipeline is not the same image/material pipeline used by
+        FBP plane clipping. A GP row between two planes must therefore be
+        ignored, not treated as a broken source that cancels plane-to-plane
+        clipping.
+        """
+        return bool(obj and is_fbp_layer_object(obj) and not is_gp_drawing_canvas(obj))
+
+    target_items = []
+    target_keys = set()
+    target_collections = []
+    target_collection_keys = set()
+    if rigs is not None:
+        try:
+            for obj in tuple(rigs):
+                if obj is None or not object_in_scene(obj, scene):
+                    continue
+                if not is_clipping_stack_candidate(obj):
+                    continue
+                key = int(obj.as_pointer())
+                if key in target_keys:
+                    continue
+                target_keys.add(key)
+                target_items.append(obj)
+                collection = get_primary_fbp_collection(obj)
                 if collection is None:
                     continue
-                try:
-                    collection_objects = tuple(collection.objects)
-                except FBP_DATA_ERRORS:
-                    collection_objects = ()
-                for rig in collection_objects:
-                    try:
-                        if (
-                            not is_fbp_layer_object(rig)
-                            or not object_in_scene(rig, scene)
-                            or get_primary_fbp_collection(rig) != collection
-                        ):
-                            continue
-                        key = int(rig.as_pointer())
-                        if key in seen_rigs:
-                            continue
-                        seen_rigs.add(key)
-                        scoped_rigs.append(rig)
-                    except FBP_DATA_ERRORS:
-                        continue
-            scene_rigs = tuple(scoped_rigs)
+                collection_key = int(collection.as_pointer())
+                if collection_key in target_collection_keys:
+                    continue
+                target_collection_keys.add(collection_key)
+                target_collections.append(collection)
+        except (ReferenceError, RuntimeError, TypeError, ValueError):
+            return result
+
+    try:
+        if collection_scope is not None:
+            scan_collections = tuple(collection_scope)
+        elif target_collections:
+            scan_collections = tuple(target_collections)
         else:
-            scene_rigs = tuple(iter_scene_fbp_rigs(scene))
+            scan_collections = ()
+    except FBP_DATA_ERRORS:
+        scan_collections = ()
+
+    try:
+        if scan_collections:
+            scene_items = []
+            seen_items = set()
+            scan_keys = set()
+            for collection in scan_collections:
+                try:
+                    if collection is not None:
+                        scan_keys.add(int(collection.as_pointer()))
+                except FBP_DATA_ERRORS:
+                    continue
+            for obj in iter_scene_fbp_rigs(scene, fallback=True):
+                try:
+                    if not is_clipping_stack_candidate(obj):
+                        continue
+                    collection = get_primary_fbp_collection(obj)
+                    if collection is None or int(collection.as_pointer()) not in scan_keys:
+                        continue
+                    key = int(obj.as_pointer())
+                    if key in seen_items:
+                        continue
+                    seen_items.add(key)
+                    scene_items.append(obj)
+                except FBP_DATA_ERRORS:
+                    continue
+        else:
+            scene_items = []
+            seen_items = set()
+            for obj in iter_scene_fbp_rigs(scene, fallback=True):
+                try:
+                    if not is_clipping_stack_candidate(obj):
+                        continue
+                    key = int(obj.as_pointer())
+                    if key in seen_items:
+                        continue
+                    seen_items.add(key)
+                    scene_items.append(obj)
+                except FBP_DATA_ERRORS:
+                    continue
     except (ReferenceError, RuntimeError, TypeError, ValueError):
         return result
-    if not scene_rigs:
+    if not scene_items:
         return result
 
     by_collection = {}
-    seen_rig_keys = set()
+    seen_item_keys = set()
     try:
-        for rig in scene_rigs:
+        for rig in scene_items:
             if (
                 not rig
-                or not is_fbp_layer_object(rig)
+                or not is_clipping_stack_candidate(rig)
                 or not object_in_scene(rig, scene)
             ):
                 continue
             rig_key = int(rig.as_pointer())
-            if rig_key in seen_rig_keys:
+            if rig_key in seen_item_keys:
                 continue
-            seen_rig_keys.add(rig_key)
+            seen_item_keys.add(rig_key)
             collection = get_primary_fbp_collection(rig)
             if collection is None:
                 continue
@@ -893,7 +1280,7 @@ def fbp_clipping_source_map(context, rigs=None, *, collections=None):
     try:
         scene_order = {
             int(rig.as_pointer()): index
-            for index, rig in enumerate(scene_rigs)
+            for index, rig in enumerate(scene_items)
             if rig is not None
         }
     except FBP_DATA_ERRORS:
@@ -913,25 +1300,29 @@ def fbp_clipping_source_map(context, rigs=None, *, collections=None):
             for candidate in displayed
         ]
         for index, rig in enumerate(displayed):
-            source = displayed[index + 1] if index + 1 < len(displayed) else None
-            if clipping_flags[index]:
-                # Stacked clipping layers share the first non-clipping base
-                # below them instead of clipping to one another recursively.
-                source = None
-                for candidate_index in range(index + 1, len(displayed)):
-                    if not clipping_flags[candidate_index]:
-                        source = displayed[candidate_index]
-                        break
-            result[rig] = source if fbp_layer_has_sampleable_image(source) else None
+            source = None
+            # Stacked clipping layers share the first non-clipping, sampleable
+            # FBP mesh layer below them. Non-sampleable rows and GP Drawing
+            # Planes are skipped so a visible GP layer between two image planes
+            # does not break plane-to-plane clipping.
+            for candidate_index in range(index + 1, len(displayed)):
+                if clipping_flags[index] and clipping_flags[candidate_index]:
+                    continue
+                candidate = displayed[candidate_index]
+                if fbp_layer_has_sampleable_image(candidate):
+                    source = candidate
+                    break
+            if target_keys and int(rig.as_pointer()) not in target_keys:
+                continue
+            result[rig] = source
     return result
 
 
 def fbp_immediate_layer_below_map(context, rigs=None, *, collections=None):
-    """Return the sampleable image layer immediately below each rig.
+    """Return the immediate Image or flat Color layer below each rig.
 
-    Procedural Color, Gradient and Holdout layers currently have no image node
-    that the pairwise shader can sample. They intentionally break the automatic
-    relation instead of silently skipping to a more distant layer.
+    A spatial procedural Gradient/Holdout layer still breaks the relation: it
+    cannot be represented by the Layer Blend group's constant RGBA source.
     """
     result = {}
     scene = getattr(context, "scene", None)
@@ -983,7 +1374,7 @@ def fbp_immediate_layer_below_map(context, rigs=None, *, collections=None):
         )
         for index, rig in enumerate(displayed):
             source = displayed[index + 1] if index + 1 < len(displayed) else None
-            result[rig] = source if fbp_layer_has_sampleable_image(source) else None
+            result[rig] = source if fbp_layer_is_blend_source(source) else None
     return result
 
 def iter_fbp_rigs_in_collection(collection, recursive=True):
@@ -1001,7 +1392,7 @@ def iter_fbp_rigs_in_collection(collection, recursive=True):
                     if rig.name not in seen:
                         seen.add(rig.name)
                         yield rig
-    except Exception:
+    except FBP_DATA_ERRORS:
         return
 
 
@@ -1009,8 +1400,16 @@ def get_child_fbp_collections(collection):
     if not collection:
         return []
     try:
-        return sort_collections_for_layer_view(bpy.context, [child for child in collection.children if collection_has_fbp_content(child, True)])
-    except Exception:
+        context = getattr(bpy, "context", None)
+        scene = getattr(context, "scene", None) if context else None
+        tree = fbp_build_canonical_collection_tree(scene)
+        key = int(collection.as_pointer())
+        children = [
+            child for child in tree.get("children", {}).get(key, ())
+            if collection_has_fbp_content(child, True)
+        ]
+        return sort_collections_for_layer_view(context, children)
+    except FBP_DATA_ERRORS:
         return []
 
 
@@ -1109,12 +1508,33 @@ def fbp_procedural_kind_for_item(rig, index, fallback='SOLID'):
 
 
 def fbp_set_procedural_metadata(mat, kind):
-    """Store the procedural kind on a material when possible."""
+    """Store one canonical procedural kind and clear conflicting material flags."""
     if not mat:
         return
+    kind = kind if kind in {'SOLID', 'GRADIENT', 'HOLDOUT'} else 'SOLID'
     try:
-        if kind in {'SOLID', 'GRADIENT', 'HOLDOUT'}:
-            mat['fbp_procedural_kind'] = kind
+        mat['fbp_procedural_kind'] = kind
+        if kind == 'GRADIENT':
+            mat['fbp_gradient_material'] = True
+            try:
+                if 'fbp_holdout_material' in mat:
+                    del mat['fbp_holdout_material']
+            except FBP_DATA_IO_ERRORS:
+                pass
+        elif kind == 'HOLDOUT':
+            mat['fbp_holdout_material'] = True
+            try:
+                if 'fbp_gradient_material' in mat:
+                    del mat['fbp_gradient_material']
+            except FBP_DATA_IO_ERRORS:
+                pass
+        else:
+            for key in ('fbp_gradient_material', 'fbp_holdout_material'):
+                try:
+                    if key in mat:
+                        del mat[key]
+                except FBP_DATA_IO_ERRORS:
+                    pass
     except FBP_DATA_IO_ERRORS:
         pass
 
@@ -1198,26 +1618,22 @@ def fbp_select_plane_icon(rig, context):
 
 def fbp_collection_select_icon(collection, context):
     """Checkbox icon for collection rig selection."""
-    cached = _fbp_cached_collection_ui_state(collection, context)
-    if cached is not None:
-        if bool(cached.get("locked", False)):
-            return fbp_icon("LAYER_USED")
-        return fbp_icon("CHECKBOX_HLT") if bool(cached.get("selected_visible", False)) else fbp_icon("CHECKBOX_DEHLT")
-    if bool(getattr(collection, 'fbp_collection_locked', False)):
+    rigs, gp_canvases = _collection_ui_members(collection)
+    members = [
+        member for member in tuple(rigs) + tuple(gp_canvases)
+        if object_in_view_layer(member, context)
+    ]
+    if members and all(bool(getattr(member, "hide_select", False)) for member in members):
         return fbp_icon("LAYER_USED")
-    rigs = [rig for rig in iter_fbp_rigs_in_collection(collection, True) if object_in_view_layer(rig, context)]
-    if rigs and all(rig.select_get() for rig in rigs):
+    if members and all(bool(member.select_get()) for member in members):
         return fbp_icon("CHECKBOX_HLT")
     return fbp_icon("CHECKBOX_DEHLT")
 
 
 def fbp_collection_plane_icon(collection, context):
     """Icon for linked image/color plane selectability inside a collection."""
-    cached = _fbp_cached_collection_ui_state(collection, context)
-    if cached is not None:
-        return fbp_icon("RESTRICT_SELECT_ON") if bool(cached.get("plane_locked_visible", False)) else fbp_icon("RESTRICT_SELECT_OFF")
     planes = []
-    for rig in iter_fbp_rigs_in_collection(collection, True):
+    for rig in _collection_rigs_for_ui(collection):
         plane = getattr(rig, 'fbp_plane_target', None)
         if plane and object_in_view_layer(plane, context):
             planes.append(plane)
@@ -1226,10 +1642,70 @@ def fbp_collection_plane_icon(collection, context):
     return fbp_icon("RESTRICT_SELECT_OFF")
 
 
-def fbp_collection_icon(collection):
-    """Return the collection icon, preserving Blender collection color tags when available."""
-    return fbp_collection_color_icon(getattr(collection, "color_tag", ""))
+def _fbp_normalize_layer_color_tag(color_tag):
+    """Return one artist-facing layer tag, normalizing internal values."""
+    return fbp_normalize_artist_color_tag(color_tag)
 
+
+def fbp_collection_effective_color_tag(collection, context=None):
+    """Return the shared color of all FBP plane layers in a collection tree.
+
+    Collection datablock colors are not authoritative for the Layer List: they
+    can be inherited from imports or manually changed in the Outliner. A
+    collection row is colored only when every
+    descendant Frame By Plane plane has the same artist-facing tag. Empty or
+    mixed collections stay white/default.
+    """
+    if collection is None:
+        return 'NONE'
+    try:
+        if bool(getattr(collection, 'fbp_color_tag_explicit', False)):
+            return _fbp_normalize_layer_color_tag(
+                safe_collection_color_tag(collection, 'NONE')
+            )
+    except FBP_DATA_ERRORS:
+        pass
+    try:
+        rigs, gp_canvases = _collection_ui_members(collection)
+        tags = (
+            _fbp_normalize_layer_color_tag(getattr(member, 'fbp_color_tag', 'NONE'))
+            for member in tuple(rigs) + tuple(gp_canvases)
+            if member is not None
+        )
+    except FBP_DATA_ERRORS:
+        return 'NONE'
+    return fbp_shared_artist_color_tag(tags)
+
+
+def fbp_collection_icon(collection, context=None):
+    """Return a collection icon derived from the colors of its plane layers."""
+    return fbp_collection_color_icon(
+        fbp_collection_effective_color_tag(collection, context=context)
+    )
+
+
+def fbp_layer_tag_backend_icon_value(rig, inactive=None):
+    """Return the bundled PNG icon for a layer backend and color tag.
+
+    Layer-list icons are never generated at runtime.  This keeps the artwork
+    consistent with the rest of Frame By Plane, avoids allocating preview image
+    buffers during UI redraw, and respects the user's custom icon assets.
+    """
+    if not rig:
+        return 0
+    try:
+        color_tag = str(getattr(rig, 'fbp_color_tag', 'NONE') or 'NONE')
+        inactive_state = (
+            not bool(getattr(rig, 'fbp_is_visible', True))
+            if inactive is None else bool(inactive)
+        )
+        return int(layer_custom_icon_value(
+            fbp_layer_backend_type(rig),
+            color_tag,
+            inactive=inactive_state,
+        ) or 0)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return 0
 
 def fbp_layer_row_type_icon(rig, context):
     """Return a thumbnail when enabled, otherwise the rig Color Tag icon."""
@@ -1238,8 +1714,13 @@ def fbp_layer_row_type_icon(rig, context):
         if preview:
             return None, preview.icon_id
     try:
-        return fbp_strip_icon(getattr(rig, 'fbp_color_tag', 'COLOR_09')), None
-    except Exception:
+
+        if str(getattr(rig, 'fbp_color_tag', 'NONE') or '').upper() == 'NONE':
+            value = layer_custom_icon_value(fbp_layer_backend_type(rig), 'NONE')
+            if value:
+                return None, value
+        return fbp_strip_icon(getattr(rig, 'fbp_color_tag', 'NONE')), None
+    except FBP_DATA_ERRORS:
         return fbp_icon("STRIP_COLOR_09"), None
 
 
@@ -1257,145 +1738,89 @@ def fbp_set_ui_units_x(ui_layout, units):
 
 def fbp_collection_rows_are_disabled(collection, context):
     """Return whether collection text/icon should look inactive while controls stay usable."""
-    cached = _fbp_cached_collection_ui_state(collection, context)
-    if cached is not None:
-        return bool(cached.get("rows_disabled", False))
     if collection_is_hidden_in_view_layer(context, collection):
         return True
-    if bool(getattr(collection, 'fbp_collection_locked', False)):
+    rigs, gp_canvases = _collection_ui_members(collection)
+    members = [
+        (member, False) for member in rigs if object_in_view_layer(member, context)
+    ]
+    members.extend(
+        (member, True) for member in gp_canvases if object_in_view_layer(member, context)
+    )
+    if members and all(bool(getattr(member, "hide_select", False)) for member, _is_gp in members):
         return True
-    rigs = [rig for rig in iter_fbp_rigs_in_collection(collection, True) if object_in_view_layer(rig, context)]
-    if rigs and all(not getattr(rig, 'fbp_is_visible', True) for rig in rigs):
+    if members and all(not _collection_member_visible(member, is_gp=is_gp) for member, is_gp in members):
         return True
     return False
 
 
-def draw_fbp_layer_row(layout, context, rig, depth=0):
-    item = get_layer_item_for_rig(context, rig)
-    if not item:
-        return
-
-    is_disabled = (not getattr(rig, 'fbp_is_visible', True)) or bool(item.rig_locked)
-
-    row = layout.row(align=False)
-    split = row.split(factor=0.68, align=False)
-
-    # LEFT: Eye - depth BLANK1(s) - arrow placeholder - icon+name operator.
-    # Icon and name are drawn by the same operator to avoid the extra gap created
-    # by separate icon_row/name_row blocks.
-    left = split.row(align=True)
-    left.alignment = 'LEFT'
-
-    vis_icon = fbp_icon("HIDE_OFF") if rig.fbp_is_visible else fbp_icon("HIDE_ON")
-    left.prop(rig, "fbp_is_visible", text="", icon=vis_icon, icon_only=True, emboss=False)
-
-    for _ in range(max(0, depth)):
-        left.label(text="", icon=fbp_icon("BLANK1"))
-
-    # Keep layer names aligned with collection names, which have a disclosure arrow.
-    left.label(text="", icon=fbp_icon("BLANK1"))
-
-    name_row = left.row(align=True)
-    name_row.alignment = 'LEFT'
-    name_row.active = not is_disabled
-    type_icon, preview_icon = fbp_layer_row_type_icon(rig, context)
-    if preview_icon:
-        op_name = name_row.operator("fbp.select_layer_exclusive", text=rig.name, icon_value=preview_icon, emboss=False)
-    else:
-        op_name = name_row.operator("fbp.select_layer_exclusive", text=rig.name, icon=type_icon or fbp_icon("STRIP_COLOR_09"), emboss=False)
-    op_name.rig_name = rig.name
-
-    # RIGHT: fixed action strip.
-    right = split.row(align=True)
-    right.alignment = 'RIGHT'
-    fbp_set_ui_units_x(right, 5.75)
-
-    solo_icon = fbp_icon("OUTLINER_OB_LIGHT") if item.solo_view else fbp_icon("LIGHT")
-    right.prop(item, "solo_view", text="", icon=solo_icon, icon_only=True, emboss=False)
-
-    op_hold = right.operator("fbp.toggle_layer_holdout", text="", icon=fbp_mask_icon(item.holdout), emboss=False)
-    op_hold.rig_name = rig.name
-
-    op_plane = right.operator("fbp.select_linked_plane", text="", icon=fbp_select_plane_icon(rig, context), emboss=False)
-    op_plane.rig_name = rig.name
-
-    lock_icon = fbp_icon("LOCKED") if item.rig_locked else fbp_icon("UNLOCKED")
-    right.prop(item, "rig_locked", text="", icon=lock_icon, icon_only=True, emboss=False)
-
-    sel_row = right.row(align=True)
-    sel_row.enabled = not item.rig_locked
-    sel_row.prop(item, "selected", text="", icon=fbp_select_rig_icon(item.rig_locked, rig.select_get()), icon_only=True, emboss=False)
-
-def draw_fbp_collection_row(layout, context, collection, depth=0):
-    if not collection_has_fbp_content(collection, True):
-        return
-
-    hidden = collection_is_hidden_in_view_layer(context, collection)
-    collapsed = bool(getattr(collection, 'fbp_collapsed', False))
-    is_disabled = fbp_collection_rows_are_disabled(collection, context)
-
-    row = layout.row(align=False)
-    split = row.split(factor=0.68, align=False)
-
-    # LEFT: Eye - depth BLANK1(s) - disclosure arrow - collection icon+name operator.
-    left = split.row(align=True)
-    left.alignment = 'LEFT'
-
-    vis_icon = fbp_icon("HIDE_OFF") if collection.fbp_collection_visible else fbp_icon("HIDE_ON")
-    left.prop(collection, "fbp_collection_visible", text="", icon=vis_icon, icon_only=True, emboss=False)
-
-    for _ in range(max(0, depth)):
-        left.label(text="", icon=fbp_icon("BLANK1"))
-
-    fold_icon = fbp_icon("RIGHTARROW") if collapsed else fbp_icon("DOWNARROW_HLT")
-    op = left.operator("fbp.toggle_collection_collapse", text="", icon=fold_icon, emboss=False)
-    op.collection_name = collection.name
-
-    name_row = left.row(align=True)
-    name_row.alignment = 'LEFT'
-    name_row.active = not is_disabled
-    op_sel = name_row.operator("fbp.select_collection_layers", text=collection.name, icon=fbp_collection_icon(collection), emboss=False)
-    op_sel.collection_name = collection.name
-
-    # RIGHT: fixed action strip.
-    right = split.row(align=True)
-    right.alignment = 'RIGHT'
-    fbp_set_ui_units_x(right, 5.75)
-
-    solo_icon = fbp_icon("OUTLINER_OB_LIGHT") if collection.fbp_collection_solo else fbp_icon("LIGHT")
-    right.prop(collection, "fbp_collection_solo", text="", icon=solo_icon, icon_only=True, emboss=False)
-
-    op_hold = right.operator("fbp.toggle_collection_holdout", text="", icon=fbp_mask_icon(collection.fbp_collection_holdout), emboss=False)
-    op_hold.collection_name = collection.name
-
-    op_planes = right.operator("fbp.select_collection_planes", text="", icon=fbp_collection_plane_icon(collection, context), emboss=False)
-    op_planes.collection_name = collection.name
-
-    lock_icon = fbp_icon("LOCKED") if collection.fbp_collection_locked else fbp_icon("UNLOCKED")
-    right.prop(collection, "fbp_collection_locked", text="", icon=lock_icon, icon_only=True, emboss=False)
-
-    sel_row = right.row(align=True)
-    sel_row.enabled = not collection.fbp_collection_locked
-    sel_row.prop(collection, "fbp_collection_selected", text="", icon=fbp_collection_select_icon(collection, context), icon_only=True, emboss=False)
-
-    if collapsed or hidden:
-        return
-
-    for child in get_child_fbp_collections(collection):
-        draw_fbp_collection_row(layout, context, child, depth + 1)
-
-    direct = list(reversed(get_direct_fbp_rigs_in_collection(context, collection)))
-    for rig in direct:
-        draw_fbp_layer_row(layout, context, rig, depth + 1)
-
-
 def collect_project_image_paths():
+    """Return FBP media paths, expanding Blender 5.2 image sequences when possible."""
+    images = []
+    image_pointers = set()
+    for _mat, _node, image in iter_material_image_nodes():
+        try:
+            pointer = int(image.as_pointer())
+        except FBP_DATA_ERRORS:
+            pointer = id(image)
+        if pointer in image_pointers:
+            continue
+        image_pointers.add(pointer)
+        images.append(image)
+
     paths = []
-    for _mat, _node, img in iter_material_image_nodes():
-        p = getattr(img, 'filepath', '')
-        if p:
-            paths.append(p)
-    return paths
+    path_foreach = getattr(getattr(bpy, 'data', None), 'file_path_foreach', None)
+    if callable(path_foreach) and images:
+        def _visit(id_block, path, meta):
+            try:
+                pointer = int(id_block.as_pointer())
+            except FBP_DATA_ERRORS:
+                return
+            if pointer not in image_pointers or bool(getattr(meta, 'is_cache', False)):
+                return
+            value = str(path or '')
+            if value:
+                paths.append(value)
+        flags = {
+            'SKIP_PACKED',
+            'SKIP_WEAK_REFERENCES',
+            'EXPAND_SEQUENCES',
+        }
+        try:
+            # Blender 5.2 can scope traversal to the Image datablocks actually
+            # used by FBP. This avoids visiting every library/cache path in large
+            # productions and, in particular, avoids expanding Cycles .tx files
+            # that are deliberately ignored by this media-only collector.
+            path_foreach(_visit, subset=images, flags=flags)
+        except TypeError:
+            # Defensive fallback for API builds that expose file_path_foreach
+            # without the scoped subset keyword.
+            try:
+                path_foreach(_visit, flags=flags)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                paths.clear()
+        except (AttributeError, ReferenceError, RuntimeError, ValueError):
+            paths.clear()
+
+    if not paths:
+        for image in images:
+            path = str(getattr(image, 'filepath', '') or '')
+            if path:
+                paths.append(path)
+
+    # FBP rows retain the intended complete sequence, including frames that are
+    # currently missing on disk and therefore cannot be returned by Blender's
+    # expanded-path traversal.
+    try:
+        for scene in bpy.data.scenes:
+            for rig in iter_scene_fbp_rigs(scene, fallback=True):
+                for item in tuple(getattr(rig, 'fbp_images', ()) or ()):
+                    path = str(getattr(item, 'filepath', '') or '')
+                    if path:
+                        paths.append(path)
+    except FBP_DATA_ERRORS:
+        pass
+    return list(dict.fromkeys(paths))
 
 
 def missing_project_images():
@@ -1465,7 +1890,7 @@ def rig_has_missing_images(rig):
     if not plane:
         return False
     for mat in plane.data.materials:
-        if not mat or not getattr(mat, 'use_nodes', False) or not mat.node_tree:
+        if not mat or not getattr(mat, 'node_tree', None):
             continue
         for node in mat.node_tree.nodes:
             if node.type == 'TEX_IMAGE' and getattr(node, 'image', None):
@@ -1475,11 +1900,69 @@ def rig_has_missing_images(rig):
     return False
 
 
-def swap_layer_depth_only(context, rig_a, rig_b, *, depth_context=None):
+_FBP_LAYER_DEPTH_EPSILON = 0.01
+
+
+def _fbp_depth_nudge_amount(depth_a=0.0, depth_b=0.0):
+    """Return a visible-but-small camera-depth nudge for equal-depth layers."""
+    try:
+        scale = max(abs(float(depth_a)), abs(float(depth_b)), 1.0)
+    except (TypeError, ValueError):
+        scale = 1.0
+    return max(_FBP_LAYER_DEPTH_EPSILON, scale * 1.0e-5)
+def move_layer_to_depth_preserve_projection(context, obj, target_depth, *, depth_context=None):
+    """Move one stack object without moving neighbours and preserve screen size.
+
+    Perspective cameras require the object's scale to change by the same ratio
+    as its camera depth. Orthographic cameras and no-camera scenes keep scale
+    unchanged. The complete world matrix is written once so parented rigs do not
+    accumulate translation/scale drift across repeated Layer List moves.
+    """
+    if obj is None:
+        return False
+    depth_context = depth_context or fbp_make_depth_context_cache(context)
+    try:
+        world = obj.matrix_world.copy()
+        if depth_context.get("has_camera"):
+            camera_location = depth_context["camera_location"]
+            forward = depth_context["camera_forward"].normalized()
+            current_depth = float((world.translation - camera_location).dot(forward))
+            target_depth = float(target_depth)
+            if target_depth <= 1.0e-6:
+                return False
+            location, rotation, scale = world.decompose()
+            location += forward * (target_depth - current_depth)
+            if (
+                str(depth_context.get("camera_type", "PERSP") or "PERSP") == "PERSP"
+                and current_depth > 1.0e-6
+            ):
+                ratio = target_depth / current_depth
+                if ratio > 1.0e-6:
+                    scale = scale * ratio
+            obj.matrix_world = mathutils.Matrix.LocRotScale(location, rotation, scale)
+            return True
+
+        axis = 1 if getattr(obj, 'fbp_is_vertical', False) else 2
+        world.translation[axis] = float(target_depth)
+        obj.matrix_world = world
+        return True
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not move layer while preserving camera projection", exc)
+        return False
+
+
+def swap_layer_depth_only(context, rig_a, rig_b, *, depth_context=None, direction=""):
+    """Swap or nudge two stack items using the same depth metric as the Layer List.
+
+    ``Move Up/Down`` used to be a no-op for layers sharing exactly the same
+    distance from the camera: both objects swapped identical depth values, then
+    the UI fell back to name ordering and appeared to ignore the command.  When a
+    direction is supplied and the neighbour has the same projected distance, move
+    only the active object by a tiny camera-depth step past the neighbour.
+    """
     if not rig_a or not rig_b:
         return
-    # Match the same camera-relative depth metric used by the Layer List. This
-    # keeps Move Up/Down and Reverse Selected correct even with a rotated camera.
+    direction = str(direction or "").upper()
     try:
         depth_context = depth_context or fbp_make_depth_context_cache(context)
         if depth_context.get("has_camera"):
@@ -1489,10 +1972,33 @@ def swap_layer_depth_only(context, rig_a, rig_b, *, depth_context=None):
             world_b = rig_b.matrix_world.copy()
             depth_a = float((world_a.translation - camera_location).dot(forward))
             depth_b = float((world_b.translation - camera_location).dot(forward))
-            world_a.translation += forward * (depth_b - depth_a)
-            world_b.translation += forward * (depth_a - depth_b)
-            rig_a.matrix_world = world_a
-            rig_b.matrix_world = world_b
+            epsilon = _fbp_depth_nudge_amount(depth_a, depth_b)
+            if direction in {"UP", "DOWN"} and abs(depth_a - depth_b) <= epsilon * 0.25:
+                target_depth = depth_b - epsilon if direction == "UP" else depth_b + epsilon
+                move_layer_to_depth_preserve_projection(
+                    context,
+                    rig_a,
+                    target_depth,
+                    depth_context=depth_context,
+                )
+                return
+            # Reverse both projected depths through the same perspective-aware
+            # path used by ordinary Up/Down moves. The rear/larger plane thus
+            # becomes the nearer/smaller plane (and vice versa) while keeping
+            # its apparent camera framing. Orthographic cameras intentionally
+            # change only position.
+            move_layer_to_depth_preserve_projection(
+                context,
+                rig_a,
+                depth_b,
+                depth_context=depth_context,
+            )
+            move_layer_to_depth_preserve_projection(
+                context,
+                rig_b,
+                depth_a,
+                depth_context=depth_context,
+            )
             return
     except FBP_DATA_ERRORS:
         pass
@@ -1504,6 +2010,11 @@ def swap_layer_depth_only(context, rig_a, rig_b, *, depth_context=None):
         world_b = rig_b.matrix_world.copy()
         depth_a = float(world_a.translation[axis])
         depth_b = float(world_b.translation[axis])
+        epsilon = _fbp_depth_nudge_amount(depth_a, depth_b)
+        if direction in {"UP", "DOWN"} and abs(depth_a - depth_b) <= epsilon * 0.25:
+            world_a.translation[axis] = depth_b - epsilon if direction == "UP" else depth_b + epsilon
+            rig_a.matrix_world = world_a
+            return
         world_a.translation[axis] = depth_b
         world_b.translation[axis] = depth_a
         rig_a.matrix_world = world_a
@@ -1512,15 +2023,26 @@ def swap_layer_depth_only(context, rig_a, rig_b, *, depth_context=None):
         # Conservative fallback for incomplete objects during file load.
         loc_a = rig_a.location.copy()
         loc_b = rig_b.location.copy()
-        loc_a[axis], loc_b[axis] = loc_b[axis], loc_a[axis]
+        if direction in {"UP", "DOWN"}:
+            epsilon = _fbp_depth_nudge_amount(loc_a[axis], loc_b[axis])
+            loc_a[axis] = loc_b[axis] - epsilon if direction == "UP" else loc_b[axis] + epsilon
+        else:
+            loc_a[axis], loc_b[axis] = loc_b[axis], loc_a[axis]
+            rig_b.location = loc_b
         rig_a.location = loc_a
-        rig_b.location = loc_b
 
 
-def iter_scene_fbp_rigs(scene, *, fallback=True):
+def iter_scene_fbp_rigs(scene, *, fallback=False):
     """Yield synchronized FBP rigs without rescanning the Scene on hot paths."""
     if not scene:
         return
+    try:
+        from .fbp_index import iter_scene_fbp_rigs as _indexed_scene_rigs
+        yield from _indexed_scene_rigs(scene, fallback=fallback)
+        return
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
     seen = set()
     yielded = False
     try:
@@ -1540,17 +2062,70 @@ def iter_scene_fbp_rigs(scene, *, fallback=True):
     except FBP_DATA_ERRORS:
         pass
 
-    # The cache is populated by initial/import/depsgraph synchronization. A full
-    # fallback is needed only during the very first tick of an unsynchronized file.
-    if yielded or not fallback:
+    if fallback and not yielded:
+        try:
+            for rig in tuple(getattr(scene, "objects", ()) or ()):  # scene-local repair path
+                if not is_fbp_layer_object(rig) or not object_in_scene(rig, scene):
+                    continue
+                try:
+                    key = int(rig.as_pointer())
+                except FBP_DATA_ERRORS:
+                    key = str(getattr(rig, "name", "") or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield rig
+        except FBP_DATA_ERRORS:
+            pass
+    return
+
+
+def iter_scene_fbp_planes(scene, *, fallback=False):
+    """Yield synchronized FBP layer planes without rescanning on hot paths."""
+    if not scene:
         return
     try:
-        for obj in scene.objects:
-            if is_fbp_layer_object(obj):
-                yield obj
+        from .fbp_index import iter_scene_fbp_planes as _indexed_scene_planes
+        yield from _indexed_scene_planes(scene, fallback=fallback)
+        return
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+    seen = set()
+    try:
+        for rig in iter_scene_fbp_rigs(scene, fallback=fallback):
+            plane = getattr(rig, "fbp_plane_target", None)
+            if not plane or not getattr(plane, "is_fbp_plane", False):
+                continue
+            if not object_in_scene(plane, scene):
+                continue
+            try:
+                key = int(plane.as_pointer())
+            except FBP_DATA_ERRORS:
+                key = str(getattr(plane, "name", "") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            yield plane
     except FBP_DATA_ERRORS:
         return
+    if fallback:
+        try:
+            for plane in tuple(getattr(scene, "objects", ()) or ()):  # scene-local repair path
+                if not plane or not getattr(plane, "is_fbp_plane", False) or not object_in_scene(plane, scene):
+                    continue
+                try:
+                    key = int(plane.as_pointer())
+                except FBP_DATA_ERRORS:
+                    key = str(getattr(plane, "name", "") or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield plane
+        except FBP_DATA_ERRORS:
+            return
 
+    return
 
 def object_in_scene(obj, scene=None):
     """Return membership without linearly scanning every object in the Scene."""
@@ -1592,7 +2167,7 @@ def ensure_object_in_active_collection(obj, context=None):
             coll.objects.link(obj)
         context.view_layer.update()
         return object_in_view_layer(obj, context)
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -1600,21 +2175,85 @@ def get_selected_rigs(context):
     return get_selected_fbp_roots(context)
 
 
+def get_selected_or_active_rigs(context):
+    """Return selected rigs, falling back to the active object's owner."""
+    rigs = list(get_selected_rigs(context) or ())
+    if rigs:
+        return rigs
+    active = getattr(context, "object", None) if context is not None else None
+    rig = fbp_resolve_rig_from_any_object(active, context) if active is not None else None
+    return [rig] if rig is not None else []
+
+
 def fbp_resolve_rig_from_any_object(obj, context=None):
+    """Return the current FBP rig represented by a rig, helper, GP canvas or plane.
+
+    Selection polling and Properties panels can call this repeatedly within the
+    same redraw. Cache the answer for a tiny UI tick using an ownership
+    signature that changes when parent/object tags change.
+    """
+    if obj is None:
+        return None
+    cache_key = _resolve_cache_key(obj, context)
+    if cache_key is not None:
+        cached = _FBP_RESOLVE_RIG_CACHE.get(cache_key)
+        if cached is not None:
+            try:
+                checked_at, name, pointer = cached
+                if time.monotonic() - float(checked_at or 0.0) <= _FBP_RESOLVE_RIG_CACHE_SECONDS:
+                    rig = _resolve_cached_rig(name, pointer, context)
+                    if rig is not None or not name:
+                        return rig
+            except (TypeError, ValueError):
+                pass
+    rig = _fbp_resolve_rig_from_any_object_uncached(obj, context)
+    return _cache_resolved_rig(cache_key, rig)
+
+
+def _fbp_resolve_rig_from_any_object_uncached(obj, context=None):
     """Return the current FBP rig represented by a rig or its linked plane."""
     if obj is None:
         return None
     try:
         if getattr(obj, "is_fbp_control", False):
             return obj
-        try:
-            from .effect_controls import effect_control_owner, is_effect_control
-            if is_effect_control(obj):
-                owner = effect_control_owner(obj)
-                if owner and getattr(owner, "is_fbp_control", False):
-                    return owner
-        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
+        if bool(obj.get("fbp_gradient_controller", False)):
+            plane = getattr(obj, "parent", None)
+            owner = getattr(plane, "parent", None) if plane else None
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
+            owner_name = str(obj.get("fbp_gradient_controller_owner", "") or "")
+            owner = bpy.data.objects.get(owner_name) if owner_name else None
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
+        api = _effect_control_api()
+        if api is not None:
+            try:
+                is_effect_control, effect_control_owner = api
+                if is_effect_control(obj):
+                    owner = effect_control_owner(obj)
+                    if owner and getattr(owner, "is_fbp_control", False):
+                        return owner
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        api = _motion_helper_api()
+        if api is not None:
+            try:
+                is_motion_helper, motion_helper_owner = api
+                if is_motion_helper(obj):
+                    owner = motion_helper_owner(obj)
+                    if owner is not None:
+                        # Motion can target an FBP layer rig or a camera/regular object.
+                        # For FBP layers, route the Properties UI back to the owning rig
+                        # so selecting the helper behaves exactly like selecting the plane.
+                        if getattr(owner, "is_fbp_control", False):
+                            return owner
+                        plane_parent = getattr(owner, "parent", None)
+                        if getattr(owner, "is_fbp_plane", False) and plane_parent and getattr(plane_parent, "is_fbp_control", False):
+                            return plane_parent
+                        return owner
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
         if str(getattr(obj, "type", "") or "") == "LATTICE":
             # Parenting is the native ownership contract and survives rig
             # renames. The readable name tag is only a repair fallback. Older
@@ -1627,20 +2266,32 @@ def fbp_resolve_rig_from_any_object(obj, context=None):
             owner = bpy.data.objects.get(owner_name) if owner_name else None
             if owner and getattr(owner, "is_fbp_control", False):
                 return owner
-        try:
-            from .object_masks import find_object_mask_owner, is_object_mask_helper
-            if is_object_mask_helper(obj):
-                plane = getattr(obj, "parent", None)
-                parent_rig = getattr(plane, "parent", None) if plane else None
-                if parent_rig and getattr(parent_rig, "is_fbp_control", False):
-                    return parent_rig
-                # Repair-tolerant fallback for helpers whose parenting was
-                # changed manually or temporarily lost during Undo/file load.
-                owner = find_object_mask_owner(obj)
-                if owner and getattr(owner, "is_fbp_control", False):
-                    return owner
-        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
+        api = _gp_canvas_api()
+        if api is not None:
+            try:
+                is_gp_canvas, gp_canvas_owner = api
+                if is_gp_canvas(obj):
+                    owner = gp_canvas_owner(obj)
+                    if owner and getattr(owner, "is_fbp_control", False):
+                        return owner
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        api = _object_mask_api()
+        if api is not None:
+            try:
+                is_object_mask_controller, find_object_mask_controller_owner = api
+                if is_object_mask_controller(obj):
+                    plane = getattr(obj, "parent", None)
+                    parent_rig = getattr(plane, "parent", None) if plane else None
+                    if parent_rig and getattr(parent_rig, "is_fbp_control", False):
+                        return parent_rig
+                    # Repair-tolerant fallback for helpers whose parenting was
+                    # changed manually or temporarily lost during Undo/file load.
+                    owner = find_object_mask_controller_owner(obj)
+                    if owner and getattr(owner, "is_fbp_control", False):
+                        return owner
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
         if not getattr(obj, "is_fbp_plane", False):
             return None
         parent = getattr(obj, "parent", None)
@@ -1653,16 +2304,65 @@ def fbp_resolve_rig_from_any_object(obj, context=None):
         return None
 
 
+def _selected_roots_cache_key(context):
+    try:
+        scene = getattr(context, "scene", None)
+        active = getattr(context, "object", None)
+        selected = tuple(getattr(context, "selected_objects", ()) or ())
+        selection_sig = tuple(
+            (
+                _object_pointer(obj),
+                _object_name(obj),
+                str(getattr(obj, "type", "") or ""),
+                _object_pointer(getattr(obj, "parent", None)),
+            )
+            for obj in selected
+            if obj is not None
+        )
+        return (_object_pointer(scene), _object_pointer(active), selection_sig)
+    except FBP_DATA_ERRORS:
+        return None
+
+
 def get_selected_fbp_roots(context):
     """Return selected FBP rigs with the active rig first for reliable multi-edit UI."""
+    cache_key = _selected_roots_cache_key(context)
+    if cache_key is not None:
+        cached = _FBP_SELECTED_ROOTS_CACHE.get(cache_key)
+        if cached is not None:
+            try:
+                checked_at, names = cached
+                if time.monotonic() - float(checked_at or 0.0) <= _FBP_SELECTED_ROOTS_CACHE_SECONDS:
+                    roots = []
+                    for name in tuple(names or ()):
+                        rig = _resolve_cached_rig(name, 0, context)
+                        if rig is not None and rig not in roots:
+                            roots.append(rig)
+                    return roots
+            except (TypeError, ValueError):
+                pass
     roots = []
-    selected = list(getattr(context, "selected_objects", []) or [])
+    selected = tuple(getattr(context, "selected_objects", ()) or ())
     active = getattr(context, "object", None)
-    ordered = ([active] if active else []) + [obj for obj in selected if obj != active]
+    # Blender can keep context.object pointing at the former active object after
+    # Select None.  This function promises selected roots only; callers that
+    # intentionally want an active-object fallback use get_selected_or_active_rigs().
+    ordered = (
+        (active,) + tuple(obj for obj in selected if obj is not active)
+        if active is not None and active in selected
+        else selected
+    )
     for ob in ordered:
         rig = fbp_resolve_rig_from_any_object(ob, context)
         if rig and rig not in roots:
             roots.append(rig)
+    if cache_key is not None:
+        if len(_FBP_SELECTED_ROOTS_CACHE) >= _FBP_SELECTED_ROOTS_CACHE_LIMIT and cache_key not in _FBP_SELECTED_ROOTS_CACHE:
+            _FBP_SELECTED_ROOTS_CACHE.clear()
+        _FBP_SELECTED_ROOTS_CACHE[cache_key] = (
+            time.monotonic(),
+            tuple(_object_name(rig) for rig in roots),
+        )
     return roots
 
 
@@ -1711,14 +2411,17 @@ def invalidate_preview_path(image_path):
 
 
 def clear_previews():
+    """Release layer thumbnails without touching unrelated UI icon collections."""
     _FBP_COMPOSITE_PREVIEW_KEYS.clear()
     _FBP_RAW_PREVIEW_KEYS.clear()
-    for pcoll in preview_collections.values():
+    for key in ("fbp_previews", _FBP_COMPOSITE_PREVIEW_COLLECTION):
+        pcoll = preview_collections.pop(key, None)
+        if pcoll is None:
+            continue
         try:
             bpy.utils.previews.remove(pcoll)
         except FBP_DATA_ERRORS:
             pass
-    preview_collections.clear()
     _FBP_PREVIEW_MISS_CACHE.clear()
     try:
         from .drawing_plane import clear_drawing_preview_runtime_state
@@ -1729,7 +2432,9 @@ def clear_previews():
 
 def update_rig_visibility(rig, layer_item=None, context=None):
     """Apply one rig's visibility contract without scanning every layer."""
-    if not rig:
+    # RNA update callbacks can run while Undo is replacing Main. Never touch
+    # object visibility, materials or image-backed planes in that interval.
+    if fbp_undo_guard_active() or not rig:
         return False
     try:
         if layer_item is None:
@@ -1738,10 +2443,29 @@ def update_rig_visibility(rig, layer_item=None, context=None):
         visible = bool(getattr(rig, "fbp_is_visible", True)) and not bool(
             getattr(layer_item, "mute", False) if layer_item is not None else False
         )
+        try:
+            scene = getattr(context, "scene", None) if context else None
+            gp_solo_active = False
+            if scene is not None:
+                from .grease_pencil_bridge import any_gp_canvas_solo
+                gp_solo_active = bool(any_gp_canvas_solo(scene))
+            layer_solo_active = bool(
+                context and scene is not None
+                and any(bool(getattr(item, "solo", False)) for item in getattr(scene, "fbp_layers", ()) or ())
+            )
+            if gp_solo_active or layer_solo_active:
+                visible = bool(visible and getattr(layer_item, "solo", False))
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+        hidden = not visible
+        try:
+            if bool(rig.hide_get()) != hidden:
+                rig.hide_set(hidden)
+        except FBP_DATA_IO_ERRORS:
+            pass
         plane = getattr(rig, "fbp_plane_target", None)
         if not plane:
-            return False
-        hidden = not visible
+            return True
         if bool(getattr(plane, "hide_viewport", False)) != hidden:
             plane.hide_viewport = hidden
         if bool(getattr(plane, "hide_render", False)) != hidden:
@@ -1766,6 +2490,8 @@ def update_rig_visibility(rig, layer_item=None, context=None):
 
 
 def update_global_visibility(context=None):
+    if fbp_undo_guard_active():
+        return
     context = context or getattr(bpy, "context", None)
     scene = getattr(context, "scene", None) if context else None
     if scene is None:
@@ -1775,7 +2501,11 @@ def update_global_visibility(context=None):
             update_rig_visibility(item.obj, item, context)
         except ReferenceError:
             pass
-    fbp_clear_collection_ui_state_cache()
+    try:
+        from .grease_pencil_bridge import sync_gp_canvas_visibility
+        sync_gp_canvas_visibility(context)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def update_mute_cb(self, context):
@@ -1784,7 +2514,6 @@ def update_mute_cb(self, context):
         update_rig_visibility(self.obj, self, context)
     except FBP_DATA_ERRORS:
         pass
-    fbp_clear_collection_ui_state_cache()
 
 
 def get_preview_collection():
@@ -1820,13 +2549,19 @@ def thumbnail_background_state(scene=None):
 
 
 def _remember_composite_preview(pcoll, cache_key):
+    """Maintain a bounded LRU for square/processed thumbnails."""
+    try:
+        _FBP_COMPOSITE_PREVIEW_KEYS.remove(cache_key)
+    except ValueError:
+        pass
     _FBP_COMPOSITE_PREVIEW_KEYS.append(cache_key)
     while len(_FBP_COMPOSITE_PREVIEW_KEYS) > _FBP_COMPOSITE_PREVIEW_LIMIT:
         oldest = _FBP_COMPOSITE_PREVIEW_KEYS.popleft()
         if oldest == cache_key:
             continue
         try:
-            del pcoll[oldest]
+            if oldest in pcoll:
+                del pcoll[oldest]
         except (KeyError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
 
@@ -2045,6 +2780,8 @@ def fbp_make_depth_context_cache(context):
                     "has_camera": True,
                     "camera_location": cam.matrix_world.translation.copy(),
                     "camera_forward": forward,
+                    "camera_type": str(getattr(getattr(cam, "data", None), "type", "PERSP") or "PERSP"),
+                    "camera_name": str(getattr(cam, "name", "") or ""),
                 }
     except ReferenceError:
         pass
@@ -2077,9 +2814,9 @@ def sort_rigs_for_layer_view(context, rigs):
         return list(rigs)
     if getattr(context.scene, 'fbp_sort_layers_alpha', False):
         return sorted(rigs, key=lambda rig: natural_sort_key(rig.name))
-    # Farther layers first internally; UI reverses this where needed so closest appears on top.
-    # Sort only by physical depth. The input order is already the stable runtime
-    # order, so equal-depth layers no longer jump when their names change.
+    # Layer view order is Photoshop/Procreate-like: closest to camera first
+    # at the top of the list, farthest layers last at the bottom.  Sort only by
+    # physical depth; the input order remains the stable tie-breaker.
     depth_ctx = fbp_make_depth_context_cache(context)
     depth_cache = {
         rig: fbp_layer_depth_value_from_cache(rig, depth_ctx)
@@ -2088,7 +2825,6 @@ def sort_rigs_for_layer_view(context, rigs):
     return sorted(
         rigs,
         key=lambda rig: depth_cache.get(rig, 0.0),
-        reverse=True,
     )
 
 
@@ -2101,11 +2837,15 @@ def sort_collections_for_layer_view(context, collections):
         return sorted(collections, key=lambda c: natural_sort_key(c.name))
     depth_ctx = fbp_make_depth_context_cache(context)
     def _collection_depth(coll):
-        rigs = list(iter_fbp_rigs_in_collection(coll, True))
-        if not rigs:
+        rigs, gp_canvases = _collection_ui_members(coll)
+        members = tuple(rigs) + tuple(gp_canvases)
+        if not members:
             return 0.0
-        return sum(fbp_layer_depth_value_from_cache(rig, depth_ctx) for rig in rigs) / max(1, len(rigs))
-    return sorted(collections, key=lambda c: (_collection_depth(c), natural_sort_key(c.name)), reverse=True)
+        return sum(
+            fbp_layer_depth_value_from_cache(member, depth_ctx)
+            for member in members
+        ) / max(1, len(members))
+    return sorted(collections, key=lambda c: (_collection_depth(c), natural_sort_key(c.name)))
 
 
 # ── LAYER UI BOOLEAN HELPERS ─────────────────────────────────────────────────
@@ -2181,6 +2921,12 @@ def set_layer_solo_view(self, value):
         return
 
     if value:
+        # Plane solo must isolate against Grease Pencil canvases as well.
+        try:
+            from .grease_pencil_bridge import clear_gp_canvas_solo
+            clear_gp_canvas_solo(sc)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
         # First solo click isolates the layer. Further solo clicks add more layers.
         if not any(item.solo for item in sc.fbp_layers):
             for item in sc.fbp_layers:
@@ -2211,7 +2957,7 @@ def get_layer_holdout(self):
     obj = _safe_layer_obj(self)
     try:
         return bool(obj and rig_holdout_is_active(obj))
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -2229,22 +2975,107 @@ def set_layer_holdout(self, value):
 
 
 def _collection_rigs_for_ui(collection):
+    """Resolve members through the canonical Layer-List collection contract.
+
+    Layer List collections are real Blender Collections and membership is
+    resolved only from the current canonical collection hierarchy.
+    """
+    if collection is None:
+        return []
     try:
-        return list(iter_fbp_rigs_in_collection(collection, True))
-    except Exception:
+        context = getattr(bpy, "context", None)
+        scene = getattr(context, "scene", None) if context else None
+        if scene is None:
+            return []
+
+        collection_keys = {
+            int(current.as_pointer())
+            for current in fbp_canonical_collection_descendants(scene, collection)
+            if current is not None
+        }
+
+        result = []
+        seen = set()
+        for rig in iter_scene_fbp_rigs(scene, fallback=True):
+            if rig is None:
+                continue
+            primary = get_primary_fbp_collection(rig)
+            if primary is None or int(primary.as_pointer()) not in collection_keys:
+                continue
+            key = int(rig.as_pointer())
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(rig)
+        return result
+    except FBP_DATA_ERRORS:
         return []
 
 
-def get_collection_selected(self):
-    cached = _fbp_cached_collection_ui_state(self)
-    if cached is not None:
-        return bool(cached.get("selected", False))
-    rigs = _collection_rigs_for_ui(self)
+def _collection_tree_for_ui(collection):
+    """Return the canonical Layer List collection subtree once, depth-first."""
+    if collection is None:
+        return []
+    context = getattr(bpy, "context", None)
+    scene = getattr(context, "scene", None) if context else None
+    return fbp_canonical_collection_descendants(scene, collection)
+
+
+def _collection_gp_canvases_for_ui(collection):
+    """Resolve Drawing Plane rows assigned to a visual collection tree."""
+    if collection is None:
+        return []
     try:
-        items = [get_layer_item_for_rig(bpy.context, rig) for rig in rigs]
-        items = [item for item in items if item is not None]
-        return bool(items and len(items) == len(rigs) and all(item.selected for item in items))
-    except Exception:
+        context = getattr(bpy, "context", None)
+        scene = getattr(context, "scene", None) if context else None
+        if scene is None:
+            return []
+        from .fbp_index import iter_scene_gp_canvases
+        from .grease_pencil_bridge import is_gp_drawing_canvas
+
+        collection_keys = {
+            int(current.as_pointer())
+            for current in _collection_tree_for_ui(collection)
+            if current is not None
+        }
+        result = []
+        seen = set()
+        for canvas in iter_scene_gp_canvases(scene, kind="DRAWING", fallback=True):
+            if canvas is None or not is_gp_drawing_canvas(canvas):
+                continue
+            primary = get_primary_fbp_collection(canvas)
+            if primary is None or int(primary.as_pointer()) not in collection_keys:
+                continue
+            key = int(canvas.as_pointer())
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(canvas)
+        return result
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return []
+
+
+def _collection_ui_members(collection):
+    """Return mesh rigs and GP Drawing Planes represented by one folder row."""
+    return _collection_rigs_for_ui(collection), _collection_gp_canvases_for_ui(collection)
+
+
+def _collection_member_visible(member, *, is_gp=False):
+    try:
+        if is_gp:
+            return bool(getattr(member, "fbp_gp_canvas_visible", True))
+        return bool(getattr(member, "fbp_is_visible", True))
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def get_collection_selected(self):
+    rigs, gp_canvases = _collection_ui_members(self)
+    members = tuple(rigs) + tuple(gp_canvases)
+    try:
+        return bool(members and all(bool(member.select_get()) for member in members))
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -2252,14 +3083,20 @@ def set_collection_selected(self, value):
     context = getattr(bpy, "context", None)
     selected_value = bool(value)
     last_selected = None
-    for rig in _collection_rigs_for_ui(self):
+    rigs, gp_canvases = _collection_ui_members(self)
+    for member in tuple(rigs) + tuple(gp_canvases):
         try:
-            if selected_value and context and not object_in_view_layer(rig, context):
-                if not ensure_object_in_active_collection(rig, context):
+            if selected_value and context and not object_in_view_layer(member, context):
+                if not ensure_object_in_active_collection(member, context):
                     continue
-            rig.select_set(selected_value)
-            if selected_value and object_in_view_layer(rig, context):
-                last_selected = rig
+            # Folder selection must never silently unlock a locked child.  This
+            # differs from the direct GP row proxy, where clicking the row is an
+            # explicit request to edit that canvas.
+            if selected_value and bool(getattr(member, "hide_select", False)):
+                continue
+            member.select_set(selected_value)
+            if selected_value and object_in_view_layer(member, context):
+                last_selected = member
         except FBP_DATA_IO_ERRORS:
             continue
     if last_selected is not None and context and getattr(context, "view_layer", None):
@@ -2267,19 +3104,44 @@ def set_collection_selected(self, value):
             context.view_layer.objects.active = last_selected
         except FBP_DATA_IO_ERRORS:
             pass
-    fbp_clear_collection_ui_state_cache()
+    # Property-icon selection must keep the collection row active just like a
+    # click on its name. Otherwise the active-object message bus immediately
+    # paints one child layer blue instead of the collection.
+    if context is not None:
+        scene = getattr(context, "scene", None)
+        if scene is not None:
+            try:
+                tree_index = next((
+                    index for index, row in enumerate(getattr(scene, "fbp_layer_tree_rows", ()) or ())
+                    if str(getattr(row, "row_type", "") or "") == "GROUP"
+                    and str(getattr(row, "collection_name", "") or "") == str(getattr(self, "name", "") or "")
+                ), -1)
+                if tree_index >= 0:
+                    scene.fbp_layer_tree_rows_idx = tree_index
+                fbp_runtime_set(
+                    "fbp.collection_row_selection_guard",
+                    {
+                        "scene_pointer": int(scene.as_pointer()),
+                        "collection_name": str(getattr(self, "name", "") or ""),
+                        "tree_index": int(tree_index),
+                        "expires": time.monotonic() + 0.85,
+                    },
+                )
+            except FBP_DATA_IO_ERRORS:
+                pass
 
 
 def get_collection_solo(self):
-    cached = _fbp_cached_collection_ui_state(self)
-    if cached is not None:
-        return bool(cached.get("solo", False))
-    rigs = _collection_rigs_for_ui(self)
+    rigs, gp_canvases = _collection_ui_members(self)
+    states = []
     try:
-        items = [get_layer_item_for_rig(bpy.context, rig) for rig in rigs]
-        items = [item for item in items if item is not None]
-        return bool(items and len(items) == len(rigs) and all(item.solo_view for item in items))
-    except Exception:
+        for rig in rigs:
+            item = get_layer_item_for_rig(bpy.context, rig)
+            states.append(bool(item and getattr(item, "solo", False)))
+        from .grease_pencil_bridge import gp_canvas_solo_active
+        states.extend(bool(gp_canvas_solo_active(canvas)) for canvas in gp_canvases)
+        return bool(states and all(states))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
 
 
@@ -2288,17 +3150,31 @@ def set_collection_solo(self, value):
     scene = getattr(context, "scene", None) if context else None
     if not scene:
         return
-    target_rigs = _collection_rigs_for_ui(self)
+    target_rigs, target_canvases = _collection_ui_members(self)
     try:
-        target_keys = {
-            int(rig.as_pointer())
-            for rig in target_rigs
-            if rig is not None
-        }
+        target_rig_keys = {_object_pointer(rig) for rig in target_rigs if rig is not None}
+        target_canvas_keys = {_object_pointer(canvas) for canvas in target_canvases if canvas is not None}
         value = bool(value)
         items = list(getattr(scene, "fbp_layers", ()) or ())
+        from .grease_pencil_bridge import (
+            KEY_CANVAS_SOLO,
+            gp_canvas_solo_active,
+            is_gp_drawing_canvas,
+        )
+        from .fbp_index import iter_scene_gp_canvases
+        all_canvases = tuple(
+            canvas for canvas in iter_scene_gp_canvases(scene, kind="DRAWING", fallback=True)
+            if canvas is not None and is_gp_drawing_canvas(canvas)
+        )
+        had_any_solo = bool(
+            any(bool(getattr(item, "solo", False)) for item in items)
+            or any(gp_canvas_solo_active(canvas) for canvas in all_canvases)
+        )
 
-        if value and not any(bool(getattr(item, "solo", False)) for item in items):
+        # Preserve the established Layer List contract: entering the first solo
+        # state stores the isolation in solo flags and suppresses non-target
+        # mesh eye states. Additional folder solos remain additive.
+        if value and not had_any_solo:
             for item in items:
                 item.solo = False
                 rig = _safe_layer_obj(item)
@@ -2307,18 +3183,24 @@ def set_collection_solo(self, value):
 
         for item in items:
             rig = _safe_layer_obj(item)
-            if not rig:
-                continue
-            try:
-                key = int(rig.as_pointer())
-            except FBP_DATA_ERRORS:
-                continue
-            if key not in target_keys:
+            if not rig or _object_pointer(rig) not in target_rig_keys:
                 continue
             item.solo = value
-            fbp_set_rna_property_silent(rig, "fbp_is_visible", value)
+            if value:
+                fbp_set_rna_property_silent(rig, "fbp_is_visible", True)
 
-        if not any(bool(getattr(item, "solo", False)) for item in items):
+        for canvas in all_canvases:
+            if _object_pointer(canvas) not in target_canvas_keys:
+                continue
+            canvas[KEY_CANVAS_SOLO] = value
+            if value:
+                fbp_set_rna_property_silent(canvas, "fbp_gp_canvas_visible", True)
+
+        any_solo_remaining = bool(
+            any(bool(getattr(item, "solo", False)) for item in items)
+            or any(gp_canvas_solo_active(canvas) for canvas in all_canvases)
+        )
+        if not any_solo_remaining:
             for item in items:
                 rig = _safe_layer_obj(item)
                 if rig:
@@ -2328,24 +3210,25 @@ def set_collection_solo(self, value):
     except Exception as exc:
         fbp_warn("Could not update collection solo visibility", exc)
 
+
 def get_collection_locked(self):
-    cached = _fbp_cached_collection_ui_state(self)
-    if cached is not None:
-        return bool(cached.get("locked", False))
-    rigs = _collection_rigs_for_ui(self)
-    return bool(rigs and all(getattr(rig, 'hide_select', False) for rig in rigs))
+    rigs, gp_canvases = _collection_ui_members(self)
+    members = tuple(rigs) + tuple(gp_canvases)
+    return bool(members and all(bool(getattr(member, "hide_select", False)) for member in members))
 
 
 def set_collection_locked(self, value):
-    for rig in _collection_rigs_for_ui(self):
-        rig.hide_select = bool(value)
-    fbp_clear_collection_ui_state_cache()
-
+    locked = bool(value)
+    rigs, gp_canvases = _collection_ui_members(self)
+    for member in tuple(rigs) + tuple(gp_canvases):
+        try:
+            member.hide_select = locked
+            if locked and bool(member.select_get()):
+                member.select_set(False)
+        except FBP_DATA_IO_ERRORS:
+            continue
 
 def get_collection_plane_locked(self):
-    cached = _fbp_cached_collection_ui_state(self)
-    if cached is not None:
-        return bool(cached.get("plane_locked", False))
     planes = []
     for rig in _collection_rigs_for_ui(self):
         plane = getattr(rig, 'fbp_plane_target', None)
@@ -2367,34 +3250,52 @@ def set_collection_plane_locked(self, value):
             continue
         except Exception as exc:
             fbp_warn('Could not paint collection linked plane selectability', exc)
-    fbp_clear_collection_ui_state_cache()
 
 
 def get_collection_visible(self):
-    cached = _fbp_cached_collection_ui_state(self)
-    if cached is not None:
-        return bool(cached.get("visible", True))
     try:
         return not collection_is_hidden_in_view_layer(bpy.context, self)
-    except Exception:
+    except FBP_DATA_ERRORS:
         return True
 
 
 def set_collection_visible(self, value):
-    hidden = not bool(value)
+    # Custom RNA setters may be replayed while Ctrl+Z restores IDs. Side-effect
+    # writes here would race Eevee's image/material sync and can crash Blender.
+    if fbp_undo_guard_active():
+        return
+    visible = bool(value)
+    hidden = not visible
+    context = getattr(bpy, "context", None)
+    collections = _collection_tree_for_ui(self)
+    for collection in collections:
+        try:
+            collection.hide_viewport = hidden
+        except FBP_DATA_IO_ERRORS:
+            pass
+        try:
+            view_layer = getattr(context, "view_layer", None) if context else None
+            layer_coll = find_layer_collection(view_layer.layer_collection, collection) if view_layer else None
+            if layer_coll:
+                layer_coll.hide_viewport = hidden
+        except FBP_DATA_IO_ERRORS:
+            pass
+
+    for rig in _collection_rigs_for_ui(self):
+        try:
+            fbp_set_rna_property_silent(rig, "fbp_is_visible", visible)
+        except FBP_DATA_IO_ERRORS:
+            pass
+
+    gp_canvases = _collection_gp_canvases_for_ui(self)
+    for canvas in gp_canvases:
+        try:
+            fbp_set_rna_property_silent(canvas, "fbp_gp_canvas_visible", visible)
+        except FBP_DATA_IO_ERRORS:
+            pass
+
     try:
-        self.hide_viewport = hidden
-    except FBP_DATA_IO_ERRORS:
-        pass
-    fbp_clear_collection_ui_state_cache()
-    try:
-        layer_coll = find_layer_collection(bpy.context.view_layer.layer_collection, self)
-        if layer_coll:
-            layer_coll.hide_viewport = hidden
-    except FBP_DATA_IO_ERRORS:
-        pass
-    try:
-        update_global_visibility(bpy.context)
+        update_global_visibility(context)
     except FBP_DATA_IO_ERRORS:
         pass
     # The UIList is a virtual tree. Force its signature to rebuild immediately
@@ -2403,22 +3304,17 @@ def set_collection_visible(self, value):
         scene = getattr(bpy.context, "scene", None)
         if scene:
             scene.fbp_layer_tree_signature = ""
-        for area in getattr(getattr(bpy.context, "screen", None), "areas", ()):
-            if getattr(area, "type", "") == 'VIEW_3D':
-                area.tag_redraw()
+        fbp_request_redraw(area_types={'VIEW_3D', 'PROPERTIES'})
     except FBP_DATA_ERRORS:
         pass
 
 
 def get_collection_holdout(self):
-    cached = _fbp_cached_collection_ui_state(self)
-    if cached is not None:
-        return bool(cached.get("holdout", False))
     rigs = _collection_rigs_for_ui(self)
     try:
         # Folder icon is considered active if at least one child layer is currently in temporary holdout.
         return bool(rigs and any(rig_holdout_is_active(rig) for rig in rigs))
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -2431,4 +3327,3 @@ def set_collection_holdout(self, value):
                 restore_original_materials_from_holdout(rig)
         except FBP_DATA_IO_ERRORS:
             pass
-    fbp_clear_collection_ui_state_cache()

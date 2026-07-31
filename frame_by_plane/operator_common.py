@@ -1,4 +1,4 @@
-"""Shared imports, state and helper functions for Frame by Plane operators.
+"""Shared imports, state and helper functions for Frame By Plane operators.
 
 Operator classes live in focused modules and depend on this module only.
 """
@@ -8,6 +8,7 @@ import bpy
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 
@@ -23,10 +24,193 @@ from .layers import (
     is_fbp_layer_object,
     set_collection_color_tag,
 )
+from .service_registry import call_service, register_service, unregister_service
 from .runtime import (
     fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS,
-    fbp_obj_runtime_key, fbp_obj_matches_runtime_key,
+    fbp_obj_runtime_key, fbp_obj_matches_runtime_key, fbp_tag_redraw,
+    fbp_runtime_get, fbp_runtime_set,
 )
+from .ui_context import restore_modal_cursor
+from .ui_list_state import (
+    clear_anchor,
+    ensure_unique_item_identities,
+    identity_at,
+    index_for_identity,
+    restore_active_index,
+    store_anchor,
+    transient_get,
+    transient_set,
+)
+
+
+_FBP_UI_MODAL_MUTATION_DEPTH_KEY = "fbp_ui_modal_mutation_depth"
+_FBP_UI_MODAL_MUTATION_DEADLINE_KEY = "fbp_ui_modal_mutation_deadline"
+
+
+def fbp_begin_ui_modal_mutation(owner=None):
+    """Pause deferred RNA mutations while one interactive UIList drag is active."""
+    if owner is not None and bool(getattr(owner, "_fbp_ui_modal_mutation_active", False)):
+        return True
+    try:
+        depth = max(0, int(fbp_runtime_get(_FBP_UI_MODAL_MUTATION_DEPTH_KEY, 0) or 0)) + 1
+        fbp_runtime_set(_FBP_UI_MODAL_MUTATION_DEPTH_KEY, depth)
+        fbp_runtime_set(_FBP_UI_MODAL_MUTATION_DEADLINE_KEY, time.monotonic() + 60.0)
+        if owner is not None:
+            owner._fbp_ui_modal_mutation_active = True
+        return True
+    except (AttributeError, RuntimeError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def fbp_touch_ui_modal_mutation(owner=None):
+    if owner is not None and not bool(getattr(owner, "_fbp_ui_modal_mutation_active", False)):
+        return False
+    try:
+        if int(fbp_runtime_get(_FBP_UI_MODAL_MUTATION_DEPTH_KEY, 0) or 0) <= 0:
+            return False
+        fbp_runtime_set(_FBP_UI_MODAL_MUTATION_DEADLINE_KEY, time.monotonic() + 60.0)
+        return True
+    except (RuntimeError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def fbp_end_ui_modal_mutation(owner=None):
+    """Release the drag guard and leave one short notifier-safe settling window."""
+    if owner is not None and not bool(getattr(owner, "_fbp_ui_modal_mutation_active", False)):
+        return False
+    try:
+        depth = max(0, int(fbp_runtime_get(_FBP_UI_MODAL_MUTATION_DEPTH_KEY, 0) or 0) - 1)
+        fbp_runtime_set(_FBP_UI_MODAL_MUTATION_DEPTH_KEY, depth)
+        if depth <= 0:
+            fbp_runtime_set(_FBP_UI_MODAL_MUTATION_DEADLINE_KEY, 0.0)
+            current = float(fbp_runtime_get("fbp_managed_timers_resume_after", 0.0) or 0.0)
+            fbp_runtime_set("fbp_managed_timers_resume_after", max(current, time.monotonic() + 0.20))
+        if owner is not None:
+            owner._fbp_ui_modal_mutation_active = False
+        return True
+    except (AttributeError, RuntimeError, TypeError, ValueError, OverflowError):
+        return False
+
+
+class FBP_VerticalDragModalMixin:
+    """Shared modal loop for vertically reordered Frame By Plane UI rows."""
+
+    def _begin_modal_mutation(self):
+        return fbp_begin_ui_modal_mutation(self)
+
+    def _touch_modal_mutation(self):
+        return fbp_touch_ui_modal_mutation(self)
+
+    def _end_modal_mutation(self):
+        return fbp_end_ui_modal_mutation(self)
+
+    def _notify_drag_finished(self, context, *, cancelled):
+        callback = getattr(self, '_on_drag_finished', None)
+        if callable(callback):
+            try:
+                callback(context, cancelled=bool(cancelled))
+            except Exception as exc:
+                fbp_warn('Could not finalize UIList drag', exc)
+
+    def _cancel_drag_transaction(self, context):
+        """Restore the pre-drag state when the operator provides a snapshot.
+
+        Older drag operators attempted to undo a cancelled gesture by replaying
+        the opposite move for every recorded step.  That approach is fragile:
+        each move can rebuild the source list, filters may change while the
+        operator is running and one failed inverse step leaves a partially
+        reordered list.  Operators can now implement ``_cancel_drag`` and
+        restore one atomic snapshot instead.  The inverse-history fallback is
+        kept for third-party operators that do not provide a snapshot.
+        """
+        custom_cancel = getattr(self, '_cancel_drag', None)
+        if callable(custom_cancel):
+            try:
+                handled = custom_cancel(context)
+                if handled is not False:
+                    return True
+            except Exception as exc:
+                fbp_warn('Could not restore cancelled drag transaction', exc)
+
+        inverse = {'UP': 'DOWN', 'DOWN': 'UP'}
+        restored = True
+        for direction in reversed(getattr(self, '_history', ())):
+            if not self._move_once(context, inverse[direction]):
+                restored = False
+                break
+        return restored
+
+    def _restore_cursor(self, context):
+        restore_modal_cursor(context)
+
+    def modal(self, context, event):
+        try:
+            self._touch_modal_mutation()
+            if event.type == 'MOUSEMOVE':
+                self._saw_drag_motion = True
+                mouse_y = int(getattr(event, 'mouse_y', self._anchor_y) or self._anchor_y)
+                delta = mouse_y - self._anchor_y
+                while abs(delta) >= self._threshold:
+                    direction = 'UP' if delta > 0 else 'DOWN'
+                    if not self._move_once(context, direction):
+                        self._anchor_y = mouse_y
+                        break
+                    self._history.append(direction)
+                    self._did_change = True
+                    self._anchor_y += self._threshold if delta > 0 else -self._threshold
+                    delta = mouse_y - self._anchor_y
+                self._redraw(context)
+                return {'RUNNING_MODAL'}
+
+            if event.type in {'ESC', 'RIGHTMOUSE', 'WINDOW_DEACTIVATE'}:
+                self._cancel_drag_transaction(context)
+                self._restore_cursor(context)
+                self._end_modal_mutation()
+                self._notify_drag_finished(context, cancelled=True)
+                self._redraw(context)
+                return {'CANCELLED'}
+
+            if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+                if self._finish_on_release or self._saw_drag_motion:
+                    self._restore_cursor(context)
+                    self._end_modal_mutation()
+                    changed = bool(getattr(self, '_did_change', False))
+                    self._notify_drag_finished(context, cancelled=not changed)
+                    self._redraw(context)
+                    # Clicking a grip without crossing one reorder threshold must
+                    # not create an empty Undo entry.
+                    return {'FINISHED'} if changed else {'CANCELLED'}
+                self._finish_on_release = True
+                return {'RUNNING_MODAL'}
+
+            return {'RUNNING_MODAL'}
+        except Exception as exc:
+            # A modal exception must never leave Blender's cursor override or the
+            # global timer pause latched. Restore the original list snapshot when
+            # available, then fail closed.
+            try:
+                fbp_warn('UIList drag aborted after an unexpected error', exc)
+            except Exception:
+                pass
+            try:
+                self._cancel_drag_transaction(context)
+            except Exception:
+                pass
+            try:
+                self._restore_cursor(context)
+            except Exception:
+                pass
+            try:
+                self._end_modal_mutation()
+            except Exception:
+                pass
+            try:
+                self._notify_drag_finished(context, cancelled=True)
+                self._redraw(context)
+            except Exception:
+                pass
+            return {'CANCELLED'}
+
 
 
 def fbp_sequence_row_start_frame(rig, index):
@@ -124,52 +308,124 @@ def _fbp_find_insert_index_for_pending(scene, active_index, collection_name):
             return last + 1
     return count
 
-FBP_GENERATION_OVERLAY = globals().get("FBP_GENERATION_OVERLAY", {})
-FBP_GENERATION_OVERLAY.setdefault("handle", None)
-FBP_GENERATION_OVERLAY.setdefault("active", False)
-FBP_GENERATION_OVERLAY.setdefault("text", "Generating Frame By Plane Sequence...")
-_FBP_GENERATION_TIMERS = globals().get("_FBP_GENERATION_TIMERS", [])
+_PREVIOUS_GENERATION_OVERLAY = globals().get("FBP_GENERATION_OVERLAY", {})
+_PREVIOUS_GENERATION_TIMERS = globals().get("_FBP_GENERATION_TIMERS", ())
+_PREVIOUS_GENERATION_OPERATORS = globals().get("_FBP_GENERATION_OPERATORS", ())
 
-def _fbp_tag_view3d_redraw():
+
+def _retire_generation_ui_on_reload():
+    """Remove former draw/event handles before the new module accepts UI work."""
+    retired = 0
     try:
-        wm = bpy.context.window_manager
-        for window in wm.windows:
-            screen = getattr(window, 'screen', None)
-            if not screen:
-                continue
-            for area in screen.areas:
-                if area.type == 'VIEW_3D':
-                    area.tag_redraw()
+        handle = (
+            _PREVIOUS_GENERATION_OVERLAY.get("handle")
+            if isinstance(_PREVIOUS_GENERATION_OVERLAY, dict)
+            else None
+        )
+        if handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(handle, 'WINDOW')
+            retired += 1
     except FBP_DATA_IO_ERRORS:
         pass
+    try:
+        wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+        for operator in tuple(_PREVIOUS_GENERATION_OPERATORS or ()):
+            try:
+                operator._fbp_generation_cancelled = True
+                operator._fbp_generation_timer = None
+            except FBP_DATA_ERRORS:
+                continue
+        for timer in tuple(_PREVIOUS_GENERATION_TIMERS or ()):
+            try:
+                if wm is not None:
+                    wm.event_timer_remove(timer)
+                    retired += 1
+            except FBP_DATA_ERRORS:
+                continue
+    except FBP_DATA_ERRORS:
+        pass
+    try:
+        if hasattr(_PREVIOUS_GENERATION_OPERATORS, "clear"):
+            _PREVIOUS_GENERATION_OPERATORS.clear()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return retired
+
+
+_RETIRED_GENERATION_UI_HANDLES = _retire_generation_ui_on_reload()
+_FBP_GENERATION_OPERATORS = []
+FBP_GENERATION_OVERLAY = {
+    "handle": None,
+    "active": False,
+    "text": "Generating Frame By Plane Sequence…",
+}
+_FBP_GENERATION_TIMERS = []
+
+def _fbp_ui_scale(context=None):
+    """Return Blender UI scale for POST_PIXEL overlays.
+
+    Viewport overlays are drawn in pixels, so hardcoded padding/font sizes must
+    follow Blender's UI scale to stay readable on HiDPI displays.
+    """
+    try:
+        ctx = context or bpy.context
+        prefs = getattr(ctx, "preferences", None)
+        system = getattr(prefs, "system", None)
+        value = float(getattr(system, "ui_scale", 1.0) or 1.0)
+        return max(0.5, min(3.0, value))
+    except FBP_DATA_IO_ERRORS:
+        return 1.0
+
+def _fbp_import_blf(gpu_module=None):
+    """Return Blender's text drawing module with forward-compatible fallback."""
+    try:
+        blf_module = getattr(gpu_module, "blf", None) if gpu_module is not None else None
+        if blf_module is not None:
+            return blf_module
+    except FBP_DATA_IO_ERRORS:
+        pass
+    try:
+        import blf as blf_module
+        return blf_module
+    except ImportError:
+        return None
+
+def _fbp_tag_view3d_redraw():
+    fbp_tag_redraw(area_types={'VIEW_3D'}, all_windows=True)
 
 def _fbp_draw_generation_overlay():
     if not FBP_GENERATION_OVERLAY.get("active"):
         return
+    gpu = None
     try:
-        import blf
         import gpu
         from gpu_extras.batch import batch_for_shader
+        blf = _fbp_import_blf(gpu)
+        if blf is None:
+            return
 
         region = bpy.context.region
         if not region:
             return
 
+        ui_scale = _fbp_ui_scale()
         font_id = 0
-        font_size = 14
+        font_size = max(10, int(round(14 * ui_scale)))
         try:
             blf.size(font_id, font_size)
         except TypeError:
             blf.size(font_id, font_size, 72)
 
-        text_value = str(FBP_GENERATION_OVERLAY.get("text") or "Generating Frame By Plane Sequence...")
+        text_value = str(FBP_GENERATION_OVERLAY.get("text") or "Generating Frame By Plane Sequence…")
         text_w, text_h = blf.dimensions(font_id, text_value)
-        pad_x = 18.0
-        pad_y = 11.0
+        pad_x = 18.0 * ui_scale
+        pad_y = 11.0 * ui_scale
         box_w = text_w + pad_x * 2.0
         box_h = text_h + pad_y * 2.0
-        x = max(16.0, (float(region.width) - box_w) * 0.5)
-        y = max(16.0, float(region.height) - box_h - 42.0)
+        margin = 16.0 * ui_scale
+        y_offset = 42.0 * ui_scale
+        x = max(margin, (float(region.width) - box_w) * 0.5)
+        y = max(margin, float(region.height) - box_h - y_offset)
 
         shader = gpu.shader.from_builtin('UNIFORM_COLOR')
         batch = batch_for_shader(
@@ -196,7 +452,8 @@ def _fbp_draw_generation_overlay():
         gpu.state.blend_set('NONE')
     except Exception:
         try:
-            gpu.state.blend_set('NONE')
+            if gpu is not None:
+                gpu.state.blend_set('NONE')
         except FBP_DATA_IO_ERRORS:
             pass
 
@@ -219,7 +476,7 @@ def _fbp_hide_generation_overlay(context=None):
 def _fbp_show_generation_start_popup(context, title="Generating Frame By Plane Sequence"):
     """Show a temporary viewport overlay that can be removed programmatically."""
     _fbp_hide_generation_overlay(context)
-    FBP_GENERATION_OVERLAY["text"] = f"{str(title or 'Generating Frame By Plane Sequence').rstrip('.')}..."
+    FBP_GENERATION_OVERLAY["text"] = f"{str(title or 'Generating Frame By Plane Sequence').rstrip('.…')}…"
     FBP_GENERATION_OVERLAY["active"] = True
     try:
         FBP_GENERATION_OVERLAY["handle"] = bpy.types.SpaceView3D.draw_handler_add(
@@ -229,23 +486,26 @@ def _fbp_show_generation_start_popup(context, title="Generating Frame By Plane S
     except Exception:
         FBP_GENERATION_OVERLAY["active"] = False
         try:
-            context.workspace.status_text_set("Generating Frame By Plane Sequence...")
+            context.workspace.status_text_set("Generating Frame By Plane Sequence…")
         except FBP_DATA_IO_ERRORS:
             pass
 
 def _fbp_add_generation_timer(context, operator, delay=0.20):
     """Defer heavy generation by one UI tick so the start popup can draw first."""
     try:
+        operator._fbp_generation_cancelled = False
         operator._fbp_generation_timer = context.window_manager.event_timer_add(delay, window=context.window)
         if operator._fbp_generation_timer not in _FBP_GENERATION_TIMERS:
             _FBP_GENERATION_TIMERS.append(operator._fbp_generation_timer)
+        if operator not in _FBP_GENERATION_OPERATORS:
+            _FBP_GENERATION_OPERATORS.append(operator)
         context.window_manager.modal_handler_add(operator)
         return {'RUNNING_MODAL'}
     except FBP_DATA_ERRORS as exc:
         # event_timer_add() may succeed before modal_handler_add() fails. Remove
         # that partially-created timer or it remains attached to the window.
         _fbp_remove_generation_timer(context, operator)
-        fbp_warn('Could not defer Frame by Plane generation', exc)
+        fbp_warn('Could not defer Frame By Plane generation', exc)
         return None
 
 def _fbp_remove_generation_timer(context, operator):
@@ -263,13 +523,17 @@ def _fbp_remove_generation_timer(context, operator):
         operator._fbp_generation_timer = None
     except FBP_DATA_IO_ERRORS:
         pass
+    try:
+        _FBP_GENERATION_OPERATORS.remove(operator)
+    except (ValueError, ReferenceError, RuntimeError, TypeError):
+        pass
 
 def _fbp_generation_rig_issue(rig):
     """Return a small issue dictionary for rigs that need attention after generation."""
     if not rig or getattr(rig, 'fbp_is_color_plane', False):
         return None
 
-    name = getattr(rig, 'name', 'Frame by Plane Layer')
+    name = getattr(rig, 'name', 'Frame By Plane Layer')
     directory, files = fbp_native_sequence_files_from_rig(rig)
     files = list(files or [])
 
@@ -306,7 +570,7 @@ def _fbp_generation_rig_issue(rig):
         try:
             for slot in getattr(plane, 'material_slots', []):
                 mat = getattr(slot, 'material', None)
-                if not mat or not getattr(mat, 'use_nodes', False):
+                if not mat or not getattr(mat, 'node_tree', None):
                     continue
                 for node in getattr(mat.node_tree, 'nodes', []):
                     if getattr(node, 'type', None) != 'TEX_IMAGE':
@@ -356,7 +620,7 @@ def _fbp_store_generation_report(context, *, mode="Sequence", generated_rigs=Non
     }
     try:
         sc["fbp_generation_report_json"] = json.dumps(report)
-    except Exception:
+    except FBP_DATA_IO_ERRORS:
         sc["fbp_generation_report_json"] = "{}"
     return report
 
@@ -365,7 +629,7 @@ def _fbp_generation_report(context):
         raw = context.scene.get("fbp_generation_report_json", "{}")
         data = json.loads(raw) if raw else {}
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (AttributeError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
         return {}
 
 def _fbp_clear_generation_report(context):
@@ -619,17 +883,29 @@ def _fbp_rigs_from_report(context, key="problem_rigs"):
     return rigs
 
 def _fbp_sync_generation_rename_items(context):
-    """Populate the scene-side rename UIList from the current generation report."""
+    """Populate the generation report without losing its logical active row."""
     scene = context.scene
+    anchor_index_key = "_fbp_generation_rename_selection_anchor"
+    anchor_uid_key = "_fbp_generation_rename_selection_anchor_uid"
     try:
         items = scene.fbp_generation_rename_items
+        ensure_unique_item_identities(items, "stable_id")
+        previous_index = int(getattr(scene, 'fbp_generation_rename_index', 0) or 0)
+        previous_active_uid = identity_at(items, "stable_id", previous_index)
+        previous_selected = {
+            identity_at(items, "stable_id", index)
+            for index, item in enumerate(items)
+            if bool(getattr(item, "selected", False))
+        }
+        previous_anchor_uid = str(transient_get(scene, anchor_uid_key, "") or "")
         items.clear()
-    except Exception:
+    except FBP_DATA_IO_ERRORS:
         return []
 
     report = _fbp_generation_report(context)
     issues = list(report.get("issues", []) or [])
     created = []
+    occurrences = {}
     for issue in issues:
         kind = str(issue.get("kind", "") or "")
         if kind not in {"RENAME_SEQUENCE", "RENAMED_SEQUENCE"}:
@@ -637,17 +913,40 @@ def _fbp_sync_generation_rename_items(context):
         rig_name = str(issue.get("rig", "") or "")
         if not rig_name:
             continue
+        occurrence = occurrences.get(rig_name, 0)
+        occurrences[rig_name] = occurrence + 1
         item = items.add()
+        item.stable_id = f"generation:{rig_name}:{occurrence}"
         item.rig_name = rig_name
         item.display_name = rig_name
         item.is_renamed = bool(issue.get("renamed", False) or kind == "RENAMED_SEQUENCE")
         item.message = str(issue.get("message", "Renamed successfully" if item.is_renamed else "Needs rename") or "")
         files = list(issue.get("files", []) or [])
         item.preview_files = ", ".join(str(f) for f in files[:3])
+        item.selected = item.stable_id in previous_selected
         created.append(rig_name)
 
+    ensure_unique_item_identities(items, "stable_id")
     try:
-        scene.fbp_generation_rename_index = min(max(int(getattr(scene, 'fbp_generation_rename_index', 0)), 0), max(len(items) - 1, 0))
+        active_index = restore_active_index(
+            items, "stable_id", previous_active_uid, fallback=previous_index
+        )
+        scene.fbp_generation_rename_index = active_index
+        anchor_index = index_for_identity(
+            items, "stable_id", previous_anchor_uid, default=-1
+        )
+        if anchor_index >= 0:
+            store_anchor(
+                scene, anchor_index_key, anchor_uid_key, items,
+                "stable_id", anchor_index,
+            )
+        elif items:
+            store_anchor(
+                scene, anchor_index_key, anchor_uid_key, items,
+                "stable_id", active_index,
+            )
+        else:
+            clear_anchor(scene, anchor_index_key, anchor_uid_key)
     except FBP_DATA_IO_ERRORS:
         pass
     return created
@@ -680,7 +979,7 @@ def _fbp_mark_generation_sequence_renamed(context, rig_name, files=None):
     if not changed:
         return False
 
-    renamed = set(str(name) for name in (report.get("renamed_rigs", []) or []) if name)
+    renamed = {str(name) for name in (report.get("renamed_rigs", []) or []) if name}
     renamed.add(rig_name)
     report["renamed_rigs"] = sorted(renamed)
     report["rename_rigs"] = [
@@ -691,7 +990,7 @@ def _fbp_mark_generation_sequence_renamed(context, rig_name, files=None):
     report["issues"] = issues
     try:
         context.scene["fbp_generation_report_json"] = json.dumps(report)
-    except Exception:
+    except (ReferenceError, RuntimeError, TypeError, ValueError, OSError):
         return False
     _fbp_sync_generation_rename_items(context)
     return True
@@ -704,7 +1003,7 @@ def _fbp_active_generation_rename_item(context):
         idx = int(getattr(context.scene, 'fbp_generation_rename_index', 0))
         idx = min(max(idx, 0), len(items) - 1)
         return items[idx]
-    except Exception:
+    except FBP_DATA_IO_ERRORS:
         return None
 
 FBP_BG_RENDER_STATE = globals().get("FBP_BG_RENDER_STATE", {})
@@ -717,17 +1016,41 @@ for _key, _default in {
     "rendered_frames": set(),
     "last_rendered_frame": 0,
     "last_log_message": "",
+    "last_log_copy": "",
     "log_complete": False,
     "last_filesystem_scan": 0.0,
     "filesystem_progress": 0,
     "temp_dir": "",
     "out_dir": "",
     "prefix": "",
+    "output_path": "",
+    "expected_paths": (),
+    "scheduled_frames": (),
+    "output_files": set(),
+    "is_movie_format": False,
+    "auto_video": False,
+    "requires_movie_output": False,
+    "movie_output_path": "",
+    "accept_existing_outputs": False,
     "start": 0,
     "end": 0,
+    "step": 1,
     "total": 0,
     "started_at": 0.0,
     "session_token": "",
+    "state_path": "",
+    "stop_path": "",
+    "state_mtime_ns": 0,
+    "state_status": "",
+    "state_progress": 0,
+    "state_error": "",
+    "current_frame": 0,
+    "current_frame_known": False,
+    "current_frame_started_at": 0.0,
+    "last_activity_at": 0.0,
+    "frame_durations": [],
+    "last_status_signature": None,
+    "last_status_write_at": 0.0,
 }.items():
     FBP_BG_RENDER_STATE.setdefault(_key, _default)
 del _key, _default
@@ -739,11 +1062,24 @@ def _fbp_bg_reset_progress_state():
         "log_offset": 0,
         "log_partial": "",
         "rendered_frames": set(),
+        "output_files": set(),
         "last_rendered_frame": 0,
         "last_log_message": "",
+        "last_log_copy": "",
         "log_complete": False,
         "last_filesystem_scan": 0.0,
         "filesystem_progress": 0,
+        "state_mtime_ns": 0,
+        "state_status": "",
+        "state_progress": 0,
+        "state_error": "",
+        "current_frame": 0,
+        "current_frame_known": False,
+        "current_frame_started_at": 0.0,
+        "last_activity_at": 0.0,
+        "frame_durations": [],
+        "last_status_signature": None,
+        "last_status_write_at": 0.0,
     })
 
 
@@ -757,11 +1093,23 @@ def _fbp_bg_clear_runtime_state(scene=None):
         "temp_dir": "",
         "out_dir": "",
         "prefix": "",
+        "output_path": "",
+        "expected_paths": (),
+        "scheduled_frames": (),
+        "output_files": set(),
+        "is_movie_format": False,
+        "auto_video": False,
+        "requires_movie_output": False,
+        "movie_output_path": "",
+        "accept_existing_outputs": False,
         "start": 0,
         "end": 0,
+        "step": 1,
         "total": 0,
         "started_at": 0.0,
         "session_token": "",
+        "state_path": "",
+        "stop_path": "",
     })
     _fbp_bg_reset_progress_state()
     if scene:
@@ -770,6 +1118,8 @@ def _fbp_bg_clear_runtime_state(scene=None):
             scene.fbp_background_render_progress = 0
             scene.fbp_background_render_total = 0
             scene.fbp_background_render_output_dir = ""
+            scene.fbp_background_render_current_frame = 0
+            scene.fbp_background_render_eta = ""
             scene.fbp_background_render_status = "Idle"
         except FBP_DATA_IO_ERRORS:
             pass
@@ -819,6 +1169,57 @@ def _fbp_bg_cleanup_temp_files():
     FBP_BG_RENDER_STATE["log_path"] = ""
 
 
+def _fbp_bg_read_state_file():
+    """Read the child job-state file only when its atomic replacement changed."""
+    state_path = str(FBP_BG_RENDER_STATE.get("state_path", "") or "")
+    if not state_path:
+        return False
+    try:
+        stat = os.stat(state_path)
+        mtime_ns = int(getattr(stat, "st_mtime_ns", 0) or 0)
+        if mtime_ns and mtime_ns == int(FBP_BG_RENDER_STATE.get("state_mtime_ns", 0) or 0):
+            return True
+        with open(state_path, "r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+    except (OSError, json.JSONDecodeError, RuntimeError, TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    token = str(payload.get("session_token", "") or "")
+    active_token = str(FBP_BG_RENDER_STATE.get("session_token", "") or "")
+    if token and active_token and token != active_token:
+        return False
+    FBP_BG_RENDER_STATE["state_mtime_ns"] = mtime_ns
+    status = str(payload.get("status", "") or "").upper()
+    FBP_BG_RENDER_STATE["state_status"] = status
+    try:
+        FBP_BG_RENDER_STATE["state_progress"] = max(
+            int(FBP_BG_RENDER_STATE.get("state_progress", 0) or 0),
+            int(payload.get("rendered_count", 0) or 0),
+        )
+    except (TypeError, ValueError):
+        pass
+    try:
+        if "current_frame" in payload:
+            FBP_BG_RENDER_STATE["current_frame"] = int(payload.get("current_frame", 0) or 0)
+            FBP_BG_RENDER_STATE["current_frame_known"] = True
+    except (TypeError, ValueError):
+        pass
+    try:
+        updated_at = float(payload.get("updated_at", 0.0) or 0.0)
+        if updated_at > 0.0:
+            FBP_BG_RENDER_STATE["last_activity_at"] = updated_at
+    except (TypeError, ValueError):
+        pass
+    error = str(payload.get("error", "") or "").strip()
+    if error:
+        FBP_BG_RENDER_STATE["state_error"] = error[-500:]
+        FBP_BG_RENDER_STATE["last_log_message"] = error[-500:]
+    if status == "DONE":
+        FBP_BG_RENDER_STATE["log_complete"] = True
+    return True
+
+
 def _fbp_bg_read_progress_log():
     """Incrementally parse only newly appended child-process log bytes.
 
@@ -859,21 +1260,63 @@ def _fbp_bg_read_progress_log():
         FBP_BG_RENDER_STATE["rendered_frames"] = rendered
     start = int(FBP_BG_RENDER_STATE.get("start", 0) or 0)
     end = int(FBP_BG_RENDER_STATE.get("end", 0) or 0)
+    scheduled = set(FBP_BG_RENDER_STATE.get("scheduled_frames", ()) or ())
 
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith("[FBP_BG_FRAME_START]"):
+            try:
+                payload_text = line.split("]", 1)[1].strip()
+                frame_text, _, timestamp_text = payload_text.partition("|")
+                frame = int(frame_text.strip())
+                if not scheduled or frame in scheduled:
+                    FBP_BG_RENDER_STATE["current_frame"] = frame
+                    FBP_BG_RENDER_STATE["current_frame_known"] = True
+                    started_wall = float(timestamp_text.strip() or time.time())
+                    FBP_BG_RENDER_STATE["current_frame_started_at"] = started_wall
+                    FBP_BG_RENDER_STATE["last_activity_at"] = started_wall
+            except (IndexError, TypeError, ValueError):
+                pass
+            continue
         if line.startswith("[FBP_BG_FRAME]"):
             try:
                 payload_text = line.split("]", 1)[1].strip()
-                frame_text = payload_text.split("/", 1)[0].strip()
+                parts = payload_text.split("|", 2)
+                frame_payload = parts[0]
+                output_path = parts[1].strip() if len(parts) > 1 else ""
+                timestamp = float(parts[2].strip()) if len(parts) > 2 and parts[2].strip() else time.time()
+                frame_text = frame_payload.split("/", 1)[0].strip()
                 frame = int(frame_text)
-                if (not start or frame >= start) and (not end or frame <= end):
+                valid_frame = frame in scheduled if scheduled else start <= frame <= end
+                if valid_frame:
                     rendered.add(frame)
                     FBP_BG_RENDER_STATE["last_rendered_frame"] = frame
+                    FBP_BG_RENDER_STATE["current_frame"] = frame
+                    FBP_BG_RENDER_STATE["current_frame_known"] = True
+                    FBP_BG_RENDER_STATE["last_activity_at"] = timestamp
+                    started_wall = float(FBP_BG_RENDER_STATE.get("current_frame_started_at", 0.0) or 0.0)
+                    if started_wall > 0.0 and timestamp >= started_wall:
+                        durations = FBP_BG_RENDER_STATE.get("frame_durations")
+                        if not isinstance(durations, list):
+                            durations = list(durations or ())
+                        duration = timestamp - started_wall
+                        if 0.0 <= duration < 7 * 24 * 3600:
+                            durations.append(duration)
+                            del durations[:-32]
+                            FBP_BG_RENDER_STATE["frame_durations"] = durations
+                    if output_path:
+                        output_files = FBP_BG_RENDER_STATE.get("output_files")
+                        if not isinstance(output_files, set):
+                            output_files = set(output_files or ())
+                            FBP_BG_RENDER_STATE["output_files"] = output_files
+                        output_files.add(os.path.normpath(output_path))
             except (IndexError, TypeError, ValueError):
                 pass
+            continue
+        if line.startswith("[FBP_BG_ERROR]"):
+            FBP_BG_RENDER_STATE["last_log_message"] = line.split("]", 1)[-1].strip()[-500:]
             continue
         if line.startswith("[FBP_BG]"):
             message = line.split("]", 1)[1].strip() if "]" in line else line
@@ -888,32 +1331,60 @@ def _fbp_bg_read_progress_log():
 
 
 def _fbp_bg_count_rendered_frames(out_dir, prefix):
-    """Count output files only as a throttled filesystem fallback."""
+    """Count only files expected by the active native Blender output pattern."""
+    started_at = float(FBP_BG_RENDER_STATE.get("started_at", 0.0) or 0.0)
+    expected_paths = tuple(FBP_BG_RENDER_STATE.get("expected_paths", ()) or ())
+    accept_existing = bool(FBP_BG_RENDER_STATE.get("accept_existing_outputs", False))
+    if expected_paths:
+        count = 0
+        for path in expected_paths:
+            try:
+                if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                    continue
+                if (
+                    not accept_existing
+                    and started_at > 0.0
+                    and os.path.getmtime(path) < started_at - 1.0
+                ):
+                    continue
+                count += 1
+            except OSError:
+                continue
+        return count
+
+    # Movie formats and engines without deterministic frame paths rely on log
+    # markers. Keep one broad final fallback without assuming a file extension.
     try:
         names = os.listdir(out_dir) if out_dir and os.path.isdir(out_dir) else []
     except (OSError, RuntimeError, TypeError, ValueError):
         return 0
     prefix = str(prefix or "")
     count = 0
-    started_at = float(FBP_BG_RENDER_STATE.get("started_at", 0.0) or 0.0)
     for name in names:
-        low = str(name).lower()
-        if not (name.startswith(prefix) and low.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr"))):
+        if prefix and not str(name).startswith(prefix):
             continue
-        if started_at > 0.0:
-            try:
-                if os.path.getmtime(os.path.join(out_dir, name)) < started_at - 1.0:
-                    continue
-            except OSError:
+        path = os.path.join(out_dir, name)
+        try:
+            if not os.path.isfile(path) or os.path.getsize(path) <= 0:
                 continue
+            if (
+                not accept_existing
+                and started_at > 0.0
+                and os.path.getmtime(path) < started_at - 1.0
+            ):
+                continue
+        except OSError:
+            continue
         count += 1
     return count
 
 
 def _fbp_bg_progress(*, force_filesystem_scan=False):
     _fbp_bg_read_progress_log()
+    _fbp_bg_read_state_file()
     rendered = FBP_BG_RENDER_STATE.get("rendered_frames")
     log_progress = len(rendered) if isinstance(rendered, set) else len(set(rendered or ()))
+    log_progress = max(log_progress, int(FBP_BG_RENDER_STATE.get("state_progress", 0) or 0))
     now = time.monotonic()
     last_scan = float(FBP_BG_RENDER_STATE.get("last_filesystem_scan", 0.0) or 0.0)
     # A filesystem scan is only needed if no marker has appeared yet, or once at
@@ -932,80 +1403,176 @@ def _fbp_bg_progress(*, force_filesystem_scan=False):
     return max(log_progress, int(FBP_BG_RENDER_STATE.get("filesystem_progress", 0) or 0))
 
 
+def _fbp_bg_format_duration(seconds):
+    try:
+        value = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        return ""
+    hours, remainder = divmod(value, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes:d}m {secs:02d}s"
+    return f"{secs:d}s"
+
+
 def _fbp_bg_update_scene_status(scene, message=None, *, force_filesystem_scan=False):
+    """Publish monitor state and return True only when Scene RNA changed."""
     if not scene:
-        return
+        return False
+    explicit_message = message is not None
     total = int(FBP_BG_RENDER_STATE.get("total", 0) or 0)
     progress = _fbp_bg_progress(force_filesystem_scan=force_filesystem_scan)
     progress = max(0, min(progress, total)) if total else progress
     remaining = max(0, total - progress)
     start = int(FBP_BG_RENDER_STATE.get("start", 0) or 0)
     end = int(FBP_BG_RENDER_STATE.get("end", 0) or 0)
-    last_frame = int(FBP_BG_RENDER_STATE.get("last_rendered_frame", 0) or 0)
-    current = last_frame if last_frame else start + max(0, progress - 1)
+    step = max(1, int(FBP_BG_RENDER_STATE.get("step", 1) or 1))
+    scheduled = tuple(FBP_BG_RENDER_STATE.get("scheduled_frames", ()) or ())
+    current_known = bool(FBP_BG_RENDER_STATE.get("current_frame_known", False))
+    current = int(FBP_BG_RENDER_STATE.get("current_frame", 0) or 0)
+    if not current_known:
+        current = int(FBP_BG_RENDER_STATE.get("last_rendered_frame", 0) or start)
     running = _fbp_bg_process_running()
+    durations = [float(value) for value in list(FBP_BG_RENDER_STATE.get("frame_durations", ()) or ()) if isinstance(value, (int, float)) and value >= 0.0]
+    eta_seconds = (sum(durations) / len(durations) * remaining) if durations and remaining else 0.0
+    eta_text = _fbp_bg_format_duration(eta_seconds) if eta_seconds > 0.0 else ""
     if message is None:
         if running:
             if progress > 0:
-                next_frame = min(end or current, current + 1)
-                message = f"Rendered {progress}/{total} · Next Frame {next_frame} · {remaining} remaining"
+                if scheduled and progress < len(scheduled):
+                    next_frame = int(scheduled[progress])
+                else:
+                    next_frame = min(end or current, current + step)
+                message = f"Rendered {progress}/{total} · Frame {current} · Next {next_frame}"
+                if eta_text:
+                    message += f" · ETA {eta_text}"
+            elif current:
+                message = f"Rendering Frame {current} · {total} frames total"
             else:
                 message = f"Rendering starting · {total} frames total"
         else:
             message = "Idle"
-    try:
-        scene.fbp_background_render_running = bool(running)
-        scene.fbp_background_render_progress = int(progress)
-        scene.fbp_background_render_total = int(total)
-        scene.fbp_background_render_output_dir = FBP_BG_RENDER_STATE.get("out_dir", "")
-        scene.fbp_background_render_status = str(message)
-    except FBP_DATA_IO_ERRORS:
-        pass
+
+    now = time.monotonic()
+    signature = (bool(running), int(progress), int(total), int(current), str(message))
+    previous_signature = FBP_BG_RENDER_STATE.get("last_status_signature")
+    last_write = float(FBP_BG_RENDER_STATE.get("last_status_write_at", 0.0) or 0.0)
+    should_write_status = explicit_message or signature != previous_signature or now - last_write >= 5.0
+
+    scene_changed = False
+
+    def set_changed(name, value):
+        nonlocal scene_changed
+        try:
+            if getattr(scene, name) != value:
+                setattr(scene, name, value)
+                scene_changed = True
+        except FBP_DATA_IO_ERRORS:
+            pass
+
+    set_changed("fbp_background_render_running", bool(running))
+    set_changed("fbp_background_render_progress", int(progress))
+    set_changed("fbp_background_render_total", int(total))
+    set_changed("fbp_background_render_output_dir", str(FBP_BG_RENDER_STATE.get("out_dir", "") or ""))
+    set_changed("fbp_background_render_current_frame", int(current))
+    set_changed("fbp_background_render_eta", str(eta_text))
+    last_log_copy = str(FBP_BG_RENDER_STATE.get("last_log_copy", "") or "")
+    if last_log_copy:
+        set_changed("fbp_background_render_last_log", last_log_copy)
+    if should_write_status:
+        set_changed("fbp_background_render_status", str(message))
+        FBP_BG_RENDER_STATE["last_status_signature"] = signature
+        FBP_BG_RENDER_STATE["last_status_write_at"] = now
+    return scene_changed
 
 
 def _fbp_bg_terminate_process(scene=None):
-    """Stop the child process without discarding live process state.
+    """Stop the complete background-render process group conservatively.
 
-    Temporary snapshots and logs are removed only after ``poll``/``wait`` has
-    positively confirmed process exit. If termination cannot be confirmed, the
-    process reference is intentionally retained so the modal monitor can keep
-    observing it and the user can retry Stop Render.
+    This function confirms process exit but deliberately leaves session files and
+    ownership tokens intact. The modal owner or Stop operator preserves the log
+    and performs cleanup after termination, preventing cancelled jobs from losing
+    their diagnostics.
     """
     proc = FBP_BG_RENDER_STATE.get("process")
     if proc is None:
         _fbp_bg_update_scene_status(scene, "No background render is running")
         return False
 
-    stopped = False
     try:
+        stop_path = str(FBP_BG_RENDER_STATE.get("stop_path", "") or "")
+        if stop_path:
+            try:
+                with open(stop_path, "w", encoding="utf-8") as stream:
+                    stream.write("stop\n")
+            except OSError:
+                pass
+        _fbp_bg_update_scene_status(scene, "Stopping background render")
+
         running, _returncode, state_known = _fbp_bg_process_status()
         if state_known and not running:
-            stopped = True
+            FBP_BG_RENDER_STATE["process"] = None
+            return True
+
+        stopped = False
+        if os.name == "nt":
+            try:
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            except (AttributeError, OSError, RuntimeError, ValueError):
+                try:
+                    proc.terminate()
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                    pass
         else:
             try:
-                proc.terminate()
-            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
-                pass
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (AttributeError, OSError, ProcessLookupError, RuntimeError, TypeError, ValueError):
+                try:
+                    proc.terminate()
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                    pass
+
+        try:
+            proc.wait(timeout=6)
+            stopped = True
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired):
+            pass
+
+        if not stopped and os.name == "nt":
             try:
-                proc.wait(timeout=5)
-                stopped = True
-            except (AttributeError, OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired):
+                subprocess.run(
+                    ["taskkill", "/PID", str(int(proc.pid)), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                    check=False,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired):
+                pass
+        elif not stopped:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (AttributeError, OSError, ProcessLookupError, RuntimeError, TypeError, ValueError):
                 try:
                     proc.kill()
                 except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
                     pass
-                try:
-                    proc.wait(timeout=2)
-                    stopped = True
-                except (AttributeError, OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired):
-                    stopped = False
+
+        if not stopped:
+            try:
+                proc.wait(timeout=3)
+                stopped = True
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired):
+                pass
 
         if not stopped:
             running, _returncode, state_known = _fbp_bg_process_status()
             stopped = bool(state_known and not running)
-
         if not stopped:
             _fbp_bg_read_progress_log()
+            _fbp_bg_read_state_file()
             _fbp_bg_update_scene_status(
                 scene,
                 "Could not confirm that the background render stopped",
@@ -1013,15 +1580,14 @@ def _fbp_bg_terminate_process(scene=None):
             )
             return False
 
+        FBP_BG_RENDER_STATE["process"] = None
         _fbp_bg_update_scene_status(
             scene, "Background render stopped", force_filesystem_scan=True
         )
-        FBP_BG_RENDER_STATE["process"] = None
-        FBP_BG_RENDER_STATE["session_token"] = ""
-        _fbp_bg_cleanup_temp_files()
         return True
     except Exception:
         _fbp_bg_read_progress_log()
+        _fbp_bg_read_state_file()
         _fbp_bg_update_scene_status(
             scene,
             "Could not stop background render",
@@ -1029,38 +1595,105 @@ def _fbp_bg_terminate_process(scene=None):
         )
         return False
 
+
 def _fbp_select_pending_index(context, pending_index):
     scene = context.scene
+    focus_uid = ""
     try:
-        scene.fbp_pending_planes_idx = max(0, min(int(pending_index), max(0, len(scene.fbp_pending_planes) - 1)))
+        pending = scene.fbp_pending_planes
+        ensure_unique_item_identities(pending, "stable_id")
+        clamped_index = max(0, min(int(pending_index), max(0, len(pending) - 1)))
+        scene.fbp_pending_planes_idx = clamped_index
+        focus_uid = identity_at(pending, "stable_id", clamped_index)
+        if focus_uid:
+            transient_set(scene, "_fbp_pending_tree_focus_uid", focus_uid)
     except FBP_DATA_IO_ERRORS:
         pass
     _fbp_refresh_pending_tree(context)
-    # Move the virtual tree selection to the matching layer row when possible.
+    # Move the virtual tree selection by stable identity when the refresh was
+    # immediate. If it was deferred, fbp_rebuild_pending_tree_rows consumes the
+    # same primitive focus token after Blender releases the current row wrappers.
+    if not focus_uid:
+        return
     try:
+        pending = scene.fbp_pending_planes
         for row_index, row in enumerate(scene.fbp_pending_tree_rows):
-            if getattr(row, 'row_type', 'LAYER') == 'LAYER' and int(getattr(row, 'pending_index', -1)) == pending_index:
+            if getattr(row, 'row_type', 'LAYER') != 'LAYER':
+                continue
+            source_index = int(getattr(row, 'pending_index', -1))
+            if not (0 <= source_index < len(pending)):
+                continue
+            if identity_at(pending, "stable_id", source_index) == focus_uid:
                 scene.fbp_pending_tree_rows_idx = row_index
                 break
     except FBP_DATA_IO_ERRORS:
         pass
 
-def _fbp_refresh_layer_tree(context):
-    """Refresh virtual Layers UIList rows and redraw the sidebar immediately."""
-    from .ui_layout import fbp_refresh_layer_tree_rows
-    if fbp_refresh_layer_tree_rows:
-        try:
-            fbp_refresh_layer_tree_rows(context)
+def _fbp_remove_pending_indices(context, indices):
+    """Remove setup rows while keeping the same logical active row when possible."""
+    scene = context.scene
+    pending = getattr(scene, 'fbp_pending_planes', None)
+    if pending is None:
+        return 0
+    ensure_unique_item_identities(pending, "stable_id")
+    valid = sorted({int(index) for index in indices if 0 <= int(index) < len(pending)})
+    if not valid:
+        return 0
+    active_index = max(0, min(
+        int(getattr(scene, 'fbp_pending_planes_idx', 0) or 0),
+        max(0, len(pending) - 1),
+    ))
+    active_uid = identity_at(pending, "stable_id", active_index)
+    removed_uids = {identity_at(pending, "stable_id", index) for index in valid}
+    for index in reversed(valid):
+        pending.remove(index)
+    if pending:
+        fallback = min(valid[0], len(pending) - 1)
+        new_index = restore_active_index(
+            pending, "stable_id",
+            "" if active_uid in removed_uids else active_uid,
+            fallback=fallback,
+        )
+    else:
+        new_index = 0
+    _fbp_select_pending_index(context, new_index)
+    return len(valid)
+
+
+def _fbp_refresh_layer_tree(context, *, update_compositor=True):
+    """Refresh virtual Layers UIList rows without invalidating an active row drag."""
+    from .ui_layout import fbp_refresh_layer_tree_rows, fbp_schedule_layer_tree_rebuild
+    if not fbp_refresh_layer_tree_rows:
+        return False
+    try:
+        call_service("layers.invalidate_tree_snapshot", context)
+        scene = getattr(context, "scene", None)
+        if int(fbp_runtime_get(_FBP_UI_MODAL_MUTATION_DEPTH_KEY, 0) or 0) > 0:
+            if scene is not None:
+                try:
+                    scene.fbp_layer_tree_signature = ""
+                except FBP_DATA_IO_ERRORS:
+                    pass
+            fbp_schedule_layer_tree_rebuild(context)
             _fbp_tag_view3d_redraw()
-        except FBP_DATA_IO_ERRORS:
-            pass
+            return True
+        refreshed = bool(fbp_refresh_layer_tree_rows(context))
+        _fbp_tag_view3d_redraw()
+        if bool(update_compositor):
+            try:
+                from .compositor import fbp_schedule_compositor_update
+                fbp_schedule_compositor_update(scene)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        return refreshed
+    except FBP_DATA_IO_ERRORS:
+        return False
 
 def _fbp_color_tag_for_group(key, color_map):
     key = str(key or "Root")
     if key not in color_map:
-        # Blender Collections expose eight actual color tags. COLOR_09 remains
-        # available for neutral Frame by Plane layer rows, but not collections.
-        color_map[key] = f"COLOR_{(len(color_map) % 8) + 1:02d}"
+        # Blender Collections expose seven artist-facing color tags; Brown/Grey are intentionally hidden.
+        color_map[key] = f"COLOR_{(len(color_map) % 7) + 1:02d}"
     return color_map[key]
 
 def _fbp_get_or_create_collection_path(parent_collection, collection_path, color_tag=None):
@@ -1077,11 +1710,9 @@ def _fbp_get_or_create_collection_path(parent_collection, collection_path, color
 
 def fbp_hex_name_from_color(color):
     try:
-        r = int(max(0.0, min(1.0, float(color[0]))) * 255 + 0.5)
-        g = int(max(0.0, min(1.0, float(color[1]))) * 255 + 0.5)
-        b = int(max(0.0, min(1.0, float(color[2]))) * 255 + 0.5)
-        return f"#{r:02X}{g:02X}{b:02X}"
-    except Exception:
+        from .color_names import normalize_color_hex
+        return normalize_color_hex(color, color_space="LINEAR")[:7]
+    except (ImportError, IndexError, TypeError, ValueError, OverflowError):
         return "Color"
 
 def fbp_default_color_plane_name(kind, color):
@@ -1089,20 +1720,52 @@ def fbp_default_color_plane_name(kind, color):
         return "Gradient Plane"
     if kind == 'HOLDOUT':
         return "Holdout Plane"
-    return f"Color Plane {fbp_hex_name_from_color(color)}"
-
-
-def unregister():
-    """Remove transient overlays/timers when the extension is disabled or reloaded."""
-    _fbp_hide_generation_overlay(getattr(bpy, "context", None))
     try:
-        wm = getattr(bpy.context, "window_manager", None)
-        for timer in list(_FBP_GENERATION_TIMERS):
+        from .color_names import color_plane_name_from_color
+        return color_plane_name_from_color(color, color_space="LINEAR")
+    except (ImportError, TypeError, ValueError, OverflowError):
+        return f"Color Plane {fbp_hex_name_from_color(color)}"
+
+
+def quiesce_generation_runtime(context=None):
+    """Retire deferred generation modals before operator classes are removed."""
+    target_context = context or getattr(bpy, "context", None)
+    for operator in tuple(_FBP_GENERATION_OPERATORS):
+        try:
+            operator._fbp_generation_cancelled = True
+        except FBP_DATA_ERRORS:
+            continue
+        if target_context is not None:
+            _fbp_remove_generation_timer(target_context, operator)
+    try:
+        wm = getattr(target_context, "window_manager", None) if target_context else None
+        for timer in tuple(_FBP_GENERATION_TIMERS):
             try:
                 if wm is not None:
                     wm.event_timer_remove(timer)
             except FBP_DATA_ERRORS:
-                pass
-        _FBP_GENERATION_TIMERS.clear()
+                continue
     except FBP_DATA_ERRORS:
-        _FBP_GENERATION_TIMERS.clear()
+        pass
+    _FBP_GENERATION_TIMERS.clear()
+    _FBP_GENERATION_OPERATORS.clear()
+    _fbp_hide_generation_overlay(target_context)
+    return True
+
+
+def register():
+    quiesce_generation_runtime(getattr(bpy, "context", None))
+    from .ui_layout import fbp_invalidate_layer_tree_snapshot
+    register_service("layers.refresh_tree", _fbp_refresh_layer_tree, owner=__name__)
+    register_service(
+        "layers.invalidate_tree_snapshot",
+        fbp_invalidate_layer_tree_snapshot,
+        owner=__name__,
+    )
+
+
+def unregister():
+    """Remove transient overlays/timers when the extension is disabled or reloaded."""
+    unregister_service("layers.invalidate_tree_snapshot")
+    unregister_service("layers.refresh_tree")
+    quiesce_generation_runtime(getattr(bpy, "context", None))

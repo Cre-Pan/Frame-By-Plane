@@ -11,7 +11,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -51,36 +50,41 @@ class FBP_LayeredDocumentProbe:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def _module_available(name: str) -> bool:
+_LAYERED_BACKEND_STATUS_CACHE: tuple[FBP_LayeredBackendStatus, ...] | None = None
+
+
+def _guarded_backend_imports() -> tuple[FBP_LayeredBackendStatus, ...]:
+    """Import the real bundled backends once and cache the verified result.
+
+    ``find_spec()`` can report psd-tools as available even when one of its
+    transitive dependencies is missing. A guarded import catches the exact
+    clean-install failure that matters to users while Python's module cache
+    keeps subsequent checks inexpensive.
+    """
+    psd_error = ""
+    pillow_error = ""
     try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, AttributeError, ValueError):
-        return False
+        from PIL import Image as _PILImage  # noqa: F401 -- guarded dependency probe
+    except Exception as exc:  # dependency diagnostics must retain the real cause
+        pillow_error = f"{type(exc).__name__}: {exc}"
 
+    if not pillow_error:
+        try:
+            import numpy as _numpy  # noqa: F401 -- guarded dependency probe
+            from psd_tools import PSDImage as _PSDImage  # noqa: F401 -- guarded dependency probe
+        except Exception as exc:  # includes missing typing_extensions and binary import errors
+            psd_error = f"{type(exc).__name__}: {exc}"
+    else:
+        psd_error = f"Pillow unavailable ({pillow_error})"
 
-def fbp_layered_backend_status() -> tuple[FBP_LayeredBackendStatus, ...]:
-    """Return capability status without importing heavyweight dependencies."""
-    psd_tools = _module_available("psd_tools")
-    pillow = _module_available("PIL")
-    numpy = _module_available("numpy")
-    psd_ready = psd_tools and pillow and numpy
-    procreate_ready = pillow
-    missing = [
-        name
-        for name, present in (("psd-tools", psd_tools), ("Pillow", pillow), ("NumPy", numpy))
-        if not present
-    ]
-    psd_detail = (
-        "Layer decoder available."
-        if psd_ready
-        else "Missing packaged dependency: " + ", ".join(missing) + "."
-    )
+    psd_ready = not psd_error
+    procreate_ready = not pillow_error
     return (
         FBP_LayeredBackendStatus(
             format="PSD/PSB",
             available=psd_ready,
             state="READY" if psd_ready else "DEPENDENCY_REQUIRED",
-            detail=psd_detail,
+            detail="Layer decoder available." if psd_ready else f"Layer decoder unavailable: {psd_error}",
         ),
         FBP_LayeredBackendStatus(
             format="PROCREATE",
@@ -89,10 +93,18 @@ def fbp_layered_backend_status() -> tuple[FBP_LayeredBackendStatus, ...]:
             detail=(
                 "Local archive and tile decoder available."
                 if procreate_ready
-                else "Missing packaged dependency: Pillow."
+                else f"Image decoder unavailable: {pillow_error}"
             ),
         ),
     )
+
+
+def fbp_layered_backend_status() -> tuple[FBP_LayeredBackendStatus, ...]:
+    """Return a cached capability status verified by importing real backends."""
+    global _LAYERED_BACKEND_STATUS_CACHE
+    if _LAYERED_BACKEND_STATUS_CACHE is None:
+        _LAYERED_BACKEND_STATUS_CACHE = _guarded_backend_imports()
+    return _LAYERED_BACKEND_STATUS_CACHE
 
 
 def fbp_layered_cache_key(path: str) -> str:
@@ -332,6 +344,7 @@ class FBP_LayeredExtractionResult:
     transferred_masks: int = 0
     transferred_clipping_layers: int = 0
     unsupported_blend_modes: int = 0
+    time_lapse_relative_file: str = ""
 
 
 def _safe_layer_component(value: str, fallback: str = "Layer") -> str:
@@ -364,14 +377,14 @@ def _blend_mode_name(layer) -> str:
 def _layer_kind(layer) -> str:
     try:
         return str(getattr(layer, "kind", "layer") or "layer").lower()
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return "layer"
 
 
 def _layer_own_visible(layer) -> bool:
     try:
         return bool(getattr(layer, "visible", True))
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return True
 
 
@@ -386,7 +399,7 @@ def _effective_layer_opacity(layer) -> float:
         visited.add(pointer)
         try:
             value *= max(0.0, min(1.0, float(getattr(current, "opacity", 255)) / 255.0))
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError, OverflowError):
             pass
         current = getattr(current, "parent", None)
         if current is not None and _layer_kind(current) == "psdimage":
@@ -433,12 +446,12 @@ def _temporary_render_state(layer):
         if old_blend is not None:
             try:
                 layer.blend_mode = old_blend
-            except Exception:
+            except (AttributeError, RuntimeError, TypeError, ValueError):
                 pass
         if old_opacity is not None:
             try:
                 layer.opacity = old_opacity
-            except Exception:
+            except (AttributeError, RuntimeError, TypeError, ValueError):
                 pass
 
 
@@ -738,6 +751,9 @@ def _load_layered_cache(manifest_path: str, source_path: str, source_key: str, o
             return None
         if record.mask_relative_file and not os.path.isfile(os.path.join(output_directory, record.mask_relative_file)):
             return None
+    time_lapse_relative_file = str(payload.get("time_lapse_relative_file", "") or "")
+    if time_lapse_relative_file and not os.path.isfile(os.path.join(output_directory, time_lapse_relative_file)):
+        return None
     return FBP_LayeredExtractionResult(
         source_path=os.path.abspath(source_path),
         output_directory=output_directory,
@@ -758,6 +774,7 @@ def _load_layered_cache(manifest_path: str, source_path: str, source_key: str, o
         transferred_masks=int(payload.get("transferred_masks", 0)),
         transferred_clipping_layers=int(payload.get("transferred_clipping_layers", 0)),
         unsupported_blend_modes=int(payload.get("unsupported_blend_modes", 0)),
+        time_lapse_relative_file=time_lapse_relative_file,
     )
 
 
@@ -1103,6 +1120,8 @@ def fbp_inspect_procreate_layers(source_path: str) -> dict[str, Any]:
         "archive_entries": int(inspection.archive_entries),
         "has_preview": bool(inspection.has_preview),
         "video_enabled": bool(inspection.video_enabled),
+        "video_members": int(getattr(inspection, "video_members", 0)),
+        "video_bytes": int(getattr(inspection, "video_bytes", 0)),
         "warnings": list(inspection.warnings),
         "backend_version": FBP_PROCREATE_DECODER_VERSION,
     }
@@ -1116,6 +1135,7 @@ def fbp_extract_procreate_layers(
     include_hidden: bool = False,
     fallback_to_preview: bool = True,
     reuse_cache: bool = True,
+    extract_time_lapse: bool = False,
 ) -> FBP_LayeredExtractionResult:
     """Extract common Procreate layer tiles into full-canvas PNG sources.
 
@@ -1135,7 +1155,7 @@ def fbp_extract_procreate_layers(
     option_payload = (
         f"backend={FBP_PROCREATE_DECODER_VERSION};schema={FBP_LAYERED_CACHE_SCHEMA};"
         f"groups={int(preserve_groups)};hidden={int(include_hidden)};"
-        f"preview={int(fallback_to_preview)}"
+        f"preview={int(fallback_to_preview)};video={int(extract_time_lapse)}"
     )
     option_key = hashlib.sha256(option_payload.encode("ascii")).hexdigest()[:10]
     source_key = probe.cache_key
@@ -1163,6 +1183,14 @@ def fbp_extract_procreate_layers(
         result.width = int(document.width or probe.width)
         result.height = int(document.height or probe.height)
         result.warnings.extend(document.warnings)
+        if extract_time_lapse:
+            time_lapse_path = document.extract_time_lapse(output_directory)
+            if time_lapse_path:
+                result.time_lapse_relative_file = os.path.basename(time_lapse_path)
+            elif document.video_enabled:
+                result.warnings.append(
+                    "Time-lapse metadata exists, but no single complete embedded movie could be extracted safely."
+                )
 
         for layer, parents in document.iter_layers(include_groups=False):
             effective_visible = bool(layer.visible and all(parent.visible for parent in parents))
@@ -1299,6 +1327,7 @@ def fbp_extract_procreate_layers(
         "transferred_masks": result.transferred_masks,
         "transferred_clipping_layers": result.transferred_clipping_layers,
         "unsupported_blend_modes": result.unsupported_blend_modes,
+        "time_lapse_relative_file": result.time_lapse_relative_file,
     }
     temp_path = manifest_path + ".tmp"
     with open(temp_path, "w", encoding="utf-8") as handle:

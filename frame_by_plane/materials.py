@@ -2,6 +2,9 @@
 
 import bpy
 import math
+from mathutils import Matrix
+
+from .color_names import color_plane_name_from_color
 
 
 # SECTION 00B - Shared runtime helpers #
@@ -16,12 +19,17 @@ from .runtime import (
 from . import safe_tasks as _safe_tasks
 
 
-_PENDING_PROXY_CACHE_ROOTS = globals().get('_PENDING_PROXY_CACHE_ROOTS', set())
-if not isinstance(_PENDING_PROXY_CACHE_ROOTS, set):
-    _PENDING_PROXY_CACHE_ROOTS = set()
-_PENDING_GRADIENT_PREVIEW_SYNC = globals().get('_PENDING_GRADIENT_PREVIEW_SYNC', {})
-if not isinstance(_PENDING_GRADIENT_PREVIEW_SYNC, dict):
-    _PENDING_GRADIENT_PREVIEW_SYNC = {}
+# Deferred cleanup callbacks are retired on reload. Do not inherit old paths:
+# a stale request could otherwise remove a proxy cache newly claimed by the
+# current project before the next ownership scan.
+_RELOAD_DROPPED_PROXY_CACHE_ROOTS = len(
+    globals().get('_PENDING_PROXY_CACHE_ROOTS', set())
+    if isinstance(globals().get('_PENDING_PROXY_CACHE_ROOTS', set()), set)
+    else ()
+)
+_PENDING_PROXY_CACHE_ROOTS = set()
+# Pending preview writes are generation-local and are discarded on reload.
+_PENDING_GRADIENT_PREVIEW_SYNC = {}
 
 
 def fbp_primary_plane_material_index(rig):
@@ -105,7 +113,7 @@ def ensure_fbp_plane_material_integrity(rig):
 
 def iter_material_image_nodes():
     for mat in bpy.data.materials:
-        if not mat or not getattr(mat, 'use_nodes', False) or not mat.node_tree:
+        if not mat or not getattr(mat, 'node_tree', None):
             continue
         for node in mat.node_tree.nodes:
             if node.type == 'TEX_IMAGE' and getattr(node, 'image', None):
@@ -159,11 +167,14 @@ def fbp_material_is_owned(mat):
 
 
 def fbp_remove_unused_materials_and_images(materials):
-    """Remove zero-user FBP materials without freeing Blender Image datablocks.
+    """Retire zero-user FBP materials without deleting Blender ID datablocks.
 
-    The public name is retained for compatibility with existing internal callers.
-    Image IDs and their sequence/movie caches remain owned by Blender and can be
-    removed explicitly through Orphan Purge.
+    Blender 5.2 can keep references to materials and their Image Texture nodes in
+    the global Undo history even after ``users`` reaches zero. Removing those IDs
+    from an idle timer can leave an older Undo state pointing at freed image data,
+    which later crashes Eevee in ``BKE_image_acquire_ibuf``. FBP therefore marks
+    unused owned materials as orphan candidates and leaves final deletion to
+    Blender's explicit Orphan Purge. The public name is retained for compatibility.
     """
     unique_materials = []
     seen_materials = set()
@@ -189,12 +200,12 @@ def fbp_remove_unused_materials_and_images(materials):
 
     for mat in materials:
         try:
-            if mat and fbp_material_is_owned(mat) and mat.users == 0:
-                bpy.data.materials.remove(mat)
+            if mat and fbp_material_is_owned(mat) and int(getattr(mat, "users", 0) or 0) == 0:
+                mat["fbp_orphan_candidate"] = True
         except ReferenceError:
             continue
-        except (AttributeError, TypeError, RuntimeError) as exc:
-            fbp_warn("Could not remove unused FBP material datablock", exc)
+        except (AttributeError, TypeError, RuntimeError, ValueError, KeyError) as exc:
+            fbp_warn("Could not mark unused FBP material datablock", exc)
 
     if _PENDING_PROXY_CACHE_ROOTS:
         _safe_tasks.schedule_once(
@@ -325,7 +336,8 @@ def do_update_emission(rig):
     plane = rig.fbp_plane_target
     if not plane:
         return
-    use_emission = bool(getattr(rig, 'fbp_color_plane_emission', getattr(rig, 'fbp_use_emission', True))) if getattr(rig, 'fbp_is_color_plane', False) else bool(getattr(rig, 'fbp_use_emission', True))
+    emission_effect_active = bool(rig.get('fbp_effect_emission', False))
+    use_emission = True if emission_effect_active else (bool(getattr(rig, 'fbp_color_plane_emission', getattr(rig, 'fbp_use_emission', True))) if getattr(rig, 'fbp_is_color_plane', False) else bool(getattr(rig, 'fbp_use_emission', True)))
     fbp_set_rna_property_silent(rig, 'fbp_use_emission', use_emission)
     if getattr(rig, 'fbp_is_color_plane', False):
         fbp_set_rna_property_silent(rig, 'fbp_color_plane_emission', use_emission)
@@ -341,7 +353,7 @@ def do_update_emission(rig):
         if (
             not mat
             or not fbp_material_is_owned(mat)
-            or not getattr(mat, 'use_nodes', False)
+            or not getattr(mat, 'node_tree', None)
         ):
             continue
         if getattr(rig, 'fbp_is_color_plane', False):
@@ -353,6 +365,12 @@ def do_update_emission(rig):
             if new_mat != mat:
                 fbp_remove_unused_materials_and_images([mat])
     _fbp_reapply_registered_effects(rig, custom_states=custom_states)
+    if emission_effect_active:
+        try:
+            from .geometry_nodes import fbp_sync_emission_effect_surface
+            fbp_sync_emission_effect_surface(rig)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
 
 
 def set_fbp_material_transparency(mat, opacity=1.0):
@@ -379,7 +397,7 @@ def do_update_opacity(rig):
     for mat in list(getattr(plane.data, "materials", ()) or ()):
         if not mat or not fbp_material_is_owned(mat):
             continue
-        if is_procedural and getattr(mat, "use_nodes", False):
+        if is_procedural and getattr(mat, "node_tree", None):
             # The procedural updater already writes metadata and render settings.
             # Avoid configuring the same material twice for every slider event.
             update_fbp_procedural_material_opacity(mat, opacity)
@@ -391,7 +409,15 @@ def do_update_opacity(rig):
             pass
         configure_fbp_material_surface(mat, opacity, has_alpha=True)
 
-    if not is_procedural:
+    if is_procedural:
+        try:
+            from .geometry_nodes import fbp_refresh_layer_blend_dependents
+            fbp_refresh_layer_blend_dependents(
+                rig, getattr(bpy.context, "scene", None)
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, ImportError) as exc:
+            fbp_warn("Could not refresh procedural Layer Blend opacity", exc)
+    else:
         try:
             from .geometry_nodes import (
                 fbp_schedule_clipping_mask_sync,
@@ -423,17 +449,139 @@ def fbp_alpha_render_method(scene=None):
 
 
 def fbp_resolve_material_render_method(opacity=1.0, has_alpha=True, scene=None):
-    # Resolve the effective Blender surface method without wasting alpha on opaque materials.
+    """Resolve the effective Blender surface method for FBP planes.
+
+    AUTO deliberately prefers DITHERED/HASHED for alpha materials. BLENDED can
+    let viewport overlays such as the floor grid bleed through a plane that is
+    visually opaque, because the whole surface is drawn in Blender's transparent
+    pass. Dithered alpha keeps depth information stable while still respecting
+    per-pixel alpha for cutouts, masks and image edges. Users can still choose
+    Blended explicitly when they need smooth transparent compositing.
+    """
     alpha = max(0.0, min(1.0, float(opacity)))
     needs_alpha = bool(has_alpha) or alpha < 0.999
     requested = fbp_alpha_render_method(scene)
+    # Blender 5.2 removed OPAQUE from Material.surface_render_method. FBP keeps
+    # the user-facing mode and implements it by bypassing shader alpha below.
     if requested == 'OPAQUE' or not needs_alpha:
-        return 'OPAQUE'
+        return 'DITHERED'
     if requested == 'BLENDED':
         return 'BLENDED'
-    # AUTO preserves smooth alpha edges. Depth Blur is handled as an
-    # explicit image effect instead of forcing Eevee depth writes.
-    return 'BLENDED'
+    if requested == 'DITHERED':
+        return 'DITHERED'
+    # AUTO: depth-safe alpha. This prevents the viewport floor grid from
+    # appearing through otherwise opaque-looking Frame By Plane image layers.
+    return 'DITHERED'
+
+
+def _fbp_socket_by_id_or_name(sockets, identifier, name):
+    for socket in sockets:
+        if identifier and str(getattr(socket, 'identifier', '') or '') == identifier:
+            return socket
+        if name and str(getattr(socket, 'name', '') or '') == name:
+            return socket
+    return None
+
+
+def _fbp_set_socket_opaque_override(node_tree, node, socket, enabled):
+    if node_tree is None or node is None or socket is None:
+        return False
+    links = node_tree.links
+    marker = 'fbp_opaque_override'
+    changed = False
+    if enabled:
+        if bool(node.get(marker, False)):
+            try:
+                if abs(float(socket.default_value) - 1.0) > 1.0e-6:
+                    socket.default_value = 1.0
+                    changed = True
+            except FBP_DATA_IO_ERRORS:
+                pass
+            return changed
+        try:
+            node['fbp_opaque_default'] = float(socket.default_value)
+        except FBP_DATA_ERRORS:
+            node['fbp_opaque_default'] = 1.0
+        link = socket.links[0] if socket.links else None
+        if link is not None:
+            try:
+                node['fbp_opaque_source_node'] = link.from_node.name
+                node['fbp_opaque_source_socket_id'] = str(getattr(link.from_socket, 'identifier', '') or '')
+                node['fbp_opaque_source_socket_name'] = str(getattr(link.from_socket, 'name', '') or '')
+                links.remove(link)
+                changed = True
+            except FBP_DATA_ERRORS:
+                pass
+        node[marker] = True
+        try:
+            socket.default_value = 1.0
+            changed = True
+        except FBP_DATA_IO_ERRORS:
+            pass
+        return changed
+
+    if not bool(node.get(marker, False)):
+        return False
+    try:
+        for link in tuple(socket.links):
+            links.remove(link)
+        source_node = node_tree.nodes.get(str(node.get('fbp_opaque_source_node', '') or ''))
+        if source_node is not None:
+            source_socket = _fbp_socket_by_id_or_name(
+                source_node.outputs,
+                str(node.get('fbp_opaque_source_socket_id', '') or ''),
+                str(node.get('fbp_opaque_source_socket_name', '') or ''),
+            )
+            if source_socket is not None:
+                links.new(source_socket, socket)
+            else:
+                socket.default_value = float(node.get('fbp_opaque_default', 1.0))
+        else:
+            socket.default_value = float(node.get('fbp_opaque_default', 1.0))
+        changed = True
+    except FBP_DATA_ERRORS:
+        pass
+    for key in (
+        marker,
+        'fbp_opaque_default',
+        'fbp_opaque_source_node',
+        'fbp_opaque_source_socket_id',
+        'fbp_opaque_source_socket_name',
+    ):
+        try:
+            del node[key]
+        except FBP_DATA_ERRORS:
+            pass
+    return changed
+
+
+def _fbp_set_material_opaque_override(mat, enabled):
+    if not mat or not getattr(mat, 'node_tree', None):
+        return False
+    if bool(mat.get('fbp_holdout_material', False)):
+        enabled = False
+    tree = mat.node_tree
+    changed = False
+    for node in tuple(tree.nodes):
+        try:
+            if node.type == 'MIX_SHADER' and len(node.inputs) >= 3:
+                transparent_link = node.inputs[1].links[0] if node.inputs[1].links else None
+                transparent = getattr(transparent_link, 'from_node', None)
+                if getattr(transparent, 'type', '') == 'BSDF_TRANSPARENT' or bool(node.get('fbp_opaque_override', False)):
+                    changed |= _fbp_set_socket_opaque_override(tree, node, node.inputs[0], enabled)
+            elif node.type == 'BSDF_PRINCIPLED':
+                alpha = safe_get_socket(node, ['alpha'])
+                if alpha is not None and (alpha.is_linked or bool(node.get('fbp_opaque_override', False))):
+                    changed |= _fbp_set_socket_opaque_override(tree, node, alpha, enabled)
+        except FBP_DATA_ERRORS:
+            continue
+    try:
+        if bool(mat.get('fbp_force_opaque', False)) != bool(enabled):
+            mat['fbp_force_opaque'] = bool(enabled)
+            changed = True
+    except FBP_DATA_ERRORS:
+        pass
+    return changed
 
 
 def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True, scene=None):
@@ -460,25 +608,27 @@ def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True, scene=None)
     except FBP_DATA_ERRORS:
         pass
 
+    requested = fbp_alpha_render_method(scene)
+    force_opaque = requested == 'OPAQUE'
     render_method = fbp_resolve_material_render_method(alpha, has_alpha, scene)
-    legacy_method = {
-        'DITHERED': 'HASHED',
-        'BLENDED': 'BLEND',
-        'OPAQUE': 'OPAQUE',
-    }.get(render_method, 'OPAQUE')
-    for attr, value in (
-        ('surface_render_method', render_method),
-        ('blend_method', legacy_method),
-        ('show_transparent_back', True),
-        ('use_screen_refraction', False),
-    ):
-        if hasattr(mat, attr):
-            try:
-                if getattr(mat, attr) != value:
-                    setattr(mat, attr, value)
-                    changed = True
-            except FBP_DATA_IO_ERRORS:
-                pass
+    transparent_overlap = bool(render_method == 'BLENDED')
+    try:
+        if mat.surface_render_method != render_method:
+            mat.surface_render_method = render_method
+            changed = True
+        if bool(mat.use_transparency_overlap) != transparent_overlap:
+            mat.use_transparency_overlap = transparent_overlap
+            changed = True
+        threshold = 0.003 if render_method == 'DITHERED' else 0.0
+        if abs(float(mat.alpha_threshold) - threshold) > 1e-6:
+            mat.alpha_threshold = threshold
+            changed = True
+    except FBP_DATA_IO_ERRORS:
+        pass
+
+    if _fbp_set_material_opaque_override(mat, force_opaque):
+        changed = True
+
     if changed:
         try:
             mat.update_tag()
@@ -489,7 +639,7 @@ def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True, scene=None)
 def fbp_refresh_material_render_methods(scene=None):
     # Apply the selected alpha method to existing owned materials in place.
     changed = 0
-    for mat in tuple(getattr(bpy.data, 'materials', ()) or ()):
+    for mat in getattr(bpy.data, 'materials', ()) or ():
         if not mat or not fbp_material_is_owned(mat):
             continue
         try:
@@ -500,69 +650,148 @@ def fbp_refresh_material_render_methods(scene=None):
             has_alpha = bool(mat.get('fbp_surface_has_alpha', True))
         except FBP_DATA_ERRORS:
             has_alpha = True
-        before = getattr(mat, 'surface_render_method', None) if hasattr(mat, 'surface_render_method') else getattr(mat, 'blend_method', None)
+        before = mat.surface_render_method
         configure_fbp_material_surface(mat, opacity, has_alpha, scene=scene)
-        after = getattr(mat, 'surface_render_method', None) if hasattr(mat, 'surface_render_method') else getattr(mat, 'blend_method', None)
+        after = mat.surface_render_method
         if before != after:
             changed += 1
     return changed
 
 
 def create_fbp_color_material(name, color=(1.0, 1.0, 1.0, 1.0), use_emission=True, holdout=False):
+    """Create or update one solid procedural material without rebuilding no-op nodes.
+
+    Blender 5.2 tags a material for shading whenever its node tree or RNA values
+    are assigned. Color frames can revisit this helper during repairs and timing
+    sync, so keep a small structural contract and update only changed values.
+    """
+    color = tuple(float(value) for value in tuple(color)[:4])
+    if len(color) < 4:
+        color = color + (1.0,) * (4 - len(color))
+    use_emission = bool(use_emission)
+    holdout = bool(holdout)
+    alpha_branch = bool(use_emission and color[3] < 0.999)
+    contract = f"2:{int(holdout)}:{int(use_emission)}:{int(alpha_branch)}"
+
     mat = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
-    mat["fbp_owned"] = True
-    mat.use_nodes = True
-    configure_fbp_material_surface(mat, color[3], has_alpha=color[3] < 0.999)
     try:
-        mat.diffuse_color = color
-        mat["fbp_color_material"] = True
-        mat["fbp_color_value"] = tuple(color)
-    except (TypeError, ValueError) as exc:
-        fbp_warn("Could not assign material viewport color", exc)
+        if not bool(getattr(mat, "use_nodes", False)):
+            mat.use_nodes = True
+    except FBP_DATA_IO_ERRORS:
+        pass
+    try:
+        if not bool(mat.get("fbp_owned", False)):
+            mat["fbp_owned"] = True
+        if not bool(mat.get("fbp_color_material", False)):
+            mat["fbp_color_material"] = True
+        if tuple(mat.get("fbp_color_value", ())) != color:
+            mat["fbp_color_value"] = color
+        if abs(float(mat.get("fbp_base_alpha", -1.0)) - float(color[3])) > 1.0e-6:
+            mat["fbp_base_alpha"] = float(color[3])
+        if bool(mat.get("fbp_holdout_material", False)) != holdout:
+            mat["fbp_holdout_material"] = holdout
+    except FBP_DATA_ERRORS:
+        pass
+    try:
+        current = tuple(mat.diffuse_color)
+        if len(current) != 4 or any(abs(float(a) - float(b)) > 1.0e-6 for a, b in zip(current, color, strict=True)):
+            mat.diffuse_color = color
+    except FBP_DATA_IO_ERRORS:
+        pass
+
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
-    nodes.clear()
-    out = nodes.new(type='ShaderNodeOutputMaterial')
-    out.location = (320, 0)
-    if holdout:
-        hold = nodes.new(type='ShaderNodeHoldout')
-        hold.location = (0, 0)
-        links.new(hold.outputs[0], out.inputs[0])
-        mat["fbp_holdout_material"] = True
-        return mat
-    if use_emission:
-        shader = nodes.new(type='ShaderNodeEmission')
-        shader.location = (0, 0)
-        color_sock = safe_get_socket(shader, ['color']) or shader.inputs[0]
-        color_sock.default_value = color
-        try:
-            shader.inputs['Strength'].default_value = 1.0
-        except FBP_DATA_IO_ERRORS:
-            pass
-    else:
-        shader = nodes.new(type='ShaderNodeBsdfPrincipled')
-        shader.location = (0, 0)
-        base = safe_get_socket(shader, ['base', 'color']) or shader.inputs[0]
-        base.default_value = color
-        alpha = safe_get_socket(shader, ['alpha'])
-        if alpha:
-            alpha.default_value = color[3]
-        spec = safe_get_socket(shader, ['specular'])
-        if spec:
-            spec.default_value = 0.0
-    if use_emission and color[3] < 0.999:
-        transparent = nodes.new(type='ShaderNodeBsdfTransparent')
-        transparent.name = 'FBP_Transparent'
-        transparent.location = (0, -140)
-        mix = nodes.new(type='ShaderNodeMixShader')
-        mix.name = 'FBP_Alpha_Mix'
-        mix.location = (180, 0)
-        mix.inputs[0].default_value = color[3]
-        links.new(transparent.outputs[0], mix.inputs[1])
-        links.new(shader.outputs[0], mix.inputs[2])
-        links.new(mix.outputs[0], out.inputs[0])
-    else:
-        links.new(shader.outputs[0], out.inputs[0])
+    out = nodes.get("FBP Color Output")
+    shader_name = (
+        "FBP Color Holdout" if holdout
+        else "FBP Color Emission" if use_emission
+        else "FBP Color Principled"
+    )
+    shader = nodes.get(shader_name)
+    transparent = nodes.get("FBP_Transparent")
+    mix = nodes.get("FBP_Alpha_Mix")
+    structure_ok = bool(
+        str(mat.get("fbp_color_material_contract", "") or "") == contract
+        and out is not None
+        and shader is not None
+        and ((transparent is not None and mix is not None) if alpha_branch else True)
+    )
+    if not structure_ok:
+        nodes.clear()
+        out = nodes.new(type="ShaderNodeOutputMaterial")
+        out.name = "FBP Color Output"
+        out.location = (320, 0)
+        if holdout:
+            shader = nodes.new(type="ShaderNodeHoldout")
+            shader.name = "FBP Color Holdout"
+            shader.location = (0, 0)
+            links.new(shader.outputs[0], out.inputs[0])
+        elif use_emission:
+            shader = nodes.new(type="ShaderNodeEmission")
+            shader.name = "FBP Color Emission"
+            shader.location = (0, 0)
+            if alpha_branch:
+                transparent = nodes.new(type="ShaderNodeBsdfTransparent")
+                transparent.name = "FBP_Transparent"
+                transparent.location = (0, -140)
+                mix = nodes.new(type="ShaderNodeMixShader")
+                mix.name = "FBP_Alpha_Mix"
+                mix.location = (180, 0)
+                links.new(transparent.outputs[0], mix.inputs[1])
+                links.new(shader.outputs[0], mix.inputs[2])
+                links.new(mix.outputs[0], out.inputs[0])
+            else:
+                links.new(shader.outputs[0], out.inputs[0])
+        else:
+            shader = nodes.new(type="ShaderNodeBsdfPrincipled")
+            shader.name = "FBP Color Principled"
+            shader.location = (0, 0)
+            links.new(shader.outputs[0], out.inputs[0])
+        mat["fbp_color_material_contract"] = contract
+
+    if not holdout:
+        if use_emission:
+            color_sock = safe_get_socket(shader, ["color"]) or shader.inputs[0]
+            try:
+                if any(abs(float(a) - float(b)) > 1.0e-6 for a, b in zip(tuple(color_sock.default_value), color, strict=True)):
+                    color_sock.default_value = color
+            except FBP_DATA_IO_ERRORS:
+                pass
+            try:
+                strength = shader.inputs["Strength"]
+                if abs(float(strength.default_value) - 1.0) > 1.0e-6:
+                    strength.default_value = 1.0
+            except FBP_DATA_IO_ERRORS:
+                pass
+            if alpha_branch and mix is not None:
+                try:
+                    if abs(float(mix.inputs[0].default_value) - float(color[3])) > 1.0e-6:
+                        mix.inputs[0].default_value = color[3]
+                except FBP_DATA_IO_ERRORS:
+                    pass
+        else:
+            base = safe_get_socket(shader, ["base", "color"]) or shader.inputs[0]
+            try:
+                if any(abs(float(a) - float(b)) > 1.0e-6 for a, b in zip(tuple(base.default_value), color, strict=True)):
+                    base.default_value = color
+            except FBP_DATA_IO_ERRORS:
+                pass
+            alpha = safe_get_socket(shader, ["alpha"])
+            if alpha is not None:
+                try:
+                    if abs(float(alpha.default_value) - float(color[3])) > 1.0e-6:
+                        alpha.default_value = color[3]
+                except FBP_DATA_IO_ERRORS:
+                    pass
+            spec = safe_get_socket(shader, ["specular"])
+            if spec is not None:
+                try:
+                    if abs(float(spec.default_value)) > 1.0e-6:
+                        spec.default_value = 0.0
+                except FBP_DATA_IO_ERRORS:
+                    pass
+
+    configure_fbp_material_surface(mat, color[3], has_alpha=color[3] < 0.999)
     return mat
 
 
@@ -576,7 +805,6 @@ def create_fbp_gradient_material(name, mode='LINEAR', kind='COLOR', color_a=(1.0
     """
     mat = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
     mat["fbp_owned"] = True
-    mat.use_nodes = True
     configure_fbp_material_surface(mat, 1.0, has_alpha=True)
     try:
         mat.diffuse_color = color_b
@@ -684,6 +912,7 @@ def create_fbp_gradient_material(name, mode='LINEAR', kind='COLOR', color_a=(1.0
     mat['fbp_gradient_kind'] = kind
     mat['fbp_gradient_reverse'] = bool(reverse)
     mat['fbp_use_emission'] = bool(use_emission)
+    configure_fbp_material_surface(mat, 1.0, has_alpha=True)
     return mat
 
 
@@ -768,6 +997,8 @@ def fbp_rebuild_color_plane_material(rig):
     if mode == 'GRADIENT':
         try:
             apply_fbp_gradient_mapping_to_material(rig, mat)
+            if getattr(rig, "fbp_gradient_controller", None) is not None:
+                fbp_bind_gradient_controller_drivers(rig, rig.fbp_gradient_controller)
         except Exception as exc:
             fbp_warn("Could not apply gradient transform after rebuilding material", exc)
     if mode != 'HOLDOUT':
@@ -799,14 +1030,14 @@ def _copy_image_user_settings(src_node, dst_node):
             except FBP_DATA_IO_ERRORS:
                 pass
         return True
-    except Exception:
+    except FBP_DATA_IO_ERRORS:
         return False
 
 
 def _copy_image_user_animation(src_mat, src_node, dst_mat, dst_node):
     """Mirror ImageUser.frame_offset animation for alpha-aware holdout.
 
-    Blender 5.1 stores Action curves in slot Channelbags instead of exposing
+    Blender 5.2 stores Action curves in slot Channelbags instead of exposing
     ``Action.fcurves``. Keyframes are recreated through RNA so this works with
     both action layouts; source drivers are mirrored with one direct property
     driver rather than copying an incomplete expression without variables.
@@ -887,7 +1118,7 @@ def _copy_image_user_animation(src_mat, src_node, dst_mat, dst_node):
 
 def fbp_alpha_holdout_material_from_source(source_mat):
     """Create a holdout material that respects the source alpha and native timing."""
-    if not source_mat or not getattr(source_mat, "use_nodes", False) or not source_mat.node_tree:
+    if not source_mat or not getattr(source_mat, 'node_tree', None):
         return fbp_holdout_material()
     img = None
     interpolation = 'Closest'
@@ -906,7 +1137,6 @@ def fbp_alpha_holdout_material_from_source(source_mat):
     # sequence has been rebuilt.
     mat = bpy.data.materials.new(mat_name)
     mat["fbp_owned"] = True
-    mat.use_nodes = True
     set_fbp_material_transparency(mat, 1.0)
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
@@ -942,7 +1172,7 @@ def fbp_alpha_holdout_material_from_source(source_mat):
 def fbp_material_is_holdout(mat):
     try:
         return bool(mat and mat.get('fbp_holdout_material', False))
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -950,14 +1180,14 @@ def fbp_plane_uses_holdout_materials(plane):
     try:
         mats = [mat for mat in plane.data.materials if mat]
         return bool(mats and all(fbp_material_is_holdout(mat) for mat in mats))
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
 def fbp_is_native_holdout_plane(rig):
     try:
         return bool(getattr(rig, "fbp_is_color_plane", False) and getattr(rig, "fbp_color_plane_mode", 'SOLID') == 'HOLDOUT')
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -1007,7 +1237,7 @@ def fbp_apply_holdout_materials_to_rig(rig):
         return True
 
     store_original_materials_for_holdout(rig)
-    source_materials = [mat for mat in plane.data.materials]
+    source_materials = list(plane.data.materials)
     plane.data.materials.clear()
     if not source_materials:
         plane.data.materials.append(fbp_holdout_material())
@@ -1105,15 +1335,32 @@ def fbp_active_surface_chain(mat):
 
 def update_fbp_procedural_material_opacity(mat, opacity=1.0):
     """Apply the layer opacity slider to solid/gradient procedural materials."""
-    if not mat or not getattr(mat, 'use_nodes', False):
+    if not mat or not getattr(mat, 'node_tree', None):
         return False
     opacity = max(0.0, min(1.0, float(opacity)))
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
-    configure_fbp_material_surface(mat, opacity, has_alpha=True)
+    intrinsic_alpha = 1.0
+    try:
+        intrinsic_alpha = max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    mat.get(
+                        "fbp_base_alpha",
+                        fbp_material_color_value(mat, (1.0, 1.0, 1.0, 1.0))[3],
+                    )
+                ),
+            ),
+        )
+    except FBP_DATA_ERRORS:
+        intrinsic_alpha = 1.0
+    effective_alpha = intrinsic_alpha * opacity
+    configure_fbp_material_surface(mat, effective_alpha, has_alpha=True)
     try:
         rgba = list(getattr(mat, 'diffuse_color', (1.0, 1.0, 1.0, 1.0)))
-        rgba[3] = opacity
+        rgba[3] = effective_alpha
         mat.diffuse_color = tuple(rgba)
     except FBP_DATA_IO_ERRORS:
         pass
@@ -1191,23 +1438,23 @@ def update_fbp_procedural_material_opacity(mat, opacity=1.0):
 
     if bool(mat.get('fbp_color_material', False)):
         color = list(fbp_material_color_value(mat, (1.0, 1.0, 1.0, 1.0)))
-        color[3] = opacity
-        mat['fbp_color_value'] = tuple(color)
+        color[3] = intrinsic_alpha
+        shaded_color = tuple((*color[:3], effective_alpha))
         out, shader, mix, transparent = fbp_active_surface_chain(mat)
         if shader:
             color_sock = safe_get_socket(shader, ['color']) or shader.inputs[0]
             try:
-                color_sock.default_value = tuple(color)
+                color_sock.default_value = shaded_color
             except FBP_DATA_IO_ERRORS:
                 pass
             alpha_sock = safe_get_socket(shader, ['alpha'])
             if alpha_sock:
                 try:
-                    alpha_sock.default_value = opacity
+                    alpha_sock.default_value = effective_alpha
                 except FBP_DATA_IO_ERRORS:
                     pass
         if getattr(shader, 'type', '') == 'EMISSION' and out:
-            if opacity < 0.999:
+            if effective_alpha < 0.999:
                 if transparent is None:
                     transparent = nodes.new(type='ShaderNodeBsdfTransparent')
                     transparent.name = 'FBP_Transparent'
@@ -1216,7 +1463,7 @@ def update_fbp_procedural_material_opacity(mat, opacity=1.0):
                     mix = nodes.new(type='ShaderNodeMixShader')
                     mix.name = 'FBP_Alpha_Mix'
                     mix.location = (180, 0)
-                mix.inputs[0].default_value = opacity
+                mix.inputs[0].default_value = effective_alpha
                 fbp_relink_node_input(links, mix.inputs[1], transparent.outputs[0])
                 fbp_relink_node_input(links, mix.inputs[2], shader.outputs[0])
                 fbp_relink_node_input(links, out.inputs[0], mix.outputs[0])
@@ -1242,23 +1489,55 @@ def fbp_rebuild_procedural_material_for_emission(mat, rig, use_emission):
     if bool(mat.get('fbp_holdout_material', False)):
         return create_fbp_color_material(mat.name, (0.0, 0.0, 0.0, 1.0), use_emission, True)
     if bool(mat.get('fbp_gradient_material', False)):
+        # ``create_fbp_gradient_material(mat.name, ...)`` intentionally reuses the
+        # same Blender material datablock and clears its nodes. Capture the real
+        # ColorRamp first, otherwise rebuilding emission after Add Frame recreates
+        # every gradient from rig-level colors + Reverse and flips all existing
+        # frames on alternate inserts.
+        ramp_data = fbp_capture_color_ramp_data(find_fbp_gradient_ramp_node(mat))
+        gradient_mode = str(mat.get('fbp_gradient_mode', getattr(rig, 'fbp_gradient_mode', 'LINEAR')))
+        gradient_kind = str(mat.get('fbp_gradient_kind', getattr(rig, 'fbp_gradient_kind', 'COLOR')))
+        gradient_reverse = bool(mat.get('fbp_gradient_reverse', getattr(rig, 'fbp_gradient_reverse', True)))
+        fallback_a = tuple(getattr(rig, 'fbp_gradient_color_a', (0, 0, 0, 0)))
+        fallback_b = tuple(getattr(rig, 'fbp_gradient_color_b', (0, 0, 0, 1)))
+        if ramp_data and ramp_data.get('elements'):
+            elements = list(ramp_data.get('elements') or [])
+            try:
+                fallback_a = tuple(elements[0][1])
+                fallback_b = tuple(elements[-1][1])
+            except (IndexError, TypeError, ValueError):
+                pass
         new_mat = create_fbp_gradient_material(
             mat.name,
-            str(mat.get('fbp_gradient_mode', getattr(rig, 'fbp_gradient_mode', 'LINEAR'))),
-            str(mat.get('fbp_gradient_kind', getattr(rig, 'fbp_gradient_kind', 'COLOR'))),
-            tuple(getattr(rig, 'fbp_gradient_color_a', (0,0,0,0))),
-            tuple(getattr(rig, 'fbp_gradient_color_b', (0,0,0,1))),
-            bool(mat.get('fbp_gradient_reverse', getattr(rig, 'fbp_gradient_reverse', True))),
+            gradient_mode,
+            gradient_kind,
+            fallback_a,
+            fallback_b,
+            gradient_reverse if not ramp_data else False,
             bool(use_emission),
         )
-        copy_color_ramp(find_fbp_gradient_ramp_node(mat), find_fbp_gradient_ramp_node(new_mat))
+        if ramp_data:
+            fbp_restore_color_ramp_data(ramp_data, find_fbp_gradient_ramp_node(new_mat))
+        else:
+            fbp_apply_gradient_kind_to_ramp_node(find_fbp_gradient_ramp_node(new_mat), gradient_kind)
+        try:
+            new_mat['fbp_gradient_mode'] = gradient_mode
+            new_mat['fbp_gradient_kind'] = gradient_kind
+            new_mat['fbp_gradient_reverse'] = gradient_reverse
+            new_mat['fbp_procedural_kind'] = 'GRADIENT'
+            new_mat['fbp_gradient_material'] = True
+        except FBP_DATA_IO_ERRORS:
+            pass
         apply_fbp_gradient_mapping_to_material(rig, new_mat)
         update_fbp_procedural_material_opacity(new_mat, opacity)
         return new_mat
     if bool(mat.get('fbp_color_material', False)):
-        color = list(fbp_material_color_value(mat, (1.0,1.0,1.0,1.0)))
-        color[3] = opacity
-        return create_fbp_color_material(mat.name, tuple(color), bool(use_emission), False)
+        color = tuple(fbp_material_color_value(mat, (1.0, 1.0, 1.0, 1.0)))
+        new_mat = create_fbp_color_material(
+            mat.name, color, bool(use_emission), False
+        )
+        update_fbp_procedural_material_opacity(new_mat, opacity)
+        return new_mat
     return mat
 
 
@@ -1272,7 +1551,7 @@ def rig_holdout_is_active(rig):
         if rig.get("fbp_holdout_original_materials", ""):
             return True
         return fbp_plane_uses_holdout_materials(getattr(rig, "fbp_plane_target", None))
-    except Exception:
+    except FBP_DATA_ERRORS:
         return False
 
 
@@ -1286,7 +1565,7 @@ def get_fbp_gradient_material_from_rig(rig):
     if not plane or not getattr(plane, 'data', None) or not getattr(plane.data, 'materials', None):
         return None
     mat = fbp_get_active_frame_material(rig)
-    if mat and getattr(mat, 'use_nodes', False) and mat.get('fbp_gradient_material'):
+    if mat and getattr(mat, 'node_tree', None) and mat.get('fbp_gradient_material'):
         return mat
     return None
 
@@ -1326,7 +1605,7 @@ def get_fbp_gradient_mapping_node(mat):
 
 def get_fbp_gradient_center_node(mat):
     """Find the Vector Math node that stores the editable gradient pivot."""
-    if not mat or not getattr(mat, 'use_nodes', False):
+    if not mat or not getattr(mat, 'node_tree', None):
         return None
     node = mat.node_tree.nodes.get('FBP_GradientCenter')
     if node:
@@ -1401,6 +1680,103 @@ def apply_fbp_gradient_mapping_to_material(rig, mat=None):
     mapping.inputs['Rotation'].default_value[1] = 0.0
     mapping.inputs['Rotation'].default_value[2] = rotation
     update_fbp_gradient_viewport_color(rig, mat)
+
+
+def _fbp_gradient_plane_extents(rig):
+    plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    vertices = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
+    if not vertices:
+        return 1.0, 1.0
+    try:
+        xs = [float(vertex.co.x) for vertex in vertices]
+        ys = [float(vertex.co.y) for vertex in vertices]
+        return max(1.0e-6, max(xs) - min(xs)), max(1.0e-6, max(ys) - min(ys))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return 1.0, 1.0
+
+
+def _fbp_remove_gradient_driver(owner, data_path, index=None):
+    try:
+        if index is None:
+            owner.driver_remove(data_path)
+        else:
+            owner.driver_remove(data_path, index)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def _fbp_add_gradient_transform_driver(owner, data_path, index, controller, axis, expression):
+    try:
+        curve = owner.driver_add(data_path, index) if index is not None else owner.driver_add(data_path)
+        driver = curve.driver
+        driver.type = "SCRIPTED"
+        driver.expression = str(expression)
+        while driver.variables:
+            driver.variables.remove(driver.variables[0])
+        variable = driver.variables.new()
+        variable.name = "position"
+        variable.type = "TRANSFORMS"
+        target = variable.targets[0]
+        target.id = controller
+        target.transform_type = "LOC_X" if axis == 0 else "LOC_Y"
+        target.transform_space = "TRANSFORM_SPACE"
+        return True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def fbp_bind_gradient_controller_drivers(rig, controller=None, extra_material=None):
+    """Drive gradient centers from one external Empty in the plane's local space."""
+    if rig is None:
+        return False
+    controller = controller or getattr(rig, "fbp_gradient_controller", None)
+    plane = getattr(rig, "fbp_plane_target", None)
+    if controller is not None and plane is not None and getattr(controller, "parent", None) is not plane:
+        try:
+            world_matrix = controller.matrix_world.copy()
+            controller.parent = plane
+            controller.matrix_parent_inverse = Matrix.Identity(4)
+            controller.matrix_world = world_matrix
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+    width, height = _fbp_gradient_plane_extents(rig)
+    changed = False
+
+    for property_name in ("fbp_gradient_offset_x", "fbp_gradient_offset_y"):
+        _fbp_remove_gradient_driver(rig, property_name)
+    if controller is not None:
+        changed = _fbp_add_gradient_transform_driver(
+            rig, "fbp_gradient_offset_x", None, controller, 0, f"position / {width:.12g}"
+        ) or changed
+        changed = _fbp_add_gradient_transform_driver(
+            rig, "fbp_gradient_offset_y", None, controller, 1, f"position / {height:.12g}"
+        ) or changed
+
+    materials = list(getattr(getattr(plane, "data", None), "materials", ()) or ())
+    if extra_material is not None and extra_material not in materials:
+        materials.append(extra_material)
+    for material in materials:
+        if material is None or not bool(material.get("fbp_gradient_material", False)):
+            continue
+        center = get_fbp_gradient_center_node(material)
+        tree = getattr(material, "node_tree", None)
+        if center is None or tree is None:
+            continue
+        try:
+            data_path = center.inputs[1].path_from_id("default_value")
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+        _fbp_remove_gradient_driver(tree, data_path, 0)
+        _fbp_remove_gradient_driver(tree, data_path, 1)
+        if controller is None:
+            continue
+        changed = _fbp_add_gradient_transform_driver(
+            tree, data_path, 0, controller, 0, f"0.5 + position / {width:.12g}"
+        ) or changed
+        changed = _fbp_add_gradient_transform_driver(
+            tree, data_path, 1, controller, 1, f"0.5 + position / {height:.12g}"
+        ) or changed
+    return changed
 
 
 # SECTION 10 - Gradient preview scene material #
@@ -1490,7 +1866,7 @@ def fbp_schedule_gradient_preview_material_sync(scene, *, first_interval=0.03):
         if stored_name is None:
             return None
         target = fbp_find_id_by_runtime_key(
-            bpy.data.scenes, scene_key, stored_name
+            getattr(bpy.data, "scenes", ()), scene_key, stored_name
         )
         if target is None:
             return None
@@ -1512,10 +1888,8 @@ def fbp_schedule_gradient_preview_material_sync(scene, *, first_interval=0.03):
         first_interval=max(0.0, float(first_interval)),
     )
     if not scheduled:
-        # A task with this key may already be pending. Its callback will consume
-        # the freshly replaced payload above, so this is still a successful
-        # coalesced request.
-        return token in _PENDING_GRADIENT_PREVIEW_SYNC
+        _PENDING_GRADIENT_PREVIEW_SYNC.pop(token, None)
+        return False
     return True
 
 
@@ -1596,7 +1970,7 @@ def copy_color_ramp(source_node, target_node):
 
 
 def copy_scene_preview_ramp_to_rig(scene, rig):
-    """After creating a Gradient Plane, copy the popup/N-Panel creation ramp to the real material."""
+    """After creating a Gradient Plane, copy the compact creation ramp to the real material."""
     preview = get_or_create_fbp_gradient_preview_material(scene)
     src = find_fbp_gradient_ramp_node(preview) if preview else None
     mat = get_fbp_gradient_material_from_rig(rig)
@@ -1636,6 +2010,44 @@ def fbp_material_color_value(mat, fallback=(1.0, 1.0, 1.0, 1.0)):
     except FBP_DATA_IO_ERRORS:
         pass
     return fallback
+
+
+def fbp_procedural_frame_display_name(
+    rig, material=None, kind=None, *, is_empty=False
+):
+    """Return a stable, color-derived name for a procedural frame row."""
+    if is_empty:
+        return "Alpha"
+    kind = str(
+        kind
+        or (
+            material.get("fbp_procedural_kind", "")
+            if material is not None else ""
+        )
+        or getattr(rig, "fbp_color_plane_mode", "SOLID")
+        or "SOLID"
+    ).upper()
+    if kind == "GRADIENT":
+        color = tuple(
+            getattr(
+                rig,
+                "fbp_gradient_color_b",
+                (0.0588235294, 0.1294117647, 0.2431372549, 1.0),
+            )
+        )
+        try:
+            ramp = find_fbp_gradient_ramp_node(material) if material else None
+            elements = getattr(getattr(ramp, "color_ramp", None), "elements", ())
+            if elements:
+                color = tuple(elements[-1].color)
+        except FBP_DATA_IO_ERRORS:
+            pass
+        return f"Gradient {color_plane_name_from_color(color, color_space='LINEAR')}"
+    color = fbp_material_color_value(
+        material,
+        tuple(getattr(rig, "fbp_color_plane_color", (1.0, 1.0, 1.0, 1.0))),
+    )
+    return color_plane_name_from_color(color, color_space="LINEAR")
 
 
 def fbp_unique_material_name(base):
@@ -1731,29 +2143,45 @@ def fbp_create_procedural_frame_material_for_rig(rig, suffix="Frame"):
     be changed without affecting the source frame.
     """
     if not rig or not getattr(rig, "fbp_is_color_plane", False):
-        return None, "Transparent Frame", True
+        return None, "Alpha", True
     mode = getattr(rig, 'fbp_color_plane_mode', 'SOLID')
     use_emission = bool(getattr(rig, 'fbp_color_plane_emission', getattr(rig, 'fbp_use_emission', True)))
     safe_suffix = str(suffix).replace(" ", "_")
 
     active_mat = fbp_get_active_frame_material(rig)
-    active_kind = 'GRADIENT' if (active_mat and bool(active_mat.get('fbp_gradient_material', False))) else ('HOLDOUT' if (active_mat and bool(active_mat.get('fbp_holdout_material', False))) else 'SOLID')
-    # Only copy the active material when it matches the requested frame type.
-    # Otherwise a Color frame inserted after selecting a Gradient frame would
-    # inherit the gradient material and turn back into a gradient on selection.
-    if active_mat and mode != 'HOLDOUT' and active_kind == mode:
+    active_kind = 'SOLID'
+    if active_mat:
+        try:
+            explicit_kind = str(active_mat.get('fbp_procedural_kind', '') or '')
+            if explicit_kind in {'SOLID', 'GRADIENT', 'HOLDOUT'}:
+                active_kind = explicit_kind
+            elif bool(active_mat.get('fbp_gradient_material', False)):
+                active_kind = 'GRADIENT'
+            elif bool(active_mat.get('fbp_holdout_material', False)):
+                active_kind = 'HOLDOUT'
+        except FBP_DATA_IO_ERRORS:
+            active_kind = 'SOLID'
+    # Only duplicate an existing material for Gradient frames. Solid frames must
+    # be rebuilt as a real flat shader: a copied Gradient material can carry an
+    # old ColorRamp node tree even after its metadata says SOLID, which makes the
+    # viewport show a gradient while the UI row says Color.
+    if active_mat and mode == 'GRADIENT' and active_kind == 'GRADIENT':
         mat = fbp_duplicate_procedural_material_for_frame(active_mat, rig, safe_suffix)
         if mat:
             try:
-                mat['fbp_procedural_kind'] = active_kind
+                mat['fbp_procedural_kind'] = 'GRADIENT'
+                mat['fbp_gradient_material'] = True
             except FBP_DATA_IO_ERRORS:
                 pass
-            label = "Gradient Frame" if active_kind == 'GRADIENT' else "Color Frame"
-            return mat, label, False
+            if getattr(rig, "fbp_gradient_controller", None) is not None:
+                fbp_bind_gradient_controller_drivers(rig, rig.fbp_gradient_controller, extra_material=mat)
+            return mat, fbp_procedural_frame_display_name(
+                rig, mat, "GRADIENT"
+            ), False
 
     if mode == 'GRADIENT':
         mat = create_fbp_gradient_material(
-            f"FBP_Gradient_{rig.name}_{safe_suffix}",
+            fbp_unique_material_name(f"FBP_Gradient_{rig.name}_{safe_suffix}"),
             getattr(rig, 'fbp_gradient_mode', 'LINEAR'),
             getattr(rig, 'fbp_gradient_kind', 'COLOR'),
             tuple(getattr(rig, 'fbp_gradient_color_a', (1.0, 0.3686274509803922, 0.596078431372549, 1.0))),
@@ -1763,20 +2191,35 @@ def fbp_create_procedural_frame_material_for_rig(rig, suffix="Frame"):
         )
         try:
             apply_fbp_gradient_mapping_to_material(rig, mat)
+            if getattr(rig, "fbp_gradient_controller", None) is not None:
+                fbp_bind_gradient_controller_drivers(rig, rig.fbp_gradient_controller, extra_material=mat)
         except Exception as exc:
             fbp_warn("Could not copy gradient transform to new frame material", exc)
         try:
             mat['fbp_procedural_kind'] = 'GRADIENT'
         except FBP_DATA_IO_ERRORS:
             pass
-        return mat, "Gradient Frame", False
+        return mat, fbp_procedural_frame_display_name(
+            rig, mat, "GRADIENT"
+        ), False
     color = tuple(getattr(rig, 'fbp_color_plane_color', (1.0, 1.0, 1.0, 1.0)))
-    mat = create_fbp_color_material(f"FBP_Color_{rig.name}_{safe_suffix}", color, use_emission, False)
+    try:
+        active_index = int(getattr(rig, "fbp_images_index", 0) or 0)
+        active_rows = getattr(rig, "fbp_images", ()) or ()
+        if (
+            0 <= active_index < len(active_rows)
+            and bool(getattr(active_rows[active_index], "is_empty", False))
+            and len(color) >= 4
+        ):
+            color = (*color[:3], 1.0)
+    except FBP_DATA_ERRORS:
+        pass
+    mat = create_fbp_color_material(fbp_unique_material_name(f"FBP_Color_{rig.name}_{safe_suffix}"), color, use_emission, False)
     try:
         mat['fbp_procedural_kind'] = 'SOLID'
     except FBP_DATA_IO_ERRORS:
         pass
-    return mat, "Color Frame", False
+    return mat, fbp_procedural_frame_display_name(rig, mat, "SOLID"), False
 
 
 def unregister():

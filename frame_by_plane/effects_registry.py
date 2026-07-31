@@ -31,7 +31,19 @@ FBP_EFFECT_MIRROR = "MIRROR"
 FBP_EFFECT_THICKNESS = "THICKNESS"
 FBP_EFFECT_INFINITE_ROTATION = "INFINITE_ROTATION"
 FBP_EFFECT_FELT_FUZZ = "FELT_FUZZ"
+FBP_EFFECT_FIBER_TUFTS = "FIBER_TUFTS"
+FBP_EFFECT_PAPER_SHARDS = "PAPER_SHARDS"
+FBP_EFFECT_SPHERE_SCREEN = "SPHERE_SCREEN"
+FBP_EFFECT_IMAGE_RELIEF = "IMAGE_RELIEF"
+FBP_EFFECT_GLASS = "GLASS"
+FBP_EFFECT_CRYSTAL = "CRYSTAL"
+FBP_EFFECT_SURFACE_CONFORM = "SURFACE_CONFORM"
+FBP_EFFECT_ACCORDION_FOLD = "ACCORDION_FOLD"
+FBP_EFFECT_SCULPT_WAVES = "SCULPT_WAVES"
+FBP_EFFECT_KINETIC_TILES = "KINETIC_TILES"
+FBP_EFFECT_LAYERED_ECHO = "LAYERED_ECHO"
 FBP_EFFECT_LATTICE = "LATTICE"
+FBP_EFFECT_MOTION = "MOTION"
 
 FBP_EFFECT_UV_DISTORTION = "UV_DISTORTION"
 FBP_EFFECT_PIXELATE = "PIXELATE"
@@ -43,6 +55,7 @@ FBP_EFFECT_RIPPLE_DISTORTION = "RIPPLE_DISTORTION"
 FBP_EFFECT_KALEIDOSCOPE = "KALEIDOSCOPE"
 FBP_EFFECT_HEX_PIXELATE = "HEX_PIXELATE"
 FBP_EFFECT_MOSAIC_JITTER = "MOSAIC_JITTER"
+FBP_EFFECT_SLICE_SHIFT = "SLICE_SHIFT"
 FBP_EFFECT_DEPTH_BLUR = "DEPTH_BLUR"
 FBP_EFFECT_GAUSSIAN_BLUR = "GAUSSIAN_BLUR"
 FBP_EFFECT_DIRECTIONAL_BLUR = "DIRECTIONAL_BLUR"
@@ -67,12 +80,18 @@ FBP_EFFECT_CIRCLE_MASK = "CIRCLE_MASK"
 FBP_EFFECT_TRIANGLE_MASK = "TRIANGLE_MASK"
 FBP_EFFECT_CLIPPING_MASK = "CLIPPING_MASK"
 FBP_EFFECT_IMPORTED_MASK = "IMPORTED_MASK"
+FBP_EFFECT_GP_MASK_SLOT_2 = "GP_MASK_SLOT_2"
+FBP_EFFECT_GP_MASK_SLOT_3 = "GP_MASK_SLOT_3"
+FBP_EFFECT_GP_MASK_SLOT_4 = "GP_MASK_SLOT_4"
+GP_MASK_EFFECT_IDS = (FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_GP_MASK_SLOT_2, FBP_EFFECT_GP_MASK_SLOT_3, FBP_EFFECT_GP_MASK_SLOT_4)
 FBP_EFFECT_LAYER_BLEND = "LAYER_BLEND"
 FBP_EFFECT_COLOR_MASK = "COLOR_MASK"
 FBP_EFFECT_LUMINANCE_MASK = "LUMINANCE_MASK"
 FBP_EFFECT_CHANNEL_MASK = "CHANNEL_MASK"
 FBP_EFFECT_GRADIENT_MASK = "GRADIENT_MASK"
 FBP_EFFECT_NOISE_MASK = "NOISE_MASK"
+FBP_EFFECT_VORONOI_MASK = "VORONOI_MASK"
+FBP_EFFECT_WAVE_MASK = "WAVE_MASK"
 FBP_EFFECT_SOLID_MASK = "SOLID_MASK"
 FBP_EFFECT_HUE_SATURATION = "HUE_SATURATION"
 FBP_EFFECT_WHITE_BALANCE = "WHITE_BALANCE"
@@ -83,6 +102,11 @@ FBP_EFFECT_THRESHOLD = "THRESHOLD"
 FBP_EFFECT_COLOR_ISOLATE = "COLOR_ISOLATE"
 FBP_EFFECT_DUOTONE = "DUOTONE"
 FBP_EFFECT_RECOLOR = "RECOLOR"
+FBP_EFFECT_GRADIENT_MAP = "GRADIENT_MAP"
+FBP_EFFECT_CHANNEL_MIXER = "CHANNEL_MIXER"
+FBP_EFFECT_DITHER = "DITHER"
+FBP_EFFECT_BLOOM = "BLOOM"
+FBP_EFFECT_FILTER_PRESETS = "FILTER_PRESETS"
 FBP_EFFECT_GRAIN = "GRAIN"
 FBP_EFFECT_PAPER_FIBERS = "PAPER_FIBERS"
 FBP_EFFECT_GRADIENT_LIGHT = "GRADIENT_LIGHT"
@@ -97,6 +121,7 @@ FBP_EFFECT_TRITONE = "TRITONE"
 FBP_EFFECT_FILM_FADE = "FILM_FADE"
 FBP_EFFECT_CROP = "CROP"
 FBP_EFFECT_EXTEND = "EXTEND"
+FBP_EFFECT_EMISSION = "EMISSION"
 FBP_EFFECT_DIGITAL_NOISE = "DIGITAL_NOISE"
 FBP_EFFECT_CHROMA_KEY = "CHROMA_KEY"
 FBP_EFFECT_HALFTONE = "HALFTONE"
@@ -111,6 +136,15 @@ if not isinstance(_FBP_CUSTOM_EFFECT_MISS_CACHE, dict):
     _FBP_CUSTOM_EFFECT_MISS_CACHE = {}
 
 FBP_EFFECT_REGISTRY = {
+    FBP_EFFECT_MOTION: {
+        "label": "Motion", "icon": "TIME", "kind": "BASE",
+        "enabled_key": "fbp_motion_effect_container",
+        "category": "3D", "performance": "LIGHT",
+        "description": "Container for repeatable procedural Motion layers, paths, spring follow, stagger and baking.",
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT", "HOLDOUT"),
+        "targets": ("IMAGE_PLANE",),
+        "custom_ui": True,
+    },
     FBP_EFFECT_CROP: {
         "label": "Crop", "icon": "FULLSCREEN_EXIT", "kind": "BASE",
         "enabled_key": "fbp_effect_crop",
@@ -128,35 +162,96 @@ FBP_EFFECT_REGISTRY = {
             "fbp_extend_bottom": "Bottom",
         },
     },
+    FBP_EFFECT_EMISSION: {
+        "label": "Emission", "icon": "LIGHT_SUN", "kind": "BASE",
+        "enabled_key": "fbp_effect_emission",
+        "category": "2D", "performance": "LIGHT",
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
+        "property_map": {"fbp_emission_strength": "Strength"},
+        "description": "Use a real Emission shader and expose its unrestricted Strength directly in the effect stack.",
+    },
     FBP_EFFECT_MESH_WIGGLE: {
-        "label": "Wiggle", "icon": "MOD_NOISE", "kind": "GEOMETRY",
+        "label": "Mesh Wiggle", "icon": "MOD_NOISE", "kind": "GEOMETRY",
         "source_names": ("FBP_Wiggle",),
-        "canonical_name": "FBP_GN_Wiggle_450", "modifier_name": "FBP • Wiggle",
+        "canonical_name": "FBP_GN_Wiggle_450", "modifier_name": "FBP • Mesh Wiggle",
         "asset_id": "frame_by_plane.wiggle.450", "enabled_key": "fbp_effect_mesh_wiggle",
         "alpha_aware": False,
         "property_map": {
+            # Socket names must stay aligned with the bundled GN group. User-facing
+            # labels are overridden in ui_labels below.
             "fbp_mesh_wiggle_subdivisions": "Subdivision", "fbp_mesh_wiggle_shade_smooth": "Shade Smooth",
             "fbp_mesh_wiggle_hold": "Stepped", "fbp_mesh_wiggle_strength": "Strength",
             "fbp_mesh_wiggle_speed": "Speed", "fbp_mesh_wiggle_w": "W",
             "fbp_mesh_wiggle_noise_scale": "Noise Scale", "fbp_mesh_wiggle_detail": "Noise Detail",
         },
+        "extra_properties": (
+            "fbp_mesh_wiggle_playback_subdivisions",
+            "fbp_mesh_wiggle_render_subdivisions",
+            "fbp_mesh_wiggle_seed",
+            "fbp_mesh_wiggle_unique_seed",
+        ),
+        "ui_labels": {
+            "fbp_mesh_wiggle_subdivisions": "Viewport",
+            "fbp_mesh_wiggle_playback_subdivisions": "Playback",
+            "fbp_mesh_wiggle_render_subdivisions": "Render",
+            "fbp_mesh_wiggle_hold": "Stepped",
+            "fbp_mesh_wiggle_w": "Starting Phase",
+            "fbp_mesh_wiggle_noise_scale": "Scale",
+            "fbp_mesh_wiggle_detail": "Detail",
+            "fbp_mesh_wiggle_seed": "Pattern Seed",
+            "fbp_mesh_wiggle_unique_seed": "Unique per Layer",
+        },
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_mesh_wiggle_subdivisions",
+            "playback_property": "fbp_mesh_wiggle_playback_subdivisions",
+            "render_property": "fbp_mesh_wiggle_render_subdivisions",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_mesh_wiggle_w", "evolve_amount": 1.0,
+        "evolve_active_property": "fbp_mesh_wiggle_strength",
         "supports_seed": True,
+        "procedural_frame_sync": True,
     },
     FBP_EFFECT_STOP_MOTION_CRUMPLE: {
-        "label": "Crumple", "icon": "IMAGE_PLANE", "kind": "GEOMETRY",
+        "label": "Crumple", "icon": "MOD_DISPLACE", "kind": "GEOMETRY",
         "source_names": ("FBP_StopMotion_Crumple",), "canonical_name": "FBP_GN_StopMotion_Crumple_450",
-        "modifier_name": "FBP • Stop Motion Crumple", "asset_id": "frame_by_plane.stop_motion_crumple.450",
+        "modifier_name": "FBP • Crumple", "asset_id": "frame_by_plane.stop_motion_crumple.450",
         "enabled_key": "fbp_effect_stop_motion_crumple", "alpha_aware": False,
-        "property_map": {"fbp_stop_motion_resolution": "Resolution", "fbp_stop_motion_strength": "Strength", "fbp_stop_motion_step_frames": "Step Frames"},
+        "property_map": {
+            "fbp_stop_motion_resolution": "Resolution",
+            "fbp_stop_motion_strength": "Strength",
+            "fbp_stop_motion_step_frames": "Step Frames",
+        },
+        "extra_properties": (
+            "fbp_stop_motion_playback_resolution",
+            "fbp_stop_motion_render_resolution",
+        ),
+        "ui_labels": {
+            "fbp_stop_motion_resolution": "Viewport",
+            "fbp_stop_motion_playback_resolution": "Playback",
+            "fbp_stop_motion_render_resolution": "Render",
+            "fbp_stop_motion_step_frames": "Stepped",
+        },
+        "quality_contracts": ({
+            "socket": "Resolution",
+            "viewport_property": "fbp_stop_motion_resolution",
+            "playback_property": "fbp_stop_motion_playback_resolution",
+            "render_property": "fbp_stop_motion_render_resolution",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "performance": "HEAVY",
     },
     FBP_EFFECT_WIND_BENDER: {
         "label": "Wind", "icon": "FORCE_WIND", "kind": "GEOMETRY",
         "source_names": (), "canonical_name": "FBP_GN_Mesh_Motion_611",
-        "modifier_name": "FBP • Mesh Motion", "asset_id": "frame_by_plane.mesh_motion.611",
+        "modifier_name": "FBP • Wind", "asset_id": "frame_by_plane.mesh_motion.611",
         "enabled_key": "fbp_effect_wind_bender", "alpha_aware": False,
         "property_map": {
             "fbp_wind_subdivision": "Subdivision", "fbp_wind_bend_amount": "Bend Amount",
-            "fbp_wind_speed": "Wind Speed", "fbp_wind_stepped": "Stepped",
+            "fbp_wind_speed": "Wind Speed", "fbp_wind_shade_smooth": "Shade Smooth", "fbp_wind_stepped": "Stepped",
             "fbp_wind_pin_edge": "Pin Mode", "fbp_wind_pin_strength": "Pin Strength",
             "fbp_wind_pin_vertex_group": "Pin Vertex Group", "fbp_wind_motion_mode": "Motion Mode",
             "fbp_wind_ripple_direction": "Ripple Direction",
@@ -169,12 +264,40 @@ FBP_EFFECT_REGISTRY = {
             "fbp_wind_direction": "Wind Direction",
             "fbp_wind_preview_falloff": "Preview Falloff",
         },
+        "extra_properties": (
+            "fbp_wind_playback_subdivision",
+            "fbp_wind_render_subdivision",
+        ),
+        "ui_labels": {
+            "fbp_wind_subdivision": "Viewport",
+            "fbp_wind_playback_subdivision": "Playback",
+            "fbp_wind_render_subdivision": "Render",
+            "fbp_wind_bend_amount": "Strength",
+            "fbp_wind_speed": "Speed",
+            "fbp_wind_shade_smooth": "Shade Smooth",
+            "fbp_wind_wave_amplitude": "Strength",
+            "fbp_wind_wave_speed": "Speed",
+            "fbp_wind_phase": "Starting Phase",
+            "fbp_wind_direction": "Direction",
+            "fbp_wind_direction_space": "Local / World",
+        },
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_wind_subdivision",
+            "playback_property": "fbp_wind_playback_subdivision",
+            "render_property": "fbp_wind_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "performance": "HEAVY",
+        "evolve_property": "fbp_wind_phase", "evolve_amount": 6.283185307,
+        "evolve_active_property": "fbp_wind_bend_amount", "supports_seed": True,
         "builtin": True,
     },
     FBP_EFFECT_CUTOUT_OUTLINE: {
         "label": "Cutout Outline", "icon": "MOD_SKIN", "kind": "GEOMETRY",
-        "source_names": (), "canonical_name": "FBP_GN_Cutout_Outline_6027",
-        "modifier_name": "FBP • Cutout Outline", "asset_id": "frame_by_plane.cutout_outline.6027",
+        "source_names": ("FBP_GN_Cutout_Outline_6027",), "canonical_name": "FBP_GN_Cutout_Outline_6130",
+        "modifier_name": "FBP • Cutout Outline", "asset_id": "frame_by_plane.cutout_outline.6130",
         "enabled_key": "fbp_effect_cutout_outline", "alpha_aware": True,
         "private_group": True, "builtin": True,
         "supports": ("IMAGE", "SEQUENCE"),
@@ -231,7 +354,7 @@ FBP_EFFECT_REGISTRY = {
     },
     FBP_EFFECT_CAMERA_BILLBOARD: {
         "label": "Track to Camera", "icon": "CON_TRACKTO", "kind": "BASE", "category": "3D",
-        "enabled_key": "fbp_effect_camera_billboard", "builtin": True,
+        "enabled_key": "fbp_effect_camera_billboard",
         "supports_future_instances": False,
         "property_map": {
             "fbp_camera_billboard_mode": "Tracking Mode",
@@ -250,7 +373,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_THICKNESS: {
-        "label": "Extrude", "icon": "AREA_DOCK", "kind": "GEOMETRY",
+        "label": "Extrude", "icon": "MOD_SOLIDIFY", "kind": "GEOMETRY",
         "source_names": ("FBP_Thickness", "FBP_GN_Extrude_585"), "canonical_name": "FBP_GN_Extrude_611",
         "modifier_name": "FBP • Extrude", "asset_id": "frame_by_plane.extrude.611",
         "enabled_key": "fbp_effect_thickness", "alpha_aware": True,
@@ -328,18 +451,464 @@ FBP_EFFECT_REGISTRY = {
             "fbp_felt_render_density": "Render Density", "fbp_felt_viewport_percentage": "Viewport %",
             "fbp_felt_fuzz_length": "Fuzz Length", "fbp_felt_subdivisions": "Subdivisions",
             "fbp_felt_fuzz_radius": "Fuzz Radius", "fbp_felt_curl_amount": "Curl Amount",
-            "fbp_felt_seed": "Seed", "fbp_felt_alpha_threshold": "Alpha Threshold",
+            "fbp_felt_seed": "Base Seed", "fbp_felt_alpha_threshold": "Alpha Threshold",
             "fbp_felt_alpha_resolution": "Alpha Resolution",
         },
         "evolve_property": "fbp_felt_seed", "evolve_amount": 1.0,
-        "evolve_mode": "SEED_STEP", "supports_seed": False,
+        "evolve_mode": "SEED_STEP", "supports_seed": True,
+        "source_material_socket": "Fuzz Material",
+    },
+    FBP_EFFECT_FIBER_TUFTS: {
+        "label": "Fiber Tufts", "icon": "CURVES_DATA", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Fiber_Tufts_660",), "canonical_name": "FBP_GN_Fiber_Tufts_6130",
+        "modifier_name": "FBP • Fiber Tufts", "asset_id": "frame_by_plane.fiber_tufts.6130",
+        "enabled_key": "fbp_effect_fiber_tufts", "alpha_aware": True, "builtin": True,
+        "requires_alpha_geometry_contract": True,
+        "attribute_material_socket": "Fiber Material",
+        "attribute_material_name": "fbp_fiber_color",
+        "attribute_material_uv_name": "fbp_fiber_uv",
+        "attribute_material_uv_store": "Store Fiber Source UV",
+        "attribute_material_role": "Fiber Tufts",
+        "owned_material": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Render Density", "Viewport %", "Length", "Luminance Length", "Radius", "Segments",
+            "Bend", "Randomness", "Seed", "Alpha Threshold", "Alpha Resolution",
+            "Fiber Material",
+        ),
+        "property_map": {
+            "fbp_fiber_render_density": "Render Density",
+            "fbp_fiber_viewport_percentage": "Viewport %",
+            "fbp_fiber_length": "Length",
+            "fbp_fiber_luminance_length": "Luminance Length",
+            "fbp_fiber_radius": "Radius",
+            "fbp_fiber_segments": "Segments",
+            "fbp_fiber_bend": "Bend",
+            "fbp_fiber_randomness": "Randomness",
+            "fbp_fiber_seed": "Seed",
+            "fbp_fiber_alpha_threshold": "Alpha Threshold",
+            "fbp_fiber_alpha_resolution": "Alpha Resolution",
+        },
+        "evolve_property": "fbp_fiber_seed", "evolve_amount": 1.0,
+        "evolve_mode": "SEED_STEP", "supports_seed": True,
+        "description": "Alpha-aware instanced fiber clumps sampled on an aspect-balanced plane grid. Instances stay unrealized for responsive viewport and render evaluation.",
+    },
+    FBP_EFFECT_PAPER_SHARDS: {
+        "label": "Paper Shards", "icon": "MOD_EXPLODE", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Paper_Shards_660",), "canonical_name": "FBP_GN_Paper_Shards_6130",
+        "modifier_name": "FBP • Paper Shards", "asset_id": "frame_by_plane.paper_shards.6130",
+        "enabled_key": "fbp_effect_paper_shards", "alpha_aware": True, "builtin": True,
+        "requires_alpha_geometry_contract": True,
+        "attribute_material_socket": "Shard Material",
+        "attribute_material_name": "fbp_shard_color",
+        "attribute_material_uv_name": "fbp_shard_uv",
+        "attribute_material_uv_store": "Store Shard Source UV",
+        "attribute_material_role": "Paper Shards",
+        "owned_material": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Render Density", "Viewport %", "Shard Size", "Aspect", "Thickness",
+            "Lift", "Luminance Lift", "Tilt", "Scale Randomness", "Seed", "Alpha Threshold",
+            "Alpha Resolution", "Shard Material",
+        ),
+        "property_map": {
+            "fbp_shards_render_density": "Render Density",
+            "fbp_shards_viewport_percentage": "Viewport %",
+            "fbp_shards_size": "Shard Size",
+            "fbp_shards_aspect": "Aspect",
+            "fbp_shards_thickness": "Thickness",
+            "fbp_shards_lift": "Lift",
+            "fbp_shards_luminance_lift": "Luminance Lift",
+            "fbp_shards_tilt": "Tilt",
+            "fbp_shards_scale_randomness": "Scale Randomness",
+            "fbp_shards_seed": "Seed",
+            "fbp_shards_alpha_threshold": "Alpha Threshold",
+            "fbp_shards_alpha_resolution": "Alpha Resolution",
+        },
+        "evolve_property": "fbp_shards_seed", "evolve_amount": 1.0,
+        "evolve_mode": "SEED_STEP", "supports_seed": True,
+        "description": "Scatter lightweight instanced paper chips across an aspect-balanced opaque silhouette with controllable lift, tilt, thickness and scale variation.",
+    },
+    FBP_EFFECT_SPHERE_SCREEN: {
+        "label": "Image Solids", "icon": "MESH_ICOSPHERE", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Image_Solids_680",), "canonical_name": "FBP_GN_Image_Solids_6140",
+        "modifier_name": "FBP • Image Solids", "asset_id": "frame_by_plane.image_solids.6140",
+        "enabled_key": "fbp_effect_sphere_screen", "image_aware": True,
+        "alpha_aware": False, "private_group": True, "builtin": True,
+        "material_preview": True,
+        "attribute_material_socket": "Solid Material",
+        "attribute_material_name": "fbp_sphere_screen_color",
+        "attribute_material_uv_name": "fbp_sphere_screen_uv",
+        "attribute_material_uv_store": "Store Image Solids UV",
+        "attribute_material_role": "Image Solids",
+        "attribute_material_emission_property": "fbp_sphere_screen_emission",
+        "owned_material": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Viewport Columns", "Viewport Rows", "Render Columns", "Render Rows",
+            "Shape", "Solid Scale", "Luminance Size", "Sphere Detail",
+            "Depth", "Depth Mode", "Depth Image", "Flicker", "Phase",
+            "Alpha Threshold", "Show Source", "Solid Material",
+        ),
+        "property_map": {
+            "fbp_sphere_screen_viewport_columns": "Viewport Columns",
+            "fbp_sphere_screen_viewport_rows": "Viewport Rows",
+            "fbp_sphere_screen_render_columns": "Render Columns",
+            "fbp_sphere_screen_render_rows": "Render Rows",
+            "fbp_sphere_screen_shape": "Shape",
+            "fbp_sphere_screen_scale": "Solid Scale",
+            "fbp_sphere_screen_luminance_size": "Luminance Size",
+            "fbp_sphere_screen_subdivisions": "Sphere Detail",
+            "fbp_sphere_screen_depth": "Depth",
+            "fbp_sphere_screen_depth_mode": "Depth Mode",
+            "fbp_sphere_screen_depth_image": "Depth Image",
+            "fbp_sphere_screen_flicker": "Flicker",
+            "fbp_sphere_screen_phase": "Phase",
+            "fbp_sphere_screen_alpha_threshold": "Alpha Threshold",
+            "fbp_sphere_screen_show_source": "Show Source",
+        },
+        "extra_properties": ("fbp_sphere_screen_emission",),
+        "evolve_property": "fbp_sphere_screen_phase", "evolve_amount": 0.5,
+        "evolve_active_property": "fbp_sphere_screen_flicker", "supports_seed": True,
+        "description": "Rebuild the image as luminous spheres, cubes, cylinders or cones. Color, size and selectable light/shadow/saturation/custom-map depth remain point-driven and unrealized.",
+    },
+    FBP_EFFECT_IMAGE_RELIEF: {
+        "label": "Image Relief", "icon": "MOD_DISPLACE", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Image_Relief_680", "FBP_GN_Image_Relief_6130"), "canonical_name": "FBP_GN_Image_Relief_6140",
+        "modifier_name": "FBP • Image Relief", "asset_id": "frame_by_plane.image_relief.6140",
+        "enabled_key": "fbp_effect_image_relief", "image_aware": True,
+        "alpha_aware": False, "private_group": True, "builtin": True,
+        "material_preview": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Geometry", "Subdivision", "Depth", "Midlevel", "Depth Mode",
+            "Depth Image", "Smooth", "Smooth Iterations", "Alpha Threshold", "Shade Smooth",
+        ),
+        "property_map": {
+            "fbp_image_relief_subdivision": "Subdivision",
+            "fbp_image_relief_depth": "Depth",
+            "fbp_image_relief_midlevel": "Midlevel",
+            "fbp_image_relief_depth_mode": "Depth Mode",
+            "fbp_image_relief_depth_image": "Depth Image",
+            "fbp_image_relief_smooth": "Smooth",
+            "fbp_image_relief_smooth_iterations": "Smooth Iterations",
+            "fbp_image_relief_alpha_threshold": "Alpha Threshold",
+            "fbp_image_relief_shade_smooth": "Shade Smooth",
+        },
+        "extra_properties": (
+            "fbp_image_relief_playback_subdivision",
+            "fbp_image_relief_render_subdivision",
+        ),
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_image_relief_subdivision",
+            "playback_property": "fbp_image_relief_playback_subdivision",
+            "render_property": "fbp_image_relief_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_image_relief_depth", "evolve_amount": 0.02,
+        "supports_seed": True,
+        "description": "Turn the textured plane into a UV-preserving, aspect-balanced triangular relief driven by highlights, shadows, saturation or a custom depth image.",
+    },
+    FBP_EFFECT_GLASS: {
+        "label": "Broken Glass", "icon": "MOD_EXPLODE", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Glass_690", "FBP_GN_Broken_Glass_6110", "FBP_GN_Broken_Glass_6120", "FBP_GN_Broken_Glass_6130", "FBP_GN_Broken_Glass_6140", "FBP_GN_Broken_Glass_6160", "FBP_GN_Broken_Glass_7000"), "canonical_name": "FBP_GN_Broken_Glass_6170",
+        "modifier_name": "FBP • Broken Glass", "asset_id": "frame_by_plane.broken_glass.6170",
+        "enabled_key": "fbp_effect_glass", "image_aware": True,
+        "alpha_aware": False, "private_group": True, "builtin": True,
+        "material_preview": True,
+        "owned_material": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Geometry", "Subdivision", "Thickness", "Bevel", "Shard Lift", "Damage Source",
+            "Damage Map", "Cell Scale", "Correct Aspect", "Texture Scale X", "Texture Scale Y",
+            "Crack Width", "Damage", "Chaos", "Seed",
+            "Alpha Threshold", "Shade Smooth", "Glass Material",
+        ),
+        "property_map": {
+            "fbp_glass_subdivision": "Subdivision",
+            "fbp_glass_thickness": "Thickness",
+            "fbp_glass_bevel": "Bevel",
+            "fbp_glass_relief": "Shard Lift",
+            "fbp_glass_source": "Damage Source",
+            "fbp_glass_normal_image": "Damage Map",
+            "fbp_glass_noise_scale": "Cell Scale",
+            "fbp_glass_correct_aspect": "Correct Aspect",
+            "fbp_glass_texture_scale_x": "Texture Scale X",
+            "fbp_glass_texture_scale_y": "Texture Scale Y",
+            "fbp_glass_crack_width": "Crack Width",
+            "fbp_glass_damage": "Damage",
+            "fbp_glass_noise_detail": "Chaos",
+            "fbp_glass_phase": "Seed",
+            "fbp_glass_alpha_threshold": "Alpha Threshold",
+            "fbp_glass_shade_smooth": "Shade Smooth",
+        },
+        "extra_properties": (
+            "fbp_glass_playback_subdivision",
+            "fbp_glass_render_subdivision",
+            "fbp_glass_crack_width",
+            "fbp_glass_damage",
+            "fbp_glass_distortion",
+            "fbp_glass_roughness",
+            "fbp_glass_ior",
+            "fbp_glass_tint",
+            "fbp_glass_source_color",
+            "fbp_glass_edge_tint",
+            "fbp_glass_absorption",
+        ),
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_glass_subdivision",
+            "playback_property": "fbp_glass_playback_subdivision",
+            "render_property": "fbp_glass_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_glass_phase", "evolve_amount": 0.35,
+        "evolve_active_property": "fbp_glass_damage", "supports_seed": True,
+        "description": "Fracture an aspect-balanced alpha grid into separated Voronoi shards with automatic texture-aspect correction, independent X/Y scale, Blender 5.2 Mesh Bevel, damage-map control and a closed refractive volume.",
+    },
+    FBP_EFFECT_CRYSTAL: {
+        "label": "Crystal", "icon": "LIGHTPROBE_SPHERE", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Crystal_6110", "FBP_GN_Crystal_6120", "FBP_GN_Crystal_6130", "FBP_GN_Crystal_6140", "FBP_GN_Crystal_6160", "FBP_GN_Crystal_6170", "FBP_GN_Crystal_6180", "FBP_GN_Crystal_6190", "FBP_GN_Crystal_7000"), "canonical_name": "FBP_GN_Crystal_6222",
+        "modifier_name": "FBP • Crystal", "asset_id": "frame_by_plane.crystal.6222",
+        "enabled_key": "fbp_effect_crystal", "image_aware": True,
+        "alpha_aware": False, "private_group": True, "builtin": True,
+        "material_preview": True,
+        "owned_material": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Geometry", "Subdivision", "Silhouette Detail", "Depth", "Thickness", "Roundness",
+            "Edge Pinning", "Blur Iterations", "Use Influence Map", "Influence Map",
+            "Invert Influence", "Influence Strength", "Texture Type", "Pattern Mode", "Pattern Scale", "Correct Aspect",
+            "Texture Scale X", "Texture Scale Y", "Pattern Detail",
+            "Pattern Strength", "Cell Randomness", "Cell Seed", "Phase",
+            "Alpha Threshold", "Surface Subdivision",
+            "Shade Smooth", "Crystal Material",
+        ),
+        "property_map": {
+            "fbp_crystal_subdivision": "Subdivision",
+            "fbp_crystal_silhouette_detail": "Silhouette Detail",
+            "fbp_crystal_depth": "Depth",
+            "fbp_crystal_thickness": "Thickness",
+            "fbp_crystal_roundness": "Roundness",
+            "fbp_crystal_edge_pinning": "Edge Pinning",
+            "fbp_crystal_blur_iterations": "Blur Iterations",
+            "fbp_crystal_use_influence_map": "Use Influence Map",
+            "fbp_crystal_influence_image": "Influence Map",
+            "fbp_crystal_invert_influence": "Invert Influence",
+            "fbp_crystal_influence_strength": "Influence Strength",
+            "fbp_crystal_texture_type": "Texture Type",
+            "fbp_crystal_pattern_mode": "Pattern Mode",
+            "fbp_crystal_pattern_scale": "Pattern Scale",
+            "fbp_crystal_correct_aspect": "Correct Aspect",
+            "fbp_crystal_texture_scale_x": "Texture Scale X",
+            "fbp_crystal_texture_scale_y": "Texture Scale Y",
+            "fbp_crystal_pattern_detail": "Pattern Detail",
+            "fbp_crystal_pattern_strength": "Pattern Strength",
+            "fbp_crystal_cell_randomness": "Cell Randomness",
+            "fbp_crystal_cell_seed": "Cell Seed",
+            "fbp_crystal_phase": "Phase",
+            "fbp_crystal_alpha_threshold": "Alpha Threshold",
+            "fbp_crystal_surface_subdivision": "Surface Subdivision",
+            "fbp_crystal_shade_smooth": "Shade Smooth",
+        },
+        "ui_labels": {"fbp_crystal_alpha_threshold": "Alpha Cutoff", "fbp_crystal_blur_iterations": "Edge Width"},
+        "extra_properties": (
+            "fbp_crystal_playback_subdivision", "fbp_crystal_render_subdivision",
+            "fbp_crystal_distortion", "fbp_crystal_roughness", "fbp_crystal_ior",
+            "fbp_crystal_tint", "fbp_crystal_source_color", "fbp_crystal_absorption",
+            "fbp_crystal_thin_wall",
+        ),
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_crystal_subdivision",
+            "playback_property": "fbp_crystal_playback_subdivision",
+            "render_property": "fbp_crystal_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_crystal_phase", "evolve_amount": 0.25,
+        "evolve_active_property": "fbp_crystal_pattern_strength", "supports_seed": True,
+        "description": "Turn the plane texture into an exact-cut refractive surface while preserving the plane UVs, Crop and Extend modes across both the Crystal source and its Influence Map.",
+    },
+    FBP_EFFECT_SURFACE_CONFORM: {
+        "label": "Surface Conform", "icon": "MOD_SHRINKWRAP", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Surface_Conform_650",), "canonical_name": "FBP_GN_Surface_Conform_6130",
+        "modifier_name": "FBP • Surface Conform", "asset_id": "frame_by_plane.surface_conform.6130",
+        "enabled_key": "fbp_effect_surface_conform", "builtin": True,
+        "required_input_sockets": (
+            "Target", "Subdivision", "Factor", "Offset", "Max Distance", "Shade Smooth",
+        ),
+        "property_map": {
+            "fbp_surface_conform_target": "Target",
+            "fbp_surface_conform_subdivision": "Subdivision",
+            "fbp_surface_conform_factor": "Factor",
+            "fbp_surface_conform_offset": "Offset",
+            "fbp_surface_conform_max_distance": "Max Distance",
+            "fbp_surface_conform_shade_smooth": "Shade Smooth",
+        },
+        "extra_properties": (
+            "fbp_surface_conform_playback_subdivision",
+            "fbp_surface_conform_render_subdivision",
+        ),
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_surface_conform_subdivision",
+            "playback_property": "fbp_surface_conform_playback_subdivision",
+            "render_property": "fbp_surface_conform_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_surface_conform_offset", "evolve_amount": 0.02,
+        "supports_seed": True,
+        "description": "Triangulate and non-destructively conform an aspect-balanced plane to the closest target surface while preserving its UV texture.",
+    },
+    FBP_EFFECT_ACCORDION_FOLD: {
+        "label": "Accordion Fold", "icon": "MOD_SIMPLEDEFORM", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Accordion_Fold_660",), "canonical_name": "FBP_GN_Accordion_Fold_6130",
+        "modifier_name": "FBP • Accordion Fold", "asset_id": "frame_by_plane.accordion_fold.6130",
+        "enabled_key": "fbp_effect_accordion_fold", "builtin": True,
+        "required_input_sockets": (
+            "Geometry", "Subdivision", "Folds", "Depth", "Phase", "Vertical", "Shade Smooth",
+        ),
+        "property_map": {
+            "fbp_accordion_subdivision": "Subdivision",
+            "fbp_accordion_folds": "Folds",
+            "fbp_accordion_depth": "Depth",
+            "fbp_accordion_phase": "Phase",
+            "fbp_accordion_vertical": "Vertical",
+            "fbp_accordion_shade_smooth": "Shade Smooth",
+        },
+        "extra_properties": (
+            "fbp_accordion_playback_subdivision",
+            "fbp_accordion_render_subdivision",
+        ),
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_accordion_subdivision",
+            "playback_property": "fbp_accordion_playback_subdivision",
+            "render_property": "fbp_accordion_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_accordion_phase", "evolve_amount": 0.25,
+        "supports_seed": True,
+        "description": "Fold an aspect-balanced triangular plane into an animatable accordion surface while preserving UVs and material.",
+    },
+    FBP_EFFECT_SCULPT_WAVES: {
+        "label": "Sculpt Waves", "icon": "MOD_WAVE", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Sculpt_Waves_680", "FBP_GN_Sculpt_Waves_6130"), "canonical_name": "FBP_GN_Sculpt_Waves_6140",
+        "modifier_name": "FBP • Sculpt Waves", "asset_id": "frame_by_plane.sculpt_waves.6140",
+        "enabled_key": "fbp_effect_sculpt_waves", "private_group": True, "builtin": True,
+        "required_input_sockets": (
+            "Geometry", "Subdivision", "Style", "Amplitude", "Frequency",
+            "Phase", "Edge Falloff", "Shade Smooth",
+        ),
+        "property_map": {
+            "fbp_sculpt_waves_subdivision": "Subdivision",
+            "fbp_sculpt_waves_style": "Style",
+            "fbp_sculpt_waves_amplitude": "Amplitude",
+            "fbp_sculpt_waves_frequency": "Frequency",
+            "fbp_sculpt_waves_phase": "Phase",
+            "fbp_sculpt_waves_edge_falloff": "Edge Falloff",
+            "fbp_sculpt_waves_shade_smooth": "Shade Smooth",
+        },
+        "extra_properties": (
+            "fbp_sculpt_waves_playback_subdivision",
+            "fbp_sculpt_waves_render_subdivision",
+        ),
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_sculpt_waves_subdivision",
+            "playback_property": "fbp_sculpt_waves_playback_subdivision",
+            "render_property": "fbp_sculpt_waves_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_sculpt_waves_phase", "evolve_amount": 0.18,
+        "evolve_active_property": "fbp_sculpt_waves_amplitude", "supports_seed": True,
+        "description": "Sculpt an aspect-balanced triangular plane into animated radial, moiré or spiral waves while preserving UVs and material.",
+    },
+    FBP_EFFECT_KINETIC_TILES: {
+        "label": "Kinetic Tiles", "icon": "MESH_GRID", "kind": "GEOMETRY",
+        "source_names": ("FBP_GN_Kinetic_Tiles_680", "FBP_GN_Kinetic_Tiles_6130"), "canonical_name": "FBP_GN_Kinetic_Tiles_6140",
+        "modifier_name": "FBP • Kinetic Tiles", "asset_id": "frame_by_plane.kinetic_tiles.6140",
+        "enabled_key": "fbp_effect_kinetic_tiles", "private_group": True, "builtin": True,
+        "required_input_sockets": (
+            "Geometry", "Subdivision", "Pattern", "Gap", "Thickness",
+            "Motion", "Frequency", "Phase", "Shade Smooth",
+        ),
+        "property_map": {
+            "fbp_kinetic_tiles_subdivision": "Subdivision",
+            "fbp_kinetic_tiles_pattern": "Pattern",
+            "fbp_kinetic_tiles_gap": "Gap",
+            "fbp_kinetic_tiles_thickness": "Thickness",
+            "fbp_kinetic_tiles_motion": "Motion",
+            "fbp_kinetic_tiles_frequency": "Frequency",
+            "fbp_kinetic_tiles_phase": "Phase",
+            "fbp_kinetic_tiles_shade_smooth": "Shade Smooth",
+        },
+        "extra_properties": (
+            "fbp_kinetic_tiles_playback_subdivision",
+            "fbp_kinetic_tiles_render_subdivision",
+        ),
+        "quality_contracts": ({
+            "socket": "Subdivision",
+            "viewport_property": "fbp_kinetic_tiles_subdivision",
+            "playback_property": "fbp_kinetic_tiles_playback_subdivision",
+            "render_property": "fbp_kinetic_tiles_render_subdivision",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_kinetic_tiles_phase", "evolve_amount": 0.22,
+        "evolve_active_property": "fbp_kinetic_tiles_motion", "supports_seed": True,
+        "description": "Break the textured plane into near-square extruded tiles with wave, checker or ripple motion while retaining source UVs and material.",
+    },
+    FBP_EFFECT_LAYERED_ECHO: {
+        "label": "Array", "icon": "MOD_ARRAY", "kind": "GEOMETRY",
+        "source_names": (), "canonical_name": "FBP_GN_Array_670",
+        "modifier_name": "FBP • Array", "asset_id": "frame_by_plane.array.670",
+        "enabled_key": "fbp_effect_layered_echo", "builtin": True,
+        "required_input_sockets": (
+            "Geometry", "Layers", "Offset X", "Offset Y", "Spacing", "Scale Step",
+            "Rotation X", "Rotation Y", "Twist", "Wave", "Phase",
+        ),
+        "property_map": {
+            "fbp_layered_echo_layers": "Layers",
+            "fbp_layered_echo_offset_x": "Offset X",
+            "fbp_layered_echo_offset_y": "Offset Y",
+            "fbp_layered_echo_spacing": "Spacing",
+            "fbp_layered_echo_scale_step": "Scale Step",
+            "fbp_layered_echo_rotation_x": "Rotation X",
+            "fbp_layered_echo_rotation_y": "Rotation Y",
+            "fbp_layered_echo_twist": "Twist",
+            "fbp_layered_echo_wave": "Wave",
+            "fbp_layered_echo_phase": "Phase",
+        },
+        "extra_properties": (
+            "fbp_layered_echo_playback_layers",
+            "fbp_layered_echo_render_layers",
+        ),
+        "quality_contracts": ({
+            "socket": "Layers",
+            "viewport_property": "fbp_layered_echo_layers",
+            "playback_property": "fbp_layered_echo_playback_layers",
+            "render_property": "fbp_layered_echo_render_layers",
+            "minimum": 1,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_layered_echo_phase", "evolve_amount": 0.2,
+        "evolve_active_property": "fbp_layered_echo_wave", "supports_seed": True,
+        "description": "Create a memory-efficient animated stack of textured plane instances with depth, scale, twist and wave controls.",
     },
     FBP_EFFECT_LATTICE: {
         "label": "Lattice", "icon": "MOD_LATTICE", "kind": "BASE",
         "category": "3D", "enabled_key": "fbp_effect_lattice",
         # Lattice deforms the generated mesh and does not depend on whether the
-        # visual source is an image, sequence, procedural plane or migrated
-        # test layer. Validate the real linked mesh instead of media metadata.
+        # visual source is an image, sequence, procedural plane or test layer.
+        # Validate the real linked mesh instead of media metadata.
         "requires_mesh_plane": True,
         "property_map": {
             "fbp_lattice_mode": "Mode",
@@ -354,21 +923,25 @@ FBP_EFFECT_REGISTRY = {
             "fbp_lattice_mesh_density": "Density",
             "fbp_lattice_mesh_subdivisions": "Subdivision Levels",
         },
-        # Points W is retained only to migrate older files. The planar cage is
-        # planar and always evaluates with one depth layer.
         "extra_properties": (
             "fbp_lattice_object", "fbp_lattice_points_u", "fbp_lattice_points_v",
-            "fbp_lattice_points_w", "fbp_lattice_link_loops",
+            "fbp_lattice_link_loops",
         ),
         "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT", "HOLDOUT", "CUTOUT"),
     },
     FBP_EFFECT_UV_DISTORTION: {
         "label": "Turbulence", "icon": "FORCE_TURBULENCE", "kind": "SHADER", "stage": "UV",
-        "source_names": ("FBP_Turbolence",), "canonical_name": "FBP_SH_Turbolence_445",
-        "asset_id": "frame_by_plane.shader.turbolence.445", "enabled_key": "fbp_effect_uv_distortion",
+        "source_names": ("FBP_Turbolence",), "canonical_name": "FBP_SH_Turbulence_7029",
+        "asset_id": "frame_by_plane.shader.turbulence.7029", "enabled_key": "fbp_effect_uv_distortion",
         "input_socket": "Vector", "output_socket": "Vector Out",
-        "property_map": {"fbp_uv_distortion_scale": "Noise Scale", "fbp_uv_distortion_amount": "Distortion Amount"},
-        "evolve_property": "fbp_uv_distortion_amount", "evolve_amount": 0.05, "supports_seed": True,
+        "required_input_sockets": ("Noise Scale", "Distortion Amount", "Evolution"),
+        "property_map": {
+            "fbp_uv_distortion_scale": "Noise Scale",
+            "fbp_uv_distortion_amount": "Distortion Amount",
+            "fbp_uv_distortion_evolution": "Evolution",
+        },
+        "evolve_property": "fbp_uv_distortion_evolution", "evolve_amount": 0.2,
+        "supports_seed": True, "builtin": True,
     },
     FBP_EFFECT_PIXELATE: {
         "label": "Pixelate", "icon": "ALIASED", "kind": "SHADER", "stage": "UV",
@@ -383,7 +956,10 @@ FBP_EFFECT_REGISTRY = {
             "fbp_pixelate_offset_x": "Offset X",
             "fbp_pixelate_offset_y": "Offset Y",
         },
-        "extra_properties": ("fbp_pixelate_grid_mode",),
+        "extra_properties": (
+            "fbp_pixelate_grid_mode",
+            "fbp_pixelate_size", "fbp_pixelate_stretch",
+        ),
         "builtin": True,
     },
     FBP_EFFECT_SWIRL: {
@@ -422,7 +998,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_WAVE_WARP: {
-        "label": "Wave", "icon": "MOD_OCEAN", "kind": "SHADER", "stage": "UV",
+        "label": "Wave Warp", "icon": "MOD_WAVE", "kind": "SHADER", "stage": "UV",
         "canonical_name": "FBP_SH_Wave_Warp_6019", "asset_id": "frame_by_plane.shader.wave_warp.6019",
         "enabled_key": "fbp_effect_wave_warp", "input_socket": "Vector", "output_socket": "Vector Out",
         "required_input_sockets": ("Amplitude", "Frequency", "Phase", "Speed", "Angle", "Factor"),
@@ -431,8 +1007,18 @@ FBP_EFFECT_REGISTRY = {
             "fbp_wave_warp_phase": "Phase", "fbp_wave_warp_speed": "Speed",
             "fbp_wave_warp_angle": "Angle", "fbp_wave_warp_factor": "Factor",
         },
+        "ui_labels": {
+            "fbp_wave_warp_amplitude": "Strength",
+            "fbp_wave_warp_frequency": "Frequency",
+            "fbp_wave_warp_phase": "Starting Phase",
+            "fbp_wave_warp_speed": "Speed",
+            "fbp_wave_warp_angle": "Direction",
+            "fbp_wave_warp_factor": "Influence",
+        },
         "evolve_property": "fbp_wave_warp_phase", "evolve_amount": 6.283185307,
+        "evolve_speed_property": "fbp_wave_warp_speed",
         "evolve_active_property": "fbp_wave_warp_amplitude", "supports_seed": True,
+        
         "builtin": True,
     },
     FBP_EFFECT_RIPPLE_DISTORTION: {
@@ -447,7 +1033,9 @@ FBP_EFFECT_REGISTRY = {
             "fbp_ripple_distortion_radius": "Radius",
             "fbp_ripple_distortion_falloff": "Falloff", "fbp_ripple_distortion_factor": "Factor",
         },
+        "ui_labels": {"fbp_ripple_distortion_phase": "Base Phase"},
         "evolve_property": "fbp_ripple_distortion_phase", "evolve_amount": 6.283185307,
+        "evolve_speed_property": "fbp_ripple_distortion_speed",
         "evolve_active_property": "fbp_ripple_distortion_amplitude", "supports_seed": True,
         "builtin": True,
     },
@@ -487,8 +1075,27 @@ FBP_EFFECT_REGISTRY = {
             "fbp_mosaic_jitter_seed": "Seed",
             "fbp_mosaic_jitter_factor": "Factor",
         },
+        "ui_labels": {"fbp_mosaic_jitter_seed": "Base Seed"},
         "evolve_property": "fbp_mosaic_jitter_seed", "evolve_amount": 1.0,
         "evolve_active_property": "fbp_mosaic_jitter_amount",
+        "evolve_mode": "SEED_STEP", "supports_seed": True, "builtin": True,
+    },
+    FBP_EFFECT_SLICE_SHIFT: {
+        "label": "Slice Shift", "icon": "MOD_DISPLACE", "kind": "SHADER", "stage": "UV",
+        "canonical_name": "FBP_SH_Slice_Shift_627", "asset_id": "frame_by_plane.shader.slice_shift.627",
+        "enabled_key": "fbp_effect_slice_shift", "input_socket": "Vector", "output_socket": "Vector Out",
+        "required_input_sockets": ("Angle", "Bands", "Shift", "Random", "Seed", "Factor"),
+        "property_map": {
+            "fbp_slice_shift_angle": "Angle",
+            "fbp_slice_shift_bands": "Bands",
+            "fbp_slice_shift_shift": "Shift",
+            "fbp_slice_shift_random": "Random",
+            "fbp_slice_shift_seed": "Seed",
+            "fbp_slice_shift_factor": "Factor",
+        },
+        "ui_labels": {"fbp_slice_shift_seed": "Base Seed"},
+        "evolve_property": "fbp_slice_shift_seed", "evolve_amount": 1.0,
+        "evolve_active_property": "fbp_slice_shift_shift",
         "evolve_mode": "SEED_STEP", "supports_seed": True, "builtin": True,
     },
     FBP_EFFECT_DEPTH_BLUR: {
@@ -514,12 +1121,13 @@ FBP_EFFECT_REGISTRY = {
         "supports": ("IMAGE", "SEQUENCE"),
     },
     FBP_EFFECT_GAUSSIAN_BLUR: {
-        "label": "Gaussian Blur", "icon": "PROP_ON", "kind": "SHADER", "stage": "COLOR",
+        "label": "Gaussian Blur", "icon": "ANTIALIASED", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Gaussian_Blur_611",
         "asset_id": "frame_by_plane.shader.gaussian_blur.611", "enabled_key": "fbp_effect_gaussian_blur",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True,
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "prebundled": True,
+        
         "supports": ("IMAGE", "SEQUENCE"),
         "required_input_sockets": ("Use Image Sample", "Radius X", "Radius Y", "Samples", "Factor", "Texel X", "Texel Y"),
         "property_map": {
@@ -535,7 +1143,7 @@ FBP_EFFECT_REGISTRY = {
         "asset_id": "frame_by_plane.shader.directional_blur.611", "enabled_key": "fbp_effect_directional_blur",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True,
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "prebundled": True,
         "supports": ("IMAGE", "SEQUENCE"),
         "required_input_sockets": ("Use Image Sample", "Angle", "Distance", "Samples", "Factor", "Texel X", "Texel Y"),
         "property_map": {
@@ -544,13 +1152,19 @@ FBP_EFFECT_REGISTRY = {
             "fbp_directional_blur_samples": "Samples",
             "fbp_directional_blur_factor": "Factor",
         },
+        # Controller anchor values are intentionally UI/runtime-only: they
+        # position the viewport direction helper but do not map to shader sockets.
+        "extra_properties": (
+            "fbp_directional_blur_control_x",
+            "fbp_directional_blur_control_y",
+        ),
     },
     FBP_EFFECT_TRIANGLE_BLUR: {
-        "label": "Triangle Blur", "icon": "MOD_TONEMAP", "kind": "SHADER", "stage": "COLOR",
+        "label": "Triangle Blur", "icon": "ANTIALIASED", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Triangle_Blur_6012", "asset_id": "frame_by_plane.shader.triangle_blur.6012",
         "enabled_key": "fbp_effect_triangle_blur", "input_socket": "Color In", "output_socket": "Color Out",
         "uv_input_socket": "UV Vector", "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True,
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "prebundled": True,
         "supports": ("IMAGE", "SEQUENCE"),
         "property_map": {"fbp_triangle_blur_radius": "Radius", "fbp_triangle_blur_samples": "Samples", "fbp_triangle_blur_factor": "Factor"},
     },
@@ -559,7 +1173,7 @@ FBP_EFFECT_REGISTRY = {
         "canonical_name": "FBP_SH_Tilt_Shift_6037", "asset_id": "frame_by_plane.shader.tilt_shift.6037",
         "enabled_key": "fbp_effect_tilt_shift", "input_socket": "Color In", "output_socket": "Color Out",
         "uv_input_socket": "UV Vector", "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
-        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True,
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "prebundled": True,
         "supports": ("IMAGE", "SEQUENCE"),
         "required_input_sockets": ("Use Image Sample", "Focus Position", "Focus Width", "Focus Angle", "Blur Radius", "Factor", "Texel X", "Texel Y"),
         "property_map": {"fbp_tilt_shift_position": "Focus Position", "fbp_tilt_shift_width": "Focus Width", "fbp_tilt_shift_angle": "Focus Angle", "fbp_tilt_shift_radius": "Blur Radius", "fbp_tilt_shift_factor": "Factor"},
@@ -591,7 +1205,7 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_smooth_toon_levels": "Levels", "fbp_smooth_toon_softness": "Softness", "fbp_smooth_toon_factor": "Factor"},
     },
     FBP_EFFECT_ADAPTIVE_THRESHOLD: {
-        "label": "Threshold", "icon": "MOD_DASH", "kind": "SHADER", "stage": "COLOR",
+        "label": "Adaptive Threshold", "icon": "MOD_DASH", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Adaptive_Threshold_6013", "asset_id": "frame_by_plane.shader.adaptive_threshold.6013",
         "enabled_key": "fbp_effect_adaptive_threshold", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -603,7 +1217,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_INK: {
-        "label": "Ink", "icon": "MESH_MONKEY", "kind": "SHADER", "stage": "COLOR",
+        "label": "Ink", "icon": "GREASEPENCIL", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Ink_6013", "asset_id": "frame_by_plane.shader.ink.6013",
         "enabled_key": "fbp_effect_ink", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -627,7 +1241,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_PENCIL_SKETCH: {
-        "label": "Sketch", "icon": "MESH_MONKEY", "kind": "SHADER", "stage": "COLOR",
+        "label": "Sketch", "icon": "GREASEPENCIL", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Pencil_Sketch_6013", "asset_id": "frame_by_plane.shader.pencil_sketch.6013",
         "enabled_key": "fbp_effect_pencil_sketch", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -664,7 +1278,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_EMBOSS: {
-        "label": "Emboss", "icon": "MOD_OCEAN", "kind": "SHADER", "stage": "COLOR",
+        "label": "Emboss", "icon": "MOD_DISPLACE", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Emboss_6013", "asset_id": "frame_by_plane.shader.emboss.6013",
         "enabled_key": "fbp_effect_emboss", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -688,7 +1302,7 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_chromatic_aberration_distance": "Distance", "fbp_chromatic_aberration_angle": "Angle", "fbp_chromatic_aberration_factor": "Factor"},
     },
     FBP_EFFECT_ALPHA_MATTE: {
-        "label": "Alpha Matte", "icon": "TEXTURE", "kind": "SHADER", "stage": "MASK",
+        "label": "Alpha Matte", "icon": "IMAGE_ALPHA", "kind": "SHADER", "stage": "MASK",
         "source_names": (), "canonical_name": "FBP_SH_Alpha_Matte_552",
         "asset_id": "frame_by_plane.shader.alpha_matte.552", "enabled_key": "fbp_effect_alpha_matte",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "uv_input_socket": "UV Vector",
@@ -707,11 +1321,12 @@ FBP_EFFECT_REGISTRY = {
         "extra_properties": ("fbp_alpha_matte_source", "fbp_alpha_matte_source_display"),
         "mask_source_property": "fbp_alpha_matte_source",
         "mask_source_aware": True, "mask_source_visibility_aware": True,
-        "mask_source_transform_aware": True, "private_group": True, "builtin": True,
+        "mask_source_transform_aware": True, "track_matte_contract_version": 10,
+        "private_group": True, "builtin": True,
         "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
     },
     FBP_EFFECT_LUMA_MATTE: {
-        "label": "Luma Matte", "icon": "SEQ_SPLITVIEW", "kind": "SHADER", "stage": "MASK",
+        "label": "Luma Matte", "icon": "LIGHT", "kind": "SHADER", "stage": "MASK",
         "source_names": (), "canonical_name": "FBP_SH_Luma_Matte_552",
         "asset_id": "frame_by_plane.shader.luma_matte.552", "enabled_key": "fbp_effect_luma_matte",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "uv_input_socket": "UV Vector",
@@ -729,14 +1344,19 @@ FBP_EFFECT_REGISTRY = {
             "fbp_luma_matte_uv_scale_y": "UV Scale Y",
             "fbp_luma_matte_uv_rotation": "UV Rotation",
         },
-        "extra_properties": ("fbp_luma_matte_source", "fbp_luma_matte_source_display"),
+        "extra_properties": (
+            "fbp_luma_matte_source_type", "fbp_luma_matte_source",
+            "fbp_luma_matte_path", "fbp_luma_matte_image",
+            "fbp_luma_matte_source_display",
+        ),
         "mask_source_property": "fbp_luma_matte_source",
         "mask_source_aware": True, "mask_source_visibility_aware": True,
-        "mask_source_transform_aware": True, "private_group": True, "builtin": True,
+        "mask_source_transform_aware": True, "track_matte_contract_version": 10,
+        "private_group": True, "builtin": True,
         "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
     },
     FBP_EFFECT_SQUARE_MASK: {
-        "label": "Square Mask", "icon": "MOD_MESHDEFORM", "kind": "SHADER", "stage": "MASK",
+        "label": "Square Mask", "icon": "MESH_PLANE", "kind": "SHADER", "stage": "MASK",
         "source_names": (), "canonical_name": "FBP_SH_Square_Mask_553",
         "asset_id": "frame_by_plane.shader.square_mask.553", "enabled_key": "fbp_effect_square_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "debug_socket": "Debug Preview",
@@ -749,6 +1369,7 @@ FBP_EFFECT_REGISTRY = {
         "extra_properties": (
             "fbp_square_mask_object", "fbp_square_mask_follow_bounds",
             "fbp_square_mask_show_helper", "fbp_square_mask_lock_to_plane",
+            "fbp_square_mask_external_null",
         ),
         "object_mask_aware": True, "object_mask_shape": "SQUARE",
         "object_mask_pointer_property": "fbp_square_mask_object",
@@ -758,7 +1379,7 @@ FBP_EFFECT_REGISTRY = {
         "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
     },
     FBP_EFFECT_CIRCLE_MASK: {
-        "label": "Circle Mask", "icon": "CURVE_NCIRCLE", "kind": "SHADER", "stage": "MASK",
+        "label": "Circle Mask", "icon": "MESH_CIRCLE", "kind": "SHADER", "stage": "MASK",
         "source_names": (), "canonical_name": "FBP_SH_Circle_Mask_553",
         "asset_id": "frame_by_plane.shader.circle_mask.553", "enabled_key": "fbp_effect_circle_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "debug_socket": "Debug Preview",
@@ -771,6 +1392,7 @@ FBP_EFFECT_REGISTRY = {
         "extra_properties": (
             "fbp_circle_mask_object", "fbp_circle_mask_follow_bounds",
             "fbp_circle_mask_show_helper", "fbp_circle_mask_lock_to_plane",
+            "fbp_circle_mask_external_null",
         ),
         "object_mask_aware": True, "object_mask_shape": "CIRCLE",
         "object_mask_pointer_property": "fbp_circle_mask_object",
@@ -793,6 +1415,7 @@ FBP_EFFECT_REGISTRY = {
         "extra_properties": (
             "fbp_triangle_mask_object", "fbp_triangle_mask_follow_bounds",
             "fbp_triangle_mask_show_helper", "fbp_triangle_mask_lock_to_plane",
+            "fbp_triangle_mask_external_null",
         ),
         "object_mask_aware": True, "object_mask_shape": "TRIANGLE",
         "object_mask_pointer_property": "fbp_triangle_mask_object",
@@ -802,7 +1425,7 @@ FBP_EFFECT_REGISTRY = {
         "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
     },
     FBP_EFFECT_CLIPPING_MASK: {
-        "label": "Clipping Mask", "icon": "AREA_JOIN_DOWN", "kind": "SHADER", "stage": "MASK",
+        "label": "Clipping Mask", "icon": "CLIPUV_HLT", "kind": "SHADER", "stage": "MASK",
         "source_names": (), "canonical_name": "FBP_SH_Clipping_Mask_6030",
         "asset_id": "frame_by_plane.shader.clipping_mask.6030", "enabled_key": "fbp_effect_clipping_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "uv_input_socket": "UV Vector",
@@ -822,14 +1445,15 @@ FBP_EFFECT_REGISTRY = {
         "extra_properties": ("fbp_clipping_mask_source",),
         "mask_source_property": "fbp_clipping_mask_source",
         "mask_source_aware": True, "mask_source_transform_aware": True,
-        "track_matte_contract_version": 8,
+        "mask_camera_projection_aware": True,
+        "track_matte_contract_version": 10,
         "private_group": True, "builtin": True, "layer_feature": True,
         "description": "Clip this layer to the alpha of the image or animated layer directly below it in the same collection.",
         "category": "MASK", "performance": "LIGHT",
         "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
     },
     FBP_EFFECT_IMPORTED_MASK: {
-        "label": "Imported Layer Mask", "icon": "NEWFOLDER", "kind": "SHADER", "stage": "MASK",
+        "label": "Imported Layer Mask", "icon": "FILE_IMAGE", "kind": "SHADER", "stage": "MASK",
         "source_names": (), "canonical_name": "FBP_SH_Imported_Mask_593",
         "asset_id": "frame_by_plane.shader.imported_mask.593", "enabled_key": "fbp_effect_imported_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "uv_input_socket": "UV Vector",
@@ -840,14 +1464,57 @@ FBP_EFFECT_REGISTRY = {
             "fbp_imported_mask_invert": "Invert",
         },
         "extra_properties": ("fbp_imported_mask_path",),
-        "imported_mask_aware": True,
+        "imported_mask_aware": True, "imported_mask_prefix": "fbp_imported_mask",
         "private_group": True, "builtin": True, "layer_feature": True,
+        "local_mask_capable": True,
         "description": "Use a raster layer mask imported from a PSD or another layered document while keeping factor and inversion editable.",
         "category": "MASK", "performance": "LIGHT",
         "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
     },
+    FBP_EFFECT_GP_MASK_SLOT_2: {
+        "label": "Grease Pencil Mask Slot 2", "icon": "OUTLINER_OB_GREASEPENCIL", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_GP_Mask_Slot_2_624",
+        "asset_id": "frame_by_plane.shader.gp_mask_slot_2.624", "enabled_key": "fbp_effect_gp_mask_slot_2",
+        "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "uv_input_socket": "UV Vector",
+        "debug_socket": "Debug Preview", "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte"), ("SOURCE", "Source")),
+        "property_map": {"fbp_gp_mask_slot_2_factor": "Factor", "fbp_gp_mask_slot_2_invert": "Invert"},
+        "extra_properties": ("fbp_gp_mask_slot_2_path",),
+        "imported_mask_aware": True, "imported_mask_prefix": "fbp_gp_mask_slot_2",
+        "private_group": True, "builtin": True, "layer_feature": True, "hidden": True,
+        "local_mask_capable": True,
+        "description": "Independent Grease Pencil raster mask slot for a local effect.",
+        "category": "MASK", "performance": "LIGHT", "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
+    },
+    FBP_EFFECT_GP_MASK_SLOT_3: {
+        "label": "Grease Pencil Mask Slot 3", "icon": "OUTLINER_OB_GREASEPENCIL", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_GP_Mask_Slot_3_624",
+        "asset_id": "frame_by_plane.shader.gp_mask_slot_3.624", "enabled_key": "fbp_effect_gp_mask_slot_3",
+        "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "uv_input_socket": "UV Vector",
+        "debug_socket": "Debug Preview", "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte"), ("SOURCE", "Source")),
+        "property_map": {"fbp_gp_mask_slot_3_factor": "Factor", "fbp_gp_mask_slot_3_invert": "Invert"},
+        "extra_properties": ("fbp_gp_mask_slot_3_path",),
+        "imported_mask_aware": True, "imported_mask_prefix": "fbp_gp_mask_slot_3",
+        "private_group": True, "builtin": True, "layer_feature": True, "hidden": True,
+        "local_mask_capable": True,
+        "description": "Independent Grease Pencil raster mask slot for a local effect.",
+        "category": "MASK", "performance": "LIGHT", "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
+    },
+    FBP_EFFECT_GP_MASK_SLOT_4: {
+        "label": "Grease Pencil Mask Slot 4", "icon": "OUTLINER_OB_GREASEPENCIL", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_GP_Mask_Slot_4_624",
+        "asset_id": "frame_by_plane.shader.gp_mask_slot_4.624", "enabled_key": "fbp_effect_gp_mask_slot_4",
+        "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out", "uv_input_socket": "UV Vector",
+        "debug_socket": "Debug Preview", "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte"), ("SOURCE", "Source")),
+        "property_map": {"fbp_gp_mask_slot_4_factor": "Factor", "fbp_gp_mask_slot_4_invert": "Invert"},
+        "extra_properties": ("fbp_gp_mask_slot_4_path",),
+        "imported_mask_aware": True, "imported_mask_prefix": "fbp_gp_mask_slot_4",
+        "private_group": True, "builtin": True, "layer_feature": True, "hidden": True,
+        "local_mask_capable": True,
+        "description": "Independent Grease Pencil raster mask slot for a local effect.",
+        "category": "MASK", "performance": "LIGHT", "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
+    },
     FBP_EFFECT_LAYER_BLEND: {
-        "label": "Layer Blend", "icon": "XRAY", "kind": "SHADER", "stage": "COLOR",
+        "label": "Layer Blend", "icon": "NODE_MATERIAL", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Layer_Blend_593",
         "asset_id": "frame_by_plane.shader.layer_blend.593", "enabled_key": "fbp_effect_layer_blend",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -858,8 +1525,9 @@ FBP_EFFECT_REGISTRY = {
         "mask_source_property": "fbp_layer_blend_source",
         "mask_source_aware": True,
         "mask_use_socket": "Use Source Sample",
+        "layer_blend_contract_version": 2,
         "private_group": True, "builtin": True, "layer_feature": True,
-        "description": "Blend this layer with the image layer directly below it. Principal PSD and Procreate blend modes can be transferred automatically.",
+        "description": "Blend this layer with the Image or flat Color Plane directly below it. Principal PSD and Procreate blend modes can be transferred automatically.",
         "category": "2D", "performance": "LIGHT",
         "supports": ("IMAGE", "SEQUENCE"),
     },
@@ -884,8 +1552,8 @@ FBP_EFFECT_REGISTRY = {
     },
     FBP_EFFECT_LUMINANCE_MASK: {
         "label": "Luminance Mask", "icon": "LIGHT", "kind": "SHADER", "stage": "MASK",
-        "source_names": (), "canonical_name": "FBP_SH_Luminance_Mask_601",
-        "asset_id": "frame_by_plane.shader.luminance_mask.601", "enabled_key": "fbp_effect_luminance_mask",
+        "source_names": (), "canonical_name": "FBP_SH_Luminance_Mask_640",
+        "asset_id": "frame_by_plane.shader.luminance_mask.640", "enabled_key": "fbp_effect_luminance_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
         "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
         "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
@@ -902,9 +1570,9 @@ FBP_EFFECT_REGISTRY = {
         "supports": ("IMAGE", "SEQUENCE"),
     },
     FBP_EFFECT_CHANNEL_MASK: {
-        "label": "Channel Mask", "icon": "MOD_ARRAY", "kind": "SHADER", "stage": "MASK",
-        "source_names": (), "canonical_name": "FBP_SH_Channel_Mask_603",
-        "asset_id": "frame_by_plane.shader.channel_mask.603", "enabled_key": "fbp_effect_channel_mask",
+        "label": "Channel Mask", "icon": "IMAGE_RGB", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_Channel_Mask_640",
+        "asset_id": "frame_by_plane.shader.channel_mask.640", "enabled_key": "fbp_effect_channel_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
         "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
         "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
@@ -923,8 +1591,8 @@ FBP_EFFECT_REGISTRY = {
     },
     FBP_EFFECT_GRADIENT_MASK: {
         "label": "Gradient Mask", "icon": "NODE_TEXTURE", "kind": "SHADER", "stage": "MASK",
-        "source_names": (), "canonical_name": "FBP_SH_Gradient_Mask_5513",
-        "asset_id": "frame_by_plane.shader.gradient_mask.5513", "enabled_key": "fbp_effect_gradient_mask",
+        "source_names": (), "canonical_name": "FBP_SH_Gradient_Mask_640",
+        "asset_id": "frame_by_plane.shader.gradient_mask.640", "enabled_key": "fbp_effect_gradient_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
         "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
         "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
@@ -942,7 +1610,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
         "description": "Create a linear or radial procedural mask in the layer UV space.",
         "category": "MASK", "performance": "LIGHT",
-        "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
     },
     FBP_EFFECT_NOISE_MASK: {
         "label": "Noise Mask", "icon": "FORCE_TURBULENCE", "kind": "SHADER", "stage": "MASK",
@@ -961,11 +1629,61 @@ FBP_EFFECT_REGISTRY = {
             "fbp_noise_mask_factor": "Factor",
             "fbp_noise_mask_invert": "Invert",
         },
-        "evolve_property": "fbp_noise_mask_seed", "evolve_amount": 1.0, "supports_seed": True,
+        "evolve_property": "fbp_noise_mask_seed", "evolve_amount": 1.0, "evolve_mode": "SEED_STEP", "supports_seed": True,
         "builtin": True,
         "description": "Create an animatable procedural noise mask in the layer UV space.",
         "category": "MASK", "performance": "LIGHT",
-        "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
+    },
+    FBP_EFFECT_VORONOI_MASK: {
+        "label": "Voronoi Mask", "icon": "NODE_TEXTURE", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_Voronoi_Mask_640",
+        "asset_id": "frame_by_plane.shader.voronoi_mask.640", "enabled_key": "fbp_effect_voronoi_mask",
+        "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
+        "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
+        "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
+        "property_map": {
+            "fbp_voronoi_mask_scale": "Scale",
+            "fbp_voronoi_mask_angle": "Angle",
+            "fbp_voronoi_mask_randomness": "Randomness",
+            "fbp_voronoi_mask_threshold": "Threshold",
+            "fbp_voronoi_mask_softness": "Softness",
+            "fbp_voronoi_mask_seed": "Seed",
+            "fbp_voronoi_mask_factor": "Factor",
+            "fbp_voronoi_mask_invert": "Invert",
+        },
+        "evolve_property": "fbp_voronoi_mask_seed", "evolve_amount": 1.0, "evolve_mode": "SEED_STEP", "supports_seed": True,
+        "builtin": True,
+        "description": "Create a cellular procedural mask from a Voronoi texture in layer UV space.",
+        "category": "MASK", "performance": "LIGHT",
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
+    },
+    FBP_EFFECT_WAVE_MASK: {
+        "label": "Wave Mask", "icon": "MOD_OCEAN", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_Wave_Mask_640",
+        "asset_id": "frame_by_plane.shader.wave_mask.640", "enabled_key": "fbp_effect_wave_mask",
+        "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
+        "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
+        "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
+        "property_map": {
+            "fbp_wave_mask_scale": "Scale",
+            "fbp_wave_mask_angle": "Angle",
+            "fbp_wave_mask_distortion": "Distortion",
+            "fbp_wave_mask_detail": "Detail",
+            "fbp_wave_mask_detail_scale": "Detail Scale",
+            "fbp_wave_mask_detail_roughness": "Detail Roughness",
+            "fbp_wave_mask_phase": "Phase",
+            "fbp_wave_mask_threshold": "Threshold",
+            "fbp_wave_mask_softness": "Softness",
+            "fbp_wave_mask_factor": "Factor",
+            "fbp_wave_mask_invert": "Invert",
+        },
+        "evolve_property": "fbp_wave_mask_phase", "evolve_amount": 0.25,
+        "supports_seed": True,
+        "builtin": True,
+        "description": "Create an animatable stripe or ripple mask from a Wave texture in layer UV space.",
+        "category": "MASK", "performance": "LIGHT",
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
     },
     FBP_EFFECT_SOLID_MASK: {
         "label": "Tint", "icon": "IMAGE", "kind": "SHADER", "stage": "COLOR",
@@ -973,7 +1691,9 @@ FBP_EFFECT_REGISTRY = {
         "asset_id": "frame_by_plane.shader.tint.450", "enabled_key": "fbp_effect_solid_mask",
         "input_socket": "Color In", "output_socket": "Color Out",
         "property_map": {"fbp_solid_mask_color": "Mask Color", "fbp_solid_mask_factor": "Mask Factor"},
-        "evolve_property": "fbp_solid_mask_factor", "evolve_amount": 1.0, "supports_seed": True,
+        "evolve_property": "fbp_solid_mask_factor", "evolve_amount": 0.25,
+        "evolve_mode": "PING_PONG", "evolve_min": 0.0, "evolve_max": 1.0,
+        "supports_seed": True,
     },
     FBP_EFFECT_HUE_SATURATION: {
         "label": "Hue & Saturation", "icon": "IMAGE_RGB", "kind": "SHADER", "stage": "COLOR",
@@ -981,7 +1701,9 @@ FBP_EFFECT_REGISTRY = {
         "asset_id": "frame_by_plane.shader.hue_saturation.450", "enabled_key": "fbp_effect_hue_saturation",
         "input_socket": "Color In", "output_socket": "Color Out",
         "property_map": {"fbp_hue_saturation_hue": "Hue", "fbp_hue_saturation_saturation": "Saturation", "fbp_hue_saturation_value": "Value"},
-        "evolve_property": "fbp_hue_saturation_hue", "evolve_amount": 0.5, "supports_seed": True,
+        "evolve_property": "fbp_hue_saturation_hue", "evolve_amount": 0.125,
+        "evolve_mode": "WRAP", "evolve_min": 0.0, "evolve_max": 1.0,
+        "supports_seed": True,
     },
     FBP_EFFECT_WHITE_BALANCE: {
         "label": "White Balance", "icon": "MOD_WHITE_BALANCE", "kind": "SHADER", "stage": "COLOR",
@@ -1014,7 +1736,7 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_brightness_contrast_brightness": "Brightness", "fbp_brightness_contrast_contrast": "Contrast"},
     },
     FBP_EFFECT_INVERT: {
-        "label": "Invert", "icon": "IMAGE_ALPHA", "kind": "SHADER", "stage": "COLOR",
+        "label": "Invert", "icon": "SELECT_DIFFERENCE", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Invert",), "canonical_name": "FBP_SH_Invert_450",
         "asset_id": "frame_by_plane.shader.invert.450", "enabled_key": "fbp_effect_invert",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1058,13 +1780,92 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_recolor_factor": "Factor"},
         "color_ramp_role": "RECOLOR",
     },
+    FBP_EFFECT_GRADIENT_MAP: {
+        "label": "Gradient Map", "icon": "COLOR", "kind": "SHADER", "stage": "COLOR",
+        "source_names": (), "canonical_name": "FBP_SH_Gradient_Map_625",
+        "asset_id": "frame_by_plane.shader.gradient_map.625", "enabled_key": "fbp_effect_gradient_map",
+        "input_socket": "Color In", "output_socket": "Color Out",
+        "private_group": True, "rig_private_group": True, "builtin": True,
+        "required_input_sockets": ("Factor",),
+        "property_map": {"fbp_gradient_map_factor": "Factor"},
+        "color_ramp_role": "GRADIENT_MAP",
+        "description": "Figma-inspired Gradient Map that remaps source luminance through an editable Color Ramp while preserving alpha.",
+    },
+    FBP_EFFECT_CHANNEL_MIXER: {
+        "label": "Channel Mixer", "icon": "SEQ_SPLITVIEW", "kind": "SHADER", "stage": "COLOR",
+        "source_names": (), "canonical_name": "FBP_SH_Channel_Mixer_625",
+        "asset_id": "frame_by_plane.shader.channel_mixer.625", "enabled_key": "fbp_effect_channel_mixer",
+        "input_socket": "Color In", "output_socket": "Color Out",
+        "private_group": True, "rig_private_group": True, "builtin": True,
+        "required_input_sockets": ("Red", "Green", "Blue", "Factor"),
+        "property_map": {
+            "fbp_channel_mixer_red": "Red",
+            "fbp_channel_mixer_green": "Green",
+            "fbp_channel_mixer_blue": "Blue",
+            "fbp_channel_mixer_factor": "Factor",
+        },
+        "description": "Figma-inspired RGB channel gain mixer for false-color, grading and stylized image treatment.",
+    },
+    FBP_EFFECT_DITHER: {
+        "label": "Dither", "icon": "ALIASED", "kind": "SHADER", "stage": "COLOR",
+        "source_names": (), "canonical_name": "FBP_SH_Dither_641",
+        "asset_id": "frame_by_plane.shader.dither.641", "enabled_key": "fbp_effect_dither",
+        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "private_group": True, "rig_private_group": True, "builtin": True,
+        "uses_source_texel": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
+        "required_input_sockets": ("UV Vector", "Style", "Size", "Texel X", "Texel Y", "Brightness", "Contrast", "Mono", "Mono Color", "Factor"),
+        "property_map": {
+            "fbp_dither_style": "Style",
+            "fbp_dither_size": "Size",
+            "fbp_dither_brightness": "Brightness",
+            "fbp_dither_contrast": "Contrast",
+            "fbp_dither_mono": "Mono",
+            "fbp_dither_mono_color": "Mono Color",
+            "fbp_dither_factor": "Factor",
+        },
+        "description": "True ordered dithering. Source luminance is compared against Bayer/noise threshold matrices to create square source-pixel dither cells.",
+    },
+    FBP_EFFECT_BLOOM: {
+        "label": "Bloom", "icon": "LIGHT_SUN", "kind": "SHADER", "stage": "COLOR",
+        "source_names": (), "canonical_name": "FBP_SH_Bloom_626",
+        "asset_id": "frame_by_plane.shader.bloom.626", "enabled_key": "fbp_effect_bloom",
+        "input_socket": "Color In", "output_socket": "Color Out",
+        "private_group": True, "rig_private_group": True, "builtin": True,
+        "required_input_sockets": ("Threshold", "Softness", "Intensity", "Glow Color", "Factor"),
+        "property_map": {
+            "fbp_bloom_threshold": "Threshold",
+            "fbp_bloom_softness": "Softness",
+            "fbp_bloom_intensity": "Intensity",
+            "fbp_bloom_color": "Glow Color",
+            "fbp_bloom_factor": "Factor",
+        },
+        "description": "Figma-inspired bloom/glow pass for highlights, luminous cards and painterly light accents.",
+    },
+    FBP_EFFECT_FILTER_PRESETS: {
+        "label": "Filter Presets", "icon": "PRESET", "kind": "SHADER", "stage": "COLOR",
+        "source_names": (), "canonical_name": "FBP_SH_Filter_Presets_627",
+        "asset_id": "frame_by_plane.shader.filter_presets.627", "enabled_key": "fbp_effect_filter_presets",
+        "input_socket": "Color In", "output_socket": "Color Out",
+        "private_group": True, "rig_private_group": True, "builtin": True,
+        "required_input_sockets": ("Sepia", "Warm", "Cool", "Noir", "Factor"),
+        "property_map": {
+            "fbp_filter_preset_sepia": "Sepia",
+            "fbp_filter_preset_warm": "Warm",
+            "fbp_filter_preset_cool": "Cool",
+            "fbp_filter_preset_noir": "Noir",
+            "fbp_filter_preset_factor": "Factor",
+        },
+        "description": "Figma-inspired quick filter stack for sepia, warm, cool and noir looks with one final intensity control.",
+    },
     FBP_EFFECT_GRAIN: {
-        "label": "Grain", "icon": "RENDER_STILL", "kind": "SHADER", "stage": "COLOR",
+        "label": "Grain", "icon": "RNDCURVE", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Film_Grain",), "canonical_name": "FBP_SH_Film_Grain_450",
         "asset_id": "frame_by_plane.shader.film_grain.450", "enabled_key": "fbp_effect_grain",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "property_map": {"fbp_grain_strength": "Intensity", "fbp_grain_scale": "Grain Scale", "fbp_grain_seed": "Animate (W)"},
-        "evolve_property": "fbp_grain_seed", "evolve_amount": 1.0, "supports_seed": False,
+        "evolve_property": "fbp_grain_seed", "evolve_amount": 1.0, "evolve_mode": "SEED_STEP", "supports_seed": True,
+        
     },
     FBP_EFFECT_PAPER_FIBERS: {
         "label": "Paper Fibers", "icon": "TEXTURE", "kind": "SHADER", "stage": "COLOR",
@@ -1079,6 +1880,11 @@ FBP_EFFECT_REGISTRY = {
         "source_names": ("FBP_2D_Gradient_Light", "FBP_SH_Gradient_Light_570"), "canonical_name": "FBP_SH_Gradient_Light_6025",
         "asset_id": "frame_by_plane.shader.gradient_light.6025", "enabled_key": "fbp_effect_gradient_light",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
+        # Gradient Light consumes the already-evaluated Color/UV stream and
+        # does not sample a private image texture. Keeping it image-aware made
+        # the generated group fail its own contract and scheduled needless
+        # source synchronization on every animated frame.
         "private_group": True, "rig_private_group": True, "builtin": True,
         "required_input_sockets": ("Center X", "Center Y", "Light Angle", "Light Position", "Strength"),
         "property_map": {
@@ -1093,15 +1899,18 @@ FBP_EFFECT_REGISTRY = {
     },
     FBP_EFFECT_RIM: {
         "label": "Rim", "icon": "MOD_OUTLINE", "kind": "SHADER", "stage": "COLOR",
-        "source_names": ("FBP_SH_Rim_611", "FBP_SH_Rim_617", "FBP_SH_Rim_6021"), "canonical_name": "FBP_SH_Rim_6022",
-        "asset_id": "frame_by_plane.shader.rim.6022", "enabled_key": "fbp_effect_rim",
+        "source_names": ("FBP_SH_Rim_611", "FBP_SH_Rim_617", "FBP_SH_Rim_6021", "FBP_SH_Rim_6022"), "canonical_name": "FBP_SH_Rim_6100",
+        "asset_id": "frame_by_plane.shader.rim.6100", "enabled_key": "fbp_effect_rim",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
         "image_aware": True, "private_group": True, "builtin": True,
         "performance": "HEAVY",
-        "required_input_sockets": ("Use Image Sample", "Width", "Offset X", "Offset Y", "Rotation", "Blur", "Softness", "Intensity", "Rim Color"),
+        "required_input_sockets": ("Use Image Sample", "Mode", "Blend Mode", "Width", "Expand / Shrink", "Offset X", "Offset Y", "Rotation", "Blur", "Softness", "Intensity", "Rim Color"),
         "property_map": {
+            "fbp_rim_mode": "Mode",
+            "fbp_rim_blend_mode": "Blend Mode",
             "fbp_rim_width": "Width",
+            "fbp_rim_expand": "Expand / Shrink",
             "fbp_rim_offset_x": "Offset X",
             "fbp_rim_offset_y": "Offset Y",
             "fbp_rim_rotation": "Rotation",
@@ -1147,7 +1956,7 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_crt_line_count": "Line Count", "fbp_crt_opacity": "Opacity"},
     },
     FBP_EFFECT_VIGNETTE: {
-        "label": "Vignette", "icon": "CLIPUV_DEHLT", "kind": "SHADER", "stage": "COLOR",
+        "label": "Vignette", "icon": "IMAGE_ALPHA", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Vignette",), "canonical_name": "FBP_SH_Vignette_450",
         "asset_id": "frame_by_plane.shader.vignette.450", "enabled_key": "fbp_effect_vignette",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -1158,7 +1967,9 @@ FBP_EFFECT_REGISTRY = {
         "source_names": ("FBP_Posterize",), "canonical_name": "FBP_SH_Posterize_445",
         "asset_id": "frame_by_plane.shader.posterize.445", "enabled_key": "fbp_effect_posterize",
         "input_socket": "Color In", "output_socket": "Color Out", "property_map": {"fbp_posterize_steps": "Color Steps"},
-        "evolve_property": "fbp_posterize_steps", "evolve_amount": 8.0, "supports_seed": True,
+        "evolve_property": "fbp_posterize_steps", "evolve_amount": 4.0,
+        "evolve_mode": "PING_PONG", "evolve_min": 2.0, "evolve_max": 64.0,
+        "supports_seed": True,
     },
     FBP_EFFECT_SOLARIZE: {
         "label": "Solarize", "icon": "LIGHT_SUN", "kind": "SHADER", "stage": "COLOR",
@@ -1185,7 +1996,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_FILM_FADE: {
-        "label": "Fade", "icon": "MOD_FLUIDSIM", "kind": "SHADER", "stage": "COLOR",
+        "label": "Fade", "icon": "IMAGE_ALPHA", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Film_Fade_604",
         "asset_id": "frame_by_plane.shader.film_fade.604", "enabled_key": "fbp_effect_film_fade",
         "input_socket": "Color In", "output_socket": "Color Out", "builtin": True,
@@ -1208,7 +2019,8 @@ FBP_EFFECT_REGISTRY = {
             "fbp_digital_noise_shadow_bias": "Shadow Bias",
             "fbp_digital_noise_seed": "Animate (W)",
         },
-        "evolve_property": "fbp_digital_noise_seed", "evolve_amount": 1.0, "supports_seed": True,
+        "ui_labels": {"fbp_digital_noise_seed": "Base W"},
+        "evolve_property": "fbp_digital_noise_seed", "evolve_amount": 1.0, "evolve_mode": "SEED_STEP", "supports_seed": True,
         "builtin": True,
     },
     FBP_EFFECT_CHROMA_KEY: {
@@ -1230,12 +2042,14 @@ FBP_EFFECT_REGISTRY = {
     },
     FBP_EFFECT_HALFTONE: {
         "label": "Halftone", "icon": "OUTLINER_DATA_POINTCLOUD", "kind": "SHADER", "stage": "COLOR",
-        "canonical_name": "FBP_SH_Halftone_611",
-        "asset_id": "frame_by_plane.shader.halftone.611", "enabled_key": "fbp_effect_halftone",
+        "canonical_name": "FBP_SH_Halftone_621",
+        "asset_id": "frame_by_plane.shader.halftone.621", "enabled_key": "fbp_effect_halftone",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
-        "required_input_sockets": ("Aspect Ratio", "Shape"),
+        "required_input_sockets": ("Aspect Ratio", "Pattern", "Color Mode", "Shape", "Dot Scale", "Blend", "Softness", "Center X", "Center Y", "Clip to Alpha"),
         "property_map": {
+            "fbp_halftone_pattern": "Pattern", "fbp_halftone_color_mode": "Color Mode",
             "fbp_halftone_scale": "Cell Scale", "fbp_halftone_dot_size": "Dot Size",
+            "fbp_halftone_dot_scale": "Dot Scale", "fbp_halftone_blend": "Blend", "fbp_halftone_softness": "Softness",
             "fbp_halftone_rotation": "Rotation", "fbp_halftone_contrast": "Contrast",
             "fbp_halftone_invert": "Invert",
             "fbp_halftone_shape": "Shape",
@@ -1243,6 +2057,8 @@ FBP_EFFECT_REGISTRY = {
             "fbp_halftone_foreground": "Foreground",
             "fbp_halftone_background": "Background",
             "fbp_halftone_transparent_background": "Transparent Background",
+            "fbp_halftone_center_x": "Center X", "fbp_halftone_center_y": "Center Y",
+            "fbp_halftone_clip_alpha": "Clip to Alpha",
         },
         "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
         "debug_modes": (("FINAL", "Final"), ("LUMINANCE", "Luminance"), ("MASK", "Mask")),
@@ -1271,6 +2087,7 @@ FBP_EFFECT_REGISTRY = {
             "fbp_dot_matrix_dead_pixels": "Dead Pixels",
             "fbp_dot_matrix_flicker": "Flicker",
         },
+        "ui_labels": {"fbp_dot_matrix_seed": "Base Seed"},
         "evolve_property": "fbp_dot_matrix_seed", "evolve_amount": 1.0,
         "evolve_mode": "SEED_STEP", "supports_seed": True,
         "debug_modes": (("FINAL", "Final"), ("LUMINANCE", "Luminance"), ("MASK", "Mask")),
@@ -1279,8 +2096,8 @@ FBP_EFFECT_REGISTRY = {
     },
     FBP_EFFECT_ASCII_MATRIX: {
         "label": "Textellation", "icon": "SYNTAX_OFF", "kind": "SHADER", "stage": "COLOR",
-        "canonical_name": "FBP_SH_Textellation_485",
-        "asset_id": "frame_by_plane.shader.textellation.485", "enabled_key": "fbp_effect_ascii_matrix",
+        "canonical_name": "FBP_SH_Textellation_486",
+        "asset_id": "frame_by_plane.shader.textellation.486", "enabled_key": "fbp_effect_ascii_matrix",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
         "property_map": {
@@ -1289,6 +2106,9 @@ FBP_EFFECT_REGISTRY = {
             "fbp_ascii_foreground": "Foreground", "fbp_ascii_background": "Background",
             "fbp_ascii_transparent_background": "Transparent Background",
             "fbp_ascii_variation": "Variation", "fbp_ascii_random_seed": "Seed",
+            "fbp_ascii_gamma": "Gamma",
+            "fbp_ascii_glyph_scale": "Glyph Scale",
+            "fbp_ascii_glyph_width": "Glyph Width",
             "fbp_ascii_edge_boost": "Edge Boost",
             "fbp_ascii_dither": "Dither",
         },
@@ -1325,6 +2145,7 @@ FBP_EFFECT_REGISTRY = {
             "fbp_terminal_ascii_transparent_background": "Transparent Background",
             "fbp_terminal_ascii_seed": "Seed",
         },
+        "ui_labels": {"fbp_terminal_ascii_seed": "Base Seed"},
         "evolve_property": "fbp_terminal_ascii_seed", "evolve_amount": 1.0,
         "evolve_mode": "SEED_STEP", "supports_seed": True,
         "debug_modes": (("FINAL", "Final"), ("LUMINANCE", "Luminance"), ("EDGES", "Edge Mask")),
@@ -1381,14 +2202,14 @@ FBP_EFFECT_REGISTRY = {
         "evolve_property": "fbp_text_matrix_seed", "evolve_amount": 1.0,
         "evolve_mode": "SEED_STEP", "supports_seed": True,
         "private_group": True, "image_aware": True, "alpha_aware": False,
-        "supports": ("IMAGE", "SEQUENCE"), "builtin": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"), "builtin": True, "prebundled": True,
     },
 }
 
 
 FBP_EFFECT_METADATA = {
     FBP_EFFECT_CROP: ("BASE", "LIGHT", "Crop the visible borders without changing the rig transform. The operation is non-destructive and can be animated."),
-    FBP_EFFECT_EXTEND: ("BASE", "LIGHT", "Extend the plane borders while preserving the central image. Edge Pixel clamps, Transparent creates empty canvas for shadows and glows, and Repeat Texture tiles the source."),
+    FBP_EFFECT_EXTEND: ("BASE", "LIGHT", "Extend the plane borders while preserving the central image. Edge Pixel clamps, Transparent creates empty canvas, Repeat Texture tiles the source, and Repeat Flipped alternates mirrored tiles for seamless infinite borders."),
     FBP_EFFECT_SOLID_MASK: ("BASE", "LIGHT", "Apply a color tint to the final plane output. Useful for recoloring images, solid planes and gradients."),
     FBP_EFFECT_HUE_SATURATION: ("BASE", "LIGHT", "Adjust hue, saturation and value on the final color output."),
     FBP_EFFECT_WHITE_BALANCE: ("BASE", "LIGHT", "Correct color temperature from cold to warm and tint from green to magenta while preserving alpha."),
@@ -1399,6 +2220,11 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_COLOR_ISOLATE: ("BASE", "LIGHT", "Keep a selected color range and suppress the remaining colors."),
     FBP_EFFECT_DUOTONE: ("BASE", "LIGHT", "Map shadows and highlights to two editable colors."),
     FBP_EFFECT_RECOLOR: ("2D", "LIGHT", "Map source luminance through an editable Color Ramp while preserving the original alpha."),
+    FBP_EFFECT_GRADIENT_MAP: ("2D", "LIGHT", "Figma-inspired Gradient Map that remaps source luminance through an editable Color Ramp."),
+    FBP_EFFECT_CHANNEL_MIXER: ("2D", "LIGHT", "Figma-inspired Channel Mixer for RGB channel gain, false color and compact grading workflows."),
+    FBP_EFFECT_DITHER: ("2D", "LIGHT", "Figma-inspired ordered dither for retro print, risograph and low-color graphics."),
+    FBP_EFFECT_BLOOM: ("2D", "MEDIUM", "Figma-inspired highlight bloom/glow. Softness and intensity can add extra color processing cost."),
+    FBP_EFFECT_FILTER_PRESETS: ("2D", "LIGHT", "Figma-inspired quick color presets for sepia, warm, cool and noir treatments."),
     FBP_EFFECT_CHROMA_KEY: ("BASE", "MEDIUM", "Remove a selected color and generate transparency. Softness cleans edges; Despill reduces the key color around the subject."),
     FBP_EFFECT_UV_DISTORTION: ("2D", "MEDIUM", "Distort UV coordinates with procedural turbulence. Animated or high-frequency distortion can cost viewport performance."),
     FBP_EFFECT_PIXELATE: ("2D", "LIGHT", "Reduce detail into adjustable pixel blocks. Square Pixels compensates for the plane aspect ratio and is enabled by default."),
@@ -1410,6 +2236,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_KALEIDOSCOPE: ("2D", "MEDIUM", "Fold the source around a configurable number of mirrored radial segments."),
     FBP_EFFECT_HEX_PIXELATE: ("2D", "LIGHT", "Sample the source on a staggered hexagonal-style grid with editable resolution and rotation."),
     FBP_EFFECT_MOSAIC_JITTER: ("2D", "MEDIUM", "Break the source into cells and randomly offset each sample for an animatable mosaic or glitch treatment."),
+    FBP_EFFECT_SLICE_SHIFT: ("2D", "LIGHT", "Figma-inspired slice shift that cuts UVs into angled bands and offsets them with optional per-band randomness."),
     FBP_EFFECT_DEPTH_BLUR: ("2D", "HEAVY", "Blur the animated source image with alpha-safe sampling. Manual mode uses a fixed radius; Depth mode increases blur away from the configured camera focus distance."),
     FBP_EFFECT_TRIANGLE_BLUR: ("2D", "HEAVY", "Apply a fast alpha-safe triangular blur with adjustable radius and sample count."),
     FBP_EFFECT_TILT_SHIFT: ("2D", "HEAVY", "Keep an editable horizontal focus band sharp while progressively blurring the surrounding image."),
@@ -1432,12 +2259,15 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_TRIANGLE_MASK: ("MASK", "LIGHT", "Mask the layer with an editable triangular helper. Transform it in Object Mode or reshape its vertices in Edit Mode."),
     FBP_EFFECT_CLIPPING_MASK: ("MASK", "LIGHT", "Clip this layer to the alpha of the layer directly below it in the Layer List."),
     FBP_EFFECT_IMPORTED_MASK: ("MASK", "LIGHT", "Apply an imported raster layer mask while keeping factor and inversion editable."),
+    FBP_EFFECT_EMISSION: ("2D", "LIGHT", "Switch the owned layer material to a real Emission shader with directly editable high-dynamic-range strength."),
     FBP_EFFECT_LAYER_BLEND: ("2D", "LIGHT", "Blend the current layer against the image layer directly below it using a principal PSD or Procreate blend mode."),
     FBP_EFFECT_COLOR_MASK: ("MASK", "LIGHT", "Select pixels close to a chosen color and use the result as a layer or per-effect mask."),
     FBP_EFFECT_LUMINANCE_MASK: ("MASK", "LIGHT", "Select a luminance interval from the current image or sequence and use it as a layer or per-effect mask."),
     FBP_EFFECT_CHANNEL_MASK: ("MASK", "LIGHT", "Select a value interval from the red, green, blue, alpha or luminance channel of the current image or sequence."),
     FBP_EFFECT_GRADIENT_MASK: ("MASK", "LIGHT", "Create a linear or radial procedural mask with editable center, angle, scale and feather."),
     FBP_EFFECT_NOISE_MASK: ("MASK", "LIGHT", "Create an animatable procedural noise mask with threshold and softness controls."),
+    FBP_EFFECT_VORONOI_MASK: ("MASK", "LIGHT", "Create a cellular procedural mask with scale, randomness, threshold and softness controls."),
+    FBP_EFFECT_WAVE_MASK: ("MASK", "LIGHT", "Create an animatable stripe or ripple mask with distortion, phase, threshold and softness controls."),
     FBP_EFFECT_ALPHA_MATTE: ("MASK", "LIGHT", "Multiply the layer alpha by another Frame By Plane image or sequence alpha, using normalized UVs or the live source-plane transform."),
     FBP_EFFECT_LUMA_MATTE: ("MASK", "LIGHT", "Convert another Frame By Plane image or sequence to luminance and use it as a normalized or spatially transformed track matte."),
     FBP_EFFECT_GRAIN: ("2D", "LIGHT", "Add soft monochromatic film-like grain. Use Digital Noise for colored high-ISO sensor noise."),
@@ -1449,7 +2279,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_TEXT_MATRIX: ("3D", "VERY_HEAVY", "Generate real vector text from the animated source. Geometry Nodes maps alpha-aware luminance to density-sorted glyphs and can preserve one sampled source color per cell."),
     FBP_EFFECT_PAPER_FIBERS: ("2D", "MEDIUM", "Overlay procedural paper fibers on the final color."),
     FBP_EFFECT_GRADIENT_LIGHT: ("2D", "LIGHT", "Multiply the source with a directional editable Color Ramp."),
-    FBP_EFFECT_RIM: ("2D", "MEDIUM", "Create a soft colored rim from the animated image alpha or, for procedural planes, from the plane border."),
+    FBP_EFFECT_RIM: ("2D", "MEDIUM", "Create a Grease-Pencil-like inner, outer or two-sided colored rim with grow/shrink, spatial blur and editable blend modes."),
     FBP_EFFECT_SHADOW: ("2D", "MEDIUM", "Create an alpha-safe offset inner or outer shadow with editable color blending."),
     FBP_EFFECT_GOBO_SHADOWS: ("2D", "MEDIUM", "Project a procedural gobo-like shadow pattern across the plane."),
     FBP_EFFECT_CRT_SCANLINES: ("2D", "LIGHT", "Add CRT-style horizontal scanlines."),
@@ -1468,8 +2298,27 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_THICKNESS: ("3D", "HEAVY", "Extrude the animated alpha silhouette into a closed volume. The outer cap keeps the plane texture, while side faces can use a solid material or the animated plane colors."),
     FBP_EFFECT_INFINITE_ROTATION: ("3D", "LIGHT", "Continuously rotate the plane with optional stepped motion."),
     FBP_EFFECT_FELT_FUZZ: ("3D", "VERY_HEAVY", "Generate alpha-aware felt fibers. Render density and subdivisions can be extremely expensive."),
+    FBP_EFFECT_FIBER_TUFTS: ("3D", "MEDIUM", "Generate lightweight alpha-aware fiber clumps as shared instances over an aspect-balanced sampling grid. Density is reduced independently in the viewport."),
+    FBP_EFFECT_PAPER_SHARDS: ("3D", "MEDIUM", "Scatter alpha-aware paper chips over an aspect-balanced sampling grid. Keeping instances unrealized reduces memory use at high density."),
+    FBP_EFFECT_SPHERE_SCREEN: ("3D", "HEAVY", "Rebuild the source as a luminous matrix of selectable shared solids with sampled color and multiple depth algorithms."),
+    FBP_EFFECT_IMAGE_RELIEF: ("3D", "HEAVY", "Displace an aspect-balanced triangular grid from luminance, shadows, saturation or a custom depth image. Point budget remains close to the former square grid."),
+    FBP_EFFECT_GLASS: ("3D", "HEAVY", "Cut an aspect-balanced quad grid into procedural shards. Mesh Bevel is bypassed at zero; positive bevel values add real topology only along sharp edges."),
+    FBP_EFFECT_CRYSTAL: ("3D", "HEAVY", "Build an exact-cut rounded alpha relief. Adaptive refinement spends the requested edge density on the painted alpha region instead of the transparent canvas; Roundness Passes remain iterative."),
+    FBP_EFFECT_SURFACE_CONFORM: ("3D", "HEAVY", "Project an aspect-balanced triangular grid through one nearest-surface sample per point. Remesh level has the strongest performance impact."),
+    FBP_EFFECT_ACCORDION_FOLD: ("3D", "MEDIUM", "Fold an aspect-balanced triangular grid with an animatable profile. Playback and render use independent remesh quality."),
+    FBP_EFFECT_SCULPT_WAVES: ("3D", "MEDIUM", "Sculpt an aspect-balanced triangular grid with radial, moiré or spiral fields. Remesh level controls most of the cost."),
+    FBP_EFFECT_KINETIC_TILES: ("3D", "MEDIUM", "Split an aspect-balanced grid into near-square individually extruded tiles. Remesh level controls tile count and evaluation cost."),
+    FBP_EFFECT_LAYERED_ECHO: ("3D", "LIGHT", "Array the textured plane with per-axis offset, rotation, scale, twist and animated wave controls. Layer count is the main cost."),
     FBP_EFFECT_LATTICE: ("3D", "LIGHT", "Deform the linked plane through a planar control grid with one selectable point per intersection, or bake its 3D perspective into a camera-parallel surface while preserving the same camera appearance."),
 }
+
+# Built-in image-pipeline effects share the same plane contract unless they
+# explicitly opt into a narrower list. Keep one canonical default so the hot
+# lookup cache and the fallback path cannot disagree after reload/Undo.
+FBP_DEFAULT_PLANE_MEDIA_SUPPORT = (
+    "IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT",
+)
+
 
 for _effect_id, (_category, _performance, _description) in FBP_EFFECT_METADATA.items():
     _definition = FBP_EFFECT_REGISTRY.get(_effect_id)
@@ -1478,7 +2327,39 @@ for _effect_id, (_category, _performance, _description) in FBP_EFFECT_METADATA.i
     _definition.setdefault("category", _category)
     _definition.setdefault("performance", _performance)
     _definition.setdefault("description", _description)
-    _definition.setdefault("supports", ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"))
+    _definition.setdefault("supports", FBP_DEFAULT_PLANE_MEDIA_SUPPORT)
+
+# Effects in this controlled rollout use only scalar socket-backed properties,
+# share immutable node groups and keep all mutable state on the concrete node or
+# instance animation channels. Contextual, ramp, pointer and mask-stage effects
+# remain SINGLE until their dedicated UI/runtime contracts become instance-safe.
+FBP_MULTI_INSTANCE_SUPPORTED_EFFECTS = frozenset((
+    FBP_EFFECT_GRAIN,
+    FBP_EFFECT_GAUSSIAN_BLUR,
+    FBP_EFFECT_WAVE_WARP,
+    FBP_EFFECT_UV_DISTORTION,
+    FBP_EFFECT_TRIANGLE_BLUR,
+    FBP_EFFECT_UNSHARP_MASK,
+    FBP_EFFECT_SMOOTH_TOON,
+    FBP_EFFECT_ADAPTIVE_THRESHOLD,
+    FBP_EFFECT_HUE_SATURATION,
+    FBP_EFFECT_WHITE_BALANCE,
+    FBP_EFFECT_BRIGHTNESS_CONTRAST,
+    FBP_EFFECT_INVERT,
+    FBP_EFFECT_THRESHOLD,
+    FBP_EFFECT_PAPER_FIBERS,
+    FBP_EFFECT_CRT_SCANLINES,
+    FBP_EFFECT_VIGNETTE,
+    FBP_EFFECT_POSTERIZE,
+    FBP_EFFECT_SOLARIZE,
+    FBP_EFFECT_DIGITAL_NOISE,
+))
+
+for _effect_id in FBP_MULTI_INSTANCE_SUPPORTED_EFFECTS:
+    _definition = FBP_EFFECT_REGISTRY.get(_effect_id)
+    if _definition is not None:
+        _definition["instance_policy"] = "MULTI"
+        _definition["instance_support"] = "SUPPORTED"
 
 # Color-chain effects can choose whether they read the original material color
 # or the result of earlier effects. Image-sampling Matrix effects intentionally
@@ -1496,6 +2377,132 @@ for _definition in FBP_EFFECT_REGISTRY.values():
 finalize_effect_registry(FBP_EFFECT_REGISTRY)
 FBP_EFFECT_REGISTRY_ISSUES = validate_effect_registry(FBP_EFFECT_REGISTRY)
 
+# Hot lookup caches used by UI drawing, compatibility checks and property
+# callbacks.  They avoid rebuilding temporary ``set(...)`` objects for every
+# effect button, stack row and RNA update.  Custom effects rebuild their own
+# entries when the custom registry changes.
+_FBP_EFFECT_ALLOWED_PROPS_CACHE = globals().get("_FBP_EFFECT_ALLOWED_PROPS_CACHE", {})
+if not isinstance(_FBP_EFFECT_ALLOWED_PROPS_CACHE, dict):
+    _FBP_EFFECT_ALLOWED_PROPS_CACHE = {}
+_FBP_RIG_MESH_PLANE_CACHE = globals().get("_FBP_RIG_MESH_PLANE_CACHE", {})
+if not isinstance(_FBP_RIG_MESH_PLANE_CACHE, dict):
+    _FBP_RIG_MESH_PLANE_CACHE = {}
+_FBP_RIG_MEDIA_TYPE_CACHE = globals().get("_FBP_RIG_MEDIA_TYPE_CACHE", {})
+if not isinstance(_FBP_RIG_MEDIA_TYPE_CACHE, dict):
+    _FBP_RIG_MEDIA_TYPE_CACHE = {}
+_FBP_EFFECT_SUPPORT_FOR_RIG_CACHE = globals().get("_FBP_EFFECT_SUPPORT_FOR_RIG_CACHE", {})
+if not isinstance(_FBP_EFFECT_SUPPORT_FOR_RIG_CACHE, dict):
+    _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE = {}
+_FBP_EFFECT_TOOLTIP_CACHE = globals().get("_FBP_EFFECT_TOOLTIP_CACHE", {})
+if not isinstance(_FBP_EFFECT_TOOLTIP_CACHE, dict):
+    _FBP_EFFECT_TOOLTIP_CACHE = {}
+_FBP_EFFECT_SUPPORTS_MEDIA_CACHE = globals().get("_FBP_EFFECT_SUPPORTS_MEDIA_CACHE", {})
+if not isinstance(_FBP_EFFECT_SUPPORTS_MEDIA_CACHE, dict):
+    _FBP_EFFECT_SUPPORTS_MEDIA_CACHE = {}
+_FBP_EFFECT_RUNTIME_CONTRACT_CACHE = globals().get(
+    "_FBP_EFFECT_RUNTIME_CONTRACT_CACHE", {}
+)
+if not isinstance(_FBP_EFFECT_RUNTIME_CONTRACT_CACHE, dict):
+    _FBP_EFFECT_RUNTIME_CONTRACT_CACHE = {}
+# The owner index stores only primitive names. Blender Object wrappers are
+# resolved afresh at each use so Undo, Delete and file reload cannot leave stale
+# RNA objects in this global cache.
+_FBP_PLANE_OWNER_INDEX = {
+    "object_count": -1,
+    "by_owner": {},
+    "checked_at": 0.0,
+}
+
+
+def _fbp_compile_effect_runtime_contract(effect_id, definition):
+    """Compile immutable values used by hot UI and compatibility paths."""
+    kind = str(definition.get("kind", "") or "").upper()
+    return {
+        "effect_id": str(effect_id or ""),
+        "kind": kind,
+        "category": str(definition.get("category", "2D") or "2D").upper(),
+        "supports": frozenset(definition.get("supports", FBP_DEFAULT_PLANE_MEDIA_SUPPORT)),
+        "targets": frozenset(definition.get("targets", ())),
+        "requires_mesh_plane": bool(
+            definition.get("requires_mesh_plane", False) or kind == "SHADER"
+        ),
+        "node_tree_type": str(definition.get("node_tree_type", "") or ""),
+        "asset_id": str(definition.get("asset_id", "") or ""),
+        "evolve_property": str(definition.get("evolve_property", "") or ""),
+        "evolve_speed_property": str(
+            definition.get("evolve_speed_property", "") or ""
+        ),
+    }
+
+
+def fbp_effect_runtime_contract(effect_id):
+    """Return the precompiled runtime contract for one registered effect."""
+    effect_id = fbp_normalize_effect_id(effect_id)
+    cached = _FBP_EFFECT_RUNTIME_CONTRACT_CACHE.get(effect_id)
+    if cached is not None:
+        return cached
+    definition = fbp_effect_definition(effect_id)
+    if not definition:
+        return {}
+    cached = _fbp_compile_effect_runtime_contract(effect_id, definition)
+    _FBP_EFFECT_RUNTIME_CONTRACT_CACHE[effect_id] = cached
+    return cached
+
+
+def _fbp_rebuild_effect_lookup_caches(effect_ids=None):
+    # Rig/object compatibility depends on live Blender pointers. Any registry
+    # rebuild (including extension reload and custom-effect refresh) invalidates
+    # those pointer-sensitive results; retaining an old False entry caused
+    # otherwise valid planes to reject effects such as Wave Warp after Undo.
+    _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE.clear()
+    _FBP_RIG_MESH_PLANE_CACHE.clear()
+    ids = tuple(effect_ids or FBP_EFFECT_REGISTRY.keys())
+    for effect_id in ids:
+        definition = FBP_EFFECT_REGISTRY.get(effect_id) or {}
+        _FBP_EFFECT_ALLOWED_PROPS_CACHE[effect_id] = frozenset(
+            tuple((definition.get("property_map", {}) or {}).keys())
+            + tuple(definition.get("extra_properties", ()) or ())
+        )
+        _FBP_EFFECT_RUNTIME_CONTRACT_CACHE[effect_id] = (
+            _fbp_compile_effect_runtime_contract(effect_id, definition)
+        )
+    return True
+
+
+def _fbp_drop_effect_lookup_cache(effect_id):
+    _FBP_EFFECT_ALLOWED_PROPS_CACHE.pop(effect_id, None)
+    _FBP_EFFECT_RUNTIME_CONTRACT_CACHE.pop(effect_id, None)
+    _FBP_EFFECT_TOOLTIP_CACHE.pop(effect_id, None)
+    for cache_key in tuple(_FBP_EFFECT_SUPPORTS_MEDIA_CACHE.keys()):
+        try:
+            if cache_key[0] == effect_id:
+                _FBP_EFFECT_SUPPORTS_MEDIA_CACHE.pop(cache_key, None)
+        except (TypeError, IndexError):
+            _FBP_EFFECT_SUPPORTS_MEDIA_CACHE.pop(cache_key, None)
+    for cache_key in tuple(_FBP_EFFECT_SUPPORT_FOR_RIG_CACHE.keys()):
+        try:
+            if cache_key[-1] == effect_id:
+                _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE.pop(cache_key, None)
+        except (TypeError, IndexError):
+            _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE.pop(cache_key, None)
+
+
+def fbp_effect_allowed_property_names(effect_id):
+    effect_id = fbp_normalize_effect_id(effect_id)
+    cached = _FBP_EFFECT_ALLOWED_PROPS_CACHE.get(effect_id)
+    if cached is not None:
+        return cached
+    definition = FBP_EFFECT_REGISTRY.get(effect_id) or {}
+    cached = frozenset(
+        tuple((definition.get("property_map", {}) or {}).keys())
+        + tuple(definition.get("extra_properties", ()) or ())
+    )
+    _FBP_EFFECT_ALLOWED_PROPS_CACHE[effect_id] = cached
+    return cached
+
+
+_fbp_rebuild_effect_lookup_caches()
+
 
 def _fbp_purge_custom_effect_definitions():
     """Remove runtime custom entries while preserving the built-in registry."""
@@ -1505,8 +2512,17 @@ def _fbp_purge_custom_effect_definitions():
             isinstance(definition, dict) and definition.get("custom", False)
         ):
             FBP_EFFECT_REGISTRY.pop(effect_id, None)
+            _fbp_drop_effect_lookup_cache(effect_id)
             removed = True
     _FBP_CUSTOM_EFFECT_MISS_CACHE.clear()
+    _FBP_RIG_MESH_PLANE_CACHE.clear()
+    _FBP_RIG_MEDIA_TYPE_CACHE.clear()
+    _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE.clear()
+    _FBP_EFFECT_SUPPORTS_MEDIA_CACHE.clear()
+    _FBP_EFFECT_RUNTIME_CONTRACT_CACHE.clear()
+    _FBP_EFFECT_TOOLTIP_CACHE.clear()
+    _FBP_PLANE_OWNER_INDEX["object_count"] = -1
+    _FBP_PLANE_OWNER_INDEX["by_owner"] = {}
     return removed
 
 
@@ -1526,25 +2542,23 @@ def fbp_refresh_custom_effect_registry(force=False):
             for effect_id in custom_ids
             if effect_id in FBP_EFFECT_REGISTRY
         })
+        _fbp_rebuild_effect_lookup_caches(custom_ids)
         for effect_id in custom_ids:
             _FBP_CUSTOM_EFFECT_MISS_CACHE.pop(effect_id, None)
     return custom_ids
 
 
-fbp_refresh_custom_effect_registry(force=True)
-set_custom_effect_registry_refresh_callback(fbp_refresh_custom_effect_registry)
-
 FBP_SHADER_STAGE_ORDER = {
-    "UV": (FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_PIXELATE, FBP_EFFECT_SWIRL, FBP_EFFECT_BULGE_PINCH, FBP_EFFECT_LENS_WARP, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_RIPPLE_DISTORTION, FBP_EFFECT_KALEIDOSCOPE, FBP_EFFECT_HEX_PIXELATE, FBP_EFFECT_MOSAIC_JITTER),
+    "UV": (FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_PIXELATE, FBP_EFFECT_SWIRL, FBP_EFFECT_BULGE_PINCH, FBP_EFFECT_LENS_WARP, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_RIPPLE_DISTORTION, FBP_EFFECT_KALEIDOSCOPE, FBP_EFFECT_HEX_PIXELATE, FBP_EFFECT_MOSAIC_JITTER, FBP_EFFECT_SLICE_SHIFT),
     "MASK": (
         FBP_EFFECT_CLIPPING_MASK, FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
-        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK, FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK,
+        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK, FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,
         FBP_EFFECT_SQUARE_MASK, FBP_EFFECT_CIRCLE_MASK, FBP_EFFECT_TRIANGLE_MASK,
     ),
     "COLOR": (
         FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
         FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_CURVES, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD,
-        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_HALFTONE,
+        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE,
         FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
         FBP_EFFECT_DIGITAL_NOISE,
         FBP_EFFECT_PAPER_FIBERS, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW, FBP_EFFECT_GOBO_SHADOWS,
@@ -1554,7 +2568,7 @@ FBP_SHADER_STAGE_ORDER = {
 }
 
 FBP_BASE_EFFECT_MENU_ORDER = (
-    FBP_EFFECT_CROP, FBP_EFFECT_EXTEND, FBP_EFFECT_HUE_SATURATION,
+    FBP_EFFECT_CROP, FBP_EFFECT_EXTEND, FBP_EFFECT_EMISSION, FBP_EFFECT_HUE_SATURATION,
     FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_CURVES,
     FBP_EFFECT_SOLID_MASK, FBP_EFFECT_DUOTONE, FBP_EFFECT_TRITONE, FBP_EFFECT_RECOLOR,
     FBP_EFFECT_VIGNETTE, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW,
@@ -1563,9 +2577,14 @@ FBP_BASE_EFFECT_MENU_ORDER = (
 )
 FBP_3D_EFFECT_MENU_ORDER = (
     FBP_EFFECT_CAMERA_SCALE_LOCK, FBP_EFFECT_CAMERA_BILLBOARD, FBP_EFFECT_MIRROR,
+    FBP_EFFECT_MOTION,
     FBP_EFFECT_LATTICE, FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE,
     FBP_EFFECT_WIND_BENDER, FBP_EFFECT_INFINITE_ROTATION, FBP_EFFECT_CUTOUT_OUTLINE,
-    FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_TEXT_MATRIX,
+    FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_FIBER_TUFTS,
+    FBP_EFFECT_PAPER_SHARDS, FBP_EFFECT_SPHERE_SCREEN, FBP_EFFECT_IMAGE_RELIEF, FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
+    FBP_EFFECT_SURFACE_CONFORM, FBP_EFFECT_ACCORDION_FOLD,
+    FBP_EFFECT_SCULPT_WAVES, FBP_EFFECT_KINETIC_TILES,
+    FBP_EFFECT_LAYERED_ECHO, FBP_EFFECT_TEXT_MATRIX,
 )
 
 # Related effects keep their stable internal IDs but appear as one user-facing
@@ -1579,6 +2598,7 @@ FBP_EFFECT_FAMILIES = {
             (FBP_EFFECT_FALSE_COLOR, "False Color"),
             (FBP_EFFECT_TRITONE, "Tritone"),
             (FBP_EFFECT_RECOLOR, "Color Ramp"),
+            (FBP_EFFECT_GRADIENT_MAP, "Gradient Map"),
         ),
     },
     "DIRECTIONAL_BLUR": {
@@ -1620,10 +2640,13 @@ FBP_EFFECT_FAMILIES = {
         ),
     },
     "WAVE": {
-        "label": "Wave", "icon": "MOD_OCEAN", "default": FBP_EFFECT_WAVE_WARP,
+        "label": "Warp", "icon": "MOD_WARP", "default": FBP_EFFECT_WAVE_WARP,
         "variants": (
-            (FBP_EFFECT_WAVE_WARP, "Linear"),
-            (FBP_EFFECT_RIPPLE_DISTORTION, "Circle"),
+            (FBP_EFFECT_WAVE_WARP, "Sine wave"),
+            (FBP_EFFECT_SWIRL, "Swirl"),
+            (FBP_EFFECT_BULGE_PINCH, "Bulge / Pinch"),
+            (FBP_EFFECT_RIPPLE_DISTORTION, "Ripple"),
+            (FBP_EFFECT_LENS_WARP, "Lens"),
         ),
     },
 }
@@ -1672,71 +2695,86 @@ for _family_id, _family in FBP_EFFECT_FAMILIES.items():
 # Add-menu sections and explicit column grouping mirror the supplied effect list.
 # Each inner tuple is one visual column; short sections may share a column.
 FBP_IMAGE_EFFECT_MENU_SECTIONS = (
-    ("UTILITY", "TOOL_SETTINGS", (
+    ("Color", "COLOR", (
         FBP_EFFECT_CROP, FBP_EFFECT_EXTEND, FBP_EFFECT_HUE_SATURATION,
         FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_CURVES,
-        "FAMILY:COLORIZE", FBP_EFFECT_VIGNETTE,
+        "FAMILY:COLORIZE", FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_FILTER_PRESETS,
+        FBP_EFFECT_VIGNETTE,
     )),
-    ("Light", "OUTLINER_OB_LIGHT", (FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW)),
-    ("Magic", "SHADERFX", (
-        FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_INVERT, FBP_EFFECT_UNSHARP_MASK,
-        FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE,
+    ("Light", "OUTLINER_OB_LIGHT", (
+        FBP_EFFECT_BLOOM, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW,
     )),
-    ("BLUR", "ONIONSKIN_ON", (
+    ("Blur", "ONIONSKIN_ON", (
         FBP_EFFECT_GAUSSIAN_BLUR, "FAMILY:DIRECTIONAL_BLUR",
         FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_TRIANGLE_BLUR,
     )),
-    ("Digital", "IMAGE_BACKGROUND", (
-        "FAMILY:PIXELATE_MOSAIC", FBP_EFFECT_CHROMATIC_ABERRATION,
-        FBP_EFFECT_DIGITAL_NOISE, FBP_EFFECT_CRT_SCANLINES,
+    ("Pixel / Print", "MESH_GRID", (
+        "FAMILY:PIXELATE_MOSAIC", FBP_EFFECT_DITHER, FBP_EFFECT_HALFTONE,
+        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_CROSSHATCH,
     )),
-    ("Grid", "MESH_GRID", (
-        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_HALFTONE, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII,
+    ("Deform", "OUTLINER_OB_SURFACE", (
+        FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_SWIRL,
+        FBP_EFFECT_BULGE_PINCH, FBP_EFFECT_RIPPLE_DISTORTION, FBP_EFFECT_LENS_WARP,
+        FBP_EFFECT_SLICE_SHIFT, FBP_EFFECT_KALEIDOSCOPE,
+    )),
+    ("Edges", "MOD_LINEART", (
+        "FAMILY:EDGE", "FAMILY:STYLIZE", FBP_EFFECT_EMBOSS,
+    )),
+    ("Digital", "IMAGE_BACKGROUND", (
+        FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_DIGITAL_NOISE,
+        FBP_EFFECT_CRT_SCANLINES, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII,
     )),
     ("Film", "RENDER_STILL", (
         FBP_EFFECT_SOLARIZE, FBP_EFFECT_FILM_FADE, FBP_EFFECT_GRAIN, FBP_EFFECT_PAPER_FIBERS,
     )),
-    ("Creative", "BRUSHES_ALL", (
-        FBP_EFFECT_KALEIDOSCOPE, "FAMILY:POSTERIZE", "FAMILY:EDGE",
-        "FAMILY:STYLIZE", FBP_EFFECT_EMBOSS,
-    )),
-    ("Deform", "OUTLINER_OB_SURFACE", (
-        FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_SWIRL, FBP_EFFECT_BULGE_PINCH,
-        FBP_EFFECT_LENS_WARP, "FAMILY:WAVE",
+    ("Magic", "SHADERFX", (
+        FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_INVERT, FBP_EFFECT_UNSHARP_MASK,
+        FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE,
     )),
 )
 FBP_IMAGE_EFFECT_MENU_COLUMNS = (
-    (0, 1, 2),
-    (3, 4, 5),
-    (6, 7, 8),
+    (0,),
+    (1, 2),
+    (3, 5),
+    (4,),
+    (6, 7),
+    (8,),
 )
 
 FBP_MASK_EFFECT_MENU_SECTIONS = (
     ("Shape", "SURFACE_NCURVE", (FBP_EFFECT_SQUARE_MASK, FBP_EFFECT_CIRCLE_MASK, FBP_EFFECT_TRIANGLE_MASK)),
     ("Nodes", "NODE_INSERT_ON", (
         FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK,
-        FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK,
+        FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,
     )),
     ("Advanced", "SEQ_STRIP_MODIFIER", (
-        FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
+        "GREASE_PENCIL_MASK_CONTROL", FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
     )),
-    ("LAYER INTERACTION", "MOD_MASK", (FBP_EFFECT_CLIPPING_MASK, "LAYER_BLEND_CONTROL")),
 )
-FBP_MASK_EFFECT_MENU_COLUMNS = ((0,), (1,), (2, 3))
+FBP_MASK_EFFECT_MENU_COLUMNS = ((0, 2), (1,))
 
 FBP_MESH_EFFECT_MENU_SECTIONS = (
     ("CAMERA & LAYOUT", "CAMERA_DATA", (
         FBP_EFFECT_CAMERA_SCALE_LOCK, FBP_EFFECT_CAMERA_BILLBOARD, FBP_EFFECT_MIRROR,
+        FBP_EFFECT_MOTION, FBP_EFFECT_INFINITE_ROTATION, FBP_EFFECT_LAYERED_ECHO,
     )),
-    ("Stop Motion", "WORLD", (
+    ("DEFORM", "MOD_SIMPLEDEFORM", (
         FBP_EFFECT_LATTICE, FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE,
-        FBP_EFFECT_WIND_BENDER, FBP_EFFECT_INFINITE_ROTATION,
+        FBP_EFFECT_WIND_BENDER, FBP_EFFECT_ACCORDION_FOLD,
+        FBP_EFFECT_SURFACE_CONFORM, FBP_EFFECT_IMAGE_RELIEF,
     )),
-    ("Creative", "MONKEY", (
-        FBP_EFFECT_CUTOUT_OUTLINE, FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_TEXT_MATRIX,
+    ("SURFACE & VOLUME", "MOD_SOLIDIFY", (
+        FBP_EFFECT_CUTOUT_OUTLINE, FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ,
+        FBP_EFFECT_FIBER_TUFTS, FBP_EFFECT_PAPER_SHARDS, FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
+    )),
+    ("ARTISTIC", "SHADERFX", (
+        FBP_EFFECT_SCULPT_WAVES, FBP_EFFECT_KINETIC_TILES,
+    )),
+    ("IMAGE GEOMETRY", "IMAGE_DATA", (
+        FBP_EFFECT_SPHERE_SCREEN, FBP_EFFECT_TEXT_MATRIX,
     )),
 )
-FBP_MESH_EFFECT_MENU_COLUMNS = ((0,), (1,), (2,))
+FBP_MESH_EFFECT_MENU_COLUMNS = ((0,), (1,), (2,), (3, 4))
 
 
 def fbp_normalize_effect_id(effect_id):
@@ -1765,89 +2803,415 @@ def fbp_effect_definition(effect_id):
             definition = None
     return definition or {}
 
+
+def fbp_effect_multi_instance_enabled(effect_id):
+    """Return whether one built-in effect has the complete MULTI contract."""
+    definition = fbp_effect_definition(effect_id)
+    return (
+        str(definition.get("instance_policy", "SINGLE") or "SINGLE").upper() == "MULTI"
+        and str(definition.get("instance_support", "NONE") or "NONE").upper()
+        in {"PILOT", "SUPPORTED"}
+    )
+
+
+def _fbp_rig_media_cache_key(rig):
+    try:
+        plane = getattr(rig, "fbp_plane_target", None)
+        mesh = getattr(plane, "data", None) if plane else None
+        materials = getattr(mesh, "materials", ()) if mesh else ()
+        material_key = tuple(
+            (
+                str(getattr(material, "name", "") or ""),
+                bool(material.get("fbp_drawing_material", False)),
+                bool(material.get("fbp_native_sequence", False)),
+                bool(material.get("fbp_native_video", False)),
+                bool(material.get("fbp_native_static_image", False)),
+            )
+            for material in tuple(materials or ())
+            if material is not None
+        )
+        return (
+            int(rig.as_pointer()),
+            str(getattr(rig, "name", "") or ""),
+            bool(getattr(rig, "fbp_is_color_plane", False)),
+            str(getattr(rig, "fbp_color_plane_mode", "SOLID") or "SOLID"),
+            bool(getattr(rig, "fbp_is_drawing_plane", False)),
+            str(rig.get("fbp_backend_type", "") or ""),
+            len(getattr(rig, "fbp_images", ()) or ()),
+            material_key,
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _cache_rig_media_type(cache_key, media_type):
+    if cache_key is None:
+        return media_type
+    if len(_FBP_RIG_MEDIA_TYPE_CACHE) >= 2048 and cache_key not in _FBP_RIG_MEDIA_TYPE_CACHE:
+        _FBP_RIG_MEDIA_TYPE_CACHE.clear()
+    _FBP_RIG_MEDIA_TYPE_CACHE[cache_key] = media_type
+    return media_type
+
+
 def fbp_rig_media_type(rig):
     if not rig:
         return "UNKNOWN"
+    cache_key = _fbp_rig_media_cache_key(rig)
+    cached = _FBP_RIG_MEDIA_TYPE_CACHE.get(cache_key) if cache_key is not None else None
+    if cached is not None:
+        return cached
     if bool(getattr(rig, "fbp_is_color_plane", False)):
         mode = str(getattr(rig, "fbp_color_plane_mode", "SOLID") or "SOLID")
         if mode == "HOLDOUT":
-            return "HOLDOUT"
+            return _cache_rig_media_type(cache_key, "HOLDOUT")
         if mode == "GRADIENT":
-            return "GRADIENT"
-        return "COLOR"
+            return _cache_rig_media_type(cache_key, "GRADIENT")
+        return _cache_rig_media_type(cache_key, "COLOR")
+    # Preserve distinct public asset contracts while sharing the same effect
+    # pipeline underneath. This makes compatibility diagnostics meaningful for
+    # Cutout and Movie layers instead of silently reporting them as stills.
     try:
-        return "SEQUENCE" if len(getattr(rig, "fbp_images", ())) > 1 else "IMAGE"
+        from .layers import fbp_layer_backend_type
+        backend = str(fbp_layer_backend_type(rig) or "")
+        if backend == "CUTOUT":
+            return _cache_rig_media_type(cache_key, "CUTOUT")
+        if backend == "NATIVE_MOVIE":
+            return _cache_rig_media_type(cache_key, "VIDEO")
+        if backend == "NATIVE_SEQUENCE":
+            return _cache_rig_media_type(cache_key, "SEQUENCE")
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        result = "SEQUENCE" if len(getattr(rig, "fbp_images", ())) > 1 else "IMAGE"
     except FBP_DATA_ERRORS:
-        return "IMAGE"
+        result = "IMAGE"
+    return _cache_rig_media_type(cache_key, result)
+
+def _fbp_rebuild_plane_owner_index():
+    """Build one bounded owner-name index for Undo plane recovery.
+
+    Normal compatibility uses the direct ``fbp_plane_target`` pointer. The
+    index is consulted only while Blender is repairing that pointer, avoiding a
+    full ``bpy.data.objects`` scan for every effect button and selected layer.
+    """
+    try:
+        objects = getattr(bpy.data, "objects", None)
+        object_count = len(objects or ())
+    except FBP_DATA_ERRORS:
+        return {}
+    by_owner = {}
+    try:
+        for candidate in objects or ():
+            if candidate is None or str(getattr(candidate, "type", "") or "") != "MESH":
+                continue
+            mesh = getattr(candidate, "data", None)
+            tagged_plane = bool(getattr(candidate, "is_fbp_plane", False))
+            if not tagged_plane and mesh is not None:
+                tagged_plane = bool(mesh.get("fbp_plane_mesh", False))
+            owner_name = str(candidate.get("fbp_parent_rig_name", "") or "")
+            parent = getattr(candidate, "parent", None)
+            if not owner_name and parent is not None and bool(
+                getattr(parent, "is_fbp_control", False)
+            ):
+                owner_name = str(getattr(parent, "name", "") or "")
+            if tagged_plane and owner_name and owner_name not in by_owner:
+                by_owner[owner_name] = str(getattr(candidate, "name", "") or "")
+    except FBP_DATA_ERRORS:
+        by_owner = {}
+    _FBP_PLANE_OWNER_INDEX["object_count"] = object_count
+    _FBP_PLANE_OWNER_INDEX["by_owner"] = by_owner
+    _FBP_PLANE_OWNER_INDEX["checked_at"] = time.monotonic()
+    return by_owner
+
+
+def _fbp_indexed_plane_for_rig(rig):
+    if rig is None:
+        return None
+    try:
+        owner_name = str(getattr(rig, "name", "") or "")
+        objects = getattr(bpy.data, "objects", None)
+        object_count = len(objects or ())
+    except FBP_DATA_ERRORS:
+        return None
+    now = time.monotonic()
+    cached_count = int(_FBP_PLANE_OWNER_INDEX.get("object_count", -1) or -1)
+    checked_at = float(_FBP_PLANE_OWNER_INDEX.get("checked_at", 0.0) or 0.0)
+    by_owner = _FBP_PLANE_OWNER_INDEX.get("by_owner", {})
+    if (
+        cached_count != object_count
+        or not isinstance(by_owner, dict)
+        or (owner_name not in by_owner and now - checked_at > 0.50)
+    ):
+        by_owner = _fbp_rebuild_plane_owner_index()
+
+    def resolve(candidate_name):
+        if not candidate_name:
+            return None
+        try:
+            candidate = objects.get(str(candidate_name))
+            if candidate is None or str(getattr(candidate, "type", "") or "") != "MESH":
+                return None
+            mesh = getattr(candidate, "data", None)
+            tagged_plane = bool(getattr(candidate, "is_fbp_plane", False))
+            if not tagged_plane and mesh is not None:
+                tagged_plane = bool(mesh.get("fbp_plane_mesh", False))
+            if not tagged_plane:
+                return None
+            tagged_owner = str(candidate.get("fbp_parent_rig_name", "") or "")
+            parent = getattr(candidate, "parent", None)
+            return candidate if (tagged_owner == owner_name or parent is rig) else None
+        except FBP_DATA_ERRORS:
+            return None
+
+    candidate_name = by_owner.get(owner_name) if isinstance(by_owner, dict) else ""
+    candidate = resolve(candidate_name)
+    if candidate is not None:
+        return candidate
+    if not candidate_name and now - checked_at <= 0.50:
+        # Preserve the bounded negative cache for rigs that legitimately do not
+        # own a plane. Repeated compatibility draws must not rescan bpy.data on
+        # every call.
+        return None
+
+    # Same-count Undo and name reuse can leave a valid Mesh under the cached
+    # name, but that Mesh may now belong to another rig. Rebuild on every stale
+    # validation failure, not only when the object disappeared.
+    rebuilt = _fbp_rebuild_plane_owner_index()
+    candidate = resolve(rebuilt.get(owner_name, "") if isinstance(rebuilt, dict) else "")
+    if candidate is None and isinstance(rebuilt, dict):
+        rebuilt.pop(owner_name, None)
+    return candidate
+
 
 def _fbp_rig_has_mesh_plane(rig):
-    """Return whether ``rig`` owns one unambiguous mesh plane.
+    """Return whether ``rig`` owns a usable Frame By Plane mesh plane.
 
-    Do not rely only on ``fbp_plane_target`` or direct parenting. During Undo,
-    duplication, regression-scene generation and migration Blender can briefly
-    preserve only the owner metadata. This read-only resolver mirrors the more
-    complete repair path used by the Lattice implementation.
+    Compatibility checks must never cache a transient negative result. During
+    import, Undo and pointer repair Blender can briefly expose the rig before
+    ``fbp_plane_target`` is restored; the previous negative cache then made
+    ordinary shader effects such as Wave Warp appear randomly incompatible.
+    Positive results remain cached behind a relation signature.
     """
     if not rig:
         return False
-    owner_name = str(getattr(rig, "name", "") or "")
+
     try:
         plane = getattr(rig, "fbp_plane_target", None)
         if plane is not None and str(getattr(plane, "type", "") or "") == "MESH":
             return True
     except FBP_DATA_ERRORS:
-        pass
+        plane = None
 
-    tagged = []
-    fallback = []
     try:
-        for obj in tuple(getattr(bpy.data, "objects", ()) or ()):
-            if str(getattr(obj, "type", "") or "") != "MESH":
-                continue
-            is_parented = getattr(obj, "parent", None) is rig
-            try:
-                stored_owner = str(obj.get("fbp_parent_rig_name", "") or "")
-            except FBP_DATA_ERRORS:
-                stored_owner = ""
-            if not is_parented and stored_owner != owner_name:
-                continue
-            fallback.append(obj)
-            if bool(getattr(obj, "is_fbp_plane", False)) or stored_owner == owner_name:
-                tagged.append(obj)
+        owner_name = str(getattr(rig, "name", "") or "")
+        children = tuple(getattr(rig, "children", ()) or ())
+        children_sig = tuple(
+            (
+                int(child.as_pointer()),
+                str(getattr(child, "name", "") or ""),
+                str(getattr(child, "type", "") or ""),
+                bool(getattr(child, "is_fbp_plane", False)),
+                str(child.get("fbp_parent_rig_name", "") or ""),
+            )
+            for child in children
+            if child is not None
+        )
+        object_count = len(getattr(bpy.data, "objects", ()) or ())
+        cache_key = (int(rig.as_pointer()), owner_name, object_count, children_sig)
     except FBP_DATA_ERRORS:
         return False
-    return len(tagged) == 1 or (not tagged and len(fallback) == 1)
+
+    # Only a positive entry is authoritative. A False result can be a one-tick
+    # import/Undo state and must be re-evaluated immediately on the next query.
+    if _FBP_RIG_MESH_PLANE_CACHE.get(cache_key) is True:
+        return True
+
+    def is_owned_plane(candidate):
+        if candidate is None:
+            return False
+        try:
+            if str(getattr(candidate, "type", "") or "") != "MESH":
+                return False
+            if bool(getattr(candidate, "is_fbp_plane", False)):
+                return True
+            # A direct mesh child is the strongest ownership relationship.
+            # During creation/Undo the custom plane tags can lag behind the
+            # parent relation by one depsgraph tick, so do not reject it.
+            if getattr(candidate, "parent", None) is rig:
+                return True
+            return str(candidate.get("fbp_parent_rig_name", "") or "") == owner_name
+        except FBP_DATA_ERRORS:
+            return False
+
+    result = any(is_owned_plane(child) for child in children)
+    if not result:
+        # Undo fallback is indexed once instead of rescanning Main for
+        # each compatibility query. This is especially important while the
+        # Effects popover draws dozens of buttons across multiple layers.
+        result = is_owned_plane(_fbp_indexed_plane_for_rig(rig))
+
+    if result:
+        if len(_FBP_RIG_MESH_PLANE_CACHE) >= 1024 and cache_key not in _FBP_RIG_MESH_PLANE_CACHE:
+            _FBP_RIG_MESH_PLANE_CACHE.clear()
+        _FBP_RIG_MESH_PLANE_CACHE[cache_key] = True
+    return bool(result)
+
+
+FBP_PUBLIC_MEDIA_TYPES = (
+    "IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT", "HOLDOUT",
+)
+
+
+def fbp_effect_supports_media_type(effect_id, media_type):
+    """Return compatibility for one public Frame By Plane asset contract.
+
+    Movie and Cutout layers share the image-texture/alpha pipeline used by
+    stills and image sequences. Holdout layers deliberately remain narrower:
+    only explicitly compatible, BASE and GEOMETRY effects are accepted. Shader masks require an image/color pipeline and are rejected unless explicitly supported.
+    """
+    effect_id = fbp_normalize_effect_id(effect_id)
+    media_type = str(media_type or "UNKNOWN").upper()
+    cache_key = (effect_id, media_type)
+    cached = _FBP_EFFECT_SUPPORTS_MEDIA_CACHE.get(cache_key)
+    if cached is not None:
+        return bool(cached)
+    definition = fbp_effect_definition(effect_id)
+    contract = fbp_effect_runtime_contract(effect_id)
+    if not definition or not contract or bool(definition.get("custom_invalid", False)):
+        result = False
+    else:
+        supports = contract["supports"]
+        if media_type == "VIDEO":
+            result = bool(("VIDEO" in supports) or ("SEQUENCE" in supports) or ("IMAGE" in supports))
+        elif media_type == "CUTOUT":
+            result = bool(("CUTOUT" in supports) or ("SEQUENCE" in supports) or ("IMAGE" in supports))
+        elif media_type == "HOLDOUT":
+            result = bool(
+                "HOLDOUT" in supports
+                or contract["kind"] in {"BASE", "GEOMETRY"}
+            )
+        else:
+            result = media_type in supports
+    if len(_FBP_EFFECT_SUPPORTS_MEDIA_CACHE) >= 1024 and cache_key not in _FBP_EFFECT_SUPPORTS_MEDIA_CACHE:
+        _FBP_EFFECT_SUPPORTS_MEDIA_CACHE.clear()
+    _FBP_EFFECT_SUPPORTS_MEDIA_CACHE[cache_key] = bool(result)
+    return bool(result)
 
 
 def fbp_effect_supported_for_rig(rig, effect_id):
+    effect_id = fbp_normalize_effect_id(effect_id)
+    if not rig:
+        return False
+    try:
+        plane = getattr(rig, "fbp_plane_target", None)
+        rig_key = (
+            int(rig.as_pointer()),
+            str(getattr(rig, "name", "") or ""),
+            fbp_rig_media_type(rig),
+            int(plane.as_pointer()) if plane is not None else 0,
+            str(getattr(plane, "name", "") or ""),
+            effect_id,
+        )
+    except FBP_DATA_ERRORS:
+        rig_key = None
+    cached = _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE.get(rig_key) if rig_key is not None else None
+    # Only positive compatibility is safe to cache. During import, mode changes
+    # and Undo, Blender can expose a rig for one event tick before its plane
+    # pointer/ownership tags are restored. Caching that transient False made
+    # compatibility failures appear random until another object was created.
+    if cached is True:
+        return True
     definition = fbp_effect_definition(effect_id)
-    if not definition or not rig:
-        return False
-    if bool(definition.get("custom_invalid", False)):
-        return False
-    if bool(definition.get("requires_mesh_plane", False)):
-        return _fbp_rig_has_mesh_plane(rig)
-    media_type = fbp_rig_media_type(rig)
-    supports = tuple(definition.get("supports", ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT")))
-    if media_type not in supports:
-        return False
-    return True
+    contract = fbp_effect_runtime_contract(effect_id)
+    if not definition or not contract or bool(definition.get("custom_invalid", False)):
+        result = False
+    elif "IMAGE_PLANE" not in contract["targets"]:
+        result = False
+    elif contract["requires_mesh_plane"] and not _fbp_rig_has_mesh_plane(rig):
+        # Shader effects and explicitly mesh-bound geometry effects require the
+        # actual plane, not a selected GP canvas/helper that resolves to a rig.
+        result = False
+    else:
+        media_type = rig_key[2] if rig_key is not None else fbp_rig_media_type(rig)
+        result = fbp_effect_supports_media_type(effect_id, media_type)
+    if rig_key is not None and result:
+        if len(_FBP_EFFECT_SUPPORT_FOR_RIG_CACHE) >= 4096 and rig_key not in _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE:
+            _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE.clear()
+        _FBP_EFFECT_SUPPORT_FOR_RIG_CACHE[rig_key] = True
+    return bool(result)
+
+
+def fbp_effect_compatibility_matrix(effect_ids=None):
+    """Return a deterministic public asset compatibility matrix for audits/UI."""
+    ids = tuple(effect_ids or FBP_EFFECT_REGISTRY.keys())
+    return {
+        effect_id: {
+            media_type: fbp_effect_supports_media_type(effect_id, media_type)
+            for media_type in FBP_PUBLIC_MEDIA_TYPES
+        }
+        for effect_id in ids
+        if fbp_effect_definition(effect_id)
+    }
+
+
+def fbp_effect_supports_target(effect_id, target):
+    """Return whether an effect explicitly supports one 6.2 target contract."""
+    contract = fbp_effect_runtime_contract(effect_id)
+    target = str(target or "").strip().upper()
+    return bool(contract and target and target in contract["targets"])
 
 def fbp_effect_tooltip(effect_id):
+    effect_id = fbp_normalize_effect_id(effect_id)
+    cached = _FBP_EFFECT_TOOLTIP_CACHE.get(effect_id)
+    if cached is not None:
+        return cached
     definition = fbp_effect_definition(effect_id)
     if not definition:
-        return "Frame by Plane effect"
-    description = str(definition.get("description", "") or "")
+        return "Frame By Plane effect\n\nUse when: selecting or adding a registered Frame By Plane effect."
+    label = str(definition.get("label", effect_id) or effect_id)
+    description = str(definition.get("description", "") or "").strip()
     category = str(definition.get("category", "2D") or "2D")
     performance = str(definition.get("performance", "LIGHT") or "LIGHT").replace("_", " ").title()
-    supports = ", ".join(str(item).title() for item in definition.get("supports", ()))
+    supports = ", ".join(str(item).title() for item in definition.get("supports", ())) or "Selected compatible layers"
+    target_labels = {
+        "IMAGE_PLANE": "Single Plane",
+        "GREASE_PENCIL_MASK": "Grease Pencil Mask",
+        "GREASE_PENCIL_OBJECT": "Grease Pencil Object",
+        "CAMERA": "Camera",
+        "COMPOSITOR": "Compositor",
+    }
+    targets = ", ".join(
+        target_labels.get(str(item), str(item).replace("_", " ").title())
+        for item in definition.get("targets", ("IMAGE_PLANE",))
+    ) or "Single Plane"
+    animation = (
+        "Evolution, Stepped and Seed available"
+        if definition.get("evolve_property")
+        else "Static/deterministic; no Evolution control is exposed"
+    )
+    local_masks = (
+        "Can receive local effect masks"
+        if bool(definition.get("can_receive_local_masks", False)) or str(definition.get("stage", "")).upper() in {"COLOR", "UV"}
+        else "Use as a whole-layer effect or mask source"
+    )
     warning = ""
     if str(definition.get("performance", "")).upper() in {"HEAVY", "VERY_HEAVY"}:
-        warning = "\n\nWarning: This effect may reduce viewport playback performance."
-    return (
-        f"{description}\n\nCategory: {category}\n"
-        f"Compatibility: {supports}\nPerformance: {performance}{warning}"
+        warning = "\n\nWarning: heavy effect. Test viewport playback before stacking many copies."
+    example_by_category = {
+        "MASK": "Example: add this to the Mask stack, or attach it to one effect through the effect-mask button.",
+        "3D": "Example: use this for multiplane depth, mesh deformation, outlines, thickness or camera-aware layer behavior.",
+        "2D": "Example: place this after color/UV effects when you want a visible image-processing result on the layer.",
+    }
+    example = example_by_category.get(category, "Example: add it to selected compatible Frame By Plane layers from the Effects library.")
+    tooltip = (
+        f"{label}\n{description}\n\n"
+        f"Use on: {supports}\nTargets: {targets}\nType: {category}\nPerformance: {performance}\n"
+        f"Animation: {animation}\nMasking: {local_masks}\n\n{example}{warning}"
     )
+    if len(_FBP_EFFECT_TOOLTIP_CACHE) >= 1024 and effect_id not in _FBP_EFFECT_TOOLTIP_CACHE:
+        _FBP_EFFECT_TOOLTIP_CACHE.clear()
+    _FBP_EFFECT_TOOLTIP_CACHE[effect_id] = tooltip
+    return tooltip
 
 def register():
     # Remove stale definitions left by older addon generations before rebuilding
@@ -1873,7 +3237,19 @@ __all__ = (
     "FBP_EFFECT_THICKNESS",
     "FBP_EFFECT_INFINITE_ROTATION",
     "FBP_EFFECT_FELT_FUZZ",
+    "FBP_EFFECT_FIBER_TUFTS",
+    "FBP_EFFECT_PAPER_SHARDS",
+    "FBP_EFFECT_SPHERE_SCREEN",
+    "FBP_EFFECT_IMAGE_RELIEF",
+    "FBP_EFFECT_GLASS",
+    "FBP_EFFECT_CRYSTAL",
+    "FBP_EFFECT_SURFACE_CONFORM",
+    "FBP_EFFECT_ACCORDION_FOLD",
+    "FBP_EFFECT_SCULPT_WAVES",
+    "FBP_EFFECT_KINETIC_TILES",
+    "FBP_EFFECT_LAYERED_ECHO",
     "FBP_EFFECT_LATTICE",
+    "FBP_EFFECT_MOTION",
     "FBP_EFFECT_UV_DISTORTION",
     "FBP_EFFECT_PIXELATE",
     "FBP_EFFECT_SWIRL",
@@ -1908,12 +3284,15 @@ __all__ = (
     "FBP_EFFECT_TRIANGLE_MASK",
     "FBP_EFFECT_CLIPPING_MASK",
     "FBP_EFFECT_IMPORTED_MASK",
+    "FBP_EFFECT_GP_MASK_SLOT_2", "FBP_EFFECT_GP_MASK_SLOT_3", "FBP_EFFECT_GP_MASK_SLOT_4", "GP_MASK_EFFECT_IDS",
     "FBP_EFFECT_LAYER_BLEND",
     "FBP_EFFECT_COLOR_MASK",
     "FBP_EFFECT_LUMINANCE_MASK",
     "FBP_EFFECT_CHANNEL_MASK",
     "FBP_EFFECT_GRADIENT_MASK",
     "FBP_EFFECT_NOISE_MASK",
+    "FBP_EFFECT_VORONOI_MASK",
+    "FBP_EFFECT_WAVE_MASK",
     "FBP_EFFECT_SOLID_MASK",
     "FBP_EFFECT_HUE_SATURATION",
     "FBP_EFFECT_WHITE_BALANCE",
@@ -1924,6 +3303,10 @@ __all__ = (
     "FBP_EFFECT_COLOR_ISOLATE",
     "FBP_EFFECT_DUOTONE",
     "FBP_EFFECT_RECOLOR",
+    "FBP_EFFECT_GRADIENT_MAP",
+    "FBP_EFFECT_CHANNEL_MIXER",
+    "FBP_EFFECT_DITHER",
+    "FBP_EFFECT_BLOOM",
     "FBP_EFFECT_GRAIN",
     "FBP_EFFECT_PAPER_FIBERS",
     "FBP_EFFECT_GRADIENT_LIGHT",
@@ -1938,6 +3321,7 @@ __all__ = (
     "FBP_EFFECT_FILM_FADE",
     "FBP_EFFECT_CROP",
     "FBP_EFFECT_EXTEND",
+    "FBP_EFFECT_EMISSION",
     "FBP_EFFECT_DIGITAL_NOISE",
     "FBP_EFFECT_CHROMA_KEY",
     "FBP_EFFECT_HALFTONE",
@@ -1948,6 +3332,7 @@ __all__ = (
     "FBP_EFFECT_REGISTRY",
     "FBP_EFFECT_METADATA",
     "FBP_EFFECT_REGISTRY_ISSUES",
+    "FBP_MULTI_INSTANCE_SUPPORTED_EFFECTS",
     "fbp_refresh_custom_effect_registry",
     "FBP_SHADER_STAGE_ORDER",
     "FBP_BASE_EFFECT_MENU_ORDER",
@@ -1964,7 +3349,14 @@ __all__ = (
     "FBP_MESH_EFFECT_MENU_SECTIONS",
     "FBP_MESH_EFFECT_MENU_COLUMNS",
     "fbp_effect_definition",
+    "fbp_effect_multi_instance_enabled",
+    "fbp_effect_runtime_contract",
     "fbp_effect_supported_for_rig",
+    "fbp_effect_supports_media_type",
+    "fbp_effect_allowed_property_names",
+    "fbp_effect_compatibility_matrix",
+    "FBP_PUBLIC_MEDIA_TYPES",
+    "fbp_effect_supports_target",
     "fbp_effect_tooltip",
     "fbp_normalize_effect_id",
     "fbp_rig_media_type",

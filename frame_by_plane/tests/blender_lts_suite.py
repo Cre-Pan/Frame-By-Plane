@@ -1,0 +1,906 @@
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import json
+import math
+import os
+import sys
+import time
+import traceback
+import tomllib
+from pathlib import Path
+
+import bpy
+from mathutils import Vector
+
+SOURCE = Path(os.environ["FBP_TEST_SOURCE"]).resolve()
+REPORT = Path(os.environ["FBP_TEST_REPORT"]).resolve()
+WORKDIR = Path(os.environ.get("FBP_TEST_WORKDIR", REPORT.parent)).resolve()
+SUITE = os.environ.get("FBP_TEST_SUITE", "background")
+RUN_ID = str(os.environ.get("FBP_TEST_RUN_ID", "") or "")
+PACKAGE = "frame_by_plane"
+RESULTS = []
+
+
+def _source_release_version():
+    try:
+        payload = tomllib.loads((SOURCE / "blender_manifest.toml").read_text(encoding="utf-8"))
+        value = str(payload.get("version", "") or "").strip()
+        parts = tuple(int(part) for part in value.split("."))
+        if len(parts) == 3:
+            return value, parts
+    except (OSError, TypeError, ValueError, tomllib.TOMLDecodeError):
+        pass
+    return "0.0.0", (0, 0, 0)
+
+
+RELEASE_VERSION, RELEASE_PARTS = _source_release_version()
+RELEASE_TOKEN = RELEASE_VERSION.replace(".", "_")
+PREVIOUS_RELEASE = ".".join(str(part) for part in (RELEASE_PARTS[0], RELEASE_PARTS[1], max(0, RELEASE_PARTS[2] - 1)))
+
+
+class SkipTest(RuntimeError):
+    pass
+
+
+def record(name, callback):
+    started = time.perf_counter()
+    try:
+        detail = callback()
+        RESULTS.append({
+            "name": name,
+            "status": "PASS",
+            "seconds": time.perf_counter() - started,
+            "detail": detail or "",
+        })
+    except SkipTest as exc:
+        RESULTS.append({
+            "name": name,
+            "status": "SKIP",
+            "seconds": time.perf_counter() - started,
+            "detail": str(exc),
+        })
+    except Exception as exc:
+        RESULTS.append({
+            "name": name,
+            "status": "FAIL",
+            "seconds": time.perf_counter() - started,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        })
+
+
+def _write_json_atomic(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    temp.replace(path)
+
+
+def reset_file():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+
+
+def _drop_package_modules():
+    for name in sorted(
+        (name for name in sys.modules if name == PACKAGE or name.startswith(PACKAGE + ".")),
+        key=lambda value: value.count("."),
+        reverse=True,
+    ):
+        sys.modules.pop(name, None)
+
+
+def load_addon_module(*, fresh=False):
+    if fresh:
+        _drop_package_modules()
+    existing = sys.modules.get(PACKAGE)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(
+        PACKAGE,
+        SOURCE / "__init__.py",
+        submodule_search_locations=[str(SOURCE)],
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Could not create the Frame By Plane package spec")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[PACKAGE] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def import_addon(*, fresh=False):
+    module = load_addon_module(fresh=fresh)
+    module.register()
+    return module
+
+
+def unregister_addon(module):
+    module.unregister()
+
+
+def test_version():
+    assert bpy.app.version[:2] == (5, 2), bpy.app.version_string
+    return bpy.app.version_string
+
+
+def test_release_sync(_module):
+    constants = importlib.import_module(f"{PACKAGE}.constants")
+    policy = importlib.import_module(f"{PACKAGE}.support_policy")
+    assert constants.FBP_VERSION_STRING == RELEASE_VERSION, (constants.FBP_VERSION_STRING, RELEASE_VERSION)
+    assert policy.FBP_LTS_TARGET_VERSION == RELEASE_VERSION, (policy.FBP_LTS_TARGET_VERSION, RELEASE_VERSION)
+    assert constants.FBP_FEEDBACK_RELEASE == RELEASE_VERSION
+    return RELEASE_VERSION
+
+
+def test_register_cycles():
+    module = import_addon(fresh=True)
+    for cycle in range(3):
+        scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
+        assert scheduler.scheduler_accepting_tasks(), f"cycle {cycle}: scheduler not accepting"
+        marker = []
+
+        def deferred_probe():
+            marker.append(True)
+            return None
+
+        assert scheduler.schedule_task(
+            f"tests.reload_probe.{cycle}",
+            deferred_probe,
+            delay=60.0,
+            category="tests",
+        )
+        assert scheduler.task_count(category="tests") == 1
+        unregister_addon(module)
+        assert not scheduler.scheduler_accepting_tasks()
+        assert scheduler.task_count() == 0, scheduler.scheduler_snapshot()
+        module = import_addon(fresh=True)
+
+    # Blender's extension updater normally reloads the existing package object
+    # rather than deleting every module first. Exercise that separate lifecycle
+    # so previous-generation timer globals and class references are retired.
+    scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
+    unregister_addon(module)
+    assert not scheduler.scheduler_accepting_tasks()
+    module = importlib.reload(module)
+    module.register()
+    scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
+    assert scheduler.scheduler_accepting_tasks()
+    assert scheduler.task_count(category="tests") == 0
+    return module, "3 clean reloads plus 1 in-place extension reload; scheduler quiescent"
+
+
+def test_scheduler_rna_capture(_module):
+    scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
+    scene = bpy.context.scene
+
+    deep_payload = {"a": [{"b": [{"c": [{"d": scene}]}]}]}
+    def unsafe_default(payload=deep_payload):
+        return None
+    assert not scheduler.schedule_task(
+        "tests.unsafe_nested_rna", unsafe_default, delay=60.0, category="tests"
+    )
+
+    class SlottedCallback:
+        __slots__ = ("payload",)
+        def __init__(self, payload):
+            self.payload = payload
+        def __call__(self):
+            return None
+
+    assert not scheduler.schedule_task(
+        "tests.unsafe_slotted_rna", SlottedCallback({"scene": scene}),
+        delay=60.0, category="tests",
+    )
+    safe_payload = {"a": [{"b": [1, 2, 3, "safe"]}]}
+    assert scheduler.schedule_task(
+        "tests.safe_nested_primitives", lambda payload=safe_payload: None,
+        delay=60.0, category="tests",
+    )
+    assert scheduler.cancel_task("tests.safe_nested_primitives")
+
+    # The safety scan must fail closed rather than accepting an opaque payload
+    # merely because its nesting exceeds the bounded traversal contract.
+    too_deep = value = {}
+    for index in range(12):
+        child = {}
+        value[f"level_{index}"] = child
+        value = child
+    value["leaf"] = "primitive"
+    assert not scheduler.schedule_task(
+        "tests.inconclusive_deep_payload", lambda payload=too_deep: None,
+        delay=60.0, category="tests",
+    )
+    oversized_payload = {f"item_{index}": index for index in range(96)}
+    assert not scheduler.schedule_task(
+        "tests.inconclusive_oversized_payload", lambda payload=oversized_payload: None,
+        delay=60.0, category="tests",
+    )
+
+    # Facade registries must also revalidate their real payload at dispatch.
+    # The scheduler itself only owns the wrapper runner, so mutable callbacks
+    # could otherwise acquire RNA after registration and bypass the guard.
+    safe_tasks = importlib.import_module(f"{PACKAGE}.safe_tasks")
+    facade_payload = {"target": "safe"}
+    facade_calls = []
+    def facade_callback(payload=facade_payload):
+        facade_calls.append(payload["target"])
+        return None
+    assert safe_tasks.schedule_once(
+        "tests.mutable_safe_facade", facade_callback, first_interval=60.0
+    )
+    facade_payload["target"] = scene
+    facade_runner = scheduler.task_callback("tests.mutable_safe_facade")
+    assert callable(facade_runner)
+    assert facade_runner() is None
+    assert not facade_calls
+    scheduler.cancel_task("tests.mutable_safe_facade")
+
+    managed = importlib.import_module(f"{PACKAGE}.managed_timers")
+    managed_payload = {"target": "safe"}
+    managed_calls = []
+    def managed_callback(payload=managed_payload):
+        managed_calls.append(payload["target"])
+        return None
+    assert managed.fbp_register_timer_once(managed_callback, 60.0)
+    managed_payload["target"] = scene
+    managed_key = managed._scheduler_key(managed_callback)
+    managed_runner = scheduler.task_callback(managed_key)
+    assert callable(managed_runner)
+    assert managed_runner() is None
+    assert not managed_calls
+    managed.fbp_unregister_managed_timer(managed_callback)
+
+    metrics = scheduler.scheduler_metrics()
+    assert int(metrics.get("rna_callbacks_rejected", 0)) >= 6, metrics
+    assert int(metrics.get("rna_scans_inconclusive", 0)) >= 2, metrics
+    return (
+        "RNA captures, inconclusive payloads and post-registration facade mutations rejected; "
+        "bounded primitive payload accepted"
+    )
+
+
+def test_collections(_module):
+    layers = importlib.import_module(f"{PACKAGE}.layers")
+    ui_layout = importlib.import_module(f"{PACKAGE}.ui_layout")
+    scene = bpy.context.scene
+    root = layers.get_or_create_child_collection(scene.collection, "FBP Test Root")
+    child = layers.get_or_create_child_collection(root, "FBP Test Child")
+    nested = layers.get_or_create_child_collection(child, "FBP Test Nested")
+    mesh = bpy.data.meshes.new("FBP Test Mesh")
+    obj = bpy.data.objects.new("FBP Test Object", mesh)
+    nested.objects.link(obj)
+
+    for index in range(80):
+        obj.hide_viewport = not obj.hide_viewport
+        obj.hide_render = not obj.hide_render
+        root.fbp_collapsed = bool(index & 1)
+        root.fbp_collapsed = False
+        if index % 8 == 0:
+            ui_layout.fbp_refresh_layer_tree_rows(bpy.context)
+            ui_layout.fbp_refresh_layer_tree_group_snapshots(bpy.context)
+
+    child.children.unlink(nested)
+    root.children.link(nested)
+    ui_layout.fbp_refresh_layer_tree_rows(bpy.context)
+    bpy.data.collections.remove(child)
+    ui_layout.fbp_invalidate_layer_tree_snapshot(scene)
+    ui_layout.fbp_refresh_layer_tree_rows(bpy.context)
+    tree = layers.fbp_build_canonical_collection_tree(scene)
+    assert obj.name in bpy.data.objects and nested.name in bpy.data.collections
+    assert tree["root"] is scene.collection
+    return "managed create/reparent/toggle/delete plus scalar Layer Tree snapshots"
+
+
+def test_undo_redo(_module):
+    if not bpy.ops.ed.undo_push.poll() or not bpy.ops.ed.undo.poll():
+        raise SkipTest("Undo operators need an interactive editor context on this Blender build")
+    bpy.ops.mesh.primitive_plane_add()
+    obj = bpy.context.object
+    obj.name = "FBP Undo Target"
+    for index in range(12):
+        obj.location.x = index
+        bpy.ops.ed.undo_push(message=f"FBP test {index}")
+    for _ in range(6):
+        bpy.ops.ed.undo()
+    if bpy.ops.ed.redo.poll():
+        for _ in range(6):
+            bpy.ops.ed.redo()
+    assert bpy.data.objects.get("FBP Undo Target") is not None
+    return "12 pushes / 6 undo / 6 redo"
+
+
+def test_gp_support(_module):
+    bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
+    summary = bridge.fbp_gp_effect_support_summary()
+    assert summary["NATIVE"] >= 27, summary
+    assert summary["total"] >= summary["NATIVE"]
+    assert any(
+        item["effect_id"] == "SURFACE_CONFORM" and item["tier"] == "NATIVE"
+        for item in bridge.fbp_gp_effect_backend_matrix()
+    )
+    return summary
+
+
+def test_gp_native_apply(_module):
+    bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
+    result = bpy.ops.fbp.add_grease_pencil_canvas(
+        "EXEC_DEFAULT",
+        canvas_name="FBP GP Native Backend",
+        owner_name="__FREE__",
+        enter_draw_mode=False,
+    )
+    assert "FINISHED" in result, result
+    canvas = bpy.context.object
+    supported = []
+    added = []
+    for definition in bridge.GP_NATIVE_EFFECTS:
+        effect_id = definition[0]
+        if not bridge._gp_native_effect_supported(canvas, definition):
+            continue
+        supported.append(effect_id)
+        item = bridge._gp_add_native_effect(canvas, effect_id)
+        if item is not None:
+            added.append(effect_id)
+    if added:
+        effect_id = added[0]
+        definition = bridge._gp_native_effect_definition(effect_id)
+        collection = bridge._gp_native_effect_collection(canvas, definition[3])
+        native_type = bridge._gp_supported_native_type(canvas, definition)
+        duplicate = bridge._gp_new_native_effect_item(
+            collection,
+            bridge._gp_native_effect_name(effect_id) + " Duplicate",
+            native_type,
+        )
+        assert duplicate is not None
+        assert bridge._gp_tag_native_effect_item(duplicate, effect_id)
+        _active, _ordered, _lengths, duplicates = bridge._gp_native_effect_stack_state(canvas)
+        assert duplicates.get(effect_id, 0) == 2, duplicates
+        assert bridge._gp_repair_native_effect_duplicates(canvas) == 1
+        _active, _ordered, _lengths, duplicates = bridge._gp_native_effect_stack_state(canvas)
+        assert duplicates.get(effect_id, 0) == 1, duplicates
+    for effect_id in reversed(added):
+        assert bridge._gp_remove_native_effect(canvas, effect_id), effect_id
+    if not supported:
+        raise SkipTest("This Blender build exposed no supported native GP effect type")
+    assert added, {"supported": supported}
+    return {"supported_by_blender": len(supported), "created_and_removed": len(added)}
+
+
+def test_generic_mesh_matrix(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    matrix = geo.fbp_generic_mesh_effect_matrix()
+    assert matrix and all("reason" in item for item in matrix)
+    assert any(item["supported"] for item in matrix)
+    assert all(not item["supported"] for item in matrix if item["alpha_aware"])
+    return {"total": len(matrix), "supported": sum(item["supported"] for item in matrix)}
+
+
+
+def _fbp_test_mesh_object(name, vertices, edges, faces):
+    mesh = bpy.data.meshes.new(name + " Mesh")
+    mesh.from_pydata(vertices, edges, faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
+def test_generic_mesh_topology_profiles(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+
+    bpy.ops.mesh.primitive_cube_add()
+    closed = bpy.context.object
+    closed.name = "FBP Topology Closed"
+
+    bpy.ops.mesh.primitive_plane_add()
+    open_surface = bpy.context.object
+    open_surface.name = "FBP Topology Open"
+
+    wire = _fbp_test_mesh_object(
+        "FBP Topology Wire",
+        [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        [(0, 1), (1, 2)],
+        [],
+    )
+    non_manifold = _fbp_test_mesh_object(
+        "FBP Topology Non Manifold",
+        [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, -1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ],
+        [],
+        [(0, 1, 2), (1, 0, 3), (0, 1, 4)],
+    )
+
+    profiles = {
+        "closed": geo.fbp_generic_mesh_topology_profile(closed),
+        "open": geo.fbp_generic_mesh_topology_profile(open_surface),
+        "wire": geo.fbp_generic_mesh_topology_profile(wire),
+        "non_manifold": geo.fbp_generic_mesh_topology_profile(non_manifold),
+    }
+    assert profiles["closed"]["classification"] == "CLOSED_MANIFOLD", profiles
+    assert profiles["open"]["classification"] == "OPEN_SURFACE", profiles
+    assert profiles["wire"]["classification"] == "WIRE", profiles
+    assert profiles["non_manifold"]["classification"] == "NON_MANIFOLD", profiles
+    assert all(profile.get("coordinate_scan_complete") for profile in profiles.values()), profiles
+    assert all(profile.get("sampled_vertices") == profile.get("vertices") for profile in profiles.values()), profiles
+
+    for obj in (closed, open_surface, wire, non_manifold):
+        valid, _reason, profile = geo.fbp_generic_mesh_preflight(obj)
+        assert valid, profile
+
+    original = tuple(float(value) for value in wire.data.vertices[0].co)
+    wire.data.vertices[0].co.x = float("nan")
+    valid, reason, profile = geo.fbp_generic_mesh_preflight(wire)
+    assert not valid and profile["classification"] == "NON_FINITE", (reason, profile)
+    wire.data.vertices[0].co = original
+    return {key: value["classification"] for key, value in profiles.items()}
+
+
+def test_generic_mesh_supported_group_contracts(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    supported = [item["effect_id"] for item in geo.fbp_generic_mesh_effect_matrix() if item["supported"]]
+    checked = []
+    missing = []
+    invalid = []
+    for effect_id in supported:
+        group = geo.fbp_load_mesh_wiggle_group() if effect_id == geo.FBP_EFFECT_MESH_WIGGLE else geo._fbp_load_effect_group(effect_id)
+        if group is None:
+            missing.append(effect_id)
+            continue
+        has_input, has_output = geo._fbp_node_group_geometry_contract(group)
+        if not has_input or not has_output:
+            invalid.append(effect_id)
+        else:
+            checked.append(effect_id)
+    assert not invalid, {"invalid_geometry_contracts": invalid}
+    if not checked:
+        raise SkipTest(f"No bundled Generic Mesh group was available; missing: {missing}")
+    return {"checked": len(checked), "missing": missing}
+
+
+def test_generic_mesh_apply(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    supported = [item["effect_id"] for item in geo.fbp_generic_mesh_effect_matrix() if item["supported"]]
+    if not supported:
+        raise SkipTest("No Generic Mesh backend is marked supported")
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=4, y_subdivisions=4)
+    obj = bpy.context.object
+    effect_id = supported[0]
+    changed = geo.fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, scene=bpy.context.scene)
+    if not changed:
+        raise SkipTest(f"Bundled node asset for {effect_id} was unavailable in this test environment")
+    owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    assert len(owned) == 1 and owned[0].get("fbp_effect_id") == effect_id
+    assert owned[0].get("fbp_input_topology") in {
+        "CLOSED_MANIFOLD", "OPEN_SURFACE", "NON_MANIFOLD", "LOOSE_GEOMETRY", "WIRE", "POINTS", "EMPTY"
+    }
+    valid, reason = geo.fbp_validate_generic_mesh_object(obj)
+    assert valid, reason
+
+    # Updating an existing FBP modifier is transactional. A failed evaluated
+    # result must restore its previous name, group and custom inputs.
+    current = owned[0]
+    current.name = "FBP Mesh Effect — Rollback Sentinel"
+    current["fbp_test_sentinel"] = 42
+    original_validator = geo.fbp_validate_generic_mesh_object
+    geo.fbp_validate_generic_mesh_object = lambda *_args, **_kwargs: (False, "forced runner rollback")
+    try:
+        assert not geo.fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, scene=bpy.context.scene)
+    finally:
+        geo.fbp_validate_generic_mesh_object = original_validator
+    assert current.name == "FBP Mesh Effect — Rollback Sentinel"
+    assert current.get("fbp_test_sentinel") == 42
+
+    node_group = current.node_group
+    obj.modifiers.remove(current)
+    artist = obj.modifiers.new(name="Artist Nodes — Must Survive", type="NODES")
+    artist.node_group = node_group
+    assert not bool(artist.get("fbp_generic_mesh_effect", False))
+    assert geo.fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, scene=bpy.context.scene)
+    owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    assert len(owned) == 1
+    assert obj.modifiers.get(artist.name) is artist
+    assert not bool(artist.get("fbp_generic_mesh_effect", False))
+
+    owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    assert len(owned) == 1
+    duplicate = obj.modifiers.new(name="FBP Duplicate Owned Modifier", type="NODES")
+    duplicate.node_group = owned[0].node_group
+    duplicate["fbp_generic_mesh_effect"] = True
+    duplicate["fbp_effect_id"] = effect_id
+    assert geo.fbp_generic_mesh_duplicate_effects(obj).get(effect_id) == 2
+    assert geo.fbp_repair_generic_mesh_duplicates(obj) == 1
+    assert not geo.fbp_generic_mesh_duplicate_effects(obj)
+    assert obj.modifiers.get(artist.name) is artist
+
+    # Multi-object application is atomic: a failure on the second target must
+    # restore the first object's FBP modifier and remove the second object's
+    # newly-created modifier, while preserving artist modifiers on both.
+    first_owned = next(m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False)))
+    first_owned.name = "FBP Atomic Rollback Sentinel"
+    first_owned["fbp_atomic_sentinel"] = 73
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=3, y_subdivisions=3)
+    failing_obj = bpy.context.object
+    failing_obj.name = "FBP Atomic Failure Target"
+    failing_artist = failing_obj.modifiers.new(name="Artist Modifier — Atomic", type="NODES")
+    failing_artist.node_group = node_group
+
+    original_validator = geo.fbp_validate_generic_mesh_object
+    def atomic_validator(target, *_args, **_kwargs):
+        if target is failing_obj:
+            return False, "forced atomic batch failure"
+        return original_validator(target, *_args, **_kwargs)
+    geo.fbp_validate_generic_mesh_object = atomic_validator
+    try:
+        changed, failure = geo.fbp_apply_geometry_effect_to_mesh_objects(
+            (obj, failing_obj), effect_id, scene=bpy.context.scene
+        )
+    finally:
+        geo.fbp_validate_generic_mesh_object = original_validator
+    assert changed == 0 and "rolled back" in failure, (changed, failure)
+    restored_owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    assert len(restored_owned) == 1
+    assert restored_owned[0].name == "FBP Atomic Rollback Sentinel"
+    assert restored_owned[0].get("fbp_atomic_sentinel") == 73
+    assert not [m for m in failing_obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    assert failing_obj.modifiers.get(failing_artist.name) is failing_artist
+
+    return {
+        "effect": effect_id,
+        "artist_modifier_preserved": True,
+        "duplicate_repair": True,
+        "atomic_batch_rollback": True,
+    }
+
+
+def test_compositor(_module):
+    scene = bpy.context.scene
+    scene.use_nodes = True
+    tree = scene.node_tree
+    rgb = tree.nodes.new("CompositorNodeRGB")
+    rgb.name = "Artist RGB — Must Survive"
+    mix = tree.nodes.new("CompositorNodeMixRGB")
+    mix.name = "Artist Mix — Must Survive"
+    tree.links.new(rgb.outputs[0], mix.inputs[1])
+    rgb.outputs[0].default_value = (0.15, 0.25, 0.35, 1.0)
+    mix.blend_type = "MULTIPLY"
+    mix.inputs[0].default_value = 0.375
+    mix["artist_note"] = "preserve"
+
+    group_tree = bpy.data.node_groups.new("FBP Artist Group Tree", "CompositorNodeTree")
+    group_rgb = group_tree.nodes.new("CompositorNodeRGB")
+    group_rgb.name = "Artist Group RGB"
+    group_rgb.outputs[0].default_value = (0.8, 0.1, 0.2, 1.0)
+    group_node = tree.nodes.new("CompositorNodeGroup")
+    group_node.name = "Artist Group — Must Survive"
+    group_node.node_tree = group_tree
+
+    sets = importlib.import_module(f"{PACKAGE}.compositor_sets")
+
+    # Nested group safety limits must propagate to the root completeness flag.
+    # A partial deep-group snapshot is not sufficient to authorize Safe Repair.
+    deep_trees = [
+        bpy.data.node_groups.new(f"FBP Snapshot Depth {index}", "CompositorNodeTree")
+        for index in range(5)
+    ]
+    for index in range(len(deep_trees) - 1):
+        nested_node = deep_trees[index].nodes.new("CompositorNodeGroup")
+        nested_node.node_tree = deep_trees[index + 1]
+    deep_root_node = tree.nodes.new("CompositorNodeGroup")
+    deep_root_node.name = "Artist Deep Group — Snapshot Limit Probe"
+    deep_root_node.node_tree = deep_trees[0]
+    deep_snapshot = sets.fbp_compositor_artist_graph_snapshot(scene)
+    assert not deep_snapshot.get("complete", True), deep_snapshot
+    assert any("depth-limit" in error for error in deep_snapshot.get("errors", ())), deep_snapshot
+    tree.nodes.remove(deep_root_node)
+    for deep_tree in reversed(deep_trees):
+        if deep_tree.users == 0:
+            bpy.data.node_groups.remove(deep_tree)
+
+    graph_before = sets.fbp_compositor_artist_graph_snapshot(scene)
+    assert graph_before.get("complete", False), graph_before
+    assert graph_before["nodes"] and graph_before["links"]
+    bounded = sets.fbp_compositor_artist_graph_snapshot(scene, max_nodes=1)
+    assert not bounded.get("complete", True) and bounded.get("errors"), bounded
+    original_label = rgb.label
+    rgb.label = "Runner State Mutation"
+    assert graph_before != sets.fbp_compositor_artist_graph_snapshot(scene)
+    rgb.label = original_label
+    assert graph_before == sets.fbp_compositor_artist_graph_snapshot(scene)
+
+    original_color = tuple(rgb.outputs[0].default_value)
+    rgb.outputs[0].default_value = (0.9, 0.9, 0.9, 1.0)
+    assert graph_before != sets.fbp_compositor_artist_graph_snapshot(scene)
+    rgb.outputs[0].default_value = original_color
+
+    original_blend = mix.blend_type
+    mix.blend_type = "ADD"
+    assert graph_before != sets.fbp_compositor_artist_graph_snapshot(scene)
+    mix.blend_type = original_blend
+
+    original_group_color = tuple(group_rgb.outputs[0].default_value)
+    group_rgb.outputs[0].default_value = (0.1, 0.8, 0.2, 1.0)
+    assert graph_before != sets.fbp_compositor_artist_graph_snapshot(scene)
+    group_rgb.outputs[0].default_value = original_group_color
+    assert graph_before == sets.fbp_compositor_artist_graph_snapshot(scene)
+
+    issues = sets.fbp_validate_composite(scene)
+    assert tree.nodes.get(rgb.name) is rgb and tree.nodes.get(mix.name) is mix
+    assert graph_before == sets.fbp_compositor_artist_graph_snapshot(scene)
+
+    # Exercise the same rollback primitive used by Safe Repair.
+    backup_state = sets._fbp_safe_repair_backup(scene)
+    unsafe_rgb = scene.compositing_node_group.nodes.get(rgb.name)
+    unsafe_mix = scene.compositing_node_group.nodes.get(mix.name)
+    unsafe_rgb.label = "Unsafe Mutation"
+    unsafe_rgb.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
+    unsafe_mix.blend_type = "SCREEN"
+    group_rgb.outputs[0].default_value = (0.0, 1.0, 0.0, 1.0)
+    assert sets._fbp_safe_repair_restore(scene, backup_state)
+    restored_tree = scene.compositing_node_group
+    restored_rgb = restored_tree.nodes.get(rgb.name)
+    restored_mix = restored_tree.nodes.get(mix.name)
+    assert restored_rgb is not None and restored_mix is not None
+    assert restored_rgb.label == original_label
+    assert tuple(restored_rgb.outputs[0].default_value) == original_color
+    assert restored_mix.blend_type == original_blend
+    assert restored_mix.get("artist_note") == "preserve"
+    restored_group = restored_tree.nodes.get(group_node.name)
+    assert restored_group is not None and restored_group.node_tree is not None
+    restored_group_rgb = restored_group.node_tree.nodes.get(group_rgb.name)
+    assert restored_group_rgb is not None
+    assert tuple(restored_group_rgb.outputs[0].default_value) == original_group_color
+    assert not bool(restored_group.node_tree.get("fbp_safe_repair_nested_backup", False))
+
+    # Successful repair paths must discard the deep backup and every orphaned
+    # nested copy instead of leaking hidden NodeTree datablocks.
+    discard_state = sets._fbp_safe_repair_backup(scene)
+    discard_names = [discard_state["backup"].name] + [tree.name for tree in discard_state.get("nested_backups", ())]
+    sets._fbp_safe_repair_discard(discard_state)
+    assert all(bpy.data.node_groups.get(name) is None for name in discard_names), discard_names
+
+    duplicate = scene.copy()
+    duplicate.name = "FBP Duplicate Scene"
+    sets.fbp_ensure_scene_copy_independence(duplicate)
+    assert duplicate.name in bpy.data.scenes
+    return {
+        "artist_nodes": len(graph_before["nodes"]),
+        "artist_links": len(graph_before["links"]),
+        "issues": len(issues or ()),
+        "duplicate_scene": duplicate.name,
+    }
+
+
+def test_toon_boom_contract(_module):
+    importer = importlib.import_module(f"{PACKAGE}.operator_import")
+    caps = importer.fbp_toon_boom_exchange_capabilities()
+    assert caps["raster_export_folder"] is True
+    assert caps["native_xstage_import"] is False
+    assert caps["round_trip_export"] is False
+    return caps
+
+
+def test_projector_contract(_module):
+    projector = importlib.import_module(f"{PACKAGE}.projector")
+    assert ".mp4" in projector._MEDIA_EXTENSIONS
+    assert ".png" in projector._MEDIA_EXTENSIONS
+    assert not (projector._VIDEO_EXTENSIONS & projector._IMAGE_EXTENSIONS)
+    return sorted(projector._VIDEO_EXTENSIONS)
+
+
+def test_save_reopen(_module):
+    path = WORKDIR / f"fbp_{RELEASE_TOKEN}_regression.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=str(path), check_existing=False)
+    assert path.exists() and path.stat().st_size > 0
+    bpy.ops.wm.open_mainfile(filepath=str(path), load_ui=False)
+    assert bpy.context.scene is not None
+    return str(path)
+
+
+def test_tiny_render(_module):
+    scene = bpy.context.scene
+    scene.render.engine = "BLENDER_WORKBENCH"
+    scene.render.resolution_x = 32
+    scene.render.resolution_y = 32
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = "PNG"
+    path = WORKDIR / f"fbp_{RELEASE_TOKEN}_render.png"
+    scene.render.filepath = str(path)
+    bpy.ops.mesh.primitive_cube_add()
+    cube = bpy.context.object
+    bpy.ops.object.camera_add(location=(0.0, -6.0, 0.0))
+    camera = bpy.context.object
+    camera.rotation_euler = (cube.location - camera.location).to_track_quat("-Z", "Y").to_euler()
+    scene.camera = camera
+    bpy.ops.render.render(write_still=True)
+    assert path.exists() and path.stat().st_size > 0
+    return str(path)
+
+
+def _redraw_all(iterations=1):
+    for window in tuple(bpy.context.window_manager.windows):
+        for area in tuple(window.screen.areas):
+            area.tag_redraw()
+    if bpy.ops.wm.redraw_timer.poll():
+        bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=max(1, int(iterations)))
+
+
+def _prepare_view3d_sidebars():
+    count = 0
+    for window in tuple(bpy.context.window_manager.windows):
+        for area in tuple(window.screen.areas):
+            if area.type != "VIEW_3D":
+                continue
+            try:
+                area.spaces.active.show_region_ui = True
+            except Exception:
+                pass
+            area.tag_redraw()
+            count += 1
+    return count
+
+
+def test_interactive_layer_tree_gp(_module):
+    if bpy.app.background:
+        raise SkipTest("Interactive UI required")
+    layers = importlib.import_module(f"{PACKAGE}.layers")
+    ui_layout = importlib.import_module(f"{PACKAGE}.ui_layout")
+    scene = bpy.context.scene
+    view_count = _prepare_view3d_sidebars()
+    if not view_count:
+        raise SkipTest("No View3D area available for sidebar redraw stress")
+
+    root = layers.get_or_create_child_collection(scene.collection, "FBP UI Stress Root")
+    children = []
+    for index in range(20):
+        parent = root if index < 10 else children[index - 10]
+        child = layers.get_or_create_child_collection(parent, f"FBP UI Child {index:02d}")
+        children.append(child)
+
+    result = bpy.ops.fbp.add_grease_pencil_canvas(
+        "EXEC_DEFAULT",
+        canvas_name="FBP GP Stress",
+        owner_name="__FREE__",
+        enter_draw_mode=False,
+    )
+    assert "FINISHED" in result, result
+    canvas = bpy.context.object
+    ui_layout.fbp_refresh_layer_tree_rows(bpy.context)
+
+    for index in range(300):
+        scene.frame_set((index % 48) + 1)
+        canvas.hide_viewport = bool(index & 1)
+        canvas.hide_viewport = False
+        child = children[index % len(children)]
+        child.fbp_collapsed = bool(index & 1)
+        if index % 5 == 0:
+            child.hide_viewport = not child.hide_viewport
+        if index % 10 == 0:
+            ui_layout.fbp_schedule_layer_tree_rebuild(bpy.context, force=True)
+        _redraw_all(1)
+    return "300 View3D sidebar redraw cycles with GP and nested managed collections"
+
+
+def test_interactive_reload_and_splash(module):
+    if bpy.app.background:
+        raise SkipTest("Interactive UI required")
+    feedback = importlib.import_module(f"{PACKAGE}.feedback")
+    prefs = feedback._preferences()
+    if prefs is None:
+        # Direct-source registration does not create an enabled extension entry
+        # in Preferences. A primitive stand-in still exercises window selection,
+        # scheduling and the native Preferences dialog path without RNA capture.
+        class TestPreferences:
+            whats_new_enabled = True
+            whats_new_last_seen_version = PREVIOUS_RELEASE
+
+        prefs = TestPreferences()
+        feedback._preferences = lambda _context=None: prefs
+    else:
+        prefs.whats_new_enabled = True
+        prefs.whats_new_last_seen_version = PREVIOUS_RELEASE
+
+    before = len(bpy.context.window_manager.windows)
+    if bpy.ops.screen.userpref_show.poll():
+        bpy.ops.screen.userpref_show("INVOKE_DEFAULT")
+        _redraw_all(2)
+    module.unregister()
+    module.register()
+    feedback = importlib.import_module(f"{PACKAGE}.feedback")
+    scheduled = feedback.fbp_schedule_whats_new_prompt(delay=0.05)
+    assert scheduled, "What's New prompt was not scheduled after update"
+    for _ in range(8):
+        _redraw_all(1)
+        time.sleep(0.03)
+    after = len(bpy.context.window_manager.windows)
+    return {"scheduled": True, "windows_before": before, "windows_after": after}
+
+
+def finish(module):
+    cleanup_error = ""
+    try:
+        if module is not None:
+            module.unregister()
+    except Exception as exc:
+        cleanup_error = f"{type(exc).__name__}: {exc}"
+    failures = [item for item in RESULTS if item["status"] == "FAIL"]
+    payload = {
+        "suite": SUITE,
+        "run_id": RUN_ID,
+        "blender": bpy.app.version_string,
+        "addon_release": RELEASE_VERSION,
+        "results": RESULTS,
+        "passed": not failures and not cleanup_error,
+        "failed": len(failures),
+        "skipped": sum(item["status"] == "SKIP" for item in RESULTS),
+        "cleanup_error": cleanup_error,
+        "workdir": str(WORKDIR),
+    }
+    _write_json_atomic(REPORT, payload)
+    if os.environ.get("FBP_TEST_NO_QUIT", "") != "1":
+        bpy.ops.wm.quit_blender()
+
+
+def run_background():
+    reset_file()
+    record("blender_version", test_version)
+    holder = {}
+
+    def reg():
+        holder["m"], detail = test_register_cycles()
+        return detail
+
+    record("register_unregister_reload", reg)
+    module = holder.get("m")
+    if module:
+        tests = (
+            ("release_metadata_sync", test_release_sync),
+            ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
+            ("collections_and_layer_tree", test_collections),
+            ("undo_redo", test_undo_redo),
+            ("gp_effect_support", test_gp_support),
+            ("gp_native_apply_remove", test_gp_native_apply),
+            ("generic_mesh_matrix", test_generic_mesh_matrix),
+            ("generic_mesh_topology_profiles", test_generic_mesh_topology_profiles),
+            ("generic_mesh_group_contracts", test_generic_mesh_supported_group_contracts),
+            ("generic_mesh_artist_modifier_preservation", test_generic_mesh_apply),
+            ("compositor_artist_graph", test_compositor),
+            ("toon_boom_contract", test_toon_boom_contract),
+            ("projector_contract", test_projector_contract),
+            ("save_reopen", test_save_reopen),
+            ("tiny_render", test_tiny_render),
+        )
+        for name, function in tests:
+            record(name, lambda function=function: function(module))
+    finish(module)
+
+
+def run_interactive():
+    reset_file()
+    record("blender_version", test_version)
+    holder = {}
+
+    def reg():
+        holder["m"] = import_addon(fresh=True)
+        return "registered"
+
+    record("register", reg)
+
+    def delayed():
+        module = holder.get("m")
+        if module:
+            record("layer_tree_gp_redraw_stress", lambda: test_interactive_layer_tree_gp(module))
+            record("preferences_reload_and_splash", lambda: test_interactive_reload_and_splash(module))
+        finish(module)
+        return None
+
+    bpy.app.timers.register(delayed, first_interval=0.75)
+
+
+run_interactive() if SUITE == "interactive" else run_background()

@@ -3,15 +3,24 @@
 import bpy
 import math
 import mathutils
+import os
 
 from .path_utils import natural_sort_key
+from .pillow_media import (
+    FBP_PILLOW_CONVERT_EXTENSIONS,
+    fbp_default_pillow_cache_root,
+    fbp_prepare_pillow_media,
+)
 from .materials import (
     fbp_rebuild_color_plane_material,
 )
 
 
 # SECTION 01 - Shared runtime helpers #
-from .runtime import fbp_warn as _fbp_warn, fbp_set_rna_property_silent, FBP_DATA_IO_ERRORS
+from .runtime import fbp_warn as _fbp_warn, fbp_set_rna_property_silent, fbp_creation_start_frame, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
+
+
+FBP_CROP_EXTEND_CONTRACT_VERSION = 3
 
 
 # SECTION 02 - Mesh / Object creation #
@@ -54,6 +63,53 @@ def fbp_link_object(obj, context, target_collection=None):
     collection.objects.link(obj)
     return obj
 
+def fbp_ensure_render_uv_map(mesh, name="UVMap"):
+    """Return the named UV map and make it Blender 5.2's render UV map.
+
+    Blender 5.2 exposes an explicit render-active UV pointer/index on the
+    collection. Keeping it aligned prevents Crop/Extend from looking correct in
+    the viewport while shaders or render jobs sample a different UV layer.
+    """
+    if mesh is None:
+        return None
+    try:
+        layers = mesh.uv_layers
+        uv_name = str(name or "UVMap")
+        layer = layers.get(uv_name)
+        if layer is None:
+            layer = layers.new(name=uv_name)
+        if layer is None:
+            return None
+        try:
+            layers.active = layer
+        except FBP_DATA_IO_ERRORS:
+            pass
+        try:
+            index = int(layers.find(layer.name))
+        except FBP_DATA_IO_ERRORS:
+            index = -1
+        if index >= 0:
+            try:
+                layers.active_index = index
+            except FBP_DATA_IO_ERRORS:
+                pass
+            try:
+                layers.active_render_index = index
+            except FBP_DATA_IO_ERRORS:
+                pass
+        try:
+            layers.active_render = layer
+        except FBP_DATA_IO_ERRORS:
+            pass
+        try:
+            layer.active_render = True
+        except FBP_DATA_IO_ERRORS:
+            pass
+        return layer
+    except FBP_DATA_IO_ERRORS:
+        return None
+
+
 def fbp_create_rect_mesh(name, size=2.0, with_face=True):
     """Create a rectangular FBP mesh through the Data API.
 
@@ -68,13 +124,117 @@ def fbp_create_rect_mesh(name, size=2.0, with_face=True):
     mesh.from_pydata(verts, edges, faces)
     mesh.update()
     if with_face:
-        uv_layer = mesh.uv_layers.new(name="UVMap")
+        uv_layer = fbp_ensure_render_uv_map(mesh, "UVMap")
         coords = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
         if mesh.polygons:
             for loop_index, uv in zip(mesh.polygons[0].loop_indices, coords, strict=True):
                 uv_layer.data[loop_index].uv = uv
     return mesh
 
+
+def _fbp_rig_shape_geometry(shape, size=2.1, *, half_extents=None, center=(0.0, 0.0)):
+    """Return local XY wire geometry for a non-rendering FBP control rig."""
+    shape = str(shape or "DEFAULT").upper()
+    if shape == "DEFAULT":
+        shape = "RECTANGLE"
+    radius = max(0.0001, float(size) * 0.5)
+    if shape == "CIRCLE":
+        count = 32
+        verts = [
+            (math.cos((math.tau * index) / count) * radius,
+             math.sin((math.tau * index) / count) * radius,
+             0.0)
+            for index in range(count)
+        ]
+    elif shape == "DIAMOND":
+        verts = [(0.0, radius, 0.0), (radius, 0.0, 0.0), (0.0, -radius, 0.0), (-radius, 0.0, 0.0)]
+    elif shape == "HEXAGON":
+        count = 6
+        verts = [
+            (math.cos((math.tau * index) / count) * radius,
+             math.sin((math.tau * index) / count) * radius,
+             0.0)
+            for index in range(count)
+        ]
+    elif shape == "OCTAGON":
+        count = 8
+        verts = [
+            (math.cos((math.tau * index) / count + math.pi / 8.0) * radius,
+             math.sin((math.tau * index) / count + math.pi / 8.0) * radius,
+             0.0)
+            for index in range(count)
+        ]
+    else:
+        verts = [(-radius, -radius, 0.0), (radius, -radius, 0.0), (radius, radius, 0.0), (-radius, radius, 0.0)]
+    if half_extents is not None:
+        hx, hy = half_extents
+        hx = max(0.0001, float(hx))
+        hy = max(0.0001, float(hy))
+        verts = [(x / radius * hx, y / radius * hy, z) for x, y, z in verts]
+    cx, cy = center
+    if cx or cy:
+        verts = [(x + float(cx), y + float(cy), z) for x, y, z in verts]
+    edges = [(index, (index + 1) % len(verts)) for index in range(len(verts))]
+    return verts, edges
+
+
+
+def fbp_rig_shape_margin(rig):
+    """Return the controller border in plane-local units."""
+    try:
+        expand = max(0.0, min(2.0, float(getattr(rig, "fbp_rig_shape_expand", 1.0) or 0.0)))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        expand = 1.0
+    return 0.05 * expand
+
+def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
+    """Replace only the control-rig wire mesh, preserving plane/media/effects."""
+    if rig is None or not bool(getattr(rig, "is_fbp_control", False)):
+        return False
+    shape = str(shape or getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper()
+    if shape == "CUSTOM":
+        return False
+    mesh = getattr(rig, "data", None)
+    if mesh is None or not isinstance(mesh, bpy.types.Mesh):
+        return False
+    try:
+        # Editing the wire manually remains valid. Presets are applied only when
+        # the user explicitly chooses one from the rig panel in Object Mode.
+        if str(getattr(rig, "mode", "OBJECT") or "OBJECT") != "OBJECT":
+            return False
+        fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
+        half_extents = None
+        center = (0.0, 0.0)
+        margin = fbp_rig_shape_margin(rig)
+        if fit_mode == "FIT_PLANE" or shape == "DEFAULT":
+            plane = getattr(rig, "fbp_plane_target", None)
+            coords = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
+            if coords:
+                xs = [float(vertex.co.x) for vertex in coords]
+                ys = [float(vertex.co.y) for vertex in coords]
+                half_extents = (
+                    max(0.0001, (max(xs) - min(xs)) * 0.5 + margin),
+                    max(0.0001, (max(ys) - min(ys)) * 0.5 + margin),
+                )
+                center = ((max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5)
+            else:
+                aspect_x, aspect_y = fbp_native_aspect_half_extents(rig)
+                half_extents = (
+                    max(0.0001, aspect_x + margin),
+                    max(0.0001, aspect_y + margin),
+                )
+        shape_size = max(0.0002, 2.0 + margin * 2.0)
+        verts, edges = _fbp_rig_shape_geometry(shape, size=shape_size, half_extents=half_extents, center=center)
+        mesh.clear_geometry()
+        mesh.from_pydata(verts, edges, [])
+        mesh.update()
+        mesh["fbp_rig_shape"] = shape
+        mesh["fbp_rig_shape_fit_mode"] = fit_mode
+        rig.update_tag()
+        return True
+    except Exception as exc:
+        _fbp_warn("Could not apply Frame By Plane rig shape", exc)
+        return False
 
 def _fbp_aspect_from_plane_image(rig):
     plane = getattr(rig, "fbp_plane_target", None) if rig else None
@@ -93,7 +253,7 @@ def _fbp_aspect_from_plane_image(rig):
                     return max(width / height, 0.0001), 1.0, int(width), int(height)
             except FBP_DATA_IO_ERRORS:
                 pass
-            if not getattr(mat, "use_nodes", False) or not getattr(mat, "node_tree", None):
+            if not getattr(mat, "node_tree", None):
                 continue
             for node in mat.node_tree.nodes:
                 if getattr(node, "type", None) != 'TEX_IMAGE':
@@ -125,7 +285,7 @@ def fbp_native_aspect_half_extents(rig):
     try:
         if not bool(rig.get("fbp_native_backend", False)):
             return 1.0, 1.0
-    except Exception:
+    except FBP_DATA_ERRORS:
         return 1.0, 1.0
     material_aspect = _fbp_aspect_from_plane_image(rig)
     try:
@@ -229,17 +389,29 @@ def fbp_plane_reference_bounds(rig):
     return source, cropped, extended, uv
 
 
-def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=0.05):
+def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=None):
     """Keep the wire rig rectangle aligned with the cropped/extended plane bounds."""
     if not rig or not getattr(rig, 'data', None):
         return False
     try:
+        shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper()
+        if shape == 'CUSTOM':
+            return True
+        margin = fbp_rig_shape_margin(rig) if margin is None else max(0.0, float(margin))
         min_x, max_x = float(min_x) - margin, float(max_x) + margin
         min_y, max_y = float(min_y) - margin, float(max_y) + margin
         mesh = rig.data
         mesh.clear_geometry()
-        verts = [(min_x, min_y, 0.0), (max_x, min_y, 0.0), (max_x, max_y, 0.0), (min_x, max_y, 0.0)]
-        edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+        fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
+        half_extents = None
+        center = (0.0, 0.0)
+        if fit_mode == 'FIT_PLANE' or shape == 'DEFAULT':
+            half_extents = ((max_x - min_x) * 0.5, (max_y - min_y) * 0.5)
+            center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
+        shape_size = max(0.0002, 2.0 + margin * 2.0)
+        verts, edges = _fbp_rig_shape_geometry(
+            shape, size=shape_size, half_extents=half_extents, center=center
+        )
         mesh.from_pydata(verts, edges, [])
         mesh.update()
         return True
@@ -269,13 +441,17 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
     fbp_set_rna_property_silent(rig, 'fbp_color_plane_emission', bool(use_emission))
     rig.fbp_loop_mode = 'NONE'
     rig.fbp_global_duration = 1
-    rig.fbp_start_frame = sc.frame_current
+    rig.fbp_start_frame = fbp_creation_start_frame(sc, context)
     rig.fbp_track_cam = bool(getattr(sc, 'fbp_pre_track_cam', False))
     rig.scale = camera_ratio_scale(context)
     rig.fbp_base_scale_vec = rig.scale
     # Creation-time initialization must not invoke the interactive bulk-color callback.
-    fbp_set_rna_property_silent(rig, 'fbp_color_tag', 'COLOR_01')
+    fbp_set_rna_property_silent(rig, 'fbp_color_tag', 'NONE')
     rig.fbp_is_color_plane = True
+    try:
+        rig["fbp_auto_color_plane_name"] = str(rig.name)
+    except FBP_DATA_IO_ERRORS:
+        pass
     rig.fbp_color_plane_color = color
     rig.fbp_color_plane_mode = 'GRADIENT' if gradient_settings else ('HOLDOUT' if holdout else 'SOLID')
     try:
@@ -328,15 +504,23 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
     except (AttributeError, ReferenceError, RuntimeError) as exc:
         _fbp_warn('Could not finalize procedural plane render state', exc)
 
-    # Static procedural planes start without frame rows.
-    # The image/frame list appears only after the user explicitly adds/imports a frame.
+    # New Color and Gradient planes are genuinely static. The Frames panel owns
+    # the explicit conversion to a two-row procedural animation, so creation
+    # never presents a simple plane as an already animated Multi Color Plane.
+    if not holdout:
+        fbp_set_rna_property_silent(rig, 'fbp_sequence_show_frames', True)
     if target_collection:
         rig.fbp_collection_name = target_collection.name
         plane.fbp_collection_name = target_collection.name
+    try:
+        from .ownership import tag_layer_contract
+        tag_layer_contract(rig)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     return rig
 
 # SECTION 04 - Plane Extension / Crop Geometry #
-def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode='EDGE', crop_left=0.0, crop_right=0.0, crop_bottom=0.0, crop_top=0.0):
+def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode='MIRROR', crop_left=0.0, crop_right=0.0, crop_bottom=0.0, crop_top=0.0):
     """Extend plane borders without scaling/deforming the center image.
 
     Rebuilds only the child plane mesh. Object transforms are explicitly preserved
@@ -395,10 +579,32 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
         scale = max_vertical_crop / max(crop_bottom + crop_top, 1e-12)
         crop_bottom *= scale
         crop_top *= scale
-    mode = (mode or 'EDGE').upper()
+    mode = (mode or 'MIRROR').upper()
 
+    base_x, base_y = fbp_native_aspect_half_extents(rig)
+    no_extension = left <= 1e-8 and right <= 1e-8 and bottom <= 1e-8 and top <= 1e-8
+    expected_polygon_count = 1 if no_extension else 9
     mesh = plane.data
-    mats = [mat for mat in mesh.materials]
+    signature = "|".join((
+        str(FBP_CROP_EXTEND_CONTRACT_VERSION),
+        mode,
+        f"{base_x:.9f}", f"{base_y:.9f}",
+        f"{left:.9f}", f"{right:.9f}", f"{bottom:.9f}", f"{top:.9f}",
+        f"{crop_left:.9f}", f"{crop_right:.9f}", f"{crop_bottom:.9f}", f"{crop_top:.9f}",
+        str(source_width), str(source_height), str(expected_polygon_count),
+    ))
+    try:
+        if (
+            int(plane.get("fbp_crop_extend_contract_version", 0) or 0) == FBP_CROP_EXTEND_CONTRACT_VERSION
+            and str(plane.get("fbp_crop_extend_mesh_signature", "") or "") == signature
+            and len(getattr(mesh, "polygons", ()) or ()) == expected_polygon_count
+            and bool(getattr(mesh, "uv_layers", None))
+        ):
+            return False
+    except FBP_DATA_IO_ERRORS:
+        pass
+
+    mats = list(mesh.materials)
     try:
         current_material_index = int(mesh.polygons[0].material_index) if mesh.polygons else 0
     except Exception:
@@ -408,7 +614,6 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
     else:
         current_material_index = 0
 
-    base_x, base_y = fbp_native_aspect_half_extents(rig)
     # Crop values use the current 0..2 range, corresponding to 0..100% of
     # the local width/height. Native layers apply that percentage to the real
     # image-aspect half extents instead of rebuilding a square plane.
@@ -432,7 +637,7 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
             if mat:
                 mesh.materials.append(mat)
 
-        uv_layer = mesh.uv_layers.new(name="UVMap") if not mesh.uv_layers else mesh.uv_layers.active
+        uv_layer = fbp_ensure_render_uv_map(mesh, "UVMap")
         if mesh.polygons:
             u0 = crop_left / 2.0
             u1 = 1.0 - (crop_right / 2.0)
@@ -467,13 +672,13 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
             if mat:
                 mesh.materials.append(mat)
 
-        uv_layer = mesh.uv_layers.new(name="UVMap") if not mesh.uv_layers else mesh.uv_layers.active
+        uv_layer = fbp_ensure_render_uv_map(mesh, "UVMap")
 
         u0 = crop_left / 2.0
         u1 = 1.0 - (crop_right / 2.0)
         v0 = crop_bottom / 2.0
         v1 = 1.0 - (crop_top / 2.0)
-        if mode in {'REPEAT', 'TRANSPARENT'}:
+        if mode in {'REPEAT', 'MIRROR', 'TRANSPARENT'}:
             ux = [u0 - left / 2.0, u0, u1, u1 + right / 2.0]
             uy = [v0 - bottom / 2.0, v0, v1, v1 + top / 2.0]
         else:
@@ -498,6 +703,11 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
     rig["fbp_crop_right"] = crop_right
     rig["fbp_crop_bottom"] = crop_bottom
     rig["fbp_crop_top"] = crop_top
+    try:
+        plane["fbp_crop_extend_mesh_signature"] = signature
+        plane["fbp_crop_extend_contract_version"] = FBP_CROP_EXTEND_CONTRACT_VERSION
+    except FBP_DATA_IO_ERRORS:
+        pass
 
     # Rebuilding mesh data must never change user transforms.
     try:
@@ -583,13 +793,134 @@ def apply_fit_to_camera(context, rig, cam):
     rig.scale = (base_x * factor, base_y * factor, base_z * factor)
 
 # SECTION 06 - Image Sequence Rig Builder #
+def fbp_prepare_media_source(context, directory, files_list, item_durations=None):
+    """Resolve one Pillow-backed source to Blender-readable cached PNG frames."""
+    files_list = [str(f) for f in (files_list or []) if f]
+    original_durations = list(item_durations) if item_durations is not None else None
+    if not files_list:
+        return directory, [], original_durations, None
+
+    render = getattr(getattr(context, "scene", None), "render", None)
+    fps = float(getattr(render, "fps", 24) or 24) / max(
+        0.001, float(getattr(render, "fps_base", 1.0) or 1.0)
+    )
+
+    def prepare_one(source_path, extension):
+        try:
+            return fbp_prepare_pillow_media(
+                source_path,
+                cache_root=fbp_default_pillow_cache_root(source_path),
+                fps=fps,
+            )
+        except OSError:
+            try:
+                fallback_root = bpy.utils.user_resource(
+                    "DATAFILES",
+                    path=os.path.join("frame_by_plane", "media_cache"),
+                    create=True,
+                )
+                if not fallback_root:
+                    raise OSError("Blender did not provide a writable media cache")
+                return fbp_prepare_pillow_media(
+                    source_path,
+                    cache_root=fallback_root,
+                    fps=fps,
+                )
+            except Exception as exc:
+                if extension in FBP_PILLOW_CONVERT_EXTENSIONS:
+                    raise RuntimeError(f"Could not convert {extension.lstrip('.').upper()} media: {exc}") from exc
+                _fbp_warn("Animated image extraction skipped", exc)
+                return None
+        except Exception as exc:
+            if extension in FBP_PILLOW_CONVERT_EXTENSIONS:
+                raise RuntimeError(f"Could not decode {extension.lstrip('.').upper()} media: {exc}") from exc
+            _fbp_warn("Animated image extraction skipped", exc)
+            return None
+
+    expanded_files = []
+    expanded_durations = []
+    prepared_sources = []
+    for index, filename in enumerate(files_list):
+        source_path = filename
+        if not os.path.isabs(source_path):
+            source_path = os.path.join(str(directory or ""), source_path)
+        source_path = os.path.abspath(source_path)
+        extension = os.path.splitext(source_path)[1].lower()
+        # A normal numbered PNG/GIF/WebP sequence is already native and must
+        # not be opened once per row merely to look for embedded animation.
+        should_prepare = len(files_list) == 1 or extension in FBP_PILLOW_CONVERT_EXTENSIONS
+        prepared = prepare_one(source_path, extension) if should_prepare else None
+        try:
+            original_duration = (
+                max(1, int(original_durations[index]))
+                if original_durations is not None and index < len(original_durations)
+                else 1
+            )
+        except (TypeError, ValueError):
+            original_duration = 1
+        if prepared is None:
+            expanded_files.append(filename)
+            expanded_durations.append(original_duration)
+            continue
+
+        prepared_sources.append(prepared)
+        for frame_index, frame_name in enumerate(prepared.files):
+            expanded_files.append(os.path.join(prepared.output_directory, frame_name))
+            if prepared.animated:
+                expanded_durations.append(prepared.durations[frame_index])
+            else:
+                expanded_durations.append(original_duration)
+
+    if not prepared_sources:
+        return directory, files_list, original_durations, None
+
+    prepared_media = prepared_sources[0] if len(files_list) == 1 else None
+    if prepared_media is not None:
+        directory = prepared_media.output_directory
+        expanded_files = [os.path.basename(path) for path in expanded_files]
+    return directory, expanded_files, expanded_durations, prepared_media
+
+
+def fbp_store_prepared_media_metadata(rig, prepared_media) -> None:
+    keys = (
+        "fbp_pillow_source_path",
+        "fbp_pillow_source_format",
+        "fbp_pillow_source_cache_key",
+        "fbp_pillow_source_animated",
+        "fbp_pillow_source_cache_reused",
+        "fbp_pillow_source_durations_ms",
+    )
+    if prepared_media is None:
+        for key in keys:
+            try:
+                if key in rig:
+                    del rig[key]
+            except FBP_DATA_IO_ERRORS:
+                pass
+        return
+    try:
+        rig["fbp_pillow_source_path"] = prepared_media.source_path
+        rig["fbp_pillow_source_format"] = prepared_media.source_format
+        rig["fbp_pillow_source_cache_key"] = prepared_media.cache_key
+        rig["fbp_pillow_source_animated"] = bool(prepared_media.animated)
+        rig["fbp_pillow_source_cache_reused"] = bool(prepared_media.reused_cache)
+        rig["fbp_pillow_source_durations_ms"] = "|".join(
+            f"{value:.6f}" for value in prepared_media.source_durations_ms
+        )
+    except FBP_DATA_IO_ERRORS:
+        pass
+
+
 def build_fbp_rig(
-    context, rig_name, directory, files_list, location, color_tag='COLOR_01',
+    context, rig_name, directory, files_list, location, color_tag='NONE',
     target_collection=None, color_variant_index=0, follow_collection_color=True,
     item_durations=None, source_frame_numbers=None, source_preset="",
 ):
     """Create an FBP image layer using Blender's native Image Sequence backend only."""
-    files_list = [str(f) for f in (files_list or []) if f]
+    directory, files_list, item_durations, prepared_media = fbp_prepare_media_source(
+        context, directory, files_list, item_durations,
+    )
+
     from .native_backend import build_native_fbp_rig
     try:
         rig = build_native_fbp_rig(
@@ -608,6 +939,9 @@ def build_fbp_rig(
                 )
             except FBP_DATA_IO_ERRORS:
                 pass
+        if prepared_media is not None:
+            fbp_store_prepared_media_metadata(rig, prepared_media)
+        fbp_set_rna_property_silent(rig, "fbp_sequence_show_frames", len(files_list) > 1)
         if len(files_list) > 1:
             natural_order = sorted(files_list, key=natural_sort_key)
             is_reversed = files_list == list(reversed(natural_order)) and files_list != natural_order

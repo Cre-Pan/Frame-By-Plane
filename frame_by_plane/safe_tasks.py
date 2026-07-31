@@ -1,236 +1,242 @@
-from .runtime import FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
-# Frame by Plane - Safe Task Scheduler
-# Blender 5.1+ can crash if add-ons create/link/remove ID datablocks from
-# depsgraph handlers, undo callbacks or UI draw code. This module gives the rest
-# of Frame by Plane one place to schedule those mutations for Blender timers.
+"""Compatibility facade for deferred one-shot Frame By Plane work.
 
-import time
+Feature modules keep using ``schedule_once`` while the actual lifecycle,
+coalescing, priority ordering and Blender timer ownership live in
+:mod:`runtime_scheduler`.
+"""
 
-import bpy
+from __future__ import annotations
 
-_SCHEDULED_KEYS = globals().get("_SCHEDULED_KEYS", set())
-_SCHEDULED_RUNNERS = globals().get("_SCHEDULED_RUNNERS", {})
-_SCHEDULED_GENERATIONS = globals().get("_SCHEDULED_GENERATIONS", {})
-_PREVIOUS_SCHEDULER_GENERATION = int(globals().get("_SCHEDULER_GENERATION", 0) or 0)
+from .runtime import fbp_runtime_get, fbp_undo_guard_active
+from .runtime_scheduler import (
+    PRIORITY_IDLE,
+    PRIORITY_INTERACTIVE,
+    PRIORITY_MAINTENANCE,
+    PRIORITY_NORMAL,
+    cancel_task_prefixes,
+    clear_tasks,
+    normalize_task_counter,
+    normalize_task_delay,
+    normalize_task_key,
+    schedule_task,
+    scheduler_accepting_tasks,
+    scheduler_callback_is_safe,
+    scheduler_dispatcher_callback,
+    normalize_task_interval,
+    task_is_scheduled,
+)
 
-# importlib.reload() reuses the module dictionary. Retire closures from the old
-# code generation immediately instead of waiting for another task with the same
-# key to replace them. This prevents stale callbacks from executing after reload.
-if _PREVIOUS_SCHEDULER_GENERATION > 0:
-    for _old_runner in list(_SCHEDULED_RUNNERS.values()):
-        try:
-            if bpy.app.timers.is_registered(_old_runner):
-                bpy.app.timers.unregister(_old_runner)
-        except FBP_DATA_ERRORS:
-            pass
-    _SCHEDULED_KEYS.clear()
-    _SCHEDULED_RUNNERS.clear()
-    _SCHEDULED_GENERATIONS.clear()
-
-_SCHEDULER_GENERATION = _PREVIOUS_SCHEDULER_GENERATION + 1
-_UNKNOWN_GUARD_RETRY_SECONDS = 15.0
-_UNKNOWN_GUARD_RETRY_INTERVAL = 0.25
+# Deferred callback closures are tied to one Python/RNA generation. Reusing the
+# old facade dictionaries during an in-place extension reload can keep stale
+# Object/Scene wrappers alive even after the scheduler timer was retired.
+_PREVIOUS_SCHEDULED_COUNT = len(globals().get("_SCHEDULED_KEYS", ()) or ())
+_SCHEDULED_KEYS = set()
+_SCHEDULED_RUNNERS = {}
+_SCHEDULED_CALLBACKS = {}
+_SCHEDULED_GENERATIONS = {}
+_SCHEDULED_TASK_EPOCHS = {}
+_TASK_EPOCH = normalize_task_counter(globals().get("_TASK_EPOCH", 0)) + 1
 
 
-def _task_key(name, callback):
-    return str(name or getattr(callback, "__name__", "fbp_safe_task"))
+def _priority_for_key(key):
+    name = normalize_task_key(key).lower()
+    if any(token in name for token in ("dirty.flush", "preview.queue", "mask_live", "selection")):
+        return PRIORITY_INTERACTIVE
+    if any(token in name for token in ("cleanup", "orphan", "diagnostic", "audit")):
+        return PRIORITY_IDLE
+    if any(token in name for token in ("sync", "rebuild", "refresh", "repair")):
+        return PRIORITY_MAINTENANCE
+    return PRIORITY_NORMAL
+
+
+def _drop_key(key):
+    _SCHEDULED_KEYS.discard(key)
+    _SCHEDULED_RUNNERS.pop(key, None)
+    _SCHEDULED_CALLBACKS.pop(key, None)
+    _SCHEDULED_GENERATIONS.pop(key, None)
+    _SCHEDULED_TASK_EPOCHS.pop(key, None)
+
+
+def _prune_scheduled_registry():
+    """Drop wrapper metadata for tasks no longer owned by the scheduler.
+
+    Low-level cancellation is used by lifecycle repair and diagnostics. Without
+    reconciliation, the compatibility registry could keep reporting pending
+    work after the dispatcher task had already been removed.
+    """
+    stale = tuple(key for key in _SCHEDULED_KEYS if not task_is_scheduled(key))
+    for key in stale:
+        _drop_key(key)
+    return len(stale)
+
+
+def invalidate_task_epoch():
+    """Invalidate captured one-shot payloads without clearing timer ownership.
+
+    This variant is safe for Blender ``undo_pre`` and ``load_pre`` callbacks.
+    Stale facade metadata is reconciled later from the ordinary idle loop.
+    """
+    global _TASK_EPOCH
+    _TASK_EPOCH += 1
+    return _TASK_EPOCH
+
+
+def bump_task_epoch():
+    """Eagerly retire deferred mutations from a safe idle context."""
+    global _TASK_EPOCH
+    _TASK_EPOCH += 1
+    clear_scheduled()
+    return _TASK_EPOCH
 
 
 def schedule_once(name, callback, *, first_interval=0.03):
-    """Run callback once from bpy.app.timers, deduplicated by name.
+    """Schedule one deduplicated safe task through the shared dispatcher.
 
-    The callback may return a number to reschedule itself, or None to finish.
-    The scheduler clears its dedupe key only when the task actually finishes.
-    Datablock tasks pause for the complete render session and resume only after
-    Blender and the Frame by Plane render guard both report an idle state.
+    Repeated calls keep only the latest callback payload and never postpone an
+    earlier due time. A positive numeric return value reschedules the same key.
+    The return value is idempotent: ``True`` means the request is active, while
+    ``False`` is reserved for a real scheduling rejection.
     """
-    if not callable(callback):
+    if not callable(callback) or not scheduler_accepting_tasks():
+        return False
+    if not scheduler_callback_is_safe(name, callback):
+        return False
+    normalized_delay = normalize_task_delay(first_interval)
+    if normalized_delay is None:
+        return False
+    try:
+        if fbp_undo_guard_active() or bool(fbp_runtime_get("fbp_pause_managed_timers", False)):
+            return False
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
 
-    key = _task_key(name, callback)
-    if key in _SCHEDULED_KEYS:
-        # Blender can silently discard timers during file loads. A Python module
-        # reload is different: an old registered closure must be unregistered so
-        # it cannot call stale code or clear a new generation's dedupe entry.
-        runner = _SCHEDULED_RUNNERS.get(key)
-        same_generation = _SCHEDULED_GENERATIONS.get(key) == _SCHEDULER_GENERATION
-        try:
-            is_registered = bool(runner is not None and bpy.app.timers.is_registered(runner))
-        except FBP_DATA_ERRORS:
-            is_registered = False
-        if same_generation and is_registered:
-            return False
-        if is_registered:
+    key = normalize_task_key(name)
+    if not key:
+        key = normalize_task_key(getattr(callback, "__name__", "fbp_safe_task"))
+    if not key:
+        key = "fbp_safe_task"
+    epoch = _TASK_EPOCH
+    _SCHEDULED_CALLBACKS[key] = callback
+
+    runner = _SCHEDULED_RUNNERS.get(key)
+    if runner is None or _SCHEDULED_TASK_EPOCHS.get(key) != epoch:
+        def runner():
+            keep = False
+            run_generation = normalize_task_counter(_SCHEDULED_GENERATIONS.get(key, 0))
             try:
-                bpy.app.timers.unregister(runner)
-            except FBP_DATA_ERRORS:
-                pass
-        _SCHEDULED_KEYS.discard(key)
-        _SCHEDULED_RUNNERS.pop(key, None)
-        _SCHEDULED_GENERATIONS.pop(key, None)
+                if _SCHEDULED_TASK_EPOCHS.get(key) != epoch:
+                    return None
+                current = _SCHEDULED_CALLBACKS.get(key)
+                if not callable(current):
+                    return None
+                # The scheduler owns only this facade runner. The actual payload
+                # lives in our registry and may acquire RNA through a mutable
+                # closure after it was queued, so validate it again immediately
+                # before execution.
+                if not scheduler_callback_is_safe(key, current):
+                    return None
+                repeat_interval = normalize_task_interval(current())
+                keep = repeat_interval is not None
+                return repeat_interval
+            finally:
+                # A callback may schedule a newer payload for this same key while
+                # it is executing.  Do not let the older invocation erase that
+                # payload merely because the older callback returned ``None``.
+                if (
+                    not keep
+                    and normalize_task_counter(_SCHEDULED_GENERATIONS.get(key, 0))
+                    == run_generation
+                ):
+                    _drop_key(key)
+
+        runner.__name__ = f"fbp_safe_task_{abs(hash(key))}"
+        runner.__module__ = __name__
+        _SCHEDULED_RUNNERS[key] = runner
 
     _SCHEDULED_KEYS.add(key)
-    runner_generation = _SCHEDULER_GENERATION
-    unknown_guard_since = 0.0
-
-    def _runner():
-        nonlocal unknown_guard_since
-        repeat_interval = None
-        try:
-            # ``clear_scheduled`` may fail to unregister a timer while Blender is
-            # replacing Main. Treat the scheduler maps as the authority: a stale
-            # closure that is no longer the current runner for its key must exit
-            # before querying guards or invoking its captured callback.
-            if (
-                _SCHEDULED_RUNNERS.get(key) is not _runner
-                or _SCHEDULED_GENERATIONS.get(key) != runner_generation
-            ):
-                return None
-
-            # A timer queued before Ctrl+Z or file loading must not mutate Blender
-            # datablocks while Main is being decoded/replaced. Keep the same
-            # deduplicated task pending and retry after the runtime guard releases.
-            try:
-                from .runtime import (
-                    FBP_RENDER_BUSY,
-                    FBP_RENDER_UNKNOWN,
-                    fbp_render_state,
-                    fbp_runtime_get,
-                    fbp_undo_guard_active,
-                )
-                # Destructive Developer Tool cleanup invalidates every deferred
-                # mutation captured from its temporary Scenes. Keep safe tasks
-                # dormant while the transaction is active; cleanup explicitly
-                # retires them before generated datablocks are removed.
-                if bool(fbp_runtime_get("fbp_pause_managed_timers", False)):
-                    unknown_guard_since = 0.0
-                    repeat_interval = 0.10
-                    return repeat_interval
-                try:
-                    resume_after = float(
-                        fbp_runtime_get("fbp_managed_timers_resume_after", 0.0) or 0.0
-                    )
-                except (TypeError, ValueError):
-                    resume_after = 0.0
-                now = time.monotonic()
-                if resume_after > now:
-                    unknown_guard_since = 0.0
-                    repeat_interval = max(0.05, min(0.25, resume_after - now))
-                    return repeat_interval
-                if fbp_undo_guard_active():
-                    unknown_guard_since = 0.0
-                    repeat_interval = 0.10
-                    return repeat_interval
-                render_state = fbp_render_state()
-                if render_state == FBP_RENDER_BUSY:
-                    unknown_guard_since = 0.0
-                    repeat_interval = 0.10
-                    return repeat_interval
-                if render_state == FBP_RENDER_UNKNOWN:
-                    # A transient UNKNOWN sample can occur while Blender is
-                    # replacing Main or reloading modules. Never mutate IDs, but
-                    # keep the deduplicated task alive briefly instead of losing
-                    # a required repair forever. Unregister/load cleanup still
-                    # retires this closure immediately.
-                    now = time.monotonic()
-                    if unknown_guard_since <= 0.0:
-                        unknown_guard_since = now
-                    if now - unknown_guard_since < _UNKNOWN_GUARD_RETRY_SECONDS:
-                        repeat_interval = _UNKNOWN_GUARD_RETRY_INTERVAL
-                        return repeat_interval
-                    try:
-                        from .runtime import fbp_warn_once
-                        fbp_warn_once(
-                            f"safe_task_unknown_guard:{key}",
-                            f"Deferred task '{key}' was cancelled because Blender's render state stayed unknown",
-                        )
-                    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                        pass
-                    return None
-                unknown_guard_since = 0.0
-            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                # Treat guard-query failures like UNKNOWN: wait for a bounded
-                # period, but never guess that Blender is idle.
-                now = time.monotonic()
-                if unknown_guard_since <= 0.0:
-                    unknown_guard_since = now
-                if now - unknown_guard_since < _UNKNOWN_GUARD_RETRY_SECONDS:
-                    repeat_interval = _UNKNOWN_GUARD_RETRY_INTERVAL
-                    return repeat_interval
-                return None
-
-            result = callback()
-            if (
-                not isinstance(result, bool)
-                and isinstance(result, (int, float))
-                and result > 0
-            ):
-                repeat_interval = float(result)
-                return repeat_interval
-            return None
-        except ReferenceError:
-            return None
-        except Exception as exc:
-            try:
-                print(f"[FBP Safe Task] {key} failed: {exc}")
-            except FBP_DATA_IO_ERRORS:
-                pass
-            return None
-        finally:
-            # Keep the dedupe lock only while Blender will call this runner again.
-            if (
-                repeat_interval is None
-                and _SCHEDULED_RUNNERS.get(key) is _runner
-                and _SCHEDULED_GENERATIONS.get(key) == runner_generation
-            ):
-                _SCHEDULED_KEYS.discard(key)
-                _SCHEDULED_RUNNERS.pop(key, None)
-                _SCHEDULED_GENERATIONS.pop(key, None)
-
-    try:
-        _SCHEDULED_RUNNERS[key] = _runner
-        _SCHEDULED_GENERATIONS[key] = runner_generation
-        bpy.app.timers.register(_runner, first_interval=max(0.0, float(first_interval)))
-        return True
-    except ValueError:
-        _SCHEDULED_KEYS.discard(key)
-        _SCHEDULED_RUNNERS.pop(key, None)
-        _SCHEDULED_GENERATIONS.pop(key, None)
+    _SCHEDULED_GENERATIONS[key] = normalize_task_counter(
+        _SCHEDULED_GENERATIONS.get(key, 0)
+    ) + 1
+    _SCHEDULED_TASK_EPOCHS[key] = epoch
+    accepted = schedule_task(
+        key,
+        _SCHEDULED_RUNNERS[key],
+        delay=normalized_delay,
+        priority=_priority_for_key(key),
+        category="safe",
+        persistent=False,
+        restart=False,
+    )
+    if not accepted and not task_is_scheduled(key):
+        _drop_key(key)
         return False
-    except Exception as exc:
-        _SCHEDULED_KEYS.discard(key)
-        _SCHEDULED_RUNNERS.pop(key, None)
-        _SCHEDULED_GENERATIONS.pop(key, None)
-        try:
-            print(f"[FBP Safe Task] Could not schedule {key}: {exc}")
-        except FBP_DATA_IO_ERRORS:
-            pass
-        return False
+    return True
+
+
+def cancel_scheduled_prefixes(*prefixes):
+    normalized = tuple(
+        value for value in (normalize_task_key(prefix) for prefix in prefixes) if value
+    )
+    if not normalized:
+        return 0
+    keys = tuple(key for key in _SCHEDULED_KEYS if key.startswith(normalized))
+    removed = cancel_task_prefixes(*normalized, category="safe")
+    for key in keys:
+        _drop_key(key)
+    return removed
 
 
 def clear_scheduled():
-    """Unregister pending timer closures and clear all scheduler state.
-
-    Returning the number of retired tasks helps Undo/load safety code verify that
-    stale datablock mutations were discarded without retaining callback objects.
-    """
-    retired = len(_SCHEDULED_RUNNERS)
-    runners = list(_SCHEDULED_RUNNERS.values())
-    # Invalidate closures before asking Blender to unregister them. Even if an
-    # unregister call fails during Undo/load, the stale runner sees that it no
-    # longer owns its key and exits without touching datablocks.
-    _SCHEDULED_RUNNERS.clear()
-    _SCHEDULED_KEYS.clear()
-    _SCHEDULED_GENERATIONS.clear()
-    for runner in runners:
-        try:
-            if bpy.app.timers.is_registered(runner):
-                bpy.app.timers.unregister(runner)
-        except FBP_DATA_IO_ERRORS:
-            pass
-    return retired
+    keys = tuple(_SCHEDULED_KEYS)
+    removed = clear_tasks(category="safe")
+    for key in keys:
+        _drop_key(key)
+    return max(removed, len(keys))
 
 
 def scheduled_task_count():
-    """Return the number of deduplicated safe tasks currently pending."""
-    return len(_SCHEDULED_RUNNERS)
+    _prune_scheduled_registry()
+    return len(_SCHEDULED_KEYS)
+
+
+def scheduled_task_pending(name):
+    key = normalize_task_key(name)
+    if not key:
+        return False
+    pending = task_is_scheduled(key)
+    if not pending and key in _SCHEDULED_KEYS:
+        _drop_key(key)
+    return pending
+
+
+def scheduled_dispatcher_callback():
+    """Expose the single Blender timer callback for lifecycle diagnostics."""
+    return scheduler_dispatcher_callback()
+
+
+def _reset_task_epoch():
+    global _TASK_EPOCH
+    _TASK_EPOCH += 1
+    clear_scheduled()
+
+
+def register():
+    _reset_task_epoch()
+
+
+def unregister():
+    _reset_task_epoch()
+
+
+__all__ = (
+    "bump_task_epoch",
+    "invalidate_task_epoch",
+    "cancel_scheduled_prefixes",
+    "clear_scheduled",
+    "register",
+    "schedule_once",
+    "scheduled_dispatcher_callback",
+    "scheduled_task_count",
+    "scheduled_task_pending",
+    "unregister",
+)

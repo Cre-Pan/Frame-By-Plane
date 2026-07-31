@@ -12,9 +12,16 @@ from .path_utils import (
     is_supported_media_file,
     is_technical_map_file,
 )
-from .runtime import fbp_runtime_get, fbp_runtime_set, fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
+from .runtime import (
+    FBP_DATA_ERRORS,
+    FBP_DATA_IO_ERRORS,
+    fbp_request_redraw,
+    fbp_runtime_get,
+    fbp_runtime_set,
+    fbp_warn,
+)
 from .materials import do_update_emission, do_update_opacity
-from .builder import build_fbp_rig
+from .builder import build_fbp_rig, fbp_scene_orientation_is_horizontal
 from .layers import (
     get_or_create_child_collection,
     set_collection_color_tag,
@@ -27,11 +34,6 @@ def _update_animation(rig):
     # core imports importer, so keep this one dependency lazy and explicit.
     from .core import do_update_animation
     return do_update_animation(rig)
-
-
-def fbp_scene_orientation_is_horizontal(scene):
-    value = str(getattr(scene, 'fbp_pre_orientation', 'VERT') or 'VERT').upper()
-    return value == 'HORIZ'
 
 
 # SECTION 00B - Smart Sequence Detection #
@@ -274,8 +276,10 @@ def fbp_expand_sequences_as_individual_planes(
             reverse=bool(reverse_sequences and is_sequence),
         )
         if enabled and is_sequence and len(ordered_files) > 1:
-            for filename in ordered_files:
-                prepared.append((clean_layer_name_from_path(filename), [filename], False))
+            prepared.extend(
+                (clean_layer_name_from_path(filename), [filename], False)
+                for filename in ordered_files
+            )
         else:
             prepared.append((layer_name, ordered_files, bool(is_sequence)))
     return prepared
@@ -456,7 +460,7 @@ _FBP_FAST_IMPORT_RUNTIME.setdefault("queued_name_set", set())
 def fbp_fast_import_depth(context=None):
     try:
         return int(_FBP_FAST_IMPORT_RUNTIME.get("depth", 0))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -508,6 +512,20 @@ def fbp_queue_fast_import_rig_name(name):
         return False
 
 
+def _fbp_context_value(context, name):
+    """Resolve context members without assuming the global window is active."""
+    try:
+        value = getattr(context, name, None) if context is not None else None
+    except FBP_DATA_ERRORS:
+        value = None
+    if value is not None:
+        return value
+    try:
+        return getattr(getattr(bpy, "context", None), name, None)
+    except FBP_DATA_ERRORS:
+        return None
+
+
 def fbp_begin_fast_import(context):
     depth = fbp_fast_import_depth(context) + 1
     fbp_set_fast_import_depth(depth, context)
@@ -516,7 +534,7 @@ def fbp_begin_fast_import(context):
 
     fbp_set_fast_import_queued_names([], context)
 
-    prefs_edit = getattr(getattr(bpy.context, "preferences", None), "edit", None)
+    prefs_edit = getattr(_fbp_context_value(context, "preferences"), "edit", None)
     if prefs_edit:
         try:
             fbp_runtime_set("fbp_fast_import_undo_state", 1 if prefs_edit.use_global_undo else 0, context)
@@ -524,16 +542,18 @@ def fbp_begin_fast_import(context):
         except Exception:
             fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
 
+    window_manager = _fbp_context_value(context, "window_manager")
     try:
-        bpy.context.window_manager.progress_begin(0, 100)
+        if window_manager is not None:
+            window_manager.progress_begin(0, 100)
     except FBP_DATA_IO_ERRORS:
         pass
 
 
-def _fbp_restore_fast_import_runtime(context):
-    """Always restore temporary Fast Import state, even after finalization errors."""
+def _fbp_restore_fast_import_runtime(context, *, request_redraw=True):
+    """Restore Fast Import state without scheduling work during add-on teardown."""
     try:
-        prefs_edit = getattr(getattr(bpy.context, "preferences", None), "edit", None)
+        prefs_edit = getattr(_fbp_context_value(context, "preferences"), "edit", None)
         stored_undo_state = fbp_runtime_get(
             "fbp_fast_import_undo_state", -1, context
         )
@@ -549,18 +569,19 @@ def _fbp_restore_fast_import_runtime(context):
         fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
         fbp_set_fast_import_queued_names([], context)
 
+    window_manager = _fbp_context_value(context, "window_manager")
     try:
-        bpy.context.window_manager.progress_update(100)
+        if window_manager is not None:
+            window_manager.progress_update(100)
     except FBP_DATA_IO_ERRORS:
         pass
     try:
-        bpy.context.window_manager.progress_end()
+        if window_manager is not None:
+            window_manager.progress_end()
     except FBP_DATA_IO_ERRORS:
         pass
-    try:
-        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-    except FBP_DATA_IO_ERRORS:
-        pass
+    if request_redraw:
+        fbp_request_redraw(context, all_windows=True)
 
 
 def fbp_end_fast_import(context):
@@ -644,7 +665,7 @@ def unregister():
         has_saved_state = False
     if fbp_fast_import_depth() > 0 or has_saved_state:
         try:
-            _fbp_restore_fast_import_runtime(getattr(bpy, "context", None))
+            _fbp_restore_fast_import_runtime(getattr(bpy, "context", None), request_redraw=False)
         except Exception as exc:
             fbp_warn("Could not restore Fast Import runtime during unregister", exc)
     fbp_set_fast_import_depth(0)
@@ -857,10 +878,9 @@ def fbp_build_project_folder(
     if flatten_single_layer:
         coll = parent_collection
         collection_color = 'NONE'
-        layer_color = f"COLOR_{(color_index % 8) + 1:02d}"
-        color_state['next'] = color_index + 1
+        layer_color = 'NONE'
         follows_collection = False
-        base_variant = color_index
+        base_variant = 0
     else:
         if has_children:
             collection_color = 'NONE'
@@ -870,7 +890,7 @@ def fbp_build_project_folder(
         coll = get_or_create_child_collection(parent_collection, folder_name)
         set_collection_color_tag(coll, collection_color)
         follows_collection = not has_children
-        layer_color = collection_color if follows_collection else 'COLOR_09'
+        layer_color = collection_color if follows_collection else 'NONE'
         base_variant = 0
 
     generated = []

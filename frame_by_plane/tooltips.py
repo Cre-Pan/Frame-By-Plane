@@ -43,6 +43,9 @@ EXACT_TOOLTIPS = {
     "fbp.toggle_clipping_mask": (
         "Enable or disable Clipping Mask for this layer. When enabled, the layer uses the alpha of the physically lower compatible layer in the same collection; alphabetical display sorting does not change the source."
     ),
+    "fbp.toggle_cursor_on_camera": (
+        "Attach the 3D cursor to the active Scene Camera and keep it following camera movement or camera animation. Moving the cursor manually disables the link immediately."
+    ),
     # Cutout Plane
     "fbp.import_drawing_plane": (
         "Create a Cutout Plane replacement-animation rig and import the selected images as an ordered drawing library. "
@@ -120,7 +123,7 @@ EXACT_TOOLTIPS = {
         "Audit the current Scene for missing, duplicated, stale or orphaned Frame By Plane viewport controls, safely repair recoverable contracts and write a detailed report to the Text Editor."
     ),
     "fbp.sort_effect_stack": (
-        "Reorder active effects into Frame By Plane's recommended processing order: base and UV stages first, color stages next, then mesh effects. Parameters and visibility states are preserved."
+        "Optionally restore Frame By Plane's factory order inside each compatible chain. Custom orders are valid; UV, sampled color and mesh processing remain separate only where Blender requires different data types."
     ),
     "fbp.apply_effect_preset": (
         "Apply this built-in or user preset to the active effect on every selected layer that already contains it. Only parameters stored by the preset are changed; unrelated effects remain untouched."
@@ -230,10 +233,10 @@ EXACT_TOOLTIPS = {
         "Generate the complete Multiplane project from the current setup tree, including collections, rigs, image planes, native sequence materials, depth spacing and optional camera fitting."
     ),
     "fbp.import_sequence": (
-        "Open the file browser and create an Image Plane from one image, a numbered image sequence or a supported video. Multiple selected stills become one animated native sequence."
+        "Open the file browser and create a Single Plane from one image, a numbered image sequence or a supported video. Animated GIF, WebP and APNG preserve their frames and embedded timing through a PNG cache; AVIF is converted without changing the source."
     ),
     "fbp.replace_sequence": (
-        "Replace the active layer's media while preserving its rig transform, layer identity, timing controls, keyframes and compatible effects. Source files are linked, not copied or deleted."
+        "Replace the active layer's media while preserving its rig transform, identity, keyframes and compatible effects. Animated GIF, WebP and APNG keep embedded timing, and AVIF uses a managed PNG cache; sources are never modified."
     ),
     "fbp.rename_sequence_for_blender": (
         "Safely rename source sequence files to a simple consecutive pattern that Blender's native image-sequence reader can load reliably. Review the preview carefully because this operation changes filenames on disk."
@@ -251,28 +254,28 @@ EXACT_TOOLTIPS = {
         "Clear the stored generation report and its problem list from the current scene. This does not remove generated objects, relink files or alter source media."
     ),
     "fbp.import_single_image": (
-        "Create one Frame By Plane rig from the chosen image or video, or one animated plane from multiple selected images. Uses Blender's native image or movie texture backend."
+        "Create one Frame By Plane rig from any supported image, or one animated plane from multiple selected images. Animated GIF, WebP and APNG retain their frames and timing; AVIF is converted to a managed PNG cache."
     ),
     "fbp.import_folder_multiplane": (
-        "Choose a folder, reuse the last import folder or read a copied folder path. Frame By Plane scans supported images, numbered image sequences, videos and subfolders, then opens a confirmation preview with counts and the first detected layer names. Auto Detect creates one Single Plane for one logical layer or a Multiplane for several layers. Forced Single Plane is accepted only for one real root-level still, video or numbered sequence. When additional layers would be ignored, a separate root-only confirmation is required. The reviewed folder snapshot fingerprints both the detected structure and lightweight source-file metadata, so generation stops if files are renamed, removed, replaced or edited before import. Dialog-only choices reuse the current preview instead of rechecking every source file, while confirmation always performs the final validation. Very large imports require explicit confirmation. Blender 5.1 does not pass ordinary dropped folders to extension File Handlers, so use this action or drop any supported media file from the target folder."
+        "Choose a folder, reuse the last import folder or read a copied folder path. Frame By Plane scans supported images, numbered image sequences, videos and subfolders, then opens a confirmation preview with counts and the first detected layer names. Auto Detect creates one Single Plane for one logical layer or a Multiplane for several layers. Forced Single Plane is accepted only for one real root-level still, video or numbered sequence. When additional layers would be ignored, a separate root-only confirmation is required. The reviewed folder snapshot fingerprints both the detected structure and lightweight source-file metadata, so generation stops if files are renamed, removed, replaced or edited before import. Dialog-only choices reuse the current preview instead of rechecking every source file, while confirmation always performs the final validation. Very large imports require explicit confirmation. Blender 5.2 does not pass ordinary dropped folders to extension File Handlers, so use this action or drop any supported media file from the target folder."
     ),
     "fbp.popup_single_plane": (
-        "Open the compact Image Plane setup, then choose a still image, image sequence or video. Advanced defaults remain available in the Frame By Plane N-panel."
+        "Open the Single Plane setup, then choose any supported still or animated image. Multiple selected images become one image sequence; video files use the separate Video Plane action."
     ),
-    "fbp.popup_single_plane_animation": (
-        "Open the compact animated Image Plane setup and choose multiple images for one native sequence. Timing, loop mode, filtering and orientation are applied during generation."
+    "fbp.popup_video_plane": (
+        "Open the Video Plane setup, then choose one supported movie file. Timing, playback, orientation, filtering, emission and camera tracking are applied during generation."
     ),
     "fbp.popup_multiplane": (
-        "Open the compact Multiplane setup for importing layered folders or multiple media sources. Send the setup to the N-panel when detailed review, grouping or reordering is required."
+        "Open the expanded Multiplane setup for scanning a layered folder and generating its camera-depth arrangement. Source aspect, camera pivot, layer spacing, fit, timing, material, orientation and alpha-crop controls are available before generation."
     ),
     "fbp.popup_color_plane": (
-        "Open the compact procedural-plane setup and create a solid Color, editable Gradient or Holdout plane at the active camera ratio. No external image file is required."
+        "Open the expanded procedural-plane setup and create a solid Color, editable Gradient or Holdout plane at the active camera ratio. Placement orientation and camera tracking can be set before creation."
     ),
     "fbp.create_color_plane_from_hex": (
         "Read a hexadecimal color code from the clipboard and create a solid Frame By Plane Color Plane using that value. Invalid or unsupported clipboard text is rejected without changing the scene."
     ),
     "fbp.import_single_image_from_clipboard": (
-        "Create an Image Plane from a copied bitmap or copied media-file path. Temporary clipboard images are written to Frame By Plane's managed clipboard folder and imported as static images."
+        "Create a Single Plane from a copied bitmap or copied media-file path. Temporary clipboard images are written to Frame By Plane's managed clipboard folder and imported as static images."
     ),
 
     # Layers and collections
@@ -340,16 +343,16 @@ EXACT_TOOLTIPS = {
         "Expand or collapse every collection in Multiplane Setup at once. This changes only the preview state and does not generate or remove scene objects."
     ),
     "fbp.select_collection_layers": (
-        "Select or deselect all Frame By Plane rig layers inside this collection. Shift-click adds or removes the collection without clearing layers selected elsewhere."
+        "Select or deselect all Frame By Plane and Grease Pencil layers inside this collection. Shift-click adds or removes the collection without clearing layers selected elsewhere."
     ),
     "fbp.toggle_collection_visibility": (
-        "Show or hide all Frame By Plane layers inside this collection while preserving each layer's stored visibility state for later restoration."
+        "Show or hide all Frame By Plane and Grease Pencil layers inside this collection while preserving each layer's stored visibility state for later restoration."
     ),
     "fbp.toggle_collection_lock": (
-        "Lock or unlock every Frame By Plane rig and linked plane in this collection to prevent accidental viewport selection and transformation."
+        "Lock or unlock every Frame By Plane rig, linked plane and Grease Pencil layer in this collection to prevent accidental viewport selection and transformation."
     ),
     "fbp.delete_collection_layers": (
-        "Delete all Frame By Plane rigs and owned planes inside this collection while leaving the collection itself available. Source media files on disk are never deleted."
+        "Delete all Frame By Plane and Grease Pencil layers inside this collection while leaving the collection itself available. Source media files on disk are never deleted."
     ),
 
     # Procedural planes and holdouts
@@ -392,25 +395,7 @@ EXACT_TOOLTIPS = {
         "Remove this specific pending layer from Multiplane Setup before generation. The source media remains on disk and can be imported again later."
     ),
     "fbp.project_health_check": (
-        "Inspect the current project for missing media, broken rig-plane links, invalid collections and common Frame By Plane consistency problems, then show a non-destructive report."
-    ),
-    "fbp.deep_addon_audit": (
-        "Run an extended diagnostic over effect-stack contracts, the complete mask interaction matrix, render-only state restoration, native media bindings, material contracts, camera links, generated datablocks and scene ownership. Safe repair restores only recoverable generated relationships."
-    ),
-    "fbp.run_effects_contract_audit": (
-        "Validate every active effect against its owner layer, detect unknown generated tags, inspect shader-stage order metadata and report stacks that differ from the recommended compatible order. Optional repair normalizes metadata and ordering without deleting effects."
-    ),
-    "fbp.run_mask_interaction_audit": (
-        "Validate editable Shape Mask helpers and private images, clipping and matte source pointers, imported raster mask paths, source cycles and per-effect mask receiver wiring. Safe repair restores generated contracts and clears only invalid pointers."
-    ),
-    "fbp.run_render_parity_audit": (
-        "Render the active Scene frame at a compact diagnostic resolution in Eevee and Cycles, compare premultiplied RGBA pixels and verify that real renders restore every tracked viewport, effect, modifier and shader-node state. Scene render settings are restored afterwards."
-    ),
-    "fbp.run_render_contract_audit": (
-        "Execute the same temporary effect-state guard used by final rendering, verify lossless restoration of node, modifier and constraint values, and ensure generated Shape Mask and Lattice helpers cannot appear in Eevee or Cycles."
-    ),
-    "fbp.run_release_gate": (
-        "Run lifecycle, native backend, effects, mask-interaction, render-contract, optional Eevee/Cycles pixel parity, persistence, Undo/Redo and Deep Add-on checks as one strict pre-release gate. Platform installation and add-on reload tests remain external."
+        "Run Project Doctor to find missing media, broken drivers, invalid rig-plane links, effect and mask problems, stale generated contracts and production warnings. Safe Repair changes only recoverable Frame By Plane metadata and generated relationships."
     ),
     "fbp.relink_from_project_root": (
         "Search recursively inside the configured Project Folder for missing image and video filenames, then relink unambiguous matches without moving or renaming files."
@@ -423,18 +408,6 @@ EXACT_TOOLTIPS = {
     ),
     "fbp.apply_preferences_to_scene": (
         "Copy the current Frame By Plane add-on defaults into this scene's creation, camera, preview and render settings. Existing generated layers are not rebuilt automatically."
-    ),
-    "fbp.profile_effects": (
-        "Measure actual frame-change and dependency-graph update time plus Blender process memory for the current scene, then report active and heavy effects. Profiling can temporarily evaluate the scene."
-    ),
-    "fbp.run_native_backend_regression": (
-        "Run deterministic One Shot, Loop and Ping-Pong playback-math checks, inspect native Image cache ownership, validate every native layer and optionally evaluate representative timeline frames without changing media files."
-    ),
-    "fbp.create_native_regression_scene": (
-        "Create a separate diagnostic scene covering static images, variable-duration One Shot, Loop, Ping-Pong, reversed rows, transparent rows, shared media sources, long sequences, mixed resolutions and missing-file recovery."
-    ),
-    "fbp.create_effect_regression_scene": (
-        "Create a separate test scene with representative source planes, one sample for every registered effect, local per-effect masks and a real animated source/target matte matrix. Use it to compare viewport, render, Undo/Redo, save/reopen and future releases."
     ),
     "fbp.repair_render_state": (
         "Validate and repair native media bindings, timing, UV layers, material slots, material indices and render-sensitive effect state before rendering. Source image files are not modified."
@@ -452,6 +425,12 @@ EXACT_TOOLTIPS = {
     # Sequence and timing
     "fbp.update_animation": (
         "Rebuild the selected layers' native sequence timing from Start Frame, frame durations and playback mode. Media files, transforms and unrelated effects are preserved."
+    ),
+    "fbp.refresh_media": (
+        "Reload the active Single Image or Image Sequence from disk. External file edits become visible immediately, Blender-side relinks are mirrored into Frame By Plane, and sequence timing, transforms, masks and effects are preserved."
+    ),
+    "fbp.refresh_all_media": (
+        "Reload every Frame By Plane image, sequence, movie and Cutout source in the current scene. Shared Blender image datablocks are refreshed once, while each layer keeps timing, transforms, masks and effects."
     ),
     "fbp.transform": (
         "Apply the requested orientation transform to selected Frame By Plane rigs, such as standing the plane vertically or laying it on the ground, without altering image timing."
@@ -471,23 +450,29 @@ EXACT_TOOLTIPS = {
     "fbp.select_image_exclusive": (
         "Make this frame the active frame-list entry and move the timeline to the first scene frame where it appears. Use row checkboxes for additive frame selection."
     ),
+    "fbp.convert_color_plane_to_animation": (
+        "Creates the first procedural frame from the current Color or Gradient plane, then shows the animation frame list."
+    ),
     "fbp.insert_images_after_selected": (
         "Choose one or more images and insert them after the active frame, or after the last checked frame. The sequence backend is rebuilt while existing frame durations are preserved."
     ),
     "fbp.insert_linked_image_after_selected": (
-        "Import a new linked image frame after the active or last checked frame. The file remains external and Frame By Plane rebuilds native timing after insertion."
+        "Import a new linked image frame after the active or last checked frame. Animated GIF, WebP and APNG expand into timed frame rows; AVIF uses a managed PNG cache. The source file remains unchanged."
     ),
     "fbp.insert_transparent_frame": (
         "Insert a logical transparent frame after the active or last checked frame. No placeholder image file is created; the transparent interval is represented by sequence timing."
     ),
     "fbp.link_image_frame": (
-        "Choose a new image or video for this frame-list entry while preserving its position and duration. The previous source datablock is released only when it is safely unused."
+        "Choose new media for this frame-list entry. Animated GIF, WebP and APNG can replace the row with their timed frames, while AVIF uses a managed PNG cache; source files remain unchanged."
     ),
     "fbp.select_all": (
         "Select all frame-list entries, deselect all entries, or invert the current frame selection according to the requested action. The active timeline frame does not change."
     ),
     "fbp.reverse_sequence": (
         "Reverse the complete logical frame order with one click. Frame checkboxes are ignored; per-frame durations move with their images, while transforms, effects and source files stay unchanged."
+    ),
+    "fbp.optimize_sequence_frames": (
+        "Decode the current frame list with Pillow, consolidate only consecutive pixel-identical images into duration-preserving holds, and optionally replace fully transparent files with logical empty frames. Source files are never modified or deleted."
     ),
     "fbp.reverse_pending_sequence": (
         "Reverse this detected sequence directly inside Multiplane Setup. Frame filenames and source files remain unchanged; only the stored import order is inverted."
@@ -524,6 +509,17 @@ EXACT_TOOLTIPS = {
     "fbp.hide_custom_node_effect": (
         "Hide this custom effect from future Add Effect menus without removing its node group or breaking layers that already use it. It can be registered again later."
     ),
+
+    # Grease Pencil workflow refinements
+    "fbp.select_grease_pencil_canvas": (
+        "Select the generated Grease Pencil Drawing Plane linked to the current Frame By Plane layer.\n\nExample: use this after selecting the image plane when you want to draw, erase or edit strokes on its matching canvas."
+    ),
+    "fbp.restore_grease_pencil_reference_opacity": (
+        "Restore the linked image-plane reference opacity used while drawing Grease Pencil masks or overlays.\n\nExample: if the source plane was dimmed to 50% for drawing, this returns it to the stored normal visibility."
+    ),
+    "fbp.gp_set_workflow_state": (
+        "Switch the Grease Pencil workflow state used by Frame By Plane.\n\nExample: move between Reference, Draw, Mask and Review states without manually searching for the generated canvas."
+    ),
 }
 
 
@@ -542,34 +538,87 @@ CATEGORY_DETAILS = {
 
 
 MENU_TOOLTIPS = {
-    "FBP_MT_add_effect": "Open the effect library for the current Image Effects or Mesh Effects view and add a compatible effect to the selected Frame By Plane layers.",
+    "FBP_MT_add_effect": "Choose Image Effects, Mask or Mesh Effects and add a compatible effect to the selected Frame By Plane layers.",
     "FBP_MT_effect_presets": "Open built-in and user presets for the active effect. User presets can be applied, renamed or deleted, and the current settings can be saved as a new preset.",
     "FBP_MT_effect_stack_actions": "Open actions for copying, pasting, resetting, sorting or clearing the selected layers' effect stack.",
     "FBP_MT_object_effects": "Open Frame By Plane's Image, Mask and Mesh libraries for the selected layer directly from Blender's object context menu.",
-    "FBP_MT_object_masks": "Add Alpha Matte or Luma Matte effects from the dedicated Mask Stack.",
+    "FBP_MT_object_masks": "Add Shape, generated, Grease Pencil, imported, Alpha Matte or Luma Matte masks from the dedicated Mask Stack.",
     "FBP_MT_object_effects_2d": "Browse compatible base, UV and image-processing effects for the selected Frame By Plane layers.",
     "FBP_MT_object_effects_3d": "Browse compatible Geometry Nodes and mesh effects for the selected Frame By Plane layers.",
-    "FBP_MT_frame_by_plane_add": "Create the primary Frame By Plane layer types from Blender's Add menu. Secondary folder, PSD/PSB, Procreate and Toon Boom imports are grouped in the final More submenu.",
-    "FBP_MT_frame_by_plane_more": "Open secondary import workflows for folders, copied folder paths, the last-used folder, PSD/PSB, Procreate and Toon Boom exports.",
+    "FBP_MT_frame_by_plane_add": "Create the primary Frame By Plane layer types from Blender's Add menu. Secondary folder, PSD/PSB and Toon Boom imports are grouped in the final More submenu. Procreate appears only when its Preview toggle is enabled.",
+    "FBP_MT_frame_by_plane_more": "Open secondary import workflows for folders, copied folder paths, the last-used folder, PSD/PSB and Toon Boom exports, plus optional Preview imports.",
     "FBP_MT_layer_blend_dropdown": "Choose a principal PSD or Procreate-style layer blend mode from a compact multi-column submenu. The current shared mode is marked with a check.",
     "FBP_MT_object_holdout": "Open alpha-aware holdout operations for selected Frame By Plane layers, including selected-only, inverse selection and material restoration workflows.",
 }
 
 
+_EXAMPLE_BY_KEYWORD = (
+    ("import", "Example: import a PNG, image sequence, PSD/PSB or folder without changing the original source files. Procreate decoding is optional Preview functionality."),
+    ("effect", "Example: apply the action to the selected Frame By Plane layers, then use Undo if the stack result is not what you expected."),
+    ("mask", "Example: attach a mask to the whole layer or to one effect when you want the effect to appear only inside a drawn or generated matte."),
+    ("grease", "Example: select the generated Grease Pencil canvas, draw the matte or strokes, then refresh the Frame By Plane mask if needed."),
+    ("motion", "Example: stack Motion items for procedural offset, rotation, scale or stagger, then bake them only when you need real keyframes."),
+    ("render", "Example: run the utility before a final export to check that viewport-only helpers, masks and render state restore correctly."),
+    ("diagnostic", "Example: copy the report text and paste it into a bug report when a layer, effect or mask contract looks broken."),
+    ("lattice", "Example: edit the cage points for perspective-style deformation, or use Camera Flatten to preserve the current camera appearance."),
+    ("sequence", "Example: rebuild timing after inserting, reversing or splitting frames while keeping linked images on disk."),
+    ("layer", "Example: use this from the Layer List to select, duplicate, isolate, lock or reorder generated Frame By Plane rigs safely."),
+)
+
+_MODULE_USE_WHEN = {
+    "custom_effects": "Use when: you are registering, editing or hiding local Shader/Geometry node effects.",
+    "drawing_plane": "Use when: the selected layer is a Cutout Plane drawing library.",
+    "effect_controls": "Use when: the active effect exposes a viewport helper such as a center, direction, offset or range control.",
+    "feedback": "Use when: you want release notes, support links or review links; no project data is submitted automatically.",
+    "geometry_nodes": "Use when: you are editing the selected layer's effect stack, generated mesh helpers, masks or effect presets.",
+    "grease_pencil_bridge": "Use when: Grease Pencil should behave like a Frame By Plane layer, mask or drawing canvas.",
+    "grease_pencil_limited_loop": "Use when: you need a controlled Grease Pencil loop range that leaves later animation free.",
+    "grease_pencil_workflow": "Use when: switching between reference, draw, mask and review states for a Grease Pencil workflow.",
+    "motion_runtime": "Use when: adding, linking, distributing or baking procedural Motion inside the effect workflow.",
+    "operator_import": "Use when: bringing external media into the scene as generated Frame By Plane layers.",
+    "operator_layers": "Use when: organizing, selecting, repairing or blending existing Frame By Plane layers.",
+    "operator_project": "Use when: checking, copying or opening project diagnostics and maintenance reports.",
+    "operator_render": "Use when: preparing or launching renders while preserving Frame By Plane helper state.",
+    "operator_sequence": "Use when: editing an animated plane's logical frame list and native sequence timing.",
+    "viewport_pie": "Use when: you need a fast viewport command without opening the full Properties panels.",
+}
+
+
+def _operator_example(operator_id: str, module_name: str, label: str) -> str:
+    haystack = f"{operator_id} {module_name} {label}".lower()
+    for key, example in _EXAMPLE_BY_KEYWORD:
+        if key in haystack:
+            return example
+    return "Example: run this from the active Frame By Plane context; incompatible layers are skipped or reported instead of being silently changed."
+
+
+def _format_operator_tooltip(cls, module_name: str, operator_id: str, base: str) -> str:
+    base = str(base or "").strip().rstrip(". ") + "."
+    label = str(getattr(cls, "bl_label", operator_id) or operator_id)
+    short_module = module_name.rsplit(".", 1)[-1]
+    lines = [base]
+    use_when = _MODULE_USE_WHEN.get(short_module)
+    if use_when and use_when not in base:
+        lines.append(use_when)
+    example = _operator_example(operator_id, short_module, label)
+    if example and example not in base:
+        lines.append(example)
+    category_suffix = CATEGORY_DETAILS.get(short_module, "").strip()
+    if category_suffix and category_suffix not in base:
+        lines.append("Note: " + category_suffix)
+    return "\n\n".join(lines)
+
+
 def _expanded_description(cls, module_name: str, operator_id: str) -> str:
     exact = EXACT_TOOLTIPS.get(operator_id)
     if exact:
-        return exact
+        return _format_operator_tooltip(cls, module_name, operator_id, exact)
 
     current = str(getattr(cls, "bl_description", "") or "").strip()
     if not current:
         label = str(getattr(cls, "bl_label", operator_id) or operator_id)
         current = f"Run {label} for the current Frame By Plane context"
-    current = current.rstrip(". ") + "."
-
-    short_module = module_name.rsplit(".", 1)[-1]
-    suffix = CATEGORY_DETAILS.get(short_module, "")
-    return current + suffix
+    return _format_operator_tooltip(cls, module_name, operator_id, current)
 
 
 def apply_tooltips(modules) -> None:
@@ -588,6 +637,14 @@ def apply_tooltips(modules) -> None:
             menu_description = MENU_TOOLTIPS.get(bl_idname)
             if menu_description:
                 cls.bl_description = menu_description
+                continue
+
+            if bl_idname.startswith("FBP_PT_"):
+                label = str(getattr(cls, "bl_label", "Frame By Plane") or "Frame By Plane")
+                cls.bl_description = (
+                    f"Open the {label} panel for the current Frame By Plane context.\n\n"
+                    "Inactive grey help text inside the panel explains unavailable controls without changing the scene."
+                )
                 continue
 
             if not bl_idname.startswith("fbp."):
