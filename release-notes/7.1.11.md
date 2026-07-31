@@ -7,6 +7,7 @@ Frame By Plane 7.1.11 closes the 7.1 LTS line with a refined Scrub Bar, correcte
 - Added **Mouse Magnet**: the persistent Scrub Bar now begins moving toward the cursor when it enters a configurable proximity range.
 - Added a smooth attach/release transition instead of an abrupt jump.
 - Added Preferences controls for magnet range, strength and smoothing.
+- Scrub Bar Preferences now request coalesced Viewport redraws, so Live Preview updates immediately while editing values and colors.
 - The bar follows the cursor exactly in the inner magnetic zone while retaining a gradual approach in the outer zone.
 - Magnetic movement is frozen during an active scrub or keyframe transform, preventing the axis from drifting under the pointer.
 - Momentary `<` scrubbing resets the magnetic displacement and keeps its relative-motion behavior predictable.
