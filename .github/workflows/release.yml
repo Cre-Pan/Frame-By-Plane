@@ -1,0 +1,173 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build, for example v7.1.11; leave empty to build main"
+        required: false
+        type: string
+      publish:
+        description: "Publish a GitHub Release for the selected tag"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Validate repository metadata
+        run: python tools/verify_repository.py
+
+      - name: Compile Python sources
+        run: python -m compileall -q frame_by_plane
+
+      - name: Resolve release metadata
+        id: metadata
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path('frame_by_plane/blender_manifest.toml').read_text(encoding='utf-8'))
+          print(data['version'])
+          PY
+          )"
+          TAG="${INPUT_TAG:-}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          PUBLISH="false"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" || "${INPUT_PUBLISH:-false}" == "true" ]]; then
+            PUBLISH="true"
+          fi
+          if [[ -n "$TAG" && "$TAG" != "v$VERSION" ]]; then
+            echo "Tag/version mismatch: tag=$TAG manifest=v$VERSION" >&2
+            exit 1
+          fi
+          if [[ "$PUBLISH" == "true" && -z "$TAG" ]]; then
+            echo "Publishing requires an existing v<version> tag" >&2
+            exit 1
+          fi
+          if [[ -n "$TAG" ]]; then
+            TAG_COMMIT="$(git rev-parse "$TAG^{commit}")"
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+            if [[ "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+              echo "Checked-out commit does not match $TAG" >&2
+              exit 1
+            fi
+          fi
+          if [[ "$PUBLISH" == "true" ]]; then
+            git fetch --no-tags origin main
+            if [[ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]]; then
+              echo "Release tags must point to the current main commit" >&2
+              exit 1
+            fi
+          fi
+          NOTES_FILE="release-notes/$VERSION.md"
+          test -f "$NOTES_FILE"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$SOURCE_DATE_EPOCH" >> "$GITHUB_OUTPUT"
+
+      - name: Build deterministic release packages
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.metadata.outputs.source_date_epoch }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          args=(--source-dir frame_by_plane --output-dir dist)
+          if [[ -n "$RELEASE_TAG" ]]; then
+            args+=(--tag "$RELEASE_TAG")
+          fi
+          python tools/build_release.py "${args[@]}"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-by-plane-${{ steps.metadata.outputs.version }}
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Generate build provenance attestations
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+
+      - name: Create or update draft release
+        if: steps.metadata.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          NOTES_FILE: ${{ steps.metadata.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' > /tmp/release-draft 2>/dev/null; then
+            if [[ "$(cat /tmp/release-draft)" != "true" ]]; then
+              echo "Release $TAG is already published and will not be overwritten" >&2
+              exit 1
+            fi
+          else
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Frame By Plane $VERSION LTS" \
+              --notes-file "$NOTES_FILE"
+          fi
+          gh release upload "$TAG" dist/*.zip dist/SHA256SUMS.txt --clobber
+          gh release edit "$TAG" \
+            --draft=false \
+            --latest \
+            --title "Frame By Plane $VERSION LTS" \
+            --notes-file "$NOTES_FILE"
+
+      - name: Write workflow summary
+        shell: bash
+        run: |
+          {
+            echo "## Frame By Plane ${{ steps.metadata.outputs.version }}"
+            echo
+            echo "- Tag: \`${{ steps.metadata.outputs.tag || 'dry-run' }}\`"
+            echo "- Published: \`${{ steps.metadata.outputs.publish }}\`"
+            echo "- Packages: five platforms plus verified source archive"
+            echo "- Checksums: \`dist/SHA256SUMS.txt\`"
+          } >> "$GITHUB_STEP_SUMMARY"
