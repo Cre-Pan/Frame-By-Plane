@@ -1,0 +1,47 @@
+name: Apply 7.1.13 runtime hotfix
+
+on:
+  push:
+    branches:
+      - "release/7.1.11-lts"
+    paths:
+      - "release-patches/7.1.13-runtime-hotfix.ready"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/7.1.11-lts
+          fetch-depth: 0
+
+      - name: Apply verified runtime patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="release-patches/7.1.13-runtime-hotfix.patch"
+          READY="release-patches/7.1.13-runtime-hotfix.ready"
+          test -f "$PATCH"
+          test -f "$READY"
+          test "$(wc -c < "$PATCH" | tr -d ' ')" = "2634"
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          rm -f "$PATCH" "$READY" .github/workflows/apply-7-1-13-hotfix.yml
+          python -m compileall -q frame_by_plane
+          find frame_by_plane -type d -name __pycache__ -prune -exec rm -rf {} +
+          find frame_by_plane -name '*.pyc' -delete
+
+      - name: Commit hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix remaining undefined runtime symbols"
+          git push origin HEAD:release/7.1.11-lts
