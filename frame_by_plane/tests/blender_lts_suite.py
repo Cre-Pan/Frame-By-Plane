@@ -311,6 +311,74 @@ def test_undo_redo(_module):
     return "12 pushes / 6 undo / 6 redo"
 
 
+def test_scrub_bar_regressions(_module):
+    scrub = importlib.import_module(f"{PACKAGE}.grease_pencil_scrub")
+    bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
+    icons = importlib.import_module(f"{PACKAGE}.ui_icons")
+
+    vertical = scrub.scrub_overlay_layout(
+        900,
+        600,
+        position="LEFT",
+        ui_scale=1.0,
+        length_ratio=0.5,
+        edge_offset=180.0,
+    )
+    base_x = float(vertical["x"])
+    assert scrub.magnetic_scrub_axis_offset(
+        base_x + 150.0,
+        300.0,
+        vertical,
+        capture_px=96.0,
+    ) == 0.0
+    assert math.isclose(
+        scrub.magnetic_scrub_axis_offset(
+            base_x + 24.0,
+            300.0,
+            vertical,
+            capture_px=96.0,
+        ),
+        24.0,
+        abs_tol=1.0e-6,
+    )
+    outer = scrub.magnetic_scrub_axis_offset(
+        base_x + 72.0,
+        300.0,
+        vertical,
+        capture_px=96.0,
+    )
+    assert 0.0 < outer < 72.0
+    assert scrub.magnetic_scrub_axis_offset(
+        base_x + 24.0,
+        800.0,
+        vertical,
+        capture_px=96.0,
+    ) == 0.0
+
+    value = 0.0
+    for _index in range(40):
+        value = scrub.smooth_scrub_magnet_offset(
+            value,
+            24.0,
+            0.22,
+            0.04,
+        )
+    assert math.isclose(value, 24.0, abs_tol=0.05), value
+
+    class SceneZero:
+        frame_current = 0
+
+    assert bridge._scene_current_frame_number(SceneZero(), 1) == 0
+    assert icons._FBP_CUSTOM_ICON_UI_KEYS.get("settings.scrub_slider") == "floating_timeline"
+    icon_path = SOURCE / "assets" / "icons" / "icon_FLOATINGTIMELINE_paste.png"
+    assert icon_path.is_file(), icon_path
+    return {
+        "magnet_outer_offset": outer,
+        "frame_zero": bridge._scene_current_frame_number(SceneZero(), 1),
+        "preferences_icon": icon_path.name,
+    }
+
+
 def test_gp_support(_module):
     bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
     summary = bridge.fbp_gp_effect_support_summary()
@@ -864,6 +932,7 @@ def run_background():
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),
+            ("scrub_bar_regressions", test_scrub_bar_regressions),
             ("gp_effect_support", test_gp_support),
             ("gp_native_apply_remove", test_gp_native_apply),
             ("generic_mesh_matrix", test_generic_mesh_matrix),

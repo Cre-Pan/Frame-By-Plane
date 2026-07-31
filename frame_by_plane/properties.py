@@ -818,6 +818,35 @@ class FBP_AddonPreferences(AddonPreferences):
     gp_scrub_edge_offset: FloatProperty(
         name="Edge Offset", description="Distance of the slider from the selected Viewport edge", default=240.0, min=8.0, max=240.0, subtype='PIXEL',
     )
+    gp_scrub_mouse_magnet: BoolProperty(
+        name="Mouse Magnet",
+        description="Pull the Scrub Bar toward the cursor when it approaches the axis",
+        default=True,
+    )
+    gp_scrub_mouse_magnet_distance: FloatProperty(
+        name="Magnet Range",
+        description="Distance in pixels at which the Scrub Bar starts moving toward the cursor",
+        default=96.0,
+        min=24.0,
+        max=240.0,
+        subtype='PIXEL',
+    )
+    gp_scrub_mouse_magnet_strength: FloatProperty(
+        name="Magnet Strength",
+        description="How closely the Scrub Bar follows the cursor inside the magnetic range",
+        subtype='FACTOR',
+        default=1.0,
+        min=0.0,
+        max=1.0,
+    )
+    gp_scrub_mouse_magnet_smoothing: FloatProperty(
+        name="Magnet Smoothing",
+        description="Transition speed used when the Scrub Bar attaches to or releases from the cursor",
+        subtype='FACTOR',
+        default=0.22,
+        min=0.01,
+        max=1.0,
+    )
     gp_scrub_tick_scale: FloatProperty(
         name="Tick Size", description="Scale of frame and second ticks", default=0.5, min=0.25, max=3.0,
     )
@@ -1612,7 +1641,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 draw.prop(self, 'default_gp_curve_type', text='Draw Curves')
                 draw.prop(self, 'default_gp_curve_conversion_threshold', text='Conversion Threshold')
 
-            body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.shortcuts', 'TIME')
+            body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.scrub_slider', 'TIME')
             if body:
                 try:
                     from .grease_pencil_scrub import is_scrub_preview_active
@@ -1643,6 +1672,15 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
                 row.prop(self, 'gp_scrub_edge_offset', text='Offset')
+                row = _row(body)
+                row.prop(self, 'gp_scrub_mouse_magnet', text='Mouse Magnet', toggle=True)
+                magnet = row.row(align=False)
+                magnet.enabled = self.gp_scrub_mouse_magnet
+                magnet.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
+                row = _row(body)
+                row.enabled = self.gp_scrub_mouse_magnet
+                row.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
+                row.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
                 row = _row(body)
                 row.prop(self, 'gp_scrub_tick_scale', text='Tick Scale', slider=True)
                 row.prop(self, 'gp_scrub_line_width', text='Line Thickness', slider=True)

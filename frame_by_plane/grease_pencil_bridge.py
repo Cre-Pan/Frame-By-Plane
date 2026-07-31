@@ -1165,7 +1165,7 @@ def _set_active_gp_brush_stroke_type(context=None, mode="STROKE"):
 def _gp_mask_curve_count(canvas, scene=None, *, rebuild_index=False):
     try:
         target_scene = _scene_for_canvas(canvas, scene)
-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(target_scene, 1)
         _exposure_key, exposure_state = _canvas_exposure_state(
             canvas,
             frame_number,
@@ -1381,7 +1381,7 @@ def _canvas_stroke_count_signature(
         _sync_gp_mask_authored_curve_state(canvas, scene=scene)
     try:
         target_scene = _scene_for_canvas(canvas, scene)
-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(target_scene, 1)
         _exposure_key, exposure_state = _canvas_exposure_state(canvas, frame_number)
     except FBP_DATA_ERRORS:
         return (), (0, 0)
@@ -3453,6 +3453,23 @@ def _ensure_gp_layer(canvas):
         return None
 
 
+def _coerce_frame_number(value, default=1):
+    """Coerce a frame value while preserving valid frame zero."""
+    try:
+        return int(default) if value is None else int(value)
+    except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+        return int(default)
+
+
+def _scene_current_frame_number(scene, default=1):
+    """Return ``Scene.frame_current`` without treating frame zero as missing."""
+    try:
+        value = getattr(scene, "frame_current", None)
+    except (AttributeError, ReferenceError):
+        value = None
+    return _coerce_frame_number(value, default)
+
+
 def _ensure_gp_current_keyframe(canvas, context=None, *, frame_number=None):
     """Ensure the active Grease Pencil layer has a blank drawing on the current frame.
 
@@ -3469,7 +3486,7 @@ def _ensure_gp_current_keyframe(canvas, context=None, *, frame_number=None):
     if frame_number is None:
         try:
             scene = getattr(context, "scene", None) if context is not None else getattr(bpy.context, "scene", None)
-            frame_number = int(getattr(scene, "frame_current", 1) or 1)
+            frame_number = _scene_current_frame_number(scene, 1)
         except FBP_DATA_ERRORS:
             frame_number = 1
     try:
@@ -4031,7 +4048,7 @@ def _gp_material_visibility_signature(canvas):
 def _canvas_geometry(canvas, rig, bounds=None, *, frame_number=None, scene=None, exposure_state=None):
     """GP Mask v2 geometry extraction with evaluated/live fallback."""
     target_scene = _scene_for_canvas(canvas, scene)
-    frame = int(frame_number if frame_number is not None else getattr(target_scene, "frame_current", 1) or 1)
+    frame = _coerce_frame_number(frame_number, _scene_current_frame_number(target_scene, 1))
     bounds = bounds if bounds is not None else _plane_bounds(rig)
     if exposure_state is None:
         _key, exposure_state = _canvas_exposure_state(canvas, frame)
@@ -4150,8 +4167,8 @@ def _geometry_signature(canvas, rig, polygons, polylines, resolution, bounds=Non
         f"{float(getattr(canvas, 'fbp_gp_mask_threshold', 0.5)):.8f}",
         "1" if bool(getattr(canvas, "fbp_gp_reveal_enabled", False)) else "0",
         str(getattr(canvas, "fbp_gp_reveal_mode", "REVEAL")),
-        str(int(getattr(canvas, "fbp_gp_reveal_start", 1) or 1)),
-        str(int(getattr(canvas, "fbp_gp_reveal_end", 24) or 24)),
+        str(_coerce_frame_number(getattr(canvas, "fbp_gp_reveal_start", None), 1)),
+        str(_coerce_frame_number(getattr(canvas, "fbp_gp_reveal_end", None), 24)),
         str(getattr(canvas, "fbp_gp_reveal_direction", "LEFT_RIGHT")),
         "1" if bool(getattr(canvas, "fbp_gp_reveal_invert", False)) else "0",
         f"{float(getattr(canvas, 'fbp_gp_reveal_feather', 0.05)):.8f}",
@@ -4209,10 +4226,10 @@ def _reveal_progress(canvas, frame_number=None):
     if not bool(getattr(canvas, "fbp_gp_reveal_enabled", False)):
         return None
     if frame_number is None:
-        frame_number = int(getattr(getattr(bpy.context, "scene", None), "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(getattr(bpy.context, "scene", None), 1)
     frame = int(frame_number)
-    start = int(getattr(canvas, "fbp_gp_reveal_start", 1) or 1)
-    end = int(getattr(canvas, "fbp_gp_reveal_end", start + 1) or (start + 1))
+    start = _coerce_frame_number(getattr(canvas, "fbp_gp_reveal_start", None), 1)
+    end = _coerce_frame_number(getattr(canvas, "fbp_gp_reveal_end", None), start + 1)
     if end < start:
         start, end = end, start
     if end == start:
@@ -4334,7 +4351,7 @@ def _mask_pixels(canvas, polygons, polylines, bounds, resolution, *, distance_si
             fill_groups=tuple(polygons or ()),
             polylines=tuple(polylines or ()),
             bounds=tuple(bounds or (-1.0, 1.0, -1.0, 1.0)),
-            frame=int(frame_number or 1),
+            frame=_coerce_frame_number(frame_number, 1),
         )
         base_signature = "|".join((
             str(distance_signature or ""),
@@ -4606,7 +4623,7 @@ def refresh_gp_mask(canvas, *, force=False, scene=None, allow_edit_mode=False):
     if surface is None:
         return None, False
     target_scene = _scene_for_canvas(canvas, scene)
-    frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+    frame_number = _scene_current_frame_number(target_scene, 1)
     try:
         existing_image = getattr(canvas, "fbp_gp_mask_image", None)
     except FBP_DATA_ERRORS:
@@ -4774,7 +4791,7 @@ def _canvas_geometry_changes_with_frame(canvas, *, refresh=False, scene=None):
         # can be linked into scenes with different frame_start values.
         if scene is None and not refresh and not cache_key[1] and KEY_MASK_GEOMETRY_FRAME_SENSITIVE in canvas:
             return bool(canvas.get(KEY_MASK_GEOMETRY_FRAME_SENSITIVE, False))
-        frame_start = int(getattr(target_scene, "frame_start", 1) or 1)
+        frame_start = _coerce_frame_number(getattr(target_scene, "frame_start", None), 1)
         sensitive = False
         data = getattr(canvas, "data", None)
         for layer in tuple(getattr(data, "layers", ()) or ()):
@@ -4784,7 +4801,7 @@ def _canvas_geometry_changes_with_frame(canvas, *, refresh=False, scene=None):
                 sensitive = True
                 break
             if count == 1:
-                first = int(getattr(frames[0], "frame_number", frame_start) or frame_start)
+                first = _coerce_frame_number(getattr(frames[0], "frame_number", None), frame_start)
                 # One drawing key is still animated when it begins after the
                 # scene start: frames before it must remain empty.
                 if first > frame_start:
@@ -4830,7 +4847,7 @@ def _canvas_frame_state_key(canvas, scene):
     Held GP exposures and reveal ranges before/after their active interval
     produce identical keys, so no timer or image upload is scheduled.
     """
-    frame_number = int(getattr(scene, "frame_current", 1) or 1)
+    frame_number = _scene_current_frame_number(scene, 1)
     exposure_key = _canvas_exposure_key(canvas, frame_number)
     return _frame_state_from_exposure(canvas, frame_number, exposure_key)
 
@@ -5085,7 +5102,7 @@ def _sync_gp_mask_authored_modes_from_native(canvas, scene=None, *, allow_edit_m
         return False
     try:
         target_scene = _scene_for_canvas(canvas, scene)
-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(target_scene, 1)
         _exposure_key, exposure_state = _canvas_exposure_state(
             canvas, frame_number, rebuild_index=True
         )
