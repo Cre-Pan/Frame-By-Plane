@@ -20,6 +20,13 @@ Frame By Plane 7.1.11 closes the 7.1 LTS line with a refined Scrub Bar, correcte
 - Frame `0` and negative frames are now preserved throughout GP mask exposure lookup, geometry extraction, reveal evaluation, raster refresh and frame-state caching.
 - Scene start frame `0` is no longer treated as a missing value when initializing Grease Pencil exposure timing.
 
+## Startup and Preferences
+
+- Fixed an add-on registration failure caused by the undefined `update_shift_a_menu_position_cb` callback.
+- Restored the missing `update_shortcut_preferences_cb` callback before its RNA properties are constructed.
+- Shift+A position changes now immediately re-register the menu entry.
+- Shortcut preference changes now rebuild the interactive keymaps and redraw the interface.
+
 ## Release engineering
 
 - Added deterministic, standard-library release packaging for all five supported platforms.
@@ -42,6 +49,7 @@ Frame By Plane 7.1.11 closes the 7.1 LTS line with a refined Scrub Bar, correcte
 - Added release-note, support-policy and manifest synchronization checks.
 - Added reproducible package generation to pull-request validation.
 - Added regression coverage for Scrub Bar magnet geometry, transition easing, the Preferences icon and Grease Pencil frame `0`.
+- Added a class-construction audit that rejects undefined RNA `update=` callbacks before packaging.
 
 ## Support policy
 
