@@ -1,0 +1,200 @@
+         _exposure_key, exposure_state = _canvas_exposure_state(
+             canvas, frame_number, rebuild_index=True
+         )
+diff --git a/frame_by_plane/grease_pencil_scrub.py b/frame_by_plane/grease_pencil_scrub.py
+index 83a84bd..3686fb8 100644
+--- a/frame_by_plane/grease_pencil_scrub.py
++++ b/frame_by_plane/grease_pencil_scrub.py
+@@ -78,6 +78,8 @@ _EDGE_DWELL_SECONDS = 0.38
+ _EDGE_REPEAT_SECONDS = 0.12
+ _TIMER_INTERVAL = 0.04
+ _AXIS_CAPTURE_PX = 42.0
++_MAGNET_INNER_RATIO = 0.42
++_MAGNET_EPSILON_PX = 0.05
+ _CURSOR_LABEL_CAPTURE_PX = 10.0
+ _KEYFRAME_HIT_PADDING_PX = 5.0
+ _DRAG_THRESHOLD_PX = 4.0
+@@ -1172,13 +1174,34 @@ def scrub_overlay_layout(region_or_width, height=None, *, position="BOTTOM", ver
+ 
+ 
+ def _scrub_layout_for_state(state, region):
+-    return scrub_overlay_layout(
++    layout = scrub_overlay_layout(
+         region,
+         position=state._position,
+         ui_scale=state._ui_scale,
+         length_ratio=state._length_ratio,
+         edge_offset=state._edge_offset,
+     )
++    try:
++        offset = float(getattr(state, "_magnetic_offset", 0.0) or 0.0)
++    except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
++        offset = 0.0
++    if not math.isfinite(offset) or abs(offset) <= _MAGNET_EPSILON_PX:
++        return layout
++    scale = max(0.5, float(getattr(state, "_ui_scale", 1.0) or 1.0))
++    margin = _OVERLAY_MARGIN_PX * scale
++    if layout["vertical"]:
++        width = max(1.0, float(getattr(region, "width", 1.0) or 1.0))
++        layout["x"] = min(
++            max(margin, float(layout["x"]) + offset),
++            max(margin, width - margin),
++        )
++    else:
++        height = max(1.0, float(getattr(region, "height", 1.0) or 1.0))
++        layout["y"] = min(
++            max(margin, float(layout["y"]) + offset),
++            max(margin, height - margin),
++        )
++    return layout
+ 
+ 
+ def _scrub_frame_position(frame, left, right, layout, *, invert_vertical=False):
+@@ -1212,6 +1235,84 @@ def cursor_near_scrub_axis(mouse_x, mouse_y, layout, *, capture_px=28.0):
+     return abs(y - axis_y) <= capture and low <= x <= high
+ 
+ 
++def magnetic_scrub_axis_offset(
++    mouse_x,
++    mouse_y,
++    layout,
++    *,
++    enabled=True,
++    capture_px=96.0,
++    strength=1.0,
++    inner_ratio=_MAGNET_INNER_RATIO,
++):
++    """Return the perpendicular axis offset used by the mouse magnet.
++
++    The bar remains fixed outside ``capture_px``. Inside the outer band it
++    eases toward the cursor, then follows it exactly in the inner band. The
++    returned value is relative to the configured static axis, which keeps the
++    calculation stable instead of feeding the already-moved bar back into the
++    next proximity test.
++    """
++    if not bool(enabled):
++        return 0.0
++    try:
++        x = float(mouse_x)
++        y = float(mouse_y)
++        capture = max(1.0, float(capture_px))
++        power = max(0.0, min(1.0, float(strength)))
++        inner = max(0.0, min(0.95, float(inner_ratio))) * capture
++        vertical = bool(layout.get("vertical", False))
++        if vertical:
++            base = float(layout["x"])
++            along = y
++            low = float(layout["y0"]) - capture
++            high = float(layout["y1"]) + capture
++            delta = x - base
++        else:
++            base = float(layout["y"])
++            along = x
++            low = float(layout["x0"]) - capture
++            high = float(layout["x1"]) + capture
++            delta = y - base
++    except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
++        return 0.0
++    values = (x, y, capture, power, inner, base, along, low, high, delta)
++    if not all(math.isfinite(value) for value in values):
++        return 0.0
++    if power <= 0.0 or along < low or along > high:
++        return 0.0
++    distance = abs(delta)
++    if distance >= capture:
++        return 0.0
++    if distance <= inner or capture <= inner + 1.0e-6:
++        factor = 1.0
++    else:
++        factor = (capture - distance) / (capture - inner)
++        factor = max(0.0, min(1.0, factor))
++        factor = factor * factor * (3.0 - 2.0 * factor)
++    return float(delta) * factor * power
++
++
++def smooth_scrub_magnet_offset(current, target, smoothing, elapsed, *, interval=_TIMER_INTERVAL):
++    """Advance the magnetic offset with frame-rate-independent easing."""
++    try:
++        current_value = float(current)
++        target_value = float(target)
++        response = max(0.01, min(1.0, float(smoothing)))
++        seconds = max(0.0, min(1.0, float(elapsed)))
++        base_interval = max(1.0e-4, float(interval))
++    except (TypeError, ValueError, OverflowError):
++        return 0.0
++    values = (current_value, target_value, response, seconds, base_interval)
++    if not all(math.isfinite(value) for value in values):
++        return 0.0
++    if abs(target_value - current_value) <= _MAGNET_EPSILON_PX:
++        return target_value
++    steps = max(1.0, seconds / base_interval)
++    alpha = 1.0 - math.pow(1.0 - response, steps)
++    return current_value + (target_value - current_value) * max(0.0, min(1.0, alpha))
++
++
+ def cursor_in_scrub_bounds(mouse_x, mouse_y, bounds, *, padding=0.0):
+     """Return True inside a rectangular slider hit region."""
+     try:
+@@ -1891,6 +1992,13 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
+     _object_data_name = ""
+     _cursor_over_axis = False
+     _cursor_kind = ""
++    _magnetic_enabled = True
++    _magnetic_distance = 96.0
++    _magnetic_strength = 1.0
++    _magnetic_smoothing = 0.22
++    _magnetic_offset = 0.0
++    _magnetic_target_offset = 0.0
++    _magnetic_last_tick = 0.0
+ 
+     @classmethod
+     def poll(cls, context):
+@@ -1979,13 +2087,129 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
+         except FBP_DATA_ERRORS:
+             pass
+ 
++    def _sync_magnetic_preferences(self, context):
++        preferences = fbp_get_addon_preferences(context)
++        try:
++            self._magnetic_enabled = bool(
++                getattr(preferences, "gp_scrub_mouse_magnet", True)
++            )
++            self._magnetic_distance = max(
++                24.0,
++                min(
++                    240.0,
++                    float(
++                        getattr(
++                            preferences,
++                            "gp_scrub_mouse_magnet_distance",
++                            96.0,
++                        )
++                    ),
++                ),
++            )
++            self._magnetic_strength = max(
++                0.0,
++                min(
++                    1.0,
++                    float(
++                        getattr(
++                            preferences,
++                            "gp_scrub_mouse_magnet_strength",
++                            1.0,
++                        )
++                    ),
++                ),
++            )
++            self._magnetic_smoothing = max(
++                0.01,
++                min(
++                    1.0,
++                    float(
++                        getattr(
++                            preferences,
++                            "gp_scrub_mouse_magnet_smoothing",
++                            0.22,
++                        )
++                    ),
++                ),
++            )
