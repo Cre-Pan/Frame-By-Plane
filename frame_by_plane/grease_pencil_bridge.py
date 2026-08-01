@@ -246,6 +246,11 @@ _GP_EFFECT_COMPATIBILITY_FILTER_ITEMS = (
     ("ALL", "All", "Show every Frame By Plane effect and its Grease Pencil support tier"),
     ("NATIVE", "Native", "Show effects backed by Blender's native Grease Pencil stack"),
     (
+        "OBJECT_UNAVAILABLE",
+        "Unavailable",
+        "Show native effects unavailable for the selected object or Blender build",
+    ),
+    (
         "GEOMETRY_CANDIDATE",
         "GN Candidate",
         "Show effects that still require a verified Grease Pencil Geometry Nodes equivalent",
@@ -355,6 +360,7 @@ _RNA_PROPERTIES = (
     "fbp_gp_ui_show_workflow",
     "fbp_gp_ui_show_unavailable_effects",
     "fbp_gp_effect_compatibility_filter",
+    "fbp_gp_effect_compatibility_search",
     "fbp_gp_ui_show_effect_library",
     "fbp_gp_ui_show_effect_settings",
     "fbp_gp_ui_show_material_52",
@@ -6666,12 +6672,18 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
     )
     if show_compatibility:
         records = _gp_effect_compatibility_records(canvas)
-        counts = {"NATIVE": 0, "GEOMETRY_CANDIDATE": 0, "RASTER_ONLY": 0}
+        counts = {
+            "NATIVE": 0,
+            "OBJECT_UNAVAILABLE": 0,
+            "GEOMETRY_CANDIDATE": 0,
+            "RASTER_ONLY": 0,
+        }
         for record in records:
-            filter_tier = str(record.get("filter_tier", "RASTER_ONLY") or "RASTER_ONLY")
-            counts[filter_tier] = counts.get(filter_tier, 0) + 1
+            actual_tier = str(record.get("tier", "RASTER_ONLY") or "RASTER_ONLY")
+            counts[actual_tier] = counts.get(actual_tier, 0) + 1
         summary = compatibility.row(align=True)
-        summary.label(text=f"Native {counts['NATIVE']}", icon="CHECKMARK")
+        summary.label(text=f"Native supported {counts['NATIVE']}", icon="CHECKMARK")
+        summary.label(text=f"Native unavailable {counts['OBJECT_UNAVAILABLE']}", icon="ERROR")
         summary.label(text=f"GN {counts['GEOMETRY_CANDIDATE']}", icon="MOD_NODES")
         summary.label(text=f"Raster {counts['RASTER_ONLY']}", icon="IMAGE_DATA")
         summary.operator(
@@ -6685,12 +6697,27 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
             text="",
             expand=True,
         )
+        compatibility.prop(
+            canvas,
+            "fbp_gp_effect_compatibility_search",
+            text="",
+            icon="VIEWZOOM",
+        )
         filter_tier = str(
             getattr(canvas, "fbp_gp_effect_compatibility_filter", "ALL") or "ALL"
         )
+        search = str(
+            getattr(canvas, "fbp_gp_effect_compatibility_search", "") or ""
+        ).strip().casefold()
         visible = tuple(
             record for record in records
-            if filter_tier == "ALL" or record.get("filter_tier") == filter_tier
+            if (filter_tier == "ALL" or record.get("tier") == filter_tier)
+            and (
+                not search
+                or search in str(record.get("label", "") or "").casefold()
+                or search in str(record.get("effect_id", "") or "").casefold()
+                or search in str(record.get("reason", "") or "").casefold()
+            )
         )
         if visible:
             tier_labels = {
@@ -6699,16 +6726,23 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
                 "GEOMETRY_CANDIDATE": ("GN Candidate", "MOD_NODES"),
                 "RASTER_ONLY": ("Raster", "IMAGE_DATA"),
             }
+            compact = len(records) >= 50
             for record in visible:
-                item = compatibility.box()
+                item = compatibility.row(align=True) if compact else compatibility.box()
                 tier = str(record.get("tier", "RASTER_ONLY") or "RASTER_ONLY")
                 tier_label, icon = tier_labels.get(tier, (tier.title(), "INFO"))
-                heading = item.row(align=True)
+                heading = item if compact else item.row(align=True)
                 heading.label(text=str(record.get("label", "Effect") or "Effect"), icon=icon)
                 heading.label(text=tier_label)
-                reason = item.row(align=False)
-                reason.active = False
-                reason.label(text=str(record.get("reason", "No compatibility reason available") or "No compatibility reason available"), icon="INFO")
+                if compact:
+                    heading.label(
+                        text=str(record.get("reason", "No compatibility reason available") or "No compatibility reason available"),
+                        icon="INFO",
+                    )
+                else:
+                    reason = item.row(align=False)
+                    reason.active = False
+                    reason.label(text=str(record.get("reason", "No compatibility reason available") or "No compatibility reason available"), icon="INFO")
         else:
             compatibility.label(text="No effects match this compatibility filter", icon="INFO")
 
@@ -10540,6 +10574,12 @@ def _register_properties():
         description="Filter the local Grease Pencil compatibility matrix without changing effects or project data",
         items=_GP_EFFECT_COMPATIBILITY_FILTER_ITEMS,
         default="ALL",
+        options={"SKIP_SAVE"},
+    )
+    bpy.types.Object.fbp_gp_effect_compatibility_search = StringProperty(
+        name="Search Compatibility",
+        description="Filter by effect name, identifier or compatibility reason",
+        default="",
         options={"SKIP_SAVE"},
     )
     bpy.types.Object.fbp_gp_ui_show_effect_library = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Effect Library", default=False, options={"SKIP_SAVE"})

@@ -95,6 +95,15 @@ def fbp_preview_feature_usage(scene=None):
             evidence["compositor_layers"].append(f"{compositor_rows} managed compositor row(s)")
         if compositor_enabled:
             evidence["compositor_layers"].append("managed compositor contract enabled")
+        try:
+            compositor_tree = getattr(scene, "compositing_node_group", None)
+            if compositor_tree and bool(
+                compositor_tree.get("fbp_compositor_owned", False)
+                or compositor_tree.get("fbp_compositor_scene_id", "")
+            ):
+                evidence["compositor_layers"].append("persisted managed compositor node group")
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+            pass
 
         try:
             if str(getattr(scene, "fbp_layered_report_format", "") or "").upper() == "PROCREATE":
@@ -103,11 +112,19 @@ def fbp_preview_feature_usage(scene=None):
             pass
 
         generic_count = 0
+        procreate_rigs = 0
         try:
             objects = tuple(getattr(scene, "objects", ()) or ())
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             objects = ()
         for obj in objects:
+            try:
+                layered_document = str(obj.get("fbp_layered_source_document", "") or "")
+                layered_kind = str(obj.get("fbp_layered_source_kind", "") or "").upper()
+                if layered_document.lower().endswith(".procreate") or "PROCREATE" in layered_kind:
+                    procreate_rigs += 1
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+                pass
             try:
                 modifiers = tuple(getattr(obj, "modifiers", ()) or ())
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
@@ -121,6 +138,10 @@ def fbp_preview_feature_usage(scene=None):
         if generic_count:
             evidence["generic_mesh_effects"].append(
                 f"{generic_count} FBP-owned Generic Mesh modifier(s)"
+            )
+        if procreate_rigs:
+            evidence["procreate_import"].append(
+                f"{procreate_rigs} rig(s) with persisted Procreate source metadata"
             )
 
     records = []
