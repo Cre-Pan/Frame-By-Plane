@@ -379,9 +379,17 @@ _FBP_EFFECT_UI_EPOCH = int(globals().get("_FBP_EFFECT_UI_EPOCH", 0) or 0)
 _FBP_CUSTOM_SOCKET_CACHE_SECONDS = 0.25
 _FBP_CUSTOM_SHADER_SYNC_CACHE_SECONDS = 0.75
 _FBP_COLOR_RAMP_SYNC_CACHE_LIMIT = 256
-_FBP_USER_PRESET_CACHE = globals().get("_FBP_USER_PRESET_CACHE", {"stamp": None, "data": {}})
+_FBP_USER_PRESET_CACHE = globals().get(
+    "_FBP_USER_PRESET_CACHE",
+    {"stamp": None, "data": {}, "status": "MISSING", "error": ""},
+)
 if not isinstance(_FBP_USER_PRESET_CACHE, dict):
-    _FBP_USER_PRESET_CACHE = {"stamp": None, "data": {}}
+    _FBP_USER_PRESET_CACHE = {
+        "stamp": None,
+        "data": {},
+        "status": "MISSING",
+        "error": "",
+    }
 # VectorFont is a Blender ID wrapper and is resolved again after reload.
 _FBP_DEFAULT_FONT_CACHE = None
 _FBP_PREVIOUS_OBJECT_CONTEXT_CALLBACK = globals().get("_fbp_draw_object_context_effects")
@@ -28189,17 +28197,39 @@ def _fbp_load_user_presets(*, mutable=True):
     if stamp is None:
         _FBP_USER_PRESET_CACHE["stamp"] = None
         _FBP_USER_PRESET_CACHE["data"] = {}
+        _FBP_USER_PRESET_CACHE["status"] = "MISSING"
+        _FBP_USER_PRESET_CACHE["error"] = ""
         return {}
     if _FBP_USER_PRESET_CACHE.get("stamp") == stamp:
         data = _FBP_USER_PRESET_CACHE.get("data", {})
         return copy.deepcopy(data) if mutable else data
+    status = "OK"
+    error = ""
     try:
         data = json.loads(path.read_text(encoding="utf8"))
-        data = data if isinstance(data, dict) else {}
-    except (OSError, ValueError, TypeError):
+        if not isinstance(data, dict):
+            raise TypeError("The preset library root must be a JSON object")
+    except OSError as exc:
         data = {}
+        status = "UNREADABLE"
+        error = f"{type(exc).__name__}: {exc}"
+    except (ValueError, TypeError) as exc:
+        data = {}
+        status = "CORRUPT"
+        error = f"{type(exc).__name__}: {exc}"
+        backup = path.with_name("effect_presets.backup.json")
+        try:
+            recovered = json.loads(backup.read_text(encoding="utf8"))
+            if not isinstance(recovered, dict):
+                raise TypeError("The backup preset library root must be a JSON object")
+            data = recovered
+            status = "RECOVERED_BACKUP"
+        except (OSError, ValueError, TypeError):
+            pass
     _FBP_USER_PRESET_CACHE["stamp"] = stamp
     _FBP_USER_PRESET_CACHE["data"] = data
+    _FBP_USER_PRESET_CACHE["status"] = status
+    _FBP_USER_PRESET_CACHE["error"] = error
     return copy.deepcopy(data) if mutable else data
 
 
@@ -28217,6 +28247,8 @@ def _fbp_save_user_presets(data):
         temporary.replace(path)
         _FBP_USER_PRESET_CACHE["stamp"] = _fbp_user_preset_stamp(path)
         _FBP_USER_PRESET_CACHE["data"] = copy.deepcopy(payload)
+        _FBP_USER_PRESET_CACHE["status"] = "OK"
+        _FBP_USER_PRESET_CACHE["error"] = ""
         return True
     except OSError:
         return False
@@ -28247,6 +28279,43 @@ def _fbp_backup_user_preset_library():
                 temporary.unlink()
         except OSError:
             pass
+
+
+def _fbp_write_recovery_copy(source, target):
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(source.read_bytes())
+        temporary.replace(target)
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
+
+
+def _fbp_prepare_user_preset_mutation():
+    """Fail closed or recover before any preset-library filesystem mutation."""
+    data = _fbp_load_user_presets(mutable=False)
+    status = str(_FBP_USER_PRESET_CACHE.get("status", "") or "")
+    path = _fbp_user_preset_path()
+    recovery_path = None
+    if status in {"CORRUPT", "UNREADABLE"}:
+        detail = str(_FBP_USER_PRESET_CACHE.get("error", "") or "unknown read error")
+        return False, None, None, f"Preset library is {status.lower()}: {detail}"
+    if status == "RECOVERED_BACKUP":
+        recovery_path = path.with_name("effect_presets.corrupt.json")
+        if not _fbp_write_recovery_copy(path, recovery_path):
+            return False, None, recovery_path, "Could not preserve the corrupted preset library"
+        if not _fbp_save_user_presets(data):
+            return False, None, recovery_path, "Could not restore the preset library from its backup"
+    backup_ok, backup_path = _fbp_backup_user_preset_library()
+    if not backup_ok:
+        return False, backup_path, recovery_path, "Could not back up the preset library"
+    return True, backup_path, recovery_path, ""
 
 
 def _fbp_effect_instance_animation_property_map(effect_id, definition=None):
@@ -29201,7 +29270,10 @@ class FBP_OT_ApplyEffectPreset(Operator):
 class FBP_OT_SaveEffectPreset(Operator):
     bl_idname = "fbp.save_effect_preset"
     bl_label = "Save Effect Preset"
-    bl_description = 'Save the active effect settings as a reusable user preset'
+    bl_description = (
+        "Save the active effect settings to the user preset library on disk; "
+        "Blender Undo cannot restore this filesystem change"
+    )
     bl_options = {"INTERNAL"}
     preset_name: StringProperty(
         name="Name",
@@ -29237,6 +29309,10 @@ class FBP_OT_SaveEffectPreset(Operator):
         layout = configure_layout(self.layout)
         section_header(layout, "Save Effect Preset", icon="PRESET")
         layout.prop(self, "preset_name", text="Preset Name")
+        warning = layout.box()
+        warning.alert = True
+        warning.label(text="This changes the user preset library on disk.", icon="ERROR")
+        warning.label(text="Blender Undo cannot restore it; one rolling backup is written first.")
 
     def execute(self, context):
         rigs = _fbp_resolve_rig_targets(self.target_payload) if self.target_payload else _fbp_selected_rigs(context)
@@ -29263,6 +29339,12 @@ class FBP_OT_SaveEffectPreset(Operator):
         if any(str(existing_name).casefold() == folded_name for existing_name in existing):
             self.report({"ERROR"}, "A user preset with this name already exists")
             return {"CANCELLED"}
+        prepared, backup_path, recovery_path, preparation_error = (
+            _fbp_prepare_user_preset_mutation()
+        )
+        if not prepared:
+            self.report({"ERROR"}, f"Could not prepare preset save; {preparation_error}")
+            return {"CANCELLED"}
         definition = fbp_effect_definition(effect_id)
         if (
             bool(definition.get("custom", False))
@@ -29282,8 +29364,14 @@ class FBP_OT_SaveEffectPreset(Operator):
             preset_value = state["properties"]
         data.setdefault(effect_id, {})[name] = preset_value
         if not _fbp_save_user_presets(data):
-            self.report({"ERROR"}, "Could not save preset")
+            self.report({"ERROR"}, "Could not save preset; the preset library was not changed")
             return {"CANCELLED"}
+        notes = []
+        if backup_path is not None:
+            notes.append(f"backup: {backup_path.name}")
+        if recovery_path is not None:
+            notes.append(f"recovered corrupt file: {recovery_path.name}")
+        self.report({"INFO"}, f"Saved preset {name}" + (f"; {'; '.join(notes)}" if notes else ""))
         return {"FINISHED"}
 
 
@@ -29337,9 +29425,11 @@ class FBP_OT_RenameEffectPreset(Operator):
             return {"CANCELLED"}
         if new_name == old_name:
             return {"FINISHED"}
-        backup_ok, backup_path = _fbp_backup_user_preset_library()
-        if not backup_ok:
-            self.report({"ERROR"}, "Could not back up the preset library; rename cancelled")
+        prepared, backup_path, recovery_path, preparation_error = (
+            _fbp_prepare_user_preset_mutation()
+        )
+        if not prepared:
+            self.report({"ERROR"}, f"Could not prepare preset rename; {preparation_error}")
             return {"CANCELLED"}
         value = presets.pop(old_name)
         presets[new_name] = value
@@ -29347,15 +29437,22 @@ class FBP_OT_RenameEffectPreset(Operator):
         if not _fbp_save_user_presets(data):
             self.report({"ERROR"}, "Could not rename preset; the preset library was not changed")
             return {"CANCELLED"}
-        backup_note = f"; backup: {backup_path.name}" if backup_path is not None else ""
-        self.report({"INFO"}, f"Renamed preset to {new_name}{backup_note}")
+        notes = []
+        if backup_path is not None:
+            notes.append(f"backup: {backup_path.name}")
+        if recovery_path is not None:
+            notes.append(f"recovered corrupt file: {recovery_path.name}")
+        self.report({"INFO"}, f"Renamed preset to {new_name}" + (f"; {'; '.join(notes)}" if notes else ""))
         return {"FINISHED"}
 
 
 class FBP_OT_DeleteEffectPreset(Operator):
     bl_idname = "fbp.delete_effect_preset"
     bl_label = "Delete Effect Preset"
-    bl_description = 'Delete the selected user effect preset without changing existing effects'
+    bl_description = (
+        "Delete the selected user effect preset from disk without changing existing effects; "
+        "Blender Undo cannot restore this filesystem change"
+    )
     bl_options = {"INTERNAL"}
     effect_id: StringProperty(description="Internal stable identifier of the Frame By Plane effect targeted by this action.", default="", options={"SKIP_SAVE"})
     preset_name: StringProperty(description="Name of the built-in or user effect preset targeted by this action.", default="", options={"SKIP_SAVE"})
@@ -29364,12 +29461,27 @@ class FBP_OT_DeleteEffectPreset(Operator):
         if self.preset_name not in _fbp_load_user_presets(mutable=False).get(self.effect_id, {}):
             self.report({"ERROR"}, "Preset no longer exists")
             return {"CANCELLED"}
-        return context.window_manager.invoke_confirm(self, event)
+        return context.window_manager.invoke_props_dialog(self, width=380)
+
+    def draw(self, _context):
+        layout = configure_layout(self.layout)
+        section_header(layout, "Delete Effect Preset", icon="TRASH")
+        hint_row(layout, self.preset_name, icon="PRESET", disabled=True)
+        warning = layout.box()
+        warning.alert = True
+        warning.label(text="This permanently changes the preset library on disk.", icon="ERROR")
+        warning.label(text="Blender Undo cannot restore it; one rolling backup is written first.")
 
     def execute(self, _context):
         data = _fbp_load_user_presets()
         presets = data.get(self.effect_id, {})
         if self.preset_name not in presets:
+            return {"CANCELLED"}
+        prepared, backup_path, recovery_path, preparation_error = (
+            _fbp_prepare_user_preset_mutation()
+        )
+        if not prepared:
+            self.report({"ERROR"}, f"Could not prepare preset deletion; {preparation_error}")
             return {"CANCELLED"}
         del presets[self.preset_name]
         if not presets:
@@ -29377,7 +29489,12 @@ class FBP_OT_DeleteEffectPreset(Operator):
         if not _fbp_save_user_presets(data):
             self.report({"ERROR"}, "Could not delete preset; the preset library was not changed")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Deleted preset {self.preset_name}")
+        notes = []
+        if backup_path is not None:
+            notes.append(f"backup: {backup_path.name}")
+        if recovery_path is not None:
+            notes.append(f"recovered corrupt file: {recovery_path.name}")
+        self.report({"INFO"}, f"Deleted preset {self.preset_name}" + (f"; {'; '.join(notes)}" if notes else ""))
         return {"FINISHED"}
 
 
@@ -32900,6 +33017,8 @@ def fbp_clear_effect_runtime_caches():
     _FBP_EFFECT_UI_SLIDER_CACHE.clear()
     _FBP_USER_PRESET_CACHE["stamp"] = None
     _FBP_USER_PRESET_CACHE["data"] = {}
+    _FBP_USER_PRESET_CACHE["status"] = "MISSING"
+    _FBP_USER_PRESET_CACHE["error"] = ""
     _FBP_DEFAULT_FONT_CACHE = None
 
 

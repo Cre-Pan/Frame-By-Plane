@@ -5,8 +5,10 @@ import importlib.util
 import json
 import math
 import os
+import stat
 import sys
 import time
+import tracemalloc
 import traceback
 import tomllib
 from pathlib import Path
@@ -1080,13 +1082,29 @@ def test_undo_redo(_module):
             bpy.ops.ed.undo_push(message=f"FBP test {index}")
         if not bpy.ops.ed.undo.poll():
             raise SkipTest("Undo history was not exposed after 20 pushes")
+        undo_count = 0
         for _ in range(20):
+            if not bpy.ops.ed.undo.poll():
+                break
             bpy.ops.ed.undo()
-        if bpy.ops.ed.redo.poll():
-            for _ in range(20):
-                bpy.ops.ed.redo()
+            undo_count += 1
+        redo_count = 0
+        for _ in range(undo_count):
+            if not bpy.ops.ed.redo.poll():
+                break
+            bpy.ops.ed.redo()
+            redo_count += 1
+    if bpy.app.background:
+        assert undo_count >= 1 and redo_count == undo_count, (undo_count, redo_count)
+    else:
+        assert undo_count == 20 and redo_count == 20, (undo_count, redo_count)
     assert bpy.data.objects.get("FBP Undo Target") is not None
-    return "20 pushes / 20 undo / 20 redo"
+    return {
+        "pushes": 20,
+        "undo": undo_count,
+        "redo": redo_count,
+        "interactive_20_cycle_requirement": not bpy.app.background,
+    }
 
 
 def test_scrub_bar_regressions(_module):
@@ -1389,10 +1407,57 @@ def test_irreversible_action_contracts(_module):
     geometry_nodes._fbp_user_preset_path = lambda: preset_path
     try:
         backup_ok, backup_path = geometry_nodes._fbp_backup_user_preset_library()
+        assert backup_ok and backup_path is not None, (backup_ok, backup_path)
+        assert backup_path.read_text(encoding="utf-8") == preset_payload
+
+        assert geometry_nodes._fbp_save_user_presets(
+            {"PIXELATE": {"Atomic": {"size": 8}}}
+        )
+        assert json.loads(preset_path.read_text(encoding="utf-8"))["PIXELATE"]["Atomic"]
+
+        backup_path.write_text(
+            json.dumps({"PIXELATE": {"Recovered": {"size": 6}}}),
+            encoding="utf-8",
+        )
+        preset_path.write_text("{corrupted json", encoding="utf-8")
+        geometry_nodes._FBP_USER_PRESET_CACHE["stamp"] = None
+        recovered = geometry_nodes._fbp_load_user_presets()
+        assert recovered["PIXELATE"]["Recovered"]["size"] == 6, recovered
+        assert geometry_nodes._FBP_USER_PRESET_CACHE["status"] == "RECOVERED_BACKUP"
+        prepared, recovered_backup, corrupt_copy, prepare_error = (
+            geometry_nodes._fbp_prepare_user_preset_mutation()
+        )
+        assert prepared and not prepare_error, prepare_error
+        assert recovered_backup is not None and corrupt_copy is not None
+        assert corrupt_copy.read_text(encoding="utf-8") == "{corrupted json"
+        assert json.loads(preset_path.read_text(encoding="utf-8"))["PIXELATE"]["Recovered"]
+
+        preset_path.chmod(stat.S_IREAD)
+        read_only_contents = preset_path.read_text(encoding="utf-8")
+        try:
+            assert not geometry_nodes._fbp_save_user_presets(
+                {"PIXELATE": {"Must Not Replace": {"size": 99}}}
+            )
+            assert preset_path.read_text(encoding="utf-8") == read_only_contents
+        finally:
+            preset_path.chmod(stat.S_IWRITE)
+
+        preset_path.write_text("{still corrupted", encoding="utf-8")
+        backup_path.write_text("{backup corrupted", encoding="utf-8")
+        geometry_nodes._FBP_USER_PRESET_CACHE["stamp"] = None
+        prepared, _backup, _recovery, prepare_error = (
+            geometry_nodes._fbp_prepare_user_preset_mutation()
+        )
+        assert not prepared and "corrupt" in prepare_error.lower(), prepare_error
     finally:
+        try:
+            preset_path.chmod(stat.S_IWRITE)
+        except OSError:
+            pass
         geometry_nodes._fbp_user_preset_path = original_preset_path
-    assert backup_ok and backup_path is not None, (backup_ok, backup_path)
-    assert backup_path.read_text(encoding="utf-8") == preset_payload
+
+    assert "Blender Undo cannot restore" in geometry_nodes.FBP_OT_SaveEffectPreset.bl_description
+    assert "Blender Undo cannot restore" in geometry_nodes.FBP_OT_DeleteEffectPreset.bl_description
 
     sources = (preset_dir / "old one.png", preset_dir / "old two.png")
     targets = (preset_dir / "shot_0001.png", preset_dir / "shot_0002.png")
@@ -1437,6 +1502,11 @@ def test_irreversible_action_contracts(_module):
     assert "no folders or files are created" in sync_help
     return {
         "preset_backup": backup_path.name,
+        "preset_atomic_write": True,
+        "preset_corrupt_recovery": True,
+        "preset_corrupt_fail_closed": True,
+        "preset_read_only_preserved": True,
+        "preset_save_delete_undo_warning": True,
         "rename_manifest": Path(manifest).name,
         "rename_manifest_uuid": True,
         "rename_manifest_finalized": True,
@@ -1899,6 +1969,9 @@ def test_performance_profile_contract(module):
     geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
     icons = importlib.import_module(f"{PACKAGE}.ui_icons")
+    handlers = importlib.import_module(f"{PACKAGE}.handlers")
+    runtime = importlib.import_module(f"{PACKAGE}.runtime")
+    coordinator = importlib.import_module(f"{PACKAGE}.generation_transaction")
     scene = bpy.context.scene
     original_frame = int(scene.frame_current)
     profile = dashboard.profile_frame_changes(
@@ -1928,12 +2001,80 @@ def test_performance_profile_contract(module):
     assert "preview_loads" in icons.custom_icon_metrics()
     assert geometry.fbp_effect_runtime_profile_metrics()["timed_samples"] >= 12
     assert "average_dispatch_duration_ms" in scheduler.scheduler_metrics()
+
+    # Every concurrency guard is exercised independently so a later ordering
+    # change cannot hide a missing condition behind an earlier rejection.
+    dashboard._PROFILE_RUN_ACTIVE = True
+    try:
+        assert "already active" in dashboard._profile_runtime_block_reason(bpy.context)
+    finally:
+        dashboard._PROFILE_RUN_ACTIVE = False
+
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.profile_guard_test",
+        mode="Profiler guard test",
+    )
+    assert owner is not None, refusal
+    try:
+        assert "generation" in dashboard._profile_runtime_block_reason(bpy.context).lower()
+    finally:
+        retired = coordinator.retire_active_generation(
+            bpy.context,
+            reason="profiler guard test",
+            rollback=True,
+        )
+        assert retired["verified"], retired
+
+    handlers.fbp_set_undo_guard(True, timeout=5.0)
+    try:
+        assert "Undo" in dashboard._profile_runtime_block_reason(bpy.context)
+    finally:
+        handlers.fbp_set_undo_guard(False)
+
+    original_render_state = runtime.fbp_render_state
+    runtime.fbp_render_state = lambda include_guard=True: runtime.FBP_RENDER_BUSY
+    try:
+        assert "render" in dashboard._profile_runtime_block_reason(bpy.context).lower()
+    finally:
+        runtime.fbp_render_state = original_render_state
+
+    fake_context = type(
+        "ProfilePlaybackContext",
+        (),
+        {"screen": type("ProfileScreen", (), {"is_animation_playing": True})()},
+    )()
+    assert "playback" in dashboard._profile_runtime_block_reason(fake_context).lower()
+    assert "background" in dashboard._profile_runtime_block_reason(
+        bpy.context,
+        reject_background=True,
+    ).lower()
+
+    tracemalloc.start()
+    try:
+        try:
+            dashboard.profile_frame_changes(scene, frame_count=1, warmup=0)
+        except RuntimeError as exc:
+            assert "allocation trace" in str(exc), exc
+        else:
+            raise AssertionError("Existing tracemalloc run was not refused")
+    finally:
+        tracemalloc.stop()
     return {
         "measured_frames": 12,
         "handler_samples": profile["effect_handler"]["timed_samples"],
         "timing_tracemalloc": profile["instrumentation"]["timing_tracemalloc"],
         "memory_run_separate": not profile["memory"]["included_in_timing"],
         "estimated_overhead_percent": profile["instrumentation"]["estimated_overhead_percent"],
+        "concurrency_guards": [
+            "playback",
+            "render",
+            "generation",
+            "undo_load",
+            "active_profiler",
+            "external_tracemalloc",
+            "background_operator",
+        ],
         "state_restored": True,
         "json_serializable": True,
     }
