@@ -422,7 +422,10 @@ class FBP_OT_FinalizeRenderStateBackground(Operator):
 class FBP_OT_SyncRenderOutput(Operator):
     bl_idname = "fbp.sync_render_output"
     bl_label = "Synchronize Render Output"
-    bl_description = "Synchronize Frame By Plane output settings with Blender's native Render File Path"
+    bl_description = (
+        "Synchronize Frame By Plane output settings with Blender's native Render File Path; "
+        "this repeatable scene-only action does not create folders or render files"
+    )
     bl_options = {'REGISTER'}
 
     from_native: BoolProperty(
@@ -430,6 +433,27 @@ class FBP_OT_SyncRenderOutput(Operator):
         description="Read Blender's native output path into Frame By Plane instead of pushing the FBP builder path",
         default=True,
     )
+
+    @classmethod
+    def description(cls, _context, properties):
+        if bool(getattr(properties, "from_native", True)):
+            return (
+                "Read Blender's native Render File Path into the Frame By Plane output builder. "
+                "Only scene RNA changes; no folders or files are created, the operation is idempotent, "
+                "and Blender Undo is intentionally not advertised for runtime path synchronization."
+            )
+        return (
+            "Push the Frame By Plane output builder path into Blender's native Render File Path. "
+            "Only scene RNA changes; no folders or files are created, the operation is idempotent, "
+            "and Blender Undo is intentionally not advertised for runtime path synchronization."
+        )
+
+    @classmethod
+    def poll(cls, context):
+        available = getattr(context, "scene", None) is not None
+        if not available:
+            cls.poll_message_set("No active scene is available for render output synchronization")
+        return available
 
     def execute(self, context):
         if self.from_native:

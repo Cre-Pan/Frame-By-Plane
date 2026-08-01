@@ -996,6 +996,59 @@ def test_preview_scope_policy(_module):
     }
 
 
+def test_irreversible_action_contracts(_module):
+    geometry_nodes = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    operator_import = importlib.import_module(f"{PACKAGE}.operator_import")
+    operator_layers = importlib.import_module(f"{PACKAGE}.operator_layers")
+    operator_render = importlib.import_module(f"{PACKAGE}.operator_render")
+
+    preset_dir = WORKDIR / "irreversible-contracts"
+    preset_dir.mkdir(parents=True, exist_ok=True)
+    preset_path = preset_dir / "effect_presets.json"
+    preset_payload = '{"PIXELATE": {"Audit": {"size": 4}}}\n'
+    preset_path.write_text(preset_payload, encoding="utf-8")
+    original_preset_path = geometry_nodes._fbp_user_preset_path
+    geometry_nodes._fbp_user_preset_path = lambda: preset_path
+    try:
+        backup_ok, backup_path = geometry_nodes._fbp_backup_user_preset_library()
+    finally:
+        geometry_nodes._fbp_user_preset_path = original_preset_path
+    assert backup_ok and backup_path is not None, (backup_ok, backup_path)
+    assert backup_path.read_text(encoding="utf-8") == preset_payload
+
+    sources = (preset_dir / "old one.png", preset_dir / "old two.png")
+    targets = (preset_dir / "shot_0001.png", preset_dir / "shot_0002.png")
+    for source in sources:
+        source.write_bytes(b"FBP audit fixture")
+    manifest, error = operator_import.FBP_OT_RenameSequenceForBlender._write_rename_manifest(
+        None,
+        str(preset_dir),
+        tuple(str(path) for path in sources),
+        tuple(str(path) for path in targets),
+    )
+    assert manifest and not error, (manifest, error)
+    payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    assert payload["schema"] == 1 and len(payload["files"]) == 2, payload
+    assert payload["files"][0] == {"source": "old one.png", "target": "shot_0001.png"}
+
+    assert "INTERNAL" in operator_layers.FBP_OT_RepairLayerRelation.bl_options
+    assert "UNDO" not in operator_layers.FBP_OT_RepairLayerRelation.bl_options
+    assert "UNDO" not in operator_layers.FBP_OT_RepairAllLayerRelations.bl_options
+    assert "UNDO" not in operator_import.FBP_OT_RemoveCorruptedGeneratedPlanes.bl_options
+    assert "UNDO" not in operator_render.FBP_OT_SyncRenderOutput.bl_options
+    sync_help = operator_render.FBP_OT_SyncRenderOutput.description(
+        bpy.context,
+        type("SyncProperties", (), {"from_native": True})(),
+    )
+    assert "no folders or files are created" in sync_help
+    return {
+        "preset_backup": backup_path.name,
+        "rename_manifest": Path(manifest).name,
+        "filesystem_undo_advertised": False,
+        "targeted_repair_internal": True,
+    }
+
+
 def test_gp_native_apply(_module):
     bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
     result = bpy.ops.fbp.add_grease_pencil_canvas(
@@ -1595,6 +1648,7 @@ def run_background():
             ("gp_effect_support", test_gp_support),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("preview_scope_policy", test_preview_scope_policy),
+            ("irreversible_action_contracts", test_irreversible_action_contracts),
             ("gp_native_apply_remove", test_gp_native_apply),
             ("generic_mesh_matrix", test_generic_mesh_matrix),
             ("generic_mesh_topology_profiles", test_generic_mesh_topology_profiles),

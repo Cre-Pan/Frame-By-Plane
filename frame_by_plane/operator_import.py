@@ -1,6 +1,7 @@
 """Focused Frame By Plane operator module."""
 
 import hashlib
+import json
 import math
 import os
 import re
@@ -2551,6 +2552,16 @@ class FBP_OT_RenameSequenceForBlender(Operator):
         description="Rename problematic sequences on all selected Frame By Plane rigs instead of only the active rig",
         default=False
     )
+    write_rename_manifest: BoolProperty(
+        name="Write Rollback Manifest",
+        description="Write a local JSON mapping of every old and new filename before changing the sequence",
+        default=True,
+    )
+    confirm_disk_rename: BoolProperty(
+        name="I understand Blender Undo cannot restore filenames",
+        description="Required confirmation for changing original sequence filenames on disk",
+        default=False,
+    )
 
     def _safe_prefix(self, value):
         value = str(value or "fbp")
@@ -2572,12 +2583,15 @@ class FBP_OT_RenameSequenceForBlender(Operator):
         if rig:
             self.prefix = self._safe_prefix(getattr(rig, 'name', 'fbp'))
         self.apply_to_selected = len(get_selected_fbp_roots(context)) > 1
+        self.confirm_disk_rename = False
         return context.window_manager.invoke_props_dialog(self, width=420)
 
     def draw(self, context):
         layout = configure_layout(self.layout)
-        layout.label(text="This renames the original files on disk.", icon='ERROR')
-        layout.label(text="No cache copies will be created.", icon='BLANK1')
+        warning = layout.box()
+        warning.alert = True
+        warning.label(text="This renames the original files on disk.", icon='ERROR')
+        warning.label(text="Blender Undo cannot restore filenames; no media copies are created.")
         col = layout.column(align=True)
         col.prop(self, "apply_to_selected")
         col.prop(self, "prefix")
@@ -2587,6 +2601,64 @@ class FBP_OT_RenameSequenceForBlender(Operator):
         rig = self._active_rig(context)
         if rig and fbp_rig_native_sequence_needs_rename(rig):
             layout.label(text="Recommended: this sequence may show pink until renamed.", icon='QUESTION')
+        preview = self._rename_preview(rig) if rig is not None else None
+        if preview:
+            plan = layout.box()
+            plan.label(text=f"Preview · {preview['count']} file(s)", icon='VIEWZOOM')
+            plan.label(text=f"First: {preview['first_source']} → {preview['first_target']}")
+            if preview['count'] > 1:
+                plan.label(text=f"Last: {preview['last_source']} → {preview['last_target']}")
+            plan.label(text="The complete source set is revalidated immediately before rename.")
+        layout.prop(self, "write_rename_manifest")
+        layout.prop(self, "confirm_disk_rename")
+
+    def _rename_preview(self, rig):
+        directory, files = fbp_native_sequence_files_from_rig(rig)
+        if not directory or not files:
+            return None
+        sources = [os.path.basename(str(path or "")) for path in files]
+        prefix = self._safe_prefix(self.prefix or getattr(rig, 'name', 'fbp'))
+        extension = os.path.splitext(sources[0])[1]
+        width = max(int(self.digits), len(str(int(self.start_index) + len(sources) - 1)))
+        targets = [
+            f"{prefix}_{int(self.start_index) + index:0{width}d}{extension}"
+            for index in range(len(sources))
+        ]
+        return {
+            "count": len(sources),
+            "first_source": sources[0],
+            "first_target": targets[0],
+            "last_source": sources[-1],
+            "last_target": targets[-1],
+        }
+
+    def _write_rename_manifest(self, directory, sources, targets):
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        suffix = f"{int((time.time() % 1.0) * 1000):03d}"
+        manifest = os.path.join(directory, f".fbp_sequence_rename_{stamp}-{suffix}.json")
+        temporary = manifest + ".tmp"
+        payload = {
+            "schema": 1,
+            "created_at": f"{stamp}-{suffix}",
+            "note": "Blender Undo cannot restore filesystem names. Rename target back to source to roll back.",
+            "files": [
+                {"source": os.path.basename(source), "target": os.path.basename(target)}
+                for source, target in zip(sources, targets, strict=True)
+            ],
+        }
+        try:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False)
+                handle.write("\n")
+            os.replace(temporary, manifest)
+            return manifest, ""
+        except OSError as exc:
+            try:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+            except OSError:
+                pass
+            return "", str(exc)
 
     @staticmethod
     def _normalized_path(path):
@@ -2648,6 +2720,14 @@ class FBP_OT_RenameSequenceForBlender(Operator):
 
         if [self._normalized_path(p) for p in abs_sources] == [self._normalized_path(p) for p in targets]:
             return False, "Files are already using the requested pattern"
+
+        manifest_path = ""
+        if self.write_rename_manifest:
+            manifest_path, manifest_error = self._write_rename_manifest(
+                directory, abs_sources, targets
+            )
+            if manifest_error:
+                return False, f"Could not write rollback manifest; no files renamed: {manifest_error}"
 
         rename_map = {
             self._normalized_path(source): target
@@ -2817,9 +2897,16 @@ class FBP_OT_RenameSequenceForBlender(Operator):
 
         shared_count = max(0, len(affected_rigs) - 1)
         suffix = f" and updated {shared_count} shared rig(s)" if shared_count else ""
-        return True, f"Renamed {len(targets)} files{suffix}"
+        manifest_note = (
+            f"; rollback manifest: {os.path.basename(manifest_path)}"
+            if manifest_path else "; rollback manifest disabled"
+        )
+        return True, f"Renamed {len(targets)} files{suffix}{manifest_note}"
 
     def execute(self, context):
+        if not self.confirm_disk_rename:
+            self.report({'WARNING'}, "Confirm that Blender Undo cannot restore renamed files")
+            return {'CANCELLED'}
         rigs = self._target_rigs(context)
         if not rigs:
             self.report({'WARNING'}, "Select a Frame By Plane image sequence rig")
@@ -3063,8 +3150,35 @@ class FBP_OT_GenerationReportPopup(Operator):
 class FBP_OT_RemoveCorruptedGeneratedPlanes(Operator):
     bl_idname = "fbp.remove_corrupted_generated_planes"
     bl_label = "Remove Corrupted Planes"
-    bl_description = "Delete the generated planes that were reported as missing or unsafe"
+    bl_description = (
+        "Confirm and delete only generated Frame By Plane rigs reported as missing or unsafe; "
+        "the deferred cleanup is not advertised as Blender Undo"
+    )
     bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        available = bool(_fbp_rigs_from_report(context, "problem_rigs"))
+        if not available:
+            cls.poll_message_set("Run generation first; no reported corrupted planes are available")
+        return available
+
+    def invoke(self, context, event):
+        count = len(_fbp_rigs_from_report(context, "problem_rigs"))
+        if not count:
+            self.report({'WARNING'}, "No reported generated planes to remove")
+            return {'CANCELLED'}
+        return context.window_manager.invoke_confirm(
+            self,
+            event,
+            title="Delete Reported Corrupted Planes?",
+            message=(
+                f"Delete {count} generated rig(s). Source files are preserved, but the deferred "
+                "cleanup is not guaranteed to be restored by Blender Undo."
+            ),
+            confirm_text="Delete Generated Planes",
+            icon='ERROR',
+        )
 
     def execute(self, context):
         rigs = _fbp_rigs_from_report(context, "problem_rigs")

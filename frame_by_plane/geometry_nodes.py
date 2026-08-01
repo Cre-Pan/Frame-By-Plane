@@ -28108,6 +28108,27 @@ def _fbp_save_user_presets(data):
             pass
 
 
+def _fbp_backup_user_preset_library():
+    """Keep one atomic rolling backup before a filesystem preset mutation."""
+    path = _fbp_user_preset_path()
+    if not path.is_file():
+        return True, None
+    backup = path.with_name("effect_presets.backup.json")
+    temporary = backup.with_name(f".{backup.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(path.read_bytes())
+        temporary.replace(backup)
+        return True, backup
+    except OSError:
+        return False, backup
+    finally:
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
+
+
 def _fbp_effect_instance_animation_property_map(effect_id, definition=None):
     effect_id = fbp_normalize_effect_id(effect_id)
     definition = definition or fbp_effect_definition(effect_id)
@@ -29173,6 +29194,10 @@ class FBP_OT_RenameEffectPreset(Operator):
         section_header(layout, "Rename Effect Preset", icon="PRESET")
         hint_row(layout, self.preset_name, icon="BLANK1", disabled=True)
         layout.prop(self, "new_name", text="New Name")
+        warning = layout.box()
+        warning.alert = True
+        warning.label(text="This changes the user preset library on disk.", icon="ERROR")
+        warning.label(text="Blender Undo cannot restore it; one rolling backup is written first.")
 
     def execute(self, _context):
         old_name = str(self.preset_name or "").strip()
@@ -29192,13 +29217,18 @@ class FBP_OT_RenameEffectPreset(Operator):
             return {"CANCELLED"}
         if new_name == old_name:
             return {"FINISHED"}
+        backup_ok, backup_path = _fbp_backup_user_preset_library()
+        if not backup_ok:
+            self.report({"ERROR"}, "Could not back up the preset library; rename cancelled")
+            return {"CANCELLED"}
         value = presets.pop(old_name)
         presets[new_name] = value
         data[self.effect_id] = presets
         if not _fbp_save_user_presets(data):
             self.report({"ERROR"}, "Could not rename preset; the preset library was not changed")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Renamed preset to {new_name}")
+        backup_note = f"; backup: {backup_path.name}" if backup_path is not None else ""
+        self.report({"INFO"}, f"Renamed preset to {new_name}{backup_note}")
         return {"FINISHED"}
 
 

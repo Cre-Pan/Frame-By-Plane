@@ -261,7 +261,7 @@ EXACT_TOOLTIPS = {
         "Save the active effect's current parameters as a reusable user preset. Presets are stored in Frame By Plane's user configuration and remain available in other Blender projects."
     ),
     "fbp.rename_effect_preset": (
-        "Open a rename dialog for this user preset. The preset values are preserved and only its library name changes; built-in presets cannot be renamed."
+        "Rename this user effect preset after writing one rolling backup of the preset-library JSON. Values and live effects are preserved and built-in presets cannot be renamed; the action changes a file in the user configuration, so Blender Undo cannot restore it."
     ),
     "fbp.delete_effect_preset": (
         "Delete this user-created effect preset from Frame By Plane's preset library. Existing layers that previously used the preset keep their current values and are not modified."
@@ -368,13 +368,22 @@ EXACT_TOOLTIPS = {
         "Replace the active layer's media while preserving its rig transform, identity, keyframes and compatible effects. Animated GIF, WebP and APNG keep embedded timing, and AVIF uses a managed PNG cache; sources are never modified."
     ),
     "fbp.rename_sequence_for_blender": (
-        "Safely rename source sequence files to a simple consecutive pattern that Blender's native image-sequence reader can load reliably. Review the preview carefully because this operation changes filenames on disk."
+        "Preview and transactionally rename original sequence files to a simple consecutive pattern that Blender's native reader can load. Shared Frame By Plane rigs are updated together and a rollback manifest is written by default; explicit confirmation is required because Blender Undo cannot restore filesystem names."
     ),
     "fbp.generation_report_popup": (
         "Open the latest generation report with created layers, warnings, skipped media and repair actions. The report is diagnostic and does not modify the current project by itself."
     ),
     "fbp.remove_corrupted_generated_planes": (
-        "Delete only generated Frame By Plane objects identified by the last report as incomplete, missing or unsafe. Valid layers and all source image files on disk are preserved."
+        "Confirm and schedule deletion of only generated Frame By Plane rigs identified by the last report as incomplete, missing or unsafe. Valid layers and source files are preserved; deferred cleanup is intentionally not advertised as Blender Undo and the action is disabled when the report has no live problem rigs."
+    ),
+    "fbp.repair_layer_relation": (
+        "Queue an idempotent rebuild of the targeted active Clipping Mask or Layer Blend relation after reorder, duplication or Undo/Redo. This internal row action changes only Frame By Plane-owned scene nodes, never files, and is hidden from F3 because it requires an explicit warning-row target; deferred repair is not advertised as Blender Undo."
+    ),
+    "fbp.repair_all_layer_relations": (
+        "Queue an idempotent scan and rebuild of active Clipping Mask and Layer Blend relations across the current scene. Only Frame By Plane-owned relation nodes and stale sources may change, no files are touched, the action is disabled without FBP layers and deferred repair is not advertised as Blender Undo."
+    ),
+    "fbp.sync_render_output": (
+        "Read Blender's native Render File Path into the Frame By Plane builder or push the builder path back to Blender. This repeatable scene-RNA synchronization creates no folders or output files, requires an active scene and intentionally does not advertise Blender Undo for its runtime path cache."
     ),
     "fbp.rename_generation_problem_sequence": (
         "Open the safe sequence-renaming dialog for the currently selected problem entry in the generation report. The dialog previews the new pattern before changing files on disk."

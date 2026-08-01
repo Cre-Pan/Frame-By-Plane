@@ -779,7 +779,7 @@ class FBP_OT_RepairLayerRelation(Operator):
         "Safely rebuild and rebind the selected Clipping Mask or Layer Blend "
         "after reordering, duplication, Undo/Redo or a partial node rebuild"
     )
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'INTERNAL'}
 
     rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', name="Layer", options={'SKIP_SAVE'})
     relation: EnumProperty(description='Choose the Relation option for this Layer List action. Hover each entry for the specific mode when Blender exposes enum item help.',
@@ -833,6 +833,14 @@ class FBP_OT_RepairAllLayerRelations(Operator):
         "clear stale sources and rebuild incomplete relation nodes"
     )
     bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, "scene", None)
+        available = bool(scene is not None and next(iter(iter_scene_fbp_rigs(scene)), None))
+        if not available:
+            cls.poll_message_set("The current scene contains no Frame By Plane layers to repair")
+        return available
 
     def execute(self, context):
         try:
