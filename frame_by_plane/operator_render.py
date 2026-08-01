@@ -965,7 +965,7 @@ try:
     render_result = bpy.ops.render.render(animation=True, scene=scene.name)
     if 'FINISHED' not in render_result:
         raise RuntimeError(f"Blender animation render returned: {{render_result}}")
-except BaseException as exc:
+except Exception as exc:
     error = f"{{type(exc).__name__}}: {{exc}}"
     _write_state("ERROR", error=error)
     print(f"[FBP_BG_ERROR] {{error}}", flush=True)
@@ -1027,7 +1027,7 @@ if AUTO_VIDEO:
                 raise RuntimeError(f"FFmpeg exited with code {{completed.returncode}}")
         if not os.path.isfile(VIDEO_PATH) or os.path.getsize(VIDEO_PATH) <= 0:
             raise RuntimeError("FFmpeg did not produce the expected MP4")
-    except BaseException as exc:
+    except Exception as exc:
         error = f"{{type(exc).__name__}}: {{exc}}"
         _write_state("ERROR", error=error)
         print(f"[FBP_BG_ERROR] {{error}}", flush=True)

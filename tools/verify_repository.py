@@ -117,6 +117,16 @@ def main() -> None:
     if forbidden:
         fail("Generated or forbidden files found: " + ", ".join(forbidden[:20]))
 
+    base_exception_catches = []
+    for path in ADDON.rglob("*.py"):
+        if "except BaseException" in path.read_text(encoding="utf-8"):
+            base_exception_catches.append(str(path.relative_to(ROOT)))
+    if base_exception_catches:
+        fail(
+            "BaseException catches hide process-control exceptions: "
+            + ", ".join(base_exception_catches)
+        )
+
     print(f"Frame By Plane {manifest_version}: repository checks passed")
     print(f"Declared platforms: {', '.join(sorted(platforms))}")
     print(f"Bundled wheels: {len(wheels)}")
