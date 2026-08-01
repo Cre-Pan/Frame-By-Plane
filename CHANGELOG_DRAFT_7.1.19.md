@@ -1,51 +1,54 @@
 # Frame By Plane 7.1.19 — draft changelog
 
-> Draft only. The audited source still reports version 7.1.18 and has not been published.
+> Draft only. The audited source and packages still report version 7.1.18. Nothing described here has been published as 7.1.19.
 
-## Stability
+## Stability and generation safety
 
-- Fixed the Effect Evolution lifecycle check so enable, Project Doctor and Repair consistently use Blender’s `frame_change_post` phase.
-- Registration failures now roll back registered modules in reverse order and release the busy state when cleanup is safe.
-- Generation waits for its own 0.20-second deadline even when another add-on has a faster timer running.
-- Sequence and Multiplane generation now advance in main-thread chunks, report the current step and can be cancelled safely between Blender operations.
-- Cancelled or failed generation restores add-on-created objects, meshes, materials, images and node groups from its transaction snapshot.
-- Background render helpers no longer intercept `KeyboardInterrupt` or `SystemExit` as ordinary errors.
+- Added one process-wide UUID owner for Multiplane and Sequence generation across operators, scenes and windows.
+- Separated Fast Import batching from Global Undo; incremental jobs no longer leave the user's Undo preference disabled between modal ticks.
+- Added a central generation lifecycle for begin, checkpoint, commit, cancel, verified rollback and retirement during reload, disable and Blender Main replacement.
+- File Open, File Revert and New File now retire active generation in interactive and background Blender before RNA references become stale.
+- Replaced project-wide rollback scans with an explicit ownership journal for objects, meshes, materials, images, node groups, cameras, rigs, collections and disk changes.
+- Rollback now reports removed, restored, failed and remaining entries and verifies its postconditions before reporting success.
+- Restored selection, active object, mode, camera, cursor, pivot, render resolution/aspect, import directory and relevant UI state after Cancel/failure.
+- Added one idempotent progress owner with monotonic updates and exact-once begin/end.
+- Generation chunks now require the owned timer identity and monotonic deadline; foreign timers and reentrant advances are ignored.
+
+## Filesystem recovery
+
+- Rename manifests now use a UUID operation ID, UTC metadata, exclusive reservation, atomic replacement and explicit terminal status.
+- Corrupted-plane removal keeps its report until the deferred task verifies deletion and exposes Retry after failure.
+- Save, Rename and Delete Effect Preset now use the same confirmation, rolling-backup and atomic-write contract.
+- Preset mutations explicitly state that Blender Undo cannot restore filesystem changes.
+- A corrupt preset library can be restored from a valid rolling backup while the corrupt input is preserved for inspection.
+- Preset mutation fails closed when both primary and backup JSON are invalid or when the target is read-only.
+
+## Performance diagnostics
+
+- Frame timing now runs without `tracemalloc` and without detailed local profiling.
+- Python allocation sampling runs separately and is never mixed into avg/p50/p95/max frame timing.
+- Added same-fixture profiler-overhead calibration, warm-up/sample metadata, Blender/machine/scene metadata and explicit CPU-side approximation labels.
+- The profiler refuses playback, render, generation, Undo/load, active-profiler, external-tracemalloc and unsupported background operator contexts.
+- Replaced front-trimmed handler sample lists with bounded `deque` buffers.
+- Generation transaction preparation no longer scales with global datablock count; the audit measured ~0.08 ms median at both 1k and 100k unrelated IDs.
 
 ## Interface and diagnostics
 
-- Grease Pencil effect compatibility now explains why an effect is Native, a Geometry Nodes candidate or Raster-only.
-- Added Native, GN Candidate, Raster and All filters, category counts and Copy Compatibility Report.
-- Replaced 40 generic operator tooltips with action-specific descriptions covering prerequisites, multi-layer behavior, Undo, skipped items and Preview scope.
-- Preview badges and diagnostics are now consistent across Compositor Layers, Procreate Import and Generic Mesh Effects.
-- Project Doctor labels Preview limitations separately from LTS errors.
-- Added local Copy Diagnostics for active Preview features; no paths, media or telemetry are sent anywhere.
+- Grease Pencil compatibility summaries distinguish Native supported from Native unavailable, GN candidates and Raster-only effects.
+- Added compatibility search, unavailable filtering and compact presentation for large effect lists.
+- Preview feature detection now reads persisted compositor, Procreate and Generic Mesh metadata rather than relying on the latest import report.
+- Project Doctor exposes `FAILED` and `FAILED_UNSAFE` registration lifecycle states with fail-closed recovery guidance and copyable diagnostics.
 
-## Safer irreversible actions
+## Verified test coverage
 
-- Renaming an effect preset creates an atomic rolling `effect_presets.backup.json` backup.
-- Renaming source sequence files requires explicit confirmation, previews the first and last rename, and writes a rollback manifest by default.
-- Filesystem actions now state clearly that Blender Undo cannot restore renamed files or external configuration.
-- Corrupted-plane removal requires confirmation; targeted relation repair is shown only where a valid row target exists.
-- Render-output sync now exposes a clear availability reason and remains a scene-only, idempotent operation.
-
-## Performance
-
-- Added an opt-in, local Developer/Profile mode. It is disabled by default.
-- The Performance Dashboard can run a controlled 120-frame profile with warm-up, avg/p50/p95/max, CPU-side effective FPS, handler and scheduler metrics, Python memory delta and guaranteed frame restoration.
-- Startup import/register timing, icon loading, scheduler queue/task timing, available cache statistics and UI-list activity can be exported as JSON or opened as a readable Blender Text report.
-- Custom effect icons are loaded on demand. Startup preview entries measured in the audit dropped from 31 to 12.
-- Duplicate icon aliases now share one Blender preview ID; 300,000 cached icon lookups measured 44.96 ms before and 30.24 ms after on the audit machine.
-- Normal playback profiling remains outside the hot path when Developer/Profile mode is off. On the 100-layer animated fixture, average handler time measured 5.82 ms before and 5.71 ms after.
-
-## Test coverage
-
-- Expanded the Blender 5.2 LTS runner with registration failure injection, generation deadline/progress/rollback, Preview policy, irreversible-action contracts, performance profiling and icon deduplication checks.
-- Added 20 Undo pushes with 10 Undo/10 Redo cycles in an interactive View3D context.
-- Added tiny background renders for Workbench, Eevee and Cycles.
+- Blender 5.2 LTS background suite: PASS, including registration failure injection, media generation, deep rollback, filesystem recovery, save/reopen and Workbench/Eevee/Cycles renders.
+- Blender 5.2 interactive suite: PASS, including two-window same/different operator contention, 20 Undo + 20 Redo and 300 Grease Pencil/Layer Tree redraw cycles.
+- Installed Windows x64 ZIP: PASS for enable, FBP scene creation, save/reopen and active-owner File Open/Revert/New File.
+- Blender 5.2 package validation: PASS for Linux x64, macOS ARM64/x64 and Windows ARM64/x64 archives.
 
 ## Known limits
 
-- “Profile 120 Frames” measures controlled CPU-side frame evaluation. It is not a GPU presentation benchmark or a substitute for final render timing.
-- A single Blender operation cannot be interrupted halfway through; cancel is honored between reported chunks.
-- Full runtime verification on Windows ARM64, macOS Intel/ARM and Linux x64 remains required before a multi-platform release.
-- Large 4K/video, long-path/read-only filesystem and 250,000-point Grease Pencil fixtures remain follow-up test work.
+- Cancel is honored between Blender-operation checkpoints; a single Blender API call cannot be interrupted halfway through.
+- “Profile 120 Frames” measures controlled CPU-side evaluation, not GPU presentation or a final render.
+- Full runtime tests were executed on Windows x64 only. Other declared packages passed structural validation but still require native-platform runtime testing.
+- The historical `CAMERA_SCALE_LOCK` artist-preservation fixture remains unavailable in the bundled test asset; the other Generic Mesh matrix/topology/group contracts pass.

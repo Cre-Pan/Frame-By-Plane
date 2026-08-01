@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "release": "7.1.18",
+  "captured_at": "2026-08-01T19:30:53+02:00",
+  "environment": {
+    "blender": "5.2.0 LTS",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "logical_cpus": 20,
+    "network_used": false,
+    "profile_environment_variable": "unset"
+  },
+  "sources": {
+    "before": {
+      "git_commit": "a1a0435",
+      "label": "before follow-up audit"
+    },
+    "after": {
+      "git_commit": "5c7d81c",
+      "label": "after follow-up audit implementation"
+    },
+    "probe": "tools/followup_performance_probe.py"
+  },
+  "methodology": {
+    "same_machine": true,
+    "same_blender_binary": true,
+    "same_fixture": true,
+    "startup": "Blender --background --factory-startup; source package loaded and registered directly.",
+    "frame_fixture": "Empty scene, frames 1-120, 12 warm-up evaluations and 240 independently timed scene.frame_set calls with tracemalloc off.",
+    "dashboard_fixture": "Empty scene, PLAYBACK CPU-side approximation, 8 warm-up and 120 measured frame evaluations.",
+    "preparation_fixture": "1,000, 10,000 and 100,000 unrelated empty Mesh datablocks; five preparation samples at each cardinality. Empty Mesh IDs avoid Blender's quadratic unique Material naming cost and keep fixture construction outside the measurement.",
+    "units": "Milliseconds unless stated otherwise",
+    "outlier_policy": "No frame samples were removed. Two final after runs are retained because the first showed system-load variance; the immediate repeat is the primary warm comparison and the first run is reported under after_run_variability.",
+    "scope": "CPU-side Python/Blender frame evaluation and transaction preparation; not GPU presentation or final-render timing."
+  },
+  "before": {
+    "independent_empty_scene_frame_set_240": {
+      "samples": 240,
+      "avg_ms": 0.0892062511,
+      "median_ms": 0.0892000098,
+      "p95_ms": 0.0908999937,
+      "max_ms": 0.0964000064,
+      "tracemalloc": false
+    },
+    "dashboard_profile_120": {
+      "warmup_frames": 8,
+      "samples": 120,
+      "avg_ms": 0.6737249993,
+      "p50_ms": 0.6618499901,
+      "p95_ms": 0.7374999943,
+      "max_ms": 0.8764000086,
+      "effective_fps": 1484.2851,
+      "timing_profile_enabled": true,
+      "timing_tracemalloc": true,
+      "memory_included_in_timing": true,
+      "python_memory_delta_bytes": 7670
+    },
+    "legacy_global_snapshot": [
+      {
+        "global_unrelated_mesh_datablocks": 1000,
+        "samples": 5,
+        "avg_ms": 0.2173799905,
+        "median_ms": 0.1955000043,
+        "p95_ms": 0.2112999791,
+        "max_ms": 0.2922999847
+      },
+      {
+        "global_unrelated_mesh_datablocks": 10000,
+        "samples": 5,
+        "avg_ms": 2.1617000049,
+        "median_ms": 1.9576999766,
+        "p95_ms": 2.0596000249,
+        "max_ms": 2.9599000118
+      },
+      {
+        "global_unrelated_mesh_datablocks": 100000,
+        "samples": 5,
+        "avg_ms": 27.1985200001,
+        "median_ms": 26.9248999830,
+        "p95_ms": 27.2653000138,
+        "max_ms": 28.9983999974
+      }
+    ]
+  },
+  "after": {
+    "independent_empty_scene_frame_set_240": {
+      "samples": 240,
+      "avg_ms": 0.0888062503,
+      "median_ms": 0.0887000060,
+      "p95_ms": 0.0911999959,
+      "max_ms": 0.0981999910,
+      "tracemalloc": false
+    },
+    "dashboard_profile_120": {
+      "warmup_frames": 8,
+      "samples": 120,
+      "avg_ms": 0.0883708327,
+      "p50_ms": 0.0883999746,
+      "p95_ms": 0.0903099906,
+      "max_ms": 0.0923000043,
+      "effective_fps": 11315.9509,
+      "timing_profile_enabled": false,
+      "timing_tracemalloc": false,
+      "memory_included_in_timing": false,
+      "memory_run": {
+        "samples": 24,
+        "python_initial_bytes": 0,
+        "python_final_bytes": 942,
+        "python_delta_bytes": 942
+      },
+      "instrumentation_calibration": {
+        "samples": 24,
+        "baseline_subset_avg_ms": 0.0889041645,
+        "profile_enabled_avg_ms": 0.0894749986,
+        "estimated_overhead_percent": 0.6420779554
+      },
+      "state_restored": true
+    },
+    "legacy_global_snapshot_control": [
+      {
+        "global_unrelated_mesh_datablocks": 1000,
+        "samples": 5,
+        "median_ms": 0.2013999911
+      },
+      {
+        "global_unrelated_mesh_datablocks": 10000,
+        "samples": 5,
+        "median_ms": 1.8981999892
+      },
+      {
+        "global_unrelated_mesh_datablocks": 100000,
+        "samples": 5,
+        "median_ms": 73.1491000042
+      }
+    ],
+    "owned_journal_acquire_and_retire": [
+      {
+        "global_unrelated_mesh_datablocks": 1000,
+        "samples": 5,
+        "avg_ms": 0.1288399973,
+        "median_ms": 0.0803000003,
+        "p95_ms": 0.1102999959,
+        "max_ms": 0.3156999883
+      },
+      {
+        "global_unrelated_mesh_datablocks": 10000,
+        "samples": 5,
+        "avg_ms": 0.1011600019,
+        "median_ms": 0.0760999974,
+        "p95_ms": 0.0898999861,
+        "max_ms": 0.2022000263
+      },
+      {
+        "global_unrelated_mesh_datablocks": 100000,
+        "samples": 5,
+        "avg_ms": 0.2677399956,
+        "median_ms": 0.2410000016,
+        "p95_ms": 0.2472999913,
+        "max_ms": 0.4081999941
+      }
+    ],
+    "after_run_variability": {
+      "reason_retained": "The first final run was materially slower under transient system load; it is retained rather than silently discarded.",
+      "independent_frame_set_avg_ms": 0.2036737501,
+      "dashboard_frame_avg_ms": 0.1479675006,
+      "estimated_profile_overhead_percent": -9.1085326296,
+      "owned_journal_medians_ms": {
+        "1000": 0.2591000230,
+        "10000": 0.2283000213,
+        "100000": 0.2393000177
+      },
+      "interpretation": "Absolute timings varied with machine load, while the owned-journal medians remained flat across the 100x datablock range in this run."
+    }
+  },
+  "comparisons": {
+    "independent_frame_set_avg_delta_percent": -0.4484,
+    "independent_frame_set_interpretation": "Within sub-millisecond noise; no normal empty-scene playback regression detected.",
+    "dashboard_reported_avg_delta_percent": -86.8832,
+    "dashboard_interpretation": "The large drop removes measurement distortion: the old dashboard timed frames while detailed profiling and tracemalloc were active; the new authoritative timing run does neither.",
+    "legacy_snapshot_median_growth_1000_to_100000_factor_final_control": 363.2031,
+    "owned_journal_primary_median_growth_1000_to_100000_factor": 3.0012,
+    "owned_journal_loaded_run_median_growth_1000_to_100000_factor": 0.9236,
+    "owned_journal_interpretation": "Across two final runs, preparation remained sub-millisecond and did not scale linearly with the 100x increase in unrelated datablocks; one run was flat and the warm primary run increased about 3x, far below the legacy full scan."
+  },
+  "validation": {
+    "background_suite": {
+      "passed": true,
+      "failed": 0,
+      "skipped": 1,
+      "skip": "CAMERA_SCALE_LOCK artist-preservation fixture unavailable in the bundled test asset"
+    },
+    "interactive_suite": {
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "undo_pushes": 20,
+      "undo": 20,
+      "redo": 20,
+      "gp_redraw_300_seconds": 2.7187451
+    },
+    "conclusion": {
+      "profiler_substantial_measurement_distortion_detected_after_fix": false,
+      "normal_playback_regression_detected": false,
+      "global_datablock_scaling_detected_in_owned_journal": false
+    }
+  }
+}
