@@ -9,6 +9,7 @@ strings. If you need a brand-new icon, add it first to constants.py > FBP_ICONS.
 """
 
 import os
+import time
 
 from .constants import FBP_ICONS, fbp_icon, preview_collections
 
@@ -269,6 +270,38 @@ _FBP_CUSTOM_ICON_VALUE_CACHE = globals().get("_FBP_CUSTOM_ICON_VALUE_CACHE", {})
 if not isinstance(_FBP_CUSTOM_ICON_VALUE_CACHE, dict):
     _FBP_CUSTOM_ICON_VALUE_CACHE = {}
 _FBP_CUSTOM_ICON_GENERATION = int(globals().get("_FBP_CUSTOM_ICON_GENERATION", 0) or 0)
+_FBP_ICON_METRIC_DEFAULTS = {
+    "requests": 0,
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "filesystem_checks": 0,
+    "preview_loads": 0,
+    "load_failures": 0,
+    "load_total_ms": 0.0,
+    "preload_total_ms": 0.0,
+}
+_FBP_ICON_METRICS = globals().get("_FBP_ICON_METRICS", {})
+if not isinstance(_FBP_ICON_METRICS, dict):
+    _FBP_ICON_METRICS = {}
+for _metric_key, _metric_default in _FBP_ICON_METRIC_DEFAULTS.items():
+    _FBP_ICON_METRICS.setdefault(_metric_key, _metric_default)
+
+
+def custom_icon_metrics(*, reset=False):
+    result = dict(_FBP_ICON_METRICS)
+    result.update({
+        "logical_cache_entries": len(_FBP_CUSTOM_ICON_VALUE_CACHE),
+        "preview_collection_entries": 0,
+    })
+    pcoll = preview_collections.get(_FBP_CUSTOM_ICON_COLLECTION)
+    try:
+        result["preview_collection_entries"] = len(pcoll) if pcoll is not None else 0
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    if reset:
+        _FBP_ICON_METRICS.clear()
+        _FBP_ICON_METRICS.update(_FBP_ICON_METRIC_DEFAULTS)
+    return result
 
 
 def clear_custom_icon_cache():
@@ -326,8 +359,10 @@ def custom_icon_value(custom_key):
     custom_key = str(custom_key or "")
     if not custom_key:
         return 0
+    _FBP_ICON_METRICS["requests"] += 1
     cached = _FBP_CUSTOM_ICON_VALUE_CACHE.get(custom_key)
     if cached is not None:
+        _FBP_ICON_METRICS["cache_hits"] += 1
         # File > Revert / Load can invalidate Blender preview icon ids without
         # re-importing this module. Never return a stale positive id unless the
         # matching preview still exists in the live collection.
@@ -343,7 +378,9 @@ def custom_icon_value(custom_key):
         except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
             pass
         _FBP_CUSTOM_ICON_VALUE_CACHE.pop(custom_key, None)
+    _FBP_ICON_METRICS["cache_misses"] += 1
     path = _fbp_custom_icon_path(custom_key)
+    _FBP_ICON_METRICS["filesystem_checks"] += 1
     if not path or not os.path.isfile(path):
         _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = 0
         return 0
@@ -352,11 +389,18 @@ def custom_icon_value(custom_key):
         _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = 0
         return 0
     try:
+        load_started = time.perf_counter()
         if custom_key not in pcoll:
             pcoll.load(custom_key, path, 'IMAGE')
+            _FBP_ICON_METRICS["preview_loads"] += 1
         value = int(getattr(pcoll[custom_key], "icon_id", 0) or 0)
     except Exception:
+        _FBP_ICON_METRICS["load_failures"] += 1
         value = 0
+    finally:
+        _FBP_ICON_METRICS["load_total_ms"] += max(
+            0.0, (time.perf_counter() - load_started) * 1000.0
+        )
     _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = value
     return value
 
@@ -453,6 +497,7 @@ def register_custom_icons():
     """
     # Revert File / Load can retire native preview ids while leaving this Python
     # module alive. Always rebuild positive ids from the active preview collection.
+    preload_started = time.perf_counter()
     clear_custom_icon_cache()
     for key in (
         "single_plane", "multi_plane", "cutout_plane", "gp_layer",
@@ -463,6 +508,9 @@ def register_custom_icons():
         custom_icon_value(key)
     for effect_id in _FBP_EFFECT_CUSTOM_ICON_FILES:
         effect_custom_icon_value(effect_id)
+    _FBP_ICON_METRICS["preload_total_ms"] = max(
+        0.0, (time.perf_counter() - preload_started) * 1000.0
+    )
     return True
 
 

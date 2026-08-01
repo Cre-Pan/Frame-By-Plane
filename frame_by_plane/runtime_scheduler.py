@@ -190,9 +190,11 @@ _METRIC_DEFAULTS = {
     "max_queue": 0,
     "last_duration_ms": 0.0,
     "max_duration_ms": 0.0,
+    "total_duration_ms": 0.0,
     "last_executed": 0,
     "slow_tasks": 0,
     "max_task_duration_ms": 0.0,
+    "total_task_duration_ms": 0.0,
     "slowest_task": "",
     "registry_checks": 0,
     "registry_recoveries": 0,
@@ -1062,6 +1064,16 @@ def scheduler_metrics(*, reset=False):
     result["epoch"] = _SCHEDULER_EPOCH
     result["accepting_tasks"] = bool(_ACCEPTING_TASKS)
     result["dispatcher_registered"] = _dispatcher_registered()
+    executed = max(0, int(result.get("executed", 0) or 0))
+    dispatches = max(0, int(result.get("dispatches", 0) or 0))
+    result["average_task_duration_ms"] = (
+        float(result.get("total_task_duration_ms", 0.0) or 0.0) / executed
+        if executed else 0.0
+    )
+    result["average_dispatch_duration_ms"] = (
+        float(result.get("total_duration_ms", 0.0) or 0.0) / dispatches
+        if dispatches else 0.0
+    )
     if reset:
         _METRICS.clear()
         _METRICS.update(_METRIC_DEFAULTS)
@@ -1232,6 +1244,11 @@ def _dispatch():
                 max(0.0, (_perf_counter() - task_started) * 1000.0)
                 if task_started else 0.0
             )
+            _METRICS["total_task_duration_ms"] = (
+                _coerce_nonnegative_float(
+                    _METRICS.get("total_task_duration_ms", 0.0)
+                ) + task_duration_ms
+            )
             if task_duration_ms > _coerce_nonnegative_float(
                 _METRICS.get("max_task_duration_ms", 0.0)
             ):
@@ -1263,6 +1280,10 @@ def _dispatch():
     finally:
         duration_ms = max(0.0, (_perf_counter() - started) * 1000.0) if started else 0.0
         _METRICS["last_duration_ms"] = round(duration_ms, 4)
+        _METRICS["total_duration_ms"] = (
+            _coerce_nonnegative_float(_METRICS.get("total_duration_ms", 0.0))
+            + duration_ms
+        )
         _METRICS["max_duration_ms"] = max(
             _coerce_nonnegative_float(_METRICS.get("max_duration_ms", 0.0)),
             duration_ms,

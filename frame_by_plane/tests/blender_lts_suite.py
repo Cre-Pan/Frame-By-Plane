@@ -1476,6 +1476,44 @@ def test_tiny_render(_module):
         scene.render.use_compositing = previous_use_compositing
 
 
+def test_performance_profile_contract(module):
+    dashboard = importlib.import_module(f"{PACKAGE}.performance_dashboard")
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
+    icons = importlib.import_module(f"{PACKAGE}.ui_icons")
+    scene = bpy.context.scene
+    original_frame = int(scene.frame_current)
+    profile = dashboard.profile_frame_changes(
+        scene,
+        frame_count=12,
+        warmup=2,
+        profile_context="PLAYBACK",
+    )
+    assert scene.frame_current == original_frame, (scene.frame_current, original_frame)
+    assert profile["state_restored"] is True, profile
+    assert profile["measured_frames"] == 12, profile
+    assert profile["frame_evaluation"]["samples"] == 12, profile
+    assert profile["effect_handler"]["timed_samples"] >= 12, profile
+    assert profile["scheduler"]["average_task_duration_ms"] >= 0.0, profile
+    assert profile["memory"]["python_initial_bytes"] >= 0, profile
+    report = dashboard.build_performance_report(scene)
+    report["frame_profile"] = profile
+    json.dumps(report)
+    text = dashboard.performance_report_text(report)
+    assert "Profile 120 Frames" in text and "Local runtime profile" in text, text
+    startup = module.fbp_startup_profile_snapshot()
+    assert startup["register_total_ms"] >= 0.0, startup
+    assert "preview_loads" in icons.custom_icon_metrics()
+    assert geometry.fbp_effect_runtime_profile_metrics()["timed_samples"] >= 12
+    assert "average_dispatch_duration_ms" in scheduler.scheduler_metrics()
+    return {
+        "measured_frames": 12,
+        "handler_samples": profile["effect_handler"]["timed_samples"],
+        "state_restored": True,
+        "json_serializable": True,
+    }
+
+
 def _redraw_all(iterations=1):
     for window in tuple(bpy.context.window_manager.windows):
         for area in tuple(window.screen.areas):
@@ -1657,6 +1695,7 @@ def run_background():
             ("compositor_artist_graph", test_compositor),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
+            ("performance_profile_contract", test_performance_profile_contract),
             ("save_reopen", test_save_reopen),
             ("tiny_render", test_tiny_render),
         )

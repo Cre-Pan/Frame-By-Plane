@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import statistics
+import time
+import tracemalloc
 from datetime import datetime, timezone
 
 import bpy
 from bpy.props import (
     CollectionProperty,
+    BoolProperty,
     EnumProperty,
     FloatProperty,
     IntProperty,
@@ -24,7 +29,7 @@ from .registration import (
     unregister_classes,
     unregister_type_properties,
 )
-from .runtime import FBP_DATA_ERRORS
+from .runtime import FBP_DATA_ERRORS, fbp_runtime_get, fbp_runtime_set
 from .ui_style import configure_layout, empty_state, hint_row, section_header
 from .ui_list_state import mark_ui_list_draw
 from .interface_preferences import (
@@ -36,7 +41,7 @@ from .interface_preferences import (
 )
 
 
-PERFORMANCE_REPORT_SCHEMA_VERSION = 1
+PERFORMANCE_REPORT_SCHEMA_VERSION = 2
 PERFORMANCE_REPORT_TEXT_NAME = "FBP_Performance_Report"
 PERFORMANCE_REPORT_FILENAME = "FBP_Performance_Report.json"
 
@@ -59,6 +64,9 @@ _TIER_ORDER = {
 _REPORT_CACHE = globals().get("_REPORT_CACHE", {})
 if not isinstance(_REPORT_CACHE, dict):
     _REPORT_CACHE = {}
+_PROFILE_ENV_ENABLED = str(os.environ.get("FBP_PROFILE", "") or "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 
 def _utc_now():
@@ -94,6 +102,174 @@ def format_memory(byte_count):
     if byte_count >= 1024.0:
         return f"{byte_count / 1024.0:.1f} KiB"
     return f"{int(byte_count)} B"
+
+
+def _percentile(values, quantile):
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return 0.0
+    position = (len(ordered) - 1) * max(0.0, min(1.0, float(quantile)))
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + ((ordered[upper] - ordered[lower]) * (position - lower))
+
+
+def _timing_summary_ms(samples):
+    values = tuple(max(0.0, float(value)) for value in samples)
+    return {
+        "samples": len(values),
+        "avg_ms": statistics.fmean(values) if values else 0.0,
+        "p50_ms": _percentile(values, 0.50),
+        "p95_ms": _percentile(values, 0.95),
+        "max_ms": max(values, default=0.0),
+    }
+
+
+def _profile_enabled():
+    return bool(
+        _PROFILE_ENV_ENABLED
+        or fbp_runtime_get("fbp_profile_enabled", False)
+    )
+
+
+def _set_profile_enabled(enabled):
+    return fbp_runtime_set("fbp_profile_enabled", bool(enabled))
+
+
+def _profile_toggle_update(self, _context):
+    try:
+        _set_profile_enabled(bool(self.fbp_performance_profile_enabled))
+    except FBP_DATA_ERRORS:
+        pass
+
+
+def runtime_profile_snapshot(scene=None):
+    """Collect primitive local metrics; never writes files or uses the network."""
+    from . import fbp_startup_profile_snapshot
+    from .geometry_nodes import fbp_effect_runtime_profile_metrics
+    from .layer_tree_snapshot import snapshot_metrics
+    from .runtime_scheduler import scheduler_metrics
+    from .ui_icons import custom_icon_metrics
+    from .ui_list_state import transient_state_snapshot
+
+    scene = scene or getattr(bpy.context, "scene", None)
+    media_memory = 0
+    managed_proxies = 0
+    image_count = 0
+    try:
+        image_count = len(bpy.data.images)
+        for image in bpy.data.images:
+            media_memory += _image_estimated_bytes(image)
+            try:
+                managed_proxies += int(bool(
+                    image.get("fbp_native_sequence_proxy", False)
+                    or image.get("fbp_generated_proxy", False)
+                ))
+            except FBP_DATA_ERRORS:
+                pass
+    except FBP_DATA_ERRORS:
+        pass
+    return {
+        "enabled": bool(_profile_enabled()),
+        "local_only": True,
+        "startup": fbp_startup_profile_snapshot(),
+        "effect_handler": fbp_effect_runtime_profile_metrics(),
+        "scheduler": scheduler_metrics(),
+        "media_cache": {
+            "loaded_images": int(image_count),
+            "estimated_decoded_bytes": int(media_memory),
+            "managed_proxy_images": int(managed_proxies),
+            "hit_miss_scope": "Layer Tree snapshot cache; Blender image-cache internals are not exposed.",
+            "layer_tree": snapshot_metrics(),
+        },
+        "ui": {
+            "ui_lists": transient_state_snapshot(),
+            "icons": custom_icon_metrics(),
+            "panel_draw_timing": "Not exposed by Blender; interactive regression records total redraw wall time.",
+        },
+    }
+
+
+def profile_frame_changes(scene, *, frame_count=120, warmup=8, profile_context="PLAYBACK"):
+    """Measure controlled frame evaluation and restore the original frame."""
+    from .geometry_nodes import fbp_effect_runtime_profile_metrics
+    from .runtime_scheduler import scheduler_metrics
+
+    if scene is None:
+        raise ValueError("A scene is required")
+    frame_count = max(1, int(frame_count))
+    warmup = max(0, int(warmup))
+    profile_context = str(profile_context or "PLAYBACK").upper()
+    if profile_context not in {"VIEWPORT", "PLAYBACK", "RENDER"}:
+        profile_context = "PLAYBACK"
+    original_frame = int(getattr(scene, "frame_current", 1) or 1)
+    start_frame = int(getattr(scene, "frame_start", 1) or 1)
+    end_frame = max(start_frame, int(getattr(scene, "frame_end", start_frame) or start_frame))
+    span = max(1, end_frame - start_frame + 1)
+    fps = max(
+        0.001,
+        float(getattr(scene.render, "fps", 24) or 24)
+        / max(0.001, float(getattr(scene.render, "fps_base", 1.0) or 1.0)),
+    )
+    budget_ms = 1000.0 / fps
+    was_enabled = _profile_enabled()
+    tracing_started_here = not tracemalloc.is_tracing()
+    samples = []
+    initial_python_bytes = 0
+    final_python_bytes = 0
+    try:
+        _set_profile_enabled(True)
+        if tracing_started_here:
+            tracemalloc.start()
+        initial_python_bytes = int(tracemalloc.get_traced_memory()[0])
+        for offset in range(warmup):
+            scene.frame_set(start_frame + (offset % span))
+        fbp_effect_runtime_profile_metrics(reset=True)
+        scheduler_metrics(reset=True)
+        for offset in range(frame_count):
+            frame = start_frame + (offset % span)
+            started = time.perf_counter()
+            scene.frame_set(frame)
+            if profile_context == "VIEWPORT":
+                view_layer = getattr(bpy.context, "view_layer", None)
+                if view_layer is not None:
+                    view_layer.update()
+            samples.append((time.perf_counter() - started) * 1000.0)
+        final_python_bytes = int(tracemalloc.get_traced_memory()[0])
+        timing = _timing_summary_ms(samples)
+        timing["effective_fps"] = (
+            1000.0 / timing["avg_ms"] if timing["avg_ms"] > 0.0 else 0.0
+        )
+        timing["target_fps"] = fps
+        timing["frame_budget_ms"] = budget_ms
+        timing["frames_over_budget"] = sum(1 for value in samples if value > budget_ms)
+        return {
+            "profile_context": profile_context,
+            "contract": (
+                "Controlled scene.frame_set evaluation; VIEWPORT also updates the active view layer. "
+                "PLAYBACK and RENDER are CPU-side approximations, not GPU presentation or final render timings."
+            ),
+            "warmup_frames": warmup,
+            "measured_frames": frame_count,
+            "frame_evaluation": timing,
+            "effect_handler": fbp_effect_runtime_profile_metrics(),
+            "scheduler": scheduler_metrics(),
+            "memory": {
+                "python_initial_bytes": initial_python_bytes,
+                "python_final_bytes": final_python_bytes,
+                "python_delta_bytes": final_python_bytes - initial_python_bytes,
+            },
+            "state_restored": True,
+        }
+    finally:
+        try:
+            scene.frame_set(original_frame)
+        finally:
+            _set_profile_enabled(was_enabled)
+            if tracing_started_here and tracemalloc.is_tracing():
+                tracemalloc.stop()
 
 
 def _normalized_path(value):
@@ -683,6 +859,7 @@ def build_performance_report(scene):
         "schema": PERFORMANCE_REPORT_SCHEMA_VERSION,
         "generated_at": _utc_now(),
         "summary": summary,
+        "runtime_profile": runtime_profile_snapshot(scene),
         "layers": layers,
         "effects": effects,
         "guidance": unique_guidance,
@@ -698,6 +875,10 @@ def build_performance_report(scene):
             "observed_timing": (
                 "Blender Modifier.execution_time from the latest evaluated "
                 "Geometry Nodes state; zero means unavailable/not evaluated."
+            ),
+            "runtime_profile": (
+                "Local process counters only. Detailed handler timing is sampled "
+                "only while Developer/Profile mode or Profile 120 Frames is active."
             ),
         },
     }
@@ -773,6 +954,68 @@ def performance_report_text(report):
         )
         if item.get("action"):
             lines.append(f"  Suggestion: {item['action']}")
+    runtime_profile = dict((report or {}).get("runtime_profile", {}) or {})
+    handler = dict(runtime_profile.get("effect_handler", {}) or {})
+    scheduler = dict(runtime_profile.get("scheduler", {}) or {})
+    icons = dict((runtime_profile.get("ui", {}) or {}).get("icons", {}) or {})
+    lines.extend((
+        "",
+        "Local runtime profile",
+        f"- Developer/Profile enabled: {bool(runtime_profile.get('enabled', False))}",
+        (
+            "- Effect handler: {avg:.4f} ms avg · {p95:.4f} ms p95 · "
+            "{maximum:.4f} ms max · {samples} sample(s)"
+        ).format(
+            avg=float(handler.get("avg_ms", 0.0) or 0.0),
+            p95=float(handler.get("p95_ms", 0.0) or 0.0),
+            maximum=float(handler.get("max_ms", 0.0) or 0.0),
+            samples=int(handler.get("timed_samples", 0) or 0),
+        ),
+        (
+            "- Scheduler: {pending} pending · {executed} executed · "
+            "{coalesced} coalesced · {avg:.4f} ms/task"
+        ).format(
+            pending=int(scheduler.get("pending", 0) or 0),
+            executed=int(scheduler.get("executed", 0) or 0),
+            coalesced=int(scheduler.get("coalesced", 0) or 0),
+            avg=float(scheduler.get("average_task_duration_ms", 0.0) or 0.0),
+        ),
+        (
+            "- Icons: {loads} preview load(s) · {hits} cache hit(s) · "
+            "{checks} filesystem check(s)"
+        ).format(
+            loads=int(icons.get("preview_loads", 0) or 0),
+            hits=int(icons.get("cache_hits", 0) or 0),
+            checks=int(icons.get("filesystem_checks", 0) or 0),
+        ),
+    ))
+    frame_profile = dict((report or {}).get("frame_profile", {}) or {})
+    if frame_profile:
+        frame_timing = dict(frame_profile.get("frame_evaluation", {}) or {})
+        lines.extend((
+            "",
+            "Profile 120 Frames",
+            f"- Context: {frame_profile.get('profile_context', 'PLAYBACK')}",
+            (
+                "- Frame evaluation: {avg:.3f} ms avg · {p50:.3f} ms p50 · "
+                "{p95:.3f} ms p95 · {maximum:.3f} ms max"
+            ).format(
+                avg=float(frame_timing.get("avg_ms", 0.0) or 0.0),
+                p50=float(frame_timing.get("p50_ms", 0.0) or 0.0),
+                p95=float(frame_timing.get("p95_ms", 0.0) or 0.0),
+                maximum=float(frame_timing.get("max_ms", 0.0) or 0.0),
+            ),
+            (
+                "- Effective FPS: {actual:.2f} · target {target:.2f} · "
+                "{missed} frame(s) over budget"
+            ).format(
+                actual=float(frame_timing.get("effective_fps", 0.0) or 0.0),
+                target=float(frame_timing.get("target_fps", 0.0) or 0.0),
+                missed=int(frame_timing.get("frames_over_budget", 0) or 0),
+            ),
+            f"- State restored: {bool(frame_profile.get('state_restored', False))}",
+            f"- Limit: {frame_profile.get('contract', '')}",
+        ))
     lines.extend(
         (
             "",
@@ -780,6 +1023,7 @@ def performance_report_text(report):
             f"- {(report or {}).get('methodology', {}).get('memory', '')}",
             f"- {(report or {}).get('methodology', {}).get('effect_cost', '')}",
             f"- {(report or {}).get('methodology', {}).get('observed_timing', '')}",
+            f"- {(report or {}).get('methodology', {}).get('runtime_profile', '')}",
         )
     )
     return "\n".join(lines).rstrip() + "\n"
@@ -946,6 +1190,57 @@ class FBP_OT_ScanPerformance(Operator):
             (
                 f"{summary['layers']} layer(s), {summary['effects']} effect(s), "
                 f"{format_memory(summary['unique_memory_bytes'])} estimated"
+            ),
+        )
+        return {"FINISHED"}
+
+
+class FBP_OT_Profile120Frames(Operator):
+    bl_idname = "fbp.profile_120_frames"
+    bl_label = "Profile 120 Frames"
+    bl_description = (
+        "Measure 120 controlled frame evaluations after warm-up, collect local "
+        "handler/scheduler/memory counters, then restore the original frame"
+    )
+    bl_options = {"REGISTER"}
+
+    profile_context: EnumProperty(
+        items=(
+            ("VIEWPORT", "Viewport", "Frame evaluation plus active View Layer update"),
+            ("PLAYBACK", "Playback", "CPU-side frame-change/playback approximation"),
+            ("RENDER", "Render", "CPU-side render-frame approximation; no image is rendered"),
+        ),
+        default="PLAYBACK",
+        options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        if getattr(context, "scene", None) is None:
+            cls.poll_message_set("An active scene is required")
+            return False
+        return True
+
+    def execute(self, context):
+        try:
+            frame_profile = profile_frame_changes(
+                context.scene,
+                frame_count=120,
+                warmup=8,
+                profile_context=self.profile_context,
+            )
+            report = build_performance_report(context.scene)
+            report["frame_profile"] = frame_profile
+            _populate_scene_report(context.scene, report)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            self.report({"ERROR"}, f"Profile failed; scene state was restored: {exc}")
+            return {"CANCELLED"}
+        timing = frame_profile["frame_evaluation"]
+        self.report(
+            {"INFO"},
+            (
+                f"120 frames: {timing['avg_ms']:.2f} ms avg, "
+                f"{timing['p95_ms']:.2f} ms p95, {timing['effective_fps']:.1f} FPS"
             ),
         )
         return {"FINISHED"}
@@ -1215,6 +1510,21 @@ def draw_performance_dashboard_ui(layout, context):
     scene = context.scene
     state = context.window_manager
     current_report = cached_performance_report(scene)
+    profile_controls = layout.row(align=True)
+    profile_controls.prop(
+        state,
+        "fbp_performance_profile_enabled",
+        text="Developer/Profile",
+        toggle=True,
+        icon="CONSOLE",
+    )
+    profile_controls.prop(state, "fbp_performance_profile_context", text="")
+    profile_operator = profile_controls.operator(
+        "fbp.profile_120_frames",
+        text="Profile 120 Frames",
+        icon="PLAY",
+    )
+    profile_operator.profile_context = state.fbp_performance_profile_context
     actions = layout.row(align=True)
     actions.operator("fbp.scan_performance", text="Scan", icon="TIME")
     report_tools = actions.row(align=True)
@@ -1356,6 +1666,7 @@ def _wrap_text(value, width):
 _model_classes = (FBP_PerformanceRow,)
 _interactive_classes = (
     FBP_OT_ScanPerformance,
+    FBP_OT_Profile120Frames,
     FBP_OT_ClearPerformance,
     FBP_OT_SelectPerformanceItem,
     FBP_OT_CopyPerformanceReport,
@@ -1370,6 +1681,26 @@ if not isinstance(_registered_classes, list):
 
 def _register_runtime_properties():
     runtime_type = bpy.types.WindowManager
+    runtime_type.fbp_performance_profile_enabled = BoolProperty(
+        name="Developer/Profile",
+        description=(
+            "Collect local runtime timings in memory; disabled by default and "
+            "never sends data over the network"
+        ),
+        default=False,
+        options={"SKIP_SAVE"},
+        update=_profile_toggle_update,
+    )
+    runtime_type.fbp_performance_profile_context = EnumProperty(
+        name="Profile Context",
+        items=(
+            ("VIEWPORT", "Viewport", "Frame evaluation plus active View Layer update"),
+            ("PLAYBACK", "Playback", "CPU-side frame-change/playback approximation"),
+            ("RENDER", "Render", "CPU-side render-frame approximation; no image is rendered"),
+        ),
+        default="PLAYBACK",
+        options={"SKIP_SAVE"},
+    )
     runtime_type.fbp_performance_rows = CollectionProperty(
         type=FBP_PerformanceRow,
         options={"SKIP_SAVE"},
@@ -1447,6 +1778,8 @@ def _register_runtime_properties():
 
 
 _SCENE_PROPERTIES = (
+    "fbp_performance_profile_enabled",
+    "fbp_performance_profile_context",
     "fbp_performance_rows",
     "fbp_performance_row_index",
     "fbp_performance_status",
@@ -1466,6 +1799,7 @@ _SCENE_PROPERTIES = (
 
 def register():
     _REPORT_CACHE.clear()
+    _set_profile_enabled(False)
     unregister_type_properties(bpy.types.WindowManager, _SCENE_PROPERTIES)
     remove_handlers_by_name(
         bpy.app.handlers.load_post,
@@ -1502,6 +1836,7 @@ def register():
 
 def unregister():
     _REPORT_CACHE.clear()
+    _set_profile_enabled(False)
     remove_handlers_by_name(
         bpy.app.handlers.load_post,
         "fbp_performance_load_post",
@@ -1521,4 +1856,6 @@ __all__ = [
     "draw_performance_dashboard_ui",
     "format_memory",
     "performance_report_text",
+    "profile_frame_changes",
+    "runtime_profile_snapshot",
 ]

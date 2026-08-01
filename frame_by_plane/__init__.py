@@ -1,11 +1,23 @@
 import importlib
 import os
+import time
 
 
 
 
 _IS_BACKGROUND = bool(getattr(__import__("bpy").app, "background", False))
 _IS_FBP_RENDER_CHILD = bool(_IS_BACKGROUND and os.environ.get("FBP_BACKGROUND_RENDER_CHILD") == "1")
+_PROFILE_ENV_ENABLED = str(os.environ.get("FBP_PROFILE", "") or "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+_FBP_STARTUP_PROFILE = {
+    "enabled_at_import": bool(_PROFILE_ENV_ENABLED),
+    "import_total_ms": 0.0,
+    "module_imports": [],
+    "register_total_ms": 0.0,
+    "module_registers": [],
+    "registered_classes": 0,
+}
 
 _MODULE_NAMES = (
     "support_policy", "constants", "math_utils", "color_names", "feature_scope", "compatibility_52", "matrix_presets", "path_utils", "alpha_crop", "runtime", "service_registry", "runtime_scheduler", "managed_timers", "interface_preferences", "preference_application", "registration", "ui_list_state", "node_sockets", "ui_context", "compositor_contracts", "render_output", "fbp_index", "storage_keys",
@@ -35,17 +47,33 @@ if _IS_BACKGROUND:
     _MODULE_NAMES = tuple(name for name in _MODULE_NAMES if name not in _BACKGROUND_SKIP_MODULES)
 
 _loaded_modules = []
+_imports_started = time.perf_counter() if _PROFILE_ENV_ENABLED else 0.0
 for _name in _MODULE_NAMES:
     # Check before importing. import_module() automatically exposes the
     # submodule on this package, so checking globals afterwards caused every
     # module to be imported and immediately reloaded even on the first enable.
     _existing_module = globals().get(_name)
+    _module_started = time.perf_counter() if _PROFILE_ENV_ENABLED else 0.0
     if _existing_module is None:
         _module = importlib.import_module(f".{_name}", __package__)
+        _import_mode = "import"
     else:
         _module = importlib.reload(_existing_module)
+        _import_mode = "reload"
     globals()[_name] = _module
     _loaded_modules.append(_module)
+    if _PROFILE_ENV_ENABLED:
+        _FBP_STARTUP_PROFILE["module_imports"].append({
+            "module": _name,
+            "mode": _import_mode,
+            "milliseconds": round((time.perf_counter() - _module_started) * 1000.0, 6),
+        })
+
+if _PROFILE_ENV_ENABLED:
+    _FBP_STARTUP_PROFILE["import_total_ms"] = round(
+        (time.perf_counter() - _imports_started) * 1000.0,
+        6,
+    )
 
 # Keep the heavy procedural builders lazy on a normal enable. During an
 # in-place development reload, refresh them only when they were already loaded
@@ -56,6 +84,42 @@ if _existing_builtin_effects is not None:
 
 modules = tuple(_loaded_modules)
 _runtime_module = globals()["runtime"]
+
+
+def _profile_enabled():
+    """Return the process-local profiler state without reading project data."""
+    if _PROFILE_ENV_ENABLED:
+        return True
+    try:
+        return bool(_runtime_module.fbp_runtime_get("fbp_profile_enabled", False))
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def fbp_startup_profile_snapshot():
+    """Return primitive-only import/register timings for local diagnostics."""
+    return {
+        "enabled": bool(_profile_enabled()),
+        "enabled_at_import": bool(_FBP_STARTUP_PROFILE["enabled_at_import"]),
+        "import_total_ms": float(_FBP_STARTUP_PROFILE["import_total_ms"]),
+        "register_total_ms": float(_FBP_STARTUP_PROFILE["register_total_ms"]),
+        "registered_classes": int(_FBP_STARTUP_PROFILE["registered_classes"]),
+        "module_imports": tuple(dict(item) for item in _FBP_STARTUP_PROFILE["module_imports"]),
+        "module_registers": tuple(dict(item) for item in _FBP_STARTUP_PROFILE["module_registers"]),
+    }
+
+
+def _registered_addon_class_count():
+    classes = set()
+    for module in modules:
+        for value in vars(module).values():
+            if not isinstance(value, type):
+                continue
+            if not str(getattr(value, "__module__", "")).startswith(f"{__package__}."):
+                continue
+            if "bl_rna" in vars(value):
+                classes.add(value)
+    return len(classes)
 
 # Apply centralized hover help only for interactive Blender. Background render
 # children have no UI and avoid traversing every operator/panel class at startup.
@@ -159,6 +223,10 @@ def register():
     current_module = None
     completed = False
     rollback_safe = True
+    profile_enabled = _profile_enabled()
+    register_started = time.perf_counter() if profile_enabled else 0.0
+    if profile_enabled:
+        _FBP_STARTUP_PROFILE["module_registers"] = []
     _set_registration_runtime_state("REGISTERING", busy=True)
     try:
         globals()["compatibility_52"].assert_supported_runtime()
@@ -167,7 +235,16 @@ def register():
             if not callable(register_fn):
                 continue
             current_module = mod
+            module_started = time.perf_counter() if profile_enabled else 0.0
             register_fn()
+            if profile_enabled:
+                _FBP_STARTUP_PROFILE["module_registers"].append({
+                    "module": str(getattr(mod, "__name__", "")).rsplit(".", 1)[-1],
+                    "milliseconds": round(
+                        (time.perf_counter() - module_started) * 1000.0,
+                        6,
+                    ),
+                })
             registered.append(mod)
             current_module = None
         completed = True
@@ -180,6 +257,14 @@ def register():
         raise
     finally:
         if completed:
+            if profile_enabled:
+                _FBP_STARTUP_PROFILE["register_total_ms"] = round(
+                    (time.perf_counter() - register_started) * 1000.0,
+                    6,
+                )
+                _FBP_STARTUP_PROFILE["registered_classes"] = (
+                    _registered_addon_class_count()
+                )
             _set_registration_runtime_state("ACTIVE", busy=False)
         else:
             _set_registration_runtime_state(

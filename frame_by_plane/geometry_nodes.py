@@ -307,13 +307,35 @@ _FBP_EFFECT_ANIMATION_CONTRACT_CACHE = globals().get(
 )
 if not isinstance(_FBP_EFFECT_ANIMATION_CONTRACT_CACHE, dict):
     _FBP_EFFECT_ANIMATION_CONTRACT_CACHE = {}
+_FBP_EFFECT_RUNTIME_STAT_DEFAULTS = {
+    "handler_runs": 0,
+    "handler_guard_skips": 0,
+    "rigs_scanned": 0,
+    "rig_updates": 0,
+    "held_step_skips": 0,
+    "scene_idle_skips": 0,
+    "camera_binding_passes": 0,
+    "lattice_updates": 0,
+    "geometry_source_updates": 0,
+    "shader_source_updates": 0,
+    "geometry_effect_updates": 0,
+    "shader_effect_updates": 0,
+}
 _FBP_EFFECT_RUNTIME_STATS = globals().get(
     "_FBP_EFFECT_RUNTIME_STATS",
-    {"handler_runs": 0, "rig_updates": 0, "held_step_skips": 0, "scene_idle_skips": 0},
+    dict(_FBP_EFFECT_RUNTIME_STAT_DEFAULTS),
 )
 if not isinstance(_FBP_EFFECT_RUNTIME_STATS, dict):
-    _FBP_EFFECT_RUNTIME_STATS = {"handler_runs": 0, "rig_updates": 0, "held_step_skips": 0, "scene_idle_skips": 0}
-_FBP_EFFECT_RUNTIME_STATS.setdefault("scene_idle_skips", 0)
+    _FBP_EFFECT_RUNTIME_STATS = dict(_FBP_EFFECT_RUNTIME_STAT_DEFAULTS)
+for _stat_key, _stat_default in _FBP_EFFECT_RUNTIME_STAT_DEFAULTS.items():
+    _FBP_EFFECT_RUNTIME_STATS.setdefault(_stat_key, _stat_default)
+_FBP_EFFECT_HANDLER_SAMPLES_MS = globals().get("_FBP_EFFECT_HANDLER_SAMPLES_MS", [])
+if not isinstance(_FBP_EFFECT_HANDLER_SAMPLES_MS, list):
+    _FBP_EFFECT_HANDLER_SAMPLES_MS = []
+_FBP_EFFECT_HANDLER_SAMPLE_LIMIT = 2048
+_FBP_PROFILE_ENV_ENABLED = str(os.environ.get("FBP_PROFILE", "") or "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 _FBP_EFFECT_SCENE_CACHE_SECONDS = 14.0
 _FBP_EFFECT_PROFILE_CACHE_SECONDS = 20.0
 _FBP_EFFECT_HEALTH_CACHE_SECONDS = 2.0
@@ -2398,29 +2420,89 @@ def _fbp_effect_runtime_value(rig, effect_id, prop_name, value, scene=None, node
         return value
 
 
+def _fbp_effect_profile_enabled():
+    return bool(
+        _FBP_PROFILE_ENV_ENABLED
+        or fbp_runtime_get("fbp_profile_enabled", False)
+    )
+
+
+def _fbp_effect_stat_add(key, amount=1):
+    try:
+        _FBP_EFFECT_RUNTIME_STATS[key] = int(
+            _FBP_EFFECT_RUNTIME_STATS.get(key, 0) or 0
+        ) + int(amount)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        pass
+
+
+def _fbp_effect_handler_record(milliseconds):
+    try:
+        value = max(0.0, float(milliseconds))
+    except (TypeError, ValueError, OverflowError):
+        return
+    _FBP_EFFECT_HANDLER_SAMPLES_MS.append(value)
+    overflow = len(_FBP_EFFECT_HANDLER_SAMPLES_MS) - _FBP_EFFECT_HANDLER_SAMPLE_LIMIT
+    if overflow > 0:
+        del _FBP_EFFECT_HANDLER_SAMPLES_MS[:overflow]
+
+
+def _fbp_percentile(values, quantile):
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return 0.0
+    position = (len(ordered) - 1) * max(0.0, min(1.0, float(quantile)))
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + ((ordered[upper] - ordered[lower]) * (position - lower))
+
+
+def fbp_effect_runtime_profile_metrics(*, reset=False):
+    """Return local handler measurements without retaining Blender RNA."""
+    samples = tuple(float(value) for value in _FBP_EFFECT_HANDLER_SAMPLES_MS)
+    result = dict(_FBP_EFFECT_RUNTIME_STATS)
+    result.update({
+        "profile_enabled": bool(_fbp_effect_profile_enabled()),
+        "timed_samples": len(samples),
+        "avg_ms": (sum(samples) / len(samples)) if samples else 0.0,
+        "p50_ms": _fbp_percentile(samples, 0.50),
+        "p95_ms": _fbp_percentile(samples, 0.95),
+        "max_ms": max(samples, default=0.0),
+    })
+    if reset:
+        _FBP_EFFECT_RUNTIME_STATS.clear()
+        _FBP_EFFECT_RUNTIME_STATS.update(_FBP_EFFECT_RUNTIME_STAT_DEFAULTS)
+        _FBP_EFFECT_HANDLER_SAMPLES_MS.clear()
+    return result
+
+
 @persistent
 def fbp_effect_evolve_frame_change(scene, depsgraph=None):
     """Refresh animated effect values after Blender commits the new frame."""
     del depsgraph
     global _FBP_EVOLVE_HANDLER_ACTIVE
     if _FBP_EVOLVE_HANDLER_ACTIVE or fbp_undo_guard_active():
+        _fbp_effect_stat_add("handler_guard_skips")
         return
     render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
     if (
         render_guard_active
         and not bool(fbp_runtime_get("fbp_render_needs_effect_frame_sync", False))
     ):
+        _fbp_effect_stat_add("handler_guard_skips")
         return
     if not render_guard_active and fbp_render_mutation_blocked(include_guard=False):
         # Do not update node trees when an external render is active or Blender
         # cannot confirm its job state. Managed renders are handled above.
+        _fbp_effect_stat_add("handler_guard_skips")
         return
+    profile_started = time.perf_counter() if _fbp_effect_profile_enabled() else 0.0
     _FBP_EVOLVE_HANDLER_ACTIVE = True
     try:
         try:
-            _FBP_EFFECT_RUNTIME_STATS["handler_runs"] = int(
-                _FBP_EFFECT_RUNTIME_STATS.get("handler_runs", 0) or 0
-            ) + 1
+            _fbp_effect_stat_add("handler_runs")
         except (AttributeError, TypeError, ValueError):
             pass
         try:
@@ -2431,11 +2513,11 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
             return
 
         if not rigs:
-            _FBP_EFFECT_RUNTIME_STATS["scene_idle_skips"] = int(
-                _FBP_EFFECT_RUNTIME_STATS.get("scene_idle_skips", 0) or 0
-            ) + 1
+            _fbp_effect_stat_add("scene_idle_skips")
             return
 
+        _fbp_effect_stat_add("rigs_scanned", len(rigs))
+        _fbp_effect_stat_add("camera_binding_passes")
         _fbp_sync_scene_camera_bindings(scene, rigs)
 
         for rig in rigs:
@@ -2480,6 +2562,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     and bool(getattr(rig, "fbp_lattice_live_update", True))
                 )
                 if lattice_live:
+                    _fbp_effect_stat_add("lattice_updates")
                     _fbp_apply_lattice_camera_flatten(rig, scene=scene, force=False)
                 evolve_pairs = runtime_profile.get("evolve_pairs", ()) or ()
                 active_evolve_pairs = tuple(
@@ -2539,9 +2622,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         and evolve_signature is not None
                         and _FBP_EFFECT_EVOLVE_STEP_CACHE.get(profile_key) == evolve_signature
                     ):
-                        _FBP_EFFECT_RUNTIME_STATS["held_step_skips"] = int(
-                            _FBP_EFFECT_RUNTIME_STATS.get("held_step_skips", 0) or 0
-                        ) + 1
+                        _fbp_effect_stat_add("held_step_skips")
                         continue
                     if profile_key and profile_key[0] and evolve_signature is not None:
                         if (
@@ -2553,19 +2634,19 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 elif profile_key and profile_key[0]:
                     _FBP_EFFECT_EVOLVE_STEP_CACHE.pop(profile_key, None)
 
-                _FBP_EFFECT_RUNTIME_STATS["rig_updates"] = int(
-                    _FBP_EFFECT_RUNTIME_STATS.get("rig_updates", 0) or 0
-                ) + 1
+                _fbp_effect_stat_add("rig_updates")
 
                 # Matrix effects follow the evaluated source image/sequence
                 # even when no procedural Evolve control is enabled.
                 if geometry_source_sync:
+                    _fbp_effect_stat_add("geometry_source_updates")
                     _fbp_sync_geometry_alpha_frame_offset(
                         rig,
                         scene=scene,
                         effect_modifiers=runtime_profile.get("frame_geometry_modifiers", ()),
                     )
                 if shader_source_sync:
+                    _fbp_effect_stat_add("shader_source_updates")
                     _fbp_sync_shader_image_sources(
                         rig,
                         active_effect_ids,
@@ -2628,6 +2709,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     if animated_effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
                         _fbp_apply_track_to_camera_constraint(rig, scene)
                     elif definition.get("kind") == "GEOMETRY":
+                        _fbp_effect_stat_add("geometry_effect_updates")
                         fbp_update_geometry_effect(
                             rig,
                             animated_effect_id,
@@ -2637,6 +2719,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                             property_names=effective_properties,
                         )
                     else:
+                        _fbp_effect_stat_add("shader_effect_updates")
                         fbp_update_shader_effect(
                             rig,
                             animated_effect_id,
@@ -2675,6 +2758,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         property_names=property_names,
                     )
                     updated_effect_ids.add(effect_id)
+                    _fbp_effect_stat_add("geometry_effect_updates")
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
@@ -2693,6 +2777,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     evolve_property = str(definition.get("evolve_property", "") or "")
                     property_names = {evolve_property} if evolve_property else None
                     if definition.get("kind") == "GEOMETRY":
+                        _fbp_effect_stat_add("geometry_effect_updates")
                         fbp_update_geometry_effect(
                             rig,
                             effect_id,
@@ -2702,6 +2787,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                             property_names=property_names,
                         )
                     else:
+                        _fbp_effect_stat_add("shader_effect_updates")
                         fbp_update_shader_effect(
                             rig,
                             effect_id,
@@ -2735,11 +2821,16 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         instance_id=instance_id,
                         nodes=runtime_profile.get("shader_nodes_by_instance", {}).get(token),
                     )
+                    _fbp_effect_stat_add("shader_effect_updates")
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
     finally:
         _FBP_EVOLVE_HANDLER_ACTIVE = False
+        if profile_started:
+            _fbp_effect_handler_record(
+                (time.perf_counter() - profile_started) * 1000.0
+            )
 
 
 def _fbp_selected_rigs_fn():
@@ -15386,8 +15477,12 @@ def fbp_effect_runtime_diagnostics(scene=None):
         "profile_cache_entries": len(_FBP_EFFECT_RUNTIME_PROFILE_CACHE),
         "step_cache_entries": len(_FBP_EFFECT_EVOLVE_STEP_CACHE),
         "handler_runs": int(_FBP_EFFECT_RUNTIME_STATS.get("handler_runs", 0) or 0),
+        "handler_guard_skips": int(_FBP_EFFECT_RUNTIME_STATS.get("handler_guard_skips", 0) or 0),
+        "rigs_scanned": int(_FBP_EFFECT_RUNTIME_STATS.get("rigs_scanned", 0) or 0),
         "rig_updates": int(_FBP_EFFECT_RUNTIME_STATS.get("rig_updates", 0) or 0),
         "held_step_skips": int(_FBP_EFFECT_RUNTIME_STATS.get("held_step_skips", 0) or 0),
+        "scene_idle_skips": int(_FBP_EFFECT_RUNTIME_STATS.get("scene_idle_skips", 0) or 0),
+        "handler_timing": fbp_effect_runtime_profile_metrics(),
         "reload_dropped_sync_records": int(_FBP_RELOAD_DROPPED_EFFECT_SYNC_RECORDS or 0),
     }
     for rig in rigs:
@@ -32760,14 +32855,8 @@ def fbp_clear_effect_runtime_caches():
     _FBP_LATTICE_REPAIR_ATTEMPTED.clear()
     _FBP_LATTICE_LIVE_SCENE_CACHE.clear()
     _FBP_EFFECT_RUNTIME_STATS.clear()
-    _FBP_EFFECT_RUNTIME_STATS.update(
-        {
-            "handler_runs": 0,
-            "rig_updates": 0,
-            "held_step_skips": 0,
-            "scene_idle_skips": 0,
-        }
-    )
+    _FBP_EFFECT_RUNTIME_STATS.update(_FBP_EFFECT_RUNTIME_STAT_DEFAULTS)
+    _FBP_EFFECT_HANDLER_SAMPLES_MS.clear()
     _FBP_CAMERA_BINDING_CACHE.clear()
     _FBP_CUSTOM_SHADER_SYNC_PENDING.clear()
     _FBP_CUSTOM_GEOMETRY_INIT_PENDING.clear()
