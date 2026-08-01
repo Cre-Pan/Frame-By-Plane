@@ -59,11 +59,11 @@ See the complete [7.1.18 release notes](release-notes/7.1.18.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-7.1.18-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-7.1.18-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-7.1.18-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-7.1.18-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-7.1.18-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-7.1.11-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-7.1.11-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-7.1.11-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-7.1.11-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-7.1.11-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.

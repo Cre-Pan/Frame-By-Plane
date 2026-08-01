@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -22,5 +26,13 @@ jobs:
       - name: Validate repository metadata
         run: python tools/verify_repository.py
 
+      - name: Validate Python symbols and RNA callbacks
+        run: python tools/verify_python_symbols.py
+
       - name: Compile Python sources
         run: python -m compileall -q frame_by_plane
+
+      - name: Build deterministic release packages
+        env:
+          SOURCE_DATE_EPOCH: "315532800"
+        run: python tools/build_release.py --source-dir frame_by_plane --output-dir dist-validation

@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "7.1.18"
+version = "7.1.11"
 name = "Frame By Plane"
 tagline = "Image sequences, Grease Pencil and 2.5D animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"

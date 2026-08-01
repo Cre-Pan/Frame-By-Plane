@@ -871,13 +871,13 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     gp_scrub_mouse_magnet: BoolProperty(
         name="Mouse Magnet",
-        description="While holding <, blend from relative sensitivity into exact cursor-to-frame mapping near the Scrub Bar; the persistent bar also follows the pointer",
+        description="Pull the Scrub Bar toward the cursor when it approaches the axis",
         default=True,
         update=update_interface_preferences_cb,
     )
     gp_scrub_mouse_magnet_distance: FloatProperty(
         name="Magnet Range",
-        description="Distance in pixels at which magnetic direct scrubbing and persistent bar attraction begin",
+        description="Distance in pixels at which the Scrub Bar starts moving toward the cursor",
         default=96.0,
         min=24.0,
         max=240.0,
@@ -886,7 +886,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     gp_scrub_mouse_magnet_strength: FloatProperty(
         name="Magnet Strength",
-        description="Strength of the gradual transition into direct cursor mapping outside the exact inner zone",
+        description="How closely the Scrub Bar follows the cursor inside the magnetic range",
         subtype='FACTOR',
         default=1.0,
         min=0.0,
@@ -900,72 +900,6 @@ class FBP_AddonPreferences(AddonPreferences):
         default=0.22,
         min=0.01,
         max=1.0,
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_show_onion_handles: BoolProperty(
-        name="Onion Range Handles",
-        description="Show draggable before/after onion-skin ranges on the Scrub Bar using Blender or custom onion colors",
-        default=True,
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_show_bookmarks: BoolProperty(
-        name="Bookmarks",
-        description="Show Frame By Plane bookmarks on the Scrub Bar; bookmarks are stored as native Timeline markers",
-        default=True,
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_bookmark_color: FloatVectorProperty(
-        name="Bookmark Color",
-        description="Color used for Frame By Plane bookmarks on the Scrub Bar",
-        subtype='COLOR_GAMMA',
-        size=4,
-        default=(0.95, 0.45, 0.08, 0.82),
-        min=0.0,
-        max=1.0,
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_bookmark_distance: FloatProperty(
-        name="Bookmark Distance",
-        description="Distance between the Scrub Bar axis and bookmark triangle",
-        default=21.0,
-        min=10.0,
-        max=96.0,
-        subtype='PIXEL',
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_bookmark_triangle_scale: FloatProperty(
-        name="Triangle Size",
-        description="Scale of bookmark triangles",
-        subtype='FACTOR',
-        default=1.0,
-        min=0.45,
-        max=3.0,
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_bookmark_stem_width: FloatProperty(
-        name="Stem Thickness",
-        description="Thickness of the line connecting a bookmark to the Scrub Bar",
-        default=0.9,
-        min=0.4,
-        max=4.0,
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_bookmark_label_scale: FloatProperty(
-        name="Bookmark Label Size",
-        description="Scale of bookmark names displayed beside selected or hovered bookmarks",
-        subtype='FACTOR',
-        default=1.0,
-        min=0.6,
-        max=2.5,
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_bookmark_label_gap: FloatProperty(
-        name="Label Distance",
-        description="Distance between the bookmark triangle and its displayed name",
-        default=5.0,
-        min=0.0,
-        max=32.0,
-        subtype='PIXEL',
         update=update_interface_preferences_cb,
     )
     gp_scrub_tick_scale: FloatProperty(
@@ -1810,48 +1744,17 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'gp_scrub_sensitivity', text='Sensitivity', slider=True)
                 row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
                 row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
-                row = _row(motion_box)
-                row.prop(self, 'gp_scrub_edge_offset', text='Edge Offset')
-                hint_row(motion_box, 'Hold <: relative sensitivity away from the axis, exact cursor mapping inside the magnetic zone.', icon='TIME')
-
-                magnet_box = body.box()
-                configure_layout(magnet_box)
-                magnet_box.label(text='Mouse Magnet', icon='SNAP_ON')
-                row = _row(magnet_box)
-                row.prop(self, 'gp_scrub_mouse_magnet', text='Enabled', toggle=True)
-                controls = row.row(align=True)
-                controls.enabled = self.gp_scrub_mouse_magnet
-                controls.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
-                controls.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
-                controls.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
-
-                onion_box = body.box()
-                configure_layout(onion_box)
-                onion_box.label(text='Onion Skin Interface', icon='ONIONSKIN_ON')
-                row = _row(onion_box)
-                row.prop(self, 'gp_scrub_show_onion_handles', text='Range Handles', toggle=True)
-                hint_row(onion_box, 'Frame/Keyframe mode, keyframe-type filter, opacity and colors are available from the Viewport Scrub Bar popover.', icon='DOWNARROW_HLT')
-
-                bookmark_box = body.box()
-                configure_layout(bookmark_box)
-                bookmark_box.label(text='Bookmarks', icon='BOOKMARKS')
-                row = _row(bookmark_box)
-                row.prop(self, 'gp_scrub_show_bookmarks', text='Show', toggle=True)
-                bookmark_controls = bookmark_box.column(align=False)
-                bookmark_controls.enabled = self.gp_scrub_show_bookmarks
-                row = _row(bookmark_controls)
-                row.prop(self, 'gp_scrub_bookmark_distance', text='Distance')
-                row.prop(self, 'gp_scrub_bookmark_triangle_scale', text='Triangle', slider=True)
-                row.prop(self, 'gp_scrub_bookmark_stem_width', text='Stem', slider=True)
-                row = _row(bookmark_controls)
-                row.prop(self, 'gp_scrub_bookmark_label_scale', text='Label Size', slider=True)
-                row.prop(self, 'gp_scrub_bookmark_label_gap', text='Label Distance')
-                hint_row(bookmark_box, 'New bookmarks use A, B, C… and keep native Timeline marker synchronization.', icon='MARKER_HLT')
-
-                appearance_box = body.box()
-                configure_layout(appearance_box)
-                appearance_box.label(text='Timeline Appearance', icon='COLOR')
-                row = _row(appearance_box)
+                row.prop(self, 'gp_scrub_edge_offset', text='Offset')
+                row = _row(body)
+                row.prop(self, 'gp_scrub_mouse_magnet', text='Mouse Magnet', toggle=True)
+                magnet = row.row(align=False)
+                magnet.enabled = self.gp_scrub_mouse_magnet
+                magnet.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
+                row = _row(body)
+                row.enabled = self.gp_scrub_mouse_magnet
+                row.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
+                row.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
+                row = _row(body)
                 row.prop(self, 'gp_scrub_tick_scale', text='Tick Scale', slider=True)
                 row.prop(self, 'gp_scrub_line_width', text='Line', slider=True)
                 row.prop(self, 'gp_scrub_major_interval', text='Long Tick Every')

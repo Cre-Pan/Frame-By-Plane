@@ -82,40 +82,6 @@ _TIMER_INTERVAL = 0.04
 _AXIS_CAPTURE_PX = 42.0
 _MAGNET_INNER_RATIO = 0.42
 _MAGNET_EPSILON_PX = 0.05
-_DIRECT_SCRUB_INNER_PX = 12.0
-_ONION_HANDLE_RADIUS_PX = 5.0
-_ONION_HANDLE_HIT_PADDING_PX = 5.0
-_BOOKMARK_PREFIX = "✦ - "
-_LEGACY_BOOKMARK_PREFIXES = ("✦ - ", "✦-", "✦ ", "★ ")
-_BOOKMARK_STATE_KEY = "_fbp_scrub_bookmarks_v1"
-_BOOKMARK_DEFAULT_COLOR = "WHITE"
-_BOOKMARK_COLOR_ITEMS = (
-    ("WHITE", "White", "White bookmark", "STRIP_COLOR_01", 0),
-    ("GREY", "Grey", "Grey bookmark", "STRIP_COLOR_02", 1),
-    ("YELLOW", "Yellow", "Yellow bookmark", "STRIP_COLOR_03", 2),
-    ("RED", "Red", "Red bookmark", "STRIP_COLOR_04", 3),
-    ("ORANGE", "Orange", "Orange bookmark", "STRIP_COLOR_05", 4),
-    ("GREEN", "Green", "Green bookmark", "STRIP_COLOR_06", 5),
-    ("BLUE", "Blue", "Blue bookmark", "STRIP_COLOR_07", 6),
-    ("MAGENTA", "Magenta", "Magenta bookmark", "STRIP_COLOR_08", 7),
-    ("PURPLE", "Purple", "Purple bookmark", "STRIP_COLOR_09", 8),
-)
-_BOOKMARK_COLORS = {
-    "WHITE": (0.94, 0.94, 0.94, 0.88),
-    "GREY": (0.47, 0.47, 0.47, 0.88),
-    "YELLOW": (0.95, 0.73, 0.12, 0.90),
-    "RED": (0.82, 0.16, 0.15, 0.90),
-    "ORANGE": (0.95, 0.39, 0.08, 0.90),
-    "GREEN": (0.18, 0.67, 0.25, 0.90),
-    "BLUE": (0.15, 0.42, 0.92, 0.90),
-    "MAGENTA": (0.90, 0.17, 0.62, 0.90),
-    "PURPLE": (0.48, 0.22, 0.82, 0.90),
-}
-_BOOKMARK_POINTER_UIDS = globals().get("_BOOKMARK_POINTER_UIDS", {})
-if not isinstance(_BOOKMARK_POINTER_UIDS, dict):
-    _BOOKMARK_POINTER_UIDS = {}
-_BOOKMARK_HIT_RADIUS_PX = 9.0
-_MARKER_HIT_RADIUS_PX = 7.0
 _CURSOR_LABEL_CAPTURE_PX = 10.0
 _KEYFRAME_HIT_PADDING_PX = 5.0
 _DRAG_THRESHOLD_PX = 4.0
@@ -1347,452 +1313,6 @@ def magnetic_scrub_axis_offset(
     return float(delta) * factor * power
 
 
-def direct_scrub_mapping_factor(
-    mouse_x,
-    mouse_y,
-    layout,
-    *,
-    capture_px=96.0,
-    inner_px=_DIRECT_SCRUB_INNER_PX,
-    strength=1.0,
-):
-    """Blend relative scrubbing into exact cursor mapping near the axis.
-
-    Outside the magnetic band the result is zero. Inside the narrow inner band
-    it is always one, so the playhead follows the mouse exactly. Strength only
-    affects the transitional outer band.
-    """
-    try:
-        x = float(mouse_x)
-        y = float(mouse_y)
-        capture = max(1.0, float(capture_px))
-        inner = max(1.0, min(capture, float(inner_px)))
-        power = max(0.0, min(1.0, float(strength)))
-        vertical = bool(layout.get("vertical", False))
-        if vertical:
-            distance = abs(x - float(layout["x"]))
-            along = y
-            low = float(layout["y0"]) - capture
-            high = float(layout["y1"]) + capture
-        else:
-            distance = abs(y - float(layout["y"]))
-            along = x
-            low = float(layout["x0"]) - capture
-            high = float(layout["x1"]) + capture
-    except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
-        return 0.0
-    if not all(math.isfinite(value) for value in (x, y, capture, inner, power, distance, along, low, high)):
-        return 0.0
-    if along < low or along > high or distance >= capture:
-        return 0.0
-    if distance <= inner:
-        return 1.0
-    if power <= 0.0:
-        return 0.0
-    factor = (capture - distance) / max(1.0e-6, capture - inner)
-    factor = max(0.0, min(1.0, factor))
-    factor = factor * factor * (3.0 - 2.0 * factor)
-    return factor * power
-
-
-def _grease_pencil_onion_settings(context, obj, keyframe_numbers=()):
-    """Return display-ready onion ranges and colors for a GP object."""
-    if not _is_live_grease_pencil_object(obj):
-        return None
-    data = getattr(obj, "data", None)
-    if data is None:
-        return None
-    try:
-        mode = str(getattr(data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
-        if mode == "SELECTED":
-            return None
-        before = max(0, min(120, int(getattr(data, "ghost_before_range", 0))))
-        after = max(0, min(120, int(getattr(data, "ghost_after_range", 0))))
-        opacity = max(0.05, min(0.65, float(getattr(data, "onion_factor", 0.5)) * 0.72))
-        custom = bool(getattr(data, "use_ghost_custom_colors", False))
-    except FBP_DATA_ERRORS:
-        return None
-    if custom:
-        before_color = _rgba(getattr(data, "before_color", (0.15, 0.42, 0.14)), (0.15, 0.42, 0.14, opacity), alpha=opacity)
-        after_color = _rgba(getattr(data, "after_color", (0.13, 0.08, 0.53)), (0.13, 0.08, 0.53, opacity), alpha=opacity)
-    else:
-        theme_view = None
-        try:
-            themes = getattr(getattr(context, "preferences", None), "themes", None)
-            theme = themes[0] if themes else None
-            theme_view = getattr(theme, "view_3d", None)
-        except FBP_DATA_ERRORS:
-            theme_view = None
-        before_color = _theme_color(theme_view, ("before_current_frame",), (0.15, 0.42, 0.14, opacity), alpha=opacity)
-        after_color = _theme_color(theme_view, ("after_current_frame",), (0.13, 0.08, 0.53, opacity), alpha=opacity)
-    return {
-        "data": data,
-        "mode": mode,
-        "before": before,
-        "after": after,
-        "before_color": before_color,
-        "after_color": after_color,
-        "keyframes": tuple(sorted({int(value) for value in keyframe_numbers})),
-    }
-
-
-def _onion_endpoint_frame(current_frame, amount, side, mode, keyframes):
-    current = int(current_frame)
-    count = max(0, int(amount))
-    direction = -1 if str(side).upper() == "BEFORE" else 1
-    if count <= 0:
-        return current
-    if str(mode or "ABSOLUTE").upper() != "RELATIVE":
-        return current + direction * count
-    values = tuple(int(value) for value in keyframes)
-    if direction < 0:
-        candidates = values[:bisect_left(values, current)]
-        return candidates[max(0, len(candidates) - count)] if candidates else current - count
-    candidates = values[bisect_right(values, current):]
-    return candidates[min(len(candidates) - 1, count - 1)] if candidates else current + count
-
-
-def _onion_amount_from_frame(current_frame, target_frame, side, mode, keyframes):
-    current = int(current_frame)
-    target = int(round(float(target_frame)))
-    before = str(side).upper() == "BEFORE"
-    if before:
-        target = min(current, target)
-    else:
-        target = max(current, target)
-    if str(mode or "ABSOLUTE").upper() != "RELATIVE":
-        return max(0, min(120, abs(target - current)))
-    values = tuple(int(value) for value in keyframes)
-    if before:
-        return max(0, min(120, bisect_left(values, current) - bisect_left(values, target)))
-    return max(0, min(120, bisect_right(values, target) - bisect_right(values, current)))
-
-
-def _marker_pointer(marker):
-    try:
-        return int(marker.as_pointer())
-    except FBP_DATA_ERRORS:
-        return 0
-
-
-def _bookmark_label_from_name(name):
-    label = str(name or "").strip()
-    for prefix in _LEGACY_BOOKMARK_PREFIXES:
-        if label.startswith(prefix):
-            label = label[len(prefix):].strip()
-            break
-    return label or "Bookmark"
-
-
-def _bookmark_native_name(label):
-    return f"{_BOOKMARK_PREFIX}{_bookmark_label_from_name(label)}"
-
-
-def _alphabetic_bookmark_label(index):
-    """Return spreadsheet-style bookmark labels: A..Z, AA..AZ, BA..."""
-    try:
-        value = max(0, int(index))
-    except (TypeError, ValueError, OverflowError):
-        value = 0
-    label = ""
-    while True:
-        value, remainder = divmod(value, 26)
-        label = chr(ord("A") + remainder) + label
-        if value == 0:
-            return label
-        value -= 1
-
-
-def _next_bookmark_default_label(scene):
-    """Return the first unused alphabetic name for a new Scene bookmark."""
-    used = {
-        str(record.get("name") or "").strip().upper()
-        for record in scrub_bookmark_records(scene)
-    }
-    for index in range(4096):
-        candidate = _alphabetic_bookmark_label(index)
-        if candidate not in used:
-            return candidate
-    return f"B{len(used) + 1}"
-
-
-def _bookmark_color_tag(value):
-    identifier = str(value or _BOOKMARK_DEFAULT_COLOR).upper()
-    return identifier if identifier in _BOOKMARK_COLORS else _BOOKMARK_DEFAULT_COLOR
-
-
-def _bookmark_color(value, *, selected=False):
-    base = _BOOKMARK_COLORS[_bookmark_color_tag(value)]
-    if not selected:
-        return base
-    return tuple(min(1.0, channel * 0.62 + 0.38) for channel in base[:3]) + (1.0,)
-
-
-def _load_bookmark_state(scene):
-    if scene is None:
-        return []
-    try:
-        raw = scene.get(_BOOKMARK_STATE_KEY, "")
-    except FBP_DATA_ERRORS:
-        raw = ""
-    if not raw:
-        return []
-    try:
-        payload = json.loads(str(raw))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    if not isinstance(payload, list):
-        return []
-    result = []
-    seen = set()
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        uid = str(item.get("uid") or "").strip() or uuid.uuid4().hex
-        if uid in seen:
-            uid = uuid.uuid4().hex
-        seen.add(uid)
-        try:
-            frame = int(item.get("frame", 0))
-        except (TypeError, ValueError, OverflowError):
-            frame = 0
-        label = _bookmark_label_from_name(item.get("label") or item.get("marker_name") or "Bookmark")
-        result.append({
-            "uid": uid,
-            "label": label,
-            "color_tag": _bookmark_color_tag(item.get("color_tag")),
-            "marker_name": str(item.get("marker_name") or _bookmark_native_name(label)),
-            "frame": frame,
-        })
-    return result
-
-
-def _save_bookmark_state(scene, entries):
-    if scene is None:
-        return False
-    payload = []
-    for item in tuple(entries or ()):
-        if not isinstance(item, dict):
-            continue
-        payload.append({
-            "uid": str(item.get("uid") or uuid.uuid4().hex),
-            "label": _bookmark_label_from_name(item.get("label") or "Bookmark"),
-            "color_tag": _bookmark_color_tag(item.get("color_tag")),
-            "marker_name": str(item.get("marker_name") or _bookmark_native_name(item.get("label"))),
-            "frame": int(item.get("frame", 0)),
-        })
-    try:
-        scene[_BOOKMARK_STATE_KEY] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        return True
-    except FBP_DATA_ERRORS as exc:
-        fbp_warn("Could not save Scrub Bar bookmark metadata", exc)
-        return False
-
-
-def _marker_name_has_bookmark_prefix(marker):
-    try:
-        name = str(getattr(marker, "name", "") or "").strip()
-    except FBP_DATA_ERRORS:
-        return False
-    return any(name.startswith(prefix) for prefix in _LEGACY_BOOKMARK_PREFIXES)
-
-
-def _new_bookmark_entry(marker, *, label=None, color_tag=_BOOKMARK_DEFAULT_COLOR):
-    frame = int(getattr(marker, "frame", 0) or 0)
-    label = _bookmark_label_from_name(label or getattr(marker, "name", "") or f"Bookmark {frame}")
-    return {
-        "uid": uuid.uuid4().hex,
-        "label": label,
-        "color_tag": _bookmark_color_tag(color_tag),
-        "marker_name": _bookmark_native_name(label),
-        "frame": frame,
-    }
-
-
-def reconcile_scrub_bookmarks(scene):
-    """Synchronize durable FBP bookmark metadata with native Timeline markers.
-
-    Native Timeline rename/move/duplicate/delete operations remain authoritative.
-    The metadata stores only the FBP color tag and durable identity; the visible
-    marker name is normalized back to ``✦ - Name`` after native renaming.
-    """
-    markers = tuple(getattr(scene, "timeline_markers", ()) or ()) if scene is not None else ()
-    entries = _load_bookmark_state(scene)
-    used = set()
-    matched = []
-    changed = False
-
-    marker_by_pointer = {_marker_pointer(marker): marker for marker in markers if _marker_pointer(marker)}
-    for entry in entries:
-        uid = str(entry.get("uid") or "")
-        marker = None
-        for pointer, mapped_uid in tuple(_BOOKMARK_POINTER_UIDS.items()):
-            if mapped_uid == uid and pointer in marker_by_pointer:
-                marker = marker_by_pointer[pointer]
-                break
-        if marker is None:
-            exact = [
-                candidate for candidate in markers
-                if _marker_pointer(candidate) not in used
-                and int(getattr(candidate, "frame", 0) or 0) == int(entry.get("frame", 0))
-                and str(getattr(candidate, "name", "") or "") == str(entry.get("marker_name") or "")
-            ]
-            marker = exact[0] if exact else None
-        if marker is None:
-            same_name = [
-                candidate for candidate in markers
-                if _marker_pointer(candidate) not in used
-                and str(getattr(candidate, "name", "") or "") == str(entry.get("marker_name") or "")
-            ]
-            marker = same_name[0] if len(same_name) == 1 else None
-        if marker is None:
-            same_frame = [
-                candidate for candidate in markers
-                if _marker_pointer(candidate) not in used
-                and int(getattr(candidate, "frame", 0) or 0) == int(entry.get("frame", 0))
-            ]
-            selected = [candidate for candidate in same_frame if bool(getattr(candidate, "select", False))]
-            marker = selected[0] if len(selected) == 1 else (same_frame[0] if len(same_frame) == 1 else None)
-        if marker is None:
-            changed = True
-            continue
-
-        pointer = _marker_pointer(marker)
-        used.add(pointer)
-        _BOOKMARK_POINTER_UIDS[pointer] = uid
-        native_label = _bookmark_label_from_name(getattr(marker, "name", ""))
-        previous_name = str(entry.get("marker_name") or "")
-        if str(getattr(marker, "name", "") or "") != previous_name:
-            entry["label"] = native_label
-            changed = True
-        desired_name = _bookmark_native_name(entry.get("label") or native_label)
-        try:
-            if str(marker.name) != desired_name:
-                marker.name = desired_name
-        except FBP_DATA_ERRORS:
-            pass
-        frame = int(getattr(marker, "frame", 0) or 0)
-        if entry.get("marker_name") != desired_name or int(entry.get("frame", 0)) != frame:
-            changed = True
-        entry["label"] = _bookmark_label_from_name(entry.get("label") or native_label)
-        entry["marker_name"] = desired_name
-        entry["frame"] = frame
-        entry["color_tag"] = _bookmark_color_tag(entry.get("color_tag"))
-        matched.append((entry, marker))
-
-    for marker in markers:
-        pointer = _marker_pointer(marker)
-        if pointer in used or not _marker_name_has_bookmark_prefix(marker):
-            continue
-        entry = _new_bookmark_entry(marker)
-        desired_name = _bookmark_native_name(entry["label"])
-        try:
-            marker.name = desired_name
-        except FBP_DATA_ERRORS:
-            pass
-        entry["marker_name"] = desired_name
-        _BOOKMARK_POINTER_UIDS[pointer] = entry["uid"]
-        used.add(pointer)
-        matched.append((entry, marker))
-        changed = True
-
-    valid_pointers = {_marker_pointer(marker) for _entry, marker in matched}
-    for pointer in tuple(_BOOKMARK_POINTER_UIDS):
-        if pointer not in valid_pointers:
-            _BOOKMARK_POINTER_UIDS.pop(pointer, None)
-
-    normalized = [entry for entry, _marker in matched]
-    if changed or normalized != entries:
-        _save_bookmark_state(scene, normalized)
-    return tuple(matched)
-
-
-def is_scrub_bookmark(marker, scene=None):
-    pointer = _marker_pointer(marker)
-    if pointer and pointer in _BOOKMARK_POINTER_UIDS:
-        return True
-    if scene is not None:
-        return any(candidate is marker for _entry, candidate in reconcile_scrub_bookmarks(scene))
-    return _marker_name_has_bookmark_prefix(marker)
-
-
-def scrub_bookmark_records(scene):
-    records = []
-    for entry, marker in reconcile_scrub_bookmarks(scene):
-        records.append({
-            "uid": str(entry.get("uid") or ""),
-            "marker": marker,
-            "frame": int(getattr(marker, "frame", 0) or 0),
-            "name": _bookmark_label_from_name(entry.get("label") or getattr(marker, "name", "")),
-            "color_tag": _bookmark_color_tag(entry.get("color_tag")),
-            "selected": bool(getattr(marker, "select", False)),
-        })
-    return tuple(sorted(records, key=lambda item: (item["frame"], item["name"].casefold(), item["uid"])))
-
-
-def scrub_native_marker_records(scene):
-    bookmark_pointers = {_marker_pointer(record["marker"]) for record in scrub_bookmark_records(scene)}
-    records = []
-    try:
-        for marker in tuple(getattr(scene, "timeline_markers", ()) or ()):
-            if _marker_pointer(marker) in bookmark_pointers:
-                continue
-            records.append({
-                "marker": marker,
-                "frame": int(getattr(marker, "frame", 0) or 0),
-                "name": str(getattr(marker, "name", "") or ""),
-                "selected": bool(getattr(marker, "select", False)),
-            })
-    except FBP_DATA_ERRORS:
-        return ()
-    return tuple(sorted(records, key=lambda item: (item["frame"], item["name"].casefold())))
-
-
-def selected_scrub_bookmark_records(scene):
-    return tuple(record for record in scrub_bookmark_records(scene) if record["selected"])
-
-
-def _bookmark_record_by_uid(scene, uid):
-    target = str(uid or "")
-    return next((record for record in scrub_bookmark_records(scene) if record["uid"] == target), None)
-
-
-def _set_bookmark_color(scene, records, color_tag):
-    identifiers = {str(record.get("uid") or "") for record in tuple(records or ())}
-    if not identifiers:
-        return False
-    entries = _load_bookmark_state(scene)
-    changed = False
-    for entry in entries:
-        if str(entry.get("uid") or "") in identifiers:
-            value = _bookmark_color_tag(color_tag)
-            if entry.get("color_tag") != value:
-                entry["color_tag"] = value
-                changed = True
-    if changed:
-        _save_bookmark_state(scene, entries)
-    return changed
-
-
-def _delete_bookmark_records(scene, records):
-    markers = getattr(scene, "timeline_markers", None) if scene is not None else None
-    targets = tuple(records or ())
-    if markers is None or not targets:
-        return 0
-    removed = 0
-    for record in targets:
-        marker = record.get("marker") if isinstance(record, dict) else None
-        if marker is None:
-            continue
-        try:
-            markers.remove(marker)
-            removed += 1
-        except FBP_DATA_ERRORS:
-            continue
-    reconcile_scrub_bookmarks(scene)
-    return removed
-
-
 def scrub_magnet_should_release(event_type, *, event_in_window, cursor_in_owned_window):
     """Return whether the persistent magnet should ease back to its base axis.
 
@@ -2522,20 +2042,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _magnetic_target_offset = 0.0
     _magnetic_last_tick = 0.0
     _cursor_in_owned_window = False
-    _shortcut_direct_factor = 0.0
-    _shortcut_direct_locked = False
-    _relative_anchor_frame = 0.0
-    _onion_before_handle = None
-    _onion_after_handle = None
-    _bookmark_records = ()
-    _native_marker_records = ()
-    _bookmark_hit_records = ()
-    _native_marker_hit_records = ()
-    _hover_bookmark_uid = ""
-    _bookmark_transform_sources = ()
-    _bookmark_transform_created = ()
-    _bookmark_transform_delta = 0
-    _onion_drag_original = None
 
     @classmethod
     def poll(cls, context):
@@ -3396,20 +2902,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._restore_transform_to_original()
         self._duplicate_pending = False
         self._duplicate_sources = ()
-        if changed_bookmarks:
-            try:
-                bpy.ops.ed.undo_push(
-                    message=(
-                        "Duplicate Scrub Bookmarks"
-                        if self._bookmark_transform_created
-                        else "Move Scrub Bookmarks"
-                    )
-                )
-            except FBP_DATA_ERRORS:
-                pass
-        self._bookmark_transform_sources = ()
-        self._bookmark_transform_created = ()
-        self._bookmark_transform_delta = 0
         self._update_magnetic_target(context)
         self._set_idle_hover(context)
 
@@ -4462,20 +3954,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._cache_checked_at = 0.0
         self._cursor_over_axis = False
         self._cursor_kind = ""
-        self._shortcut_direct_factor = 0.0
-        self._shortcut_direct_locked = False
-        self._relative_anchor_frame = float(self._session_start_frame)
-        self._onion_before_handle = None
-        self._onion_after_handle = None
-        self._bookmark_records = ()
-        self._native_marker_records = ()
-        self._bookmark_hit_records = ()
-        self._native_marker_hit_records = ()
-        self._hover_bookmark_uid = ""
-        self._bookmark_transform_sources = ()
-        self._bookmark_transform_created = ()
-        self._bookmark_transform_delta = 0
-        self._onion_drag_original = None
         self._magnetic_offset = 0.0
         self._magnetic_target_offset = 0.0
         self._magnetic_last_tick = time.monotonic()
@@ -4892,7 +4370,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                         ),
                     )
                     if cursor_in_window and not self._interaction:
-                        self._set_idle_hover(context)
+                        inside = self._mouse_in_axis(context)
+                        self._hover_frame = self._keyframe_hit(context) if inside else None
+                        self._set_hover_cursor(context, inside)
             return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
 
         if self._shortcut_pending:
@@ -4934,8 +4414,24 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                         "INVOKE_DEFAULT",
                         bookmark_uid=str(bookmark.get("uid") or ""),
                     )
-                except FBP_DATA_ERRORS as exc:
-                    fbp_warn("Could not rename Scrub Bar bookmark", exc)
+                    if self._shift_held or not hit_was_selected:
+                        select_grease_pencil_frame_number(
+                            self._object,
+                            hit,
+                            extend=self._shift_held,
+                            toggle=self._shift_held,
+                        )
+                    self._refresh_keyframe_cache(context)
+                    self._interaction = "KEY_PENDING"
+                    if not self._begin_key_transform(context):
+                        self._interaction = ""
+                    self._tag_redraw()
+                else:
+                    self._interaction = "SCRUB"
+                    self._magnetic_target_offset = float(self._magnetic_offset)
+                    self._interaction_start_frame = int(context.scene.frame_current)
+                    self._set_frame_from_axis(context)
+                    self._tag_redraw()
                 return {"RUNNING_MODAL"}
             if event_value == "PRESS":
                 if bookmark is not None:

@@ -29,6 +29,23 @@ All notable public changes to Frame By Plane are documented here.
 - Added alphabetic Scrub Bar bookmarks, native color tags and improved bookmark interactions.
 - Added bookmark appearance controls and Preview Range activation protection.
 - Exposed native Grease Pencil Onion Skin controls in the Viewport popover.
+## [7.1.11] — 2026-07-31
+
+### Scrub Bar
+
+- Added gradual Mouse Magnet behavior to the persistent Scrub Bar.
+- Added magnet range, strength and smoothing controls.
+- Restored the correct custom Scrub Bar icon in Add-on Preferences.
+- Fixed persistent hold cleanup after Blender window deactivation.
+
+### Grease Pencil
+
+- Preserved frame `0` and negative frames when creating and evaluating Grease Pencil Drawing Planes and masks.
+
+### Distribution
+
+- Added deterministic GitHub release automation and release-gate validation.
+- Added reproducible five-platform packages, source archive and SHA-256 checksums.
 
 ## [6.1.0] — 2026-06-26
 

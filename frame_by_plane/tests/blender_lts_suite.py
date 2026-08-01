@@ -381,105 +381,6 @@ def test_scrub_bar_regressions(_module):
         capture_px=96.0,
     ) == 0.0
 
-    assert not scrub.scrub_magnet_should_release(
-        "TIMER",
-        event_in_window=False,
-        cursor_in_owned_window=True,
-    )
-    assert scrub.scrub_magnet_should_release(
-        "TIMER",
-        event_in_window=True,
-        cursor_in_owned_window=False,
-    )
-    assert scrub.scrub_magnet_should_release(
-        "MOUSEMOVE",
-        event_in_window=False,
-        cursor_in_owned_window=True,
-    )
-
-    horizontal = scrub.scrub_overlay_layout(
-        900,
-        600,
-        position="BOTTOM",
-        ui_scale=1.0,
-        length_ratio=0.5,
-        edge_offset=120.0,
-    )
-    direct = scrub.direct_scrub_mapping_factor(
-        (horizontal["x0"] + horizontal["x1"]) * 0.5,
-        horizontal["y"],
-        horizontal,
-        capture_px=96.0,
-        inner_px=12.0,
-        strength=1.0,
-    )
-    transition = scrub.direct_scrub_mapping_factor(
-        (horizontal["x0"] + horizontal["x1"]) * 0.5,
-        horizontal["y"] + 48.0,
-        horizontal,
-        capture_px=96.0,
-        inner_px=12.0,
-        strength=1.0,
-    )
-    relative = scrub.direct_scrub_mapping_factor(
-        (horizontal["x0"] + horizontal["x1"]) * 0.5,
-        horizontal["y"] + 120.0,
-        horizontal,
-        capture_px=96.0,
-        inner_px=12.0,
-        strength=1.0,
-    )
-    assert direct == 1.0
-    assert 0.0 < transition < 1.0
-    assert relative == 0.0
-
-    class RangeScene:
-        frame_start = 1
-        frame_end = 250
-        use_preview_range = False
-
-    for center, count, expected in (
-        (50, 50, (25, 74)),
-        (1, 50, (1, 50)),
-        (250, 50, (201, 250)),
-    ):
-        display = scrub.scrub_display_range(RangeScene(), center, count)
-        assert display == expected, (center, count, display)
-        assert display[1] - display[0] + 1 == count
-
-    # Relative scrubbing must use the actual visible distance available on
-    # each side. At scene frame 1, a 1-50 window must reach frame 50.
-    target, _delta = scrub.relative_scrub_target(
-        1,
-        100.0,
-        24.5,
-        100.0,
-        sensitivity=1.0,
-        negative_radius=0.0,
-        positive_radius=49.0,
-    )
-    assert math.isclose(target, 50.0), target
-
-    # Leaving the exact direct zone must be distinguishable from the outer
-    # transition so the modal operator can re-anchor at the exit position.
-    assert scrub.direct_scrub_mapping_factor(
-        (horizontal["x0"] + horizontal["x1"]) * 0.5,
-        horizontal["y"],
-        horizontal,
-        capture_px=96.0,
-        inner_px=12.0,
-        strength=1.0,
-    ) == 1.0
-    assert scrub._bookmark_native_name("Shot A") == "✦ - Shot A"
-    assert scrub._bookmark_label_from_name("✦ - Shot A") == "Shot A"
-    assert len(scrub._BOOKMARK_COLOR_ITEMS) == 9
-
-    keys = (10, 20, 30, 40, 60, 70)
-    assert scrub._onion_endpoint_frame(50, 2, "BEFORE", "RELATIVE", keys) == 30
-    assert scrub._onion_endpoint_frame(50, 2, "AFTER", "RELATIVE", keys) == 70
-    assert scrub._onion_amount_from_frame(50, 25, "BEFORE", "RELATIVE", keys) == 2
-    assert scrub._onion_amount_from_frame(50, 65, "AFTER", "RELATIVE", keys) == 1
-
     value = 0.0
     for _index in range(40):
         value = scrub.smooth_scrub_magnet_offset(
@@ -499,8 +400,6 @@ def test_scrub_bar_regressions(_module):
     assert icon_path.is_file(), icon_path
     return {
         "magnet_outer_offset": outer,
-        "direct_scrub_factor": direct,
-        "range_50": scrub.scrub_display_range(RangeScene(), 50, 50),
         "frame_zero": bridge._scene_current_frame_number(SceneZero(), 1),
         "preferences_icon": icon_path.name,
     }

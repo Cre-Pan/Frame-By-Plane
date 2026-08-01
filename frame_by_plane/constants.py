@@ -14,7 +14,7 @@ from .support_policy import (
 
 # Release metadata lives here so the add-on header, preferences and local
 # What's New UI cannot silently drift apart during incremental releases.
-FBP_VERSION = (7, 1, 18)
+FBP_VERSION = (7, 1, 11)
 FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
 FBP_VERSION_FAMILY = ".".join(str(part) for part in FBP_VERSION[:2])
 
