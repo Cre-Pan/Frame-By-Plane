@@ -43,6 +43,7 @@ La raccomandazione è **GO tecnico per una candidate Windows x64 destinata a rev
 - I nuovi controlli Performance vivono su `WindowManager`, hanno `SKIP_SAVE` e sono disattivati di default.
 - I report del profiler contengono solo contatori e misure locali; non includono media, percorsi sorgente o telemetria di rete.
 - Il codice resta privo di separatori di path hardcoded nelle modifiche e il verifier conferma le cinque piattaforme dichiarate.
+- Blender 5.2 ha costruito e validato i cinque ZIP split-platform; lo ZIP Windows x64 è stato installato e abilitato in un profilo isolato con lifecycle pulito.
 
 ## Problemi risolti
 

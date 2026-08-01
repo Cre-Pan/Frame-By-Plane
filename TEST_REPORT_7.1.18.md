@@ -50,6 +50,21 @@ Esito suite finale: background **PASS**, interattiva **PASS**
 | 300 redraw View3D | Interattiva | PASS | 1,8956 s con GP e collection annidate. |
 | Preferences reload + splash | Interattiva | PASS | Reload stabile; prompt What's New schedulato. |
 | Repository verifier | Python 3.13 | PASS | Versione, piattaforme, wheel, file vietati, assenza di `BaseException` catches. |
+| Build extension split-platform | Blender 5.2 | PASS | Cinque ZIP prodotti senza cambio versione. |
+| Extension validate | Blender 5.2 | PASS | TOML valido per tutti i cinque ZIP. |
+| Install ZIP Windows x64 isolato | Blender 5.2 | PASS | Namespace `bl_ext.audit.frame_by_plane`, stato `ACTIVE`, busy false, 0 mismatch/issue. |
+
+## Pacchetti ricostruiti
+
+| Archivio | Byte | SHA-256 |
+|---|---:|---|
+| `frame_by_plane-7.1.18-linux_x64.zip` | 11.263.434 | `cf95cf06ec7764d0f12047f734a6c67888d470d7f5d36b5fe214924bed8fca8f` |
+| `frame_by_plane-7.1.18-macos_arm64.zip` | 8.533.066 | `6b9ce8996597c4aeb8239ea23a95bf4697191880fa26280b94573c57d6024b80` |
+| `frame_by_plane-7.1.18-macos_x64.zip` | 9.146.634 | `e2c98d221e2f2a043a1fbf250eaf08044a2845dd48e34b266f355a302daf46bd` |
+| `frame_by_plane-7.1.18-windows_arm64.zip` | 6.655.697 | `25c60d3176d5ddf37828c2ff6299e5545c65ddd24bb4f4b7afccca3e0fa78284` |
+| `frame_by_plane-7.1.18-windows_x64.zip` | 11.108.834 | `08761bb8d9db2fe5b59817bcdad5bcca10fc9768cb512da62374aa0fa2d139d6` |
+
+Install probe: `work/audit-7.1.18/final-suite/installed-extension.json`.
 
 ## Matrice obbligatoria
 
@@ -144,6 +159,8 @@ Esito suite finale: background **PASS**, interattiva **PASS**
 | Background dove supportato | PASS | Suite completa. |
 | F3 in tutti gli editor principali | PARTIAL | Operatori ad alto rischio auditati; matrice esaustiva non completata. |
 | Windows x64 | PASS | Ambiente reale. |
+| Build/validate pacchetti dichiarati | PASS | Blender ha costruito e validato tutti i cinque ZIP. |
+| Installazione ZIP Windows x64 | PASS | Profilo isolato, enable riuscito e lifecycle pulito. |
 | Windows ARM64/macOS Intel/macOS ARM/Linux x64 | SKIP | Manifest/wheel verificate staticamente; nessun runtime disponibile. |
 
 ## Failure e skip finali
