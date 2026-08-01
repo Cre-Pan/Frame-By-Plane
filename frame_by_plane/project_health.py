@@ -23,6 +23,7 @@ from .feature_scope import (
     FBP_FEATURE_SCOPE_ISSUES,
     fbp_enabled_preview_features,
     fbp_feature_scope_snapshot,
+    fbp_preview_feature_usage,
 )
 from .project_schema import (
     FBP_PROJECT_SCHEMA_VERSION,
@@ -423,29 +424,33 @@ def scan_project_health(scene, *, repair=False):
             _issue(
                 "WARNING",
                 "PREVIEW_FEATURE",
-                f"{definition['label']} preview is enabled and is outside the Frame By Plane 7.1 LTS core scope",
+                f"Preview limitation (not an LTS error): {definition['label']} is enabled outside the Frame By Plane 7.1 LTS core scope",
                 repair_hint=str(definition.get("disable_hint", "") or "Disable the preview feature for an LTS-only project"),
             ),
             seen,
         )
 
-    try:
-        if (
-            str(getattr(scene, "fbp_layered_report_format", "") or "").upper() == "PROCREATE"
-            and not any(item["id"] == "procreate_import" for item in fbp_enabled_preview_features(scene))
-        ):
-            _append_unique(
-                issues,
-                _issue(
-                    "INFO",
-                    "PREVIEW_DATA",
-                    "This file contains a Procreate import report, but the Procreate decoder preview is disabled. Existing generated layers remain supported.",
-                    repair_hint="Enable Procreate Preview only when the source document must be imported again",
+    preview_usage = fbp_preview_feature_usage(scene)
+    stats["preview_data_features"] = sum(bool(item.get("used")) for item in preview_usage)
+    for usage in preview_usage:
+        if not usage.get("used"):
+            continue
+        details = "; ".join(usage.get("evidence", ())) or "stored Preview data"
+        state = "enabled" if usage.get("enabled") else "disabled"
+        _append_unique(
+            issues,
+            _issue(
+                "INFO",
+                "PREVIEW_DATA",
+                f"Preview data notice (not an LTS error): this file contains {details} for {usage['label']}; the feature is {state}",
+                repair_hint=(
+                    str(usage.get("disable_hint", "") or "")
+                    if usage.get("enabled")
+                    else f"Existing data remains readable; enable {usage['label']} Preview only when it must be edited"
                 ),
-                seen,
-            )
-    except FBP_DATA_ERRORS:
-        pass
+            ),
+            seen,
+        )
 
     schema = project_schema_status(scene)
     stats["project_schema"] = int(schema.get("source_schema", 0) or 0)

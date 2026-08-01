@@ -2119,6 +2119,24 @@ class FBP_AddonPreferences(AddonPreferences):
                     row.prop(scene, 'fbp_experimental_compositor', text='Compositor', toggle=True, icon='NODE_COMPOSITING')
                     row.prop(scene, 'fbp_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                     row.prop(scene, 'fbp_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
+                    enabled_preview = [
+                        label for label, property_name in (
+                            ('Compositor', 'fbp_experimental_compositor'),
+                            ('Procreate', 'fbp_preview_procreate_import'),
+                            ('Generic Mesh', 'fbp_preview_generic_mesh_effects'),
+                        )
+                        if bool(getattr(scene, property_name, False))
+                    ]
+                    status = current.row(align=True)
+                    status.alert = bool(enabled_preview)
+                    status.label(
+                        text=(
+                            'Active Preview: ' + ', '.join(enabled_preview)
+                            if enabled_preview else 'LTS-only file: no Preview feature enabled'
+                        ),
+                        icon='INFO' if enabled_preview else 'CHECKMARK',
+                    )
+                    status.operator('fbp.copy_preview_diagnostics', text='Copy Diagnostics', icon='COPYDOWN')
                     hint_row(current, 'Project Doctor reports every enabled Preview feature.', icon='INFO')
 
             body = _section(category, 'pref_ui_show_performance', 'Performance and Safety', 'settings.repair', 'MODIFIER')

@@ -5264,7 +5264,11 @@ class FBP_OT_ImportProcreate(Operator):
             else:
                 fallback.label(text="No decodable layer tiles or QuickLook preview detected", icon=fbp_icon('ERROR'))
         notice = layout.box()
-        notice.label(text="Preview proprietary-format decoder", icon=fbp_icon('INFO'))
+        preview = notice.row(align=True)
+        preview.alert = True
+        preview.label(text="Procreate Import · Preview", icon=fbp_icon('INFO'))
+        preview.operator("fbp.copy_preview_diagnostics", text="Copy Diagnostics", icon="COPYDOWN")
+        notice.label(text="Outside the Frame By Plane 7.1 LTS stability promise.")
         notice.label(text="Review the extracted hierarchy in Multiplane Setup before generation.")
         if self._is_large_document():
             large = layout.box()

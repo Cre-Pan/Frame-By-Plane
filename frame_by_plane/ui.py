@@ -3438,6 +3438,15 @@ class FBP_MT_CompositorEffectListActions(Menu):
         remove.action = "REMOVE"
 
 
+def _fbp_draw_preview_scope_badge(layout, label):
+    """Draw the shared, non-marketing Preview scope notice and diagnostics."""
+    badge = layout.row(align=True)
+    badge.alert = True
+    badge.label(text=f"{label} · Preview", icon="INFO")
+    badge.label(text="Outside the 7.1 LTS stability promise")
+    badge.operator("fbp.copy_preview_diagnostics", text="Copy Diagnostics", icon="COPYDOWN")
+
+
 class FBP_PT_OutputCompositor(Panel):
     bl_label = "Frame By Plane Compositor"
     bl_description = f"Generate isolated View Layers from tags, layers, {primary_shortcut_label('G')} groups or collections and build per-layer compositor effects"
@@ -3459,6 +3468,7 @@ class FBP_PT_OutputCompositor(Panel):
         layout = configure_layout(self.layout)
         sc = context.scene
         content = layout.column(align=False)
+        _fbp_draw_preview_scope_badge(content, "Compositor Layers")
 
         if not fbp_feature_enabled(sc, "compositor_layers"):
             empty_state(
@@ -3754,6 +3764,7 @@ class FBP_PT_CompositorNodeSidebar(Panel):
     def draw(self, context):
         layout = configure_layout(self.layout)
         scene = context.scene
+        _fbp_draw_preview_scope_badge(layout, "Compositor Layers")
         if not fbp_feature_enabled(scene, "compositor_layers"):
             empty_state(
                 layout,

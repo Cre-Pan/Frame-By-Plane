@@ -75,6 +75,98 @@ def fbp_feature_scope_snapshot(scene=None):
     }
 
 
+def fbp_preview_feature_usage(scene=None):
+    """Return primitive evidence for Preview data already stored in a file."""
+    evidence = {
+        "compositor_layers": [],
+        "procreate_import": [],
+        "generic_mesh_effects": [],
+    }
+    if scene is not None:
+        try:
+            compositor_rows = len(getattr(scene, "fbp_compositor_layers", ()) or ())
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            compositor_rows = 0
+        try:
+            compositor_enabled = bool(getattr(scene, "fbp_compositor_enabled", False))
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            compositor_enabled = False
+        if compositor_rows:
+            evidence["compositor_layers"].append(f"{compositor_rows} managed compositor row(s)")
+        if compositor_enabled:
+            evidence["compositor_layers"].append("managed compositor contract enabled")
+
+        try:
+            if str(getattr(scene, "fbp_layered_report_format", "") or "").upper() == "PROCREATE":
+                evidence["procreate_import"].append("stored Procreate import report")
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+
+        generic_count = 0
+        try:
+            objects = tuple(getattr(scene, "objects", ()) or ())
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            objects = ()
+        for obj in objects:
+            try:
+                modifiers = tuple(getattr(obj, "modifiers", ()) or ())
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+            for modifier in modifiers:
+                try:
+                    if bool(modifier.get("fbp_generic_mesh_effect", False)):
+                        generic_count += 1
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    continue
+        if generic_count:
+            evidence["generic_mesh_effects"].append(
+                f"{generic_count} FBP-owned Generic Mesh modifier(s)"
+            )
+
+    records = []
+    for definition in fbp_preview_feature_definitions():
+        feature_id = str(definition.get("id", "") or "")
+        details = tuple(evidence.get(feature_id, ()))
+        records.append({
+            "id": feature_id,
+            "label": str(definition.get("label", feature_id) or feature_id),
+            "enabled": fbp_feature_enabled(scene, feature_id),
+            "used": bool(details),
+            "evidence": details,
+            "description": str(definition.get("description", "") or ""),
+            "disable_hint": str(definition.get("disable_hint", "") or ""),
+        })
+    return tuple(records)
+
+
+def fbp_preview_diagnostics_text(scene=None):
+    """Build a local text report that contains policy state but no project media."""
+    records = fbp_preview_feature_usage(scene)
+    enabled = sum(bool(record["enabled"]) for record in records)
+    used = sum(bool(record["used"]) for record in records)
+    lines = [
+        "Frame By Plane — Preview Feature Diagnostics",
+        f"Feature scope schema: {FBP_FEATURE_SCOPE_SCHEMA}",
+        f"Enabled Preview features: {enabled}/{len(records)}",
+        f"Preview features with stored data: {used}/{len(records)}",
+        "Policy: Preview data remains readable but is outside the Frame By Plane 7.1 LTS stability promise.",
+        "",
+    ]
+    for record in records:
+        state = "enabled" if record["enabled"] else "disabled"
+        usage = "; ".join(record["evidence"]) if record["used"] else "no stored Preview data detected"
+        lines.extend((
+            f"[{record['label']}] {state}; {usage}",
+            f"  Scope: {record['description']}",
+            f"  LTS-only action: {record['disable_hint']}",
+        ))
+    lines.extend((
+        "",
+        "This report stays local and contains no file paths, project media or telemetry.",
+    ))
+    return "\n".join(lines)
+
+
 def validate_feature_scope():
     issues = []
     seen_ids = set()
@@ -117,6 +209,8 @@ __all__ = (
     "fbp_feature_enabled",
     "fbp_feature_is_preview",
     "fbp_feature_scope_snapshot",
+    "fbp_preview_diagnostics_text",
+    "fbp_preview_feature_usage",
     "fbp_preview_feature_definitions",
     "validate_feature_scope",
 )

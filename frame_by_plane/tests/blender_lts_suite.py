@@ -949,6 +949,53 @@ def test_audited_operator_tooltips(_module):
     return {"audited": len(audited), "preview_descriptions": len(compositor)}
 
 
+def test_preview_scope_policy(_module):
+    feature_scope = importlib.import_module(f"{PACKAGE}.feature_scope")
+
+    class PreviewModifier(dict):
+        pass
+
+    class PreviewObject:
+        modifiers = (PreviewModifier(fbp_generic_mesh_effect=True),)
+
+    class PreviewScene:
+        fbp_experimental_compositor = True
+        fbp_preview_procreate_import = False
+        fbp_preview_generic_mesh_effects = False
+        fbp_compositor_layers = (object(), object())
+        fbp_compositor_enabled = True
+        fbp_layered_report_format = "PROCREATE"
+        objects = (PreviewObject(),)
+
+    usage = feature_scope.fbp_preview_feature_usage(PreviewScene())
+    assert len(usage) == 3, usage
+    assert all(item["used"] for item in usage), usage
+    assert next(item for item in usage if item["id"] == "compositor_layers")["enabled"]
+    diagnostics = feature_scope.fbp_preview_diagnostics_text(PreviewScene())
+    assert "outside the Frame By Plane 7.1 LTS stability promise" in diagnostics
+    assert "no file paths, project media or telemetry" in diagnostics
+
+    project_health = importlib.import_module(f"{PACKAGE}.project_health")
+    scene = bpy.context.scene
+    previous = bool(getattr(scene, "fbp_preview_procreate_import", False))
+    try:
+        scene.fbp_preview_procreate_import = True
+        health = project_health.scan_project_health(scene, repair=False)
+    finally:
+        scene.fbp_preview_procreate_import = previous
+    preview_issues = [
+        item for item in health.get("issues", ())
+        if item.get("code") == "PREVIEW_FEATURE"
+    ]
+    assert preview_issues, health
+    assert all("not an LTS error" in item.get("message", "") for item in preview_issues)
+    return {
+        "features": len(usage),
+        "used_features": sum(item["used"] for item in usage),
+        "doctor_preview_issues": len(preview_issues),
+    }
+
+
 def test_gp_native_apply(_module):
     bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
     result = bpy.ops.fbp.add_grease_pencil_canvas(
@@ -1431,6 +1478,9 @@ def test_interactive_layer_tree_gp(_module):
     copy_result = bpy.ops.fbp.copy_gp_effect_compatibility_report("EXEC_DEFAULT")
     assert "FINISHED" in copy_result, copy_result
     assert "Grease Pencil Effect Compatibility" in bpy.context.window_manager.clipboard
+    preview_result = bpy.ops.fbp.copy_preview_diagnostics("EXEC_DEFAULT")
+    assert "FINISHED" in preview_result, preview_result
+    assert "Preview Feature Diagnostics" in bpy.context.window_manager.clipboard
     canvas.fbp_gp_ui_show_unavailable_effects = False
     canvas.fbp_gp_effect_compatibility_filter = "ALL"
 
@@ -1544,6 +1594,7 @@ def run_background():
             ("scrub_bar_regressions", test_scrub_bar_regressions),
             ("gp_effect_support", test_gp_support),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
+            ("preview_scope_policy", test_preview_scope_policy),
             ("gp_native_apply_remove", test_gp_native_apply),
             ("generic_mesh_matrix", test_generic_mesh_matrix),
             ("generic_mesh_topology_profiles", test_generic_mesh_topology_profiles),

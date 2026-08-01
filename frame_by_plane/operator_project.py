@@ -25,6 +25,7 @@ from .operator_common import (
     _fbp_remove_pending_indices,
 )
 from .project_health import REPORT_NAME, scan_project_health, health_report_lines
+from .feature_scope import fbp_preview_diagnostics_text
 
 
 class FBP_OT_RemovePendingTreeSelection(Operator):
@@ -195,6 +196,27 @@ class FBP_OT_CopyLastDiagnosticReport(Operator):
         except FBP_DATA_ERRORS as exc:
             self.report({'WARNING'}, f"Could not copy report: {exc}")
             return {'CANCELLED'}
+
+
+class FBP_OT_CopyPreviewDiagnostics(Operator):
+    bl_idname = "fbp.copy_preview_diagnostics"
+    bl_label = "Copy Preview Diagnostics"
+    bl_description = (
+        "Copy enabled Preview features, detected Preview data and the 7.1 LTS scope policy "
+        "without including project paths, media or telemetry"
+    )
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context):
+        try:
+            context.window_manager.clipboard = fbp_preview_diagnostics_text(
+                getattr(context, "scene", None)
+            )
+        except FBP_DATA_ERRORS as exc:
+            self.report({'WARNING'}, f"Could not copy Preview diagnostics: {exc}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Preview diagnostics copied")
+        return {'FINISHED'}
 
 
 class FBP_OT_OpenDiagnosticReport(Operator):
@@ -421,7 +443,6 @@ class FBP_OT_ApplyPreferencesToScene(Operator):
 
 
 # SECTION - Effects Regression Scene #
-
 
 
 
