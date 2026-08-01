@@ -127,6 +127,7 @@ from .operator_common import (
     _fbp_add_generation_timer,
     _fbp_build_issue,
     _fbp_clear_generation_report,
+    _fbp_claim_generation_start,
     _fbp_color_tag_for_group,
     _fbp_find_insert_index_for_pending,
     _fbp_finish_generation_ui,
@@ -1510,10 +1511,8 @@ class FBP_OT_GenerateMultiplane(Operator):
             return {'CANCELLED'}
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
-        # Blender 5.2 does not reliably expose/compare the originating Timer
-        # through the modal Event. Filtering on event.timer can therefore keep
-        # this operator alive forever and prevent generation from starting.
-        # The first TIMER event starts the deferred generation.
+        if not _fbp_claim_generation_start(self, event):
+            return {'PASS_THROUGH'}
         _fbp_remove_generation_timer(context, self)
         return self._run_generation(context)
 
@@ -1967,10 +1966,8 @@ class FBP_OT_ImportSequence(Operator):
             return {'CANCELLED'}
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
-        # Blender 5.2 does not reliably expose/compare the originating Timer
-        # through the modal Event. Filtering on event.timer can therefore keep
-        # this operator alive forever and prevent generation from starting.
-        # The first TIMER event starts the deferred generation.
+        if not _fbp_claim_generation_start(self, event):
+            return {'PASS_THROUGH'}
         _fbp_remove_generation_timer(context, self)
         return self._run_generation(context)
 

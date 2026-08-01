@@ -333,6 +333,7 @@ def _retire_generation_ui_on_reload():
             try:
                 operator._fbp_generation_cancelled = True
                 operator._fbp_generation_timer = None
+                operator._fbp_generation_deadline = 0.0
             except FBP_DATA_ERRORS:
                 continue
         for timer in tuple(_PREVIOUS_GENERATION_TIMERS or ()):
@@ -493,8 +494,11 @@ def _fbp_show_generation_start_popup(context, title="Generating Frame By Plane S
 def _fbp_add_generation_timer(context, operator, delay=0.20):
     """Defer heavy generation by one UI tick so the start popup can draw first."""
     try:
+        safe_delay = max(0.0, float(delay))
         operator._fbp_generation_cancelled = False
-        operator._fbp_generation_timer = context.window_manager.event_timer_add(delay, window=context.window)
+        operator._fbp_generation_started = False
+        operator._fbp_generation_deadline = time.perf_counter() + safe_delay
+        operator._fbp_generation_timer = context.window_manager.event_timer_add(safe_delay, window=context.window)
         if operator._fbp_generation_timer not in _FBP_GENERATION_TIMERS:
             _FBP_GENERATION_TIMERS.append(operator._fbp_generation_timer)
         if operator not in _FBP_GENERATION_OPERATORS:
@@ -507,6 +511,33 @@ def _fbp_add_generation_timer(context, operator, delay=0.20):
         _fbp_remove_generation_timer(context, operator)
         fbp_warn('Could not defer Frame By Plane generation', exc)
         return None
+
+
+def _fbp_claim_generation_start(operator, event, *, now=None):
+    """Claim one deferred generation only after its monotonic deadline.
+
+    Blender 5.2 does not consistently expose a comparable ``event.timer``
+    object. The event type remains useful, while the monotonic deadline is the
+    authoritative fallback that prevents unrelated window timers from starting
+    work early. Modal callbacks run serially on Blender's main thread, so the
+    started flag is an atomic claim for this operator instance.
+    """
+    if str(getattr(event, "type", "") or "") != "TIMER":
+        return False
+    if bool(getattr(operator, "_fbp_generation_cancelled", False)):
+        return False
+    if bool(getattr(operator, "_fbp_generation_started", False)):
+        return False
+    try:
+        deadline = float(getattr(operator, "_fbp_generation_deadline", 0.0) or 0.0)
+        current = time.perf_counter() if now is None else float(now)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    if deadline > 0.0 and current < deadline:
+        return False
+    operator._fbp_generation_started = True
+    return True
+
 
 def _fbp_remove_generation_timer(context, operator):
     try:
@@ -521,6 +552,7 @@ def _fbp_remove_generation_timer(context, operator):
         pass
     try:
         operator._fbp_generation_timer = None
+        operator._fbp_generation_deadline = 0.0
     except FBP_DATA_IO_ERRORS:
         pass
     try:

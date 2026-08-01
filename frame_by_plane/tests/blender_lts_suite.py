@@ -337,6 +337,59 @@ def test_registration_failure_transaction(module):
     }
 
 
+def test_generation_timer_deadline(_module):
+    operator_common = importlib.import_module(f"{PACKAGE}.operator_common")
+
+    class Probe:
+        pass
+
+    operator = Probe()
+    operator._fbp_generation_cancelled = False
+    operator._fbp_generation_started = False
+    operator._fbp_generation_deadline = 100.20
+
+    event = Probe()
+    event.type = "TIMER"
+    event.timer = object()
+    operator._fbp_generation_timer = object()
+
+    assert not operator_common._fbp_claim_generation_start(
+        operator, event, now=100.01
+    )
+    assert not operator._fbp_generation_started
+    assert operator_common._fbp_claim_generation_start(
+        operator, event, now=100.20
+    )
+    assert operator._fbp_generation_started
+    assert not operator_common._fbp_claim_generation_start(
+        operator, event, now=100.21
+    )
+
+    cancelled = Probe()
+    cancelled._fbp_generation_cancelled = True
+    cancelled._fbp_generation_started = False
+    cancelled._fbp_generation_deadline = 0.0
+    assert not operator_common._fbp_claim_generation_start(
+        cancelled, event, now=101.0
+    )
+
+    non_timer = Probe()
+    non_timer.type = "MOUSEMOVE"
+    waiting = Probe()
+    waiting._fbp_generation_cancelled = False
+    waiting._fbp_generation_started = False
+    waiting._fbp_generation_deadline = 0.0
+    assert not operator_common._fbp_claim_generation_start(
+        waiting, non_timer, now=101.0
+    )
+    return {
+        "deadline_seconds": 0.20,
+        "foreign_timer_before_deadline": "ignored",
+        "single_claim": True,
+        "cancelled_claim": False,
+    }
+
+
 def test_register_cycles():
     module = import_addon(fresh=True)
     for cycle in range(3):
@@ -1275,6 +1328,7 @@ def run_background():
             ("release_metadata_sync", test_release_sync),
             ("effect_evolution_handler_lifecycle", test_effect_evolution_handler_lifecycle),
             ("registration_failure_transaction", test_registration_failure_transaction),
+            ("generation_timer_deadline", test_generation_timer_deadline),
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),
