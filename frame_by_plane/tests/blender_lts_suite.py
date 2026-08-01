@@ -694,21 +694,40 @@ def test_collections(_module):
 
 
 def test_undo_redo(_module):
-    if not bpy.ops.ed.undo_push.poll() or not bpy.ops.ed.undo.poll():
-        raise SkipTest("Undo operators need an interactive editor context on this Blender build")
-    bpy.ops.mesh.primitive_plane_add()
-    obj = bpy.context.object
-    obj.name = "FBP Undo Target"
-    for index in range(12):
-        obj.location.x = index
-        bpy.ops.ed.undo_push(message=f"FBP test {index}")
-    for _ in range(6):
-        bpy.ops.ed.undo()
-    if bpy.ops.ed.redo.poll():
-        for _ in range(6):
-            bpy.ops.ed.redo()
+    override = None
+    for window in tuple(bpy.context.window_manager.windows):
+        for area in tuple(window.screen.areas):
+            if area.type != "VIEW_3D":
+                continue
+            region = next(
+                (candidate for candidate in area.regions if candidate.type == "WINDOW"),
+                None,
+            )
+            if region is not None:
+                override = {"window": window, "screen": window.screen, "area": area, "region": region}
+                break
+        if override is not None:
+            break
+    if override is None:
+        raise SkipTest("Undo operators need an interactive View3D context")
+    with bpy.context.temp_override(**override):
+        if not bpy.ops.ed.undo_push.poll():
+            raise SkipTest("Undo push is unavailable in the interactive View3D context")
+        bpy.ops.mesh.primitive_plane_add()
+        obj = bpy.context.object
+        obj.name = "FBP Undo Target"
+        for index in range(20):
+            obj.location.x = index
+            bpy.ops.ed.undo_push(message=f"FBP test {index}")
+        if not bpy.ops.ed.undo.poll():
+            raise SkipTest("Undo history was not exposed after 20 pushes")
+        for _ in range(10):
+            bpy.ops.ed.undo()
+        if bpy.ops.ed.redo.poll():
+            for _ in range(10):
+                bpy.ops.ed.redo()
     assert bpy.data.objects.get("FBP Undo Target") is not None
-    return "12 pushes / 6 undo / 6 redo"
+    return "20 pushes / 10 undo / 10 redo"
 
 
 def test_scrub_bar_regressions(_module):
@@ -1453,25 +1472,47 @@ def test_tiny_render(_module):
     previous_use_compositing = bool(scene.render.use_compositing)
     scene.compositing_node_group = None
     scene.render.use_compositing = False
-    scene.render.engine = "BLENDER_WORKBENCH"
-    scene.render.resolution_x = 32
-    scene.render.resolution_y = 32
+    previous_engine = str(scene.render.engine)
+    previous_resolution = (
+        int(scene.render.resolution_x),
+        int(scene.render.resolution_y),
+        int(scene.render.resolution_percentage),
+    )
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
-    path = WORKDIR / f"fbp_{RELEASE_TOKEN}_render.png"
-    scene.render.filepath = str(path)
     bpy.ops.mesh.primitive_cube_add()
     cube = bpy.context.object
     bpy.ops.object.camera_add(location=(0.0, -6.0, 0.0))
     camera = bpy.context.object
     camera.rotation_euler = (cube.location - camera.location).to_track_quat("-Z", "Y").to_euler()
     scene.camera = camera
+    rendered = {}
     try:
-        result = bpy.ops.render.render(write_still=True)
-        assert "FINISHED" in result, result
-        assert path.exists() and path.stat().st_size > 0
-        return str(path)
+        for label, engine in (
+            ("workbench", "BLENDER_WORKBENCH"),
+            ("eevee", "BLENDER_EEVEE"),
+            ("cycles", "CYCLES"),
+        ):
+            scene.render.engine = engine
+            if engine == "CYCLES":
+                scene.cycles.samples = 1
+                scene.cycles.use_denoising = False
+            path = WORKDIR / f"fbp_{RELEASE_TOKEN}_render_{label}.png"
+            scene.render.filepath = str(path)
+            result = bpy.ops.render.render(write_still=True)
+            assert "FINISHED" in result, (engine, result)
+            assert path.exists() and path.stat().st_size > 0, (engine, path)
+            rendered[label] = str(path)
+        return rendered
     finally:
+        scene.render.engine = previous_engine
+        (
+            scene.render.resolution_x,
+            scene.render.resolution_y,
+            scene.render.resolution_percentage,
+        ) = previous_resolution
         scene.compositing_node_group = previous_group
         scene.render.use_compositing = previous_use_compositing
 
@@ -1747,6 +1788,7 @@ def run_interactive():
     def delayed():
         module = holder.get("m")
         if module:
+            record("undo_redo_20_cycles", lambda: test_undo_redo(module))
             record("icon_runtime_contract", lambda: test_icon_runtime_contract(module))
             record("layer_tree_gp_redraw_stress", lambda: test_interactive_layer_tree_gp(module))
             record("preferences_reload_and_splash", lambda: test_interactive_reload_and_splash(module))
