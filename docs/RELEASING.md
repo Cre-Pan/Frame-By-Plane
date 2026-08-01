@@ -62,3 +62,43 @@ Both scripts normalize ZIP metadata after Blender's build so identical source pr
 8. Publish the release.
 
 GitHub automatically adds **Source code (zip)** and **Source code (tar.gz)**. Those repository snapshots are not installable Blender extension packages.
+
+## 6. Upload to Blender Extensions with the official API
+
+Create an API token from the Blender Extensions account settings and expose it only to the current PowerShell process:
+
+```powershell
+$secureToken = Read-Host "Blender Extensions token" -AsSecureString
+$tokenPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+try {
+    $env:BLENDER_EXTENSIONS_TOKEN =
+        [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPointer)
+}
+finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenPointer)
+    Remove-Variable -Name secureToken, tokenPointer
+}
+```
+
+Run a validation-only pass first. The script locates the five platform-specific ZIPs, verifies their CRC data and generated manifests, validates the 1024-character release-note limit, and sends no request under `-WhatIf`. When present, `release-notes/X.Y.Z-blender-extensions.md` is selected automatically so the complete GitHub notes can remain unchanged; otherwise the script uses `release-notes/X.Y.Z.md`:
+
+```powershell
+.\tools\publish_blender_extensions.ps1 `
+    -Version 7.1.18 `
+    -PackageDirectory .\dist `
+    -WhatIf
+```
+
+Perform the real upload with the same inputs:
+
+```powershell
+.\tools\publish_blender_extensions.ps1 `
+    -Version 7.1.18 `
+    -PackageDirectory .\dist
+```
+
+The command always requires typing `UPLOAD 7.1.18` before it sends the first request. It uses only the official `https://extensions.blender.org/api/v1/extensions/frame_by_plane/versions/upload/` endpoint, never writes or prints the token, requires HTTP 201 plus the documented JSON fields, and stops with a clear error if any platform upload is rejected. Remove the process variable afterwards:
+
+```powershell
+Remove-Item Env:BLENDER_EXTENSIONS_TOKEN
+```
