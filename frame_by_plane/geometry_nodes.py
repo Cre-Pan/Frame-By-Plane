@@ -2484,25 +2484,31 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
     del depsgraph
     global _FBP_EVOLVE_HANDLER_ACTIVE
     if _FBP_EVOLVE_HANDLER_ACTIVE or fbp_undo_guard_active():
-        _fbp_effect_stat_add("handler_guard_skips")
+        if _fbp_effect_profile_enabled():
+            _fbp_effect_stat_add("handler_guard_skips")
         return
     render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
     if (
         render_guard_active
         and not bool(fbp_runtime_get("fbp_render_needs_effect_frame_sync", False))
     ):
-        _fbp_effect_stat_add("handler_guard_skips")
+        if _fbp_effect_profile_enabled():
+            _fbp_effect_stat_add("handler_guard_skips")
         return
     if not render_guard_active and fbp_render_mutation_blocked(include_guard=False):
         # Do not update node trees when an external render is active or Blender
         # cannot confirm its job state. Managed renders are handled above.
-        _fbp_effect_stat_add("handler_guard_skips")
+        if _fbp_effect_profile_enabled():
+            _fbp_effect_stat_add("handler_guard_skips")
         return
-    profile_started = time.perf_counter() if _fbp_effect_profile_enabled() else 0.0
+    profile_enabled = _fbp_effect_profile_enabled()
+    profile_started = time.perf_counter() if profile_enabled else 0.0
     _FBP_EVOLVE_HANDLER_ACTIVE = True
     try:
         try:
-            _fbp_effect_stat_add("handler_runs")
+            _FBP_EFFECT_RUNTIME_STATS["handler_runs"] = int(
+                _FBP_EFFECT_RUNTIME_STATS.get("handler_runs", 0) or 0
+            ) + 1
         except (AttributeError, TypeError, ValueError):
             pass
         try:
@@ -2513,11 +2519,14 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
             return
 
         if not rigs:
-            _fbp_effect_stat_add("scene_idle_skips")
+            _FBP_EFFECT_RUNTIME_STATS["scene_idle_skips"] = int(
+                _FBP_EFFECT_RUNTIME_STATS.get("scene_idle_skips", 0) or 0
+            ) + 1
             return
 
-        _fbp_effect_stat_add("rigs_scanned", len(rigs))
-        _fbp_effect_stat_add("camera_binding_passes")
+        if profile_enabled:
+            _fbp_effect_stat_add("rigs_scanned", len(rigs))
+            _fbp_effect_stat_add("camera_binding_passes")
         _fbp_sync_scene_camera_bindings(scene, rigs)
 
         for rig in rigs:
@@ -2562,7 +2571,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     and bool(getattr(rig, "fbp_lattice_live_update", True))
                 )
                 if lattice_live:
-                    _fbp_effect_stat_add("lattice_updates")
+                    if profile_enabled:
+                        _fbp_effect_stat_add("lattice_updates")
                     _fbp_apply_lattice_camera_flatten(rig, scene=scene, force=False)
                 evolve_pairs = runtime_profile.get("evolve_pairs", ()) or ()
                 active_evolve_pairs = tuple(
@@ -2622,7 +2632,9 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         and evolve_signature is not None
                         and _FBP_EFFECT_EVOLVE_STEP_CACHE.get(profile_key) == evolve_signature
                     ):
-                        _fbp_effect_stat_add("held_step_skips")
+                        _FBP_EFFECT_RUNTIME_STATS["held_step_skips"] = int(
+                            _FBP_EFFECT_RUNTIME_STATS.get("held_step_skips", 0) or 0
+                        ) + 1
                         continue
                     if profile_key and profile_key[0] and evolve_signature is not None:
                         if (
@@ -2634,19 +2646,23 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 elif profile_key and profile_key[0]:
                     _FBP_EFFECT_EVOLVE_STEP_CACHE.pop(profile_key, None)
 
-                _fbp_effect_stat_add("rig_updates")
+                _FBP_EFFECT_RUNTIME_STATS["rig_updates"] = int(
+                    _FBP_EFFECT_RUNTIME_STATS.get("rig_updates", 0) or 0
+                ) + 1
 
                 # Matrix effects follow the evaluated source image/sequence
                 # even when no procedural Evolve control is enabled.
                 if geometry_source_sync:
-                    _fbp_effect_stat_add("geometry_source_updates")
+                    if profile_enabled:
+                        _fbp_effect_stat_add("geometry_source_updates")
                     _fbp_sync_geometry_alpha_frame_offset(
                         rig,
                         scene=scene,
                         effect_modifiers=runtime_profile.get("frame_geometry_modifiers", ()),
                     )
                 if shader_source_sync:
-                    _fbp_effect_stat_add("shader_source_updates")
+                    if profile_enabled:
+                        _fbp_effect_stat_add("shader_source_updates")
                     _fbp_sync_shader_image_sources(
                         rig,
                         active_effect_ids,
@@ -2709,7 +2725,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     if animated_effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
                         _fbp_apply_track_to_camera_constraint(rig, scene)
                     elif definition.get("kind") == "GEOMETRY":
-                        _fbp_effect_stat_add("geometry_effect_updates")
+                        if profile_enabled:
+                            _fbp_effect_stat_add("geometry_effect_updates")
                         fbp_update_geometry_effect(
                             rig,
                             animated_effect_id,
@@ -2719,7 +2736,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                             property_names=effective_properties,
                         )
                     else:
-                        _fbp_effect_stat_add("shader_effect_updates")
+                        if profile_enabled:
+                            _fbp_effect_stat_add("shader_effect_updates")
                         fbp_update_shader_effect(
                             rig,
                             animated_effect_id,
@@ -2758,7 +2776,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         property_names=property_names,
                     )
                     updated_effect_ids.add(effect_id)
-                    _fbp_effect_stat_add("geometry_effect_updates")
+                    if profile_enabled:
+                        _fbp_effect_stat_add("geometry_effect_updates")
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
@@ -2777,7 +2796,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     evolve_property = str(definition.get("evolve_property", "") or "")
                     property_names = {evolve_property} if evolve_property else None
                     if definition.get("kind") == "GEOMETRY":
-                        _fbp_effect_stat_add("geometry_effect_updates")
+                        if profile_enabled:
+                            _fbp_effect_stat_add("geometry_effect_updates")
                         fbp_update_geometry_effect(
                             rig,
                             effect_id,
@@ -2787,7 +2807,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                             property_names=property_names,
                         )
                     else:
-                        _fbp_effect_stat_add("shader_effect_updates")
+                        if profile_enabled:
+                            _fbp_effect_stat_add("shader_effect_updates")
                         fbp_update_shader_effect(
                             rig,
                             effect_id,
@@ -2821,7 +2842,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         instance_id=instance_id,
                         nodes=runtime_profile.get("shader_nodes_by_instance", {}).get(token),
                     )
-                    _fbp_effect_stat_add("shader_effect_updates")
+                    if profile_enabled:
+                        _fbp_effect_stat_add("shader_effect_updates")
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
