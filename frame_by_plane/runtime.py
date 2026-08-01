@@ -13,6 +13,46 @@ import traceback
 FBP_DATA_ERRORS = (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError)
 FBP_DATA_IO_ERRORS = FBP_DATA_ERRORS + (KeyError, IndexError, OSError)
 
+_FBP_REGISTRATION_STATES = frozenset({
+    "INACTIVE",
+    "REGISTERING",
+    "ACTIVE",
+    "TEARDOWN",
+    "FAILED",
+    "FAILED_UNSAFE",
+})
+
+
+def fbp_set_registration_state(value):
+    """Store the volatile add-on lifecycle state outside saved Blender data."""
+    state = str(value or "INACTIVE").strip().upper()
+    if state not in _FBP_REGISTRATION_STATES:
+        state = "FAILED_UNSAFE"
+    try:
+        import bpy
+        namespace = getattr(getattr(bpy, "app", None), "driver_namespace", None)
+        if namespace is None:
+            return False
+        namespace["frame_by_plane.registration_state"] = state
+        return True
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def fbp_registration_state():
+    """Return the current volatile add-on lifecycle state."""
+    try:
+        import bpy
+        namespace = getattr(getattr(bpy, "app", None), "driver_namespace", None)
+        state = str(
+            namespace.get("frame_by_plane.registration_state", "INACTIVE")
+            if namespace is not None
+            else "INACTIVE"
+        ).strip().upper()
+        return state if state in _FBP_REGISTRATION_STATES else "FAILED_UNSAFE"
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return "FAILED_UNSAFE"
+
 
 def fbp_set_registration_busy(value):
     """Expose extension RNA teardown/rebuild state without retaining RNA wrappers."""

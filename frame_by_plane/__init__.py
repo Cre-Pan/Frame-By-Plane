@@ -101,85 +101,132 @@ def _quiesce_deferred_runtime():
     return not failures
 
 
-def register():
-    _runtime_module.fbp_set_registration_busy(True)
-    globals()["compatibility_52"].assert_supported_runtime()
-    registered = []
-    for mod in modules:
-        register_fn = getattr(mod, "register", None)
-        if not callable(register_fn):
+def _set_registration_runtime_state(state, *, busy):
+    """Update primitive lifecycle markers without retaining Blender RNA."""
+    state_callback = getattr(_runtime_module, "fbp_set_registration_state", None)
+    if callable(state_callback):
+        state_callback(state)
+    _runtime_module.fbp_set_registration_busy(bool(busy))
+
+
+def _rollback_failed_registration(current_module, registered, original_error):
+    """Roll back one failed registration transaction in strict reverse order."""
+    rollback_safe = bool(_quiesce_deferred_runtime())
+    failed_module_name = str(
+        getattr(current_module, "__name__", "preflight") or "preflight"
+    )
+    try:
+        _runtime_module.fbp_error(
+            f"Registration failed in {failed_module_name}",
+            original_error,
+            event="addon.register_module",
+            context={"module": failed_module_name},
+        )
+    except Exception:
+        rollback_safe = False
+
+    rollback_modules = []
+    if current_module is not None:
+        rollback_modules.append((current_module, "addon.rollback_partial_module"))
+    rollback_modules.extend(
+        (previous, "addon.rollback_module") for previous in reversed(registered)
+    )
+    for rollback_module, event_name in rollback_modules:
+        rollback_fn = getattr(rollback_module, "unregister", None)
+        if not callable(rollback_fn):
             continue
         try:
+            rollback_fn()
+        except Exception as rollback_exc:
+            rollback_safe = False
+            try:
+                _runtime_module.fbp_error(
+                    f"Could not roll back {rollback_module.__name__}",
+                    rollback_exc,
+                    event=event_name,
+                    context={"module": rollback_module.__name__},
+                )
+            except Exception:
+                pass
+    # A failed module can schedule work immediately before raising. Quiesce a
+    # second time after all unregister callbacks have completed.
+    rollback_safe = bool(_quiesce_deferred_runtime()) and rollback_safe
+    return rollback_safe
+
+
+def register():
+    registered = []
+    current_module = None
+    completed = False
+    rollback_safe = True
+    _set_registration_runtime_state("REGISTERING", busy=True)
+    try:
+        globals()["compatibility_52"].assert_supported_runtime()
+        for mod in modules:
+            register_fn = getattr(mod, "register", None)
+            if not callable(register_fn):
+                continue
+            current_module = mod
             register_fn()
             registered.append(mod)
-        except Exception as exc:
-            _quiesce_deferred_runtime()
-            _runtime_module.fbp_error(
-                f"Registration failed in {mod.__name__}",
-                exc,
-                event="addon.register_module",
-                context={"module": mod.__name__},
+            current_module = None
+        completed = True
+    except Exception as exc:
+        rollback_safe = _rollback_failed_registration(
+            current_module,
+            registered,
+            exc,
+        )
+        raise
+    finally:
+        if completed:
+            _set_registration_runtime_state("ACTIVE", busy=False)
+        else:
+            _set_registration_runtime_state(
+                "FAILED" if rollback_safe else "FAILED_UNSAFE",
+                busy=not rollback_safe,
             )
-            unregister_fn = getattr(mod, "unregister", None)
-            if callable(unregister_fn):
-                try:
-                    unregister_fn()
-                except Exception as cleanup_exc:
-                    _runtime_module.fbp_error(
-                        f"Could not clean partial registration for {mod.__name__}",
-                        cleanup_exc,
-                        event="addon.rollback_partial_module",
-                        context={"module": mod.__name__},
-                    )
-            for previous in reversed(registered):
-                rollback_fn = getattr(previous, "unregister", None)
-                if not callable(rollback_fn):
-                    continue
-                try:
-                    rollback_fn()
-                except Exception as rollback_exc:
-                    _runtime_module.fbp_error(
-                        f"Could not roll back {previous.__name__}",
-                        rollback_exc,
-                        event="addon.rollback_module",
-                        context={"module": previous.__name__},
-                    )
-            raise
-    _runtime_module.fbp_set_registration_busy(False)
 
 
 def unregister():
-    _runtime_module.fbp_set_registration_busy(True)
-    # Stop every timer/task before any module starts unregistering classes or
-    # deleting properties. This closes the native-crash window where a Python
-    # timer could read an IDProperty from an RNA owner being freed.
-    _quiesce_deferred_runtime()
-
-    # Leave Grease Pencil/Paint modes before Blender starts freeing Brush data.
-    # On Blender 5.x, closing or reinstalling while a GP draw brush is active
-    # can trip an internal CurveMapping/Brush free crash. This is deliberately
-    # best-effort and runs before normal module teardown.
+    teardown_safe = True
+    _set_registration_runtime_state("TEARDOWN", busy=True)
     try:
-        gp_bridge = globals().get("grease_pencil_bridge")
-        prepare_shutdown = getattr(gp_bridge, "prepare_shutdown", None)
-        if callable(prepare_shutdown):
-            prepare_shutdown()
-    except Exception as exc:
-        _runtime_module.fbp_error(
-            "Could not prepare Grease Pencil shutdown",
-            exc,
-            event="addon.prepare_shutdown",
-        )
-    for mod in reversed(modules):
-        unregister_fn = getattr(mod, "unregister", None)
-        if not callable(unregister_fn):
-            continue
+        # Stop every timer/task before any module starts unregistering classes
+        # or deleting properties.
+        teardown_safe = bool(_quiesce_deferred_runtime()) and teardown_safe
+
+        # Leave Grease Pencil/Paint modes before Blender starts freeing Brush
+        # data. This remains best-effort but is reflected in lifecycle state.
         try:
-            unregister_fn()
+            gp_bridge = globals().get("grease_pencil_bridge")
+            prepare_shutdown = getattr(gp_bridge, "prepare_shutdown", None)
+            if callable(prepare_shutdown):
+                prepare_shutdown()
         except Exception as exc:
+            teardown_safe = False
             _runtime_module.fbp_error(
-                f"Could not unregister {mod.__name__}",
+                "Could not prepare Grease Pencil shutdown",
                 exc,
-                event="addon.unregister_module",
-                context={"module": mod.__name__},
+                event="addon.prepare_shutdown",
             )
+        for mod in reversed(modules):
+            unregister_fn = getattr(mod, "unregister", None)
+            if not callable(unregister_fn):
+                continue
+            try:
+                unregister_fn()
+            except Exception as exc:
+                teardown_safe = False
+                _runtime_module.fbp_error(
+                    f"Could not unregister {mod.__name__}",
+                    exc,
+                    event="addon.unregister_module",
+                    context={"module": mod.__name__},
+                )
+    finally:
+        teardown_safe = bool(_quiesce_deferred_runtime()) and teardown_safe
+        _set_registration_runtime_state(
+            "INACTIVE" if teardown_safe else "FAILED_UNSAFE",
+            busy=not teardown_safe,
+        )

@@ -225,6 +225,118 @@ def test_effect_evolution_handler_lifecycle(module):
     }
 
 
+def _addon_handler_total():
+    total = 0
+    for list_name in dir(bpy.app.handlers):
+        if list_name.startswith("_"):
+            continue
+        handler_list = getattr(bpy.app.handlers, list_name, None)
+        if not isinstance(handler_list, list):
+            continue
+        total += sum(
+            1
+            for callback in tuple(handler_list)
+            if str(getattr(callback, "__module__", "")).startswith(f"{PACKAGE}.")
+        )
+    return total
+
+
+def test_registration_failure_transaction(module):
+    runtime = importlib.import_module(f"{PACKAGE}.runtime")
+    scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
+    lifecycle = importlib.import_module(f"{PACKAGE}.lifecycle")
+    properties_module = importlib.import_module(f"{PACKAGE}.properties")
+
+    module.unregister()
+    assert runtime.fbp_registration_state() == "INACTIVE"
+    assert not runtime.fbp_registration_busy()
+
+    ordered_modules = []
+    original_unregister = {}
+    target_index = tuple(module.modules).index(properties_module)
+    previous_modules = [
+        item
+        for item in tuple(module.modules)[:target_index]
+        if callable(getattr(item, "register", None))
+        and callable(getattr(item, "unregister", None))
+    ]
+    tracked_modules = previous_modules + [properties_module]
+    for tracked in tracked_modules:
+        callback = tracked.unregister
+        original_unregister[tracked] = callback
+
+        def observed_unregister(callback=callback, name=tracked.__name__):
+            ordered_modules.append(name)
+            return callback()
+
+        tracked.unregister = observed_unregister
+
+    original_properties_register = properties_module.register
+
+    def forced_register_failure():
+        raise RuntimeError("forced registration transaction failure")
+
+    properties_module.register = forced_register_failure
+    try:
+        try:
+            module.register()
+        except RuntimeError as exc:
+            assert "forced registration transaction failure" in str(exc)
+        else:
+            raise AssertionError("Injected register failure did not propagate")
+    finally:
+        properties_module.register = original_properties_register
+        for tracked, callback in original_unregister.items():
+            tracked.unregister = callback
+
+    expected_order = [properties_module.__name__] + [
+        item.__name__ for item in reversed(previous_modules)
+    ]
+    assert ordered_modules == expected_order, (ordered_modules, expected_order)
+    assert runtime.fbp_registration_state() == "FAILED"
+    assert not runtime.fbp_registration_busy()
+    assert _addon_handler_total() == 0, _addon_handler_total()
+    rollback_metrics = scheduler.scheduler_metrics()
+    assert rollback_metrics["pending"] == 0, rollback_metrics
+    assert not rollback_metrics["dispatcher_registered"], rollback_metrics
+
+    module.register()
+    assert runtime.fbp_registration_state() == "ACTIVE"
+    assert not runtime.fbp_registration_busy()
+    assert not lifecycle.lifecycle_audit(bpy.context.scene, repair=False)["issues"]
+
+    original_scheduler_unregister = scheduler.unregister
+
+    def forced_unregister_failure():
+        raise RuntimeError("forced teardown transaction failure")
+
+    scheduler.unregister = forced_unregister_failure
+    try:
+        module.unregister()
+    finally:
+        scheduler.unregister = original_scheduler_unregister
+    assert runtime.fbp_registration_state() == "FAILED_UNSAFE"
+    assert runtime.fbp_registration_busy()
+    teardown_metrics = scheduler.scheduler_metrics()
+    assert teardown_metrics["pending"] == 0, teardown_metrics
+    assert not teardown_metrics["dispatcher_registered"], teardown_metrics
+
+    # The failed scheduler unregister retained no work; restore its normal
+    # cleanup before enabling the add-on again in this same Blender session.
+    original_scheduler_unregister()
+    module.register()
+    assert runtime.fbp_registration_state() == "ACTIVE"
+    assert not runtime.fbp_registration_busy()
+    assert not lifecycle.lifecycle_audit(bpy.context.scene, repair=False)["issues"]
+    return {
+        "register_failure_state": "FAILED",
+        "rollback_modules": len(ordered_modules),
+        "handlers_after_rollback": 0,
+        "teardown_failure_state": "FAILED_UNSAFE",
+        "reenabled": True,
+    }
+
+
 def test_register_cycles():
     module = import_addon(fresh=True)
     for cycle in range(3):
@@ -1162,6 +1274,7 @@ def run_background():
         tests = (
             ("release_metadata_sync", test_release_sync),
             ("effect_evolution_handler_lifecycle", test_effect_evolution_handler_lifecycle),
+            ("registration_failure_transaction", test_registration_failure_transaction),
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),
