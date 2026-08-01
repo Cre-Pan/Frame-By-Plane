@@ -18,4 +18,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Blender extension build failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "Platform packages created in: $OutputDirectory"
+& $BlenderExecutable --background --factory-startup `
+    --python (Join-Path $PSScriptRoot "normalize_release_archives.py") `
+    -- $OutputDirectory
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Release archive normalization failed with exit code $LASTEXITCODE"
+}
+
+Write-Host "Deterministic platform packages created in: $OutputDirectory"

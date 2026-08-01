@@ -4,7 +4,7 @@ Contributions, reproducible bug reports and focused pull requests are welcome.
 
 ## Development requirements
 
-- Blender 5.1.2 or newer.
+- Blender 5.2.x LTS.
 - Python syntax compatible with Blender’s bundled Python.
 - No network dependency at runtime.
 - New third-party code or wheels must include their license and attribution.
@@ -14,9 +14,11 @@ Contributions, reproducible bug reports and focused pull requests are welcome.
 1. Keep the change limited to one clear purpose.
 2. Run `python tools/verify_repository.py`.
 3. Compile the extension sources with `python -m compileall -q frame_by_plane`.
-4. Test installation from a freshly built ZIP.
-5. Verify save/reopen and Undo/Redo when the change affects scene data.
-6. Update `CHANGELOG.md` for user-visible changes.
+4. Run the Blender 5.2 background regression suite.
+5. Run the interactive suite when the change affects View3D, Preferences or modal UI.
+6. Test installation from a freshly built ZIP.
+7. Verify save/reopen and Undo/Redo when the change affects scene data.
+8. Update `CHANGELOG.md`, release notes and user documentation for visible changes.
 
 ## Bug reports
 
