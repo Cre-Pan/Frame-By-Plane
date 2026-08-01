@@ -160,6 +160,71 @@ def test_release_sync(_module):
     return RELEASE_VERSION
 
 
+def _owned_handler_count(handler_list, callback_name, module_suffix):
+    return sum(
+        1
+        for callback in tuple(handler_list)
+        if str(getattr(callback, "__name__", "")) == callback_name
+        and str(getattr(callback, "__module__", "")).endswith(
+            f".{module_suffix}"
+        )
+    )
+
+
+def test_effect_evolution_handler_lifecycle(module):
+    lifecycle = importlib.import_module(f"{PACKAGE}.lifecycle")
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    callback = geometry.fbp_effect_evolve_frame_change
+    callback_name = callback.__name__
+
+    def counts():
+        return {
+            "pre": _owned_handler_count(
+                bpy.app.handlers.frame_change_pre,
+                callback_name,
+                "geometry_nodes",
+            ),
+            "post": _owned_handler_count(
+                bpy.app.handlers.frame_change_post,
+                callback_name,
+                "geometry_nodes",
+            ),
+        }
+
+    assert counts() == {"pre": 0, "post": 1}, counts()
+    initial_audit = lifecycle.lifecycle_audit(bpy.context.scene, repair=False)
+    assert not [
+        issue
+        for issue in initial_audit["issues"]
+        if callback_name in issue
+    ], initial_audit
+
+    # Simulate an interrupted older Repair that left callbacks in both phases.
+    bpy.app.handlers.frame_change_pre.extend((callback, callback))
+    stale_counts = counts()
+    assert stale_counts == {"pre": 2, "post": 1}, stale_counts
+    stale_audit = lifecycle.lifecycle_audit(bpy.context.scene, repair=False)
+    assert any(callback_name in issue for issue in stale_audit["issues"]), stale_audit
+
+    repaired = lifecycle.lifecycle_audit(bpy.context.scene, repair=True)
+    assert counts() == {"pre": 0, "post": 1}, (counts(), repaired)
+    assert not [
+        issue
+        for issue in lifecycle.lifecycle_audit(bpy.context.scene, repair=False)["issues"]
+        if callback_name in issue
+    ]
+
+    module.unregister()
+    assert counts() == {"pre": 0, "post": 0}, counts()
+    module.register()
+    assert counts() == {"pre": 0, "post": 1}, counts()
+    return {
+        "phase": "frame_change_post",
+        "before_repair": stale_counts,
+        "after_repair": counts(),
+    }
+
+
 def test_register_cycles():
     module = import_addon(fresh=True)
     for cycle in range(3):
@@ -1096,6 +1161,7 @@ def run_background():
     if module:
         tests = (
             ("release_metadata_sync", test_release_sync),
+            ("effect_evolution_handler_lifecycle", test_effect_evolution_handler_lifecycle),
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),

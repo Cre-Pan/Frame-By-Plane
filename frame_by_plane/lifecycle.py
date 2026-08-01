@@ -31,7 +31,11 @@ _HANDLER_SPECS = (
     ("frame_change_pre", "fbp_frame_change_handler", 1, "core"),
     ("frame_change_post", "fbp_frame_change_handler", 0, "core"),
     ("frame_change_post", "fbp_shape_mask_frame_change_post", 0, "object_masks"),
-    ("frame_change_pre", "fbp_effect_evolve_frame_change", 1, "geometry_nodes"),
+    # Effect values are synchronized only after Blender commits the evaluated
+    # frame. Keep PRE explicit at zero so diagnostics also catch a callback
+    # accidentally restored into both phases.
+    ("frame_change_pre", "fbp_effect_evolve_frame_change", 0, "geometry_nodes"),
+    ("frame_change_post", "fbp_effect_evolve_frame_change", 1, "geometry_nodes"),
     ("animation_playback_pre", "fbp_effect_playback_pre", 1, "geometry_nodes"),
     ("animation_playback_post", "fbp_effect_playback_post", 1, "geometry_nodes"),
     ("frame_change_post", "_fbp_motion_frame_change", 1, "motion_runtime"),
@@ -185,6 +189,12 @@ def _repair_runtime_services():
             ),
             (
                 bpy.app.handlers.frame_change_pre,
+                geometry_nodes.fbp_effect_evolve_frame_change,
+                "geometry_nodes",
+                False,
+            ),
+            (
+                bpy.app.handlers.frame_change_post,
                 geometry_nodes.fbp_effect_evolve_frame_change,
                 "geometry_nodes",
                 True,
