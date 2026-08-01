@@ -25,7 +25,6 @@ body:
         - Windows x64
         - Windows ARM64
         - macOS Apple Silicon
-        - macOS Intel
         - Linux x64
         - Other
     validations:

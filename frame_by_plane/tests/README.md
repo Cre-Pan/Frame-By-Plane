@@ -38,6 +38,12 @@ Default timeouts are 15 minutes for background and 20 minutes for interactive te
 
 On headless Linux, the interactive suite automatically uses `xvfb-run` when available. Without a display server or `xvfb-run`, it fails explicitly instead of hanging.
 
+## Native release gate
+
+The repository-level `Blender 5.2 native release gate` workflow runs the real Blender executable on Linux x64, macOS ARM64 and Windows ARM64/x64. It builds, validates, installs and smoke-tests the package matching each runner. Linux also runs this interactive suite through Xvfb. macOS x64 is excluded because Blender's official 5.2.0 release archive contains no Intel image.
+
+See `docs/BLENDER_5_2_RELEASE_GATE.md` for triggers, runner labels, checksum verification and the publication rule.
+
 ## Official `bpy 5.2` module
 
 The background suite can also run without the Blender desktop executable when

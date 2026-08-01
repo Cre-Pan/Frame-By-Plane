@@ -9,16 +9,15 @@ FBP_LTS_BLENDER_SERIES = "5.2"
 FBP_LTS_PLATFORM_IDS = (
     "windows-x64",
     "windows-arm64",
-    "macos-x64",
     "macos-arm64",
     "linux-x64",
 )
 FBP_LTS_PLATFORM_LABEL = (
-    "Windows x64/ARM64, macOS Intel/Apple Silicon and Linux x64"
+    "Windows x64/ARM64, macOS Apple Silicon and Linux x64"
 )
 FBP_LTS_SUPPORT_STATEMENT = (
     "Frame By Plane 7.1 LTS is supported on Blender 5.2.x for Windows "
-    "x64/ARM64, macOS Intel/Apple Silicon and Linux x64."
+    "x64/ARM64, macOS Apple Silicon and Linux x64."
 )
 
 FBP_FEATURE_SCOPE_SCHEMA = 2

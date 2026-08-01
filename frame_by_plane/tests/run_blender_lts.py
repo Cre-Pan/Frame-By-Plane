@@ -196,10 +196,11 @@ def main():
         detail = probe_error or version or "unavailable"
         raise SystemExit(f"Expected Blender 5.2.x, got: {detail}")
 
+    output = ns.output.expanduser().resolve()
     suites = ["background", "interactive"] if ns.all else (["interactive"] if ns.interactive else ["background"])
     runs = []
     for suite in suites:
-        path = ns.output.with_name(f"{ns.output.stem}_{suite}{ns.output.suffix}")
+        path = output.with_name(f"{output.stem}_{suite}{output.suffix}")
         timeout_seconds = ns.interactive_timeout if suite == "interactive" else ns.background_timeout
         report = run_suite(binary, suite, path, timeout_seconds=timeout_seconds)
         runs.append({
@@ -217,7 +218,7 @@ def main():
         "passed": all(item["passed"] for item in runs),
         "runs": runs,
     }
-    _write_json(ns.output, combined)
+    _write_json(output, combined)
     for item in runs:
         state = "PASS" if item["passed"] else "FAIL"
         print(f"[{state}] {item['suite']}: {item['report']}")

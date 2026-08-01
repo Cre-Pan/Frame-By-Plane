@@ -20,7 +20,7 @@ param(
     [ValidatePattern("^\d+\.\d+\.\d+$")]
     [string]$Version = "7.1.18",
 
-    [ValidateSet("all", "linux_x64", "macos_arm64", "macos_x64", "windows_arm64", "windows_x64")]
+    [ValidateSet("all", "linux_x64", "macos_arm64", "windows_arm64", "windows_x64")]
     [string]$Platform = "all",
 
     [string]$PackageDirectory,
@@ -49,7 +49,6 @@ $ApiOrigin = [Uri]"https://extensions.blender.org"
 $ExpectedPlatforms = @(
     "linux_x64",
     "macos_arm64",
-    "macos_x64",
     "windows_arm64",
     "windows_x64"
 )

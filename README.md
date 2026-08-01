@@ -47,7 +47,7 @@ See the complete [7.1.18 release notes](release-notes/7.1.18.md).
 ## Requirements
 
 - **Blender 5.2.x LTS**
-- Windows x64 or ARM64, macOS Intel or Apple Silicon, or Linux x64
+- Windows x64 or ARM64, macOS Apple Silicon, or Linux x64
 
 ## Install Frame By Plane
 
@@ -62,11 +62,12 @@ See the complete [7.1.18 release notes](release-notes/7.1.18.md).
 | Most Windows PCs | `frame_by_plane-7.1.18-windows_x64.zip` |
 | Windows on ARM | `frame_by_plane-7.1.18-windows_arm64.zip` |
 | Apple Silicon Mac | `frame_by_plane-7.1.18-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-7.1.18-macos_x64.zip` |
 | 64-bit Linux | `frame_by_plane-7.1.18-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
+
+Blender's official 5.2.0 release archive and checksum list contain no macOS Intel image, so Frame By Plane 7.1.18 does not advertise or publish a `macos_x64` package.
 
 For a clean update or architecture details, read the [installation guide](docs/INSTALLATION.md).
 

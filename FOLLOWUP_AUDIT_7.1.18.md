@@ -68,15 +68,16 @@ The final `windows-x64` ZIP was installed and enabled through Blender's extensio
 
 ## Package validation
 
-All five archives were rebuilt deterministically and passed Blender 5.2 `extension validate`:
+All four supported archives were rebuilt deterministically and passed Blender 5.2 `extension validate`:
 
 | Package | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `frame_by_plane-7.1.18-linux_x64.zip` | 11,277,456 | `D18D4F2947A43B454D4D0094BEADD8F11E05024F98C888D50E585EBB9F90D7A5` |
-| `frame_by_plane-7.1.18-macos_arm64.zip` | 8,547,088 | `8721A0E0B9E6A79FB7E26AA3B15C9B2E2A94932C54D15663DD8798FD8B912856` |
-| `frame_by_plane-7.1.18-macos_x64.zip` | 9,160,656 | `0947812EE535C1407AB8746CDD741003AB5931331A26C8AC266AD737B92BADF5` |
-| `frame_by_plane-7.1.18-windows_arm64.zip` | 6,669,719 | `7CE35216F42946234DD3AEF00E7F0AEDAE3EF6D3819B83B934A797BBC2657D51` |
-| `frame_by_plane-7.1.18-windows_x64.zip` | 11,122,856 | `96BE1A37D5C204EE3BD98CC28FBBEC60C9E7105EA730AD3B6FB371E322B4D919` |
+| `frame_by_plane-7.1.18-linux_x64.zip` | 11,277,444 | `11C01C521BE02FAFBFA0FAF75F5A31B5B112BC8F45B232DBC90532F8633977E0` |
+| `frame_by_plane-7.1.18-macos_arm64.zip` | 8,547,076 | `E60776CB72F65B9F00916515DA2EAF3AF79C99AC79F57758E59CA6F8FC47E280` |
+| `frame_by_plane-7.1.18-windows_arm64.zip` | 6,669,707 | `DDC45441D4761D12291379BB541A5414CC1383A34B51DC2E972A23E01E93434F` |
+| `frame_by_plane-7.1.18-windows_x64.zip` | 11,122,844 | `2435CB9BB72C80903AFDAC531DEDB22FE82D0E6B875C387E5284FF90B0729B70` |
+
+Blender's official 5.2.0 checksum listing contains no macOS x64 distribution. The unsupported `macos_x64` package was removed from the 7.1.18 release surface instead of retaining an untestable compatibility claim.
 
 `extension validate` checks package structure and platform metadata; it is not equivalent to running Blender on Linux, macOS or Windows ARM64.
 

@@ -5,6 +5,8 @@ Blender: 5.2.0 LTS (`fbe6228777e7`)
 Sistema: Windows 11 x64  
 Esito suite finale: background **PASS**, interattiva **PASS**
 
+> Nota storica: la tabella pacchetti di questo rapporto precede la correzione finale della piattaforma. L'archivio di release ufficiale Blender 5.2.0 non contiene un'immagine macOS x64; il candidato definitivo a quattro piattaforme e i relativi hash sono documentati in `FOLLOWUP_AUDIT_7.1.18.md`.
+
 ## Artefatti principali
 
 - `work/audit-7.1.18/final-suite/combined-2_background.json`

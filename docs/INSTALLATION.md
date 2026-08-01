@@ -21,10 +21,11 @@ In Blender:
 | Standard Windows PC | `windows_x64` |
 | Windows ARM device | `windows_arm64` |
 | Apple Silicon Mac | `macos_arm64` |
-| Intel Mac | `macos_x64` |
 | 64-bit Linux | `linux_x64` |
 
 The universal package contains every supported wheel and is larger. Platform-specific packages are recommended.
+
+Blender's official 5.2.0 release archive and checksum list contain no macOS Intel image. Intel Mac users should remain on a Blender version that still supports their hardware; Frame By Plane 7.1.18 targets Blender 5.2.x and therefore does not ship a `macos_x64` package.
 
 ## Updating an existing installation
 

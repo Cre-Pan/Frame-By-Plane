@@ -34,7 +34,6 @@ Expected packages:
 ```text
 frame_by_plane-X.Y.Z-windows_x64.zip
 frame_by_plane-X.Y.Z-windows_arm64.zip
-frame_by_plane-X.Y.Z-macos_x64.zip
 frame_by_plane-X.Y.Z-macos_arm64.zip
 frame_by_plane-X.Y.Z-linux_x64.zip
 ```
@@ -80,7 +79,7 @@ finally {
 }
 ```
 
-Run a validation-only pass first. The script locates the five platform-specific ZIPs, verifies their CRC data and generated manifests, validates the 1024-character release-note limit, and sends no request under `-WhatIf`. When present, `release-notes/X.Y.Z-blender-extensions.md` is selected automatically so the complete GitHub notes can remain unchanged; otherwise the script uses `release-notes/X.Y.Z.md`:
+Run a validation-only pass first. The script locates the four platform-specific ZIPs, verifies their CRC data and generated manifests, validates the 1024-character release-note limit, and sends no request under `-WhatIf`. When present, `release-notes/X.Y.Z-blender-extensions.md` is selected automatically so the complete GitHub notes can remain unchanged; otherwise the script uses `release-notes/X.Y.Z.md`:
 
 ```powershell
 .\tools\publish_blender_extensions.ps1 `

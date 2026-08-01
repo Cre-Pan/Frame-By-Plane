@@ -16,7 +16,6 @@ SUPPORT_POLICY = ADDON / "support_policy.py"
 EXPECTED_PLATFORMS = {
     "windows-x64",
     "windows-arm64",
-    "macos-x64",
     "macos-arm64",
     "linux-x64",
 }

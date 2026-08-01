@@ -20,7 +20,6 @@ ARCHIVE_PREFIX = f"frame_by_plane-{VERSION}"
 PLATFORMS = (
     "linux_x64",
     "macos_arm64",
-    "macos_x64",
     "windows_arm64",
     "windows_x64",
 )
@@ -149,7 +148,7 @@ def markdown_report(
 
 ## Outcome
 
-- **Blender native extension validation:** PASS on all five platform archives
+- **Blender native extension validation:** PASS on all four platform archives
 - **Blender 5.2 background regression suite:** PASS
 - **Blender 5.2 interactive UI stress suite:** PASS (300 redraws)
 - **Isolated Windows x64 install and reopen test:** PASS

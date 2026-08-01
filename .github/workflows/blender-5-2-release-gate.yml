@@ -1,0 +1,243 @@
+name: Blender 5.2 native release gate
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blender-5-2-release-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-platform:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'release-gate')
+    name: ${{ matrix.platform }} native
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux_x64
+            runner: ubuntu-24.04
+            python_arch: x64
+            asset: blender-5.2.0-linux-x64.tar.xz
+            package: frame_by_plane-7.1.18-linux_x64.zip
+          - platform: macos_arm64
+            runner: macos-15
+            python_arch: arm64
+            asset: blender-5.2.0-macos-arm64.dmg
+            package: frame_by_plane-7.1.18-macos_arm64.zip
+          - platform: windows_arm64
+            runner: windows-11-arm
+            python_arch: arm64
+            asset: blender-5.2.0-windows-arm64.zip
+            package: frame_by_plane-7.1.18-windows_arm64.zip
+          - platform: windows_x64
+            runner: windows-2025
+            python_arch: x64
+            asset: blender-5.2.0-windows-x64.zip
+            package: frame_by_plane-7.1.18-windows_x64.zip
+    env:
+      BLENDER_VERSION: "5.2.0"
+      BLENDER_ASSET: ${{ matrix.asset }}
+      BLENDER_PACKAGE: ${{ matrix.package }}
+      FBP_CI_RESULTS: ${{ runner.temp }}/fbp-results/${{ matrix.platform }}
+      BLENDER_USER_CONFIG: ${{ runner.temp }}/fbp-user/config
+      BLENDER_USER_SCRIPTS: ${{ runner.temp }}/fbp-user/scripts
+      BLENDER_USER_DATAFILES: ${{ runner.temp }}/fbp-user/datafiles
+      BLENDER_USER_EXTENSIONS: ${{ runner.temp }}/fbp-user/extensions
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: ${{ matrix.python_arch }}
+
+      - name: Install Linux UI runtime
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes xvfb libx11-6 libxi6 libxfixes3 libxrender1 libxkbcommon0 libsm6 libgl1
+
+      - name: Download and verify Blender on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$BLENDER_ASSET"
+          checksums="$RUNNER_TEMP/blender-$BLENDER_VERSION.sha256"
+          base="https://download.blender.org/release/Blender5.2"
+          curl --fail --location --retry 3 "$base/$BLENDER_ASSET" --output "$archive"
+          curl --fail --location --retry 3 "$base/blender-$BLENDER_VERSION.sha256" --output "$checksums"
+          python tools/verify_blender_download.py "$archive" "$checksums"
+          mkdir -p "$RUNNER_TEMP/blender"
+          tar -xf "$archive" -C "$RUNNER_TEMP/blender" --strip-components=1
+          echo "BLENDER_BIN=$RUNNER_TEMP/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Download and verify Blender on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$BLENDER_ASSET"
+          checksums="$RUNNER_TEMP/blender-$BLENDER_VERSION.sha256"
+          mount_point="$RUNNER_TEMP/blender-mount"
+          base="https://download.blender.org/release/Blender5.2"
+          curl --fail --location --retry 3 "$base/$BLENDER_ASSET" --output "$archive"
+          curl --fail --location --retry 3 "$base/blender-$BLENDER_VERSION.sha256" --output "$checksums"
+          python tools/verify_blender_download.py "$archive" "$checksums"
+          mkdir -p "$mount_point"
+          hdiutil attach "$archive" -nobrowse -readonly -mountpoint "$mount_point"
+          ditto "$mount_point/Blender.app" "$RUNNER_TEMP/Blender.app"
+          hdiutil detach "$mount_point"
+          echo "BLENDER_BIN=$RUNNER_TEMP/Blender.app/Contents/MacOS/Blender" >> "$GITHUB_ENV"
+
+      - name: Download and verify Blender on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP $env:BLENDER_ASSET
+          $checksums = Join-Path $env:RUNNER_TEMP "blender-$env:BLENDER_VERSION.sha256"
+          $base = "https://download.blender.org/release/Blender5.2"
+          Invoke-WebRequest -Uri "$base/$env:BLENDER_ASSET" -OutFile $archive
+          Invoke-WebRequest -Uri "$base/blender-$env:BLENDER_VERSION.sha256" -OutFile $checksums
+          python tools/verify_blender_download.py $archive $checksums
+          $destination = Join-Path $env:RUNNER_TEMP "blender"
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $binary = Get-ChildItem -LiteralPath $destination -Recurse -Filter blender.exe | Select-Object -First 1
+          if ($null -eq $binary) { throw "blender.exe was not found after extraction" }
+          $portableBinary = $binary.FullName.Replace('\', '/')
+          "BLENDER_BIN=$portableBinary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify Blender and repository
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BLENDER_BIN" --version
+          python tools/verify_repository.py
+
+      - name: Verify Blender and repository on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & $env:BLENDER_BIN --version
+          if ($LASTEXITCODE -ne 0) { throw "Blender version probe failed: $LASTEXITCODE" }
+          python tools\verify_repository.py
+          if ($LASTEXITCODE -ne 0) { throw "Repository verification failed: $LASTEXITCODE" }
+
+      - name: Build deterministic platform packages
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash tools/build_release.sh "$BLENDER_BIN"
+
+      - name: Build deterministic platform packages on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          powershell -NoProfile -ExecutionPolicy Bypass -File
+          .\tools\build_release.ps1 -BlenderExecutable $env:BLENDER_BIN
+
+      - name: Validate native package
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >-
+          "$BLENDER_BIN" --background --factory-startup --command extension validate
+          "dist/$BLENDER_PACKAGE"
+
+      - name: Validate native package on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:GITHUB_WORKSPACE "dist\$env:BLENDER_PACKAGE"
+          & $env:BLENDER_BIN --background --factory-startup --command extension validate $package
+          if ($LASTEXITCODE -ne 0) { throw "Native package validation failed: $LASTEXITCODE" }
+
+      - name: Run native background regression suite
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "$FBP_CI_RESULTS"
+          python frame_by_plane/tests/run_blender_lts.py \
+            --blender "$BLENDER_BIN" \
+            --output "$FBP_CI_RESULTS/native.json" \
+            --background-timeout 1200
+
+      - name: Run native background regression suite on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:FBP_CI_RESULTS "native.json"
+          New-Item -ItemType Directory -Force -Path (Split-Path $output -Parent) | Out-Null
+          python frame_by_plane\tests\run_blender_lts.py --blender $env:BLENDER_BIN --output $output --background-timeout 1200
+          if ($LASTEXITCODE -ne 0) { throw "Native background suite failed: $LASTEXITCODE" }
+
+      - name: Run Linux interactive regression suite
+        if: matrix.platform == 'linux_x64'
+        shell: bash
+        run: |
+          python frame_by_plane/tests/run_blender_lts.py \
+            --blender "$BLENDER_BIN" \
+            --interactive \
+            --output "$FBP_CI_RESULTS/interactive.json" \
+            --interactive-timeout 1200
+
+      - name: Install and smoke-test native package
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BLENDER_USER_CONFIG" "$BLENDER_USER_SCRIPTS" "$BLENDER_USER_DATAFILES" "$BLENDER_USER_EXTENSIONS/fbp_audit"
+          "$BLENDER_BIN" --command extension repo-add fbp_audit \
+            --name "FBP CI Isolated" \
+            --directory "$BLENDER_USER_EXTENSIONS/fbp_audit" \
+            --clear-all
+          "$BLENDER_BIN" --command extension install-file -r fbp_audit -e \
+            "${GITHUB_WORKSPACE}/dist/$BLENDER_PACKAGE"
+          export FBP_PACKAGE_SMOKE_REPORT="$FBP_CI_RESULTS/installed-smoke.json"
+          export FBP_PACKAGE_SMOKE_BLEND="$FBP_CI_RESULTS/installed-smoke.blend"
+          "$BLENDER_BIN" --background --python tools/installed_package_smoke.py
+
+      - name: Install and smoke-test native package on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repo = Join-Path $env:BLENDER_USER_EXTENSIONS "fbp_audit"
+          New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG,$env:BLENDER_USER_SCRIPTS,$env:BLENDER_USER_DATAFILES,$repo | Out-Null
+          & $env:BLENDER_BIN --command extension repo-add fbp_audit --name "FBP CI Isolated" --directory $repo --clear-all
+          if ($LASTEXITCODE -ne 0) { throw "Extension repository setup failed: $LASTEXITCODE" }
+          $package = Join-Path $env:GITHUB_WORKSPACE "dist\$env:BLENDER_PACKAGE"
+          & $env:BLENDER_BIN --command extension install-file -r fbp_audit -e $package
+          if ($LASTEXITCODE -ne 0) { throw "Extension installation failed: $LASTEXITCODE" }
+          $env:FBP_PACKAGE_SMOKE_REPORT = Join-Path $env:FBP_CI_RESULTS "installed-smoke.json"
+          $env:FBP_PACKAGE_SMOKE_BLEND = Join-Path $env:FBP_CI_RESULTS "installed-smoke.blend"
+          & $env:BLENDER_BIN --background --python tools\installed_package_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw "Installed package smoke failed: $LASTEXITCODE" }
+
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-5.2-${{ matrix.platform }}-evidence
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.FBP_CI_RESULTS }}/**
+            dist/${{ matrix.package }}
