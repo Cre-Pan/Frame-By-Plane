@@ -1514,6 +1514,34 @@ def test_performance_profile_contract(module):
     }
 
 
+def test_icon_runtime_contract(_module):
+    icons = importlib.import_module(f"{PACKAGE}.ui_icons")
+    icons.unregister_custom_icons()
+    icons.custom_icon_metrics(reset=True)
+    assert icons.register_custom_icons()
+    preload = icons.custom_icon_metrics()
+    assert preload["preview_loads"] <= 12, preload
+    assert preload["logical_cache_entries"] <= 12, preload
+    assert icons._registered_icon_key("layer.visible_on") == "HIDE_OFF"
+
+    before_loads = int(preload["preview_loads"])
+    values = tuple(
+        icons.effect_custom_icon_value(effect_id)
+        for effect_id in ("GP_MASK_SLOT_2", "GP_MASK_SLOT_3", "GP_MASK_SLOT_4")
+    )
+    after = icons.custom_icon_metrics()
+    if any(values):
+        assert len(set(values)) == 1, values
+        assert int(after["preview_loads"]) - before_loads == 1, (preload, after)
+        assert int(after["path_alias_hits"]) >= 2, after
+    return {
+        "preloaded": preload["preview_loads"],
+        "duplicate_alias_ids": values,
+        "alias_hits": after["path_alias_hits"],
+        "filesystem_checks": after["filesystem_checks"],
+    }
+
+
 def _redraw_all(iterations=1):
     for window in tuple(bpy.context.window_manager.windows):
         for area in tuple(window.screen.areas):
@@ -1696,6 +1724,7 @@ def run_background():
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
+            ("icon_runtime_contract", test_icon_runtime_contract),
             ("save_reopen", test_save_reopen),
             ("tiny_render", test_tiny_render),
         )
@@ -1718,6 +1747,7 @@ def run_interactive():
     def delayed():
         module = holder.get("m")
         if module:
+            record("icon_runtime_contract", lambda: test_icon_runtime_contract(module))
             record("layer_tree_gp_redraw_stress", lambda: test_interactive_layer_tree_gp(module))
             record("preferences_reload_and_splash", lambda: test_interactive_reload_and_splash(module))
         finish(module)

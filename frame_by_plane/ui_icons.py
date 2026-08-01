@@ -269,6 +269,15 @@ _FBP_COLOR_TAG_SUFFIX = {
 _FBP_CUSTOM_ICON_VALUE_CACHE = globals().get("_FBP_CUSTOM_ICON_VALUE_CACHE", {})
 if not isinstance(_FBP_CUSTOM_ICON_VALUE_CACHE, dict):
     _FBP_CUSTOM_ICON_VALUE_CACHE = {}
+_FBP_CUSTOM_ICON_PATH_ALIASES = globals().get("_FBP_CUSTOM_ICON_PATH_ALIASES", {})
+if not isinstance(_FBP_CUSTOM_ICON_PATH_ALIASES, dict):
+    _FBP_CUSTOM_ICON_PATH_ALIASES = {}
+_FBP_CUSTOM_ICON_CANONICAL_KEYS = globals().get("_FBP_CUSTOM_ICON_CANONICAL_KEYS", {})
+if not isinstance(_FBP_CUSTOM_ICON_CANONICAL_KEYS, dict):
+    _FBP_CUSTOM_ICON_CANONICAL_KEYS = {}
+_FBP_CUSTOM_ICON_PATH_EXISTS = globals().get("_FBP_CUSTOM_ICON_PATH_EXISTS", {})
+if not isinstance(_FBP_CUSTOM_ICON_PATH_EXISTS, dict):
+    _FBP_CUSTOM_ICON_PATH_EXISTS = {}
 _FBP_CUSTOM_ICON_GENERATION = int(globals().get("_FBP_CUSTOM_ICON_GENERATION", 0) or 0)
 _FBP_ICON_METRIC_DEFAULTS = {
     "requests": 0,
@@ -276,6 +285,7 @@ _FBP_ICON_METRIC_DEFAULTS = {
     "cache_misses": 0,
     "filesystem_checks": 0,
     "preview_loads": 0,
+    "path_alias_hits": 0,
     "load_failures": 0,
     "load_total_ms": 0.0,
     "preload_total_ms": 0.0,
@@ -308,6 +318,9 @@ def clear_custom_icon_cache():
     """Forget cached custom icon ids and advance the preview generation."""
     global _FBP_CUSTOM_ICON_GENERATION
     _FBP_CUSTOM_ICON_VALUE_CACHE.clear()
+    _FBP_CUSTOM_ICON_PATH_ALIASES.clear()
+    _FBP_CUSTOM_ICON_CANONICAL_KEYS.clear()
+    _FBP_CUSTOM_ICON_PATH_EXISTS.clear()
     _FBP_CUSTOM_ICON_GENERATION += 1
     return True
 
@@ -338,6 +351,23 @@ def _fbp_custom_icon_path(custom_key):
     return os.path.join(_FBP_CUSTOM_ICON_DIR, filename)
 
 
+def _fbp_normalized_icon_path(custom_key):
+    path = _fbp_custom_icon_path(custom_key)
+    return os.path.normcase(os.path.abspath(path)) if path else ""
+
+
+def _fbp_existing_icon_path(custom_key):
+    path = _fbp_normalized_icon_path(custom_key)
+    if not path:
+        return ""
+    exists = _FBP_CUSTOM_ICON_PATH_EXISTS.get(path)
+    if exists is None:
+        _FBP_ICON_METRICS["filesystem_checks"] += 1
+        exists = bool(os.path.isfile(path))
+        _FBP_CUSTOM_ICON_PATH_EXISTS[path] = exists
+    return path if exists else ""
+
+
 def custom_icon_path_for_ui_key(key):
     """Return the existing custom PNG path behind a readable UI icon alias.
 
@@ -346,8 +376,7 @@ def custom_icon_path_for_ui_key(key):
     same artwork as menus and UILists without duplicating filename maps.
     """
     custom_key = _FBP_CUSTOM_ICON_UI_KEYS.get(str(key or ""), "")
-    path = _fbp_custom_icon_path(custom_key)
-    return path if path and os.path.isfile(path) else ""
+    return _fbp_existing_icon_path(custom_key)
 
 
 def custom_icon_value(custom_key):
@@ -369,9 +398,10 @@ def custom_icon_value(custom_key):
         if not int(cached or 0):
             return 0
         pcoll = preview_collections.get(_FBP_CUSTOM_ICON_COLLECTION)
+        preview_key = _FBP_CUSTOM_ICON_PATH_ALIASES.get(custom_key, custom_key)
         try:
-            if pcoll is not None and custom_key in pcoll:
-                live_id = int(getattr(pcoll[custom_key], "icon_id", 0) or 0)
+            if pcoll is not None and preview_key in pcoll:
+                live_id = int(getattr(pcoll[preview_key], "icon_id", 0) or 0)
                 if live_id:
                     _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = live_id
                     return live_id
@@ -379,21 +409,34 @@ def custom_icon_value(custom_key):
             pass
         _FBP_CUSTOM_ICON_VALUE_CACHE.pop(custom_key, None)
     _FBP_ICON_METRICS["cache_misses"] += 1
-    path = _fbp_custom_icon_path(custom_key)
-    _FBP_ICON_METRICS["filesystem_checks"] += 1
-    if not path or not os.path.isfile(path):
+    path = _fbp_existing_icon_path(custom_key)
+    if not path:
         _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = 0
         return 0
     pcoll = _fbp_custom_icon_collection()
     if pcoll is None:
         _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = 0
         return 0
+    canonical_key = _FBP_CUSTOM_ICON_CANONICAL_KEYS.get(path, "")
+    if canonical_key:
+        try:
+            value = int(getattr(pcoll[canonical_key], "icon_id", 0) or 0)
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+            value = 0
+        if value:
+            _FBP_CUSTOM_ICON_PATH_ALIASES[custom_key] = canonical_key
+            _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = value
+            _FBP_ICON_METRICS["path_alias_hits"] += 1
+            return value
+        _FBP_CUSTOM_ICON_CANONICAL_KEYS.pop(path, None)
+
+    canonical_key = custom_key
     try:
         load_started = time.perf_counter()
-        if custom_key not in pcoll:
-            pcoll.load(custom_key, path, 'IMAGE')
+        if canonical_key not in pcoll:
+            pcoll.load(canonical_key, path, 'IMAGE')
             _FBP_ICON_METRICS["preview_loads"] += 1
-        value = int(getattr(pcoll[custom_key], "icon_id", 0) or 0)
+        value = int(getattr(pcoll[canonical_key], "icon_id", 0) or 0)
     except Exception:
         _FBP_ICON_METRICS["load_failures"] += 1
         value = 0
@@ -402,6 +445,9 @@ def custom_icon_value(custom_key):
             0.0, (time.perf_counter() - load_started) * 1000.0
         )
     _FBP_CUSTOM_ICON_VALUE_CACHE[custom_key] = value
+    if value:
+        _FBP_CUSTOM_ICON_CANONICAL_KEYS[path] = canonical_key
+        _FBP_CUSTOM_ICON_PATH_ALIASES[custom_key] = canonical_key
     return value
 
 
@@ -506,8 +552,6 @@ def register_custom_icons():
         "floating_timeline",
     ):
         custom_icon_value(key)
-    for effect_id in _FBP_EFFECT_CUSTOM_ICON_FILES:
-        effect_custom_icon_value(effect_id)
     _FBP_ICON_METRICS["preload_total_ms"] = max(
         0.0, (time.perf_counter() - preload_started) * 1000.0
     )
@@ -545,6 +589,17 @@ if not isinstance(_FBP_UI_ICON_CACHE, dict):
     _FBP_UI_ICON_CACHE = {}
 
 
+def _registered_icon_key(token):
+    token = token if isinstance(token, str) else str(token or "")
+    alias = FBP_UI_ICON_KEYS.get(token)
+    if alias is not None:
+        return alias
+    # Some call sites use a centralized raw FBP key in compact status rows.
+    if token in FBP_ICONS:
+        return token
+    return None
+
+
 def ui_icon(key, fallback="generic.blank"):
     """Return a Blender icon string from a readable UI alias.
 
@@ -554,17 +609,6 @@ def ui_icon(key, fallback="generic.blank"):
     cache key for correctness.
     """
     key = key if isinstance(key, str) else str(key or "")
-    def _registered_icon_key(token):
-        token = token if isinstance(token, str) else str(token or "")
-        alias = FBP_UI_ICON_KEYS.get(token)
-        if alias is not None:
-            return alias
-        # Several call sites legitimately pass a centralized raw FBP icon key
-        # (for example MOD_MASK in a status row).  Treat those as first-class
-        # instead of silently replacing them with BLANK1.
-        if token in FBP_ICONS:
-            return token
-        return None
 
     if fallback == "generic.blank":
         cache_key = key
