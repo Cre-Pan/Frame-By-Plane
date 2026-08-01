@@ -1080,13 +1080,13 @@ def test_undo_redo(_module):
             bpy.ops.ed.undo_push(message=f"FBP test {index}")
         if not bpy.ops.ed.undo.poll():
             raise SkipTest("Undo history was not exposed after 20 pushes")
-        for _ in range(10):
+        for _ in range(20):
             bpy.ops.ed.undo()
         if bpy.ops.ed.redo.poll():
-            for _ in range(10):
+            for _ in range(20):
                 bpy.ops.ed.redo()
     assert bpy.data.objects.get("FBP Undo Target") is not None
-    return "20 pushes / 10 undo / 10 redo"
+    return "20 pushes / 20 undo / 20 redo"
 
 
 def test_scrub_bar_regressions(_module):
@@ -2042,6 +2042,52 @@ def test_interactive_layer_tree_gp(_module):
     return "300 View3D sidebar redraw cycles with GP and nested managed collections"
 
 
+def test_interactive_generation_lock_windows(_module):
+    if bpy.app.background:
+        raise SkipTest("Interactive UI required")
+    coordinator = importlib.import_module(f"{PACKAGE}.generation_transaction")
+    original_window = bpy.context.window
+    if len(bpy.context.window_manager.windows) < 2 and bpy.ops.screen.userpref_show.poll():
+        bpy.ops.screen.userpref_show("INVOKE_DEFAULT")
+        _redraw_all(2)
+    other_window = next(
+        (window for window in bpy.context.window_manager.windows if window != original_window),
+        None,
+    )
+    if other_window is None:
+        raise SkipTest("Blender did not expose a second interactive window")
+
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.generate_multiplane",
+        mode="Window A Multiplane",
+    )
+    assert owner is not None, refusal
+    try:
+        with bpy.context.temp_override(window=other_window):
+            blocked, blocked_reason = coordinator.acquire_generation(
+                bpy.context,
+                operator_id="fbp.import_sequence",
+                mode="Window B Sequence",
+            )
+        assert blocked is None, blocked
+        assert "Window A Multiplane" in blocked_reason, blocked_reason
+        assert coordinator.active_generation_snapshot()["window_pointer"] == owner.window_pointer
+    finally:
+        rollback = coordinator.retire_active_generation(
+            bpy.context,
+            reason="interactive two-window regression",
+            rollback=True,
+        )
+    assert rollback["verified"], rollback
+    return {
+        "windows": len(bpy.context.window_manager.windows),
+        "different_operator_refused": True,
+        "owner_continued": True,
+        "rollback_verified": True,
+    }
+
+
 def test_interactive_reload_and_splash(module):
     if bpy.app.background:
         raise SkipTest("Interactive UI required")
@@ -2179,6 +2225,7 @@ def run_interactive():
         if module:
             record("undo_redo_20_cycles", lambda: test_undo_redo(module))
             record("icon_runtime_contract", lambda: test_icon_runtime_contract(module))
+            record("generation_lock_two_windows", lambda: test_interactive_generation_lock_windows(module))
             record("layer_tree_gp_redraw_stress", lambda: test_interactive_layer_tree_gp(module))
             record("preferences_reload_and_splash", lambda: test_interactive_reload_and_splash(module))
         finish(module)
