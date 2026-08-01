@@ -128,6 +128,7 @@ KEY_CAMERA_DISTANCE = "fbp_gp_camera_distance"
 KEY_CANVAS_KIND = "fbp_gp_canvas_kind"
 KEY_GP_NATIVE_EFFECT_ID = "fbp_gp_native_effect_id"
 KEY_GP_NATIVE_EFFECT_OPEN = "fbp_gp_native_effect_open"
+KEY_GP_NATIVE_EFFECT_REGISTRY = "fbp_gp_native_effect_registry"
 KEY_CANVAS_SOLO = "fbp_gp_canvas_solo"
 KEY_CANVAS_CLIPPING = "fbp_gp_canvas_clipping"
 KEY_CYCLES_PROXY = "fbp_gp_cycles_proxy"
@@ -5779,12 +5780,117 @@ def _gp_native_effect_supported(canvas, definition):
     return bool(_gp_supported_native_type(canvas, definition))
 
 
-def _gp_tag_native_effect_item(item, effect_id):
+def _gp_native_effect_registry_token(item):
+    """Return a persistent owner-side key for a Blender native stack item."""
+    if item is None:
+        return ""
     try:
-        item[KEY_GP_NATIVE_EFFECT_ID] = str(effect_id or "").upper()
+        persistent_uid = int(getattr(item, "persistent_uid", 0) or 0)
+    except FBP_DATA_ERRORS:
+        persistent_uid = 0
+    if persistent_uid > 0:
+        return f"uid:{persistent_uid}"
+    try:
+        rna_name = str(getattr(getattr(item, "bl_rna", None), "identifier", "") or "")
+        item_name = str(getattr(item, "name", "") or "")
+    except FBP_DATA_ERRORS:
+        return ""
+    return f"name:{rna_name}:{item_name}" if item_name else ""
+
+
+def _gp_native_effect_registry_owner(item):
+    try:
+        owner = getattr(item, "id_data", None)
+        return owner if owner is not None and hasattr(owner, "get") else None
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _gp_native_effect_registry(item):
+    """Read JSON-safe native-effect metadata stored on the owning Object.
+
+    Blender 5.2 exposes ``get``/``keys`` on ShaderFx and Modifier RNA wrappers,
+    but rejects custom-property writes on those items.  Their owning Object is
+    an ID datablock and safely persists this compact registry instead.
+    """
+    owner = _gp_native_effect_registry_owner(item)
+    if owner is None:
+        return owner, {}
+    try:
+        raw = owner.get(KEY_GP_NATIVE_EFFECT_REGISTRY, "")
+        decoded = json.loads(str(raw or "{}"))
+    except (json.JSONDecodeError, *FBP_DATA_ERRORS):
+        return owner, {}
+    if not isinstance(decoded, dict):
+        return owner, {}
+    registry = {}
+    for token, metadata in decoded.items():
+        if not isinstance(token, str) or not isinstance(metadata, dict):
+            continue
+        registry[token] = dict(metadata)
+    return owner, registry
+
+
+def _gp_store_native_effect_registry(owner, registry):
+    if owner is None:
+        return False
+    try:
+        if registry:
+            owner[KEY_GP_NATIVE_EFFECT_REGISTRY] = json.dumps(
+                registry,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        elif KEY_GP_NATIVE_EFFECT_REGISTRY in owner:
+            del owner[KEY_GP_NATIVE_EFFECT_REGISTRY]
         return True
     except FBP_DATA_ERRORS:
         return False
+
+
+def _gp_native_effect_registry_metadata(item):
+    owner, registry = _gp_native_effect_registry(item)
+    token = _gp_native_effect_registry_token(item)
+    metadata = registry.get(token, {}) if token else {}
+    return owner, registry, token, dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _gp_update_native_effect_registry(item, **values):
+    owner, registry, token, metadata = _gp_native_effect_registry_metadata(item)
+    if owner is None or not token:
+        return False
+    metadata.update(values)
+    registry[token] = metadata
+    return _gp_store_native_effect_registry(owner, registry)
+
+
+def _gp_untag_native_effect_item(item):
+    owner, registry, token, _metadata = _gp_native_effect_registry_metadata(item)
+    changed = False
+    if token and token in registry:
+        registry.pop(token, None)
+        changed = _gp_store_native_effect_registry(owner, registry)
+    try:
+        if KEY_GP_NATIVE_EFFECT_ID in item:
+            del item[KEY_GP_NATIVE_EFFECT_ID]
+            changed = True
+    except FBP_DATA_ERRORS:
+        pass
+    return changed
+
+
+def _gp_tag_native_effect_item(item, effect_id):
+    effect_id = str(effect_id or "").upper()
+    if item is None or not effect_id:
+        return False
+    try:
+        item[KEY_GP_NATIVE_EFFECT_ID] = effect_id
+        if str(item.get(KEY_GP_NATIVE_EFFECT_ID, "") or "").upper() == effect_id:
+            return True
+    except FBP_DATA_ERRORS:
+        pass
+    return _gp_update_native_effect_registry(item, effect_id=effect_id)
 
 
 def _gp_native_effect_id_from_item(item, definitions):
@@ -5796,9 +5902,13 @@ def _gp_native_effect_id_from_item(item, definitions):
     """
     try:
         tagged = str(item.get(KEY_GP_NATIVE_EFFECT_ID, "") or "").upper()
-        return tagged if tagged in definitions else ""
+        if tagged in definitions:
+            return tagged
     except FBP_DATA_ERRORS:
-        return ""
+        pass
+    _owner, _registry, _token, metadata = _gp_native_effect_registry_metadata(item)
+    tagged = str(metadata.get("effect_id", "") or "").upper()
+    return tagged if tagged in definitions else ""
 
 
 def _gp_native_effect_instances(canvas):
@@ -5992,11 +6102,16 @@ def _gp_add_native_effect(canvas, effect_id):
         item = _gp_new_native_effect_item(collection, name, native_type)
         if item is None:
             return None
-        _gp_tag_native_effect_item(item, effect_id)
+        if not _gp_tag_native_effect_item(item, effect_id):
+            collection.remove(item)
+            fbp_warn(
+                f"Could not persist ownership for native Grease Pencil effect {effect_id}"
+            )
+            return None
         try:
             item["fbp_gp_native_type"] = str(native_type)
         except FBP_DATA_ERRORS:
-            pass
+            _gp_update_native_effect_registry(item, native_type=str(native_type))
         _gp_apply_native_effect_defaults(item, effect_id)
         if str(effect_id or "").upper() == "SURFACE_CONFORM":
             try:
@@ -6050,6 +6165,7 @@ def _gp_repair_native_effect_duplicates(canvas):
                 seen.add(effect_id)
                 continue
             try:
+                _gp_untag_native_effect_item(item)
                 collection.remove(item)
                 removed += 1
             except FBP_DATA_ERRORS as exc:
@@ -6072,6 +6188,7 @@ def _gp_remove_native_effect(canvas, effect_id):
         for item in reversed(items):
             if _gp_native_effect_id_from_item(item, definitions) != target_id:
                 continue
+            _gp_untag_native_effect_item(item)
             collection.remove(item)
             removed = True
     except FBP_DATA_ERRORS as exc:
@@ -6112,17 +6229,35 @@ def _gp_native_item_name(item):
 def _gp_native_effect_open(item, default=True):
     """Return whether the inline Frame By Plane settings for an item are open."""
     try:
-        return bool(item.get(KEY_GP_NATIVE_EFFECT_OPEN, bool(default)))
+        value = item.get(KEY_GP_NATIVE_EFFECT_OPEN, None)
+        if value is not None:
+            return bool(value)
     except FBP_DATA_ERRORS:
-        return bool(default)
+        pass
+    _owner, _registry, _token, metadata = _gp_native_effect_registry_metadata(item)
+    return bool(metadata.get("open", bool(default)))
 
 
 def _gp_set_native_effect_open(item, state):
     try:
         item[KEY_GP_NATIVE_EFFECT_OPEN] = bool(state)
-        return True
+        if bool(item.get(KEY_GP_NATIVE_EFFECT_OPEN, not bool(state))) == bool(state):
+            return True
     except FBP_DATA_ERRORS:
-        return False
+        pass
+    return _gp_update_native_effect_registry(item, open=bool(state))
+
+
+def _gp_set_all_native_effects_open(canvas, state):
+    """Expand or collapse every managed native GP effect in one action."""
+    _active, ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
+    changed = 0
+    for _effect_id, item, _backend, _index in ordered:
+        if _gp_native_effect_open(item, default=True) == bool(state):
+            continue
+        if _gp_set_native_effect_open(item, bool(state)):
+            changed += 1
+    return changed
 
 
 _GP_NATIVE_EFFECT_UI_PROPS = {
@@ -6385,6 +6520,21 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
     stack_header = stack_box.row(align=True)
     stack_header.label(text="Effect Stack", icon="SHADERFX")
     stack_header.label(text="Native Grease Pencil backend", icon="CHECKMARK")
+    if active_count:
+        expand = stack_header.operator(
+            "fbp.set_all_gp_native_effect_settings",
+            text="",
+            icon="DOWNARROW_HLT",
+            emboss=False,
+        )
+        expand.expanded = True
+        collapse = stack_header.operator(
+            "fbp.set_all_gp_native_effect_settings",
+            text="",
+            icon="RIGHTARROW_THIN",
+            emboss=False,
+        )
+        collapse.expanded = False
 
     if active_count:
         backend_labels = {"SHADER_FX": ("Shader Effects", "SHADING_RENDERED"), "MODIFIER": ("Modifiers", "MODIFIER")}
@@ -6481,6 +6631,33 @@ class FBP_OT_ToggleGPNativeEffectSettings(Operator):
         if item is None:
             return {"CANCELLED"}
         _gp_set_native_effect_open(item, not _gp_native_effect_open(item, default=True))
+        return {"FINISHED"}
+
+
+class FBP_OT_SetAllGPNativeEffectSettings(Operator):
+    bl_idname = "fbp.set_all_gp_native_effect_settings"
+    bl_label = "Set All Grease Pencil Effect Settings"
+    bl_description = "Expand or collapse the inline controls for every active Grease Pencil effect"
+    bl_options = {"INTERNAL"}
+
+    expanded: BoolProperty(
+        name="Expanded",
+        description="Show every inline native Grease Pencil effect control",
+        default=True,
+        options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        canvas = _active_canvas(context)
+        if not is_gp_drawing_canvas(canvas):
+            return False
+        _active, ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
+        return bool(ordered)
+
+    def execute(self, context):
+        canvas = _active_canvas(context)
+        _gp_set_all_native_effects_open(canvas, bool(self.expanded))
         return {"FINISHED"}
 
 
@@ -10377,6 +10554,7 @@ classes = (
     FBP_OT_SafeGPMaskShrinkFatten,
     FBP_MT_GPNativeEffects,
     FBP_OT_ToggleGPNativeEffectSettings,
+    FBP_OT_SetAllGPNativeEffectSettings,
     FBP_OT_RepairGPNativeEffectDuplicates,
     FBP_OT_ResetGPNativeEffect,
     FBP_OT_MoveGPNativeEffect,

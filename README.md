@@ -1,34 +1,55 @@
-# 🎞️ Frame By Plane
+# Frame By Plane — Blender 5.2 Image Sequence & Grease Pencil Add-on
 
-**Frame By Plane works like Blender’s native “Image as Planes”, but is built for animation, layered artwork and 2.5D multiplane workflows.**
+**Frame By Plane is a Blender 5.2 LTS add-on for image-sequence animation, Grease Pencil, layered PSD and Procreate artwork, 2.5D multiplane scenes, compositing and non-destructive effects.**
 
-Import images, image sequences, folders, PSD files and Procreate projects as controllable planes. Organize layers, edit timing, apply masks and blend modes, add non-destructive effects, build camera depth and render directly inside Blender.
+It works like Blender's native **Images as Planes**, but adds production controls for timing, layers, masks, camera depth, rendering and frame-by-frame animation workflows.
 
-[Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Open the latest GitHub release](../../releases/latest)
+[Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
-## Highlights
+## What's new in 7.1.18 LTS
 
-- 🎬 Native image-sequence playback with Loop, Ping-Pong and One Shot modes.
-- 🗂️ Single-plane and multiplane imports from images, folders and layered projects.
-- 🧩 PSD and Procreate layer workflows with alpha preservation.
-- 🎨 Built-in effects for distortion, blur, color, stylization, masks and utilities.
-- 🌓 Layer blend modes inspired by common painting and compositing applications.
-- ✂️ Cutout, alpha-aware geometry and 2.5D depth tools.
-- 🎥 Camera, projector, render and sequence controls designed for animation.
-- 🧪 Integrated diagnostics, regression checks and release-gate tools.
-- 📦 Separate lightweight packages for Windows, macOS and Linux.
+- Fixed persistent ownership for all 27 native Grease Pencil effect backends on Blender 5.2.
+- Prevented unmanaged duplicate Shader Effects and Grease Pencil modifiers.
+- Restored reliable add, remove, reorder, reset and duplicate-repair actions.
+- Added **Expand All** and **Collapse All** controls for the Grease Pencil Effect Stack.
+- Fixed Compositor Safe Repair snapshots for Blender 5.2 color, vector and rotation socket values.
+- Passed native Blender 5.2.0 background tests and a 300-redraw interactive UI stress test.
+
+See the complete [7.1.18 release notes](release-notes/7.1.18.md).
+
+## Core features
+
+### Image sequences and frame-by-frame animation
+
+- Import still images, numbered image sequences, folders and video as controllable planes.
+- Use Loop, Ping-Pong and One Shot playback with timeline and frame-offset controls.
+- Scrub and edit Grease Pencil timing from the Viewport with bookmarks, preview range and onion-skin controls.
+
+### Layered artwork and 2.5D multiplane scenes
+
+- Import layered PSD and Procreate projects while preserving transparency and layer structure.
+- Arrange artwork in camera depth for parallax, multiplane animation and motion-comic workflows.
+- Manage layer visibility, folders, blend modes, clipping, holdouts and alpha-aware cutouts.
+
+### Grease Pencil, masks and effects
+
+- Create Drawing Planes linked to image layers or use independent Grease Pencil canvases.
+- Apply native Blender Grease Pencil modifiers and Shader Effects from one compact stack.
+- Build shape, color, luminance, channel, gradient, noise, imported and Grease Pencil masks.
+- Use non-destructive distortion, blur, color, light, stylization and compositing effects.
+
+### Compositing, camera and rendering
+
+- Build Blender-native compositor layer packages while preserving artist-created nodes and links.
+- Use Safe Repair, diagnostics and rollback-aware project health tools.
+- Control camera-facing planes, projectors, render output and image-sequence delivery inside Blender.
 
 ## Requirements
 
-- **Blender 5.2.x**
-- Supported packages:
-  - Windows x64
-  - Windows ARM64
-  - macOS Intel x64
-  - macOS Apple Silicon ARM64
-  - Linux x64
+- **Blender 5.2.x LTS**
+- Windows x64 or ARM64, macOS Intel or Apple Silicon, or Linux x64
 
-## Installation
+## Install Frame By Plane
 
 1. Open the [latest GitHub release](../../releases/latest).
 2. Download the ZIP matching your computer.
@@ -38,41 +59,49 @@ Import images, image sequences, folders, PSD files and Procreate projects as con
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-7.1.11-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-7.1.11-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-7.1.11-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-7.1.11-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-7.1.11-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-7.1.18-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-7.1.18-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-7.1.18-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-7.1.18-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-7.1.18-linux_x64.zip` |
 
 > [!IMPORTANT]
-> Do not install GitHub’s automatically generated **Source code (zip)** archive. Use one of the installable release assets listed above.
+> Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
 
-## Main effect families
+For a clean update or architecture details, read the [installation guide](docs/INSTALLATION.md).
 
-<details>
-<summary>View the built-in effect groups</summary>
+## Quick start
 
-- **Distortion and geometry:** Pixelate, Hex Pixelate, Mosaic Jitter, Swirl, Bulge/Pinch, Lens Warp, Wave Warp, Ripple, Kaleidoscope, Wind Bender, Thickness and camera-facing utilities.
-- **Color and light:** Recolor, White Balance, Curves, Color Isolate, Gradient Light, Rim, Shadow, False Color, Solarize, Tritone and Film Fade.
-- **Blur and detail:** Depth Blur, Gaussian Blur, Directional Blur, Triangle Blur, Tilt Shift and Unsharp Mask.
-- **Stylization:** Ink, Edge Work, Pencil Sketch, Poster Edges, Crosshatch, Emboss, Halftone, Dot Matrix, ASCII, ASCII Matrix and Text Matrix.
-- **Masks and compositing:** Alpha Matte, Luma Matte, shape masks, clipping/imported masks, Color Mask, Luminance Mask, Channel Mask, Gradient Mask, Noise Mask, Chroma Key and Layer Blend.
+1. Open the **Frame By Plane** tab in Blender's 3D View sidebar.
+2. Choose a single image, sequence, folder, PSD, Procreate file or video.
+3. Set timing and playback, then create the layer or multiplane project.
+4. Use **Layers**, **Effects**, **Grease Pencil**, **Camera** and **Render** to refine the scene.
+5. If a project needs inspection, open **Project Health** and copy the diagnostic report before filing an issue.
 
-</details>
+## Documentation and support
+
+- [Feature guide](docs/FEATURES.md)
+- [Installation and updates](docs/INSTALLATION.md)
+- [Blender 5.2 troubleshooting](docs/TROUBLESHOOTING.md)
+- [Release process](docs/RELEASING.md)
+- [GitHub Wiki](../../wiki)
+- [Bug reports and feature requests](../../issues)
+
+Bug reports should include Blender version, operating system, reproduction steps and the Frame By Plane diagnostic report when available. Frame By Plane does not send telemetry or project data.
 
 ## Repository structure
 
 ```text
-frame_by_plane/       Blender extension source and bundled wheels
+frame_by_plane/       Blender extension source, tests, assets and bundled wheels
 .github/              Issue templates and validation workflow
-docs/                 Installation and release documentation
-tools/                Local validation and build scripts
+docs/                 Installation, features, troubleshooting and release docs
+tools/                Repository validation and platform build scripts
 release-notes/        Copy-ready GitHub release notes
 ```
 
-## Build locally
+## Build and test locally
 
-Blender can generate one optimized package for each declared platform:
+Build optimized packages for every declared platform:
 
 ```bash
 blender --command extension build \
@@ -81,12 +110,18 @@ blender --command extension build \
   --split-platforms
 ```
 
+Run the native Blender 5.2 regression suites:
+
+```bash
+python frame_by_plane/tests/run_blender_lts.py \
+  --blender /path/to/blender \
+  --all
+```
+
 Windows users can run `tools/build_release.ps1`; macOS and Linux users can run `tools/build_release.sh`.
 
-## Contributing
+## Contributing and license
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Bug reports should include Blender version, operating system, reproduction steps and the Frame By Plane diagnostic report when available.
-
-## License
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 Frame By Plane is released under the **GNU General Public License v3.0 or later**. Bundled third-party components retain their original licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

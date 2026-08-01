@@ -7,14 +7,14 @@ body:
     id: fbp-version
     attributes:
       label: Frame By Plane version
-      placeholder: 6.1.0
+      placeholder: 7.1.18
     validations:
       required: true
   - type: input
     id: blender-version
     attributes:
       label: Blender version
-      placeholder: 5.1.2
+      placeholder: 5.2.0 LTS
     validations:
       required: true
   - type: dropdown

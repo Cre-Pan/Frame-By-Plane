@@ -4471,6 +4471,19 @@ def _fbp_snapshot_primitive(value, *, max_items=64):
         if any(item is _FBP_SNAPSHOT_UNSUPPORTED for item in converted):
             return _FBP_SNAPSHOT_UNSUPPORTED
         return tuple(sorted(converted, key=repr))
+    # Blender 5.2 exposes vector/color socket defaults as ``bpy_prop_array``
+    # and rotation defaults as mathutils values.  They are bounded primitive
+    # sequences, but neither family is a Python tuple/list and several members
+    # do not expose ``to_list``/``to_tuple``.  Convert only these known value
+    # containers; arbitrary iterable RNA remains unsupported so Safe Repair
+    # continues to fail closed on data it cannot prove is scalar.
+    if type(value).__name__ in {
+        "bpy_prop_array", "Color", "Euler", "Matrix", "Quaternion", "Vector",
+    }:
+        try:
+            value = tuple(value)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return _FBP_SNAPSHOT_UNSUPPORTED
     if hasattr(value, "to_list"):
         try:
             value = value.to_list()
