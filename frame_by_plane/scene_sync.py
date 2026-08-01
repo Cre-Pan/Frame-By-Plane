@@ -1,7 +1,9 @@
 """Layer synchronization, native delete/duplicate repair and orphan cleanup."""
 
 import bpy
+import json
 import time
+import uuid
 
 from . import safe_tasks as fbp_safe_tasks
 from .runtime import (
@@ -1600,6 +1602,40 @@ def schedule_delete_fbp_rigs(rig_names, *, first_interval=0.35, scene=None):
         key = _fbp_object_identity(rig) if rig and object_in_scene(rig, scene) else None
         identities.append((name, key))
     deadline = time.monotonic() + 30.0
+    task_id = uuid.uuid4().hex
+
+    def _origin_scene():
+        for candidate in tuple(getattr(bpy.data, "scenes", ()) or ()):
+            if _fbp_scene_runtime_identity(candidate) == scene_pointer:
+                return candidate
+        return bpy.data.scenes.get(scene_name)
+
+    def _record_cleanup(status, *, deleted=0, remaining=(), detail=""):
+        origin = _origin_scene()
+        if origin is None:
+            return False
+        payload = {
+            "task_id": task_id,
+            "status": str(status or "UNKNOWN").upper(),
+            "deleted": max(0, int(deleted or 0)),
+            "remaining": tuple(str(name) for name in remaining if name),
+            "detail": str(detail or "")[:2048],
+            "finished_at": time.time(),
+        }
+        try:
+            origin["fbp_generation_cleanup_last_json"] = json.dumps(payload, sort_keys=True)
+            raw_report = str(origin.get("fbp_generation_report_json", "") or "")
+            report = json.loads(raw_report) if raw_report else {}
+            if payload["status"] == "SUCCESS" and not payload["remaining"]:
+                origin["fbp_generation_report_json"] = ""
+                if hasattr(origin, "fbp_generation_rename_items"):
+                    origin.fbp_generation_rename_items.clear()
+            elif isinstance(report, dict):
+                report["cleanup_task"] = payload
+                origin["fbp_generation_report_json"] = json.dumps(report)
+            return True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return False
 
     def _delete_task():
         context = bpy.context
@@ -1609,6 +1645,11 @@ def schedule_delete_fbp_rigs(rig_names, *, first_interval=0.35, scene=None):
                 return 0.5
             fbp_warn(
                 f"Deferred rig deletion for Scene '{scene_name}' expired after a Scene switch"
+            )
+            _record_cleanup(
+                "FAILED",
+                remaining=(name for name, _key in identities),
+                detail="Scene switch deadline expired; Retry is available from the generation report",
             )
             return None
         if not fbp_stop_playback_for_datablock_cleanup(context):
@@ -1628,18 +1669,33 @@ def schedule_delete_fbp_rigs(rig_names, *, first_interval=0.35, scene=None):
                 continue
             if rig and is_fbp_layer_object(rig) and object_in_scene(rig, active_scene):
                 rigs.append(rig)
-        if rigs:
-            delete_fbp_rigs(context, rigs, defer_if_playing=False)
+        deleted = delete_fbp_rigs(context, rigs, defer_if_playing=False) if rigs else 0
+        remaining = []
+        for original_name, expected_key in identities:
+            candidate = bpy.data.objects.get(original_name)
+            if candidate is not None and _fbp_object_identity(candidate) == expected_key:
+                remaining.append(original_name)
+        _record_cleanup(
+            "SUCCESS" if not remaining else "FAILED",
+            deleted=deleted,
+            remaining=remaining,
+            detail=(
+                "Deletion verified; the generation report was cleared"
+                if not remaining else
+                "Some reported rigs remain; Retry is available"
+            ),
+        )
         return None
 
     task_token = "|".join(
         f"{name}:{key!r}" for name, key in identities
     )
-    return fbp_safe_tasks.schedule_once(
-        f'scene.remove_corrupted_generated_planes.{scene_pointer}.{task_token}',
+    scheduled = fbp_safe_tasks.schedule_once(
+        f'scene.remove_corrupted_generated_planes.{scene_pointer}.{task_token}.{task_id}',
         _delete_task,
         first_interval=max(0.1, float(first_interval)),
     )
+    return task_id if scheduled else ""
 
 
 def delete_fbp_rigs(context, rigs, *, defer_if_playing=True):

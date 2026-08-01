@@ -7,6 +7,8 @@ import os
 import re
 import tempfile
 import time
+import uuid
+from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
 
 import bpy
@@ -2818,32 +2820,87 @@ class FBP_OT_RenameSequenceForBlender(Operator):
         }
 
     def _write_rename_manifest(self, directory, sources, targets):
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        suffix = f"{int((time.time() % 1.0) * 1000):03d}"
-        manifest = os.path.join(directory, f".fbp_sequence_rename_{stamp}-{suffix}.json")
-        temporary = manifest + ".tmp"
+        operation_id = uuid.uuid4().hex
+        created_at = datetime.now(timezone.utc).isoformat()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         payload = {
-            "schema": 1,
-            "created_at": f"{stamp}-{suffix}",
+            "schema": 2,
+            "operation_id": operation_id,
+            "created_at": created_at,
+            "timezone": "UTC",
+            "status": "PLANNED",
+            "finalized_at": "",
             "note": "Blender Undo cannot restore filesystem names. Rename target back to source to roll back.",
             "files": [
                 {"source": os.path.basename(source), "target": os.path.basename(target)}
                 for source, target in zip(sources, targets, strict=True)
             ],
         }
+        last_error = None
+        for attempt in range(8):
+            attempt_id = operation_id if attempt == 0 else f"{operation_id}-{attempt}"
+            manifest = os.path.join(
+                directory,
+                f".fbp_sequence_rename_{stamp}-{attempt_id}.json",
+            )
+            temporary = manifest + f".{uuid.uuid4().hex}.tmp"
+            try:
+                # Reserve the final name exclusively, then atomically replace
+                # that reservation with the complete fsynced JSON document.
+                descriptor = os.open(manifest, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(descriptor)
+                with open(temporary, "x", encoding="utf-8") as handle:
+                    json.dump(payload, handle, indent=2, ensure_ascii=False)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, manifest)
+                return manifest, ""
+            except FileExistsError as exc:
+                last_error = exc
+            except OSError as exc:
+                last_error = exc
+                try:
+                    if os.path.exists(manifest) and os.path.getsize(manifest) == 0:
+                        os.remove(manifest)
+                except OSError:
+                    pass
+                break
+            finally:
+                try:
+                    if os.path.exists(temporary):
+                        os.remove(temporary)
+                except OSError:
+                    pass
+        return "", str(last_error or "Could not reserve a unique manifest path")
+
+    @staticmethod
+    def _finalize_rename_manifest(manifest_path, status, *, detail=""):
+        if not manifest_path:
+            return False
+        temporary = f"{manifest_path}.{uuid.uuid4().hex}.tmp"
         try:
-            with open(temporary, "w", encoding="utf-8") as handle:
+            with open(manifest_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            payload["status"] = str(status or "UNKNOWN").upper()
+            payload["finalized_at"] = datetime.now(timezone.utc).isoformat()
+            if detail:
+                payload["detail"] = str(detail)[:2048]
+            with open(temporary, "x", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, ensure_ascii=False)
                 handle.write("\n")
-            os.replace(temporary, manifest)
-            return manifest, ""
-        except OSError as exc:
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, manifest_path)
+            return True
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return False
+        finally:
             try:
                 if os.path.exists(temporary):
                     os.remove(temporary)
             except OSError:
                 pass
-            return "", str(exc)
 
     @staticmethod
     def _normalized_path(path):
@@ -3021,6 +3078,11 @@ class FBP_OT_RenameSequenceForBlender(Operator):
                         os.rename(tmp, src)
                 except FBP_DATA_IO_ERRORS:
                     pass
+            self._finalize_rename_manifest(
+                manifest_path,
+                "ROLLED_BACK",
+                detail=f"Rename failed before rig refresh: {exc}",
+            )
             return False, f"Rename failed: {exc}"
 
         refresh_errors = []
@@ -3066,6 +3128,12 @@ class FBP_OT_RenameSequenceForBlender(Operator):
                 details.append("Disk rollback errors: " + "; ".join(disk_rollback_errors[:2]))
             if rig_rollback_errors:
                 details.append("Rig rollback errors: " + "; ".join(rig_rollback_errors[:2]))
+            status = "ROLLED_BACK" if not disk_rollback_errors and not rig_rollback_errors else "ROLLBACK_FAILED"
+            self._finalize_rename_manifest(
+                manifest_path,
+                status,
+                detail=" | ".join(details),
+            )
             return False, "Rename cancelled and previous names restored. " + " | ".join(details)
 
         for affected in affected_rigs:
@@ -3079,6 +3147,12 @@ class FBP_OT_RenameSequenceForBlender(Operator):
             fbp_mark_layer_cache_dirty(context)
         except Exception as exc:
             fbp_warn("Could not refresh the layer cache after renaming", exc)
+
+        self._finalize_rename_manifest(
+            manifest_path,
+            "COMPLETED",
+            detail=f"Renamed {len(targets)} file(s) and updated {len(affected_rigs)} rig(s)",
+        )
 
         shared_count = max(0, len(affected_rigs) - 1)
         suffix = f" and updated {shared_count} shared rig(s)" if shared_count else ""
@@ -3312,11 +3386,38 @@ class FBP_OT_GenerationReportPopup(Operator):
                 if len(other_issues) > 6:
                     hint_row(box, f"… and {len(other_issues) - 6} more", icon='INFO')
 
+            cleanup_task = dict(report.get("cleanup_task", {}) or {})
+            cleanup_status = str(cleanup_task.get("status", "") or "").upper()
+            if cleanup_status:
+                cleanup_box = layout.box()
+                task_label = str(cleanup_task.get("task_id", "") or "")[:8]
+                if cleanup_status == "PENDING":
+                    hint_row(
+                        cleanup_box,
+                        f"Cleanup task {task_label} is pending; this report remains until deletion is verified.",
+                        icon='TIME',
+                        disabled=False,
+                    )
+                elif cleanup_status == "FAILED":
+                    remaining = len(tuple(cleanup_task.get("remaining", ()) or ()))
+                    hint_row(
+                        cleanup_box,
+                        f"Cleanup task {task_label} failed with {remaining} rig(s) remaining. Retry is safe.",
+                        icon='ERROR',
+                        disabled=False,
+                    )
+
             actions = layout.row(align=True)
             actions.scale_y = 1.06
             actions.operator_context = 'EXEC_DEFAULT'
             if issues:
-                actions.operator("fbp.remove_corrupted_generated_planes", text="Remove Corrupted", icon='TRASH')
+                cleanup_action = actions.row(align=True)
+                cleanup_action.enabled = cleanup_status != "PENDING"
+                cleanup_action.operator(
+                    "fbp.remove_corrupted_generated_planes",
+                    text="Retry Cleanup" if cleanup_status == "FAILED" else "Remove Corrupted",
+                    icon='FILE_REFRESH' if cleanup_status == "FAILED" else 'TRASH',
+                )
                 if report.get("rename_rigs", []) or report.get("renamed_rigs", []):
                     rename_row = actions.row(align=True)
                     selected_item = _fbp_active_generation_rename_item(context)
@@ -3371,13 +3472,21 @@ class FBP_OT_RemoveCorruptedGeneratedPlanes(Operator):
             self.report({'WARNING'}, "No reported generated planes to remove")
             return {'CANCELLED'}
         rig_names = [getattr(rig, 'name', '') for rig in rigs if rig]
-        _fbp_clear_generation_report(context)
         from .scene_sync import schedule_delete_fbp_rigs
-        scheduled = schedule_delete_fbp_rigs(rig_names, first_interval=0.35)
-        if not scheduled:
+        task_id = schedule_delete_fbp_rigs(rig_names, first_interval=0.35)
+        if not task_id:
             self.report({'WARNING'}, "Could not schedule safe corrupted-plane removal")
             return {'CANCELLED'}
-        self.report({'INFO'}, f"Removing {len(rig_names)} generated plane(s) safely")
+        report = _fbp_generation_report(context)
+        report["cleanup_task"] = {
+            "task_id": task_id,
+            "status": "PENDING",
+            "deleted": 0,
+            "remaining": tuple(rig_names),
+            "detail": "Waiting for verified deferred cleanup",
+        }
+        context.scene["fbp_generation_report_json"] = json.dumps(report)
+        self.report({'INFO'}, f"Removing {len(rig_names)} generated plane(s) safely · task {task_id[:8]}")
         return {'FINISHED'}
 
 class FBP_OT_RenameGenerationProblemSequence(Operator):
