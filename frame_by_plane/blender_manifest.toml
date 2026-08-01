@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "7.1.10"
+version = "7.1.18"
 name = "Frame By Plane"
-tagline = "Image-plane animation workflow for Blender"
+tagline = "Image sequences, Grease Pencil and 2.5D animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
 type = "add-on"
 
@@ -44,3 +44,23 @@ wheels = [
 [permissions]
 files = "Read media and write layered, animation and render caches"
 clipboard = "Import media paths and copy diagnostic reports to the clipboard"
+
+[build]
+paths_exclude_pattern = [
+  "README.md",
+  "__pycache__/",
+  ".*",
+  "*.zip",
+  "*.blend1",
+  "*.bak",
+  "_fbp_update_backups/",
+  "RELEASE_NOTES_*.md",
+  "FRAME_BY_PLANE_*_BUILD_REPORT.md",
+  "FRAME_BY_PLANE_*_ROADMAP_STATUS.md",
+  "STATIC_AUDIT_*.json",
+  "PACKAGE_VALIDATION_*.json",
+  "tests/",
+  "*.sha256",
+  "*.log",
+  "*.diff",
+]

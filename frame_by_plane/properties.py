@@ -16,7 +16,12 @@ from .constants import (
 from .matrix_presets import ASCII_ATLAS_COLUMNS, ASCII_TEXT_GLYPH_LIMIT, ascii_enum_items
 from .ui_icons import custom_icon_generation, layer_custom_icon_value, ui_icon, ui_icon_kwargs
 from .ui_style import adaptive_row, configure_layout, hint_row, section_gap, section_header
-from .shortcut_runtime import alt_shortcut_label, primary_modifier_name, primary_shortcut_label
+from .shortcut_runtime import (
+    alt_shortcut_label,
+    primary_modifier_name,
+    primary_shortcut_label,
+    refresh_all_shortcuts,
+)
 
 from .storage_keys import fbp_effect_storage_key
 from .registration import register_classes, unregister_classes, unregister_type_properties
@@ -520,6 +525,22 @@ def update_show_previews_cb(self, context):
         fbp_warn("Could not clear Frame By Plane thumbnail previews", exc)
 
 
+def update_alpha_render_method_cb(self, context):
+    """Apply the selected alpha method to every owned FBP material in this Scene."""
+    if fbp_is_silent_property_update(self) or fbp_undo_guard_active():
+        return
+    try:
+        from .materials import fbp_refresh_material_render_methods
+        fbp_refresh_material_render_methods(scene=self)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not update Frame By Plane alpha rendering", exc)
+    fbp_request_redraw(
+        context,
+        area_types={'VIEW_3D', 'PROPERTIES'},
+        all_windows=True,
+    )
+
+
 def update_collection_color_variants_cb(self, context):
     """Apply the current variant mode immediately to this Scene's layers."""
     if self is None:
@@ -669,6 +690,29 @@ def update_interface_preferences_cb(self, context):
     )
 
 
+def update_shift_a_menu_position_cb(self, context):
+    """Re-register the Shift+A entry at its newly selected location."""
+    if fbp_undo_guard_active() or fbp_is_silent_property_update(self):
+        return
+    try:
+        from .service_registry import call_service
+        call_service("ui.refresh_shift_a_menu", default=None)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    update_interface_preferences_cb(self, context)
+
+
+def update_shortcut_preferences_cb(self, context):
+    """Rebuild interactive keymaps immediately after a shortcut preference edit."""
+    if fbp_undo_guard_active() or fbp_is_silent_property_update(self):
+        return
+    try:
+        refresh_all_shortcuts()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    update_interface_preferences_cb(self, context)
+
+
 class FBP_AddonPreferences(AddonPreferences):
     bl_idname = __package__ if __package__ else "frame_by_plane"
 
@@ -779,10 +823,11 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     gp_scrub_max_range: IntProperty(
         name="Scrub Range",
-        description="Frames shown on each side of the current scrub window before edge hold continues scrolling",
+        description="Total number of frames shown by the Scrub Bar before edge hold continues scrolling",
         default=50,
         min=1,
         max=240,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_position: EnumProperty(
         name="Position",
@@ -800,26 +845,132 @@ class FBP_AddonPreferences(AddonPreferences):
         name="Show Interaction Info",
         description="Show the Snap status and keyboard help beside the Scrub Slider",
         default=False,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_invert_vertical: BoolProperty(
         name="Invert Top and Bottom Frames",
         description="For vertical sliders, place earlier frames at the top and later frames at the bottom",
         default=False,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_sensitivity: FloatProperty(
         name="Sensitivity", description="Mouse movement multiplier", default=2.0, min=0.1, max=12.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_shift_factor: FloatProperty(
         name="Shift Slowdown", description="Sensitivity multiplier while Shift is held", default=0.2, min=0.02, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_length_ratio: FloatProperty(
         name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.2, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_edge_offset: FloatProperty(
         name="Edge Offset", description="Distance of the slider from the selected Viewport edge", default=240.0, min=8.0, max=240.0, subtype='PIXEL',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet: BoolProperty(
+        name="Mouse Magnet",
+        description="While holding <, blend from relative sensitivity into exact cursor-to-frame mapping near the Scrub Bar; the persistent bar also follows the pointer",
+        default=True,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet_distance: FloatProperty(
+        name="Magnet Range",
+        description="Distance in pixels at which magnetic direct scrubbing and persistent bar attraction begin",
+        default=96.0,
+        min=24.0,
+        max=240.0,
+        subtype='PIXEL',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet_strength: FloatProperty(
+        name="Magnet Strength",
+        description="Strength of the gradual transition into direct cursor mapping outside the exact inner zone",
+        subtype='FACTOR',
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet_smoothing: FloatProperty(
+        name="Magnet Smoothing",
+        description="Transition speed used when the Scrub Bar attaches to or releases from the cursor",
+        subtype='FACTOR',
+        default=0.22,
+        min=0.01,
+        max=1.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_show_onion_handles: BoolProperty(
+        name="Onion Range Handles",
+        description="Show draggable before/after onion-skin ranges on the Scrub Bar using Blender or custom onion colors",
+        default=True,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_show_bookmarks: BoolProperty(
+        name="Bookmarks",
+        description="Show Frame By Plane bookmarks on the Scrub Bar; bookmarks are stored as native Timeline markers",
+        default=True,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_bookmark_color: FloatVectorProperty(
+        name="Bookmark Color",
+        description="Color used for Frame By Plane bookmarks on the Scrub Bar",
+        subtype='COLOR_GAMMA',
+        size=4,
+        default=(0.95, 0.45, 0.08, 0.82),
+        min=0.0,
+        max=1.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_bookmark_distance: FloatProperty(
+        name="Bookmark Distance",
+        description="Distance between the Scrub Bar axis and bookmark triangle",
+        default=21.0,
+        min=10.0,
+        max=96.0,
+        subtype='PIXEL',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_bookmark_triangle_scale: FloatProperty(
+        name="Triangle Size",
+        description="Scale of bookmark triangles",
+        subtype='FACTOR',
+        default=1.0,
+        min=0.45,
+        max=3.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_bookmark_stem_width: FloatProperty(
+        name="Stem Thickness",
+        description="Thickness of the line connecting a bookmark to the Scrub Bar",
+        default=0.9,
+        min=0.4,
+        max=4.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_bookmark_label_scale: FloatProperty(
+        name="Bookmark Label Size",
+        description="Scale of bookmark names displayed beside selected or hovered bookmarks",
+        subtype='FACTOR',
+        default=1.0,
+        min=0.6,
+        max=2.5,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_bookmark_label_gap: FloatProperty(
+        name="Label Distance",
+        description="Distance between the bookmark triangle and its displayed name",
+        default=5.0,
+        min=0.0,
+        max=32.0,
+        subtype='PIXEL',
+        update=update_interface_preferences_cb,
     )
     gp_scrub_tick_scale: FloatProperty(
         name="Tick Size", description="Scale of frame and second ticks", default=0.5, min=0.25, max=3.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_line_width: FloatProperty(
         name="Line Thickness",
@@ -827,32 +978,41 @@ class FBP_AddonPreferences(AddonPreferences):
         default=1.0,
         min=0.5,
         max=6.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_width: FloatProperty(
         name="Cursor Thickness", description="Thickness of the current-frame cursor connector", default=2.0, min=0.5, max=8.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_label_scale: FloatProperty(
         name="Cursor Label Size", description="Scale of the rounded current-frame number label", default=1.0, min=0.6, max=2.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_major_interval: IntProperty(
         name="Long Tick Interval", description="Draw a longer lower tick every N frames", default=10, min=2, max=100,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_micro_tick_length: FloatProperty(
         name="Frame Tick Length", description="Length of the small tick drawn for every frame", default=3.0, min=1.0, max=20.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_major_tick_length: FloatProperty(
         name="Long Tick Length", description="Length of the lower interval ticks", default=7.0, min=2.0, max=32.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_second_tick_length: FloatProperty(
         name="Second Tick Length", description="Half-length of ticks drawn across both sides at every scene second", default=11.0, min=3.0, max=48.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_color: FloatVectorProperty(
         name="Cursor Color", description="Color of the current-frame line and rounded number label", subtype='COLOR', size=3,
         default=(71 / 255, 114 / 255, 179 / 255), min=0.0, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_text_color: FloatVectorProperty(
         name="Cursor Text Color", description="Text color inside the current-frame label", subtype='COLOR', size=3,
         default=(1.0, 1.0, 1.0), min=0.0, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_line_color: FloatVectorProperty(
         name="Axis Color",
@@ -862,6 +1022,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_frame_tick_color: FloatVectorProperty(
         name="Frame Tick Color",
@@ -871,6 +1032,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0, 0.58),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_major_tick_color: FloatVectorProperty(
         name="Long Tick Color",
@@ -880,6 +1042,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0, 1.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_second_tick_color: FloatVectorProperty(
         name="Second Tick Color",
@@ -889,6 +1052,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0, 1.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_text_color: FloatVectorProperty(
         name="Text Color",
@@ -898,6 +1062,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     show_panel_layers: BoolProperty(
         name="Layers Panel",
@@ -1612,53 +1777,95 @@ class FBP_AddonPreferences(AddonPreferences):
                 draw.prop(self, 'default_gp_curve_type', text='Draw Curves')
                 draw.prop(self, 'default_gp_curve_conversion_threshold', text='Conversion Threshold')
 
-            body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.shortcuts', 'TIME')
+            body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.scrub_slider', 'TIME')
             if body:
                 try:
                     from .grease_pencil_scrub import is_scrub_preview_active
                     scrub_preview_active = bool(is_scrub_preview_active())
                 except (ImportError, AttributeError, RuntimeError):
                     scrub_preview_active = False
-                row = _row(body)
+
+                preview_box = body.box()
+                configure_layout(preview_box)
+                preview_box.label(text='Preview and Placement', icon='VIEW3D')
+                row = _row(preview_box)
                 row.operator(
                     'fbp.grease_pencil_scrub_preview',
                     text='Hide Live Preview' if scrub_preview_active else 'Show Live Preview',
                     icon='HIDE_OFF' if scrub_preview_active else 'HIDE_ON',
                     depress=scrub_preview_active,
                 )
-                hint_row(body, 'The preview updates live in visible 3D Viewports and closes automatically with Preferences.', icon='INFO')
-                row = _row(body)
                 row.prop(self, 'gp_scrub_position', text='Position')
-                hint_row(body, 'The slider is transparent. Axis, ticks and text use the literal inverse of the Viewport background color.', icon='SHADING_SOLID')
-                hint_row(body, 'The Scrub Bar toggle and < shortcut are available in every 3D View mode.', icon='VIEW3D')
-                row = _row(body)
-                row.prop(self, 'gp_scrub_max_range', text='Range')
-                row.prop(self, 'gp_scrub_show_info', text='Show Interaction Info', toggle=True)
+                row = _row(preview_box)
+                row.prop(self, 'gp_scrub_max_range', text='Visible Frames')
+                row.prop(self, 'gp_scrub_show_info', text='Interaction Info', toggle=True)
                 if self.gp_scrub_position in {'LEFT', 'RIGHT'}:
-                    row = _row(body)
-                    row.prop(self, 'gp_scrub_invert_vertical', text='Invert Top and Bottom Frames', toggle=True)
-                row = _row(body)
+                    row.prop(self, 'gp_scrub_invert_vertical', text='Invert Vertical', toggle=True)
+                hint_row(preview_box, 'The live preview updates appearance and placement; bookmark and onion interactions remain available in the persistent Scrub Bar.', icon='INFO')
+
+                motion_box = body.box()
+                configure_layout(motion_box)
+                motion_box.label(text='Scrubbing and Layout', icon='MOUSE_MOVE')
+                row = _row(motion_box)
                 row.prop(self, 'gp_scrub_sensitivity', text='Sensitivity', slider=True)
                 row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
-                row = _row(body)
                 row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
-                row.prop(self, 'gp_scrub_edge_offset', text='Offset')
-                row = _row(body)
+                row = _row(motion_box)
+                row.prop(self, 'gp_scrub_edge_offset', text='Edge Offset')
+                hint_row(motion_box, 'Hold <: relative sensitivity away from the axis, exact cursor mapping inside the magnetic zone.', icon='TIME')
+
+                magnet_box = body.box()
+                configure_layout(magnet_box)
+                magnet_box.label(text='Mouse Magnet', icon='SNAP_ON')
+                row = _row(magnet_box)
+                row.prop(self, 'gp_scrub_mouse_magnet', text='Enabled', toggle=True)
+                controls = row.row(align=True)
+                controls.enabled = self.gp_scrub_mouse_magnet
+                controls.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
+                controls.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
+                controls.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
+
+                onion_box = body.box()
+                configure_layout(onion_box)
+                onion_box.label(text='Onion Skin Interface', icon='ONIONSKIN_ON')
+                row = _row(onion_box)
+                row.prop(self, 'gp_scrub_show_onion_handles', text='Range Handles', toggle=True)
+                hint_row(onion_box, 'Frame/Keyframe mode, keyframe-type filter, opacity and colors are available from the Viewport Scrub Bar popover.', icon='DOWNARROW_HLT')
+
+                bookmark_box = body.box()
+                configure_layout(bookmark_box)
+                bookmark_box.label(text='Bookmarks', icon='BOOKMARKS')
+                row = _row(bookmark_box)
+                row.prop(self, 'gp_scrub_show_bookmarks', text='Show', toggle=True)
+                bookmark_controls = bookmark_box.column(align=False)
+                bookmark_controls.enabled = self.gp_scrub_show_bookmarks
+                row = _row(bookmark_controls)
+                row.prop(self, 'gp_scrub_bookmark_distance', text='Distance')
+                row.prop(self, 'gp_scrub_bookmark_triangle_scale', text='Triangle', slider=True)
+                row.prop(self, 'gp_scrub_bookmark_stem_width', text='Stem', slider=True)
+                row = _row(bookmark_controls)
+                row.prop(self, 'gp_scrub_bookmark_label_scale', text='Label Size', slider=True)
+                row.prop(self, 'gp_scrub_bookmark_label_gap', text='Label Distance')
+                hint_row(bookmark_box, 'New bookmarks use A, B, C… and keep native Timeline marker synchronization.', icon='MARKER_HLT')
+
+                appearance_box = body.box()
+                configure_layout(appearance_box)
+                appearance_box.label(text='Timeline Appearance', icon='COLOR')
+                row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_tick_scale', text='Tick Scale', slider=True)
-                row.prop(self, 'gp_scrub_line_width', text='Line Thickness', slider=True)
-                row = _row(body)
+                row.prop(self, 'gp_scrub_line_width', text='Line', slider=True)
                 row.prop(self, 'gp_scrub_major_interval', text='Long Tick Every')
+                row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_micro_tick_length', text='Frame Tick')
-                row = _row(body)
                 row.prop(self, 'gp_scrub_major_tick_length', text='Long Tick')
                 row.prop(self, 'gp_scrub_second_tick_length', text='Second Tick')
-                row = _row(body)
-                row.prop(self, 'gp_scrub_cursor_width', text='Cursor Thickness', slider=True)
-                row.prop(self, 'gp_scrub_cursor_label_scale', text='Label Size', slider=True)
-                row = _row(body)
+                row = _row(appearance_box)
+                row.prop(self, 'gp_scrub_cursor_width', text='Cursor', slider=True)
+                row.prop(self, 'gp_scrub_cursor_label_scale', text='Cursor Label', slider=True)
+                row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_cursor_color', text='Cursor Color')
                 row.prop(self, 'gp_scrub_cursor_text_color', text='Cursor Text')
-                hint_row(body, f'Tap < to toggle · hold < inherits the fixed view · over the slider: wheel zooms, {primary_modifier_name()}+wheel pans, Shift selects, Shift+D duplicates, X deletes and R changes type.', icon='TIME')
+                hint_row(appearance_box, f'Tap < to toggle · hold < to scrub · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
 
             body = _section(category, 'pref_ui_show_procedural', 'Procedural Planes', 'menu.color_plane', 'MATERIAL')
             if body:
@@ -7009,11 +7216,11 @@ def _clear_runtime_ui_rows_before_unregister():
                 rows = getattr(scene, attr, None)
                 if rows is not None:
                     rows.clear()
-            except FBP_DATA_IO_ERRORS:
+            except FBP_DATA_ERRORS:
                 pass
         try:
             scene.fbp_layer_tree_signature = ''
-        except FBP_DATA_IO_ERRORS:
+        except FBP_DATA_ERRORS:
             pass
 
 

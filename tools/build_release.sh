@@ -13,4 +13,8 @@ mkdir -p "$OUTPUT_DIRECTORY"
   --output-dir "$OUTPUT_DIRECTORY" \
   --split-platforms
 
-echo "Platform packages created in: $OUTPUT_DIRECTORY"
+"$BLENDER_EXECUTABLE" --background --factory-startup \
+  --python "$REPOSITORY_ROOT/tools/normalize_release_archives.py" \
+  -- "$OUTPUT_DIRECTORY"
+
+echo "Deterministic platform packages created in: $OUTPUT_DIRECTORY"

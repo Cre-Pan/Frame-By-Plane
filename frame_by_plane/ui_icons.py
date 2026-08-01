@@ -224,6 +224,7 @@ for _effect_id, _filename in _FBP_EFFECT_CUSTOM_ICON_FILES.items():
 _FBP_CUSTOM_ICON_FILES["floating_timeline"] = "icon_FLOATINGTIMELINE_paste.png"
 
 _FBP_CUSTOM_ICON_UI_KEYS = {
+    "settings.scrub_slider": "floating_timeline",
     "menu.color_plane": "color_plane",
     "menu.cutout_plane": "cutout_plane",
     "menu.gradient_plane": "gradient_plane",

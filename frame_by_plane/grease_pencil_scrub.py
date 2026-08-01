@@ -4,12 +4,14 @@ The overlay mirrors Blender's Timeline/Dope Sheet playhead snapping, navigation
 and keyframe editing while remaining a lightweight View3D GPU drawing.
 """
 
+import json
 import math
 import time
+import uuid
 from bisect import bisect_left, bisect_right
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Menu, Operator, Panel
 
 from .interface_preferences import fbp_get_addon_preferences
@@ -78,6 +80,42 @@ _EDGE_DWELL_SECONDS = 0.38
 _EDGE_REPEAT_SECONDS = 0.12
 _TIMER_INTERVAL = 0.04
 _AXIS_CAPTURE_PX = 42.0
+_MAGNET_INNER_RATIO = 0.42
+_MAGNET_EPSILON_PX = 0.05
+_DIRECT_SCRUB_INNER_PX = 12.0
+_ONION_HANDLE_RADIUS_PX = 5.0
+_ONION_HANDLE_HIT_PADDING_PX = 5.0
+_BOOKMARK_PREFIX = "✦ - "
+_LEGACY_BOOKMARK_PREFIXES = ("✦ - ", "✦-", "✦ ", "★ ")
+_BOOKMARK_STATE_KEY = "_fbp_scrub_bookmarks_v1"
+_BOOKMARK_DEFAULT_COLOR = "WHITE"
+_BOOKMARK_COLOR_ITEMS = (
+    ("WHITE", "White", "White bookmark", "STRIP_COLOR_01", 0),
+    ("GREY", "Grey", "Grey bookmark", "STRIP_COLOR_02", 1),
+    ("YELLOW", "Yellow", "Yellow bookmark", "STRIP_COLOR_03", 2),
+    ("RED", "Red", "Red bookmark", "STRIP_COLOR_04", 3),
+    ("ORANGE", "Orange", "Orange bookmark", "STRIP_COLOR_05", 4),
+    ("GREEN", "Green", "Green bookmark", "STRIP_COLOR_06", 5),
+    ("BLUE", "Blue", "Blue bookmark", "STRIP_COLOR_07", 6),
+    ("MAGENTA", "Magenta", "Magenta bookmark", "STRIP_COLOR_08", 7),
+    ("PURPLE", "Purple", "Purple bookmark", "STRIP_COLOR_09", 8),
+)
+_BOOKMARK_COLORS = {
+    "WHITE": (0.94, 0.94, 0.94, 0.88),
+    "GREY": (0.47, 0.47, 0.47, 0.88),
+    "YELLOW": (0.95, 0.73, 0.12, 0.90),
+    "RED": (0.82, 0.16, 0.15, 0.90),
+    "ORANGE": (0.95, 0.39, 0.08, 0.90),
+    "GREEN": (0.18, 0.67, 0.25, 0.90),
+    "BLUE": (0.15, 0.42, 0.92, 0.90),
+    "MAGENTA": (0.90, 0.17, 0.62, 0.90),
+    "PURPLE": (0.48, 0.22, 0.82, 0.90),
+}
+_BOOKMARK_POINTER_UIDS = globals().get("_BOOKMARK_POINTER_UIDS", {})
+if not isinstance(_BOOKMARK_POINTER_UIDS, dict):
+    _BOOKMARK_POINTER_UIDS = {}
+_BOOKMARK_HIT_RADIUS_PX = 9.0
+_MARKER_HIT_RADIUS_PX = 7.0
 _CURSOR_LABEL_CAPTURE_PX = 10.0
 _KEYFRAME_HIT_PADDING_PX = 5.0
 _DRAG_THRESHOLD_PX = 4.0
@@ -404,20 +442,19 @@ def scrub_release_action(elapsed, moved, persistent_before, *, threshold=_TAP_HO
     return "KEEP_PERSISTENT" if bool(persistent_before) else "FINISH_MOMENTARY"
 
 
-def clamp_timeline_view(center, radius, minimum, maximum):
-    """Return a valid center/radius pair clipped to the scene frame range."""
+def clamp_timeline_view(center, visible_count, minimum, maximum):
+    """Return a valid center/visible-frame-count pair clipped to the scene."""
     try:
         low = int(minimum)
         high = int(maximum)
         if high < low:
             low, high = high, low
-        scene_span = max(1, high - low)
-        safe_radius = max(1, min(scene_span, int(round(float(radius)))))
+        scene_count = max(1, high - low + 1)
+        safe_count = max(1, min(scene_count, int(round(float(visible_count)))))
         safe_center = max(float(low), min(float(high), float(center)))
     except (TypeError, ValueError, OverflowError):
         return 0.0, 1
-    return safe_center, safe_radius
-
+    return safe_center, safe_count
 
 def resolve_keyframe_move_delta(selected_by_layer, occupied_by_layer, requested_delta, minimum, maximum):
     """Clamp a multi-layer key move to the active scene/preview bounds.
@@ -1117,12 +1154,31 @@ def scene_frame_bounds(scene):
     return minimum, maximum
 
 
-def scrub_display_range(scene, center_frame, maximum_range):
-    minimum, maximum = scene_frame_bounds(scene)
-    center = max(minimum, min(maximum, int(center_frame)))
-    radius = max(0, int(maximum_range))
-    return max(minimum, center - radius), min(maximum, center + radius)
+def scrub_display_range(scene, center_frame, visible_count):
+    """Return an inclusive display range containing at most ``visible_count`` frames.
 
+    The preference now means the total number of visible frames, not a radius
+    applied twice around the current frame. Near scene boundaries the window is
+    shifted, rather than shortened, whenever enough frames remain available.
+    """
+    minimum, maximum = scene_frame_bounds(scene)
+    try:
+        center = max(float(minimum), min(float(maximum), float(center_frame)))
+        scene_count = max(1, int(maximum) - int(minimum) + 1)
+        count = max(1, min(scene_count, int(round(float(visible_count)))))
+    except (TypeError, ValueError, OverflowError):
+        return int(minimum), int(minimum)
+    left = int(math.floor(center - (count - 1) * 0.5))
+    right = left + count - 1
+    if left < minimum:
+        right += int(minimum - left)
+        left = int(minimum)
+    if right > maximum:
+        left -= int(right - maximum)
+        right = int(maximum)
+    left = max(int(minimum), int(left))
+    right = min(int(maximum), max(left, int(right)))
+    return left, right
 
 def continuous_scrub_offset(delta_pixels, half_extent, maximum_range):
     """Map cursor motion continuously to an integer frame offset."""
@@ -1172,13 +1228,34 @@ def scrub_overlay_layout(region_or_width, height=None, *, position="BOTTOM", ver
 
 
 def _scrub_layout_for_state(state, region):
-    return scrub_overlay_layout(
+    layout = scrub_overlay_layout(
         region,
         position=state._position,
         ui_scale=state._ui_scale,
         length_ratio=state._length_ratio,
         edge_offset=state._edge_offset,
     )
+    try:
+        offset = float(getattr(state, "_magnetic_offset", 0.0) or 0.0)
+    except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+        offset = 0.0
+    if not math.isfinite(offset) or abs(offset) <= _MAGNET_EPSILON_PX:
+        return layout
+    scale = max(0.5, float(getattr(state, "_ui_scale", 1.0) or 1.0))
+    margin = _OVERLAY_MARGIN_PX * scale
+    if layout["vertical"]:
+        width = max(1.0, float(getattr(region, "width", 1.0) or 1.0))
+        layout["x"] = min(
+            max(margin, float(layout["x"]) + offset),
+            max(margin, width - margin),
+        )
+    else:
+        height = max(1.0, float(getattr(region, "height", 1.0) or 1.0))
+        layout["y"] = min(
+            max(margin, float(layout["y"]) + offset),
+            max(margin, height - margin),
+        )
+    return layout
 
 
 def _scrub_frame_position(frame, left, right, layout, *, invert_vertical=False):
@@ -1210,6 +1287,543 @@ def cursor_near_scrub_axis(mouse_x, mouse_y, layout, *, capture_px=28.0):
     low = float(layout["x0"]) - capture
     high = float(layout["x1"]) + capture
     return abs(y - axis_y) <= capture and low <= x <= high
+
+
+def magnetic_scrub_axis_offset(
+    mouse_x,
+    mouse_y,
+    layout,
+    *,
+    enabled=True,
+    capture_px=96.0,
+    strength=1.0,
+    inner_ratio=_MAGNET_INNER_RATIO,
+):
+    """Return the perpendicular axis offset used by the mouse magnet.
+
+    The bar remains fixed outside ``capture_px``. Inside the outer band it
+    eases toward the cursor, then follows it exactly in the inner band. The
+    returned value is relative to the configured static axis, which keeps the
+    calculation stable instead of feeding the already-moved bar back into the
+    next proximity test.
+    """
+    if not bool(enabled):
+        return 0.0
+    try:
+        x = float(mouse_x)
+        y = float(mouse_y)
+        capture = max(1.0, float(capture_px))
+        power = max(0.0, min(1.0, float(strength)))
+        inner = max(0.0, min(0.95, float(inner_ratio))) * capture
+        vertical = bool(layout.get("vertical", False))
+        if vertical:
+            base = float(layout["x"])
+            along = y
+            low = float(layout["y0"]) - capture
+            high = float(layout["y1"]) + capture
+            delta = x - base
+        else:
+            base = float(layout["y"])
+            along = x
+            low = float(layout["x0"]) - capture
+            high = float(layout["x1"]) + capture
+            delta = y - base
+    except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
+        return 0.0
+    values = (x, y, capture, power, inner, base, along, low, high, delta)
+    if not all(math.isfinite(value) for value in values):
+        return 0.0
+    if power <= 0.0 or along < low or along > high:
+        return 0.0
+    distance = abs(delta)
+    if distance >= capture:
+        return 0.0
+    if distance <= inner or capture <= inner + 1.0e-6:
+        factor = 1.0
+    else:
+        factor = (capture - distance) / (capture - inner)
+        factor = max(0.0, min(1.0, factor))
+        factor = factor * factor * (3.0 - 2.0 * factor)
+    return float(delta) * factor * power
+
+
+def direct_scrub_mapping_factor(
+    mouse_x,
+    mouse_y,
+    layout,
+    *,
+    capture_px=96.0,
+    inner_px=_DIRECT_SCRUB_INNER_PX,
+    strength=1.0,
+):
+    """Blend relative scrubbing into exact cursor mapping near the axis.
+
+    Outside the magnetic band the result is zero. Inside the narrow inner band
+    it is always one, so the playhead follows the mouse exactly. Strength only
+    affects the transitional outer band.
+    """
+    try:
+        x = float(mouse_x)
+        y = float(mouse_y)
+        capture = max(1.0, float(capture_px))
+        inner = max(1.0, min(capture, float(inner_px)))
+        power = max(0.0, min(1.0, float(strength)))
+        vertical = bool(layout.get("vertical", False))
+        if vertical:
+            distance = abs(x - float(layout["x"]))
+            along = y
+            low = float(layout["y0"]) - capture
+            high = float(layout["y1"]) + capture
+        else:
+            distance = abs(y - float(layout["y"]))
+            along = x
+            low = float(layout["x0"]) - capture
+            high = float(layout["x1"]) + capture
+    except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
+        return 0.0
+    if not all(math.isfinite(value) for value in (x, y, capture, inner, power, distance, along, low, high)):
+        return 0.0
+    if along < low or along > high or distance >= capture:
+        return 0.0
+    if distance <= inner:
+        return 1.0
+    if power <= 0.0:
+        return 0.0
+    factor = (capture - distance) / max(1.0e-6, capture - inner)
+    factor = max(0.0, min(1.0, factor))
+    factor = factor * factor * (3.0 - 2.0 * factor)
+    return factor * power
+
+
+def _grease_pencil_onion_settings(context, obj, keyframe_numbers=()):
+    """Return display-ready onion ranges and colors for a GP object."""
+    if not _is_live_grease_pencil_object(obj):
+        return None
+    data = getattr(obj, "data", None)
+    if data is None:
+        return None
+    try:
+        mode = str(getattr(data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
+        if mode == "SELECTED":
+            return None
+        before = max(0, min(120, int(getattr(data, "ghost_before_range", 0))))
+        after = max(0, min(120, int(getattr(data, "ghost_after_range", 0))))
+        opacity = max(0.05, min(0.65, float(getattr(data, "onion_factor", 0.5)) * 0.72))
+        custom = bool(getattr(data, "use_ghost_custom_colors", False))
+    except FBP_DATA_ERRORS:
+        return None
+    if custom:
+        before_color = _rgba(getattr(data, "before_color", (0.15, 0.42, 0.14)), (0.15, 0.42, 0.14, opacity), alpha=opacity)
+        after_color = _rgba(getattr(data, "after_color", (0.13, 0.08, 0.53)), (0.13, 0.08, 0.53, opacity), alpha=opacity)
+    else:
+        theme_view = None
+        try:
+            themes = getattr(getattr(context, "preferences", None), "themes", None)
+            theme = themes[0] if themes else None
+            theme_view = getattr(theme, "view_3d", None)
+        except FBP_DATA_ERRORS:
+            theme_view = None
+        before_color = _theme_color(theme_view, ("before_current_frame",), (0.15, 0.42, 0.14, opacity), alpha=opacity)
+        after_color = _theme_color(theme_view, ("after_current_frame",), (0.13, 0.08, 0.53, opacity), alpha=opacity)
+    return {
+        "data": data,
+        "mode": mode,
+        "before": before,
+        "after": after,
+        "before_color": before_color,
+        "after_color": after_color,
+        "keyframes": tuple(sorted({int(value) for value in keyframe_numbers})),
+    }
+
+
+def _onion_endpoint_frame(current_frame, amount, side, mode, keyframes):
+    current = int(current_frame)
+    count = max(0, int(amount))
+    direction = -1 if str(side).upper() == "BEFORE" else 1
+    if count <= 0:
+        return current
+    if str(mode or "ABSOLUTE").upper() != "RELATIVE":
+        return current + direction * count
+    values = tuple(int(value) for value in keyframes)
+    if direction < 0:
+        candidates = values[:bisect_left(values, current)]
+        return candidates[max(0, len(candidates) - count)] if candidates else current - count
+    candidates = values[bisect_right(values, current):]
+    return candidates[min(len(candidates) - 1, count - 1)] if candidates else current + count
+
+
+def _onion_amount_from_frame(current_frame, target_frame, side, mode, keyframes):
+    current = int(current_frame)
+    target = int(round(float(target_frame)))
+    before = str(side).upper() == "BEFORE"
+    if before:
+        target = min(current, target)
+    else:
+        target = max(current, target)
+    if str(mode or "ABSOLUTE").upper() != "RELATIVE":
+        return max(0, min(120, abs(target - current)))
+    values = tuple(int(value) for value in keyframes)
+    if before:
+        return max(0, min(120, bisect_left(values, current) - bisect_left(values, target)))
+    return max(0, min(120, bisect_right(values, target) - bisect_right(values, current)))
+
+
+def _marker_pointer(marker):
+    try:
+        return int(marker.as_pointer())
+    except FBP_DATA_ERRORS:
+        return 0
+
+
+def _bookmark_label_from_name(name):
+    label = str(name or "").strip()
+    for prefix in _LEGACY_BOOKMARK_PREFIXES:
+        if label.startswith(prefix):
+            label = label[len(prefix):].strip()
+            break
+    return label or "Bookmark"
+
+
+def _bookmark_native_name(label):
+    return f"{_BOOKMARK_PREFIX}{_bookmark_label_from_name(label)}"
+
+
+def _alphabetic_bookmark_label(index):
+    """Return spreadsheet-style bookmark labels: A..Z, AA..AZ, BA..."""
+    try:
+        value = max(0, int(index))
+    except (TypeError, ValueError, OverflowError):
+        value = 0
+    label = ""
+    while True:
+        value, remainder = divmod(value, 26)
+        label = chr(ord("A") + remainder) + label
+        if value == 0:
+            return label
+        value -= 1
+
+
+def _next_bookmark_default_label(scene):
+    """Return the first unused alphabetic name for a new Scene bookmark."""
+    used = {
+        str(record.get("name") or "").strip().upper()
+        for record in scrub_bookmark_records(scene)
+    }
+    for index in range(4096):
+        candidate = _alphabetic_bookmark_label(index)
+        if candidate not in used:
+            return candidate
+    return f"B{len(used) + 1}"
+
+
+def _bookmark_color_tag(value):
+    identifier = str(value or _BOOKMARK_DEFAULT_COLOR).upper()
+    return identifier if identifier in _BOOKMARK_COLORS else _BOOKMARK_DEFAULT_COLOR
+
+
+def _bookmark_color(value, *, selected=False):
+    base = _BOOKMARK_COLORS[_bookmark_color_tag(value)]
+    if not selected:
+        return base
+    return tuple(min(1.0, channel * 0.62 + 0.38) for channel in base[:3]) + (1.0,)
+
+
+def _load_bookmark_state(scene):
+    if scene is None:
+        return []
+    try:
+        raw = scene.get(_BOOKMARK_STATE_KEY, "")
+    except FBP_DATA_ERRORS:
+        raw = ""
+    if not raw:
+        return []
+    try:
+        payload = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    result = []
+    seen = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        uid = str(item.get("uid") or "").strip() or uuid.uuid4().hex
+        if uid in seen:
+            uid = uuid.uuid4().hex
+        seen.add(uid)
+        try:
+            frame = int(item.get("frame", 0))
+        except (TypeError, ValueError, OverflowError):
+            frame = 0
+        label = _bookmark_label_from_name(item.get("label") or item.get("marker_name") or "Bookmark")
+        result.append({
+            "uid": uid,
+            "label": label,
+            "color_tag": _bookmark_color_tag(item.get("color_tag")),
+            "marker_name": str(item.get("marker_name") or _bookmark_native_name(label)),
+            "frame": frame,
+        })
+    return result
+
+
+def _save_bookmark_state(scene, entries):
+    if scene is None:
+        return False
+    payload = []
+    for item in tuple(entries or ()):
+        if not isinstance(item, dict):
+            continue
+        payload.append({
+            "uid": str(item.get("uid") or uuid.uuid4().hex),
+            "label": _bookmark_label_from_name(item.get("label") or "Bookmark"),
+            "color_tag": _bookmark_color_tag(item.get("color_tag")),
+            "marker_name": str(item.get("marker_name") or _bookmark_native_name(item.get("label"))),
+            "frame": int(item.get("frame", 0)),
+        })
+    try:
+        scene[_BOOKMARK_STATE_KEY] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return True
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not save Scrub Bar bookmark metadata", exc)
+        return False
+
+
+def _marker_name_has_bookmark_prefix(marker):
+    try:
+        name = str(getattr(marker, "name", "") or "").strip()
+    except FBP_DATA_ERRORS:
+        return False
+    return any(name.startswith(prefix) for prefix in _LEGACY_BOOKMARK_PREFIXES)
+
+
+def _new_bookmark_entry(marker, *, label=None, color_tag=_BOOKMARK_DEFAULT_COLOR):
+    frame = int(getattr(marker, "frame", 0) or 0)
+    label = _bookmark_label_from_name(label or getattr(marker, "name", "") or f"Bookmark {frame}")
+    return {
+        "uid": uuid.uuid4().hex,
+        "label": label,
+        "color_tag": _bookmark_color_tag(color_tag),
+        "marker_name": _bookmark_native_name(label),
+        "frame": frame,
+    }
+
+
+def reconcile_scrub_bookmarks(scene):
+    """Synchronize durable FBP bookmark metadata with native Timeline markers.
+
+    Native Timeline rename/move/duplicate/delete operations remain authoritative.
+    The metadata stores only the FBP color tag and durable identity; the visible
+    marker name is normalized back to ``✦ - Name`` after native renaming.
+    """
+    markers = tuple(getattr(scene, "timeline_markers", ()) or ()) if scene is not None else ()
+    entries = _load_bookmark_state(scene)
+    used = set()
+    matched = []
+    changed = False
+
+    marker_by_pointer = {_marker_pointer(marker): marker for marker in markers if _marker_pointer(marker)}
+    for entry in entries:
+        uid = str(entry.get("uid") or "")
+        marker = None
+        for pointer, mapped_uid in tuple(_BOOKMARK_POINTER_UIDS.items()):
+            if mapped_uid == uid and pointer in marker_by_pointer:
+                marker = marker_by_pointer[pointer]
+                break
+        if marker is None:
+            exact = [
+                candidate for candidate in markers
+                if _marker_pointer(candidate) not in used
+                and int(getattr(candidate, "frame", 0) or 0) == int(entry.get("frame", 0))
+                and str(getattr(candidate, "name", "") or "") == str(entry.get("marker_name") or "")
+            ]
+            marker = exact[0] if exact else None
+        if marker is None:
+            same_name = [
+                candidate for candidate in markers
+                if _marker_pointer(candidate) not in used
+                and str(getattr(candidate, "name", "") or "") == str(entry.get("marker_name") or "")
+            ]
+            marker = same_name[0] if len(same_name) == 1 else None
+        if marker is None:
+            same_frame = [
+                candidate for candidate in markers
+                if _marker_pointer(candidate) not in used
+                and int(getattr(candidate, "frame", 0) or 0) == int(entry.get("frame", 0))
+            ]
+            selected = [candidate for candidate in same_frame if bool(getattr(candidate, "select", False))]
+            marker = selected[0] if len(selected) == 1 else (same_frame[0] if len(same_frame) == 1 else None)
+        if marker is None:
+            changed = True
+            continue
+
+        pointer = _marker_pointer(marker)
+        used.add(pointer)
+        _BOOKMARK_POINTER_UIDS[pointer] = uid
+        native_label = _bookmark_label_from_name(getattr(marker, "name", ""))
+        previous_name = str(entry.get("marker_name") or "")
+        if str(getattr(marker, "name", "") or "") != previous_name:
+            entry["label"] = native_label
+            changed = True
+        desired_name = _bookmark_native_name(entry.get("label") or native_label)
+        try:
+            if str(marker.name) != desired_name:
+                marker.name = desired_name
+        except FBP_DATA_ERRORS:
+            pass
+        frame = int(getattr(marker, "frame", 0) or 0)
+        if entry.get("marker_name") != desired_name or int(entry.get("frame", 0)) != frame:
+            changed = True
+        entry["label"] = _bookmark_label_from_name(entry.get("label") or native_label)
+        entry["marker_name"] = desired_name
+        entry["frame"] = frame
+        entry["color_tag"] = _bookmark_color_tag(entry.get("color_tag"))
+        matched.append((entry, marker))
+
+    for marker in markers:
+        pointer = _marker_pointer(marker)
+        if pointer in used or not _marker_name_has_bookmark_prefix(marker):
+            continue
+        entry = _new_bookmark_entry(marker)
+        desired_name = _bookmark_native_name(entry["label"])
+        try:
+            marker.name = desired_name
+        except FBP_DATA_ERRORS:
+            pass
+        entry["marker_name"] = desired_name
+        _BOOKMARK_POINTER_UIDS[pointer] = entry["uid"]
+        used.add(pointer)
+        matched.append((entry, marker))
+        changed = True
+
+    valid_pointers = {_marker_pointer(marker) for _entry, marker in matched}
+    for pointer in tuple(_BOOKMARK_POINTER_UIDS):
+        if pointer not in valid_pointers:
+            _BOOKMARK_POINTER_UIDS.pop(pointer, None)
+
+    normalized = [entry for entry, _marker in matched]
+    if changed or normalized != entries:
+        _save_bookmark_state(scene, normalized)
+    return tuple(matched)
+
+
+def is_scrub_bookmark(marker, scene=None):
+    pointer = _marker_pointer(marker)
+    if pointer and pointer in _BOOKMARK_POINTER_UIDS:
+        return True
+    if scene is not None:
+        return any(candidate is marker for _entry, candidate in reconcile_scrub_bookmarks(scene))
+    return _marker_name_has_bookmark_prefix(marker)
+
+
+def scrub_bookmark_records(scene):
+    records = []
+    for entry, marker in reconcile_scrub_bookmarks(scene):
+        records.append({
+            "uid": str(entry.get("uid") or ""),
+            "marker": marker,
+            "frame": int(getattr(marker, "frame", 0) or 0),
+            "name": _bookmark_label_from_name(entry.get("label") or getattr(marker, "name", "")),
+            "color_tag": _bookmark_color_tag(entry.get("color_tag")),
+            "selected": bool(getattr(marker, "select", False)),
+        })
+    return tuple(sorted(records, key=lambda item: (item["frame"], item["name"].casefold(), item["uid"])))
+
+
+def scrub_native_marker_records(scene):
+    bookmark_pointers = {_marker_pointer(record["marker"]) for record in scrub_bookmark_records(scene)}
+    records = []
+    try:
+        for marker in tuple(getattr(scene, "timeline_markers", ()) or ()):
+            if _marker_pointer(marker) in bookmark_pointers:
+                continue
+            records.append({
+                "marker": marker,
+                "frame": int(getattr(marker, "frame", 0) or 0),
+                "name": str(getattr(marker, "name", "") or ""),
+                "selected": bool(getattr(marker, "select", False)),
+            })
+    except FBP_DATA_ERRORS:
+        return ()
+    return tuple(sorted(records, key=lambda item: (item["frame"], item["name"].casefold())))
+
+
+def selected_scrub_bookmark_records(scene):
+    return tuple(record for record in scrub_bookmark_records(scene) if record["selected"])
+
+
+def _bookmark_record_by_uid(scene, uid):
+    target = str(uid or "")
+    return next((record for record in scrub_bookmark_records(scene) if record["uid"] == target), None)
+
+
+def _set_bookmark_color(scene, records, color_tag):
+    identifiers = {str(record.get("uid") or "") for record in tuple(records or ())}
+    if not identifiers:
+        return False
+    entries = _load_bookmark_state(scene)
+    changed = False
+    for entry in entries:
+        if str(entry.get("uid") or "") in identifiers:
+            value = _bookmark_color_tag(color_tag)
+            if entry.get("color_tag") != value:
+                entry["color_tag"] = value
+                changed = True
+    if changed:
+        _save_bookmark_state(scene, entries)
+    return changed
+
+
+def _delete_bookmark_records(scene, records):
+    markers = getattr(scene, "timeline_markers", None) if scene is not None else None
+    targets = tuple(records or ())
+    if markers is None or not targets:
+        return 0
+    removed = 0
+    for record in targets:
+        marker = record.get("marker") if isinstance(record, dict) else None
+        if marker is None:
+            continue
+        try:
+            markers.remove(marker)
+            removed += 1
+        except FBP_DATA_ERRORS:
+            continue
+    reconcile_scrub_bookmarks(scene)
+    return removed
+
+
+def scrub_magnet_should_release(event_type, *, event_in_window, cursor_in_owned_window):
+    """Return whether the persistent magnet should ease back to its base axis.
+
+    TIMER events are not reliable indicators of the active region: Blender may
+    provide no region (or a sidebar/header region) even while the cursor remains
+    inside the owning Viewport. Mouse events update ``cursor_in_owned_window``;
+    timer events must use that remembered state.
+    """
+    if str(event_type or "").upper() == "TIMER":
+        return not bool(cursor_in_owned_window)
+    return not bool(event_in_window)
+
+
+def smooth_scrub_magnet_offset(current, target, smoothing, elapsed, *, interval=_TIMER_INTERVAL):
+    """Advance the magnetic offset with frame-rate-independent easing."""
+    try:
+        current_value = float(current)
+        target_value = float(target)
+        response = max(0.01, min(1.0, float(smoothing)))
+        seconds = max(0.0, min(1.0, float(elapsed)))
+        base_interval = max(1.0e-4, float(interval))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    values = (current_value, target_value, response, seconds, base_interval)
+    if not all(math.isfinite(value) for value in values):
+        return 0.0
+    if abs(target_value - current_value) <= _MAGNET_EPSILON_PX:
+        return target_value
+    steps = max(1.0, seconds / base_interval)
+    alpha = 1.0 - math.pow(1.0 - response, steps)
+    return current_value + (target_value - current_value) * max(0.0, min(1.0, alpha))
 
 
 def cursor_in_scrub_bounds(mouse_x, mouse_y, bounds, *, padding=0.0):
@@ -1432,19 +2046,24 @@ def relative_scrub_target(
     sensitivity=1.0,
     shift=False,
     slow_factor=0.2,
+    negative_radius=None,
+    positive_radius=None,
 ):
     """Map relative mouse motion to a frame without using cursor position.
 
-    Keeping the mapping relative guarantees that the first mouse event after
-    pressing < stays on the activation frame instead of jumping to whichever
-    frame happens to lie under the cursor.
+    ``negative_radius`` and ``positive_radius`` allow asymmetric visible ranges.
+    This matters near scene boundaries: with a visible range of 1-50 and the
+    playhead at frame 1, moving to the far end must reach frame 50 instead of
+    stopping at the old symmetric half-range around frame 25.
     """
     try:
         origin = float(origin_frame)
         delta = float(pixel_delta) * float(sensitivity)
         radius = max(1.0, float(scrub_radius))
+        backward = radius if negative_radius is None else max(0.0, float(negative_radius))
+        forward = radius if positive_radius is None else max(0.0, float(positive_radius))
         extent = max(1.0, float(half_extent))
-        if not all(math.isfinite(value) for value in (origin, delta, radius, extent)):
+        if not all(math.isfinite(value) for value in (origin, delta, radius, backward, forward, extent)):
             raise ValueError
         if shift:
             factor = max(0.02, min(1.0, float(slow_factor)))
@@ -1452,7 +2071,8 @@ def relative_scrub_target(
                 raise ValueError
             delta *= factor
         normalized = max(-1.0, min(1.0, delta / extent))
-        return origin + normalized * radius, delta
+        span = forward if normalized >= 0.0 else backward
+        return origin + normalized * span, delta
     except (TypeError, ValueError, OverflowError):
         try:
             return float(origin_frame), 0.0
@@ -1808,7 +2428,10 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _window = None
     _workspace = None
     _screen = None
+    _area = None
+    _region = None
     _area_pointer = 0
+    _region_pointer = 0
     _scene_pointer = 0
     _window_pointer = 0
     _workspace_pointer = 0
@@ -1891,10 +2514,60 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _object_data_name = ""
     _cursor_over_axis = False
     _cursor_kind = ""
+    _magnetic_enabled = True
+    _magnetic_distance = 96.0
+    _magnetic_strength = 1.0
+    _magnetic_smoothing = 0.22
+    _magnetic_offset = 0.0
+    _magnetic_target_offset = 0.0
+    _magnetic_last_tick = 0.0
+    _cursor_in_owned_window = False
+    _shortcut_direct_factor = 0.0
+    _shortcut_direct_locked = False
+    _relative_anchor_frame = 0.0
+    _onion_before_handle = None
+    _onion_after_handle = None
+    _bookmark_records = ()
+    _native_marker_records = ()
+    _bookmark_hit_records = ()
+    _native_marker_hit_records = ()
+    _hover_bookmark_uid = ""
+    _bookmark_transform_sources = ()
+    _bookmark_transform_created = ()
+    _bookmark_transform_delta = 0
+    _onion_drag_original = None
 
     @classmethod
     def poll(cls, context):
         return _is_view3d_context(context, require_window_region=True)
+
+    def _owned_window_region(self):
+        """Return the original Viewport WINDOW region even on TIMER events.
+
+        Blender can dispatch modal TIMER events with ``context.region`` set to
+        ``None`` or to a non-WINDOW region, especially outside GP modes. The
+        Scrub Bar must keep using the region where it was invoked instead of
+        treating those timer contexts as a cursor release.
+        """
+        area = getattr(self, "_area", None)
+        region = getattr(self, "_region", None)
+        pointer = int(getattr(self, "_region_pointer", 0) or 0)
+        try:
+            if (
+                area is not None
+                and region is not None
+                and pointer > 0
+                and str(getattr(region, "type", "") or "") == "WINDOW"
+                and any(
+                    int(candidate.as_pointer()) == pointer
+                    for candidate in tuple(getattr(area, "regions", ()) or ())
+                )
+                and int(region.as_pointer()) == pointer
+            ):
+                return region
+        except FBP_DATA_ERRORS:
+            return None
+        return None
 
     def _resolve_bound_object(self, context):
         """Resolve the original GP object across mode switches, rename and Undo."""
@@ -1979,13 +2652,129 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         except FBP_DATA_ERRORS:
             pass
 
+    def _sync_magnetic_preferences(self, context):
+        preferences = fbp_get_addon_preferences(context)
+        try:
+            self._magnetic_enabled = bool(
+                getattr(preferences, "gp_scrub_mouse_magnet", True)
+            )
+            self._magnetic_distance = max(
+                24.0,
+                min(
+                    240.0,
+                    float(
+                        getattr(
+                            preferences,
+                            "gp_scrub_mouse_magnet_distance",
+                            96.0,
+                        )
+                    ),
+                ),
+            )
+            self._magnetic_strength = max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            preferences,
+                            "gp_scrub_mouse_magnet_strength",
+                            1.0,
+                        )
+                    ),
+                ),
+            )
+            self._magnetic_smoothing = max(
+                0.01,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            preferences,
+                            "gp_scrub_mouse_magnet_smoothing",
+                            0.22,
+                        )
+                    ),
+                ),
+            )
+        except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+            self._magnetic_enabled = True
+            self._magnetic_distance = 96.0
+            self._magnetic_strength = 1.0
+            self._magnetic_smoothing = 0.22
+        if not self._magnetic_enabled:
+            self._magnetic_target_offset = 0.0
+
+    def _base_layout(self, region):
+        return scrub_overlay_layout(
+            region,
+            position=self._position,
+            ui_scale=self._ui_scale,
+            length_ratio=self._length_ratio,
+            edge_offset=self._edge_offset,
+        )
+
+    def _update_magnetic_target(self, context, *, release=False):
+        region = self._owned_window_region()
+        if self._interaction:
+            self._magnetic_target_offset = float(self._magnetic_offset or 0.0)
+            return self._magnetic_target_offset
+        enabled = bool(
+            not release
+            and self._magnetic_enabled
+            and self._is_persistent
+            and not self._shortcut_pending
+            and region is not None
+            and str(getattr(region, "type", "") or "") == "WINDOW"
+        )
+        if not enabled:
+            self._magnetic_target_offset = 0.0
+            return 0.0
+        self._magnetic_target_offset = magnetic_scrub_axis_offset(
+            self._mouse_x,
+            self._mouse_y,
+            self._base_layout(region),
+            enabled=True,
+            capture_px=self._magnetic_distance
+            * max(0.75, float(self._ui_scale)),
+            strength=self._magnetic_strength,
+        )
+        return self._magnetic_target_offset
+
+    def _tick_magnetic_hover(self, context, *, release=False):
+        self._update_magnetic_target(context, release=release)
+        now = time.monotonic()
+        previous_tick = float(self._magnetic_last_tick or 0.0)
+        elapsed = (
+            _TIMER_INTERVAL
+            if previous_tick <= 0.0
+            else max(0.0, now - previous_tick)
+        )
+        self._magnetic_last_tick = now
+        previous = float(self._magnetic_offset or 0.0)
+        self._magnetic_offset = smooth_scrub_magnet_offset(
+            previous,
+            self._magnetic_target_offset,
+            self._magnetic_smoothing,
+            elapsed,
+        )
+        changed = abs(self._magnetic_offset - previous) > _MAGNET_EPSILON_PX
+        if changed:
+            self._cursor_label_bounds = None
+            self._tag_redraw()
+        return changed
+
     def _sync_live_display_preferences(self, context):
         preferences = fbp_get_addon_preferences(context)
         position = str(getattr(preferences, "gp_scrub_position", self._position) or self._position).upper()
         if position in {"TOP", "BOTTOM", "LEFT", "RIGHT"} and position != self._position:
             self._position = position
             self._vertical = position in {"LEFT", "RIGHT"}
+            self._magnetic_offset = 0.0
+            self._magnetic_target_offset = 0.0
+            self._cursor_label_bounds = None
         self._show_info = bool(getattr(preferences, "gp_scrub_show_info", False))
+        self._sync_magnetic_preferences(context)
         _apply_inverted_scrub_ink(self, context)
 
     def _sync_preview_range(self, scene):
@@ -1996,10 +2785,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         enabled, minimum, maximum = signature
         if enabled:
             self._view_center = (float(minimum) + float(maximum)) * 0.5
-            self._view_radius = max(
-                1,
-                int(math.ceil((float(maximum) - float(minimum)) * 0.5)),
-            )
+            self._view_radius = max(1, int(maximum) - int(minimum) + 1)
 
     def _display_range(self, scene):
         self._sync_preview_range(scene)
@@ -2071,9 +2857,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         return best
 
     def _set_idle_hover(self, context):
-        inside = self._mouse_in_axis(context)
-        self._hover_frame = self._keyframe_hit(context) if inside else None
-        self._set_hover_cursor(context, inside)
+        axis_inside = self._mouse_in_axis(context)
+        bookmark = self._bookmark_hit()
+        interactive_inside = bool(axis_inside or bookmark is not None)
+        self._hover_bookmark_uid = str(bookmark.get("uid") or "") if bookmark else ""
+        self._hover_frame = self._keyframe_hit(context) if axis_inside and bookmark is None else None
+        self._set_hover_cursor(context, interactive_inside)
         self._tag_redraw()
 
     def _set_frame_from_axis(self, context):
@@ -2112,7 +2901,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         except (TypeError, ValueError, OverflowError):
             return
         new_center, new_radius = clamp_timeline_view(
-            pivot + (0.5 - pivot_factor) * max(2.0, float(new_radius) * 2.0),
+            pivot + (0.5 - pivot_factor) * max(1.0, float(new_radius) - 1.0),
             new_radius,
             minimum,
             maximum,
@@ -2545,7 +3334,14 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             interaction == "KEY_MOVE"
             and (int(self._transform_delta) or self._duplicate_pending)
         )
-        if cancel and interaction == "KEY_MOVE":
+        changed_bookmarks = bool(
+            interaction == "BOOKMARK_MOVE"
+            and (int(self._bookmark_transform_delta) or self._bookmark_transform_created)
+        )
+        if cancel and interaction == "BOOKMARK_MOVE":
+            self._cancel_bookmark_transform(context)
+            changed_bookmarks = False
+        elif cancel and interaction == "KEY_MOVE":
             self._cancel_key_transform(context)
             if self._duplicate_pending:
                 for layer, number in reversed(self._duplicate_sources):
@@ -2559,6 +3355,27 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._view_radius = self._interaction_start_radius
         elif cancel and interaction == "SCRUB":
             self._set_frame(context.scene, self._interaction_start_frame)
+        elif cancel and interaction in {"ONION_BEFORE", "ONION_AFTER"}:
+            original = self._onion_drag_original
+            if isinstance(original, tuple) and len(original) == 3:
+                try:
+                    setattr(original[0], original[1], int(original[2]))
+                except FBP_DATA_ERRORS:
+                    pass
+        elif interaction in {"ONION_BEFORE", "ONION_AFTER"}:
+            original = self._onion_drag_original
+            changed_onion = False
+            if isinstance(original, tuple) and len(original) == 3:
+                try:
+                    changed_onion = int(getattr(original[0], original[1])) != int(original[2])
+                except FBP_DATA_ERRORS:
+                    changed_onion = False
+            if changed_onion:
+                try:
+                    bpy.ops.ed.undo_push(message="Adjust Grease Pencil Onion Range")
+                except FBP_DATA_ERRORS:
+                    pass
+        self._onion_drag_original = None
         self._interaction = ""
         self._interaction_event_type = ""
         self._transform_sources = ()
@@ -2579,6 +3396,21 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._restore_transform_to_original()
         self._duplicate_pending = False
         self._duplicate_sources = ()
+        if changed_bookmarks:
+            try:
+                bpy.ops.ed.undo_push(
+                    message=(
+                        "Duplicate Scrub Bookmarks"
+                        if self._bookmark_transform_created
+                        else "Move Scrub Bookmarks"
+                    )
+                )
+            except FBP_DATA_ERRORS:
+                pass
+        self._bookmark_transform_sources = ()
+        self._bookmark_transform_created = ()
+        self._bookmark_transform_delta = 0
+        self._update_magnetic_target(context)
         self._set_idle_hover(context)
 
     def _begin_shortcut(self, context, event):
@@ -2606,12 +3438,18 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._activation_event_type = str(getattr(event, "type", "") or "")
         self._origin_frame = int(context.scene.frame_current)
         self._current_frame = self._origin_frame
+        self._relative_anchor_frame = float(self._origin_frame)
+        self._shortcut_direct_factor = 0.0
+        self._shortcut_direct_locked = False
         self._overflow_offset = 0
         self._drag_anchor_x = self._shortcut_start_x
         self._drag_anchor_y = self._shortcut_start_y
         self._mouse_x = self._shortcut_start_x
         self._mouse_y = self._shortcut_start_y
         self._edge_direction = 0
+        self._magnetic_offset = 0.0
+        self._magnetic_target_offset = 0.0
+        self._cursor_label_bounds = None
         self._suspend_onion_skin(context)
         self._set_hover_cursor(context, True)
         self._tag_redraw()
@@ -2687,7 +3525,216 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             context.scene, self._object
         )
         self._marker_frames = marker_snap_frames(context.scene)
+        self._bookmark_records = scrub_bookmark_records(context.scene)
+        self._native_marker_records = scrub_native_marker_records(context.scene)
         self._strip_frames = strip_snap_frames(context.scene, self._object)
+
+    def _onion_handle_hit(self):
+        radius = (_ONION_HANDLE_RADIUS_PX + _ONION_HANDLE_HIT_PADDING_PX) * max(0.75, float(self._ui_scale))
+        for side, point in (("BEFORE", self._onion_before_handle), ("AFTER", self._onion_after_handle)):
+            if point is None:
+                continue
+            if math.hypot(float(self._mouse_x) - float(point[0]), float(self._mouse_y) - float(point[1])) <= radius:
+                return side
+        return None
+
+    @staticmethod
+    def _point_in_triangle(x, y, triangle):
+        try:
+            (x1, y1), (x2, y2), (x3, y3) = triangle
+            denominator = ((y2 - y3) * (x1 - x3)) + ((x3 - x2) * (y1 - y3))
+            if abs(float(denominator)) <= 1.0e-8:
+                return False
+            a = (((y2 - y3) * (x - x3)) + ((x3 - x2) * (y - y3))) / denominator
+            b = (((y3 - y1) * (x - x3)) + ((x1 - x3) * (y - y3))) / denominator
+            c = 1.0 - a - b
+            return a >= 0.0 and b >= 0.0 and c >= 0.0
+        except (TypeError, ValueError, KeyError, IndexError):
+            return False
+
+    def _bookmark_hit(self):
+        best = None
+        best_distance = float("inf")
+        radius = _BOOKMARK_HIT_RADIUS_PX * max(0.75, float(self._ui_scale))
+        mouse_x = float(self._mouse_x)
+        mouse_y = float(self._mouse_y)
+        for hit in tuple(getattr(self, "_bookmark_hit_records", ()) or ()):
+            try:
+                bounds = hit.get("label_bounds")
+                label_hit = bool(
+                    bounds is not None
+                    and float(bounds[0]) <= mouse_x <= float(bounds[2])
+                    and float(bounds[1]) <= mouse_y <= float(bounds[3])
+                )
+                triangle_hit = self._point_in_triangle(mouse_x, mouse_y, hit.get("triangle"))
+                distance = math.hypot(mouse_x - float(hit["x"]), mouse_y - float(hit["y"]))
+            except (TypeError, ValueError, KeyError, IndexError):
+                continue
+            if label_hit or triangle_hit:
+                return hit.get("record")
+            if distance <= radius and distance < best_distance:
+                best = hit.get("record")
+                best_distance = distance
+        return best
+
+    def _deselect_bookmarks(self, context):
+        scene = getattr(context, "scene", None)
+        changed = False
+        for record in scrub_bookmark_records(scene):
+            marker = record.get("marker")
+            try:
+                if bool(marker.select):
+                    marker.select = False
+                    changed = True
+            except FBP_DATA_ERRORS:
+                continue
+        if changed:
+            self._hover_bookmark_uid = ""
+            self._refresh_keyframe_cache(context)
+            self._tag_redraw()
+        return changed
+
+    def _select_bookmark_record(self, context, record, *, extend=False, toggle=False):
+        if not isinstance(record, dict):
+            return False
+        scene = getattr(context, "scene", None)
+        marker = record.get("marker")
+        if scene is None or marker is None:
+            return False
+        try:
+            if not extend:
+                for candidate in tuple(getattr(scene, "timeline_markers", ()) or ()):
+                    candidate.select = False
+            marker.select = (not bool(marker.select)) if toggle else True
+        except FBP_DATA_ERRORS:
+            return False
+        self._hover_bookmark_uid = str(record.get("uid") or "")
+        self._refresh_keyframe_cache(context)
+        self._tag_redraw()
+        return True
+
+    def _begin_bookmark_transform(self, context, *, duplicate=False):
+        scene = getattr(context, "scene", None)
+        markers = getattr(scene, "timeline_markers", None) if scene is not None else None
+        if markers is None:
+            return False
+        selected = selected_scrub_bookmark_records(scene)
+        if not selected:
+            hit = self._bookmark_hit()
+            if hit is not None and self._select_bookmark_record(context, hit):
+                selected = selected_scrub_bookmark_records(scene)
+        if not selected:
+            return False
+
+        created_markers = []
+        if duplicate:
+            entries = _load_bookmark_state(scene)
+            try:
+                for marker in tuple(markers):
+                    marker.select = False
+            except FBP_DATA_ERRORS:
+                pass
+            for record in selected:
+                try:
+                    try:
+                        marker = markers.new(
+                            _bookmark_native_name(record["name"]),
+                            frame=int(record["frame"]),
+                        )
+                    except TypeError:
+                        marker = markers.new(_bookmark_native_name(record["name"]))
+                        marker.frame = int(record["frame"])
+                    marker.select = True
+                except FBP_DATA_ERRORS:
+                    continue
+                entry = _new_bookmark_entry(
+                    marker,
+                    label=record["name"],
+                    color_tag=record["color_tag"],
+                )
+                entries.append(entry)
+                _BOOKMARK_POINTER_UIDS[_marker_pointer(marker)] = entry["uid"]
+                created_markers.append(marker)
+            if not created_markers:
+                return False
+            _save_bookmark_state(scene, entries)
+            reconcile_scrub_bookmarks(scene)
+            self._refresh_keyframe_cache(context)
+            selected = selected_scrub_bookmark_records(scene)
+
+        self._bookmark_transform_sources = tuple(
+            (record["marker"], int(record["frame"])) for record in selected
+        )
+        self._bookmark_transform_created = tuple(created_markers)
+        self._bookmark_transform_delta = 0
+        self._interaction_start_frame = int(round(self._axis_frame(context)))
+        self._interaction = "BOOKMARK_MOVE"
+        self._interaction_event_type = "LEFTMOUSE"
+        self._tag_redraw()
+        return True
+
+    def _update_bookmark_transform(self, context):
+        if not self._bookmark_transform_sources:
+            return False
+        delta = int(round(self._axis_frame(context))) - int(self._interaction_start_frame)
+        if delta == int(self._bookmark_transform_delta):
+            return False
+        minimum, maximum = scene_frame_bounds(context.scene)
+        for marker, original in self._bookmark_transform_sources:
+            try:
+                marker.frame = max(int(minimum), min(int(maximum), int(original) + delta))
+            except FBP_DATA_ERRORS:
+                continue
+        self._bookmark_transform_delta = delta
+        reconcile_scrub_bookmarks(context.scene)
+        self._refresh_keyframe_cache(context)
+        self._tag_redraw()
+        return True
+
+    def _cancel_bookmark_transform(self, context):
+        scene = getattr(context, "scene", None)
+        markers = getattr(scene, "timeline_markers", None) if scene is not None else None
+        created = set(self._bookmark_transform_created)
+        if markers is not None and created:
+            for marker in tuple(created):
+                try:
+                    markers.remove(marker)
+                except FBP_DATA_ERRORS:
+                    continue
+        else:
+            for marker, original in self._bookmark_transform_sources:
+                try:
+                    marker.frame = int(original)
+                except FBP_DATA_ERRORS:
+                    continue
+        reconcile_scrub_bookmarks(scene)
+        self._refresh_keyframe_cache(context)
+        self._bookmark_transform_sources = ()
+        self._bookmark_transform_created = ()
+        self._bookmark_transform_delta = 0
+        self._tag_redraw()
+
+    def _update_onion_range(self, context, side):
+        settings = _grease_pencil_onion_settings(context, self._object, self._keyframe_record_numbers)
+        if settings is None:
+            return False
+        target = self._axis_frame(context)
+        amount = _onion_amount_from_frame(
+            self._current_frame,
+            target,
+            side,
+            settings["mode"],
+            settings["keyframes"],
+        )
+        attribute = "ghost_before_range" if str(side).upper() == "BEFORE" else "ghost_after_range"
+        try:
+            if int(getattr(settings["data"], attribute)) != int(amount):
+                setattr(settings["data"], attribute, int(amount))
+                self._tag_redraw()
+            return True
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not update Grease Pencil onion range", exc)
+            return False
 
     def _set_frame(self, scene, target):
         minimum, maximum = scene_frame_bounds(scene)
@@ -2721,28 +3768,80 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return int(self._origin_frame) + int(self._overflow_offset)
         return int(round(self._view_center))
 
-    def _active_scrub_radius(self):
+    def _active_scrub_count(self):
         return (
             max(1, int(self._hold_radius))
             if self._shortcut_pending
             else max(1, int(self._view_radius))
         )
 
+    def _active_scrub_radius(self):
+        return max(1.0, (float(self._active_scrub_count()) - 1.0) * 0.5)
+
     def _target_from_mouse(self, context):
         scene = context.scene
         layout = self._layout(context.region)
+        visible_count = self._active_scrub_count()
         scrub_radius = self._active_scrub_radius()
-        left, right = scrub_display_range(scene, self._window_center(), scrub_radius)
+        left, right = scrub_display_range(scene, self._window_center(), visible_count)
 
-        raw_target, edge_value = relative_scrub_target(
-            self._window_center(),
+        factor = direct_scrub_mapping_factor(
+            self._mouse_x,
+            self._mouse_y,
+            layout,
+            capture_px=self._magnetic_distance * max(0.75, float(self._ui_scale)),
+            inner_px=_DIRECT_SCRUB_INNER_PX * max(0.75, float(self._ui_scale)),
+            strength=self._magnetic_strength if self._magnetic_enabled else 0.0,
+        )
+        previous_factor = float(getattr(self, "_shortcut_direct_factor", 0.0) or 0.0)
+        was_direct_locked = bool(getattr(self, "_shortcut_direct_locked", False))
+        direct_locked = factor >= 0.999
+        if was_direct_locked and not direct_locked:
+            # Leaving exact cursor mapping: the exit point becomes the new
+            # relative origin immediately, avoiding a recoil toward the old
+            # activation point while the magnetic blend fades out.
+            self._relative_anchor_frame = float(self._current_frame)
+            self._drag_anchor_x = float(self._mouse_x)
+            self._drag_anchor_y = float(self._mouse_y)
+            self._overflow_offset = 0
+        elif previous_factor > 0.0 and factor <= 0.0:
+            self._relative_anchor_frame = float(self._current_frame)
+            self._drag_anchor_x = float(self._mouse_x)
+            self._drag_anchor_y = float(self._mouse_y)
+            self._overflow_offset = 0
+        self._shortcut_direct_locked = direct_locked
+        self._shortcut_direct_factor = factor
+
+        relative_origin = float(getattr(self, "_relative_anchor_frame", self._window_center())) + int(self._overflow_offset)
+        relative_target, relative_edge = relative_scrub_target(
+            relative_origin,
             self._cursor_delta(),
             scrub_radius,
             layout["half_extent"],
             sensitivity=self._sensitivity,
             shift=self._shift_held,
             slow_factor=self._slow_factor,
+            negative_radius=max(0.0, relative_origin - float(left)),
+            positive_radius=max(0.0, float(right) - relative_origin),
         )
+        absolute_target = timeline_cursor_frame(
+            self._mouse_x,
+            self._mouse_y,
+            left,
+            right,
+            layout,
+            invert_vertical=self._invert_vertical,
+        )
+        raw_target = relative_target + (absolute_target - relative_target) * factor
+
+        if layout["vertical"]:
+            direct_edge = self._mouse_y - (float(layout["y0"]) + float(layout["y1"])) * 0.5
+            if self._invert_vertical:
+                direct_edge = -direct_edge
+        else:
+            direct_edge = self._mouse_x - (float(layout["x0"]) + float(layout["x1"])) * 0.5
+        edge_value = relative_edge + (direct_edge - relative_edge) * factor
+
         visible_span = max(1.0, float(right - left))
         pixels_per_frame = float(layout["length"]) / visible_span
         self._snap_settings = playhead_snap_settings(scene)
@@ -2859,8 +3958,8 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     context.scene,
                     window_center,
                     (
-                        self._active_scrub_radius()
-                        if hasattr(self, "_active_scrub_radius")
+                        self._active_scrub_count()
+                        if hasattr(self, "_active_scrub_count")
                         else self._maximum_range
                     ),
                 )
@@ -2917,6 +4016,180 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             _draw_uniform_batch(shader, batch_for_shader, "TRIS", major_tick_tris, major)
             _draw_uniform_batch(shader, batch_for_shader, "TRIS", second_tick_tris, second)
 
+            preferences = fbp_get_addon_preferences(context)
+            scale_ui = max(0.75, self._ui_scale)
+            if layout["vertical"]:
+                cursor_side = 1.0 if self._position == "LEFT" else -1.0
+                opposite_side = -cursor_side
+            else:
+                cursor_side = -1.0 if self._position == "TOP" else 1.0
+                opposite_side = -cursor_side
+
+            # Native Blender Timeline markers are distinct from FBP bookmarks.
+            # They remain close to the cursor side and use a thin stem plus M.
+            self._native_marker_hit_records = []
+            marker_font_size = max(8, int(round(9 * scale_ui)))
+            for record in tuple(self._native_marker_records or ()):
+                frame = int(record["frame"])
+                if frame < int(left) or frame > int(right):
+                    continue
+                mx, my = self._frame_position(frame, left, right, layout)
+                selected = bool(record.get("selected", False))
+                marker_color = palette["accent"] if selected else (*secondary[:3], 0.72)
+                marker_line = []
+                offset = 8.0 * scale_ui
+                if layout["vertical"]:
+                    end_x, end_y = mx + cursor_side * offset, my
+                    _append_rounded_segment(marker_line, mx, my, end_x, end_y, max(0.65, self._line_width * scale_ui))
+                    text = "M"
+                    blf.size(0, marker_font_size)
+                    text_w, text_h = blf.dimensions(0, text)
+                    text_x = end_x + (3.0 * scale_ui if cursor_side > 0 else -text_w - 3.0 * scale_ui)
+                    text_y = end_y - text_h * 0.5
+                else:
+                    end_x, end_y = mx, my + cursor_side * offset
+                    _append_rounded_segment(marker_line, mx, my, end_x, end_y, max(0.65, self._line_width * scale_ui))
+                    text = "M"
+                    blf.size(0, marker_font_size)
+                    text_w, text_h = blf.dimensions(0, text)
+                    text_x = end_x - text_w * 0.5
+                    text_y = end_y + (3.0 * scale_ui if cursor_side > 0 else -text_h - 3.0 * scale_ui)
+                _draw_uniform_batch(shader, batch_for_shader, "TRIS", marker_line, marker_color)
+                _draw_text(blf, text, text_x, text_y, marker_font_size, marker_color)
+                self._native_marker_hit_records.append({"record": record, "x": float(end_x), "y": float(end_y)})
+
+            # Onion-skin handles live on the side opposite the current-frame
+            # cursor label, so they never disappear under the axis or playhead.
+            show_onion = bool(getattr(preferences, "gp_scrub_show_onion_handles", True))
+            self._onion_before_handle = None
+            self._onion_after_handle = None
+            onion = _grease_pencil_onion_settings(context, self._object, self._keyframe_record_numbers) if show_onion else None
+            if onion is not None:
+                onion_line_width = max(0.65, 0.9 * scale_ui)
+                onion_handle_radius = _ONION_HANDLE_RADIUS_PX * scale_ui
+                lane_offset = 15.0 * scale_ui
+                for side, amount, color in (
+                    ("BEFORE", onion["before"], onion["before_color"]),
+                    ("AFTER", onion["after"], onion["after_color"]),
+                ):
+                    endpoint_frame = _onion_endpoint_frame(
+                        self._current_frame,
+                        amount,
+                        side,
+                        onion["mode"],
+                        onion["keyframes"],
+                    )
+                    endpoint_frame = max(int(left), min(int(right), int(endpoint_frame)))
+                    axis_end_x, axis_end_y = self._frame_position(endpoint_frame, left, right, layout)
+                    if layout["vertical"]:
+                        start_x, start_y = current_x + opposite_side * lane_offset, current_y
+                        end_x, end_y = current_x + opposite_side * lane_offset, axis_end_y
+                    else:
+                        start_x, start_y = current_x, current_y + opposite_side * lane_offset
+                        end_x, end_y = axis_end_x, current_y + opposite_side * lane_offset
+                    if int(amount) <= 0:
+                        tangent = -1.0 if side == "BEFORE" else 1.0
+                        if layout["vertical"] and self._invert_vertical:
+                            tangent = -tangent
+                        if layout["vertical"]:
+                            end_y += tangent * 7.0 * scale_ui
+                        else:
+                            end_x += tangent * 7.0 * scale_ui
+                    onion_color = (*color[:3], min(0.52, max(0.16, color[3] * 0.72)))
+                    onion_tris = []
+                    _append_rounded_segment(onion_tris, current_x, current_y, start_x, start_y, max(0.55, onion_line_width * 0.75))
+                    _append_rounded_segment(onion_tris, start_x, start_y, end_x, end_y, onion_line_width)
+                    _draw_uniform_batch(shader, batch_for_shader, "TRIS", onion_tris, onion_color)
+                    handle_tris = []
+                    _append_circle_triangles(handle_tris, end_x, end_y, onion_handle_radius, segments=14)
+                    handle_color = (*color[:3], min(0.96, max(0.48, color[3] + 0.30)))
+                    _draw_uniform_batch(shader, batch_for_shader, "TRIS", handle_tris, handle_color)
+                    if side == "BEFORE":
+                        self._onion_before_handle = (float(end_x), float(end_y))
+                    else:
+                        self._onion_after_handle = (float(end_x), float(end_y))
+
+            # FBP bookmarks are offset farther from the axis than native
+            # markers. A thin stem reaches the timeline and a triangle points
+            # back toward it. Selection uses a brighter variant of the tag.
+            self._bookmark_hit_records = []
+            if bool(getattr(preferences, "gp_scrub_show_bookmarks", True)):
+                try:
+                    bookmark_distance = max(10.0, min(96.0, float(getattr(preferences, "gp_scrub_bookmark_distance", 21.0))))
+                    triangle_scale = max(0.45, min(3.0, float(getattr(preferences, "gp_scrub_bookmark_triangle_scale", 1.0))))
+                    bookmark_stem_width = max(0.4, min(4.0, float(getattr(preferences, "gp_scrub_bookmark_stem_width", 0.9))))
+                    bookmark_label_scale = max(0.6, min(2.5, float(getattr(preferences, "gp_scrub_bookmark_label_scale", 1.0))))
+                    bookmark_label_gap = max(0.0, min(32.0, float(getattr(preferences, "gp_scrub_bookmark_label_gap", 5.0))))
+                except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+                    bookmark_distance, triangle_scale = 21.0, 1.0
+                    bookmark_stem_width, bookmark_label_scale, bookmark_label_gap = 0.9, 1.0, 5.0
+                for record in tuple(self._bookmark_records or ()):
+                    frame = int(record["frame"])
+                    if frame < int(left) or frame > int(right):
+                        continue
+                    axis_x, axis_y = self._frame_position(frame, left, right, layout)
+                    selected = bool(record.get("selected", False))
+                    color = _bookmark_color(record.get("color_tag"), selected=selected)
+                    stem_width = max(0.4, bookmark_stem_width * (1.35 if selected else 1.0) * scale_ui)
+                    base_offset = bookmark_distance * scale_ui
+                    triangle_depth = max(4.0, 8.0 * triangle_scale) * scale_ui
+                    tip_offset = max(2.0 * scale_ui, base_offset - triangle_depth)
+                    half_base = (5.4 if selected else 4.5) * triangle_scale * scale_ui
+                    stem = []
+                    if layout["vertical"]:
+                        tip_x, tip_y = axis_x + opposite_side * tip_offset, axis_y
+                        base_x, base_y = axis_x + opposite_side * base_offset, axis_y
+                        _append_rounded_segment(stem, axis_x, axis_y, tip_x, tip_y, stem_width)
+                        triangle = (
+                            (tip_x, tip_y),
+                            (base_x, base_y - half_base),
+                            (base_x, base_y + half_base),
+                        )
+                        label_x = base_x + (bookmark_label_gap * scale_ui if opposite_side > 0 else -bookmark_label_gap * scale_ui)
+                        label_y = base_y
+                    else:
+                        tip_x, tip_y = axis_x, axis_y + opposite_side * tip_offset
+                        base_x, base_y = axis_x, axis_y + opposite_side * base_offset
+                        _append_rounded_segment(stem, axis_x, axis_y, tip_x, tip_y, stem_width)
+                        triangle = (
+                            (tip_x, tip_y),
+                            (base_x - half_base, base_y),
+                            (base_x + half_base, base_y),
+                        )
+                        label_x = base_x
+                        label_y = base_y + (bookmark_label_gap * scale_ui if opposite_side > 0 else -bookmark_label_gap * scale_ui)
+                    _draw_uniform_batch(shader, batch_for_shader, "TRIS", stem, color)
+                    _draw_uniform_batch(shader, batch_for_shader, "TRIS", triangle, color)
+                    hit_x = (tip_x + base_x * 2.0) / 3.0
+                    hit_y = (tip_y + base_y * 2.0) / 3.0
+                    hit_record = {
+                        "record": record,
+                        "x": float(hit_x),
+                        "y": float(hit_y),
+                        "triangle": tuple((float(x), float(y)) for x, y in triangle),
+                        "label_bounds": None,
+                    }
+                    self._bookmark_hit_records.append(hit_record)
+                    if selected or str(record.get("uid") or "") == str(getattr(self, "_hover_bookmark_uid", "") or ""):
+                        label = str(record.get("name") or "Bookmark")
+                        font_size = max(8, int(round(9 * bookmark_label_scale * scale_ui)))
+                        blf.size(0, font_size)
+                        text_w, text_h = blf.dimensions(0, label)
+                        if layout["vertical"]:
+                            text_x = label_x if opposite_side > 0 else label_x - text_w
+                            text_y = label_y - text_h * 0.5
+                        else:
+                            text_x = label_x - text_w * 0.5
+                            text_y = label_y if opposite_side > 0 else label_y - text_h
+                        _draw_text(blf, label, text_x, text_y, font_size, color)
+                        padding = 3.0 * scale_ui
+                        hit_record["label_bounds"] = (
+                            float(text_x - padding),
+                            float(text_y - padding),
+                            float(text_x + text_w + padding),
+                            float(text_y + text_h + padding),
+                        )
+
             grouped = {}
             for frame, key_type, _is_active, selected in _keyframe_records_in_range(
                 self._keyframe_records,
@@ -2949,10 +4222,14 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 ctrl=self._ctrl_held,
                 slow_factor=self._slow_factor,
             )
+            direct_factor = float(getattr(self, "_shortcut_direct_factor", 0.0) or 0.0)
+            if shortcut_pending and direct_factor > 0.0:
+                snap_label += " · Direct" if direct_factor >= 0.999 else f" · Magnet {int(round(direct_factor * 100.0))}%"
             if persistent and not shortcut_pending:
                 snap_label = (
-                    "Shift select  ·  Shift+D duplicate  ·  X delete  ·  R type  "
-                    f"·  Wheel zoom  ·  {primary_modifier_name()}+wheel pan"
+                    "A bookmark · G move · Shift+D duplicate · X delete · "
+                    "double-click rename · R drawing type · "
+                    f"Wheel zoom · {primary_modifier_name()}+wheel pan · drag onion dots"
                 )
             if layout["vertical"]:
                 top_frame, bottom_frame = (left, right) if self._invert_vertical else (right, left)
@@ -3054,7 +4331,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         if self._cleaned:
             return
         self._cleaned = True
-        if self._interaction == "KEY_MOVE":
+        if self._interaction == "BOOKMARK_MOVE":
+            self._cancel_bookmark_transform(context)
+        elif self._interaction == "KEY_MOVE":
             self._restore_transform_to_original()
             if self._duplicate_pending:
                 for layer, number in reversed(self._duplicate_sources):
@@ -3077,6 +4356,17 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._cursor_over_axis = False
         self._cursor_kind = ""
         self._cursor_label_bounds = None
+        self._onion_before_handle = None
+        self._onion_after_handle = None
+        self._bookmark_records = ()
+        self._native_marker_records = ()
+        self._bookmark_hit_records = ()
+        self._native_marker_hit_records = ()
+        self._hover_bookmark_uid = ""
+        self._bookmark_transform_sources = ()
+        self._bookmark_transform_created = ()
+        self._bookmark_transform_delta = 0
+        self._onion_drag_original = None
         self._restore_onion_skin()
         if self._draw_handle is not None:
             try:
@@ -3095,6 +4385,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._window = None
         self._workspace = None
         self._screen = None
+        self._area = None
+        self._region = None
+        self._region_pointer = 0
+        self._cursor_in_owned_window = False
+        self._magnetic_offset = 0.0
+        self._magnetic_target_offset = 0.0
         restore_modal_cursor(context)
         self._tag_redraw()
         if _ACTIVE_OPERATOR is self:
@@ -3114,7 +4410,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return {"CANCELLED"}
 
         self._area = context.area
+        self._region = context.region
         self._area_pointer = int(context.area.as_pointer())
+        self._region_pointer = int(context.region.as_pointer())
         self._scene_pointer = int(context.scene.as_pointer())
         self._window = context.window
         self._window_pointer = int(context.window.as_pointer()) if context.window is not None else 0
@@ -3164,6 +4462,24 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._cache_checked_at = 0.0
         self._cursor_over_axis = False
         self._cursor_kind = ""
+        self._shortcut_direct_factor = 0.0
+        self._shortcut_direct_locked = False
+        self._relative_anchor_frame = float(self._session_start_frame)
+        self._onion_before_handle = None
+        self._onion_after_handle = None
+        self._bookmark_records = ()
+        self._native_marker_records = ()
+        self._bookmark_hit_records = ()
+        self._native_marker_hit_records = ()
+        self._hover_bookmark_uid = ""
+        self._bookmark_transform_sources = ()
+        self._bookmark_transform_created = ()
+        self._bookmark_transform_delta = 0
+        self._onion_drag_original = None
+        self._magnetic_offset = 0.0
+        self._magnetic_target_offset = 0.0
+        self._magnetic_last_tick = time.monotonic()
+        self._cursor_in_owned_window = True
         (
             self._maximum_range,
             self._position,
@@ -3199,6 +4515,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         _apply_inverted_scrub_ink(self, context)
         preferences = fbp_get_addon_preferences(context)
         self._show_info = bool(getattr(preferences, "gp_scrub_show_info", False))
+        self._sync_magnetic_preferences(context)
         self._activation_event_type = str(getattr(event, "type", "") or "")
         self._mouse_x = float(getattr(event, "mouse_region_x", 0.0) or 0.0)
         self._mouse_y = float(getattr(event, "mouse_region_y", 0.0) or 0.0)
@@ -3209,8 +4526,15 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._edge_direction = 0
         self._edge_since = 0.0
         self._edge_last_repeat = 0.0
-        self._view_center = float(self._session_start_frame)
-        self._view_radius = int(self._maximum_range)
+        self._preview_signature = preview_range_signature(context.scene)
+        if bool(self._preview_signature[0]):
+            preview_minimum = int(self._preview_signature[1])
+            preview_maximum = int(self._preview_signature[2])
+            self._view_center = (float(preview_minimum) + float(preview_maximum)) * 0.5
+            self._view_radius = max(1, preview_maximum - preview_minimum + 1)
+        else:
+            self._view_center = float(self._session_start_frame)
+            self._view_radius = int(self._maximum_range)
         self._snap_settings = playhead_snap_settings(context.scene)
         self._refresh_keyframe_cache(context)
         self._palette = blender_theme_palette(context)
@@ -3284,10 +4608,22 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 and str(getattr(owned_area, "type", "") or "") == "VIEW_3D"
                 and int(owned_area.as_pointer()) == int(self._area_pointer)
             )
+            owned_regions = tuple(getattr(owned_area, "regions", ()) or ()) if owned_area is not None else ()
+            owned_region_valid = bool(
+                getattr(self, "_region", None) is not None
+                and int(getattr(self, "_region_pointer", 0) or 0) > 0
+                and any(
+                    int(candidate.as_pointer()) == int(self._region_pointer)
+                    for candidate in owned_regions
+                )
+                and str(getattr(self._region, "type", "") or "") == "WINDOW"
+                and int(self._region.as_pointer()) == int(self._region_pointer)
+            )
             bound_object_valid = self._resolve_bound_object(context)
             gp_context_valid = _is_view3d_context(context)
             valid_session = bool(
                 owned_area_valid
+                and owned_region_valid
                 and window_valid
                 and workspace_valid
                 and screen_valid
@@ -3344,11 +4680,19 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return {"PASS_THROUGH"}
 
         if event_type == "WINDOW_DEACTIVATE":
+            self._cursor_in_owned_window = False
             self._set_hover_cursor(context, False)
             if self._shortcut_pending:
                 self._shortcut_pending = False
                 self._restore_onion_skin()
-                if not self._persistent_before_shortcut:
+                if self._persistent_before_shortcut:
+                    self._is_persistent = True
+                    if self._persistent_view_before is not None:
+                        self._view_center, self._view_radius = self._persistent_view_before
+                    self._persistent_view_before = None
+                    self._magnetic_target_offset = 0.0
+                    self._tag_redraw()
+                else:
                     if self._session_changed(context.scene):
                         self._set_frame(context.scene, self._session_start_frame)
                     self._cleanup(context)
@@ -3401,18 +4745,23 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 and not self._shortcut_pending
                 and in_window
                 and event_value == "PRESS"
-                and self._mouse_in_axis(context)
+                and (self._mouse_in_axis(context) or self._bookmark_hit() is not None)
             ):
-                hit = self._keyframe_hit(context)
-                if hit is not None:
-                    hit_was_selected = any(
-                        int(getattr(frame, "frame_number", 0) or 0) == int(hit)
-                        and bool(getattr(frame, "select", False))
-                        for _layer, frame in grease_pencil_editable_frames(self._object)
-                    )
-                    if not hit_was_selected:
-                        select_grease_pencil_frame_number(self._object, hit)
-                        self._refresh_keyframe_cache(context)
+                bookmark = self._bookmark_hit()
+                if bookmark is not None:
+                    if not bool(bookmark.get("selected", False)):
+                        self._select_bookmark_record(context, bookmark)
+                else:
+                    hit = self._keyframe_hit(context)
+                    if hit is not None:
+                        hit_was_selected = any(
+                            int(getattr(frame, "frame_number", 0) or 0) == int(hit)
+                            and bool(getattr(frame, "select", False))
+                            for _layer, frame in grease_pencil_editable_frames(self._object)
+                        )
+                        if not hit_was_selected:
+                            select_grease_pencil_frame_number(self._object, hit)
+                            self._refresh_keyframe_cache(context)
                 try:
                     bpy.ops.wm.call_menu(
                         name=FBP_MT_GreasePencilScrubContextMenu.bl_idname
@@ -3434,8 +4783,10 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._target_from_mouse(context)
             self._tag_redraw()
         if event_type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            self._cursor_in_owned_window = bool(in_window)
             if not in_window:
                 self._set_hover_cursor(context, False)
+                self._magnetic_target_offset = 0.0
                 return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
             try:
                 next_mouse_x = float(getattr(event, "mouse_region_x"))
@@ -3443,35 +4794,41 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             except (AttributeError, TypeError, ValueError, OverflowError):
                 return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
             if self._shortcut_pending and self._shortcut_anchor_pending:
-                initial_distance = math.hypot(
-                    next_mouse_x - self._shortcut_start_x,
-                    next_mouse_y - self._shortcut_start_y,
-                )
-                self._shortcut_moved = bool(
-                    self._shortcut_moved
-                    or initial_distance >= _DRAG_THRESHOLD_PX
-                )
+                # The activation event may carry stale coordinates. Treat the
+                # first real mouse event only as the trusted anchor; it must
+                # never change the current frame or count as a drag.
                 self._mouse_x = next_mouse_x
                 self._mouse_y = next_mouse_y
                 self._shortcut_start_x = next_mouse_x
                 self._shortcut_start_y = next_mouse_y
                 self._drag_anchor_x = next_mouse_x
                 self._drag_anchor_y = next_mouse_y
+                self._shortcut_moved = False
                 self._shortcut_anchor_pending = False
                 self._tag_redraw()
                 return {"RUNNING_MODAL"}
             self._mouse_x = next_mouse_x
             self._mouse_y = next_mouse_y
+            if self._is_persistent and not self._shortcut_pending and not self._interaction:
+                self._update_magnetic_target(context)
             if self._shortcut_pending:
                 distance = math.hypot(
                     self._mouse_x - self._shortcut_start_x,
                     self._mouse_y - self._shortcut_start_y,
                 )
-                self._shortcut_moved = bool(
-                    self._shortcut_moved or distance >= _DRAG_THRESHOLD_PX
-                )
+                if not self._shortcut_moved:
+                    if distance < _DRAG_THRESHOLD_PX:
+                        self._tag_redraw()
+                        return {"RUNNING_MODAL"}
+                    self._shortcut_moved = True
                 self._target_from_mouse(context)
                 self._tag_redraw()
+                return {"RUNNING_MODAL"}
+            if self._interaction in {"ONION_BEFORE", "ONION_AFTER"}:
+                self._update_onion_range(context, self._interaction.removeprefix("ONION_"))
+                return {"RUNNING_MODAL"}
+            if self._interaction == "BOOKMARK_MOVE":
+                self._update_bookmark_transform(context)
                 return {"RUNNING_MODAL"}
             if self._interaction == "SCRUB":
                 self._set_frame_from_axis(context)
@@ -3521,8 +4878,21 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 owned_timer = getattr(event, "timer", None) is self._timer
             except FBP_DATA_ERRORS:
                 owned_timer = False
-            if owned_timer and self._shortcut_pending and in_window:
-                self._edge_tick(context)
+            if owned_timer:
+                if self._shortcut_pending and in_window:
+                    self._edge_tick(context)
+                elif self._is_persistent:
+                    cursor_in_window = bool(self._cursor_in_owned_window)
+                    self._tick_magnetic_hover(
+                        context,
+                        release=scrub_magnet_should_release(
+                            event_type,
+                            event_in_window=in_window,
+                            cursor_in_owned_window=cursor_in_window,
+                        ),
+                    )
+                    if cursor_in_window and not self._interaction:
+                        self._set_idle_hover(context)
             return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
 
         if self._shortcut_pending:
@@ -3552,48 +4922,105 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 return {"RUNNING_MODAL"}
 
         if event_type == "LEFTMOUSE":
-            if event_value == "PRESS" and self._interaction == "KEY_MOVE":
+            bookmark = self._bookmark_hit()
+            axis_inside = self._mouse_in_axis(context)
+            if event_value == "PRESS" and self._interaction in {"KEY_MOVE", "BOOKMARK_MOVE"}:
                 self._finish_interaction(context)
                 return {"RUNNING_MODAL"}
-            if event_value == "PRESS" and self._mouse_in_axis(context):
-                hit = self._keyframe_hit(context)
-                self._interaction_start_x = self._mouse_x
-                self._interaction_start_y = self._mouse_y
-                if hit is not None:
-                    hit_was_selected = any(
-                        int(getattr(frame, "frame_number", 0) or 0) == int(hit)
-                        and bool(getattr(frame, "select", False))
-                        for _layer, frame in grease_pencil_editable_frames(self._object)
+            if event_value == "DOUBLE_CLICK" and bookmark is not None:
+                self._select_bookmark_record(context, bookmark)
+                try:
+                    bpy.ops.fbp.rename_scrub_bookmark(
+                        "INVOKE_DEFAULT",
+                        bookmark_uid=str(bookmark.get("uid") or ""),
                     )
-                    if self._shift_held or not hit_was_selected:
-                        select_grease_pencil_frame_number(
-                            self._object,
-                            hit,
-                            extend=self._shift_held,
-                            toggle=self._shift_held,
-                        )
-                    self._refresh_keyframe_cache(context)
-                    self._interaction = "KEY_PENDING"
-                    if not self._begin_key_transform(context):
-                        self._interaction = ""
-                    self._tag_redraw()
-                else:
-                    self._interaction = "SCRUB"
-                    self._interaction_start_frame = int(context.scene.frame_current)
-                    self._set_frame_from_axis(context)
-                    self._tag_redraw()
+                except FBP_DATA_ERRORS as exc:
+                    fbp_warn("Could not rename Scrub Bar bookmark", exc)
                 return {"RUNNING_MODAL"}
+            if event_value == "PRESS":
+                if bookmark is not None:
+                    self._select_bookmark_record(
+                        context,
+                        bookmark,
+                        extend=self._shift_held,
+                        toggle=self._shift_held,
+                    )
+                    if not self._shift_held:
+                        self._begin_bookmark_transform(context, duplicate=False)
+                    return {"RUNNING_MODAL"}
+                if not self._shift_held:
+                    self._deselect_bookmarks(context)
+                if axis_inside:
+                    onion_hit = self._onion_handle_hit()
+                    if onion_hit is not None:
+                        settings = _grease_pencil_onion_settings(context, self._object, self._keyframe_record_numbers)
+                        attribute = "ghost_before_range" if onion_hit == "BEFORE" else "ghost_after_range"
+                        original = None
+                        if settings is not None:
+                            try:
+                                original = (settings["data"], attribute, int(getattr(settings["data"], attribute)))
+                            except FBP_DATA_ERRORS:
+                                original = None
+                        self._onion_drag_original = original
+                        self._interaction = f"ONION_{onion_hit}"
+                        self._interaction_event_type = "LEFTMOUSE"
+                        self._interaction_start_x = self._mouse_x
+                        self._interaction_start_y = self._mouse_y
+                        return {"RUNNING_MODAL"}
+                    hit = self._keyframe_hit(context)
+                    self._interaction_start_x = self._mouse_x
+                    self._interaction_start_y = self._mouse_y
+                    if hit is not None:
+                        hit_was_selected = any(
+                            int(getattr(frame, "frame_number", 0) or 0) == int(hit)
+                            and bool(getattr(frame, "select", False))
+                            for _layer, frame in grease_pencil_editable_frames(self._object)
+                        )
+                        if self._shift_held or not hit_was_selected:
+                            select_grease_pencil_frame_number(
+                                self._object,
+                                hit,
+                                extend=self._shift_held,
+                                toggle=self._shift_held,
+                            )
+                        self._refresh_keyframe_cache(context)
+                        self._interaction = "KEY_PENDING"
+                        if not self._begin_key_transform(context):
+                            self._interaction = ""
+                        self._tag_redraw()
+                    else:
+                        self._interaction = "SCRUB"
+                        self._magnetic_target_offset = float(self._magnetic_offset)
+                        self._interaction_start_frame = int(context.scene.frame_current)
+                        self._set_frame_from_axis(context)
+                        self._tag_redraw()
+                    return {"RUNNING_MODAL"}
+                return {"PASS_THROUGH"}
             if event_value == "RELEASE" and self._interaction in {
                 "SCRUB",
                 "KEY_PENDING",
                 "KEY_MOVE",
+                "BOOKMARK_MOVE",
+                "ONION_BEFORE",
+                "ONION_AFTER",
             }:
                 self._finish_interaction(context)
                 return {"RUNNING_MODAL"}
             return {"PASS_THROUGH"}
 
-        if event_value == "PRESS" and self._mouse_in_axis(context):
+        if event_value == "PRESS" and (self._mouse_in_axis(context) or self._bookmark_hit() is not None):
+            bookmark_hit = self._bookmark_hit()
+            selected_bookmarks = selected_scrub_bookmark_records(context.scene)
+            bookmark_focus = bool(selected_bookmarks or bookmark_hit is not None)
             if event_type in {"X", "DEL"}:
+                if bookmark_focus:
+                    if not selected_bookmarks and bookmark_hit is not None:
+                        self._select_bookmark_record(context, bookmark_hit)
+                        selected_bookmarks = selected_scrub_bookmark_records(context.scene)
+                    _delete_bookmark_records(context.scene, selected_bookmarks)
+                    self._refresh_keyframe_cache(context)
+                    self._tag_redraw()
+                    return {"RUNNING_MODAL"}
                 if not _is_live_grease_pencil_object(self._object):
                     return {"PASS_THROUGH"}
                 if self._interaction:
@@ -3601,6 +5028,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 self._delete_selected_keyframes(context)
                 return {"RUNNING_MODAL"}
             if event_type == "D" and self._shift_held:
+                if bookmark_focus:
+                    self._begin_bookmark_transform(context, duplicate=True)
+                    return {"RUNNING_MODAL"}
                 if not _is_live_grease_pencil_object(self._object):
                     return {"PASS_THROUGH"}
                 if not selected_grease_pencil_frames(self._object):
@@ -3615,6 +5045,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     self._tag_redraw()
                 return {"RUNNING_MODAL"}
             if event_type == "G":
+                if bookmark_focus:
+                    self._begin_bookmark_transform(context, duplicate=False)
+                    return {"RUNNING_MODAL"}
                 if not _is_live_grease_pencil_object(self._object):
                     return {"PASS_THROUGH"}
                 if self._begin_key_transform(context):
@@ -3638,17 +5071,16 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     except FBP_DATA_ERRORS as exc:
                         fbp_warn("Could not open the Grease Pencil keyframe type menu", exc)
                 return {"RUNNING_MODAL"}
-            if event_type == "A":
-                if not _is_live_grease_pencil_object(self._object):
-                    return {"PASS_THROUGH"}
-                select_all_grease_pencil_frames(self._object, selected=not bool(event.alt))
-                self._refresh_keyframe_cache(context)
-                self._tag_redraw()
+            if event_type == "A" and not self._ctrl_held and not self._shift_held:
+                try:
+                    bpy.ops.fbp.add_scrub_bookmark("INVOKE_DEFAULT")
+                except FBP_DATA_ERRORS as exc:
+                    fbp_warn("Could not open New Bookmark", exc)
                 return {"RUNNING_MODAL"}
             if event_type == "HOME":
                 minimum, maximum = scene_frame_bounds(context.scene)
                 self._view_center = (minimum + maximum) * 0.5
-                self._view_radius = max(1, int(math.ceil((maximum - minimum) * 0.5)))
+                self._view_radius = max(1, int(maximum) - int(minimum) + 1)
                 self._tag_redraw()
                 return {"RUNNING_MODAL"}
             if event_type in {"NUMPAD_PERIOD", "BUTTON4MOUSE"}:
@@ -3662,7 +5094,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     low = min(selected_numbers)
                     high = max(selected_numbers)
                     self._view_center = (low + high) * 0.5
-                    self._view_radius = max(2, int(math.ceil((high - low) * 0.6)) + 1)
+                    self._view_radius = max(2, int(math.ceil((high - low + 1) * 1.2)))
                     self._tag_redraw()
                 return {"RUNNING_MODAL"}
         return {"PASS_THROUGH"}
@@ -3742,6 +5174,36 @@ class FBP_OT_ToggleGreasePencilScrubSlider(Operator):
             fbp_warn("Could not toggle the persistent Grease Pencil Scrub Slider", exc)
             return {"CANCELLED"}
         return {"FINISHED"} if "RUNNING_MODAL" in set(result) else {"CANCELLED"}
+
+
+class FBP_OT_ToggleScrubOnionInterface(Operator):
+    """Show or hide the interactive onion-skin range guides."""
+
+    bl_idname = "fbp.toggle_scrub_onion_interface"
+    bl_label = "Toggle Onion Range Handles"
+    bl_description = (
+        "Show or hide the draggable Onion Skin before/after guides on the "
+        "Frame By Plane Scrub Bar"
+    )
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return _scrub_header_available(context)
+
+    def execute(self, context):
+        preferences = fbp_get_addon_preferences(context)
+        if preferences is None or not hasattr(preferences, "gp_scrub_show_onion_handles"):
+            return {"CANCELLED"}
+        try:
+            preferences.gp_scrub_show_onion_handles = not bool(
+                preferences.gp_scrub_show_onion_handles
+            )
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not toggle Scrub Bar Onion Skin handles", exc)
+            return {"CANCELLED"}
+        _refresh_active_scrub(context)
+        return {"FINISHED"}
 
 
 class FBP_OT_CopyGreasePencilScrubKeyframes(Operator):
@@ -4224,6 +5686,279 @@ class FBP_OT_MirrorGreasePencilScrubKeyframes(Operator):
         return {"FINISHED"} if created else {"CANCELLED"}
 
 
+class FBP_OT_AddScrubBookmark(Operator):
+    """Create a named FBP bookmark using Blender's native Timeline markers."""
+
+    bl_idname = "fbp.add_scrub_bookmark"
+    bl_label = "New Bookmark"
+    bl_description = "Create a named bookmark at the current frame; it is also visible in Blender's native Timeline and Dope Sheet"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: StringProperty(name="Name", default="")
+    color_tag: EnumProperty(
+        name="Color",
+        description="Color tag used by the Frame By Plane Scrub Bar",
+        items=_BOOKMARK_COLOR_ITEMS,
+        default=_BOOKMARK_DEFAULT_COLOR,
+    )
+    frame: IntProperty(name="Frame", default=_FRAME_NUMBER_MIN, options={"HIDDEN", "SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context, "scene", None) is not None
+
+    def invoke(self, context, _event):
+        target_frame = int(context.scene.frame_current) if int(self.frame) == _FRAME_NUMBER_MIN else int(self.frame)
+        if not str(self.name or "").strip():
+            self.name = _next_bookmark_default_label(context.scene)
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.prop(self, "name")
+        layout.prop(self, "color_tag", text="Color")
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        markers = getattr(scene, "timeline_markers", None) if scene is not None else None
+        if markers is None:
+            return {"CANCELLED"}
+        frame = int(scene.frame_current) if int(self.frame) == _FRAME_NUMBER_MIN else int(self.frame)
+        label = _bookmark_label_from_name(self.name or _next_bookmark_default_label(scene))
+        full_name = _bookmark_native_name(label)
+        try:
+            try:
+                marker = markers.new(full_name, frame=frame)
+            except TypeError:
+                marker = markers.new(full_name)
+                marker.frame = frame
+            for candidate in markers:
+                candidate.select = candidate is marker
+            entries = _load_bookmark_state(scene)
+            entry = _new_bookmark_entry(marker, label=label, color_tag=self.color_tag)
+            entries.append(entry)
+            _BOOKMARK_POINTER_UIDS[_marker_pointer(marker)] = entry["uid"]
+            _save_bookmark_state(scene, entries)
+            reconcile_scrub_bookmarks(scene)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not create Scrub Bar bookmark", exc)
+            return {"CANCELLED"}
+        _refresh_active_scrub(context)
+        return {"FINISHED"}
+
+
+class FBP_OT_RenameScrubBookmark(Operator):
+    bl_idname = "fbp.rename_scrub_bookmark"
+    bl_label = "Rename Bookmark"
+    bl_description = "Rename the selected Frame By Plane bookmark"
+    bl_options = {"REGISTER", "UNDO"}
+
+    bookmark_uid: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    name: StringProperty(name="Name", default="")
+
+    @classmethod
+    def poll(cls, context):
+        return len(selected_scrub_bookmark_records(getattr(context, "scene", None))) == 1
+
+    def _record(self, context):
+        scene = getattr(context, "scene", None)
+        if self.bookmark_uid:
+            return _bookmark_record_by_uid(scene, self.bookmark_uid)
+        selected = selected_scrub_bookmark_records(scene)
+        return selected[0] if len(selected) == 1 else None
+
+    def invoke(self, context, _event):
+        record = self._record(context)
+        if record is None:
+            return {"CANCELLED"}
+        self.bookmark_uid = record["uid"]
+        self.name = record["name"]
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, _context):
+        self.layout.prop(self, "name")
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        record = self._record(context)
+        if record is None:
+            return {"CANCELLED"}
+        label = _bookmark_label_from_name(self.name)
+        try:
+            record["marker"].name = _bookmark_native_name(label)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not rename Scrub Bar bookmark", exc)
+            return {"CANCELLED"}
+        entries = _load_bookmark_state(scene)
+        for entry in entries:
+            if str(entry.get("uid") or "") == record["uid"]:
+                entry["label"] = label
+                entry["marker_name"] = _bookmark_native_name(label)
+                entry["frame"] = int(getattr(record["marker"], "frame", record["frame"]))
+                break
+        _save_bookmark_state(scene, entries)
+        reconcile_scrub_bookmarks(scene)
+        _refresh_active_scrub(context)
+        return {"FINISHED"}
+
+
+class FBP_OT_SetScrubBookmarkColor(Operator):
+    bl_idname = "fbp.set_scrub_bookmark_color"
+    bl_label = "Set Bookmark Color"
+    bl_description = "Assign a color tag to selected Frame By Plane bookmarks"
+    bl_options = {"REGISTER", "UNDO"}
+
+    color_tag: EnumProperty(items=_BOOKMARK_COLOR_ITEMS, default=_BOOKMARK_DEFAULT_COLOR)
+
+    @classmethod
+    def poll(cls, context):
+        return bool(selected_scrub_bookmark_records(getattr(context, "scene", None)))
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        records = selected_scrub_bookmark_records(scene)
+        if not _set_bookmark_color(scene, records, self.color_tag):
+            return {"CANCELLED"}
+        _refresh_active_scrub(context)
+        return {"FINISHED"}
+
+
+class FBP_OT_SelectScrubBookmarks(Operator):
+    bl_idname = "fbp.select_scrub_bookmarks"
+    bl_label = "Select Bookmarks"
+    bl_description = "Change selection of Frame By Plane bookmarks"
+    bl_options = {"REGISTER", "UNDO"}
+
+    action: EnumProperty(
+        items=(
+            ("SELECT", "Select All", "Select every Frame By Plane bookmark"),
+            ("DESELECT", "Deselect All", "Deselect every Frame By Plane bookmark"),
+            ("INVERT", "Invert", "Invert bookmark selection"),
+        ),
+        default="SELECT",
+        options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return bool(scrub_bookmark_records(getattr(context, "scene", None)))
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        records = scrub_bookmark_records(scene)
+        changed = False
+        for record in records:
+            marker = record["marker"]
+            try:
+                before = bool(marker.select)
+                if self.action == "SELECT":
+                    marker.select = True
+                elif self.action == "DESELECT":
+                    marker.select = False
+                else:
+                    marker.select = not before
+                changed = changed or bool(marker.select) != before
+            except FBP_DATA_ERRORS:
+                continue
+        _refresh_active_scrub(context)
+        return {"FINISHED"} if changed else {"CANCELLED"}
+
+
+class FBP_OT_RemoveScrubBookmark(Operator):
+    """Remove selected FBP bookmarks, or the bookmark at the current frame."""
+
+    bl_idname = "fbp.remove_scrub_bookmark"
+    bl_label = "Delete Selected Bookmark"
+    bl_description = "Remove selected Frame By Plane bookmarks or the bookmark at the current frame"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, "scene", None)
+        if scene is None:
+            return False
+        records = scrub_bookmark_records(scene)
+        frame = int(scene.frame_current)
+        return any(record["selected"] or record["frame"] == frame for record in records)
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        frame = int(scene.frame_current)
+        records = scrub_bookmark_records(scene)
+        targets = tuple(record for record in records if record["selected"])
+        if not targets:
+            targets = tuple(record for record in records if record["frame"] == frame)
+        removed = _delete_bookmark_records(scene, targets)
+        if not removed:
+            return {"CANCELLED"}
+        _refresh_active_scrub(context)
+        return {"FINISHED"}
+
+
+class FBP_OT_DeleteAllScrubBookmarks(Operator):
+    bl_idname = "fbp.delete_all_scrub_bookmarks"
+    bl_label = "Delete All Bookmarks"
+    bl_description = "Delete every Frame By Plane bookmark in the current Scene"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(scrub_bookmark_records(getattr(context, "scene", None)))
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        removed = _delete_bookmark_records(scene, scrub_bookmark_records(scene))
+        if not removed:
+            return {"CANCELLED"}
+        _refresh_active_scrub(context)
+        return {"FINISHED"}
+
+
+class FBP_OT_DuplicateScrubBookmarks(Operator):
+    bl_idname = "fbp.duplicate_scrub_bookmarks"
+    bl_label = "Duplicate Bookmarks"
+    bl_description = "Duplicate selected Frame By Plane bookmarks one frame later"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(selected_scrub_bookmark_records(getattr(context, "scene", None)))
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        markers = getattr(scene, "timeline_markers", None) if scene is not None else None
+        selected = selected_scrub_bookmark_records(scene)
+        if markers is None or not selected:
+            return {"CANCELLED"}
+        minimum, maximum = scene_frame_bounds(scene)
+        entries = _load_bookmark_state(scene)
+        for marker in tuple(getattr(scene, "timeline_markers", ()) or ()):
+            try:
+                marker.select = False
+            except FBP_DATA_ERRORS:
+                pass
+        created = 0
+        for record in selected:
+            target = max(minimum, min(maximum, int(record["frame"]) + 1))
+            try:
+                try:
+                    marker = markers.new(_bookmark_native_name(record["name"]), frame=target)
+                except TypeError:
+                    marker = markers.new(_bookmark_native_name(record["name"]))
+                    marker.frame = target
+                marker.select = True
+            except FBP_DATA_ERRORS:
+                continue
+            entry = _new_bookmark_entry(marker, label=record["name"], color_tag=record["color_tag"])
+            entries.append(entry)
+            _BOOKMARK_POINTER_UIDS[_marker_pointer(marker)] = entry["uid"]
+            created += 1
+        _save_bookmark_state(scene, entries)
+        reconcile_scrub_bookmarks(scene)
+        _refresh_active_scrub(context)
+        return {"FINISHED"} if created else {"CANCELLED"}
+
+
 class FBP_OT_SetGreasePencilScrubKeyframeType(Operator):
     """Set the type of selected drawing keyframes in the Scrub Slider."""
 
@@ -4339,56 +6074,107 @@ class FBP_MT_GreasePencilScrubMirror(Menu):
             operator.pivot = pivot
 
 
+class FBP_MT_ScrubBookmarkColor(Menu):
+    bl_idname = "FBP_MT_scrub_bookmark_color"
+    bl_label = "Color Tag"
+
+    def draw(self, context):
+        layout = self.layout
+        has_selected = bool(selected_scrub_bookmark_records(getattr(context, "scene", None)))
+        for identifier, label, _description, icon, _index in _BOOKMARK_COLOR_ITEMS:
+            row = layout.row()
+            row.enabled = has_selected
+            operator = row.operator(
+                FBP_OT_SetScrubBookmarkColor.bl_idname,
+                text=label,
+                icon=icon,
+            )
+            operator.color_tag = identifier
+
+
+class FBP_MT_ScrubBookmarkMenu(Menu):
+    bl_idname = "FBP_MT_scrub_bookmark"
+    bl_label = "Bookmark"
+
+    def draw(self, context):
+        layout = self.layout
+        scene = getattr(context, "scene", None)
+        records = scrub_bookmark_records(scene)
+        selected = tuple(record for record in records if record["selected"])
+
+        row = layout.row()
+        row.enabled = bool(selected)
+        row.menu(FBP_MT_ScrubBookmarkColor.bl_idname, text="Color Tag", icon="STRIP_COLOR_01")
+        layout.separator()
+        layout.operator(FBP_OT_AddScrubBookmark.bl_idname, text="New", icon="ADD")
+        row = layout.row()
+        row.enabled = len(selected) == 1
+        row.operator(FBP_OT_RenameScrubBookmark.bl_idname, text="Rename Selected", icon="GREASEPENCIL")
+        row = layout.row()
+        row.enabled = bool(selected)
+        row.operator(FBP_OT_DuplicateScrubBookmarks.bl_idname, text="Duplicate Selected", icon="DUPLICATE")
+
+        layout.separator()
+        row = layout.row()
+        row.enabled = bool(records)
+        operator = row.operator(FBP_OT_SelectScrubBookmarks.bl_idname, text="Select All", icon="PROP_ON")
+        operator.action = "SELECT"
+        row = layout.row()
+        row.enabled = bool(selected)
+        operator = row.operator(FBP_OT_SelectScrubBookmarks.bl_idname, text="Deselect All", icon="PROP_OFF")
+        operator.action = "DESELECT"
+        layout.separator()
+        row = layout.row()
+        row.enabled = bool(selected)
+        row.operator(FBP_OT_RemoveScrubBookmark.bl_idname, text="Delete Selected", icon="X")
+        row = layout.row()
+        row.enabled = bool(records)
+        row.operator(FBP_OT_DeleteAllScrubBookmarks.bl_idname, text="Delete All", icon="TRASH")
+
+
 class FBP_MT_GreasePencilScrubContextMenu(Menu):
     bl_idname = "FBP_MT_grease_pencil_scrub_context"
     bl_label = "Scrub Slider"
 
-    def draw(self, _context):
+    def draw(self, context):
         layout = self.layout
-        layout.operator(
-            FBP_OT_CopyGreasePencilScrubKeyframes.bl_idname,
-            text="Copy",
-            icon="COPYDOWN",
-        )
-        layout.operator(
-            FBP_OT_PasteGreasePencilScrubKeyframes.bl_idname,
-            text="Paste",
-            icon="PASTEDOWN",
-        )
+        obj = _scrub_target_object(context)
+        gp_live = _is_live_grease_pencil_object(obj)
+        selected_frames = selected_grease_pencil_frames(obj) if gp_live else ()
+        has_selected_frames = bool(selected_frames)
+        has_frames = bool(grease_pencil_editable_frames(obj)) if gp_live else False
+        can_paste = bool(gp_live and _SCRUB_FRAME_CLIPBOARD is not None)
+
+        row = layout.row()
+        row.enabled = has_selected_frames
+        row.operator(FBP_OT_CopyGreasePencilScrubKeyframes.bl_idname, text="Copy", icon="COPYDOWN")
+        row = layout.row()
+        row.enabled = can_paste
+        row.operator(FBP_OT_PasteGreasePencilScrubKeyframes.bl_idname, text="Paste", icon="PASTEDOWN")
         layout.separator()
-        layout.operator(
-            FBP_OT_DuplicateGreasePencilScrubKeyframes.bl_idname,
-            text="Duplicate",
-            icon="DUPLICATE",
-        )
-        layout.operator(
-            FBP_OT_DeleteGreasePencilScrubKeyframes.bl_idname,
-            text="Delete",
-            icon="X",
-        )
+        row = layout.row()
+        row.enabled = has_selected_frames
+        row.operator(FBP_OT_DuplicateGreasePencilScrubKeyframes.bl_idname, text="Duplicate", icon="DUPLICATE")
+        row = layout.row()
+        row.enabled = has_selected_frames
+        row.operator(FBP_OT_DeleteGreasePencilScrubKeyframes.bl_idname, text="Delete", icon="X")
         layout.separator()
-        layout.menu(
-            FBP_MT_GreasePencilScrubKeyframeType.bl_idname,
-            text="Keyframe Type",
-            icon="KEY_HLT",
-        )
-        layout.menu(
-            FBP_MT_GreasePencilScrubMirror.bl_idname,
-            text="Mirror",
-            icon="MOD_MIRROR",
-        )
+        row = layout.row()
+        row.enabled = has_selected_frames
+        row.menu(FBP_MT_GreasePencilScrubKeyframeType.bl_idname, text="Keyframe Type", icon="KEY_HLT")
+        row = layout.row()
+        row.enabled = has_selected_frames
+        row.menu(FBP_MT_GreasePencilScrubMirror.bl_idname, text="Mirror", icon="MOD_MIRROR")
         layout.separator()
-        select_operator = layout.operator(
-            FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname,
-            text="Select All",
-            icon="PROP_ON",
-        )
+        layout.menu(FBP_MT_ScrubBookmarkMenu.bl_idname, text="Bookmark", icon="MARKER_HLT")
+        layout.separator()
+        row = layout.row()
+        row.enabled = has_frames
+        select_operator = row.operator(FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname, text="Select All Drawings", icon="PROP_ON")
         select_operator.action = "SELECT"
-        deselect_operator = layout.operator(
-            FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname,
-            text="Deselect All",
-            icon="PROP_OFF",
-        )
+        row = layout.row()
+        row.enabled = has_selected_frames
+        deselect_operator = row.operator(FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname, text="Deselect Drawings", icon="PROP_OFF")
         deselect_operator.action = "DESELECT"
 
 
@@ -4413,16 +6199,75 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
             icon="SHADING_SOLID",
         )
 
-        if preferences is not None and hasattr(preferences, "gp_scrub_show_info"):
+        obj = _scrub_target_object(context)
+        gp_data = getattr(obj, "data", None) if _is_live_grease_pencil_object(obj) else None
+
+        if preferences is not None:
             layout.separator()
-            layout.prop(
-                preferences,
-                "gp_scrub_show_info",
-                text="Show Interaction Info",
-                toggle=True,
-            )
+            if hasattr(preferences, "gp_scrub_show_onion_handles"):
+                layout.prop(
+                    preferences,
+                    "gp_scrub_show_onion_handles",
+                    text="Onion Range Interface",
+                    icon="ONIONSKIN_ON",
+                    toggle=True,
+                )
+            if hasattr(preferences, "gp_scrub_show_bookmarks"):
+                layout.prop(
+                    preferences,
+                    "gp_scrub_show_bookmarks",
+                    text="Show Bookmarks",
+                    icon="BOOKMARKS",
+                    toggle=True,
+                )
+            if hasattr(preferences, "gp_scrub_show_info"):
+                layout.prop(
+                    preferences,
+                    "gp_scrub_show_info",
+                    text="Show Interaction Info",
+                    toggle=True,
+                )
+
+        if gp_data is not None:
+            layout.separator()
+            layout.label(text="Onion Skin", icon="ONIONSKIN_ON")
+            overlay = getattr(getattr(context, "space_data", None), "overlay", None)
+            if overlay is not None and hasattr(overlay, "use_gpencil_onion_skin"):
+                layout.prop(overlay, "use_gpencil_onion_skin", text="Viewport Onion Skin", toggle=True)
+            if hasattr(gp_data, "onion_mode"):
+                layout.prop(gp_data, "onion_mode", text="Range Type")
+            if hasattr(gp_data, "onion_keyframe_type"):
+                layout.prop(gp_data, "onion_keyframe_type", text="Keyframe Type")
+            onion_mode = str(getattr(gp_data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
+            if onion_mode != "SELECTED":
+                ranges = layout.row(align=True)
+                range_label = "Frames" if onion_mode == "ABSOLUTE" else "Keyframes"
+                if hasattr(gp_data, "ghost_before_range"):
+                    ranges.prop(gp_data, "ghost_before_range", text=f"{range_label} Before")
+                if hasattr(gp_data, "ghost_after_range"):
+                    ranges.prop(gp_data, "ghost_after_range", text=f"{range_label} After")
+            if hasattr(gp_data, "onion_factor"):
+                layout.prop(gp_data, "onion_factor", text="Opacity", slider=True)
+            display = layout.row(align=True)
+            if hasattr(gp_data, "use_onion_fade"):
+                display.prop(gp_data, "use_onion_fade", text="Fade", toggle=True)
+            if hasattr(gp_data, "use_onion_loop"):
+                display.prop(gp_data, "use_onion_loop", text="Loop", toggle=True)
+            if hasattr(gp_data, "use_ghost_custom_colors"):
+                layout.prop(gp_data, "use_ghost_custom_colors", text="Custom Colors", toggle=True)
+                colors = layout.row(align=True)
+                colors.enabled = bool(getattr(gp_data, "use_ghost_custom_colors", False))
+                if hasattr(gp_data, "before_color"):
+                    colors.prop(gp_data, "before_color", text="Before")
+                if hasattr(gp_data, "after_color"):
+                    colors.prop(gp_data, "after_color", text="After")
 
         scene = getattr(context, "scene", None)
+        if scene is not None:
+            layout.separator()
+            row = layout.row(align=True)
+            row.operator(FBP_OT_AddScrubBookmark.bl_idname, text="Add Bookmark", icon="MARKER_HLT")
+            row.operator(FBP_OT_RemoveScrubBookmark.bl_idname, text="", icon="X")
         if scene is not None and hasattr(scene, "use_preview_range"):
             layout.separator()
             layout.prop(
@@ -4447,6 +6292,19 @@ def _draw_scrub_header_control(layout, context):
         text="",
         depress=is_persistent_scrub_active(context),
         **floating_timeline_icon_kwargs("ACTION"),
+    )
+    preferences = fbp_get_addon_preferences(context)
+    onion_row = row.row(align=True)
+    onion_row.enabled = _is_live_grease_pencil_object(_scrub_target_object(context))
+    onion_row.operator(
+        FBP_OT_ToggleScrubOnionInterface.bl_idname,
+        text="",
+        icon="ONIONSKIN_ON",
+        depress=bool(
+            getattr(preferences, "gp_scrub_show_onion_handles", True)
+            if preferences is not None
+            else True
+        ),
     )
     row.popover(
         panel=FBP_PT_GreasePencilScrubSliderPopover.bl_idname,
@@ -4627,10 +6485,19 @@ class _ScrubPreviewOverlay:
         obj = getattr(context, "object", None)
         if obj is not None and str(getattr(obj, "type", "") or "") == "GREASEPENCIL":
             self._keyframe_records = grease_pencil_keyframe_records(obj)
+            self._object = obj
         else:
             self._keyframe_records = ()
+            self._object = None
         self._keyframe_record_numbers = tuple(record[0] for record in self._keyframe_records)
         self._all_keyframes = timeline_keyframe_frames(scene, obj)
+        self._bookmark_records = scrub_bookmark_records(scene)
+        self._onion_before_handle = None
+        self._onion_after_handle = None
+        self._shortcut_direct_factor = 0.0
+        self._shortcut_direct_locked = False
+        self._is_persistent = False
+        self._shortcut_pending = False
         self._palette = blender_theme_palette(context)
         return True
 
@@ -4753,16 +6620,26 @@ class FBP_OT_GreasePencilScrubPreview(Operator):
 _classes = (
     FBP_OT_GreasePencilFrameScrub,
     FBP_OT_ToggleGreasePencilScrubSlider,
+    FBP_OT_ToggleScrubOnionInterface,
     FBP_OT_CopyGreasePencilScrubKeyframes,
     FBP_OT_PasteGreasePencilScrubKeyframes,
     FBP_OT_DuplicateGreasePencilScrubKeyframes,
     FBP_OT_DeleteGreasePencilScrubKeyframes,
     FBP_OT_SelectAllGreasePencilScrubKeyframes,
     FBP_OT_MirrorGreasePencilScrubKeyframes,
+    FBP_OT_AddScrubBookmark,
+    FBP_OT_RenameScrubBookmark,
+    FBP_OT_SetScrubBookmarkColor,
+    FBP_OT_SelectScrubBookmarks,
+    FBP_OT_RemoveScrubBookmark,
+    FBP_OT_DeleteAllScrubBookmarks,
+    FBP_OT_DuplicateScrubBookmarks,
     FBP_OT_SetGreasePencilScrubKeyframeType,
     FBP_OT_SetGreasePencilScrubPosition,
     FBP_MT_GreasePencilScrubKeyframeType,
     FBP_MT_GreasePencilScrubMirror,
+    FBP_MT_ScrubBookmarkColor,
+    FBP_MT_ScrubBookmarkMenu,
     FBP_MT_GreasePencilScrubContextMenu,
     FBP_PT_GreasePencilScrubSliderPopover,
     FBP_OT_GreasePencilScrubPreview,

@@ -110,6 +110,32 @@ def load_addon_module(*, fresh=False):
     return module
 
 
+def reload_addon_module_in_place(module):
+    """Re-execute the package while preserving its module identity.
+
+    ``importlib.reload`` asks the import system to rediscover the package by
+    name.  That makes the regression suite depend on the extracted source
+    directory being named exactly ``frame_by_plane``, even though the suite's
+    direct loader intentionally supports arbitrary checkout and artifact paths.
+    Blender's extension updater already has the package object and executes the
+    package entry point in place, so rebuild the explicit source spec here too.
+    """
+    spec = importlib.util.spec_from_file_location(
+        PACKAGE,
+        SOURCE / "__init__.py",
+        submodule_search_locations=[str(SOURCE)],
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Could not recreate the Frame By Plane package spec")
+    module.__spec__ = spec
+    module.__loader__ = spec.loader
+    module.__file__ = str(SOURCE / "__init__.py")
+    module.__package__ = PACKAGE
+    module.__path__ = [str(SOURCE)]
+    spec.loader.exec_module(module)
+    return module
+
+
 def import_addon(*, fresh=False):
     module = load_addon_module(fresh=fresh)
     module.register()
@@ -163,7 +189,7 @@ def test_register_cycles():
     scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
     unregister_addon(module)
     assert not scheduler.scheduler_accepting_tasks()
-    module = importlib.reload(module)
+    module = reload_addon_module_in_place(module)
     module.register()
     scheduler = importlib.import_module(f"{PACKAGE}.runtime_scheduler")
     assert scheduler.scheduler_accepting_tasks()
@@ -311,11 +337,182 @@ def test_undo_redo(_module):
     return "12 pushes / 6 undo / 6 redo"
 
 
+def test_scrub_bar_regressions(_module):
+    scrub = importlib.import_module(f"{PACKAGE}.grease_pencil_scrub")
+    bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
+    icons = importlib.import_module(f"{PACKAGE}.ui_icons")
+
+    vertical = scrub.scrub_overlay_layout(
+        900,
+        600,
+        position="LEFT",
+        ui_scale=1.0,
+        length_ratio=0.5,
+        edge_offset=180.0,
+    )
+    base_x = float(vertical["x"])
+    assert scrub.magnetic_scrub_axis_offset(
+        base_x + 150.0,
+        300.0,
+        vertical,
+        capture_px=96.0,
+    ) == 0.0
+    assert math.isclose(
+        scrub.magnetic_scrub_axis_offset(
+            base_x + 24.0,
+            300.0,
+            vertical,
+            capture_px=96.0,
+        ),
+        24.0,
+        abs_tol=1.0e-6,
+    )
+    outer = scrub.magnetic_scrub_axis_offset(
+        base_x + 72.0,
+        300.0,
+        vertical,
+        capture_px=96.0,
+    )
+    assert 0.0 < outer < 72.0
+    assert scrub.magnetic_scrub_axis_offset(
+        base_x + 24.0,
+        800.0,
+        vertical,
+        capture_px=96.0,
+    ) == 0.0
+
+    assert not scrub.scrub_magnet_should_release(
+        "TIMER",
+        event_in_window=False,
+        cursor_in_owned_window=True,
+    )
+    assert scrub.scrub_magnet_should_release(
+        "TIMER",
+        event_in_window=True,
+        cursor_in_owned_window=False,
+    )
+    assert scrub.scrub_magnet_should_release(
+        "MOUSEMOVE",
+        event_in_window=False,
+        cursor_in_owned_window=True,
+    )
+
+    horizontal = scrub.scrub_overlay_layout(
+        900,
+        600,
+        position="BOTTOM",
+        ui_scale=1.0,
+        length_ratio=0.5,
+        edge_offset=120.0,
+    )
+    direct = scrub.direct_scrub_mapping_factor(
+        (horizontal["x0"] + horizontal["x1"]) * 0.5,
+        horizontal["y"],
+        horizontal,
+        capture_px=96.0,
+        inner_px=12.0,
+        strength=1.0,
+    )
+    transition = scrub.direct_scrub_mapping_factor(
+        (horizontal["x0"] + horizontal["x1"]) * 0.5,
+        horizontal["y"] + 48.0,
+        horizontal,
+        capture_px=96.0,
+        inner_px=12.0,
+        strength=1.0,
+    )
+    relative = scrub.direct_scrub_mapping_factor(
+        (horizontal["x0"] + horizontal["x1"]) * 0.5,
+        horizontal["y"] + 120.0,
+        horizontal,
+        capture_px=96.0,
+        inner_px=12.0,
+        strength=1.0,
+    )
+    assert direct == 1.0
+    assert 0.0 < transition < 1.0
+    assert relative == 0.0
+
+    class RangeScene:
+        frame_start = 1
+        frame_end = 250
+        use_preview_range = False
+
+    for center, count, expected in (
+        (50, 50, (25, 74)),
+        (1, 50, (1, 50)),
+        (250, 50, (201, 250)),
+    ):
+        display = scrub.scrub_display_range(RangeScene(), center, count)
+        assert display == expected, (center, count, display)
+        assert display[1] - display[0] + 1 == count
+
+    # Relative scrubbing must use the actual visible distance available on
+    # each side. At scene frame 1, a 1-50 window must reach frame 50.
+    target, _delta = scrub.relative_scrub_target(
+        1,
+        100.0,
+        24.5,
+        100.0,
+        sensitivity=1.0,
+        negative_radius=0.0,
+        positive_radius=49.0,
+    )
+    assert math.isclose(target, 50.0), target
+
+    # Leaving the exact direct zone must be distinguishable from the outer
+    # transition so the modal operator can re-anchor at the exit position.
+    assert scrub.direct_scrub_mapping_factor(
+        (horizontal["x0"] + horizontal["x1"]) * 0.5,
+        horizontal["y"],
+        horizontal,
+        capture_px=96.0,
+        inner_px=12.0,
+        strength=1.0,
+    ) == 1.0
+    assert scrub._bookmark_native_name("Shot A") == "✦ - Shot A"
+    assert scrub._bookmark_label_from_name("✦ - Shot A") == "Shot A"
+    assert len(scrub._BOOKMARK_COLOR_ITEMS) == 9
+
+    keys = (10, 20, 30, 40, 60, 70)
+    assert scrub._onion_endpoint_frame(50, 2, "BEFORE", "RELATIVE", keys) == 30
+    assert scrub._onion_endpoint_frame(50, 2, "AFTER", "RELATIVE", keys) == 70
+    assert scrub._onion_amount_from_frame(50, 25, "BEFORE", "RELATIVE", keys) == 2
+    assert scrub._onion_amount_from_frame(50, 65, "AFTER", "RELATIVE", keys) == 1
+
+    value = 0.0
+    for _index in range(40):
+        value = scrub.smooth_scrub_magnet_offset(
+            value,
+            24.0,
+            0.22,
+            0.04,
+        )
+    assert math.isclose(value, 24.0, abs_tol=0.05), value
+
+    class SceneZero:
+        frame_current = 0
+
+    assert bridge._scene_current_frame_number(SceneZero(), 1) == 0
+    assert icons._FBP_CUSTOM_ICON_UI_KEYS.get("settings.scrub_slider") == "floating_timeline"
+    icon_path = SOURCE / "assets" / "icons" / "icon_FLOATINGTIMELINE_paste.png"
+    assert icon_path.is_file(), icon_path
+    return {
+        "magnet_outer_offset": outer,
+        "direct_scrub_factor": direct,
+        "range_50": scrub.scrub_display_range(RangeScene(), 50, 50),
+        "frame_zero": bridge._scene_current_frame_number(SceneZero(), 1),
+        "preferences_icon": icon_path.name,
+    }
+
+
 def test_gp_support(_module):
     bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
     summary = bridge.fbp_gp_effect_support_summary()
-    assert summary["NATIVE"] >= 27, summary
-    assert summary["total"] >= summary["NATIVE"]
+    assert len(bridge.GP_NATIVE_EFFECTS) >= 27, len(bridge.GP_NATIVE_EFFECTS)
+    assert summary["total"] == sum(
+        summary[key] for key in ("NATIVE", "GEOMETRY_CANDIDATE", "RASTER_ONLY")
+    ), summary
     assert any(
         item["effect_id"] == "SURFACE_CONFORM" and item["tier"] == "NATIVE"
         for item in bridge.fbp_gp_effect_backend_matrix()
@@ -344,6 +541,12 @@ def test_gp_native_apply(_module):
         if item is not None:
             added.append(effect_id)
     if added:
+        assert bridge._gp_set_all_native_effects_open(canvas, False) == len(added)
+        assert all(
+            not bridge._gp_native_effect_open(item, default=True)
+            for item in bridge._gp_native_effect_instances(canvas).values()
+        )
+        assert bridge._gp_set_all_native_effects_open(canvas, True) == len(added)
         effect_id = added[0]
         definition = bridge._gp_native_effect_definition(effect_id)
         collection = bridge._gp_native_effect_collection(canvas, definition[3])
@@ -355,6 +558,11 @@ def test_gp_native_apply(_module):
         )
         assert duplicate is not None
         assert bridge._gp_tag_native_effect_item(duplicate, effect_id)
+        assert bridge._gp_native_effect_id_from_item(
+            duplicate, bridge._gp_native_effect_definitions()
+        ) == effect_id
+        assert bridge._gp_set_native_effect_open(duplicate, False)
+        assert not bridge._gp_native_effect_open(duplicate, default=True)
         _active, _ordered, _lengths, duplicates = bridge._gp_native_effect_stack_state(canvas)
         assert duplicates.get(effect_id, 0) == 2, duplicates
         assert bridge._gp_repair_native_effect_duplicates(canvas) == 1
@@ -561,13 +769,18 @@ def test_generic_mesh_apply(_module):
 
 def test_compositor(_module):
     scene = bpy.context.scene
-    scene.use_nodes = True
-    tree = scene.node_tree
+    sets = importlib.import_module(f"{PACKAGE}.compositor_sets")
+    tree = sets._root_tree(scene)
     rgb = tree.nodes.new("CompositorNodeRGB")
     rgb.name = "Artist RGB — Must Survive"
-    mix = tree.nodes.new("CompositorNodeMixRGB")
+    mix = tree.nodes.new("ShaderNodeMix")
     mix.name = "Artist Mix — Must Survive"
-    tree.links.new(rgb.outputs[0], mix.inputs[1])
+    mix.data_type = "RGBA"
+    color_b = next(
+        socket for socket in mix.inputs
+        if socket.name == "B" and socket.type == "RGBA"
+    )
+    tree.links.new(rgb.outputs[0], color_b)
     rgb.outputs[0].default_value = (0.15, 0.25, 0.35, 1.0)
     mix.blend_type = "MULTIPLY"
     mix.inputs[0].default_value = 0.375
@@ -580,8 +793,6 @@ def test_compositor(_module):
     group_node = tree.nodes.new("CompositorNodeGroup")
     group_node.name = "Artist Group — Must Survive"
     group_node.node_tree = group_tree
-
-    sets = importlib.import_module(f"{PACKAGE}.compositor_sets")
 
     # Nested group safety limits must propagate to the root completeness flag.
     # A partial deep-group snapshot is not sufficient to authorize Safe Repair.
@@ -631,7 +842,11 @@ def test_compositor(_module):
     assert graph_before == sets.fbp_compositor_artist_graph_snapshot(scene)
 
     issues = sets.fbp_validate_composite(scene)
-    assert tree.nodes.get(rgb.name) is rgb and tree.nodes.get(mix.name) is mix
+    current_rgb = tree.nodes.get(rgb.name)
+    current_mix = tree.nodes.get(mix.name)
+    assert current_rgb is not None and current_mix is not None
+    assert current_rgb.as_pointer() == rgb.as_pointer()
+    assert current_mix.as_pointer() == mix.as_pointer()
     assert graph_before == sets.fbp_compositor_artist_graph_snapshot(scene)
 
     # Exercise the same rollback primitive used by Safe Repair.
@@ -705,6 +920,10 @@ def test_save_reopen(_module):
 
 def test_tiny_render(_module):
     scene = bpy.context.scene
+    previous_group = getattr(scene, "compositing_node_group", None)
+    previous_use_compositing = bool(scene.render.use_compositing)
+    scene.compositing_node_group = None
+    scene.render.use_compositing = False
     scene.render.engine = "BLENDER_WORKBENCH"
     scene.render.resolution_x = 32
     scene.render.resolution_y = 32
@@ -718,9 +937,14 @@ def test_tiny_render(_module):
     camera = bpy.context.object
     camera.rotation_euler = (cube.location - camera.location).to_track_quat("-Z", "Y").to_euler()
     scene.camera = camera
-    bpy.ops.render.render(write_still=True)
-    assert path.exists() and path.stat().st_size > 0
-    return str(path)
+    try:
+        result = bpy.ops.render.render(write_still=True)
+        assert "FINISHED" in result, result
+        assert path.exists() and path.stat().st_size > 0
+        return str(path)
+    finally:
+        scene.compositing_node_group = previous_group
+        scene.render.use_compositing = previous_use_compositing
 
 
 def _redraw_all(iterations=1):
@@ -813,7 +1037,18 @@ def test_interactive_reload_and_splash(module):
     module.unregister()
     module.register()
     feedback = importlib.import_module(f"{PACKAGE}.feedback")
+    safe_tasks = importlib.import_module(f"{PACKAGE}.safe_tasks")
     scheduled = feedback.fbp_schedule_whats_new_prompt(delay=0.05)
+    if not scheduled and safe_tasks.scheduled_task_pending("fbp_whats_new_prompt"):
+        # feedback.register() already claimed and queued the single automatic
+        # prompt during module.register(). Accelerate that existing request for
+        # the interactive runner instead of treating the intended deduplication
+        # result as a scheduling failure.
+        scheduled = safe_tasks.schedule_once(
+            "fbp_whats_new_prompt",
+            feedback._try_show_whats_new_prompt,
+            first_interval=0.05,
+        )
     assert scheduled, "What's New prompt was not scheduled after update"
     for _ in range(8):
         _redraw_all(1)
@@ -864,6 +1099,7 @@ def run_background():
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),
+            ("scrub_bar_regressions", test_scrub_bar_regressions),
             ("gp_effect_support", test_gp_support),
             ("gp_native_apply_remove", test_gp_native_apply),
             ("generic_mesh_matrix", test_generic_mesh_matrix),

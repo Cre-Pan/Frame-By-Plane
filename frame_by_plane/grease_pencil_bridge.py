@@ -128,6 +128,7 @@ KEY_CAMERA_DISTANCE = "fbp_gp_camera_distance"
 KEY_CANVAS_KIND = "fbp_gp_canvas_kind"
 KEY_GP_NATIVE_EFFECT_ID = "fbp_gp_native_effect_id"
 KEY_GP_NATIVE_EFFECT_OPEN = "fbp_gp_native_effect_open"
+KEY_GP_NATIVE_EFFECT_REGISTRY = "fbp_gp_native_effect_registry"
 KEY_CANVAS_SOLO = "fbp_gp_canvas_solo"
 KEY_CANVAS_CLIPPING = "fbp_gp_canvas_clipping"
 KEY_CYCLES_PROXY = "fbp_gp_cycles_proxy"
@@ -1165,7 +1166,7 @@ def _set_active_gp_brush_stroke_type(context=None, mode="STROKE"):
 def _gp_mask_curve_count(canvas, scene=None, *, rebuild_index=False):
     try:
         target_scene = _scene_for_canvas(canvas, scene)
-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(target_scene, 1)
         _exposure_key, exposure_state = _canvas_exposure_state(
             canvas,
             frame_number,
@@ -1381,7 +1382,7 @@ def _canvas_stroke_count_signature(
         _sync_gp_mask_authored_curve_state(canvas, scene=scene)
     try:
         target_scene = _scene_for_canvas(canvas, scene)
-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(target_scene, 1)
         _exposure_key, exposure_state = _canvas_exposure_state(canvas, frame_number)
     except FBP_DATA_ERRORS:
         return (), (0, 0)
@@ -3453,6 +3454,23 @@ def _ensure_gp_layer(canvas):
         return None
 
 
+def _coerce_frame_number(value, default=1):
+    """Coerce a frame value while preserving valid frame zero."""
+    try:
+        return int(default) if value is None else int(value)
+    except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+        return int(default)
+
+
+def _scene_current_frame_number(scene, default=1):
+    """Return ``Scene.frame_current`` without treating frame zero as missing."""
+    try:
+        value = getattr(scene, "frame_current", None)
+    except (AttributeError, ReferenceError):
+        value = None
+    return _coerce_frame_number(value, default)
+
+
 def _ensure_gp_current_keyframe(canvas, context=None, *, frame_number=None):
     """Ensure the active Grease Pencil layer has a blank drawing on the current frame.
 
@@ -3469,7 +3487,7 @@ def _ensure_gp_current_keyframe(canvas, context=None, *, frame_number=None):
     if frame_number is None:
         try:
             scene = getattr(context, "scene", None) if context is not None else getattr(bpy.context, "scene", None)
-            frame_number = int(getattr(scene, "frame_current", 1) or 1)
+            frame_number = _scene_current_frame_number(scene, 1)
         except FBP_DATA_ERRORS:
             frame_number = 1
     try:
@@ -4031,7 +4049,7 @@ def _gp_material_visibility_signature(canvas):
 def _canvas_geometry(canvas, rig, bounds=None, *, frame_number=None, scene=None, exposure_state=None):
     """GP Mask v2 geometry extraction with evaluated/live fallback."""
     target_scene = _scene_for_canvas(canvas, scene)
-    frame = int(frame_number if frame_number is not None else getattr(target_scene, "frame_current", 1) or 1)
+    frame = _coerce_frame_number(frame_number, _scene_current_frame_number(target_scene, 1))
     bounds = bounds if bounds is not None else _plane_bounds(rig)
     if exposure_state is None:
         _key, exposure_state = _canvas_exposure_state(canvas, frame)
@@ -4150,8 +4168,8 @@ def _geometry_signature(canvas, rig, polygons, polylines, resolution, bounds=Non
         f"{float(getattr(canvas, 'fbp_gp_mask_threshold', 0.5)):.8f}",
         "1" if bool(getattr(canvas, "fbp_gp_reveal_enabled", False)) else "0",
         str(getattr(canvas, "fbp_gp_reveal_mode", "REVEAL")),
-        str(int(getattr(canvas, "fbp_gp_reveal_start", 1) or 1)),
-        str(int(getattr(canvas, "fbp_gp_reveal_end", 24) or 24)),
+        str(_coerce_frame_number(getattr(canvas, "fbp_gp_reveal_start", None), 1)),
+        str(_coerce_frame_number(getattr(canvas, "fbp_gp_reveal_end", None), 24)),
         str(getattr(canvas, "fbp_gp_reveal_direction", "LEFT_RIGHT")),
         "1" if bool(getattr(canvas, "fbp_gp_reveal_invert", False)) else "0",
         f"{float(getattr(canvas, 'fbp_gp_reveal_feather', 0.05)):.8f}",
@@ -4209,10 +4227,10 @@ def _reveal_progress(canvas, frame_number=None):
     if not bool(getattr(canvas, "fbp_gp_reveal_enabled", False)):
         return None
     if frame_number is None:
-        frame_number = int(getattr(getattr(bpy.context, "scene", None), "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(getattr(bpy.context, "scene", None), 1)
     frame = int(frame_number)
-    start = int(getattr(canvas, "fbp_gp_reveal_start", 1) or 1)
-    end = int(getattr(canvas, "fbp_gp_reveal_end", start + 1) or (start + 1))
+    start = _coerce_frame_number(getattr(canvas, "fbp_gp_reveal_start", None), 1)
+    end = _coerce_frame_number(getattr(canvas, "fbp_gp_reveal_end", None), start + 1)
     if end < start:
         start, end = end, start
     if end == start:
@@ -4334,7 +4352,7 @@ def _mask_pixels(canvas, polygons, polylines, bounds, resolution, *, distance_si
             fill_groups=tuple(polygons or ()),
             polylines=tuple(polylines or ()),
             bounds=tuple(bounds or (-1.0, 1.0, -1.0, 1.0)),
-            frame=int(frame_number or 1),
+            frame=_coerce_frame_number(frame_number, 1),
         )
         base_signature = "|".join((
             str(distance_signature or ""),
@@ -4606,7 +4624,7 @@ def refresh_gp_mask(canvas, *, force=False, scene=None, allow_edit_mode=False):
     if surface is None:
         return None, False
     target_scene = _scene_for_canvas(canvas, scene)
-    frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+    frame_number = _scene_current_frame_number(target_scene, 1)
     try:
         existing_image = getattr(canvas, "fbp_gp_mask_image", None)
     except FBP_DATA_ERRORS:
@@ -4774,7 +4792,7 @@ def _canvas_geometry_changes_with_frame(canvas, *, refresh=False, scene=None):
         # can be linked into scenes with different frame_start values.
         if scene is None and not refresh and not cache_key[1] and KEY_MASK_GEOMETRY_FRAME_SENSITIVE in canvas:
             return bool(canvas.get(KEY_MASK_GEOMETRY_FRAME_SENSITIVE, False))
-        frame_start = int(getattr(target_scene, "frame_start", 1) or 1)
+        frame_start = _coerce_frame_number(getattr(target_scene, "frame_start", None), 1)
         sensitive = False
         data = getattr(canvas, "data", None)
         for layer in tuple(getattr(data, "layers", ()) or ()):
@@ -4784,7 +4802,7 @@ def _canvas_geometry_changes_with_frame(canvas, *, refresh=False, scene=None):
                 sensitive = True
                 break
             if count == 1:
-                first = int(getattr(frames[0], "frame_number", frame_start) or frame_start)
+                first = _coerce_frame_number(getattr(frames[0], "frame_number", None), frame_start)
                 # One drawing key is still animated when it begins after the
                 # scene start: frames before it must remain empty.
                 if first > frame_start:
@@ -4830,7 +4848,7 @@ def _canvas_frame_state_key(canvas, scene):
     Held GP exposures and reveal ranges before/after their active interval
     produce identical keys, so no timer or image upload is scheduled.
     """
-    frame_number = int(getattr(scene, "frame_current", 1) or 1)
+    frame_number = _scene_current_frame_number(scene, 1)
     exposure_key = _canvas_exposure_key(canvas, frame_number)
     return _frame_state_from_exposure(canvas, frame_number, exposure_key)
 
@@ -5085,7 +5103,7 @@ def _sync_gp_mask_authored_modes_from_native(canvas, scene=None, *, allow_edit_m
         return False
     try:
         target_scene = _scene_for_canvas(canvas, scene)
-        frame_number = int(getattr(target_scene, "frame_current", 1) or 1)
+        frame_number = _scene_current_frame_number(target_scene, 1)
         _exposure_key, exposure_state = _canvas_exposure_state(
             canvas, frame_number, rebuild_index=True
         )
@@ -5762,12 +5780,117 @@ def _gp_native_effect_supported(canvas, definition):
     return bool(_gp_supported_native_type(canvas, definition))
 
 
-def _gp_tag_native_effect_item(item, effect_id):
+def _gp_native_effect_registry_token(item):
+    """Return a persistent owner-side key for a Blender native stack item."""
+    if item is None:
+        return ""
     try:
-        item[KEY_GP_NATIVE_EFFECT_ID] = str(effect_id or "").upper()
+        persistent_uid = int(getattr(item, "persistent_uid", 0) or 0)
+    except FBP_DATA_ERRORS:
+        persistent_uid = 0
+    if persistent_uid > 0:
+        return f"uid:{persistent_uid}"
+    try:
+        rna_name = str(getattr(getattr(item, "bl_rna", None), "identifier", "") or "")
+        item_name = str(getattr(item, "name", "") or "")
+    except FBP_DATA_ERRORS:
+        return ""
+    return f"name:{rna_name}:{item_name}" if item_name else ""
+
+
+def _gp_native_effect_registry_owner(item):
+    try:
+        owner = getattr(item, "id_data", None)
+        return owner if owner is not None and hasattr(owner, "get") else None
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _gp_native_effect_registry(item):
+    """Read JSON-safe native-effect metadata stored on the owning Object.
+
+    Blender 5.2 exposes ``get``/``keys`` on ShaderFx and Modifier RNA wrappers,
+    but rejects custom-property writes on those items.  Their owning Object is
+    an ID datablock and safely persists this compact registry instead.
+    """
+    owner = _gp_native_effect_registry_owner(item)
+    if owner is None:
+        return owner, {}
+    try:
+        raw = owner.get(KEY_GP_NATIVE_EFFECT_REGISTRY, "")
+        decoded = json.loads(str(raw or "{}"))
+    except (json.JSONDecodeError, *FBP_DATA_ERRORS):
+        return owner, {}
+    if not isinstance(decoded, dict):
+        return owner, {}
+    registry = {}
+    for token, metadata in decoded.items():
+        if not isinstance(token, str) or not isinstance(metadata, dict):
+            continue
+        registry[token] = dict(metadata)
+    return owner, registry
+
+
+def _gp_store_native_effect_registry(owner, registry):
+    if owner is None:
+        return False
+    try:
+        if registry:
+            owner[KEY_GP_NATIVE_EFFECT_REGISTRY] = json.dumps(
+                registry,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        elif KEY_GP_NATIVE_EFFECT_REGISTRY in owner:
+            del owner[KEY_GP_NATIVE_EFFECT_REGISTRY]
         return True
     except FBP_DATA_ERRORS:
         return False
+
+
+def _gp_native_effect_registry_metadata(item):
+    owner, registry = _gp_native_effect_registry(item)
+    token = _gp_native_effect_registry_token(item)
+    metadata = registry.get(token, {}) if token else {}
+    return owner, registry, token, dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _gp_update_native_effect_registry(item, **values):
+    owner, registry, token, metadata = _gp_native_effect_registry_metadata(item)
+    if owner is None or not token:
+        return False
+    metadata.update(values)
+    registry[token] = metadata
+    return _gp_store_native_effect_registry(owner, registry)
+
+
+def _gp_untag_native_effect_item(item):
+    owner, registry, token, _metadata = _gp_native_effect_registry_metadata(item)
+    changed = False
+    if token and token in registry:
+        registry.pop(token, None)
+        changed = _gp_store_native_effect_registry(owner, registry)
+    try:
+        if KEY_GP_NATIVE_EFFECT_ID in item:
+            del item[KEY_GP_NATIVE_EFFECT_ID]
+            changed = True
+    except FBP_DATA_ERRORS:
+        pass
+    return changed
+
+
+def _gp_tag_native_effect_item(item, effect_id):
+    effect_id = str(effect_id or "").upper()
+    if item is None or not effect_id:
+        return False
+    try:
+        item[KEY_GP_NATIVE_EFFECT_ID] = effect_id
+        if str(item.get(KEY_GP_NATIVE_EFFECT_ID, "") or "").upper() == effect_id:
+            return True
+    except FBP_DATA_ERRORS:
+        pass
+    return _gp_update_native_effect_registry(item, effect_id=effect_id)
 
 
 def _gp_native_effect_id_from_item(item, definitions):
@@ -5779,9 +5902,13 @@ def _gp_native_effect_id_from_item(item, definitions):
     """
     try:
         tagged = str(item.get(KEY_GP_NATIVE_EFFECT_ID, "") or "").upper()
-        return tagged if tagged in definitions else ""
+        if tagged in definitions:
+            return tagged
     except FBP_DATA_ERRORS:
-        return ""
+        pass
+    _owner, _registry, _token, metadata = _gp_native_effect_registry_metadata(item)
+    tagged = str(metadata.get("effect_id", "") or "").upper()
+    return tagged if tagged in definitions else ""
 
 
 def _gp_native_effect_instances(canvas):
@@ -5975,11 +6102,16 @@ def _gp_add_native_effect(canvas, effect_id):
         item = _gp_new_native_effect_item(collection, name, native_type)
         if item is None:
             return None
-        _gp_tag_native_effect_item(item, effect_id)
+        if not _gp_tag_native_effect_item(item, effect_id):
+            collection.remove(item)
+            fbp_warn(
+                f"Could not persist ownership for native Grease Pencil effect {effect_id}"
+            )
+            return None
         try:
             item["fbp_gp_native_type"] = str(native_type)
         except FBP_DATA_ERRORS:
-            pass
+            _gp_update_native_effect_registry(item, native_type=str(native_type))
         _gp_apply_native_effect_defaults(item, effect_id)
         if str(effect_id or "").upper() == "SURFACE_CONFORM":
             try:
@@ -6033,6 +6165,7 @@ def _gp_repair_native_effect_duplicates(canvas):
                 seen.add(effect_id)
                 continue
             try:
+                _gp_untag_native_effect_item(item)
                 collection.remove(item)
                 removed += 1
             except FBP_DATA_ERRORS as exc:
@@ -6055,6 +6188,7 @@ def _gp_remove_native_effect(canvas, effect_id):
         for item in reversed(items):
             if _gp_native_effect_id_from_item(item, definitions) != target_id:
                 continue
+            _gp_untag_native_effect_item(item)
             collection.remove(item)
             removed = True
     except FBP_DATA_ERRORS as exc:
@@ -6095,17 +6229,35 @@ def _gp_native_item_name(item):
 def _gp_native_effect_open(item, default=True):
     """Return whether the inline Frame By Plane settings for an item are open."""
     try:
-        return bool(item.get(KEY_GP_NATIVE_EFFECT_OPEN, bool(default)))
+        value = item.get(KEY_GP_NATIVE_EFFECT_OPEN, None)
+        if value is not None:
+            return bool(value)
     except FBP_DATA_ERRORS:
-        return bool(default)
+        pass
+    _owner, _registry, _token, metadata = _gp_native_effect_registry_metadata(item)
+    return bool(metadata.get("open", bool(default)))
 
 
 def _gp_set_native_effect_open(item, state):
     try:
         item[KEY_GP_NATIVE_EFFECT_OPEN] = bool(state)
-        return True
+        if bool(item.get(KEY_GP_NATIVE_EFFECT_OPEN, not bool(state))) == bool(state):
+            return True
     except FBP_DATA_ERRORS:
-        return False
+        pass
+    return _gp_update_native_effect_registry(item, open=bool(state))
+
+
+def _gp_set_all_native_effects_open(canvas, state):
+    """Expand or collapse every managed native GP effect in one action."""
+    _active, ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
+    changed = 0
+    for _effect_id, item, _backend, _index in ordered:
+        if _gp_native_effect_open(item, default=True) == bool(state):
+            continue
+        if _gp_set_native_effect_open(item, bool(state)):
+            changed += 1
+    return changed
 
 
 _GP_NATIVE_EFFECT_UI_PROPS = {
@@ -6368,6 +6520,21 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
     stack_header = stack_box.row(align=True)
     stack_header.label(text="Effect Stack", icon="SHADERFX")
     stack_header.label(text="Native Grease Pencil backend", icon="CHECKMARK")
+    if active_count:
+        expand = stack_header.operator(
+            "fbp.set_all_gp_native_effect_settings",
+            text="",
+            icon="DOWNARROW_HLT",
+            emboss=False,
+        )
+        expand.expanded = True
+        collapse = stack_header.operator(
+            "fbp.set_all_gp_native_effect_settings",
+            text="",
+            icon="RIGHTARROW_THIN",
+            emboss=False,
+        )
+        collapse.expanded = False
 
     if active_count:
         backend_labels = {"SHADER_FX": ("Shader Effects", "SHADING_RENDERED"), "MODIFIER": ("Modifiers", "MODIFIER")}
@@ -6464,6 +6631,33 @@ class FBP_OT_ToggleGPNativeEffectSettings(Operator):
         if item is None:
             return {"CANCELLED"}
         _gp_set_native_effect_open(item, not _gp_native_effect_open(item, default=True))
+        return {"FINISHED"}
+
+
+class FBP_OT_SetAllGPNativeEffectSettings(Operator):
+    bl_idname = "fbp.set_all_gp_native_effect_settings"
+    bl_label = "Set All Grease Pencil Effect Settings"
+    bl_description = "Expand or collapse the inline controls for every active Grease Pencil effect"
+    bl_options = {"INTERNAL"}
+
+    expanded: BoolProperty(
+        name="Expanded",
+        description="Show every inline native Grease Pencil effect control",
+        default=True,
+        options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        canvas = _active_canvas(context)
+        if not is_gp_drawing_canvas(canvas):
+            return False
+        _active, ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
+        return bool(ordered)
+
+    def execute(self, context):
+        canvas = _active_canvas(context)
+        _gp_set_all_native_effects_open(canvas, bool(self.expanded))
         return {"FINISHED"}
 
 
@@ -10360,6 +10554,7 @@ classes = (
     FBP_OT_SafeGPMaskShrinkFatten,
     FBP_MT_GPNativeEffects,
     FBP_OT_ToggleGPNativeEffectSettings,
+    FBP_OT_SetAllGPNativeEffectSettings,
     FBP_OT_RepairGPNativeEffectDuplicates,
     FBP_OT_ResetGPNativeEffect,
     FBP_OT_MoveGPNativeEffect,
