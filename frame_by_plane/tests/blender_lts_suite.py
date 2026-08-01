@@ -2206,11 +2206,18 @@ def test_interactive_generation_lock_windows(_module):
     assert owner is not None, refusal
     try:
         with bpy.context.temp_override(window=other_window):
+            same_blocked, same_reason = coordinator.acquire_generation(
+                bpy.context,
+                operator_id="fbp.generate_multiplane",
+                mode="Window B Multiplane",
+            )
             blocked, blocked_reason = coordinator.acquire_generation(
                 bpy.context,
                 operator_id="fbp.import_sequence",
                 mode="Window B Sequence",
             )
+        assert same_blocked is None, same_blocked
+        assert "Window A Multiplane" in same_reason, same_reason
         assert blocked is None, blocked
         assert "Window A Multiplane" in blocked_reason, blocked_reason
         assert coordinator.active_generation_snapshot()["window_pointer"] == owner.window_pointer
@@ -2221,9 +2228,12 @@ def test_interactive_generation_lock_windows(_module):
             rollback=True,
         )
     assert rollback["verified"], rollback
+    assert coordinator.active_generation_snapshot() == {}
     return {
         "windows": len(bpy.context.window_manager.windows),
+        "same_operator_refused": True,
         "different_operator_refused": True,
+        "blocked_job_never_became_owner": True,
         "owner_continued": True,
         "rollback_verified": True,
     }
