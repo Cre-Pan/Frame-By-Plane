@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "release": "7.1.18",
+  "phase": "after",
+  "captured_at": "2026-08-01T14:19:51+00:00",
+  "environment": {
+    "blender": "5.2.0 LTS",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "logical_cpus": 20,
+    "profile_default": "off",
+    "network_used": false
+  },
+  "methodology": {
+    "same_fixture_as_baseline": true,
+    "handler_fixture": "One imported 16x16 image layer duplicated to 1, 10 and 100 layers; HUE_SATURATION static or keyed on frames 1 and 120; 12 warm-up and 240 timed handler calls.",
+    "profile_120_frames": "Controlled CPU-side scene.frame_set evaluation, not GPU presentation or final-render timing.",
+    "outlier_policy": "The first default-off after probe reported a 1465.59 ms cold import outlier; the immediate repeat (95.26 ms) is reported for the warm comparison and the outlier remains listed below.",
+    "units": "Milliseconds unless a field explicitly ends in _seconds."
+  },
+  "startup_default_profile_off": {
+    "package_import_ms": 95.2636,
+    "package_import_delta_percent": 13.32,
+    "register_ms": 16.7291,
+    "register_delta_percent": 4.10,
+    "cold_import_outlier_ms": 1465.5873
+  },
+  "interactive": {
+    "register_seconds": 0.1491192,
+    "redraw_300_seconds": 1.8956285,
+    "redraw_delta_percent": 1.27,
+    "preferences_reload_and_splash_seconds": 0.5477566
+  },
+  "icons": {
+    "register_ms": 34.4981,
+    "register_delta_percent": -1.88,
+    "preview_entries_after_register": 12,
+    "preview_entries_delta_percent": -61.29,
+    "ui_icon_300k_calls_ms": 30.2388,
+    "ui_icon_calls_delta_percent": -32.74,
+    "duplicate_grease_pencil_alias_ids": [1124, 1124, 1124],
+    "preview_entries_added_for_three_aliases": 1,
+    "path_alias_hits": 2,
+    "filesystem_checks": 13,
+    "preload_total_ms": 0.2327
+  },
+  "empty_scene_default_profile_off": {
+    "effect_handler_240": {
+      "samples": 240,
+      "avg_ms": 0.003068333,
+      "p50_ms": 0.003,
+      "p95_ms": 0.003299996,
+      "max_ms": 0.0054
+    },
+    "dashboard_build_ms": 0.1265,
+    "dashboard_note": "Schema 2 includes startup, handler, scheduler, media/cache, UI and icon snapshots."
+  },
+  "handler_fixture": {
+    "static": {
+      "1": {"samples": 240, "avg_ms": 0.026509584, "p50_ms": 0.02539999, "p95_ms": 0.02832501, "max_ms": 0.127999985, "avg_delta_percent": 2.14},
+      "10": {"samples": 240, "avg_ms": 0.130237083, "p50_ms": 0.13255002, "p95_ms": 0.138699981, "max_ms": 0.240599999, "avg_delta_percent": -0.87},
+      "100": {"samples": 240, "avg_ms": 1.729060000, "p50_ms": 1.677450011, "p95_ms": 2.113449977, "max_ms": 2.648900001, "avg_delta_percent": 0.10}
+    },
+    "animated": {
+      "1": {"samples": 240, "avg_ms": 0.083187499, "p50_ms": 0.079850011, "p95_ms": 0.101700018, "max_ms": 0.144799997, "avg_delta_percent": -8.66},
+      "10": {"samples": 240, "avg_ms": 0.539588333, "p50_ms": 0.5255, "p95_ms": 0.600770004, "max_ms": 0.758500013, "avg_delta_percent": -3.15},
+      "100": {"samples": 240, "avg_ms": 5.714944582, "p50_ms": 5.619450007, "p95_ms": 6.256065004, "max_ms": 6.792500004, "avg_delta_percent": -1.78}
+    }
+  },
+  "profile_120_frames_empty_scene": {
+    "warmup_frames": 8,
+    "measured_frames": 120,
+    "frame_evaluation": {
+      "avg_ms": 0.703448332,
+      "p50_ms": 0.688350003,
+      "p95_ms": 0.768934975,
+      "max_ms": 1.310799998,
+      "effective_fps": 1421.5685,
+      "frames_over_24fps_budget": 0
+    },
+    "effect_handler": {
+      "samples": 120,
+      "avg_ms": 0.014693333,
+      "p95_ms": 0.016435007,
+      "max_ms": 0.036999991
+    },
+    "python_memory_delta_bytes": 16273,
+    "state_restored": true
+  },
+  "generation_timer": {
+    "foreign_timer_seconds": 0.01,
+    "requested_delay_seconds": 0.2,
+    "first_generation_elapsed_seconds": 0.2103019,
+    "started_before_deadline": false,
+    "orphan_timers": 0,
+    "orphan_operators": 0
+  },
+  "conclusion": {
+    "normal_playback_regression_detected": false,
+    "measured_icon_improvement": true,
+    "runtime_plan_refactor_deferred": true,
+    "reason": "The 100-layer handler remained within noise for static stacks and improved slightly for animated stacks; a large refactor was not justified by measurement."
+  },
+  "source_artifacts": [
+    "work/audit-7.1.18/p2-final/targeted-after-default-off-2.json",
+    "work/audit-7.1.18/p2-final/hot-path-fixture-after-2.json",
+    "work/audit-7.1.18/p2-icons/icon-after.json",
+    "work/audit-7.1.18/final-suite/combined-2_background.json",
+    "work/audit-7.1.18/final-suite/interactive-undo_interactive.json",
+    "work/audit-7.1.18/p0-4-final/generation-timer.json"
+  ]
+}

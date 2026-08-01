@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "release": "7.1.18",
+  "phase": "before",
+  "captured_at": "2026-08-01T13:55:13+00:00",
+  "environment": {
+    "blender": "5.2.0 LTS",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "logical_cpus": 20,
+    "profile_mode": "external audit probe",
+    "network_used": false
+  },
+  "methodology": {
+    "startup": "Factory startup; package import and add-on register measured with time.perf_counter.",
+    "handler_fixture": "One imported 16x16 image layer duplicated to 1, 10 and 100 layers; HUE_SATURATION static or keyed on frames 1 and 120; 12 warm-up and 240 timed handler calls.",
+    "icons": "Interactive factory startup; real Blender preview collection; 300000 cached ui_icon calls.",
+    "redraw": "Interactive suite; 300 View3D sidebar redraw cycles with Grease Pencil and nested managed collections.",
+    "units": "Milliseconds unless a field explicitly ends in _seconds."
+  },
+  "startup": {
+    "package_import_ms": 84.0687,
+    "register_ms": 16.0702,
+    "register_unregister_reload_3_clean_plus_1_in_place_seconds": 1.8309278
+  },
+  "interactive": {
+    "register_seconds": 0.2168473,
+    "redraw_300_seconds": 1.8717951,
+    "preferences_reload_and_splash_seconds": 0.5502036
+  },
+  "icons": {
+    "register_ms": 35.159,
+    "preview_entries_after_register": 31,
+    "ui_icon_300k_calls_ms": 44.9584,
+    "duplicate_grease_pencil_alias_ids": [1131, 1132, 1133]
+  },
+  "empty_scene": {
+    "effect_handler_240": {
+      "samples": 240,
+      "avg_ms": 0.002836667,
+      "p50_ms": 0.0028,
+      "p95_ms": 0.002905021,
+      "max_ms": 0.0034
+    },
+    "dashboard_build_ms": 0.0545
+  },
+  "handler_fixture": {
+    "static": {
+      "1": {"samples": 240, "avg_ms": 0.025954165, "p50_ms": 0.024900015, "p95_ms": 0.029119989, "max_ms": 0.073000003},
+      "10": {"samples": 240, "avg_ms": 0.131382915, "p50_ms": 0.131799985, "p95_ms": 0.139520013, "max_ms": 0.245700008},
+      "100": {"samples": 240, "avg_ms": 1.727347917, "p50_ms": 1.70655, "p95_ms": 1.874644982, "max_ms": 2.2856}
+    },
+    "animated": {
+      "1": {"samples": 240, "avg_ms": 0.091072918, "p50_ms": 0.090250018, "p95_ms": 0.140759995, "max_ms": 0.162499986},
+      "10": {"samples": 240, "avg_ms": 0.557114167, "p50_ms": 0.543999995, "p95_ms": 0.630300021, "max_ms": 0.95680001},
+      "100": {"samples": 240, "avg_ms": 5.818250417, "p50_ms": 5.730000004, "p95_ms": 6.469780018, "max_ms": 7.1321}
+    }
+  },
+  "generation_timer": {
+    "foreign_timer_seconds": 0.01,
+    "requested_delay_seconds": 0.2,
+    "first_generation_elapsed_seconds": 0.0120357,
+    "started_before_deadline": true
+  },
+  "source_artifacts": [
+    "work/audit-7.1.18/baseline/targeted-baseline.json",
+    "work/audit-7.1.18/baseline/hot-path-fixture.json",
+    "work/audit-7.1.18/baseline/generation-timer-baseline.json",
+    "work/audit-7.1.18/baseline-suite/combined_background.json",
+    "work/audit-7.1.18/baseline-suite/combined_interactive.json",
+    "work/audit-7.1.18/p2-icons/icon-before.json"
+  ]
+}
