@@ -472,6 +472,195 @@ def test_generation_progress_and_rollback(_module):
     }
 
 
+def test_incremental_generation_owner_contract(_module):
+    coordinator = importlib.import_module(f"{PACKAGE}.generation_transaction")
+
+    coordinator.retire_active_generation(
+        bpy.context,
+        reason="regression preflight",
+        rollback=True,
+    )
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_generation_a",
+        mode="Regression A",
+    )
+    assert owner is not None, refusal
+    assert owner.token
+    assert owner.operator_id == "fbp.test_generation_a"
+    assert owner.scene_pointer == bpy.context.scene.as_pointer()
+
+    blocked, blocked_reason = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_generation_b",
+        mode="Regression B",
+    )
+    assert blocked is None
+    assert "Regression A" in blocked_reason, blocked_reason
+    assert coordinator.active_generation_snapshot()["token"] == owner.token
+
+    owned_mesh = bpy.data.meshes.new("FBP Owned Journal Mesh")
+    owned_object = bpy.data.objects.new("FBP Owned Journal Object", owned_mesh)
+    bpy.context.scene.collection.objects.link(owned_object)
+    owner.record_datablock(owned_mesh, kind="MESH")
+    owner.record_datablock(owned_object, kind="OBJECT")
+
+    foreign_mesh = bpy.data.meshes.new("FBP Foreign Journal Mesh")
+    foreign_object = bpy.data.objects.new("FBP Foreign Journal Object", foreign_mesh)
+    bpy.context.scene.collection.objects.link(foreign_object)
+    rollback = coordinator.retire_active_generation(
+        bpy.context,
+        reason="regression cancellation",
+        rollback=True,
+    )
+    assert rollback["verified"], rollback
+    assert not rollback["failed"], rollback
+    assert not rollback["remaining"], rollback
+    assert bpy.data.objects.get("FBP Owned Journal Object") is None
+    assert bpy.data.meshes.get("FBP Owned Journal Mesh") is None
+    assert bpy.data.objects.get("FBP Foreign Journal Object") is foreign_object
+    assert bpy.data.meshes.get("FBP Foreign Journal Mesh") is foreign_mesh
+    assert coordinator.active_generation_snapshot() == {}
+
+    bpy.data.objects.remove(foreign_object, do_unlink=True)
+    if foreign_mesh.users == 0:
+        bpy.data.meshes.remove(foreign_mesh)
+    return {
+        "exclusive_owner": True,
+        "owner_token": "uuid",
+        "foreign_datablock_preserved": True,
+        "rollback_verified": True,
+    }
+
+
+def test_incremental_progress_owner_contract(_module):
+    coordinator = importlib.import_module(f"{PACKAGE}.generation_transaction")
+
+    class ProgressProbe:
+        def __init__(self):
+            self.calls = []
+
+        def progress_begin(self, minimum, maximum):
+            self.calls.append(("begin", minimum, maximum))
+
+        def progress_update(self, value):
+            self.calls.append(("update", value))
+
+        def progress_end(self):
+            self.calls.append(("end",))
+
+    probe = ProgressProbe()
+    progress = coordinator.GenerationProgressOwner(probe, token="progress-token")
+    assert progress.begin()
+    assert not progress.begin()
+    assert progress.update(0.0, phase="prepare")
+    assert progress.update(0.50, phase="build")
+    assert progress.update(0.25, phase="late-stale-update")
+    assert progress.update(1.0, phase="commit")
+    assert progress.end()
+    assert not progress.end()
+    assert not progress.update(1.0, phase="after-end")
+
+    begins = [call for call in probe.calls if call[0] == "begin"]
+    updates = [call[1] for call in probe.calls if call[0] == "update"]
+    ends = [call for call in probe.calls if call[0] == "end"]
+    assert len(begins) == 1, probe.calls
+    assert len(ends) == 1, probe.calls
+    assert updates == sorted(updates), updates
+    assert updates[-1] == 100.0, updates
+    return {
+        "begin_calls": len(begins),
+        "end_calls": len(ends),
+        "monotonic_updates": updates,
+        "updates_after_end": 0,
+    }
+
+
+def test_fast_import_preserves_global_undo(_module):
+    importer = importlib.import_module(f"{PACKAGE}.importer")
+    preferences = bpy.context.preferences.edit
+    original = bool(preferences.use_global_undo)
+    observations = []
+    try:
+        for initial in (True, False):
+            preferences.use_global_undo = initial
+            importer.fbp_begin_fast_import(bpy.context)
+            try:
+                observations.append(bool(preferences.use_global_undo))
+                assert bool(preferences.use_global_undo) is initial
+            finally:
+                importer.fbp_abort_fast_import(bpy.context)
+            assert bool(preferences.use_global_undo) is initial
+    finally:
+        preferences.use_global_undo = original
+        importer.fbp_abort_fast_import(bpy.context)
+    return {
+        "initial_true_preserved": observations[0],
+        "initial_false_preserved": not observations[1],
+        "depth": importer.fbp_fast_import_depth(),
+    }
+
+
+def test_incremental_user_state_rollback(_module):
+    coordinator = importlib.import_module(f"{PACKAGE}.generation_transaction")
+    scene = bpy.context.scene
+    mesh = bpy.data.meshes.new("FBP User State Mesh")
+    original = bpy.data.objects.new("FBP User State Active", mesh)
+    scene.collection.objects.link(original)
+    bpy.ops.object.select_all(action='DESELECT')
+    original.select_set(True)
+    bpy.context.view_layer.objects.active = original
+    scene.cursor.location = (1.0, 2.0, 3.0)
+    scene.tool_settings.transform_pivot_point = 'CURSOR'
+    scene.render.resolution_x = 1234
+    scene.render.resolution_y = 567
+    scene.render.pixel_aspect_x = 2.0
+    scene.render.pixel_aspect_y = 3.0
+    scene.fbp_last_directory = "//before-transaction"
+
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_user_state",
+        mode="User State Regression",
+    )
+    assert owner is not None, refusal
+    bpy.ops.object.select_all(action='DESELECT')
+    scene.cursor.location = (9.0, 9.0, 9.0)
+    scene.tool_settings.transform_pivot_point = 'MEDIAN_POINT'
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.pixel_aspect_x = 1.0
+    scene.render.pixel_aspect_y = 1.0
+    scene.fbp_last_directory = "//mutated"
+
+    rollback = coordinator.retire_active_generation(
+        bpy.context,
+        reason="state regression",
+        rollback=True,
+    )
+    assert rollback["verified"], rollback
+    assert tuple(scene.cursor.location) == (1.0, 2.0, 3.0)
+    assert scene.tool_settings.transform_pivot_point == 'CURSOR'
+    assert scene.render.resolution_x == 1234
+    assert scene.render.resolution_y == 567
+    assert scene.render.pixel_aspect_x == 2.0
+    assert scene.render.pixel_aspect_y == 3.0
+    assert scene.fbp_last_directory == "//before-transaction"
+    assert bpy.context.view_layer.objects.active is original
+    assert original.select_get()
+
+    bpy.data.objects.remove(original, do_unlink=True)
+    if mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
+    return {
+        "selection": "restored",
+        "active_object": "restored",
+        "camera_cursor_pivot": "restored",
+        "resolution_aspect": "restored",
+        "last_directory": "restored",
+    }
+
+
 def test_synchronous_media_generation(_module):
     operator_import = importlib.import_module(f"{PACKAGE}.operator_import")
     fixture_path = WORKDIR / "fbp_generation_fixture.png"
@@ -1747,6 +1936,10 @@ def run_background():
             ("registration_failure_transaction", test_registration_failure_transaction),
             ("generation_timer_deadline", test_generation_timer_deadline),
             ("generation_progress_and_rollback", test_generation_progress_and_rollback),
+            ("incremental_generation_owner_contract", test_incremental_generation_owner_contract),
+            ("incremental_progress_owner_contract", test_incremental_progress_owner_contract),
+            ("fast_import_preserves_global_undo", test_fast_import_preserves_global_undo),
+            ("incremental_user_state_rollback", test_incremental_user_state_rollback),
             ("synchronous_media_generation", test_synchronous_media_generation),
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),
