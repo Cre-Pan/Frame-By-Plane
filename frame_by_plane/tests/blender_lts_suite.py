@@ -891,7 +891,62 @@ def test_gp_support(_module):
         item["effect_id"] == "SURFACE_CONFORM" and item["tier"] == "NATIVE"
         for item in bridge.fbp_gp_effect_backend_matrix()
     )
+    records = bridge._gp_effect_compatibility_records()
+    assert len(records) == summary["total"], (len(records), summary)
+    assert all(str(item.get("reason", "")).strip() for item in records), records
+    assert any("not available yet" in item["reason"].casefold() for item in records)
+    assert any("no native conversion is planned yet" in item["reason"].casefold() for item in records)
+    report = bridge._fbp_gp_effect_compatibility_report_text()
+    assert "Grease Pencil Effect Compatibility" in report, report
+    assert "This report stays local" in report, report
+    assert hasattr(bpy.types.Object, "fbp_gp_effect_compatibility_filter")
     return summary
+
+
+def test_audited_operator_tooltips(_module):
+    tooltips = importlib.import_module(f"{PACKAGE}.tooltips")
+    audited = (
+        "fbp.reset_uilist_filter", "fbp.uilist_column_visibility",
+        "fbp.uilist_column_drag", "fbp.uilist_columns_reset",
+        "fbp.uilist_label_alignment", "fbp.move_layer_filter_preset",
+        "fbp.safe_gp_mask_shrink_fatten",
+        "fbp.copy_grease_pencil_scrub_keyframes",
+        "fbp.paste_grease_pencil_scrub_keyframes",
+        "fbp.duplicate_grease_pencil_scrub_keyframes",
+        "fbp.delete_grease_pencil_scrub_keyframes",
+        "fbp.select_all_grease_pencil_scrub_keyframes",
+        "fbp.mirror_grease_pencil_scrub_keyframes",
+        "fbp.set_grease_pencil_scrub_keyframe_type",
+        "fbp.set_grease_pencil_scrub_position", "fbp.set_quick_mask_slot",
+        "fbp.reset_quick_mask_slots", "fbp.quick_mask_library_popup",
+        "fbp.quick_effect_library_popup", "fbp.gradient_controller",
+        "fbp.apply_layer_set", "fbp.motion_select_row",
+        "fbp.select_generation_rename_row", "fbp.drop_media",
+        "fbp.stack_row_action", "fbp.add_compositor_asset",
+        "fbp.layer_set_row_action", "fbp.layer_set_batch",
+        "fbp.remap_layer_set_source", "fbp.layer_set_preview",
+        "fbp.output_pass_action", "fbp.validate_composite",
+        "fbp.compositor_package_action", "fbp.compositor_auto_layers",
+        "fbp.compositor_select_row", "fbp.compositor_layer_action",
+        "fbp.compositor_effect_select_row", "fbp.compositor_sync",
+        "fbp.move_effect_stack_preset", "fbp.gradient_light_controller",
+    )
+    assert len(audited) == 40 and len(set(audited)) == 40, audited
+    missing = [item for item in audited if not tooltips.EXACT_TOOLTIPS.get(item)]
+    assert not missing, missing
+    generic = [
+        item for item in audited
+        if len(tooltips.EXACT_TOOLTIPS[item]) < 120
+        or "current Frame By Plane context" in tooltips.EXACT_TOOLTIPS[item]
+    ]
+    assert not generic, generic
+    compositor = [item for item in audited if "compositor" in item or item in {
+        "fbp.stack_row_action", "fbp.layer_set_row_action", "fbp.layer_set_batch",
+        "fbp.remap_layer_set_source", "fbp.layer_set_preview",
+        "fbp.output_pass_action", "fbp.validate_composite",
+    }]
+    assert all("Preview" in tooltips.EXACT_TOOLTIPS[item] for item in compositor)
+    return {"audited": len(audited), "preview_descriptions": len(compositor)}
 
 
 def test_gp_native_apply(_module):
@@ -1370,6 +1425,14 @@ def test_interactive_layer_tree_gp(_module):
     assert "FINISHED" in result, result
     canvas = bpy.context.object
     ui_layout.fbp_refresh_layer_tree_rows(bpy.context)
+    canvas.fbp_gp_ui_show_unavailable_effects = True
+    canvas.fbp_gp_effect_compatibility_filter = "GEOMETRY_CANDIDATE"
+    _redraw_all(2)
+    copy_result = bpy.ops.fbp.copy_gp_effect_compatibility_report("EXEC_DEFAULT")
+    assert "FINISHED" in copy_result, copy_result
+    assert "Grease Pencil Effect Compatibility" in bpy.context.window_manager.clipboard
+    canvas.fbp_gp_ui_show_unavailable_effects = False
+    canvas.fbp_gp_effect_compatibility_filter = "ALL"
 
     for index in range(300):
         scene.frame_set((index % 48) + 1)
@@ -1480,6 +1543,7 @@ def run_background():
             ("undo_redo", test_undo_redo),
             ("scrub_bar_regressions", test_scrub_bar_regressions),
             ("gp_effect_support", test_gp_support),
+            ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("gp_native_apply_remove", test_gp_native_apply),
             ("generic_mesh_matrix", test_generic_mesh_matrix),
             ("generic_mesh_topology_profiles", test_generic_mesh_topology_profiles),

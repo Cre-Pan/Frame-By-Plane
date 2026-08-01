@@ -242,6 +242,20 @@ _GP_NATIVE_EFFECT_LIBRARY_GROUPS = (
 _GP_UNAVAILABLE_EFFECTS_CACHE = None
 _GP_NATIVE_TYPE_SUPPORT_CACHE = {}
 _GP_NATIVE_ATTR_RESOLVE_CACHE = {}
+_GP_EFFECT_COMPATIBILITY_FILTER_ITEMS = (
+    ("ALL", "All", "Show every Frame By Plane effect and its Grease Pencil support tier"),
+    ("NATIVE", "Native", "Show effects backed by Blender's native Grease Pencil stack"),
+    (
+        "GEOMETRY_CANDIDATE",
+        "GN Candidate",
+        "Show effects that still require a verified Grease Pencil Geometry Nodes equivalent",
+    ),
+    (
+        "RASTER_ONLY",
+        "Raster",
+        "Show pixel, alpha or shader effects that do not have a native Grease Pencil backend",
+    ),
+)
 _GP_OWNER_ID_LOOKUP_CACHE = None
 _GP_OBJECT_TYPES = frozenset({"GREASEPENCIL"})
 _GP_NATIVE_ATTR_ALIASES = {
@@ -340,6 +354,7 @@ _RNA_PROPERTIES = (
     "fbp_gp_ui_show_advanced",
     "fbp_gp_ui_show_workflow",
     "fbp_gp_ui_show_unavailable_effects",
+    "fbp_gp_effect_compatibility_filter",
     "fbp_gp_ui_show_effect_library",
     "fbp_gp_ui_show_effect_settings",
     "fbp_gp_ui_show_material_52",
@@ -6393,13 +6408,13 @@ def fbp_gp_effect_backend_matrix():
         kind = str(definition.get("kind", "") or "")
         if effect_id in native_ids:
             tier = "NATIVE"
-            reason = "Blender 5.2 native Grease Pencil backend"
+            reason = "Available through Blender 5.2's native Grease Pencil effect or modifier stack"
         elif kind == "GEOMETRY" and not bool(definition.get("alpha_aware", False)):
             tier = "GEOMETRY_CANDIDATE"
-            reason = "Requires a verified Grease Pencil Geometry Nodes equivalent"
+            reason = "Not available yet; it requires a verified, non-destructive Grease Pencil Geometry Nodes equivalent"
         else:
             tier = "RASTER_ONLY"
-            reason = "Depends on image pixels, alpha or shader sampling"
+            reason = "No native conversion is planned yet because it depends on image pixels, alpha or shader sampling"
         records.append({
             "effect_id": str(effect_id),
             "label": str(definition.get("label", effect_id.replace("_", " ").title())),
@@ -6418,6 +6433,70 @@ def fbp_gp_effect_support_summary():
         tier = str(record.get("tier", "RASTER_ONLY"))
         counts[tier] = counts.get(tier, 0) + 1
     return {"total": len(records), **counts}
+
+
+def _gp_effect_compatibility_records(canvas=None):
+    """Return UI-ready primitive records, including build/object limitations."""
+    records = []
+    for source in fbp_gp_effect_backend_matrix():
+        record = dict(source)
+        record["filter_tier"] = str(record.get("tier", "RASTER_ONLY") or "RASTER_ONLY")
+        record["available"] = record["filter_tier"] == "NATIVE"
+        if record["filter_tier"] == "NATIVE" and canvas is not None:
+            definition = _gp_native_effect_definition(record.get("effect_id", ""))
+            if not _gp_native_effect_supported(canvas, definition):
+                record["tier"] = "OBJECT_UNAVAILABLE"
+                record["available"] = False
+                record["reason"] = (
+                    "Unavailable for the selected Grease Pencil object: this Blender build "
+                    "does not expose the required native effect or modifier type"
+                )
+        records.append(record)
+    return tuple(records)
+
+
+def _fbp_gp_effect_compatibility_report_text(canvas=None):
+    """Build a local, clipboard-safe compatibility report without RNA values."""
+    records = _gp_effect_compatibility_records(canvas)
+    counts = {
+        "NATIVE": 0,
+        "OBJECT_UNAVAILABLE": 0,
+        "GEOMETRY_CANDIDATE": 0,
+        "RASTER_ONLY": 0,
+    }
+    for record in records:
+        tier = str(record.get("tier", "RASTER_ONLY") or "RASTER_ONLY")
+        counts[tier] = counts.get(tier, 0) + 1
+    canvas_name = "None"
+    canvas_type = "None"
+    if canvas is not None:
+        try:
+            canvas_name = str(getattr(canvas, "name", "Grease Pencil") or "Grease Pencil")
+            canvas_type = str(getattr(canvas, "type", "UNKNOWN") or "UNKNOWN")
+        except FBP_DATA_ERRORS:
+            canvas_name = "Unavailable RNA owner"
+            canvas_type = "UNKNOWN"
+    lines = [
+        "Frame By Plane — Grease Pencil Effect Compatibility",
+        f"Blender: {getattr(bpy.app, 'version_string', 'Unknown')}",
+        f"Object: {canvas_name} ({canvas_type})",
+        (
+            "Summary: "
+            f"{counts['NATIVE']} native available; "
+            f"{counts['OBJECT_UNAVAILABLE']} native unavailable for this object/build; "
+            f"{counts['GEOMETRY_CANDIDATE']} GN candidates; "
+            f"{counts['RASTER_ONLY']} raster-only"
+        ),
+        "",
+    ]
+    for record in records:
+        lines.append(
+            f"[{record.get('tier', 'RASTER_ONLY')}] "
+            f"{record.get('label', record.get('effect_id', 'Effect'))} "
+            f"({record.get('effect_id', '')}) — {record.get('reason', '')}"
+        )
+    lines.extend(("", "This report stays local and contains no project media or telemetry."))
+    return "\n".join(lines)
 
 
 def _gp_unavailable_effects():
@@ -6577,27 +6656,88 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
         title.label(text="Add Grease Pencil Effect", icon="ADD")
         _gp_draw_native_effect_library(library, canvas, active_items)
 
-    show_unavailable = bool(getattr(canvas, "fbp_gp_ui_show_unavailable_effects", False))
-    unavailable = layout.box()
-    unavailable.prop(
+    show_compatibility = bool(getattr(canvas, "fbp_gp_ui_show_unavailable_effects", False))
+    compatibility = layout.box()
+    compatibility.prop(
         canvas, "fbp_gp_ui_show_unavailable_effects",
-        text="Effects without a Native Grease Pencil Backend",
+        text="Grease Pencil Compatibility Matrix",
         emboss=False,
-        icon="DOWNARROW_HLT" if show_unavailable else "RIGHTARROW_THIN",
+        icon="DOWNARROW_HLT" if show_compatibility else "RIGHTARROW_THIN",
     )
-    if show_unavailable:
-        disabled_ids = _gp_unavailable_effects()
-        if disabled_ids:
-            grid = unavailable.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=True)
-            for label, _effect_id, tier, reason in disabled_ids:
-                row = grid.row(align=True)
-                row.enabled = False
-                icon = "MOD_NODES" if tier == "GEOMETRY_CANDIDATE" else "IMAGE_DATA"
-                row.label(text=label, icon=icon)
-                row.label(text="GN" if tier == "GEOMETRY_CANDIDATE" else "Raster")
-                row.active = False
+    if show_compatibility:
+        records = _gp_effect_compatibility_records(canvas)
+        counts = {"NATIVE": 0, "GEOMETRY_CANDIDATE": 0, "RASTER_ONLY": 0}
+        for record in records:
+            filter_tier = str(record.get("filter_tier", "RASTER_ONLY") or "RASTER_ONLY")
+            counts[filter_tier] = counts.get(filter_tier, 0) + 1
+        summary = compatibility.row(align=True)
+        summary.label(text=f"Native {counts['NATIVE']}", icon="CHECKMARK")
+        summary.label(text=f"GN {counts['GEOMETRY_CANDIDATE']}", icon="MOD_NODES")
+        summary.label(text=f"Raster {counts['RASTER_ONLY']}", icon="IMAGE_DATA")
+        summary.operator(
+            "fbp.copy_gp_effect_compatibility_report",
+            text="Copy Report",
+            icon="COPYDOWN",
+        )
+        compatibility.prop(
+            canvas,
+            "fbp_gp_effect_compatibility_filter",
+            text="",
+            expand=True,
+        )
+        filter_tier = str(
+            getattr(canvas, "fbp_gp_effect_compatibility_filter", "ALL") or "ALL"
+        )
+        visible = tuple(
+            record for record in records
+            if filter_tier == "ALL" or record.get("filter_tier") == filter_tier
+        )
+        if visible:
+            tier_labels = {
+                "NATIVE": ("Native", "CHECKMARK"),
+                "OBJECT_UNAVAILABLE": ("Unavailable", "ERROR"),
+                "GEOMETRY_CANDIDATE": ("GN Candidate", "MOD_NODES"),
+                "RASTER_ONLY": ("Raster", "IMAGE_DATA"),
+            }
+            for record in visible:
+                item = compatibility.box()
+                tier = str(record.get("tier", "RASTER_ONLY") or "RASTER_ONLY")
+                tier_label, icon = tier_labels.get(tier, (tier.title(), "INFO"))
+                heading = item.row(align=True)
+                heading.label(text=str(record.get("label", "Effect") or "Effect"), icon=icon)
+                heading.label(text=tier_label)
+                reason = item.row(align=False)
+                reason.active = False
+                reason.label(text=str(record.get("reason", "No compatibility reason available") or "No compatibility reason available"), icon="INFO")
         else:
-            unavailable.label(text="No image-only effects listed", icon="BLANK1")
+            compatibility.label(text="No effects match this compatibility filter", icon="INFO")
+
+
+class FBP_OT_CopyGPEffectCompatibilityReport(Operator):
+    bl_idname = "fbp.copy_gp_effect_compatibility_report"
+    bl_label = "Copy Grease Pencil Compatibility Report"
+    bl_description = (
+        "Copy the complete Native, Geometry Nodes candidate, Raster and object-specific "
+        "Grease Pencil compatibility matrix; no project media or telemetry is included"
+    )
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return is_gp_drawing_canvas(_active_canvas(context))
+
+    def execute(self, context):
+        canvas = _active_canvas(context)
+        if not is_gp_drawing_canvas(canvas):
+            self.report({"WARNING"}, "Select a Grease Pencil Drawing Plane")
+            return {"CANCELLED"}
+        try:
+            context.window_manager.clipboard = _fbp_gp_effect_compatibility_report_text(canvas)
+        except FBP_DATA_ERRORS as exc:
+            self.report({"WARNING"}, f"Could not copy compatibility report: {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Grease Pencil compatibility report copied")
+        return {"FINISHED"}
 
 
 class FBP_MT_GPNativeEffects(Menu):
@@ -10395,6 +10535,13 @@ def _register_properties():
     bpy.types.Object.fbp_gp_ui_show_advanced = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Mask Settings", default=False, options={"SKIP_SAVE"})
     bpy.types.Object.fbp_gp_ui_show_workflow = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Drawing Tools", default=False, options={"SKIP_SAVE"})
     bpy.types.Object.fbp_gp_ui_show_unavailable_effects = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Frame By Plane Image Effects", default=False, options={"SKIP_SAVE"})
+    bpy.types.Object.fbp_gp_effect_compatibility_filter = EnumProperty(
+        name="Compatibility Filter",
+        description="Filter the local Grease Pencil compatibility matrix without changing effects or project data",
+        items=_GP_EFFECT_COMPATIBILITY_FILTER_ITEMS,
+        default="ALL",
+        options={"SKIP_SAVE"},
+    )
     bpy.types.Object.fbp_gp_ui_show_effect_library = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Effect Library", default=False, options={"SKIP_SAVE"})
     bpy.types.Object.fbp_gp_ui_show_effect_settings = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Effect Settings", default=True, options={"SKIP_SAVE"})
     bpy.types.Object.fbp_gp_ui_show_material_52 = BoolProperty(
@@ -10553,6 +10700,7 @@ def refresh_keymaps():
 classes = (
     FBP_OT_SafeGPMaskShrinkFatten,
     FBP_MT_GPNativeEffects,
+    FBP_OT_CopyGPEffectCompatibilityReport,
     FBP_OT_ToggleGPNativeEffectSettings,
     FBP_OT_SetAllGPNativeEffectSettings,
     FBP_OT_RepairGPNativeEffectDuplicates,

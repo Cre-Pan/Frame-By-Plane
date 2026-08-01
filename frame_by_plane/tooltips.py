@@ -11,6 +11,135 @@ from __future__ import annotations
 # Context-sensitive actions keep their class ``description()`` method. These
 # strings are used for the remaining operators and as a readable fallback.
 EXACT_TOOLTIPS = {
+    # Audited UI, filter and row actions. These descriptions explicitly state
+    # whether an action changes scene data, persistent preferences or UI focus.
+    "fbp.reset_uilist_filter": (
+        "Clear the search text, alphabetical sort and reverse-sort state for this specific Frame By Plane list. It changes list presentation only, never layer data or files, needs no selection and creates no Undo step."
+    ),
+    "fbp.uilist_column_visibility": (
+        "Show or hide this optional column in the current Frame By Plane list profile. The choice is stored in add-on interface preferences, affects every row using that profile, changes no scene or media data and is not restored by Blender Undo; the required Name column cannot be hidden."
+    ),
+    "fbp.uilist_column_drag": (
+        "Drag this visible list column left or right and release to save its new interface-preference order; hidden columns retain their positions. Escape or right-click cancels the preview, no scene or media data changes, and Blender Undo is not used."
+    ),
+    "fbp.uilist_columns_reset": (
+        "Restore the default order and visibility of every column in this list profile. This resets add-on interface preferences only, does not modify any layer or file, applies to all rows in the profile and is not a Blender Undo operation."
+    ),
+    "fbp.uilist_label_alignment": (
+        "Set left, center or right alignment for names in Frame By Plane lists. The shared interface preference changes no scene, selection or source file; the action is unavailable when add-on preferences cannot be resolved and is not restored by Blender Undo."
+    ),
+    "fbp.move_layer_filter_preset": (
+        "Move the active saved Layer Filter one position earlier or later in the current scene. Filter rules and layer data are unchanged, Blender Undo is supported, and the action is skipped at the first or last list boundary."
+    ),
+
+    # Grease Pencil Scrub Bar and mask-edit bridge.
+    "fbp.safe_gp_mask_shrink_fatten": (
+        "Run Blender's native Grease Pencil Shrink/Fatten only when the active object is a Frame By Plane mask canvas in a compatible edit context. It changes selected native points, not image layers or disk files; unsupported modes pass through without a generic failure, and native Blender history owns any Undo result."
+    ),
+    "fbp.copy_grease_pencil_scrub_keyframes": (
+        "Copy selected drawing keys from the active Grease Pencil layer into Frame By Plane's in-memory Scrub Bar clipboard. No keyframes, layers or files are modified, there is no Undo step, and the action is disabled when no compatible active layer or selected keys exist."
+    ),
+    "fbp.paste_grease_pencil_scrub_keyframes": (
+        "Paste the Scrub Bar clipboard into the active compatible Grease Pencil layer relative to the current frame. Existing source keys remain unchanged, collisions or an empty clipboard are reported, only the active layer is targeted and Blender Undo is supported."
+    ),
+    "fbp.duplicate_grease_pencil_scrub_keyframes": (
+        "Duplicate the selected drawing keys on the active Grease Pencil layer and enter the Scrub Bar move workflow for the copies. Other layers and source media are untouched, unavailable selections are skipped, and Blender Undo restores the original key set."
+    ),
+    "fbp.delete_grease_pencil_scrub_keyframes": (
+        "Delete the selected drawing keys from the active compatible Grease Pencil layer. It does not delete the Grease Pencil object, materials or external files; an empty selection is rejected and Blender Undo is supported."
+    ),
+    "fbp.select_all_grease_pencil_scrub_keyframes": (
+        "Select, deselect or invert drawing-key selection on the active Grease Pencil layer for the Scrub Bar. This changes selection state only, never drawing contents or files, and is disabled without a compatible active layer."
+    ),
+    "fbp.mirror_grease_pencil_scrub_keyframes": (
+        "Mirror selected drawing keys around the chosen current-frame, cursor, selection or Preview Range pivot on the active Grease Pencil layer. Other layers are not changed, missing selections or invalid pivots are reported, and Blender Undo is supported."
+    ),
+    "fbp.set_grease_pencil_scrub_keyframe_type": (
+        "Assign the chosen Blender drawing-key type to selected Scrub Bar keys on the active Grease Pencil layer. It changes key metadata rather than drawings or files, skips when no compatible selection exists and supports Blender Undo."
+    ),
+    "fbp.set_grease_pencil_scrub_position": (
+        "Move the Scrub Bar's horizontal viewport position to the chosen preset. This is UI state only, does not move timeline keys or scene objects, requires the Scrub Bar to be available and creates no Blender Undo step."
+    ),
+
+    # Quick libraries, layer selection and import rows.
+    "fbp.set_quick_mask_slot": (
+        "Store the chosen registered mask in one of the five Favourite Mask slots used by the viewport quick menu. It changes an add-on preference, does not apply a mask to any layer or touch files, and invalid slot data is rejected without an Undo step."
+    ),
+    "fbp.reset_quick_mask_slots": (
+        "Clear all five Favourite Mask preference slots. Existing masks and layer assignments remain unchanged, no files are touched, and Blender Undo does not restore preference changes."
+    ),
+    "fbp.quick_mask_library_popup": (
+        "Open the compatible Mask library for one Favourite Mask slot, including the layer Clipping option and Clear Slot. Opening the popup changes nothing; choosing an entry updates only that preference slot, not selected layers, and uses no Blender Undo step."
+    ),
+    "fbp.quick_effect_library_popup": (
+        "Open the Image or Mesh effect library for one Quick Effect preference slot. Opening the popup applies no effect; choosing an entry stores only the registered effect ID, incompatible or Preview-only entries remain unavailable, and Blender Undo is not used."
+    ),
+    "fbp.gradient_controller": (
+        "Select the linked controller for the active Gradient Plane, reuse another selected Empty, or create a new Empty to animate gradient position; Alt-click unlinks while preserving the evaluated position. Only the first compatible Gradient Plane is targeted, invalid selections are reported, files are untouched and Blender Undo is supported."
+    ),
+    "fbp.apply_layer_set": (
+        "Restore selection from the chosen saved Layer Set: click replaces, Shift adds and the primary modifier subtracts. Missing, hidden, locked or out-of-View-Layer members are skipped and reported; no object data or media changes and Blender Undo restores selection state."
+    ),
+    "fbp.motion_select_row": (
+        "Select one Motion row, extend a range with Shift or toggle a row with the primary modifier. This changes Motion-list focus and selection flags only, never evaluates, bakes or removes Motion, and an invalid row is ignored without an Undo step."
+    ),
+    "fbp.select_generation_rename_row": (
+        "Select one sequence in the latest generation report, extend a range with Shift or toggle a row with the primary modifier. It changes report UI selection only, does not rename files, and an expired row is ignored without Blender Undo."
+    ),
+    "fbp.drop_media": (
+        "Inspect dropped media or its parent folder, show a confirmation preview for multi-layer or large imports, then create compatible Single Plane or Multiplane data. Source files are never modified; changed folder snapshots, unsupported media and unsafe forced modes are rejected, generation is transactional and cancellable between chunks, and created Blender data supports Undo."
+    ),
+
+    # Compositor Layers is explicitly Preview in the 7.1 LTS policy.
+    "fbp.stack_row_action": (
+        "Add, remove, duplicate, reorder or select a row in the active Composite Stack. This Preview action changes only the current scene's managed compositor package, supports Blender Undo, skips stale row IDs and is disabled until Compositor Preview is enabled for the file."
+    ),
+    "fbp.add_compositor_asset": (
+        "Add the chosen Frame By Plane compositor node asset to the active Compositor node tree. This is a Compositor Preview scene edit with Blender Undo; it never changes source media and is disabled when the Preview toggle or a compatible compositor context is unavailable."
+    ),
+    "fbp.layer_set_row_action": (
+        "Select, add, remove, duplicate or reorder a source row in the specified Compositor Layer Set. Multi-row selection modifiers are honored, stale sources are skipped, Blender Undo is supported and the action requires Compositor Preview in the current file."
+    ),
+    "fbp.layer_set_batch": (
+        "Run the chosen enable, disable, invert or removal action across sources in one Compositor Layer Set. It changes only managed Preview compositor data, applies as one Blender Undo step, reports empty or stale sets and is disabled outside Compositor Preview."
+    ),
+    "fbp.remap_layer_set_source": (
+        "Replace one missing Compositor Layer Set source with the selected valid scene source while preserving the logical row. No render files or source media change, invalid or circular targets are rejected, Blender Undo is supported and Compositor Preview must be enabled."
+    ),
+    "fbp.layer_set_preview": (
+        "Route the complete output, combined mask or active source of one Compositor Layer Set to the managed preview path. This Compositor Preview action changes node-tree preview state only, does not render or write files, rejects missing sets or sockets and supports Blender Undo."
+    ),
+    "fbp.output_pass_action": (
+        "Add, remove, select or reorder managed Frame By Plane output passes in the current compositor package. It changes Preview scene data rather than rendered files, skips stale pass IDs, supports Blender Undo and is unavailable while Compositor Preview is disabled."
+    ),
+    "fbp.validate_composite": (
+        "Read the current Frame By Plane composite and report missing sources, invalid links and managed-node contract problems without repairing them. Validation is read-only, creates no Undo step or files, and requires Compositor Preview plus a compatible scene."
+    ),
+    "fbp.compositor_package_action": (
+        "Add, remove, duplicate or reorder a managed package row in the Frame By Plane Compositor Layers workflow. It changes only Preview scene data, supports Blender Undo, skips invalid package state and is disabled when Compositor Preview is off."
+    ),
+    "fbp.compositor_auto_layers": (
+        "Generate managed compositor layer rows from the current source mode, replacing or updating only Frame By Plane-owned Preview definitions. Source collections and media are not altered, unsupported rows are reported, Blender Undo is supported and Compositor Preview must be enabled."
+    ),
+    "fbp.compositor_select_row": (
+        "Select one managed Compositor Layer row, extend a range with Shift or toggle with the primary modifier. It changes scene UI selection flags only, not render layers or files, supports Blender Undo and is disabled outside Compositor Preview."
+    ),
+    "fbp.compositor_layer_action": (
+        "Add, remove, duplicate, group, ungroup, reorder or remap managed Compositor Layer rows according to the selected action. Multi-row actions are applied only to valid Preview rows, source scene objects and files remain untouched, failures are reported and Blender Undo is supported."
+    ),
+    "fbp.compositor_effect_select_row": (
+        "Select, range-select or toggle one effect row inside the active managed Compositor Layer. This changes Preview UI selection only, never effect values or files, creates no Undo step and is disabled without a valid active layer and Compositor Preview."
+    ),
+    "fbp.compositor_sync": (
+        "Build or synchronize the Frame By Plane-owned compositor nodes and View Layer contract from the current managed definitions. This Preview action preserves unrelated artist nodes, reports invalid sources, changes no output files, supports Blender Undo and is disabled until Compositor Preview is enabled."
+    ),
+    "fbp.move_effect_stack_preset": (
+        "Move the active saved Effect Stack preset one position earlier or later in the current scene list. Preset contents, live layer stacks and external files are unchanged, boundary moves are skipped and Blender Undo is supported."
+    ),
+    "fbp.gradient_light_controller": (
+        "Select the linked Gradient Light controller, reuse another selected Empty or create one for the first selected layer with Gradient Light; Alt-click unlinks while preserving the evaluated center. Other selected layers are unchanged, invalid contexts are reported, files are untouched and Blender Undo is supported."
+    ),
+
     # Context-sensitive effect and list actions also receive a static fallback
     # for API documentation, search results and disabled-button hover states.
     "fbp.capture_camera_scale_reference": (
