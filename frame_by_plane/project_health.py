@@ -10,7 +10,17 @@ import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Operator, PropertyGroup, UIList
 
-from .runtime import FBP_DATA_ERRORS
+from .runtime import (
+    FBP_DATA_ERRORS,
+    fbp_registration_busy,
+    fbp_registration_state,
+)
+from .generation_transaction import (
+    active_generation_snapshot,
+    generation_journal_is_orphaned,
+    persisted_generation_journal,
+    recover_orphaned_generation,
+)
 from .registration import register_classes, unregister_classes, unregister_type_properties
 from .identifiers import repair_scene_identities
 from .ownership import audit_scene_ownership, ownership_record
@@ -372,6 +382,61 @@ def scan_project_health(scene, *, repair=False):
     if scene is None:
         issue = _issue("ERROR", "NO_SCENE", "No active Scene is available")
         return {"issues": (issue,), "stats": {"issues": 1}, "repaired": 0}
+
+    registration_state = fbp_registration_state()
+    stats["registration_state"] = registration_state
+    stats["registration_busy"] = int(bool(fbp_registration_busy()))
+    if registration_state in {"FAILED", "FAILED_UNSAFE"}:
+        unsafe = registration_state == "FAILED_UNSAFE"
+        _append_unique(
+            issues,
+            _issue(
+                "ERROR",
+                "ADDON_LIFECYCLE_FAILED",
+                (
+                    "Frame By Plane registration failed unsafely; deferred work and authoring features "
+                    "remain suspended to avoid using partially registered RNA"
+                    if unsafe else
+                    "Frame By Plane registration failed; the rollback completed and authoring features are suspended"
+                ),
+                repair_hint=(
+                    "Save the file, restart Blender, then reinstall or re-enable Frame By Plane; copy this Project Doctor report first"
+                    if unsafe else
+                    "Disable and re-enable Frame By Plane; restart Blender if registration fails again"
+                ),
+            ),
+            seen,
+        )
+
+    generation_journal = persisted_generation_journal(scene)
+    active_generation = active_generation_snapshot()
+    stats["generation_active"] = int(bool(active_generation))
+    stats["generation_journal"] = int(bool(generation_journal))
+    if generation_journal and generation_journal_is_orphaned(scene):
+        recovery = None
+        if repair:
+            recovery = recover_orphaned_generation(scene, getattr(bpy, "context", None))
+            if recovery.get("verified", False):
+                repaired += len(recovery.get("removed", ()) or ()) + len(recovery.get("restored", ()) or ())
+                stats["generation_orphan_recovered"] = 1
+                generation_journal = {}
+        if generation_journal:
+            failed = len((recovery or {}).get("failed", ()) or ())
+            remaining = len((recovery or {}).get("remaining", ()) or ())
+            _append_unique(
+                issues,
+                _issue(
+                    "ERROR",
+                    "ORPHAN_GENERATION_TRANSACTION",
+                    (
+                        f"Interrupted generation {generation_journal.get('token', 'unknown')} is orphaned "
+                        f"in phase {generation_journal.get('phase', 'UNKNOWN')}"
+                        + (f"; repair left {failed} failure(s) and {remaining} owned item(s)" if recovery else "")
+                    ),
+                    repair_hint="Run Project Doctor Repair; only datablocks carrying this transaction's owner token can be removed",
+                ),
+                seen,
+            )
 
     try:
         from .compatibility_52 import blender_52_runtime_contract

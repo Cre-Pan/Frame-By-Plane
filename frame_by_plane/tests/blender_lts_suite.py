@@ -390,11 +390,32 @@ def test_generation_timer_deadline(_module):
     assert not operator_common._fbp_claim_generation_start(
         waiting, non_timer, now=101.0
     )
+
+    chunk = Probe()
+    chunk._fbp_generation_timer = owned_timer
+    chunk._fbp_generation_next_due = 200.0
+    chunk._fbp_generation_advancing = False
+    assert not operator_common._fbp_generation_chunk_is_due(
+        chunk, foreign_event, now=200.5
+    )
+    assert not operator_common._fbp_generation_chunk_is_due(
+        chunk, event, now=199.999
+    )
+    assert operator_common._fbp_generation_chunk_is_due(
+        chunk, event, now=200.0
+    )
+    chunk._fbp_generation_advancing = True
+    assert not operator_common._fbp_generation_chunk_is_due(
+        chunk, event, now=201.0
+    )
     return {
         "deadline_seconds": 0.20,
         "foreign_timer_before_deadline": "ignored",
         "single_claim": True,
         "cancelled_claim": False,
+        "foreign_1ms_timer_ignored": True,
+        "one_step_per_deadline": True,
+        "reentrancy_guard": True,
     }
 
 
@@ -624,7 +645,9 @@ def test_incremental_user_state_rollback(_module):
     scene.render.resolution_y = 567
     scene.render.pixel_aspect_x = 2.0
     scene.render.pixel_aspect_y = 3.0
-    scene.fbp_last_directory = "//before-transaction"
+    before_directory = str(WORKDIR / "before-transaction")
+    mutated_directory = str(WORKDIR / "mutated-transaction")
+    scene.fbp_last_directory = before_directory
 
     owner, refusal = coordinator.acquire_generation(
         bpy.context,
@@ -639,7 +662,7 @@ def test_incremental_user_state_rollback(_module):
     scene.render.resolution_y = 16
     scene.render.pixel_aspect_x = 1.0
     scene.render.pixel_aspect_y = 1.0
-    scene.fbp_last_directory = "//mutated"
+    scene.fbp_last_directory = mutated_directory
 
     rollback = coordinator.retire_active_generation(
         bpy.context,
@@ -653,7 +676,7 @@ def test_incremental_user_state_rollback(_module):
     assert scene.render.resolution_y == 567
     assert scene.render.pixel_aspect_x == 2.0
     assert scene.render.pixel_aspect_y == 3.0
-    assert scene.fbp_last_directory == "//before-transaction"
+    assert scene.fbp_last_directory == before_directory
     assert bpy.context.view_layer.objects.active is original
     assert original.select_get()
 
@@ -666,6 +689,145 @@ def test_incremental_user_state_rollback(_module):
         "camera_cursor_pivot": "restored",
         "resolution_aspect": "restored",
         "last_directory": "restored",
+    }
+
+
+def test_incremental_lifecycle_and_deep_rollback(_module):
+    coordinator = importlib.import_module(f"{PACKAGE}.generation_transaction")
+    handlers = importlib.import_module(f"{PACKAGE}.handlers")
+    runtime = importlib.import_module(f"{PACKAGE}.runtime")
+    scene = bpy.context.scene
+
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_deep_rollback",
+        mode="Deep Rollback",
+    )
+    assert owner is not None, refusal
+    root = bpy.data.collections.new("FBP Journal Depth 00")
+    scene.collection.children.link(root)
+    owner.record_collection(root)
+    parent = root
+    for depth in range(1, 20):
+        child = bpy.data.collections.new(f"FBP Journal Depth {depth:02d}")
+        parent.children.link(child)
+        owner.record_collection(child)
+        parent = child
+
+    owned_material = bpy.data.materials.new("FBP Owned Journal Material")
+    owned_image = bpy.data.images.new("FBP Owned Journal Image", width=4, height=4)
+    owner.record_datablock(owned_material, kind="MATERIAL")
+    owner.record_datablock(owned_image, kind="IMAGE")
+    foreign_material = bpy.data.materials.new("FBP Foreign Journal Material")
+    foreign_image = bpy.data.images.new("FBP Foreign Journal Image", width=4, height=4)
+    second_scene = bpy.data.scenes.new("FBP Concurrent Scene")
+    fake_context = type("SceneContext", (), {"scene": second_scene})()
+    blocked, blocked_reason = coordinator.acquire_generation(
+        fake_context,
+        operator_id="fbp.test_other_scene",
+        mode="Other Scene",
+    )
+    assert blocked is None and "Deep Rollback" in blocked_reason
+    rollback = coordinator.retire_active_generation(
+        bpy.context,
+        reason="deep rollback regression",
+        rollback=True,
+    )
+    assert rollback["verified"], rollback
+    assert sum(item.startswith("COLLECTION:") for item in rollback["removed"]) == 20, rollback
+    assert bpy.data.materials.get(foreign_material.name) is foreign_material
+    assert bpy.data.images.get(foreign_image.name) is foreign_image
+    assert bpy.data.materials.get("FBP Owned Journal Material") is None
+    assert bpy.data.images.get("FBP Owned Journal Image") is None
+    bpy.data.materials.remove(foreign_material)
+    bpy.data.images.remove(foreign_image)
+    bpy.data.scenes.remove(second_scene)
+
+    # Deterministic failure immediately after a yielded phase must use the same
+    # verified rollback path.
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_failpoint",
+        mode="Failure Injection",
+    )
+    assert owner is not None, refusal
+    fail_mesh = bpy.data.meshes.new("FBP Failpoint Mesh")
+    fail_object = bpy.data.objects.new("FBP Failpoint Object", fail_mesh)
+    scene.collection.objects.link(fail_object)
+    owner.record_datablock(fail_mesh, kind="MESH")
+    owner.record_datablock(fail_object, kind="OBJECT")
+    coordinator.arm_generation_failpoint("AFTER_YIELD")
+    try:
+        owner.checkpoint("AFTER_YIELD", completed_steps=1, total_steps=2)
+        raise AssertionError("Incremental failpoint did not trigger")
+    except RuntimeError as exc:
+        assert "AFTER_YIELD" in str(exc)
+    failpoint_rollback = coordinator.retire_active_generation(
+        bpy.context,
+        reason="injected after yield",
+        rollback=True,
+    )
+    assert failpoint_rollback["verified"], failpoint_rollback
+
+    # load_pre must retire before Blender replaces Main.
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_load_pre",
+        mode="Load Lifecycle",
+    )
+    assert owner is not None, refusal
+    load_mesh = bpy.data.meshes.new("FBP Load Pre Mesh")
+    load_object = bpy.data.objects.new("FBP Load Pre Object", load_mesh)
+    scene.collection.objects.link(load_object)
+    owner.record_datablock(load_mesh, kind="MESH")
+    owner.record_datablock(load_object, kind="OBJECT")
+    handlers.fbp_load_pre_handler(None)
+    assert coordinator.active_generation_snapshot() == {}
+    assert bpy.data.objects.get("FBP Load Pre Object") is None
+    handlers.fbp_set_undo_guard(False)
+    runtime.fbp_runtime_set("fbp_pause_managed_timers", False)
+
+    # importlib.reload executes the early retirement hook before accepting a
+    # new owner from the reloaded module generation.
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_reload",
+        mode="Reload Lifecycle",
+    )
+    assert owner is not None, refusal
+    reload_mesh = bpy.data.meshes.new("FBP Reload Mesh")
+    reload_object = bpy.data.objects.new("FBP Reload Object", reload_mesh)
+    scene.collection.objects.link(reload_object)
+    owner.record_datablock(reload_mesh, kind="MESH")
+    owner.record_datablock(reload_object, kind="OBJECT")
+    coordinator = importlib.reload(coordinator)
+    assert coordinator.active_generation_snapshot() == {}
+    assert bpy.data.objects.get("FBP Reload Object") is None
+
+    owner, refusal = coordinator.acquire_generation(
+        bpy.context,
+        operator_id="fbp.test_unregister",
+        mode="Unregister Lifecycle",
+    )
+    assert owner is not None, refusal
+    unregister_mesh = bpy.data.meshes.new("FBP Unregister Mesh")
+    unregister_object = bpy.data.objects.new("FBP Unregister Object", unregister_mesh)
+    scene.collection.objects.link(unregister_object)
+    owner.record_datablock(unregister_mesh, kind="MESH")
+    owner.record_datablock(unregister_object, kind="OBJECT")
+    coordinator.unregister()
+    assert coordinator.active_generation_snapshot() == {}
+    assert bpy.data.objects.get("FBP Unregister Object") is None
+    coordinator.register()
+    return {
+        "different_scene_refused": True,
+        "nested_collection_depth": 20,
+        "foreign_material_preserved": True,
+        "foreign_image_preserved": True,
+        "failure_after_yield": "verified rollback",
+        "load_pre": "retired",
+        "reload_scripts": "retired",
+        "unregister": "retired",
     }
 
 
@@ -1244,8 +1406,24 @@ def test_irreversible_action_contracts(_module):
     )
     assert manifest and not error, (manifest, error)
     payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
-    assert payload["schema"] == 1 and len(payload["files"]) == 2, payload
+    assert payload["schema"] == 2 and len(payload["files"]) == 2, payload
+    assert len(payload["operation_id"]) == 32, payload
+    assert payload["timezone"] == "UTC" and payload["status"] == "PLANNED", payload
     assert payload["files"][0] == {"source": "old one.png", "target": "shot_0001.png"}
+    second_manifest, second_error = operator_import.FBP_OT_RenameSequenceForBlender._write_rename_manifest(
+        None,
+        str(preset_dir),
+        tuple(str(path) for path in sources),
+        tuple(str(path) for path in targets),
+    )
+    assert second_manifest and not second_error and second_manifest != manifest
+    assert operator_import.FBP_OT_RenameSequenceForBlender._finalize_rename_manifest(
+        manifest,
+        "COMPLETED",
+        detail="regression fixture",
+    )
+    finalized = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    assert finalized["status"] == "COMPLETED" and finalized["finalized_at"], finalized
 
     assert "INTERNAL" in operator_layers.FBP_OT_RepairLayerRelation.bl_options
     assert "UNDO" not in operator_layers.FBP_OT_RepairLayerRelation.bl_options
@@ -1260,6 +1438,8 @@ def test_irreversible_action_contracts(_module):
     return {
         "preset_backup": backup_path.name,
         "rename_manifest": Path(manifest).name,
+        "rename_manifest_uuid": True,
+        "rename_manifest_finalized": True,
         "filesystem_undo_advertised": False,
         "targeted_repair_internal": True,
     }
@@ -1734,6 +1914,10 @@ def test_performance_profile_contract(module):
     assert profile["effect_handler"]["timed_samples"] >= 12, profile
     assert profile["scheduler"]["average_task_duration_ms"] >= 0.0, profile
     assert profile["memory"]["python_initial_bytes"] >= 0, profile
+    assert profile["memory"]["included_in_timing"] is False, profile
+    assert profile["instrumentation"]["timing_tracemalloc"] is False, profile
+    assert profile["instrumentation"]["calibration_samples"] == 12, profile
+    assert "estimated_overhead_percent" in profile["instrumentation"], profile
     report = dashboard.build_performance_report(scene)
     report["frame_profile"] = profile
     json.dumps(report)
@@ -1747,6 +1931,9 @@ def test_performance_profile_contract(module):
     return {
         "measured_frames": 12,
         "handler_samples": profile["effect_handler"]["timed_samples"],
+        "timing_tracemalloc": profile["instrumentation"]["timing_tracemalloc"],
+        "memory_run_separate": not profile["memory"]["included_in_timing"],
+        "estimated_overhead_percent": profile["instrumentation"]["estimated_overhead_percent"],
         "state_restored": True,
         "json_serializable": True,
     }
@@ -1948,6 +2135,7 @@ def run_background():
             ("incremental_progress_owner_contract", test_incremental_progress_owner_contract),
             ("fast_import_preserves_global_undo", test_fast_import_preserves_global_undo),
             ("incremental_user_state_rollback", test_incremental_user_state_rollback),
+            ("incremental_lifecycle_and_deep_rollback", test_incremental_lifecycle_and_deep_rollback),
             ("synchronous_media_generation", test_synchronous_media_generation),
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),

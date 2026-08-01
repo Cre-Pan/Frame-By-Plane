@@ -341,6 +341,7 @@ class IncrementalGenerationOwner:
                 for entry in self.journal
             ),
             "disk_changes": tuple(dict(change) for change in self.disk_changes),
+            "user_state": dict(self._user_state),
         }
 
     def _persist(self, context=None):
@@ -689,6 +690,105 @@ def generation_journal_is_orphaned(scene):
     return active is None or str(journal.get("token", "") or "") != active.token
 
 
+def recover_orphaned_generation(scene, context=None):
+    """Remove only token-owned resources from one persisted orphan journal."""
+    journal = persisted_generation_journal(scene)
+    if not journal:
+        return {"removed": (), "restored": (), "failed": (), "remaining": (), "verified": True}
+    if not generation_journal_is_orphaned(scene):
+        return {
+            "removed": (), "restored": (),
+            "failed": ("generation owner is still live",),
+            "remaining": (str(journal.get("token", "") or ""),),
+            "verified": False,
+        }
+    token = str(journal.get("token", "") or "")
+    entries = tuple(journal.get("journal", ()) or ())
+    removed = []
+    failed = []
+    remaining = []
+    collections = {
+        "OBJECT": bpy.data.objects,
+        "MESH": bpy.data.meshes,
+        "CAMERA": bpy.data.cameras,
+        "MATERIAL": bpy.data.materials,
+        "IMAGE": bpy.data.images,
+        "NODE_GROUP": bpy.data.node_groups,
+        "COLLECTION": bpy.data.collections,
+    }
+
+    def remove_named(kind, name):
+        data_collection = collections.get(kind)
+        datablock = data_collection.get(name) if data_collection is not None else None
+        if datablock is None:
+            return True, "already absent"
+        if _owner_token(datablock) != token:
+            return False, "owner token changed"
+        try:
+            if kind == "OBJECT":
+                data_collection.remove(datablock, do_unlink=True)
+            elif kind == "COLLECTION":
+                if datablock.objects or datablock.children:
+                    return False, "collection is not empty"
+                data_collection.remove(datablock)
+            else:
+                if int(getattr(datablock, "users", 0) or 0) != 0:
+                    return False, f"{kind.lower()} has users"
+                data_collection.remove(datablock)
+            return True, "removed"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    for kind in ("OBJECT", "MESH", "CAMERA", "MATERIAL", "IMAGE", "NODE_GROUP", "COLLECTION"):
+        pending = [
+            (kind, str(entry.get("name", "") or ""))
+            for entry in reversed(entries)
+            if str(entry.get("kind", "") or "").upper() == kind
+        ]
+        while pending:
+            progressed = False
+            next_pending = []
+            for entry_kind, name in pending:
+                ok, detail = remove_named(entry_kind, name)
+                if ok:
+                    removed.append(f"{entry_kind}:{name}")
+                    progressed = True
+                else:
+                    next_pending.append((entry_kind, name, detail))
+            if not next_pending or not progressed:
+                failed.extend(f"{item_kind}:{name}: {detail}" for item_kind, name, detail in next_pending)
+                break
+            pending = [(item_kind, name) for item_kind, name, _detail in next_pending]
+
+    restored, restore_failed = _restore_user_state(
+        context or getattr(bpy, "context", None),
+        dict(journal.get("user_state", {}) or {}),
+    )
+    failed.extend(restore_failed)
+    for entry in entries:
+        kind = str(entry.get("kind", "") or "").upper()
+        name = str(entry.get("name", "") or "")
+        data_collection = collections.get(kind)
+        datablock = data_collection.get(name) if data_collection is not None else None
+        if datablock is not None and _owner_token(datablock) == token:
+            remaining.append(f"{kind}:{name}")
+    verified = not failed and not remaining
+    if verified:
+        try:
+            if GENERATION_JOURNAL_KEY in scene:
+                del scene[GENERATION_JOURNAL_KEY]
+        except FBP_DATA_IO_ERRORS:
+            verified = False
+            failed.append("could not clear persisted generation journal")
+    return {
+        "removed": tuple(removed),
+        "restored": tuple(restored),
+        "failed": tuple(failed),
+        "remaining": tuple(remaining),
+        "verified": bool(verified),
+    }
+
+
 def generation_metrics(*, reset=False):
     snapshot = dict(_METRICS)
     snapshot["active"] = bool(active_generation_owner())
@@ -763,6 +863,7 @@ __all__ = [
     "retire_active_generation",
     "persisted_generation_journal",
     "generation_journal_is_orphaned",
+    "recover_orphaned_generation",
     "generation_metrics",
     "arm_generation_failpoint",
     "clear_generation_failpoints",
