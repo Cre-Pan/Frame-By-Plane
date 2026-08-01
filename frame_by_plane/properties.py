@@ -16,7 +16,12 @@ from .constants import (
 from .matrix_presets import ASCII_ATLAS_COLUMNS, ASCII_TEXT_GLYPH_LIMIT, ascii_enum_items
 from .ui_icons import custom_icon_generation, layer_custom_icon_value, ui_icon, ui_icon_kwargs
 from .ui_style import adaptive_row, configure_layout, hint_row, section_gap, section_header
-from .shortcut_runtime import alt_shortcut_label, primary_modifier_name, primary_shortcut_label
+from .shortcut_runtime import (
+    alt_shortcut_label,
+    primary_modifier_name,
+    primary_shortcut_label,
+    refresh_all_shortcuts,
+)
 
 from .storage_keys import fbp_effect_storage_key
 from .registration import register_classes, unregister_classes, unregister_type_properties
@@ -520,6 +525,22 @@ def update_show_previews_cb(self, context):
         fbp_warn("Could not clear Frame By Plane thumbnail previews", exc)
 
 
+def update_alpha_render_method_cb(self, context):
+    """Apply the selected alpha method to every owned FBP material in this Scene."""
+    if fbp_is_silent_property_update(self) or fbp_undo_guard_active():
+        return
+    try:
+        from .materials import fbp_refresh_material_render_methods
+        fbp_refresh_material_render_methods(scene=self)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not update Frame By Plane alpha rendering", exc)
+    fbp_request_redraw(
+        context,
+        area_types={'VIEW_3D', 'PROPERTIES'},
+        all_windows=True,
+    )
+
+
 def update_collection_color_variants_cb(self, context):
     """Apply the current variant mode immediately to this Scene's layers."""
     if self is None:
@@ -669,6 +690,29 @@ def update_interface_preferences_cb(self, context):
     )
 
 
+def update_shift_a_menu_position_cb(self, context):
+    """Re-register the Shift+A entry at its newly selected location."""
+    if fbp_undo_guard_active() or fbp_is_silent_property_update(self):
+        return
+    try:
+        from .service_registry import call_service
+        call_service("ui.refresh_shift_a_menu", default=None)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    update_interface_preferences_cb(self, context)
+
+
+def update_shortcut_preferences_cb(self, context):
+    """Rebuild interactive keymaps immediately after a shortcut preference edit."""
+    if fbp_undo_guard_active() or fbp_is_silent_property_update(self):
+        return
+    try:
+        refresh_all_shortcuts()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    update_interface_preferences_cb(self, context)
+
+
 class FBP_AddonPreferences(AddonPreferences):
     bl_idname = __package__ if __package__ else "frame_by_plane"
 
@@ -783,6 +827,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=50,
         min=1,
         max=240,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_position: EnumProperty(
         name="Position",
@@ -800,26 +845,66 @@ class FBP_AddonPreferences(AddonPreferences):
         name="Show Interaction Info",
         description="Show the Snap status and keyboard help beside the Scrub Slider",
         default=False,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_invert_vertical: BoolProperty(
         name="Invert Top and Bottom Frames",
         description="For vertical sliders, place earlier frames at the top and later frames at the bottom",
         default=False,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_sensitivity: FloatProperty(
         name="Sensitivity", description="Mouse movement multiplier", default=2.0, min=0.1, max=12.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_shift_factor: FloatProperty(
         name="Shift Slowdown", description="Sensitivity multiplier while Shift is held", default=0.2, min=0.02, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_length_ratio: FloatProperty(
         name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.2, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_edge_offset: FloatProperty(
         name="Edge Offset", description="Distance of the slider from the selected Viewport edge", default=240.0, min=8.0, max=240.0, subtype='PIXEL',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet: BoolProperty(
+        name="Mouse Magnet",
+        description="Pull the Scrub Bar toward the cursor when it approaches the axis",
+        default=True,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet_distance: FloatProperty(
+        name="Magnet Range",
+        description="Distance in pixels at which the Scrub Bar starts moving toward the cursor",
+        default=96.0,
+        min=24.0,
+        max=240.0,
+        subtype='PIXEL',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet_strength: FloatProperty(
+        name="Magnet Strength",
+        description="How closely the Scrub Bar follows the cursor inside the magnetic range",
+        subtype='FACTOR',
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_mouse_magnet_smoothing: FloatProperty(
+        name="Magnet Smoothing",
+        description="Transition speed used when the Scrub Bar attaches to or releases from the cursor",
+        subtype='FACTOR',
+        default=0.22,
+        min=0.01,
+        max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_tick_scale: FloatProperty(
         name="Tick Size", description="Scale of frame and second ticks", default=0.5, min=0.25, max=3.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_line_width: FloatProperty(
         name="Line Thickness",
@@ -827,32 +912,41 @@ class FBP_AddonPreferences(AddonPreferences):
         default=1.0,
         min=0.5,
         max=6.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_width: FloatProperty(
         name="Cursor Thickness", description="Thickness of the current-frame cursor connector", default=2.0, min=0.5, max=8.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_label_scale: FloatProperty(
         name="Cursor Label Size", description="Scale of the rounded current-frame number label", default=1.0, min=0.6, max=2.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_major_interval: IntProperty(
         name="Long Tick Interval", description="Draw a longer lower tick every N frames", default=10, min=2, max=100,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_micro_tick_length: FloatProperty(
         name="Frame Tick Length", description="Length of the small tick drawn for every frame", default=3.0, min=1.0, max=20.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_major_tick_length: FloatProperty(
         name="Long Tick Length", description="Length of the lower interval ticks", default=7.0, min=2.0, max=32.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_second_tick_length: FloatProperty(
         name="Second Tick Length", description="Half-length of ticks drawn across both sides at every scene second", default=11.0, min=3.0, max=48.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_color: FloatVectorProperty(
         name="Cursor Color", description="Color of the current-frame line and rounded number label", subtype='COLOR', size=3,
         default=(71 / 255, 114 / 255, 179 / 255), min=0.0, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_cursor_text_color: FloatVectorProperty(
         name="Cursor Text Color", description="Text color inside the current-frame label", subtype='COLOR', size=3,
         default=(1.0, 1.0, 1.0), min=0.0, max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_line_color: FloatVectorProperty(
         name="Axis Color",
@@ -862,6 +956,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_frame_tick_color: FloatVectorProperty(
         name="Frame Tick Color",
@@ -871,6 +966,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0, 0.58),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_major_tick_color: FloatVectorProperty(
         name="Long Tick Color",
@@ -880,6 +976,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0, 1.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_second_tick_color: FloatVectorProperty(
         name="Second Tick Color",
@@ -889,6 +986,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0, 1.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     gp_scrub_text_color: FloatVectorProperty(
         name="Text Color",
@@ -898,6 +996,7 @@ class FBP_AddonPreferences(AddonPreferences):
         default=(0.0, 0.0, 0.0),
         min=0.0,
         max=1.0,
+        update=update_interface_preferences_cb,
     )
     show_panel_layers: BoolProperty(
         name="Layers Panel",
@@ -1612,7 +1711,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 draw.prop(self, 'default_gp_curve_type', text='Draw Curves')
                 draw.prop(self, 'default_gp_curve_conversion_threshold', text='Conversion Threshold')
 
-            body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.shortcuts', 'TIME')
+            body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.scrub_slider', 'TIME')
             if body:
                 try:
                     from .grease_pencil_scrub import is_scrub_preview_active
@@ -1643,6 +1742,15 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
                 row.prop(self, 'gp_scrub_edge_offset', text='Offset')
+                row = _row(body)
+                row.prop(self, 'gp_scrub_mouse_magnet', text='Mouse Magnet', toggle=True)
+                magnet = row.row(align=False)
+                magnet.enabled = self.gp_scrub_mouse_magnet
+                magnet.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
+                row = _row(body)
+                row.enabled = self.gp_scrub_mouse_magnet
+                row.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
+                row.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
                 row = _row(body)
                 row.prop(self, 'gp_scrub_tick_scale', text='Tick Scale', slider=True)
                 row.prop(self, 'gp_scrub_line_width', text='Line Thickness', slider=True)
@@ -7009,11 +7117,11 @@ def _clear_runtime_ui_rows_before_unregister():
                 rows = getattr(scene, attr, None)
                 if rows is not None:
                     rows.clear()
-            except FBP_DATA_IO_ERRORS:
+            except FBP_DATA_ERRORS:
                 pass
         try:
             scene.fbp_layer_tree_signature = ''
-        except FBP_DATA_IO_ERRORS:
+        except FBP_DATA_ERRORS:
             pass
 
 

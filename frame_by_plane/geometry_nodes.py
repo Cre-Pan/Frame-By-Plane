@@ -8355,6 +8355,7 @@ def fbp_update_geometry_effect(
     modifier = modifier or fbp_find_effect_modifier(rig, effect_id)
     if not modifier:
         return False
+    previous_group = getattr(modifier, "node_group", None)
     node_group = _fbp_ensure_geometry_effect_group(rig, effect_id, modifier)
     if not node_group:
         return False
@@ -25894,6 +25895,7 @@ class FBP_OT_AddGenericMeshEffect(Operator):
             self.report({"WARNING"}, "Enable Generic Mesh Preview in Frame By Plane Preferences")
             return {"CANCELLED"}
         effect_id = fbp_normalize_effect_id(self.effect_id)
+        definition = fbp_effect_definition(effect_id)
         support = fbp_generic_mesh_effect_support(effect_id)
         if not support or not support["supported"]:
             reason = support["reason"] if support else "Unknown effect"

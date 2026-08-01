@@ -78,6 +78,8 @@ _EDGE_DWELL_SECONDS = 0.38
 _EDGE_REPEAT_SECONDS = 0.12
 _TIMER_INTERVAL = 0.04
 _AXIS_CAPTURE_PX = 42.0
+_MAGNET_INNER_RATIO = 0.42
+_MAGNET_EPSILON_PX = 0.05
 _CURSOR_LABEL_CAPTURE_PX = 10.0
 _KEYFRAME_HIT_PADDING_PX = 5.0
 _DRAG_THRESHOLD_PX = 4.0
@@ -1172,13 +1174,34 @@ def scrub_overlay_layout(region_or_width, height=None, *, position="BOTTOM", ver
 
 
 def _scrub_layout_for_state(state, region):
-    return scrub_overlay_layout(
+    layout = scrub_overlay_layout(
         region,
         position=state._position,
         ui_scale=state._ui_scale,
         length_ratio=state._length_ratio,
         edge_offset=state._edge_offset,
     )
+    try:
+        offset = float(getattr(state, "_magnetic_offset", 0.0) or 0.0)
+    except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+        offset = 0.0
+    if not math.isfinite(offset) or abs(offset) <= _MAGNET_EPSILON_PX:
+        return layout
+    scale = max(0.5, float(getattr(state, "_ui_scale", 1.0) or 1.0))
+    margin = _OVERLAY_MARGIN_PX * scale
+    if layout["vertical"]:
+        width = max(1.0, float(getattr(region, "width", 1.0) or 1.0))
+        layout["x"] = min(
+            max(margin, float(layout["x"]) + offset),
+            max(margin, width - margin),
+        )
+    else:
+        height = max(1.0, float(getattr(region, "height", 1.0) or 1.0))
+        layout["y"] = min(
+            max(margin, float(layout["y"]) + offset),
+            max(margin, height - margin),
+        )
+    return layout
 
 
 def _scrub_frame_position(frame, left, right, layout, *, invert_vertical=False):
@@ -1210,6 +1233,97 @@ def cursor_near_scrub_axis(mouse_x, mouse_y, layout, *, capture_px=28.0):
     low = float(layout["x0"]) - capture
     high = float(layout["x1"]) + capture
     return abs(y - axis_y) <= capture and low <= x <= high
+
+
+def magnetic_scrub_axis_offset(
+    mouse_x,
+    mouse_y,
+    layout,
+    *,
+    enabled=True,
+    capture_px=96.0,
+    strength=1.0,
+    inner_ratio=_MAGNET_INNER_RATIO,
+):
+    """Return the perpendicular axis offset used by the mouse magnet.
+
+    The bar remains fixed outside ``capture_px``. Inside the outer band it
+    eases toward the cursor, then follows it exactly in the inner band. The
+    returned value is relative to the configured static axis, which keeps the
+    calculation stable instead of feeding the already-moved bar back into the
+    next proximity test.
+    """
+    if not bool(enabled):
+        return 0.0
+    try:
+        x = float(mouse_x)
+        y = float(mouse_y)
+        capture = max(1.0, float(capture_px))
+        power = max(0.0, min(1.0, float(strength)))
+        inner = max(0.0, min(0.95, float(inner_ratio))) * capture
+        vertical = bool(layout.get("vertical", False))
+        if vertical:
+            base = float(layout["x"])
+            along = y
+            low = float(layout["y0"]) - capture
+            high = float(layout["y1"]) + capture
+            delta = x - base
+        else:
+            base = float(layout["y"])
+            along = x
+            low = float(layout["x0"]) - capture
+            high = float(layout["x1"]) + capture
+            delta = y - base
+    except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
+        return 0.0
+    values = (x, y, capture, power, inner, base, along, low, high, delta)
+    if not all(math.isfinite(value) for value in values):
+        return 0.0
+    if power <= 0.0 or along < low or along > high:
+        return 0.0
+    distance = abs(delta)
+    if distance >= capture:
+        return 0.0
+    if distance <= inner or capture <= inner + 1.0e-6:
+        factor = 1.0
+    else:
+        factor = (capture - distance) / (capture - inner)
+        factor = max(0.0, min(1.0, factor))
+        factor = factor * factor * (3.0 - 2.0 * factor)
+    return float(delta) * factor * power
+
+
+def scrub_magnet_should_release(event_type, *, event_in_window, cursor_in_owned_window):
+    """Return whether the persistent magnet should ease back to its base axis.
+
+    TIMER events are not reliable indicators of the active region: Blender may
+    provide no region (or a sidebar/header region) even while the cursor remains
+    inside the owning Viewport. Mouse events update ``cursor_in_owned_window``;
+    timer events must use that remembered state.
+    """
+    if str(event_type or "").upper() == "TIMER":
+        return not bool(cursor_in_owned_window)
+    return not bool(event_in_window)
+
+
+def smooth_scrub_magnet_offset(current, target, smoothing, elapsed, *, interval=_TIMER_INTERVAL):
+    """Advance the magnetic offset with frame-rate-independent easing."""
+    try:
+        current_value = float(current)
+        target_value = float(target)
+        response = max(0.01, min(1.0, float(smoothing)))
+        seconds = max(0.0, min(1.0, float(elapsed)))
+        base_interval = max(1.0e-4, float(interval))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    values = (current_value, target_value, response, seconds, base_interval)
+    if not all(math.isfinite(value) for value in values):
+        return 0.0
+    if abs(target_value - current_value) <= _MAGNET_EPSILON_PX:
+        return target_value
+    steps = max(1.0, seconds / base_interval)
+    alpha = 1.0 - math.pow(1.0 - response, steps)
+    return current_value + (target_value - current_value) * max(0.0, min(1.0, alpha))
 
 
 def cursor_in_scrub_bounds(mouse_x, mouse_y, bounds, *, padding=0.0):
@@ -1808,7 +1922,10 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _window = None
     _workspace = None
     _screen = None
+    _area = None
+    _region = None
     _area_pointer = 0
+    _region_pointer = 0
     _scene_pointer = 0
     _window_pointer = 0
     _workspace_pointer = 0
@@ -1891,10 +2008,46 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _object_data_name = ""
     _cursor_over_axis = False
     _cursor_kind = ""
+    _magnetic_enabled = True
+    _magnetic_distance = 96.0
+    _magnetic_strength = 1.0
+    _magnetic_smoothing = 0.22
+    _magnetic_offset = 0.0
+    _magnetic_target_offset = 0.0
+    _magnetic_last_tick = 0.0
+    _cursor_in_owned_window = False
 
     @classmethod
     def poll(cls, context):
         return _is_view3d_context(context, require_window_region=True)
+
+    def _owned_window_region(self):
+        """Return the original Viewport WINDOW region even on TIMER events.
+
+        Blender can dispatch modal TIMER events with ``context.region`` set to
+        ``None`` or to a non-WINDOW region, especially outside GP modes. The
+        Scrub Bar must keep using the region where it was invoked instead of
+        treating those timer contexts as a cursor release.
+        """
+        area = getattr(self, "_area", None)
+        region = getattr(self, "_region", None)
+        pointer = int(getattr(self, "_region_pointer", 0) or 0)
+        try:
+            if (
+                area is not None
+                and region is not None
+                and pointer > 0
+                and str(getattr(region, "type", "") or "") == "WINDOW"
+                and any(
+                    int(candidate.as_pointer()) == pointer
+                    for candidate in tuple(getattr(area, "regions", ()) or ())
+                )
+                and int(region.as_pointer()) == pointer
+            ):
+                return region
+        except FBP_DATA_ERRORS:
+            return None
+        return None
 
     def _resolve_bound_object(self, context):
         """Resolve the original GP object across mode switches, rename and Undo."""
@@ -1979,13 +2132,129 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         except FBP_DATA_ERRORS:
             pass
 
+    def _sync_magnetic_preferences(self, context):
+        preferences = fbp_get_addon_preferences(context)
+        try:
+            self._magnetic_enabled = bool(
+                getattr(preferences, "gp_scrub_mouse_magnet", True)
+            )
+            self._magnetic_distance = max(
+                24.0,
+                min(
+                    240.0,
+                    float(
+                        getattr(
+                            preferences,
+                            "gp_scrub_mouse_magnet_distance",
+                            96.0,
+                        )
+                    ),
+                ),
+            )
+            self._magnetic_strength = max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            preferences,
+                            "gp_scrub_mouse_magnet_strength",
+                            1.0,
+                        )
+                    ),
+                ),
+            )
+            self._magnetic_smoothing = max(
+                0.01,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            preferences,
+                            "gp_scrub_mouse_magnet_smoothing",
+                            0.22,
+                        )
+                    ),
+                ),
+            )
+        except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+            self._magnetic_enabled = True
+            self._magnetic_distance = 96.0
+            self._magnetic_strength = 1.0
+            self._magnetic_smoothing = 0.22
+        if not self._magnetic_enabled:
+            self._magnetic_target_offset = 0.0
+
+    def _base_layout(self, region):
+        return scrub_overlay_layout(
+            region,
+            position=self._position,
+            ui_scale=self._ui_scale,
+            length_ratio=self._length_ratio,
+            edge_offset=self._edge_offset,
+        )
+
+    def _update_magnetic_target(self, context, *, release=False):
+        region = self._owned_window_region()
+        if self._interaction:
+            self._magnetic_target_offset = float(self._magnetic_offset or 0.0)
+            return self._magnetic_target_offset
+        enabled = bool(
+            not release
+            and self._magnetic_enabled
+            and self._is_persistent
+            and not self._shortcut_pending
+            and region is not None
+            and str(getattr(region, "type", "") or "") == "WINDOW"
+        )
+        if not enabled:
+            self._magnetic_target_offset = 0.0
+            return 0.0
+        self._magnetic_target_offset = magnetic_scrub_axis_offset(
+            self._mouse_x,
+            self._mouse_y,
+            self._base_layout(region),
+            enabled=True,
+            capture_px=self._magnetic_distance
+            * max(0.75, float(self._ui_scale)),
+            strength=self._magnetic_strength,
+        )
+        return self._magnetic_target_offset
+
+    def _tick_magnetic_hover(self, context, *, release=False):
+        self._update_magnetic_target(context, release=release)
+        now = time.monotonic()
+        previous_tick = float(self._magnetic_last_tick or 0.0)
+        elapsed = (
+            _TIMER_INTERVAL
+            if previous_tick <= 0.0
+            else max(0.0, now - previous_tick)
+        )
+        self._magnetic_last_tick = now
+        previous = float(self._magnetic_offset or 0.0)
+        self._magnetic_offset = smooth_scrub_magnet_offset(
+            previous,
+            self._magnetic_target_offset,
+            self._magnetic_smoothing,
+            elapsed,
+        )
+        changed = abs(self._magnetic_offset - previous) > _MAGNET_EPSILON_PX
+        if changed:
+            self._cursor_label_bounds = None
+            self._tag_redraw()
+        return changed
+
     def _sync_live_display_preferences(self, context):
         preferences = fbp_get_addon_preferences(context)
         position = str(getattr(preferences, "gp_scrub_position", self._position) or self._position).upper()
         if position in {"TOP", "BOTTOM", "LEFT", "RIGHT"} and position != self._position:
             self._position = position
             self._vertical = position in {"LEFT", "RIGHT"}
+            self._magnetic_offset = 0.0
+            self._magnetic_target_offset = 0.0
+            self._cursor_label_bounds = None
         self._show_info = bool(getattr(preferences, "gp_scrub_show_info", False))
+        self._sync_magnetic_preferences(context)
         _apply_inverted_scrub_ink(self, context)
 
     def _sync_preview_range(self, scene):
@@ -2579,6 +2848,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._restore_transform_to_original()
         self._duplicate_pending = False
         self._duplicate_sources = ()
+        self._update_magnetic_target(context)
         self._set_idle_hover(context)
 
     def _begin_shortcut(self, context, event):
@@ -2612,6 +2882,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._mouse_x = self._shortcut_start_x
         self._mouse_y = self._shortcut_start_y
         self._edge_direction = 0
+        self._magnetic_offset = 0.0
+        self._magnetic_target_offset = 0.0
+        self._cursor_label_bounds = None
         self._suspend_onion_skin(context)
         self._set_hover_cursor(context, True)
         self._tag_redraw()
@@ -3095,6 +3368,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._window = None
         self._workspace = None
         self._screen = None
+        self._area = None
+        self._region = None
+        self._region_pointer = 0
+        self._cursor_in_owned_window = False
+        self._magnetic_offset = 0.0
+        self._magnetic_target_offset = 0.0
         restore_modal_cursor(context)
         self._tag_redraw()
         if _ACTIVE_OPERATOR is self:
@@ -3114,7 +3393,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return {"CANCELLED"}
 
         self._area = context.area
+        self._region = context.region
         self._area_pointer = int(context.area.as_pointer())
+        self._region_pointer = int(context.region.as_pointer())
         self._scene_pointer = int(context.scene.as_pointer())
         self._window = context.window
         self._window_pointer = int(context.window.as_pointer()) if context.window is not None else 0
@@ -3164,6 +3445,10 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._cache_checked_at = 0.0
         self._cursor_over_axis = False
         self._cursor_kind = ""
+        self._magnetic_offset = 0.0
+        self._magnetic_target_offset = 0.0
+        self._magnetic_last_tick = time.monotonic()
+        self._cursor_in_owned_window = True
         (
             self._maximum_range,
             self._position,
@@ -3199,6 +3484,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         _apply_inverted_scrub_ink(self, context)
         preferences = fbp_get_addon_preferences(context)
         self._show_info = bool(getattr(preferences, "gp_scrub_show_info", False))
+        self._sync_magnetic_preferences(context)
         self._activation_event_type = str(getattr(event, "type", "") or "")
         self._mouse_x = float(getattr(event, "mouse_region_x", 0.0) or 0.0)
         self._mouse_y = float(getattr(event, "mouse_region_y", 0.0) or 0.0)
@@ -3284,10 +3570,22 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 and str(getattr(owned_area, "type", "") or "") == "VIEW_3D"
                 and int(owned_area.as_pointer()) == int(self._area_pointer)
             )
+            owned_regions = tuple(getattr(owned_area, "regions", ()) or ()) if owned_area is not None else ()
+            owned_region_valid = bool(
+                getattr(self, "_region", None) is not None
+                and int(getattr(self, "_region_pointer", 0) or 0) > 0
+                and any(
+                    int(candidate.as_pointer()) == int(self._region_pointer)
+                    for candidate in owned_regions
+                )
+                and str(getattr(self._region, "type", "") or "") == "WINDOW"
+                and int(self._region.as_pointer()) == int(self._region_pointer)
+            )
             bound_object_valid = self._resolve_bound_object(context)
             gp_context_valid = _is_view3d_context(context)
             valid_session = bool(
                 owned_area_valid
+                and owned_region_valid
                 and window_valid
                 and workspace_valid
                 and screen_valid
@@ -3344,11 +3642,19 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return {"PASS_THROUGH"}
 
         if event_type == "WINDOW_DEACTIVATE":
+            self._cursor_in_owned_window = False
             self._set_hover_cursor(context, False)
             if self._shortcut_pending:
                 self._shortcut_pending = False
                 self._restore_onion_skin()
-                if not self._persistent_before_shortcut:
+                if self._persistent_before_shortcut:
+                    self._is_persistent = True
+                    if self._persistent_view_before is not None:
+                        self._view_center, self._view_radius = self._persistent_view_before
+                    self._persistent_view_before = None
+                    self._magnetic_target_offset = 0.0
+                    self._tag_redraw()
+                else:
                     if self._session_changed(context.scene):
                         self._set_frame(context.scene, self._session_start_frame)
                     self._cleanup(context)
@@ -3434,8 +3740,10 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._target_from_mouse(context)
             self._tag_redraw()
         if event_type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            self._cursor_in_owned_window = bool(in_window)
             if not in_window:
                 self._set_hover_cursor(context, False)
+                self._magnetic_target_offset = 0.0
                 return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
             try:
                 next_mouse_x = float(getattr(event, "mouse_region_x"))
@@ -3462,6 +3770,8 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 return {"RUNNING_MODAL"}
             self._mouse_x = next_mouse_x
             self._mouse_y = next_mouse_y
+            if self._is_persistent and not self._shortcut_pending and not self._interaction:
+                self._update_magnetic_target(context)
             if self._shortcut_pending:
                 distance = math.hypot(
                     self._mouse_x - self._shortcut_start_x,
@@ -3521,8 +3831,23 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 owned_timer = getattr(event, "timer", None) is self._timer
             except FBP_DATA_ERRORS:
                 owned_timer = False
-            if owned_timer and self._shortcut_pending and in_window:
-                self._edge_tick(context)
+            if owned_timer:
+                if self._shortcut_pending and in_window:
+                    self._edge_tick(context)
+                elif self._is_persistent:
+                    cursor_in_window = bool(self._cursor_in_owned_window)
+                    self._tick_magnetic_hover(
+                        context,
+                        release=scrub_magnet_should_release(
+                            event_type,
+                            event_in_window=in_window,
+                            cursor_in_owned_window=cursor_in_window,
+                        ),
+                    )
+                    if cursor_in_window and not self._interaction:
+                        inside = self._mouse_in_axis(context)
+                        self._hover_frame = self._keyframe_hit(context) if inside else None
+                        self._set_hover_cursor(context, inside)
             return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
 
         if self._shortcut_pending:
@@ -3579,6 +3904,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     self._tag_redraw()
                 else:
                     self._interaction = "SCRUB"
+                    self._magnetic_target_offset = float(self._magnetic_offset)
                     self._interaction_start_frame = int(context.scene.frame_current)
                     self._set_frame_from_axis(context)
                     self._tag_redraw()
