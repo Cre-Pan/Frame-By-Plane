@@ -25,6 +25,7 @@ from .layers import (
     set_collection_color_tag,
 )
 from .service_registry import call_service, register_service, unregister_service
+from .generation_transaction import active_generation_owner
 from .runtime import (
     fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS,
     fbp_obj_runtime_key, fbp_obj_matches_runtime_key, fbp_tag_redraw,
@@ -533,6 +534,10 @@ def _fbp_claim_generation_start(operator, event, *, now=None):
         return False
     if bool(getattr(operator, "_fbp_generation_started", False)):
         return False
+    owned_timer = getattr(operator, "_fbp_generation_timer", None)
+    event_timer = getattr(event, "timer", None)
+    if event_timer is not None and owned_timer is not None and event_timer != owned_timer:
+        return False
     try:
         deadline = float(getattr(operator, "_fbp_generation_deadline", 0.0) or 0.0)
         current = time.perf_counter() if now is None else float(now)
@@ -567,29 +572,59 @@ def _fbp_remove_generation_timer(context, operator):
 
 
 def _fbp_update_generation_progress(context, operator, payload):
-    """Publish one primitive generation progress snapshot to Blender's UI."""
+    """Publish one semantically complete snapshot through one progress owner."""
     payload = payload if isinstance(payload, dict) else {}
     try:
-        total = max(1, int(payload.get("total", 1) or 1))
-        completed = max(0, min(total, int(payload.get("completed", 0) or 0)))
+        total = max(1, int(payload.get("total_steps", payload.get("total", 1)) or 1))
+        completed = max(0, min(
+            total,
+            int(payload.get("completed_steps", payload.get("completed", 0)) or 0),
+        ))
     except (TypeError, ValueError, OverflowError):
         total = 1
         completed = 0
-    step = str(payload.get("step", "Generating Frame By Plane media") or "Generating Frame By Plane media")
-    cancellable = bool(payload.get("cancellable", True))
-    suffix = "Esc cancels between steps" if cancellable else "Current Blender step runs to completion"
-    text = f"{step} — {completed}/{total} — {suffix}"
+    step = str(
+        payload.get("current_step", payload.get("step", "Generating Frame By Plane media"))
+        or "Generating Frame By Plane media"
+    )
+    phase = str(payload.get("phase", "WORK") or "WORK").upper()
     try:
-        if not bool(getattr(operator, "_fbp_generation_progress_active", False)):
-            context.window_manager.progress_begin(0, total)
-            operator._fbp_generation_progress_active = True
-        context.window_manager.progress_update(completed)
-    except FBP_DATA_IO_ERRORS:
-        pass
+        percent = float(payload.get("percent", completed / total))
+    except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+        percent = completed / total
+    percent = max(0.0, min(1.0, percent))
+    cancellable = bool(payload.get("cancellable", True))
+    suffix = "Esc cancels between phases" if cancellable else "Cancellation available when this phase finishes"
+    text = f"{step} — {completed}/{total} ({percent * 100.0:.0f}%) — {suffix}"
+    owner = active_generation_owner()
+    owner_token = str(getattr(operator, "_fbp_generation_owner_token", "") or "")
+    if owner is not None and owner.token == owner_token:
+        owner.checkpoint(
+            phase,
+            completed_steps=completed,
+            total_steps=total,
+            percent=percent,
+            current_step=step,
+        )
+        operator._fbp_generation_progress_active = True
+    else:
+        # Direct regression helpers can drain an iterator without acquiring the
+        # process-wide generation slot.
+        try:
+            if not bool(getattr(operator, "_fbp_generation_progress_active", False)):
+                context.window_manager.progress_begin(0.0, 100.0)
+                operator._fbp_generation_progress_active = True
+            previous = float(getattr(operator, "_fbp_generation_progress_percent", 0.0) or 0.0)
+            percent = max(previous, percent)
+            context.window_manager.progress_update(percent * 100.0)
+        except FBP_DATA_IO_ERRORS:
+            pass
     try:
         operator._fbp_generation_progress_completed = completed
         operator._fbp_generation_progress_total = total
         operator._fbp_generation_progress_step = step
+        operator._fbp_generation_progress_phase = phase
+        operator._fbp_generation_progress_percent = percent
     except FBP_DATA_IO_ERRORS:
         pass
     FBP_GENERATION_OVERLAY["text"] = text
@@ -602,6 +637,8 @@ def _fbp_update_generation_progress(context, operator, payload):
         "completed": completed,
         "total": total,
         "step": step,
+        "phase": phase,
+        "percent": percent,
         "cancellable": cancellable,
     }
 
@@ -614,8 +651,12 @@ def _fbp_begin_generation_chunks(context, operator, iterator, *, interval=0.01):
         operator._fbp_generation_chunking = True
         operator._fbp_generation_started = True
         operator._fbp_generation_cancelled = False
+        chunk_interval = max(0.001, float(interval))
+        operator._fbp_generation_chunk_interval = chunk_interval
+        operator._fbp_generation_next_due = time.perf_counter() + chunk_interval
+        operator._fbp_generation_advancing = False
         operator._fbp_generation_timer = context.window_manager.event_timer_add(
-            max(0.001, float(interval)),
+            chunk_interval,
             window=context.window,
         )
         if operator._fbp_generation_timer not in _FBP_GENERATION_TIMERS:
@@ -634,11 +675,35 @@ def _fbp_begin_generation_chunks(context, operator, iterator, *, interval=0.01):
         return False
 
 
-def _fbp_advance_generation_chunk(context, operator):
+def _fbp_generation_chunk_is_due(operator, event=None, *, now=None):
+    """Accept the owned event timer, or one deadline-gated fallback event."""
+    if event is not None and str(getattr(event, "type", "") or "") != "TIMER":
+        return False
+    owned_timer = getattr(operator, "_fbp_generation_timer", None)
+    event_timer = getattr(event, "timer", None) if event is not None else None
+    if event_timer is not None and owned_timer is not None and event_timer != owned_timer:
+        return False
+    if bool(getattr(operator, "_fbp_generation_advancing", False)):
+        return False
+    try:
+        current = time.perf_counter() if now is None else float(now)
+        next_due = float(getattr(operator, "_fbp_generation_next_due", 0.0) or 0.0)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    return next_due <= 0.0 or current >= next_due
+
+
+def _fbp_advance_generation_chunk(context, operator, event=None, *, now=None):
     """Advance one generator step and return a primitive state record."""
+    if not _fbp_generation_chunk_is_due(operator, event, now=now):
+        return {"state": "WAITING"}
     iterator = getattr(operator, "_fbp_generation_iterator", None)
     if iterator is None:
         return {"state": "ERROR", "error": RuntimeError("Generation iterator is unavailable")}
+    operator._fbp_generation_advancing = True
+    current = time.perf_counter() if now is None else float(now)
+    interval = max(0.001, float(getattr(operator, "_fbp_generation_chunk_interval", 0.01) or 0.01))
+    operator._fbp_generation_next_due = current + interval
     try:
         payload = next(iterator)
         progress = _fbp_update_generation_progress(context, operator, payload)
@@ -647,6 +712,8 @@ def _fbp_advance_generation_chunk(context, operator):
         return {"state": "FINISHED", "result": finished.value}
     except Exception as exc:
         return {"state": "ERROR", "error": exc}
+    finally:
+        operator._fbp_generation_advancing = False
 
 
 def _fbp_finish_generation_chunks(context, operator, *, close_iterator=False):
@@ -664,12 +731,17 @@ def _fbp_finish_generation_chunks(context, operator, *, close_iterator=False):
         operator._fbp_generation_iterator = None
         operator._fbp_generation_chunking = False
         operator._fbp_generation_progress_active = False
+        operator._fbp_generation_next_due = 0.0
+        operator._fbp_generation_advancing = False
     except FBP_DATA_ERRORS:
         pass
-    try:
-        context.window_manager.progress_end()
-    except FBP_DATA_ERRORS:
-        pass
+    owner = active_generation_owner()
+    owner_token = str(getattr(operator, "_fbp_generation_owner_token", "") or "")
+    if owner is None or owner.token != owner_token:
+        try:
+            context.window_manager.progress_end()
+        except FBP_DATA_ERRORS:
+            pass
     return True
 
 def _fbp_generation_rig_issue(rig):
@@ -1840,13 +1912,22 @@ def _fbp_color_tag_for_group(key, color_map):
         color_map[key] = f"COLOR_{(len(color_map) % 7) + 1:02d}"
     return color_map[key]
 
-def _fbp_get_or_create_collection_path(parent_collection, collection_path, color_tag=None):
+def _fbp_get_or_create_collection_path(
+    parent_collection,
+    collection_path,
+    color_tag=None,
+    *,
+    on_create=None,
+):
     """Create nested collections, keeping parent folders colorless."""
     current = parent_collection
     parts = [part.strip() for part in str(collection_path or '').split(' / ') if part.strip()]
     for index, part in enumerate(parts):
         is_leaf = index == len(parts) - 1
+        previous = next((child for child in current.children if child.name == part), None)
         current = get_or_create_child_collection(current, part)
+        if previous is None and callable(on_create):
+            on_create(current)
         # Reapplying NONE is intentional: a collection may first be created as
         # a leaf and later become a parent when another setup row is processed.
         set_collection_color_tag(current, color_tag if is_leaf and color_tag else 'NONE')

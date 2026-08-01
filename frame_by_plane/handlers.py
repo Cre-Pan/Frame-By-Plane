@@ -1150,6 +1150,24 @@ def fbp_load_pre_handler(_dummy):
     """
     if fbp_registration_busy():
         return
+    # A generation journal still owns live Blender IDs until commit. Retire it
+    # before Main is replaced; load_post is too late to restore user state or
+    # remove owned partial data safely. This branch is a no-op unless the single
+    # process-wide generation lock is active.
+    try:
+        from .generation_transaction import active_generation_owner, retire_active_generation
+        if active_generation_owner() is not None:
+            retire_active_generation(
+                getattr(bpy, "context", None),
+                reason="File Open/Revert/New File",
+                rollback=True,
+            )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_error(
+            "Could not retire incremental generation before replacing Main",
+            exc,
+            event="generation.load_pre_teardown",
+        )
     fbp_set_undo_guard(True, timeout=_FBP_LOAD_FAILSAFE_SECONDS)
     # Keep the persistent idle watchdog registered. It is the component that
     # safely performs cleanup after Blender finishes replacing Main.

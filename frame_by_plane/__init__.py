@@ -22,7 +22,7 @@ _FBP_STARTUP_PROFILE = {
 _MODULE_NAMES = (
     "support_policy", "constants", "math_utils", "color_names", "feature_scope", "compatibility_52", "matrix_presets", "path_utils", "alpha_crop", "runtime", "service_registry", "runtime_scheduler", "managed_timers", "interface_preferences", "preference_application", "registration", "ui_list_state", "node_sockets", "ui_context", "compositor_contracts", "render_output", "fbp_index", "storage_keys",
     "identifiers", "ownership",
-    "safe_tasks", "transactions", "project_schema", "fbp_dirty", "lifecycle", "effect_schema", "effect_instances", "object_masks",
+    "safe_tasks", "transactions", "generation_transaction", "project_schema", "fbp_dirty", "lifecycle", "effect_schema", "effect_instances", "object_masks",
     # Register Object properties before the Effects UI/handler. On unregister
     # the reverse order removes the frame handler before deleting its RNA props.
     "properties", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "grease_pencil_scrub", "grease_pencil_bridge", "layer_sets", "grease_pencil_workflow", "grease_pencil_limited_loop", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "scene_sync", "persistence",
@@ -141,6 +141,7 @@ def _quiesce_deferred_runtime():
         ("generation modal", globals().get("operator_common"), "quiesce_generation_runtime"),
         ("background render monitor", globals().get("operator_render"), "quiesce_background_render_runtime"),
         ("active transactions", globals().get("transactions"), "abort_active_transactions"),
+        ("incremental generation", globals().get("generation_transaction"), "retire_active_generation"),
     )
     for label, module, function_name in operations:
         if module is None:

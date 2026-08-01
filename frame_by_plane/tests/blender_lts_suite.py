@@ -350,8 +350,16 @@ def test_generation_timer_deadline(_module):
 
     event = Probe()
     event.type = "TIMER"
-    event.timer = object()
-    operator._fbp_generation_timer = object()
+    owned_timer = object()
+    event.timer = owned_timer
+    operator._fbp_generation_timer = owned_timer
+
+    foreign_event = Probe()
+    foreign_event.type = "TIMER"
+    foreign_event.timer = object()
+    assert not operator_common._fbp_claim_generation_start(
+        operator, foreign_event, now=100.20
+    )
 
     assert not operator_common._fbp_claim_generation_start(
         operator, event, now=100.01

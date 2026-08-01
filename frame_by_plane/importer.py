@@ -527,6 +527,13 @@ def _fbp_context_value(context, name):
 
 
 def fbp_begin_fast_import(context):
+    """Begin native rebuild batching without owning Undo or UI progress.
+
+    Incremental operators may remain alive between Blender events.  Global Undo
+    and the WindowManager progress channel are process-wide, so Fast Import must
+    never hold either resource.  The generation transaction owns progress and
+    Blender's normal operator boundary owns Undo.
+    """
     depth = fbp_fast_import_depth(context) + 1
     fbp_set_fast_import_depth(depth, context)
     if depth != 1:
@@ -534,54 +541,22 @@ def fbp_begin_fast_import(context):
 
     fbp_set_fast_import_queued_names([], context)
 
-    prefs_edit = getattr(_fbp_context_value(context, "preferences"), "edit", None)
-    if prefs_edit:
-        try:
-            fbp_runtime_set("fbp_fast_import_undo_state", 1 if prefs_edit.use_global_undo else 0, context)
-            prefs_edit.use_global_undo = False
-        except Exception:
-            fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
-
-    window_manager = _fbp_context_value(context, "window_manager")
-    try:
-        if window_manager is not None:
-            window_manager.progress_begin(0, 100)
-    except FBP_DATA_IO_ERRORS:
-        pass
-
 
 def _fbp_restore_fast_import_runtime(context, *, request_redraw=True):
-    """Restore Fast Import state without scheduling work during add-on teardown."""
-    try:
-        prefs_edit = getattr(_fbp_context_value(context, "preferences"), "edit", None)
-        stored_undo_state = fbp_runtime_get(
-            "fbp_fast_import_undo_state", -1, context
-        )
-        undo_state = int(
-            -1 if stored_undo_state is None else stored_undo_state
-        )
-        if prefs_edit and undo_state >= 0:
-            try:
-                prefs_edit.use_global_undo = bool(undo_state)
-            except Exception as exc:
-                fbp_warn("Could not restore global undo", exc)
-    finally:
-        fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
-        fbp_set_fast_import_queued_names([], context)
-
-    window_manager = _fbp_context_value(context, "window_manager")
-    try:
-        if window_manager is not None:
-            window_manager.progress_update(100)
-    except FBP_DATA_IO_ERRORS:
-        pass
-    try:
-        if window_manager is not None:
-            window_manager.progress_end()
-    except FBP_DATA_IO_ERRORS:
-        pass
+    """Clear batching state without touching process-wide Undo or progress."""
+    # Remove the legacy marker left by builds made before 7.1.18's follow-up
+    # transaction coordinator.  Never derive or write the current preference.
+    fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
+    fbp_set_fast_import_queued_names([], context)
     if request_redraw:
         fbp_request_redraw(context, all_windows=True)
+
+
+def fbp_abort_fast_import(context=None):
+    """Discard the shared rebuild queue without finalizing partial output."""
+    fbp_set_fast_import_depth(0, context)
+    _fbp_restore_fast_import_runtime(context, request_redraw=False)
+    return True
 
 
 def fbp_end_fast_import(context):
@@ -657,18 +632,11 @@ def fbp_end_fast_import(context):
 
 
 def unregister():
-    """Restore Global Undo if the extension is disabled during Fast Import."""
+    """Discard transient batching state during add-on teardown."""
     try:
-        stored_state = fbp_runtime_get("fbp_fast_import_undo_state", -1)
-        has_saved_state = int(-1 if stored_state is None else stored_state) >= 0
-    except FBP_DATA_ERRORS:
-        has_saved_state = False
-    if fbp_fast_import_depth() > 0 or has_saved_state:
-        try:
-            _fbp_restore_fast_import_runtime(getattr(bpy, "context", None), request_redraw=False)
-        except Exception as exc:
-            fbp_warn("Could not restore Fast Import runtime during unregister", exc)
-    fbp_set_fast_import_depth(0)
+        fbp_abort_fast_import(getattr(bpy, "context", None))
+    except Exception as exc:
+        fbp_warn("Could not retire Fast Import runtime during unregister", exc)
 
 
 # SECTION 03 - Auto Build Project helpers #
