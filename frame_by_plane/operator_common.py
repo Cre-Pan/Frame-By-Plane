@@ -331,6 +331,11 @@ def _retire_generation_ui_on_reload():
         wm = getattr(getattr(bpy, "context", None), "window_manager", None)
         for operator in tuple(_PREVIOUS_GENERATION_OPERATORS or ()):
             try:
+                iterator = getattr(operator, "_fbp_generation_iterator", None)
+                close_iterator = getattr(iterator, "close", None)
+                if callable(close_iterator):
+                    close_iterator()
+                operator._fbp_generation_iterator = None
                 operator._fbp_generation_cancelled = True
                 operator._fbp_generation_timer = None
                 operator._fbp_generation_deadline = 0.0
@@ -559,6 +564,113 @@ def _fbp_remove_generation_timer(context, operator):
         _FBP_GENERATION_OPERATORS.remove(operator)
     except (ValueError, ReferenceError, RuntimeError, TypeError):
         pass
+
+
+def _fbp_update_generation_progress(context, operator, payload):
+    """Publish one primitive generation progress snapshot to Blender's UI."""
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        total = max(1, int(payload.get("total", 1) or 1))
+        completed = max(0, min(total, int(payload.get("completed", 0) or 0)))
+    except (TypeError, ValueError, OverflowError):
+        total = 1
+        completed = 0
+    step = str(payload.get("step", "Generating Frame By Plane media") or "Generating Frame By Plane media")
+    cancellable = bool(payload.get("cancellable", True))
+    suffix = "Esc cancels between steps" if cancellable else "Current Blender step runs to completion"
+    text = f"{step} — {completed}/{total} — {suffix}"
+    try:
+        if not bool(getattr(operator, "_fbp_generation_progress_active", False)):
+            context.window_manager.progress_begin(0, total)
+            operator._fbp_generation_progress_active = True
+        context.window_manager.progress_update(completed)
+    except FBP_DATA_IO_ERRORS:
+        pass
+    try:
+        operator._fbp_generation_progress_completed = completed
+        operator._fbp_generation_progress_total = total
+        operator._fbp_generation_progress_step = step
+    except FBP_DATA_IO_ERRORS:
+        pass
+    FBP_GENERATION_OVERLAY["text"] = text
+    try:
+        context.workspace.status_text_set(text)
+    except FBP_DATA_IO_ERRORS:
+        pass
+    _fbp_tag_view3d_redraw()
+    return {
+        "completed": completed,
+        "total": total,
+        "step": step,
+        "cancellable": cancellable,
+    }
+
+
+def _fbp_begin_generation_chunks(context, operator, iterator, *, interval=0.01):
+    """Replace the start-delay timer with a short main-thread chunk timer."""
+    _fbp_remove_generation_timer(context, operator)
+    try:
+        operator._fbp_generation_iterator = iterator
+        operator._fbp_generation_chunking = True
+        operator._fbp_generation_started = True
+        operator._fbp_generation_cancelled = False
+        operator._fbp_generation_timer = context.window_manager.event_timer_add(
+            max(0.001, float(interval)),
+            window=context.window,
+        )
+        if operator._fbp_generation_timer not in _FBP_GENERATION_TIMERS:
+            _FBP_GENERATION_TIMERS.append(operator._fbp_generation_timer)
+        if operator not in _FBP_GENERATION_OPERATORS:
+            _FBP_GENERATION_OPERATORS.append(operator)
+        return True
+    except FBP_DATA_ERRORS as exc:
+        _fbp_remove_generation_timer(context, operator)
+        try:
+            operator._fbp_generation_iterator = None
+            operator._fbp_generation_chunking = False
+        except FBP_DATA_ERRORS:
+            pass
+        fbp_warn("Could not start incremental Frame By Plane generation", exc)
+        return False
+
+
+def _fbp_advance_generation_chunk(context, operator):
+    """Advance one generator step and return a primitive state record."""
+    iterator = getattr(operator, "_fbp_generation_iterator", None)
+    if iterator is None:
+        return {"state": "ERROR", "error": RuntimeError("Generation iterator is unavailable")}
+    try:
+        payload = next(iterator)
+        progress = _fbp_update_generation_progress(context, operator, payload)
+        return {"state": "RUNNING", "progress": progress}
+    except StopIteration as finished:
+        return {"state": "FINISHED", "result": finished.value}
+    except Exception as exc:
+        return {"state": "ERROR", "error": exc}
+
+
+def _fbp_finish_generation_chunks(context, operator, *, close_iterator=False):
+    """Retire the chunk iterator and its event timer exactly once."""
+    iterator = getattr(operator, "_fbp_generation_iterator", None)
+    if close_iterator:
+        try:
+            close_callback = getattr(iterator, "close", None)
+            if callable(close_callback):
+                close_callback()
+        except FBP_DATA_ERRORS:
+            pass
+    _fbp_remove_generation_timer(context, operator)
+    try:
+        operator._fbp_generation_iterator = None
+        operator._fbp_generation_chunking = False
+        operator._fbp_generation_progress_active = False
+    except FBP_DATA_ERRORS:
+        pass
+    try:
+        context.window_manager.progress_end()
+    except FBP_DATA_ERRORS:
+        pass
+    return True
 
 def _fbp_generation_rig_issue(rig):
     """Return a small issue dictionary for rigs that need attention after generation."""
@@ -1763,6 +1875,21 @@ def quiesce_generation_runtime(context=None):
     """Retire deferred generation modals before operator classes are removed."""
     target_context = context or getattr(bpy, "context", None)
     for operator in tuple(_FBP_GENERATION_OPERATORS):
+        cancel_incremental = getattr(
+            operator,
+            "_fbp_cancel_incremental_generation",
+            None,
+        )
+        if (
+            bool(getattr(operator, "_fbp_generation_chunking", False))
+            and callable(cancel_incremental)
+            and target_context is not None
+        ):
+            try:
+                cancel_incremental(target_context, from_quiesce=True)
+                continue
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn("Could not roll back incremental generation during teardown", exc)
         try:
             operator._fbp_generation_cancelled = True
         except FBP_DATA_ERRORS:

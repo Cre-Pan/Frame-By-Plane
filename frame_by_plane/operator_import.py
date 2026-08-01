@@ -125,12 +125,15 @@ from .operator_common import (
     _fbp_active_generation_rename_item,
     _fbp_active_pending_index_and_collection,
     _fbp_add_generation_timer,
+    _fbp_advance_generation_chunk,
+    _fbp_begin_generation_chunks,
     _fbp_build_issue,
     _fbp_clear_generation_report,
     _fbp_claim_generation_start,
     _fbp_color_tag_for_group,
     _fbp_find_insert_index_for_pending,
     _fbp_finish_generation_ui,
+    _fbp_finish_generation_chunks,
     _fbp_generation_report,
     _fbp_get_or_create_collection_path,
     _fbp_mark_generation_sequence_renamed,
@@ -142,6 +145,7 @@ from .operator_common import (
     _fbp_show_generation_start_popup,
     _fbp_store_generation_report,
     _fbp_sync_generation_rename_items,
+    _fbp_update_generation_progress,
 )
 from .ui_list_state import mark_ui_list_draw
 from .interface_preferences import (
@@ -289,6 +293,14 @@ def _fbp_multiplane_runtime_snapshot(context):
                 for key in (fbp_obj_runtime_key(collection),)
                 if key is not None
             },
+            'datablock_keys': {
+                name: {
+                    key for datablock in tuple(getattr(bpy.data, name, ()) or ())
+                    for key in (fbp_obj_runtime_key(datablock),)
+                    if key is not None
+                }
+                for name in ("materials", "images", "node_groups", "meshes", "cameras")
+            },
             'camera': getattr(scene, 'camera', None),
             'cursor': scene.cursor.location.copy(),
             'pivot': str(getattr(scene.tool_settings, 'transform_pivot_point', 'MEDIAN_POINT')),
@@ -347,6 +359,22 @@ def _fbp_rollback_unexpected_multiplane_build(context, snapshot):
         except FBP_DATA_ERRORS:
             continue
 
+    previous_datablocks = snapshot.get('datablock_keys', {}) or {}
+    for collection_name in ("materials", "images", "node_groups", "meshes", "cameras"):
+        data_collection = getattr(bpy.data, collection_name, None)
+        if data_collection is None:
+            continue
+        previous_keys = set(previous_datablocks.get(collection_name, ()))
+        for datablock in reversed(tuple(data_collection)):
+            try:
+                if fbp_obj_runtime_key(datablock) in previous_keys:
+                    continue
+                if int(getattr(datablock, 'users', 0) or 0) != 0:
+                    continue
+                data_collection.remove(datablock)
+            except FBP_DATA_ERRORS:
+                continue
+
     previous_collections = set(snapshot.get('collection_keys', ()))
     # Child collections must be removed before their parents. Repeat only while
     # progress is made and never touch a pre-existing or non-empty collection.
@@ -371,6 +399,225 @@ def _fbp_rollback_unexpected_multiplane_build(context, snapshot):
     except FBP_DATA_ERRORS:
         pass
     return True
+
+
+def _fbp_drain_generation_iterator(context, operator, iterator):
+    """Run the incremental implementation synchronously for tests/background."""
+    while True:
+        try:
+            payload = next(iterator)
+        except StopIteration as finished:
+            return finished.value
+        _fbp_update_generation_progress(context, operator, payload)
+
+
+_FBP_INCREMENTAL_GENERATION_STATE = globals().get(
+    "_FBP_INCREMENTAL_GENERATION_STATE",
+    {},
+)
+if not isinstance(_FBP_INCREMENTAL_GENERATION_STATE, dict):
+    _FBP_INCREMENTAL_GENERATION_STATE = {}
+
+
+def _fbp_incremental_operator_key(operator, context=None):
+    try:
+        window = getattr(context, "window", None) if context is not None else None
+        if window is not None:
+            return (
+                "WINDOW",
+                int(window.as_pointer()),
+                str(getattr(operator, "bl_idname", type(operator).__name__) or type(operator).__name__),
+            )
+    except FBP_DATA_ERRORS:
+        pass
+    try:
+        return ("POINTER", int(operator.as_pointer()))
+    except FBP_DATA_ERRORS:
+        return ("PYTHON", id(operator))
+
+
+def _fbp_incremental_operator_entry(operator, context=None):
+    key = _fbp_incremental_operator_key(operator, context)
+    state = _FBP_INCREMENTAL_GENERATION_STATE.get(key)
+    if state is not None:
+        return key, state
+    bl_idname = str(
+        getattr(operator, "bl_idname", type(operator).__name__)
+        or type(operator).__name__
+    )
+    candidates = [
+        (candidate_key, candidate_state)
+        for candidate_key, candidate_state in _FBP_INCREMENTAL_GENERATION_STATE.items()
+        if str(candidate_state.get("bl_idname", "") or "") == bl_idname
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return key, {}
+
+
+def _fbp_incremental_operator_state(operator, context=None):
+    return _fbp_incremental_operator_entry(operator, context)[1]
+
+
+def _fbp_release_incremental_operator(context, operator, *, close_iterator=False):
+    runtime_key, _existing_state = _fbp_incremental_operator_entry(operator, context)
+    runtime_state = _FBP_INCREMENTAL_GENERATION_STATE.pop(
+        runtime_key,
+        {},
+    )
+    _fbp_finish_generation_chunks(
+        context,
+        operator,
+        close_iterator=close_iterator,
+    )
+    owns_fast_import = bool(
+        runtime_state.get(
+            "owns_fast_import",
+            getattr(operator, "_fbp_generation_owns_fast_import", False),
+        )
+    )
+    if owns_fast_import:
+        try:
+            fbp_end_fast_import(context)
+        except FBP_DATA_ERRORS:
+            pass
+    try:
+        operator._fbp_generation_owns_fast_import = False
+        operator._fbp_generation_rollback_snapshot = None
+    except FBP_DATA_ERRORS:
+        pass
+
+
+def _fbp_fail_incremental_operator(context, operator, mode, exc):
+    step = str(
+        getattr(operator, "_fbp_generation_progress_step", "generation")
+        or "generation"
+    )
+    runtime_state = _fbp_incremental_operator_state(operator, context)
+    snapshot = runtime_state.get(
+        "snapshot",
+        getattr(operator, "_fbp_generation_rollback_snapshot", None),
+    )
+    _fbp_release_incremental_operator(context, operator, close_iterator=True)
+    rolled_back = _fbp_rollback_unexpected_multiplane_build(context, snapshot)
+    fbp_error(
+        f"Unexpected {mode} incremental generation failure",
+        exc,
+        event="import.incremental_generation",
+        context={"mode": mode, "step": step, "rolled_back": bool(rolled_back)},
+    )
+    report = _fbp_store_generation_report(
+        context,
+        mode=mode,
+        generated_rigs=[],
+        cancelled=True,
+        message=f"{mode} failed during {step}; rollback {'completed' if rolled_back else 'could not be confirmed'}.",
+    )
+    _fbp_finish_generation_ui(context, report)
+    operator.report({'ERROR'}, f"{mode} failed during {step}")
+    return {'CANCELLED'}
+
+
+def _fbp_start_incremental_operator(context, operator, mode):
+    snapshot = _fbp_multiplane_runtime_snapshot(context)
+    owns_fast_import = not fbp_fast_import_is_active()
+    if owns_fast_import:
+        fbp_begin_fast_import(context)
+    iterator = operator._execute_impl(context)
+    runtime_key = _fbp_incremental_operator_key(operator, context)
+    if runtime_key in _FBP_INCREMENTAL_GENERATION_STATE:
+        if owns_fast_import:
+            fbp_end_fast_import(context)
+        report = _fbp_store_generation_report(
+            context,
+            mode=mode,
+            generated_rigs=[],
+            cancelled=True,
+            message="Another Frame By Plane generation is already active in this window.",
+        )
+        _fbp_finish_generation_ui(context, report)
+        operator.report({'WARNING'}, "Another generation is already active")
+        return {'CANCELLED'}
+    _FBP_INCREMENTAL_GENERATION_STATE[runtime_key] = {
+        "snapshot": snapshot,
+        "owns_fast_import": owns_fast_import,
+        "mode": str(mode or "Generation"),
+        "bl_idname": str(
+            getattr(operator, "bl_idname", type(operator).__name__)
+            or type(operator).__name__
+        ),
+    }
+    try:
+        operator._fbp_generation_rollback_snapshot = snapshot
+        operator._fbp_generation_owns_fast_import = owns_fast_import
+        operator._fbp_generation_mode = str(mode or "Generation")
+    except FBP_DATA_ERRORS:
+        pass
+    if _fbp_begin_generation_chunks(context, operator, iterator, interval=0.01):
+        return {'RUNNING_MODAL'}
+    try:
+        return _fbp_drain_generation_iterator(context, operator, iterator)
+    except Exception as exc:
+        return _fbp_fail_incremental_operator(context, operator, mode, exc)
+    finally:
+        _fbp_release_incremental_operator(context, operator)
+
+
+def _fbp_advance_incremental_operator(context, operator, mode):
+    outcome = _fbp_advance_generation_chunk(context, operator)
+    state = str(outcome.get("state", "ERROR") or "ERROR")
+    if state == "RUNNING":
+        return {'RUNNING_MODAL'}
+    if state == "FINISHED":
+        result = outcome.get("result") or {'CANCELLED'}
+        _fbp_release_incremental_operator(context, operator)
+        return result
+    return _fbp_fail_incremental_operator(
+        context,
+        operator,
+        mode,
+        outcome.get("error") or RuntimeError("Unknown incremental generation failure"),
+    )
+
+
+def _fbp_cancel_incremental_operator(context, operator, mode, *, from_quiesce=False):
+    step = str(
+        getattr(operator, "_fbp_generation_progress_step", "preparation")
+        or "preparation"
+    )
+    completed = int(
+        getattr(operator, "_fbp_generation_progress_completed", 0) or 0
+    )
+    total = int(getattr(operator, "_fbp_generation_progress_total", 0) or 0)
+    runtime_state = _fbp_incremental_operator_state(operator, context)
+    snapshot = runtime_state.get(
+        "snapshot",
+        getattr(operator, "_fbp_generation_rollback_snapshot", None),
+    )
+    try:
+        operator._fbp_generation_cancelled = True
+    except FBP_DATA_ERRORS:
+        pass
+    _fbp_release_incremental_operator(context, operator, close_iterator=True)
+    rolled_back = _fbp_rollback_unexpected_multiplane_build(context, snapshot)
+    report = _fbp_store_generation_report(
+        context,
+        mode=mode,
+        generated_rigs=[],
+        cancelled=True,
+        message=(
+            f"Cancelled during {step} at step {completed}/{total}; "
+            f"rollback {'completed' if rolled_back else 'could not be confirmed'}."
+        ),
+    )
+    _fbp_finish_generation_ui(
+        context,
+        report,
+        show_popup=not bool(from_quiesce),
+    )
+    if not from_quiesce:
+        operator.report({'INFO'}, f"{mode} cancelled; partial data rolled back")
+    return {'CANCELLED'}
 
 
 def _fbp_source_dimensions_from_rig(rig):
@@ -1500,6 +1747,14 @@ class FBP_OT_GenerateMultiplane(Operator):
         return self._run_generation(context)
 
     def modal(self, context, event):
+        if bool(getattr(self, "_fbp_generation_chunking", False)):
+            if event.type == 'ESC':
+                return self._fbp_cancel_incremental_generation(context)
+            if event.type == 'TIMER':
+                return _fbp_advance_incremental_operator(
+                    context, self, "Multiplane"
+                )
+            return {'RUNNING_MODAL'}
         if bool(getattr(self, "_fbp_generation_cancelled", False)):
             _fbp_remove_generation_timer(context, self)
             _fbp_finish_generation_ui(context, show_popup=False)
@@ -1510,14 +1765,21 @@ class FBP_OT_GenerateMultiplane(Operator):
             _fbp_finish_generation_ui(context)
             return {'CANCELLED'}
         if event.type != 'TIMER':
-            return {'PASS_THROUGH'}
+            return {'RUNNING_MODAL'}
         if not _fbp_claim_generation_start(self, event):
             return {'PASS_THROUGH'}
-        _fbp_remove_generation_timer(context, self)
-        return self._run_generation(context)
+        return _fbp_start_incremental_operator(context, self, "Multiplane")
+
+    def _fbp_cancel_incremental_generation(self, context, *, from_quiesce=False):
+        return _fbp_cancel_incremental_operator(
+            context,
+            self,
+            "Multiplane",
+            from_quiesce=from_quiesce,
+        )
 
     def execute(self, context):
-        if self.synchronous:
+        if self.synchronous or bool(getattr(bpy.app, "background", False)):
             return self._run_generation(context)
         # Some UI entry points, especially Shift+A popup buttons, call execute()
         # directly instead of invoke(). Defer from here too so the generation
@@ -1536,7 +1798,11 @@ class FBP_OT_GenerateMultiplane(Operator):
             fbp_begin_fast_import(context)
         try:
             try:
-                result = self._execute_impl(context)
+                result = _fbp_drain_generation_iterator(
+                    context,
+                    self,
+                    self._execute_impl(context),
+                )
             except Exception as exc:
                 fbp_error(
                     "Unexpected Multiplane generation failure",
@@ -1565,13 +1831,22 @@ class FBP_OT_GenerateMultiplane(Operator):
 
     def _execute_impl(self, context):
         sc = context.scene
-        if not sc.fbp_pending_planes:
+        pending_planes = tuple(sc.fbp_pending_planes)
+        if not pending_planes:
             self.report({'WARNING'}, "No layers added to the list!")
             return {'CANCELLED'}
-        for p in sc.fbp_pending_planes:
+        for p in pending_planes:
             if not p.directory or not p.files_str:
                 self.report({'ERROR'}, f"Layer '{p.name}' has no images assigned!")
                 return {'CANCELLED'}
+
+        progress_total = len(pending_planes) + 2
+        yield {
+            "completed": 0,
+            "total": progress_total,
+            "step": "Preparing Multiplane generation",
+            "cancellable": True,
+        }
 
         if sc.fbp_gen_camera:
             apply_camera_ratio_settings(sc)
@@ -1637,7 +1912,19 @@ class FBP_OT_GenerateMultiplane(Operator):
             path for path in collection_paths
             if any(other.startswith(path + " / ") for other in collection_paths)
         }
-        for p_item in sc.fbp_pending_planes:
+        yield {
+            "completed": 1,
+            "total": progress_total,
+            "step": "Multiplane scene prepared",
+            "cancellable": True,
+        }
+        for pending_index, p_item in enumerate(pending_planes):
+            yield {
+                "completed": pending_index + 1,
+                "total": progress_total,
+                "step": f"Building layer: {p_item.name}",
+                "cancellable": False,
+            }
             f_list = [f for f in p_item.files_str.split("|") if f]
             collection_name = getattr(p_item, "collection_name", "") or ""
             if collection_name and last_collection_name is not None and collection_name != last_collection_name:
@@ -1808,6 +2095,13 @@ class FBP_OT_GenerateMultiplane(Operator):
             generated_rigs.append(rig)
             last_rig = rig
 
+        yield {
+            "completed": len(pending_planes) + 1,
+            "total": progress_total,
+            "step": "Finalizing Multiplane scene",
+            "cancellable": True,
+        }
+
         if generated_rigs:
             try:
                 fbp_sync_clipping_masks(context)
@@ -1912,6 +2206,12 @@ class FBP_OT_ImportSequence(Operator):
     filepath:  StringProperty(description="Selected media file path returned by Blender's file browser.", subtype='FILE_PATH')
     directory: StringProperty(description="Folder currently selected in Blender's file browser.", subtype='DIR_PATH')
     files:     CollectionProperty(description="Files selected in Blender's file browser for this import or replacement action.", type=bpy.types.OperatorFileListElement)
+    synchronous: BoolProperty(
+        name="Synchronous Generation",
+        description="Internal regression/background option that drains generation steps immediately",
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
     media_filter: EnumProperty(
         name="Media Filter",
         description="Limit the file browser to image sequences or video files for the selected creation workflow",
@@ -1941,6 +2241,8 @@ class FBP_OT_ImportSequence(Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        if self.synchronous or bool(getattr(bpy.app, "background", False)):
+            return self._run_generation(context)
         _fbp_show_generation_start_popup(context, f"Generating {self._generation_mode()}")
         deferred = _fbp_add_generation_timer(context, self, delay=0.20)
         if deferred:
@@ -1948,13 +2250,22 @@ class FBP_OT_ImportSequence(Operator):
         return self._run_generation(context)
 
     def modal(self, context, event):
+        mode = self._generation_mode()
+        if bool(getattr(self, "_fbp_generation_chunking", False)):
+            if event.type == 'ESC':
+                return self._fbp_cancel_incremental_generation(context)
+            if event.type == 'TIMER':
+                return _fbp_advance_incremental_operator(context, self, mode)
+            # The rollback snapshot assumes no unrelated scene edits occur while
+            # the operator owns the transaction.  Keep events inside the modal
+            # operator until the current generation is finished or cancelled.
+            return {'RUNNING_MODAL'}
         if bool(getattr(self, "_fbp_generation_cancelled", False)):
             _fbp_remove_generation_timer(context, self)
             _fbp_finish_generation_ui(context, show_popup=False)
             return {'CANCELLED'}
         if event.type == 'ESC':
             _fbp_remove_generation_timer(context, self)
-            mode = self._generation_mode()
             _fbp_store_generation_report(
                 context,
                 mode=mode,
@@ -1968,8 +2279,15 @@ class FBP_OT_ImportSequence(Operator):
             return {'PASS_THROUGH'}
         if not _fbp_claim_generation_start(self, event):
             return {'PASS_THROUGH'}
-        _fbp_remove_generation_timer(context, self)
-        return self._run_generation(context)
+        return _fbp_start_incremental_operator(context, self, mode)
+
+    def _fbp_cancel_incremental_generation(self, context, *, from_quiesce=False):
+        return _fbp_cancel_incremental_operator(
+            context,
+            self,
+            self._generation_mode(),
+            from_quiesce=from_quiesce,
+        )
 
     def _run_generation(self, context):
         # Fast import is now entered directly here instead of monkey-patching the class at module load.
@@ -1978,7 +2296,11 @@ class FBP_OT_ImportSequence(Operator):
             fbp_begin_fast_import(context)
         try:
             try:
-                result = self._execute_impl(context)
+                result = _fbp_drain_generation_iterator(
+                    context,
+                    self,
+                    self._execute_impl(context),
+                )
             except Exception as exc:
                 mode = self._generation_mode()
                 fbp_warn(f"Unexpected {mode} generation failure", exc)
@@ -2008,6 +2330,12 @@ class FBP_OT_ImportSequence(Operator):
                 fbp_end_fast_import(context)
 
     def _execute_impl(self, context):
+        yield {
+            "completed": 0,
+            "total": 3,
+            "step": "Scanning selected media",
+            "cancellable": True,
+        }
         filenames = [f.name for f in self.files] if self.files else []
         if not filenames and self.filepath:
             if os.path.isfile(bpy.path.abspath(self.filepath)):
@@ -2038,6 +2366,12 @@ class FBP_OT_ImportSequence(Operator):
             return {'CANCELLED'}
         single_name = clean_layer_name_from_path(f_list[0]) if len(f_list) == 1 else clean_layer_name_from_path(os.path.basename(os.path.normpath(self.directory))) or "Sequence_Rig"
         target_collection = context.collection if context.collection else context.scene.collection
+        yield {
+            "completed": 1,
+            "total": 3,
+            "step": f"Building media layer: {single_name}",
+            "cancellable": False,
+        }
         try:
             rig = build_fbp_rig(
                 context, single_name, self.directory, f_list,
@@ -2061,6 +2395,12 @@ class FBP_OT_ImportSequence(Operator):
             _fbp_finish_generation_ui(context)
             self.report({'ERROR'}, f"{mode} import failed: {exc}")
             return {'CANCELLED'}
+        yield {
+            "completed": 2,
+            "total": 3,
+            "step": "Finalizing imported media",
+            "cancellable": True,
+        }
         bpy.ops.object.select_all(action='DESELECT')
         rig.select_set(True)
         context.view_layer.objects.active = rig

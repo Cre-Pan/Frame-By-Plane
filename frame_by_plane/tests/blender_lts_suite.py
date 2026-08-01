@@ -390,6 +390,150 @@ def test_generation_timer_deadline(_module):
     }
 
 
+def test_generation_progress_and_rollback(_module):
+    operator_import = importlib.import_module(f"{PACKAGE}.operator_import")
+
+    class Probe:
+        pass
+
+    operator = Probe()
+
+    def steps():
+        yield {"completed": 0, "total": 2, "step": "Prepare", "cancellable": True}
+        yield {"completed": 1, "total": 2, "step": "Build", "cancellable": False}
+        return {'FINISHED'}
+
+    try:
+        result = operator_import._fbp_drain_generation_iterator(
+            bpy.context,
+            operator,
+            steps(),
+        )
+    finally:
+        bpy.context.window_manager.progress_end()
+    assert result == {'FINISHED'}, result
+    assert operator._fbp_generation_progress_completed == 1
+    assert operator._fbp_generation_progress_total == 2
+
+    names = {
+        "object": "FBP Rollback Test Object",
+        "mesh": "FBP Rollback Test Mesh",
+        "material": "FBP Rollback Test Material",
+        "image": "FBP Rollback Test Image",
+        "nodes": "FBP Rollback Test Nodes",
+    }
+    before = {
+        "objects": len(bpy.data.objects),
+        "meshes": len(bpy.data.meshes),
+        "materials": len(bpy.data.materials),
+        "images": len(bpy.data.images),
+        "node_groups": len(bpy.data.node_groups),
+    }
+    snapshot = operator_import._fbp_multiplane_runtime_snapshot(bpy.context)
+    try:
+        mesh = bpy.data.meshes.new(names["mesh"])
+        obj = bpy.data.objects.new(names["object"], mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.is_fbp_control = True
+        material = bpy.data.materials.new(names["material"])
+        mesh.materials.append(material)
+        bpy.data.images.new(names["image"], width=8, height=8)
+        bpy.data.node_groups.new(names["nodes"], "GeometryNodeTree")
+        assert operator_import._fbp_rollback_unexpected_multiplane_build(
+            bpy.context,
+            snapshot,
+        )
+        after = {
+            "objects": len(bpy.data.objects),
+            "meshes": len(bpy.data.meshes),
+            "materials": len(bpy.data.materials),
+            "images": len(bpy.data.images),
+            "node_groups": len(bpy.data.node_groups),
+        }
+        assert after == before, (before, after)
+    finally:
+        obj = bpy.data.objects.get(names["object"])
+        if obj is not None:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        for collection_name, key in (
+            ("meshes", "mesh"),
+            ("materials", "material"),
+            ("images", "image"),
+            ("node_groups", "nodes"),
+        ):
+            collection = getattr(bpy.data, collection_name)
+            datablock = collection.get(names[key])
+            if datablock is not None and int(getattr(datablock, "users", 0) or 0) == 0:
+                collection.remove(datablock)
+    return {
+        "progress_steps": 2,
+        "rollback_restored": True,
+        "datablock_types": sorted(before),
+    }
+
+
+def test_synchronous_media_generation(_module):
+    operator_import = importlib.import_module(f"{PACKAGE}.operator_import")
+    fixture_path = WORKDIR / "fbp_generation_fixture.png"
+    fixture_image = bpy.data.images.new(
+        "FBP Generation Fixture Source",
+        width=16,
+        height=16,
+        alpha=True,
+    )
+    try:
+        fixture_image.generated_color = (0.2, 0.4, 0.8, 1.0)
+        fixture_image.filepath_raw = str(fixture_path)
+        fixture_image.file_format = 'PNG'
+        fixture_image.save()
+    finally:
+        bpy.data.images.remove(fixture_image)
+    assert fixture_path.is_file(), fixture_path
+
+    snapshot = operator_import._fbp_multiplane_runtime_snapshot(bpy.context)
+    before_rigs = {
+        obj.as_pointer()
+        for obj in bpy.context.scene.objects
+        if bool(getattr(obj, "is_fbp_control", False))
+    }
+    operator_class = operator_import.FBP_OT_ImportSequence
+    temporary_registration = getattr(bpy.types, operator_class.__name__, None) is None
+    if temporary_registration:
+        bpy.utils.register_class(operator_class)
+    try:
+        result = bpy.ops.fbp.import_sequence(
+            'EXEC_DEFAULT',
+            synchronous=True,
+            filepath=str(fixture_path),
+            directory=str(fixture_path.parent),
+            media_filter='IMAGES',
+        )
+        assert result == {'FINISHED'}, result
+        generated = [
+            obj
+            for obj in bpy.context.scene.objects
+            if bool(getattr(obj, "is_fbp_control", False))
+            and obj.as_pointer() not in before_rigs
+        ]
+        assert len(generated) == 1, [obj.name for obj in generated]
+        # Clean success reports are intentionally cleared after UI finalization;
+        # warning/cancel reports remain available for diagnostics.
+        assert operator_import._fbp_generation_report(bpy.context) == {}
+    finally:
+        assert operator_import._fbp_rollback_unexpected_multiplane_build(
+            bpy.context,
+            snapshot,
+        )
+        if temporary_registration:
+            bpy.utils.unregister_class(operator_class)
+    return {
+        "fixture": str(fixture_path),
+        "generated_rigs": 1,
+        "background_mode": bool(bpy.app.background),
+        "rollback_restored": True,
+    }
+
+
 def test_register_cycles():
     module = import_addon(fresh=True)
     for cycle in range(3):
@@ -1329,6 +1473,8 @@ def run_background():
             ("effect_evolution_handler_lifecycle", test_effect_evolution_handler_lifecycle),
             ("registration_failure_transaction", test_registration_failure_transaction),
             ("generation_timer_deadline", test_generation_timer_deadline),
+            ("generation_progress_and_rollback", test_generation_progress_and_rollback),
+            ("synchronous_media_generation", test_synchronous_media_generation),
             ("scheduler_rna_capture_guard", test_scheduler_rna_capture),
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),
