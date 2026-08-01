@@ -13,6 +13,7 @@ from pathlib import Path
 from array import array
 import os
 import copy
+from collections import deque
 import importlib
 import json
 import math
@@ -329,10 +330,15 @@ if not isinstance(_FBP_EFFECT_RUNTIME_STATS, dict):
     _FBP_EFFECT_RUNTIME_STATS = dict(_FBP_EFFECT_RUNTIME_STAT_DEFAULTS)
 for _stat_key, _stat_default in _FBP_EFFECT_RUNTIME_STAT_DEFAULTS.items():
     _FBP_EFFECT_RUNTIME_STATS.setdefault(_stat_key, _stat_default)
-_FBP_EFFECT_HANDLER_SAMPLES_MS = globals().get("_FBP_EFFECT_HANDLER_SAMPLES_MS", [])
-if not isinstance(_FBP_EFFECT_HANDLER_SAMPLES_MS, list):
-    _FBP_EFFECT_HANDLER_SAMPLES_MS = []
 _FBP_EFFECT_HANDLER_SAMPLE_LIMIT = 2048
+_PREVIOUS_EFFECT_HANDLER_SAMPLES_MS = globals().get("_FBP_EFFECT_HANDLER_SAMPLES_MS", ())
+try:
+    _FBP_EFFECT_HANDLER_SAMPLES_MS = deque(
+        tuple(float(value) for value in _PREVIOUS_EFFECT_HANDLER_SAMPLES_MS)[-_FBP_EFFECT_HANDLER_SAMPLE_LIMIT:],
+        maxlen=_FBP_EFFECT_HANDLER_SAMPLE_LIMIT,
+    )
+except (TypeError, ValueError, OverflowError):
+    _FBP_EFFECT_HANDLER_SAMPLES_MS = deque(maxlen=_FBP_EFFECT_HANDLER_SAMPLE_LIMIT)
 _FBP_PROFILE_ENV_ENABLED = str(os.environ.get("FBP_PROFILE", "") or "").strip().lower() in {
     "1", "true", "yes", "on",
 }
@@ -2442,9 +2448,6 @@ def _fbp_effect_handler_record(milliseconds):
     except (TypeError, ValueError, OverflowError):
         return
     _FBP_EFFECT_HANDLER_SAMPLES_MS.append(value)
-    overflow = len(_FBP_EFFECT_HANDLER_SAMPLES_MS) - _FBP_EFFECT_HANDLER_SAMPLE_LIMIT
-    if overflow > 0:
-        del _FBP_EFFECT_HANDLER_SAMPLES_MS[:overflow]
 
 
 def _fbp_percentile(values, quantile):

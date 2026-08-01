@@ -67,6 +67,7 @@ if not isinstance(_REPORT_CACHE, dict):
 _PROFILE_ENV_ENABLED = str(os.environ.get("FBP_PROFILE", "") or "").strip().lower() in {
     "1", "true", "yes", "on",
 }
+_PROFILE_RUN_ACTIVE = False
 
 
 def _utc_now():
@@ -192,13 +193,50 @@ def runtime_profile_snapshot(scene=None):
     }
 
 
+def _profile_runtime_block_reason(context, *, reject_background=False):
+    if _PROFILE_RUN_ACTIVE:
+        return "Another Frame By Plane profile is already active"
+    if reject_background and bool(getattr(bpy.app, "background", False)):
+        return "Interactive profiling is unavailable in background mode"
+    try:
+        if bool(getattr(getattr(context, "screen", None), "is_animation_playing", False)):
+            return "Stop animation playback before profiling"
+    except FBP_DATA_ERRORS:
+        pass
+    try:
+        from .runtime import FBP_RENDER_IDLE, fbp_render_state
+        if fbp_render_state(include_guard=True) != FBP_RENDER_IDLE:
+            return "Wait for the active render to finish before profiling"
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        return "Render state is unavailable; profiling is blocked safely"
+    try:
+        from .generation_transaction import active_generation_owner
+        if active_generation_owner() is not None:
+            return "Wait for Frame By Plane generation to finish before profiling"
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        from .handlers import fbp_undo_guard_active
+        if fbp_undo_guard_active():
+            return "Wait for Undo, Redo or file loading to finish before profiling"
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return ""
+
+
 def profile_frame_changes(scene, *, frame_count=120, warmup=8, profile_context="PLAYBACK"):
-    """Measure controlled frame evaluation and restore the original frame."""
+    """Measure timing, memory and profiler overhead in separate runs."""
+    global _PROFILE_RUN_ACTIVE
     from .geometry_nodes import fbp_effect_runtime_profile_metrics
     from .runtime_scheduler import scheduler_metrics
 
     if scene is None:
         raise ValueError("A scene is required")
+    if tracemalloc.is_tracing():
+        raise RuntimeError("Stop the existing Python allocation trace before timing frames")
+    block_reason = _profile_runtime_block_reason(getattr(bpy, "context", None))
+    if block_reason:
+        raise RuntimeError(block_reason)
     frame_count = max(1, int(frame_count))
     warmup = max(0, int(warmup))
     profile_context = str(profile_context or "PLAYBACK").upper()
@@ -215,19 +253,22 @@ def profile_frame_changes(scene, *, frame_count=120, warmup=8, profile_context="
     )
     budget_ms = 1000.0 / fps
     was_enabled = _profile_enabled()
-    tracing_started_here = not tracemalloc.is_tracing()
     samples = []
-    initial_python_bytes = 0
-    final_python_bytes = 0
+    calibration_samples = []
+    memory_initial_bytes = 0
+    memory_final_bytes = 0
+    memory_tracing_started_here = False
+    calibration_count = min(frame_count, 24)
+    memory_count = min(frame_count, 24)
     try:
-        _set_profile_enabled(True)
-        if tracing_started_here:
-            tracemalloc.start()
-        initial_python_bytes = int(tracemalloc.get_traced_memory()[0])
+        _PROFILE_RUN_ACTIVE = True
+        _set_profile_enabled(False)
         for offset in range(warmup):
             scene.frame_set(start_frame + (offset % span))
         fbp_effect_runtime_profile_metrics(reset=True)
         scheduler_metrics(reset=True)
+        # Authoritative timing run: tracemalloc is deliberately off and local
+        # handler timing is disabled unless forced by FBP_PROFILE in the process.
         for offset in range(frame_count):
             frame = start_frame + (offset % span)
             started = time.perf_counter()
@@ -237,7 +278,38 @@ def profile_frame_changes(scene, *, frame_count=120, warmup=8, profile_context="
                 if view_layer is not None:
                     view_layer.update()
             samples.append((time.perf_counter() - started) * 1000.0)
-        final_python_bytes = int(tracemalloc.get_traced_memory()[0])
+
+        # Short same-fixture calibration run with detailed handler profiling on.
+        # It is reported separately and never mixed into the authoritative run.
+        _set_profile_enabled(True)
+        fbp_effect_runtime_profile_metrics(reset=True)
+        scheduler_metrics(reset=True)
+        for offset in range(calibration_count):
+            frame = start_frame + (offset % span)
+            started = time.perf_counter()
+            scene.frame_set(frame)
+            if profile_context == "VIEWPORT":
+                view_layer = getattr(bpy.context, "view_layer", None)
+                if view_layer is not None:
+                    view_layer.update()
+            calibration_samples.append((time.perf_counter() - started) * 1000.0)
+        handler_metrics = fbp_effect_runtime_profile_metrics()
+        scheduler_profile = scheduler_metrics()
+
+        # Separate allocation run. No value measured here contributes to avg,
+        # p50, p95 or max frame timing.
+        _set_profile_enabled(False)
+        memory_tracing_started_here = not tracemalloc.is_tracing()
+        if memory_tracing_started_here:
+            tracemalloc.start()
+        memory_initial_bytes = int(tracemalloc.get_traced_memory()[0])
+        for offset in range(memory_count):
+            scene.frame_set(start_frame + (offset % span))
+        memory_final_bytes = int(tracemalloc.get_traced_memory()[0])
+        if memory_tracing_started_here and tracemalloc.is_tracing():
+            tracemalloc.stop()
+            memory_tracing_started_here = False
+
         timing = _timing_summary_ms(samples)
         timing["effective_fps"] = (
             1000.0 / timing["avg_ms"] if timing["avg_ms"] > 0.0 else 0.0
@@ -245,21 +317,45 @@ def profile_frame_changes(scene, *, frame_count=120, warmup=8, profile_context="
         timing["target_fps"] = fps
         timing["frame_budget_ms"] = budget_ms
         timing["frames_over_budget"] = sum(1 for value in samples if value > budget_ms)
+        calibration = _timing_summary_ms(calibration_samples)
+        baseline_subset = _timing_summary_ms(samples[:calibration_count])
+        baseline_avg = float(baseline_subset.get("avg_ms", 0.0) or 0.0)
+        enabled_avg = float(calibration.get("avg_ms", 0.0) or 0.0)
+        overhead_percent = (
+            ((enabled_avg - baseline_avg) / baseline_avg) * 100.0
+            if baseline_avg > 0.0 else 0.0
+        )
         return {
             "profile_context": profile_context,
             "contract": (
                 "Controlled scene.frame_set evaluation; VIEWPORT also updates the active view layer. "
-                "PLAYBACK and RENDER are CPU-side approximations, not GPU presentation or final render timings."
+                "PLAYBACK and RENDER are CPU-side approximations, not GPU presentation or final render timings. "
+                "Authoritative timing runs without tracemalloc; allocation sampling is separate."
             ),
             "warmup_frames": warmup,
             "measured_frames": frame_count,
             "frame_evaluation": timing,
-            "effect_handler": fbp_effect_runtime_profile_metrics(),
-            "scheduler": scheduler_metrics(),
+            "effect_handler": handler_metrics,
+            "scheduler": scheduler_profile,
+            "instrumentation": {
+                "timing_tracemalloc": False,
+                "timing_profile_enabled": bool(_PROFILE_ENV_ENABLED),
+                "calibration_samples": calibration_count,
+                "baseline_subset_avg_ms": baseline_avg,
+                "profile_enabled_avg_ms": enabled_avg,
+                "estimated_overhead_percent": overhead_percent,
+                "warmup_frames": warmup,
+                "machine": str(getattr(bpy.app, "build_platform", b"")),
+                "blender_version": ".".join(str(value) for value in bpy.app.version),
+                "scene": _safe_name(getattr(scene, "name", ""), "Scene"),
+            },
             "memory": {
-                "python_initial_bytes": initial_python_bytes,
-                "python_final_bytes": final_python_bytes,
-                "python_delta_bytes": final_python_bytes - initial_python_bytes,
+                "mode": "separate allocation run with tracemalloc",
+                "included_in_timing": False,
+                "samples": memory_count,
+                "python_initial_bytes": memory_initial_bytes,
+                "python_final_bytes": memory_final_bytes,
+                "python_delta_bytes": memory_final_bytes - memory_initial_bytes,
             },
             "state_restored": True,
         }
@@ -267,9 +363,10 @@ def profile_frame_changes(scene, *, frame_count=120, warmup=8, profile_context="
         try:
             scene.frame_set(original_frame)
         finally:
-            _set_profile_enabled(was_enabled)
-            if tracing_started_here and tracemalloc.is_tracing():
+            if memory_tracing_started_here and tracemalloc.is_tracing():
                 tracemalloc.stop()
+            _set_profile_enabled(was_enabled)
+            _PROFILE_RUN_ACTIVE = False
 
 
 def _normalized_path(value):
@@ -992,6 +1089,8 @@ def performance_report_text(report):
     frame_profile = dict((report or {}).get("frame_profile", {}) or {})
     if frame_profile:
         frame_timing = dict(frame_profile.get("frame_evaluation", {}) or {})
+        instrumentation = dict(frame_profile.get("instrumentation", {}) or {})
+        memory = dict(frame_profile.get("memory", {}) or {})
         lines.extend((
             "",
             "Profile 120 Frames",
@@ -1014,6 +1113,17 @@ def performance_report_text(report):
                 missed=int(frame_timing.get("frames_over_budget", 0) or 0),
             ),
             f"- State restored: {bool(frame_profile.get('state_restored', False))}",
+            (
+                "- Profiler calibration: {samples} sample(s) · estimated overhead "
+                "{overhead:.2f}% · timing tracemalloc {tracing}"
+            ).format(
+                samples=int(instrumentation.get("calibration_samples", 0) or 0),
+                overhead=float(instrumentation.get("estimated_overhead_percent", 0.0) or 0.0),
+                tracing="on" if instrumentation.get("timing_tracemalloc", False) else "off",
+            ),
+            (
+                "- Memory: separate {samples}-frame allocation run; never included in timing"
+            ).format(samples=int(memory.get("samples", 0) or 0)),
             f"- Limit: {frame_profile.get('contract', '')}",
         ))
     lines.extend(
@@ -1218,6 +1328,13 @@ class FBP_OT_Profile120Frames(Operator):
     def poll(cls, context):
         if getattr(context, "scene", None) is None:
             cls.poll_message_set("An active scene is required")
+            return False
+        reason = _profile_runtime_block_reason(context, reject_background=True)
+        if reason:
+            cls.poll_message_set(reason)
+            return False
+        if tracemalloc.is_tracing():
+            cls.poll_message_set("Stop the existing Python allocation trace before profiling")
             return False
         return True
 
