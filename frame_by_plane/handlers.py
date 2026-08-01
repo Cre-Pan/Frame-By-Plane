@@ -1402,8 +1402,11 @@ def register():
         (bpy.app.handlers.render_init, _core.fbp_render_guard_pre, "core"),
         (bpy.app.handlers.render_cancel, _core.fbp_render_guard_complete, "core"),
         (bpy.app.handlers.render_complete, _core.fbp_render_guard_complete, "core"),
-        # Background processes also replace Main when opening a .blend. Their
-        # load_post path restores pure driver namespace functions, then exits.
+        # Background processes also replace Main when opening a .blend. The
+        # pre handler must retire the process-wide generation transaction
+        # before its RNA journal becomes stale; load_post then restores pure
+        # driver namespace functions and exits through the background path.
+        (bpy.app.handlers.load_pre, fbp_load_pre_handler, "handlers"),
         (bpy.app.handlers.load_post, fbp_load_post_handler, "handlers"),
     ]
     if not is_background:
@@ -1415,7 +1418,6 @@ def register():
             ),
             (bpy.app.handlers.undo_pre, fbp_undo_pre_handler, "handlers"),
             (bpy.app.handlers.undo_post, fbp_undo_post_handler, "handlers"),
-            (bpy.app.handlers.load_pre, fbp_load_pre_handler, "handlers"),
         ))
         if redo_pre is not None:
             handler_specs.append((redo_pre, fbp_redo_pre_handler, "handlers"))

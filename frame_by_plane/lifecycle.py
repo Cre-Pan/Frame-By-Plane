@@ -96,7 +96,6 @@ _BACKGROUND_DISABLED_HANDLERS = frozenset({
     ("undo_post", "fbp_undo_post_handler"),
     ("redo_pre", "fbp_redo_pre_handler"),
     ("redo_post", "fbp_redo_post_handler"),
-    ("load_pre", "fbp_load_pre_handler"),
     ("animation_playback_pre", "fbp_effect_playback_pre"),
     ("animation_playback_post", "fbp_effect_playback_post"),
     ("load_post", "_fbp_motion_load_post"),

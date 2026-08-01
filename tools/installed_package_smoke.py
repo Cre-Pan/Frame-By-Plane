@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import os
 from pathlib import Path
 
@@ -43,6 +44,45 @@ def main():
     if not hasattr(bpy.ops.fbp, "generate_multiplane"):
         raise RuntimeError("Frame By Plane operators disappeared after reopen")
 
+    coordinator = importlib.import_module(f"{MODULE}.generation_transaction")
+
+    def exercise_main_replacement(label, callback):
+        owner, refusal = coordinator.acquire_generation(
+            bpy.context,
+            operator_id=f"fbp.package_smoke_{label}",
+            mode=f"Package smoke {label}",
+        )
+        if owner is None:
+            raise RuntimeError(refusal)
+        mesh_name = f"FBP Package Smoke {label} Mesh"
+        object_name = f"FBP Package Smoke {label} Object"
+        mesh = bpy.data.meshes.new(mesh_name)
+        obj = bpy.data.objects.new(object_name, mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        owner.record_datablock(mesh, kind="MESH")
+        owner.record_datablock(obj, kind="OBJECT")
+        operation_result = callback()
+        if "FINISHED" not in operation_result:
+            raise RuntimeError(f"{label} failed: {operation_result}")
+        if coordinator.active_generation_snapshot():
+            raise RuntimeError(f"{label} left an active generation owner")
+        if bpy.data.objects.get(object_name) is not None:
+            raise RuntimeError(f"{label} preserved transaction-owned partial data")
+        return sorted(operation_result)
+
+    open_with_active_owner = exercise_main_replacement(
+        "open",
+        lambda: bpy.ops.wm.open_mainfile(filepath=str(BLEND), load_ui=False),
+    )
+    revert_with_active_owner = exercise_main_replacement(
+        "revert",
+        lambda: bpy.ops.wm.revert_mainfile(),
+    )
+    new_with_active_owner = exercise_main_replacement(
+        "new",
+        lambda: bpy.ops.wm.read_homefile(use_empty=True),
+    )
+
     payload = {
         "blender": bpy.app.version_string,
         "module": MODULE,
@@ -53,6 +93,10 @@ def main():
         "reopen_result": sorted(open_result),
         "object_preserved": True,
         "fbp_marker_preserved": True,
+        "active_owner_file_open": open_with_active_owner,
+        "active_owner_file_revert": revert_with_active_owner,
+        "active_owner_new_file": new_with_active_owner,
+        "orphan_owner_after_main_replacement": False,
         "blend_file": str(BLEND),
     }
     REPORT.parent.mkdir(parents=True, exist_ok=True)
