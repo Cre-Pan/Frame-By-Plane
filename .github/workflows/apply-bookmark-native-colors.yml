@@ -1,0 +1,134 @@
+name: Apply Bookmark native colors
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/apply-bookmark-native-colors.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Patch source and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('frame_by_plane/grease_pencil_scrub.py'); s=p.read_text(encoding='utf-8')
+          a=s.index('_BOOKMARK_COLOR_ITEMS = ('); b=s.index('_BOOKMARK_COLORS = {',a); c=s.index('_BOOKMARK_POINTER_UIDS',b)
+          items='''_BOOKMARK_COLOR_ITEMS = (
+              ("WHITE", "None", "Default bookmark color follows the Timeline theme", "IMAGE_ALPHA", 0),
+              ("RED", "Red", "Red bookmark", "STRIP_COLOR_01", 1),
+              ("ORANGE", "Orange", "Orange bookmark", "STRIP_COLOR_02", 2),
+              ("YELLOW", "Yellow", "Yellow bookmark", "STRIP_COLOR_03", 3),
+              ("GREEN", "Green", "Green bookmark", "STRIP_COLOR_04", 4),
+              ("CYAN", "Cyan", "Cyan bookmark", "STRIP_COLOR_05", 5),
+              ("PURPLE", "Purple", "Purple bookmark", "STRIP_COLOR_06", 6),
+              ("MAGENTA", "Magenta", "Magenta bookmark", "STRIP_COLOR_07", 7),
+              ("GREY", "Grey", "Grey bookmark", "STRIP_COLOR_09", 8),
+          )
+          '''
+          colors='''_BOOKMARK_COLORS = {
+              "WHITE": (0.94, 0.94, 0.94, 0.88),
+              "RED": (0.82, 0.16, 0.15, 0.90),
+              "ORANGE": (0.95, 0.39, 0.08, 0.90),
+              "YELLOW": (0.95, 0.73, 0.12, 0.90),
+              "GREEN": (0.18, 0.67, 0.25, 0.90),
+              "CYAN": (0.10, 0.72, 0.78, 0.90),
+              "PURPLE": (0.48, 0.22, 0.82, 0.90),
+              "MAGENTA": (0.90, 0.17, 0.62, 0.90),
+              "GREY": (0.47, 0.47, 0.47, 0.88),
+          }
+          '''
+          p.write_text(s[:a]+items+colors+s[c:],encoding='utf-8',newline='\n')
+
+          p=Path('frame_by_plane/ui.py'); u=p.read_text(encoding='utf-8')
+          old='''        row = adaptive_row(project_actions, context, align=False, scale=1.05)
+          op = row.operator("fbp.import_folder_multiplane", text="Paste Path", **ui_icon_kwargs("menu.clipboard"))
+          op.from_clipboard = True
+          op = row.operator("fbp.import_folder_multiplane", text="Reuse Last", icon='FILE_REFRESH')
+          op.use_last_folder = True
+          row.operator("fbp.refresh_all_media", text="", icon=ui_icon("action.refresh"))
+          row.operator("fbp.apply_preferences_to_scene", text="", icon='CHECKMARK')
+          '''
+          new='''        row = adaptive_row(project_actions, context, align=False, scale=1.05)
+          op = row.operator("fbp.import_folder_multiplane", text="Reuse Last", icon='FILE_REFRESH')
+          op.use_last_folder = True
+          row.operator("fbp.refresh_all_media", text="", icon=ui_icon("action.refresh"))
+          row.operator("fbp.apply_preferences_to_scene", text="", icon='CHECKMARK')
+          '''
+          assert old in u; u=u.replace(old,new,1)
+          block='''        op = layout.operator(
+              "fbp.import_folder_multiplane",
+              text="Import Folder Path from Clipboard",
+              **ui_icon_kwargs("menu.clipboard"),
+          )
+          op.from_clipboard = True
+          '''
+          assert block in u; u=u.replace(block,'',1)
+          line='        layout.operator("fbp.create_color_plane_from_hex", text="Color Plane from Hex", icon=ui_icon("menu.hex"))\n'
+          assert line in u; u=u.replace(line,'',1)
+          p.write_text(u,encoding='utf-8',newline='\n')
+
+          p=Path('frame_by_plane/tests/blender_lts_suite.py'); t=p.read_text(encoding='utf-8')
+          start=t.find('    assert tuple((item[0], item[3]) for item in scrub._BOOKMARK_COLOR_ITEMS) == (')
+          expected='''    assert tuple((item[0], item[1], item[3]) for item in scrub._BOOKMARK_COLOR_ITEMS) == (
+              ("WHITE", "None", "IMAGE_ALPHA"),
+              ("RED", "Red", "STRIP_COLOR_01"),
+              ("ORANGE", "Orange", "STRIP_COLOR_02"),
+              ("YELLOW", "Yellow", "STRIP_COLOR_03"),
+              ("GREEN", "Green", "STRIP_COLOR_04"),
+              ("CYAN", "Cyan", "STRIP_COLOR_05"),
+              ("PURPLE", "Purple", "STRIP_COLOR_06"),
+              ("MAGENTA", "Magenta", "STRIP_COLOR_07"),
+              ("GREY", "Grey", "STRIP_COLOR_09"),
+          )
+          '''
+          if start >= 0:
+              end=t.find('    )\n',start)+len('    )\n'); t=t[:start]+expected+t[end:]
+          else:
+              anchor='    assert len(scrub._BOOKMARK_COLOR_ITEMS) == 9\n'; assert anchor in t; t=t.replace(anchor,anchor+expected,1)
+          p.write_text(t,encoding='utf-8',newline='\n')
+          PY
+      - name: Validate and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/verify_repository.py
+          python tools/verify_python_symbols.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/pycache" python -m compileall -q frame_by_plane
+          SOURCE_DATE_EPOCH=315532800 python tools/build_release.py --source-dir frame_by_plane --output-dir dist
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-by-plane-7.1.18-native-bookmark-colors
+          path: |
+            dist/frame_by_plane-7.1.18-windows_x64.zip
+            dist/frame_by_plane-7.1.18-windows_arm64.zip
+            dist/frame_by_plane-7.1.18-macos_x64.zip
+            dist/frame_by_plane-7.1.18-macos_arm64.zip
+            dist/frame_by_plane-7.1.18-linux_x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-bookmark-native-colors.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Use native Bookmark colors and simplify import menus"
+          git push origin HEAD:main
