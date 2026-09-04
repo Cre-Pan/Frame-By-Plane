@@ -14,9 +14,8 @@ from .support_policy import (
 
 # Release metadata lives here so the add-on header, preferences and local
 # What's New UI cannot silently drift apart during incremental releases.
-FBP_VERSION = (7, 1, 18)
+FBP_VERSION = (7, 2, 0)
 FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
-FBP_VERSION_FAMILY = ".".join(str(part) for part in FBP_VERSION[:2])
 
 # Final LTS runtime policy. Keep these values aligned with blender_manifest.toml.
 FBP_RELEASE_CHANNEL = "LTS"
@@ -24,7 +23,6 @@ FBP_RELEASE_CHANNEL_LABEL = "7.1 LTS"
 FBP_LTS_TARGET_VERSION = _FBP_LTS_TARGET_VERSION
 FBP_BLENDER_VERSION_MIN = (5, 2, 0)
 FBP_BLENDER_VERSION_MIN_STRING = ".".join(str(part) for part in FBP_BLENDER_VERSION_MIN)
-FBP_BLENDER_VERSION_SERIES = (5, 2)
 FBP_BLENDER_VERSION_SERIES_STRING = "5.2 LTS"
 FBP_BLENDER_VERSION_MAX_EXCLUSIVE = (5, 3, 0)
 FBP_SUPPORTED_PLATFORM_IDS = _FBP_LTS_PLATFORM_IDS
@@ -40,9 +38,6 @@ FBP_LTS_PREVIEW_SCOPE = _FBP_LTS_PREVIEW_SCOPE
 # one-time What's New state and visible version string cannot drift apart.
 FBP_FEEDBACK_RELEASE = FBP_VERSION_STRING
 FBP_PUBLIC_VERSION_STRING = FBP_VERSION_STRING
-FBP_RELEASE_SUMMARY = (
-    "Frame By Plane 7.1 LTS: Grease Pencil, Scrub Slider, masks, effects and a refined UI for Blender 5.2 LTS."
-)
 
 # Principal layer blend modes shared by RNA properties, operators and UI.
 # ``short`` is intentionally compact so every layer can expose a Procreate-style
@@ -347,17 +342,6 @@ STRIP_COLORS_DICT = {
     'COLOR_08': (0.4, 0.2, 0.1, 1.0),
     'COLOR_09': (0.5, 0.5, 0.5, 1.0),
 }
-
-COLOR_ENUM_ITEMS = [
-    ('NONE', "None / Default", "Use the default plane icon without a color tag", fbp_icon('STRIP_COLOR_09'), 0),
-    ('COLOR_01', "Red",     "", fbp_icon('STRIP_COLOR_01'), 1),
-    ('COLOR_02', "Orange",  "", fbp_icon('STRIP_COLOR_02'), 2),
-    ('COLOR_03', "Yellow",  "", fbp_icon('STRIP_COLOR_03'), 3),
-    ('COLOR_04', "Green",   "", fbp_icon('STRIP_COLOR_04'), 4),
-    ('COLOR_05', "Cyan",    "", fbp_icon('STRIP_COLOR_05'), 5),
-    ('COLOR_06', "Purple",  "", fbp_icon('STRIP_COLOR_06'), 6),
-    ('COLOR_07', "Magenta", "", fbp_icon('STRIP_COLOR_07'), 7),
-]
 
 COLLECTION_COLOR_ENUM_ITEMS = [
     ('NONE', "None", "Do not assign a color tag to this collection", fbp_icon('OUTLINER_COLLECTION'), 0),

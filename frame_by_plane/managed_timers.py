@@ -28,7 +28,6 @@ from .runtime_scheduler import (
 # The shared scheduler retires its persistent dispatcher at import time; reset
 # this compatibility facade at the same boundary so no stale bound method or
 # local closure survives until register().
-_PREVIOUS_MANAGED_TIMER_COUNT = len(globals().get("_FBP_REGISTERED_TIMERS", {}) or {})
 _FBP_REGISTERED_TIMERS = {}
 _FBP_TIMER_PERSISTENT = {}
 _FBP_TIMER_RUNNERS = {}

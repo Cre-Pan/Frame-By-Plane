@@ -19,6 +19,14 @@ Suites:
 - `background`: complete register/unregister and in-place reload cycles, scheduler teardown, managed collection/Layer Tree lifecycle, Undo/Redo, native GP effect creation/removal, Generic Mesh ownership, compositor artist-node/link preservation, save/reopen and a tiny Workbench render.
 - `interactive`: 300 View3D sidebar redraws with nested collections and a GP canvas, then update/reload while Preferences is open and automatic What’s New scheduling.
 
+The focused 7.2 gate runs the dual Stroke/Fill, Close Gap, paint/edit Undo,
+compositor opt-in, Object Data Properties and lifecycle regressions as separate
+Blender processes:
+
+```bash
+python tests/run_7_2_feature_gate.py --blender /path/to/blender
+```
+
 ## Result handling
 
 The launcher does **not** trust Blender's process exit code alone. Blender can exit with code `0` even when one or more Python tests failed. The generated JSON report is parsed and the launcher returns failure unless both conditions are true:
@@ -40,7 +48,7 @@ On headless Linux, the interactive suite automatically uses `xvfb-run` when avai
 
 ## Native release gate
 
-The repository-level `Blender 5.2 native release gate` workflow runs the real Blender executable on Linux x64, macOS ARM64 and Windows ARM64/x64. It builds, validates, installs and smoke-tests the package matching each runner. Linux also runs this interactive suite through Xvfb. macOS x64 is excluded because Blender's official 5.2.0 release archive contains no Intel image.
+The repository-level `Blender 5.2 native release gate` workflow runs the real Blender executable on Linux x64, macOS ARM64 and Windows ARM64/x64. It builds, validates, installs and smoke-tests the package matching each runner. Linux also runs this interactive suite through Xvfb and performs the package-only validation for the fifth macOS x64 ZIP, for which Blender's official 5.2.0 checksum list currently contains no Intel runtime image.
 
 See `docs/BLENDER_5_2_RELEASE_GATE.md` for triggers, runner labels, checksum verification and the publication rule.
 

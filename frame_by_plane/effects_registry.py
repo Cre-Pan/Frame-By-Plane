@@ -451,7 +451,7 @@ FBP_EFFECT_REGISTRY = {
             "fbp_felt_render_density": "Render Density", "fbp_felt_viewport_percentage": "Viewport %",
             "fbp_felt_fuzz_length": "Fuzz Length", "fbp_felt_subdivisions": "Subdivisions",
             "fbp_felt_fuzz_radius": "Fuzz Radius", "fbp_felt_curl_amount": "Curl Amount",
-            "fbp_felt_seed": "Base Seed", "fbp_felt_alpha_threshold": "Alpha Threshold",
+            "fbp_felt_seed": "Seed", "fbp_felt_alpha_threshold": "Alpha Threshold",
             "fbp_felt_alpha_resolution": "Alpha Resolution",
         },
         "evolve_property": "fbp_felt_seed", "evolve_amount": 1.0,

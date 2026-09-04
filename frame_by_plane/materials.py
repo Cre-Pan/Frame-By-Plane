@@ -22,11 +22,6 @@ from . import safe_tasks as _safe_tasks
 # Deferred cleanup callbacks are retired on reload. Do not inherit old paths:
 # a stale request could otherwise remove a proxy cache newly claimed by the
 # current project before the next ownership scan.
-_RELOAD_DROPPED_PROXY_CACHE_ROOTS = len(
-    globals().get('_PENDING_PROXY_CACHE_ROOTS', set())
-    if isinstance(globals().get('_PENDING_PROXY_CACHE_ROOTS', set()), set)
-    else ()
-)
 _PENDING_PROXY_CACHE_ROOTS = set()
 # Pending preview writes are generation-local and are discarded on reload.
 _PENDING_GRADIENT_PREVIEW_SYNC = {}

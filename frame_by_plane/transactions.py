@@ -65,7 +65,7 @@ def _retire_previous_transactions_early():
     return {"retired": retired, "failures": failures}
 
 
-_PREVIOUS_TRANSACTIONS_RETIRED = _retire_previous_transactions_early()
+_retire_previous_transactions_early()
 _ACTIVE = {}
 _FAILPOINTS = {}
 _METRICS = {

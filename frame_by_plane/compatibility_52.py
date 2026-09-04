@@ -376,11 +376,6 @@ def assert_supported_runtime():
     return report
 
 
-def assert_blender_52_runtime():
-    """Backward-compatible alias for older internal callers."""
-    return assert_supported_runtime()
-
-
 def register():
     invalidate_blender_52_runtime_contract()
 

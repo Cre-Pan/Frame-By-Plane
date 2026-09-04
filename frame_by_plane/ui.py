@@ -98,7 +98,7 @@ def _fbp_ui_preferences(context):
 
 
 def _fbp_properties_panel_enabled(context):
-    """Return whether the standard 3D View Tool-tab control panels are enabled."""
+    """Return whether the standard Properties/Tool control panels are enabled."""
     prefs = _fbp_ui_preferences(context)
     return bool(getattr(prefs, 'show_control_panel_properties', True)) if prefs else True
 
@@ -3474,7 +3474,7 @@ class FBP_PT_OutputCompositor(Panel):
             empty_state(
                 content,
                 "Compositor Preview Disabled",
-                "Enable the compositor workflow for this .blend file.",
+                "Enable the tools for this .blend file; rendering stays disabled until you opt in.",
                 icon='NODE_COMPOSITING',
             )
             enable = content.row(align=False)
@@ -3482,13 +3482,29 @@ class FBP_PT_OutputCompositor(Panel):
             enable.prop(
                 sc,
                 "fbp_experimental_compositor",
-                text="Enable Compositor",
+                text="Enable Compositor Tools",
                 toggle=True,
                 icon='NODE_COMPOSITING',
             )
             return
 
         section_header(content, "Render", icon='IMAGE_ALPHA')
+        render_opt_in = content.row(align=False)
+        render_opt_in.scale_y = 1.1
+        render_opt_in.prop(
+            sc,
+            "fbp_compositor_render_enabled",
+            text="Use Compositor in Render",
+            toggle=True,
+            icon='NODE_COMPOSITING',
+        )
+        if not bool(getattr(sc, "fbp_compositor_render_enabled", False)):
+            hint_row(
+                content,
+                "Off by default · build and edit nodes without changing rendered output",
+                icon='INFO',
+                disabled=True,
+            )
         row = content.row(align=False)
         row.prop(sc, "fbp_compositor_transparent", text="Transparent", toggle=True, icon='IMAGE_ALPHA')
         row.prop(sc, "fbp_compositor_disable_unmanaged_layers", text="Managed Only", toggle=True, icon='RENDERLAYERS')
@@ -3769,7 +3785,7 @@ class FBP_PT_CompositorNodeSidebar(Panel):
             empty_state(
                 layout,
                 "Compositor Preview Disabled",
-                "Enable the compositor workflow for this .blend file.",
+                "Enable the tools for this .blend file; rendering stays disabled until you opt in.",
                 icon='NODE_COMPOSITING',
             )
             enable = layout.row(align=False)
@@ -3777,11 +3793,19 @@ class FBP_PT_CompositorNodeSidebar(Panel):
             enable.prop(
                 scene,
                 "fbp_experimental_compositor",
-                text="Enable Compositor",
+                text="Enable Compositor Tools",
                 toggle=True,
                 icon='NODE_COMPOSITING',
             )
             return
+        render_opt_in = layout.row(align=False)
+        render_opt_in.prop(
+            scene,
+            "fbp_compositor_render_enabled",
+            text="Use Compositor in Render",
+            toggle=True,
+            icon='NODE_COMPOSITING',
+        )
         items = scene.fbp_compositor_layers
         index = int(getattr(scene, "fbp_compositor_layer_index", -1))
         active = items[index] if 0 <= index < len(items) else None
@@ -3840,38 +3864,38 @@ class FBP_PT_CameraSettings(Panel):
     def draw(self, context):
         layout = configure_layout(self.layout)
         sc = context.scene
+        camera_data = getattr(getattr(context, "object", None), "data", None)
+        if camera_data is None:
+            return
 
         camera = layout.box()
         configure_layout(camera)
         section_header(camera, "Lens and Framing", icon=ui_icon("settings.camera_tab"))
         row = adaptive_row(camera, context)
-        row.prop(sc, "fbp_camera_projection", text="Projection", icon=ui_icon("settings.projection"))
-        if sc.fbp_camera_projection == 'ORTHO':
-            row.prop(sc, "fbp_camera_ortho_scale", text="Scale", icon='VIEW_CAMERA_UNSELECTED')
+        row.prop(camera_data, "type", text="Projection", icon=ui_icon("settings.projection"))
+        if camera_data.type == 'ORTHO':
+            row.prop(camera_data, "ortho_scale", text="Scale", icon='VIEW_CAMERA_UNSELECTED')
         else:
-            row.prop(sc, "fbp_camera_lens", text="Lens", icon='CAMERA_DATA')
+            row.prop(camera_data, "lens", text="Lens", icon='CAMERA_DATA')
 
-        row = adaptive_row(camera, context)
-        row.prop(sc, "fbp_cam_ratio", text="Aspect", icon=ui_icon("settings.camera_frame"))
-        row.prop(sc, "fbp_camera_fit_source_aspect", text="Source Aspect", toggle=True, icon='IMAGE_DATA')
-
-        resolution = adaptive_row(camera, context)
-        resolution.active = sc.fbp_cam_ratio == 'CUSTOM' and not bool(getattr(sc, "fbp_camera_fit_source_aspect", False))
-        resolution.prop(sc.render, "resolution_x", text="X")
-        resolution.prop(sc.render, "resolution_y", text="Y")
+        output = layout.box()
+        section_header(output, "Output Format", icon=ui_icon("settings.camera_frame"))
+        from .camera_output import draw_camera_output
+        draw_camera_output(output, sc, context)
 
         section_gap(layout)
         setup = layout.box()
         configure_layout(setup)
         section_header(setup, "Clipping and Generation", icon="TOOL_SETTINGS")
         row = adaptive_row(setup, context)
-        row.prop(sc, "fbp_camera_clip_start", text="Clip Start")
-        row.prop(sc, "fbp_camera_clip_end", text="Clip End")
+        row.prop(camera_data, "clip_start", text="Clip Start")
+        row.prop(camera_data, "clip_end", text="Clip End")
 
         row = adaptive_row(setup, context)
         row.prop(sc, "fbp_gen_camera", text="Create Camera", toggle=True, icon='CAMERA_DATA')
         row.prop(sc, "fbp_cam_pivot", text="Cursor Pivot", toggle=True, icon='PIVOT_CURSOR')
         setup.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        setup.prop(sc, "fbp_camera_fit_source_aspect", text="Use Source Aspect on Import", icon='IMAGE_DATA')
 
 
 def fbp_scene_has_cached_rigs(context):
@@ -4004,6 +4028,21 @@ def _fbp_draw_tool_sequence_or_hint(panel, context):
         "Timing, frames, appearance and transform controls will appear here.",
         icon="RESTRICT_SELECT_OFF",
     )
+
+
+def _fbp_image_properties_rig(context):
+    """Resolve only the visible rig/plane pair for Object Data Properties."""
+    active = getattr(context, "object", None) if context is not None else None
+    if active is None:
+        return None
+    rig = _fbp_active_plane_context(context)
+    if rig is None:
+        return None
+    try:
+        plane = getattr(rig, "fbp_plane_target", None)
+        return rig if active == rig or active == plane else None
+    except FBP_DATA_ERRORS:
+        return None
 
 
 def _fbp_active_layer_tree_row_type(context, list_mode='ALL'):
@@ -5229,7 +5268,6 @@ class FBP_PT_ToolLayerStack(FBP_PT_LayerStack):
     def draw(self, context):
         _fbp_draw_tool_layer_stack_or_create(self, context)
 
-
 class FBP_PT_ToolGreasePencilStack(FBP_PT_GreasePencilStack):
     """Grease Pencil panel shown in the standard 3D View Tool tab."""
 
@@ -5252,6 +5290,7 @@ class FBP_PT_ToolGreasePencilStack(FBP_PT_GreasePencilStack):
         _fbp_draw_tool_gp_stack_or_hint(self, context)
 
 
+
 class FBP_PT_ToolSequence(FBP_PT_Sequence):
     """Selected-layer settings shown in the standard 3D View Tool tab."""
 
@@ -5271,6 +5310,33 @@ class FBP_PT_ToolSequence(FBP_PT_Sequence):
 
     def draw(self, context):
         _fbp_draw_tool_sequence_or_hint(self, context)
+
+
+class FBP_PT_ImagePlaneData(Panel):
+    """Selected Frame By Plane layer in Blender's Object Data Properties."""
+
+    bl_label = "Frame By Plane Image"
+    bl_description = "Edit the selected Frame By Plane image plane like native image data"
+    bl_idname = "FBP_PT_image_plane_data"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'data'
+    bl_order = 0
+
+    @classmethod
+    def poll(cls, context):
+        return _fbp_image_properties_rig(context) is not None
+
+    def draw_header(self, _context):
+        self.layout.label(
+            text="",
+            **ui_label_icon_kwargs("menu.image_plane", fallback="IMAGE_DATA"),
+        )
+
+    def draw(self, context):
+        # Reuse the canonical Layer Settings implementation so the Properties
+        # and 3D View versions cannot drift apart.
+        FBP_PT_Sequence.draw(self, context)
 
 
 class FBP_PT_ModifierShortcuts(Panel):
@@ -5312,24 +5378,19 @@ class FBP_PT_ModifierShortcuts(Panel):
 # ###ICON Menu Shift+A, Functions: Color Plane, Gradient, Holdout, Image Plane, Multiplane, Clipboard.
 class FBP_MT_FrameByPlaneMore(Menu):
     bl_idname = "FBP_MT_frame_by_plane_more"
-    bl_label = "More"
-    bl_description = "Secondary import workflows and reusable folder sources"
+    bl_label = "More..."
+    bl_description = "Additional Frame By Plane creation and import workflows"
 
     def draw(self, context):
         layout = configure_layout(self.layout)
         layout.operator_context = 'INVOKE_DEFAULT'
 
         layout.operator(
-            "fbp.import_folder_multiplane",
-            text="Import a Folder",
-            icon='FOLDER_REDIRECT',
+            "fbp.create_color_plane_from_hex",
+            text="Color Plane from Hex",
+            icon=ui_icon("menu.hex"),
         )
-        op = layout.operator(
-            "fbp.import_folder_multiplane",
-            text="Import Folder Path from Clipboard",
-            **ui_icon_kwargs("menu.clipboard"),
-        )
-        op.from_clipboard = True
+        layout.separator(factor=0.45)
         op = layout.operator("fbp.import_folder_multiplane", text="Reimport Last Folder", icon='FILE_REFRESH')
         op.use_last_folder = True
 
@@ -5395,10 +5456,9 @@ class FBP_MT_FrameByPlaneAdd(Menu):
             text="Paste Image as Plane",
             **ui_icon_kwargs("menu.clipboard"),
         )
-        layout.operator("fbp.create_color_plane_from_hex", text="Color Plane from Hex", icon=ui_icon("menu.hex"))
 
         layout.separator(factor=0.45)
-        layout.menu(FBP_MT_FrameByPlaneMore.bl_idname, text="More Import Workflows", icon="COLLAPSEMENU")
+        layout.menu(FBP_MT_FrameByPlaneMore.bl_idname, text="More...", icon="COLLAPSEMENU")
 
 
 def _fbp_context_selected_gp_canvases(context):
@@ -6469,6 +6529,7 @@ ui_classes = (
     FBP_PT_ToolLayerStack,
     FBP_PT_ToolGreasePencilStack,
     FBP_PT_ToolSequence,
+    FBP_PT_ImagePlaneData,
     FBP_PT_ModifierShortcuts,
     FBP_MT_FrameByPlaneAdd,
     FBP_MT_ObjectMaskContext,
@@ -6477,16 +6538,6 @@ ui_classes = (
     FBP_MT_ObjectLayerTags,
     FBP_MT_ObjectContext,
     FBP_MT_ObjectHoldout,
-)
-
-
-_PROPERTIES_ORDER_CLASSES = (
-    FBP_PT_OutputAnchor,
-    FBP_PT_OutputRender,
-    FBP_PT_ProjectDoctor,
-    FBP_PT_PerformanceDashboard,
-    FBP_PT_OutputCompositor,
-    FBP_PT_ModifierShortcuts,
 )
 
 
@@ -6519,6 +6570,7 @@ def _all_properties_order_classes():
     projector = external.get('FBP_PT_ProjectorLight')
     if projector is not None:
         ordered.append(projector)
+    ordered.append(FBP_PT_ImagePlaneData)
     ordered.append(FBP_PT_ModifierShortcuts)
     return tuple(dict.fromkeys(ordered))
 

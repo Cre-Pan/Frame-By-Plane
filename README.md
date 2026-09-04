@@ -6,16 +6,17 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
-## What's new in 7.1.18 LTS
+## What's new in the 7.2.0 pre-release
 
-- Fixed persistent ownership for all 27 native Grease Pencil effect backends on Blender 5.2.
-- Prevented unmanaged duplicate Shader Effects and Grease Pencil modifiers.
-- Restored reliable add, remove, reorder, reset and duplicate-repair actions.
-- Added **Expand All** and **Collapse All** controls for the Grease Pencil Effect Stack.
-- Fixed Compositor Safe Repair snapshots for Blender 5.2 color, vector and rotation socket values.
-- Passed native Blender 5.2.0 background tests and a 300-redraw interactive UI stress test.
+- Separate Grease Pencil Stroke and Fill colors in Draw, Vertex Paint and Edit modes, including Both mode and mixed-selection swatches.
+- `X` swaps Stroke/Fill, `Shift+X` samples Stroke, and Draw-mode `G` toggles Close Gap without replacing Edit-mode Grab.
+- Dedicated Undo steps keep color changes, newly drawn strokes and Close Gap in Blender's expected history order.
+- Camera aspect shapes, SD–8K/Custom resolution, linked Width/Height pixels, orientation swap and saved format presets.
+- Explicit compositor render opt-in: managed nodes can be edited without silently changing F12 output.
+- Cleaner Object Data and Tool panels, selectable image/GP effect lists, grouped icon menus and synchronized time editors.
+- All 7.1.19 import, Scrub Bar, bookmark, Generic Mesh, performance and Blender 5.2 stability fixes remain included.
 
-See the complete [7.1.18 release notes](release-notes/7.1.18.md).
+See the complete [7.2.0 pre-release notes](release-notes/7.2.0.md).
 
 ## Core features
 
@@ -34,7 +35,7 @@ See the complete [7.1.18 release notes](release-notes/7.1.18.md).
 ### Grease Pencil, masks and effects
 
 - Create Drawing Planes linked to image layers or use independent Grease Pencil canvases.
-- Apply native Blender Grease Pencil modifiers and Shader Effects from one compact stack.
+- Apply native Blender Grease Pencil modifiers and Shader Effects from a reorderable list and grouped icon menu.
 - Build shape, color, luminance, channel, gradient, noise, imported and Grease Pencil masks.
 - Use non-destructive distortion, blur, color, light, stylization and compositing effects.
 
@@ -47,7 +48,7 @@ See the complete [7.1.18 release notes](release-notes/7.1.18.md).
 ## Requirements
 
 - **Blender 5.2.x LTS**
-- Windows x64 or ARM64, macOS Apple Silicon, or Linux x64
+- Windows x64 or ARM64, macOS Intel or Apple Silicon, or Linux x64
 
 ## Install Frame By Plane
 
@@ -59,15 +60,16 @@ See the complete [7.1.18 release notes](release-notes/7.1.18.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-7.1.18-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-7.1.18-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-7.1.18-macos_arm64.zip` |
-| 64-bit Linux | `frame_by_plane-7.1.18-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-7.2.0-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-7.2.0-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-7.2.0-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-7.2.0-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-7.2.0-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
 
-Blender's official 5.2.0 release archive and checksum list contain no macOS Intel image, so Frame By Plane 7.1.18 does not advertise or publish a `macos_x64` package.
+The `macos_x64` package is provided for Intel Blender 5.2 installations. Because Blender's official 5.2.0 release checksum list currently contains only the Apple Silicon image, this package receives structural validation rather than an official-distribution runtime smoke test.
 
 For a clean update or architecture details, read the [installation guide](docs/INSTALLATION.md).
 

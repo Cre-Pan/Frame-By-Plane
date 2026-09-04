@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -13,9 +14,13 @@ ADDON = ROOT / "frame_by_plane"
 MANIFEST = ADDON / "blender_manifest.toml"
 CONSTANTS = ADDON / "constants.py"
 SUPPORT_POLICY = ADDON / "support_policy.py"
+PACKAGE_TOOL = ROOT / "tools" / "package_release.py"
+PUBLISHER = ROOT / "tools" / "publish_blender_extensions.ps1"
+RELEASE_GATE = ROOT / ".github" / "workflows" / "blender-5-2-release-gate.yml"
 EXPECTED_PLATFORMS = {
     "windows-x64",
     "windows-arm64",
+    "macos-x64",
     "macos-arm64",
     "linux-x64",
 }
@@ -75,16 +80,33 @@ def main() -> None:
     policy_version = read_string_assignment(SUPPORT_POLICY, "FBP_LTS_TARGET_VERSION")
     if manifest_version != policy_version:
         fail(f"Version mismatch: manifest={manifest_version!r}, support_policy={policy_version!r}")
+    package_version = read_string_assignment(PACKAGE_TOOL, "VERSION")
+    if manifest_version != package_version:
+        fail(f"Version mismatch: manifest={manifest_version!r}, package_release={package_version!r}")
+
+    publisher_text = PUBLISHER.read_text(encoding="utf-8")
+    publisher_match = re.search(
+        r'\[string\]\$Version\s*=\s*"(?P<version>\d+\.\d+\.\d+)"',
+        publisher_text,
+    )
+    if not publisher_match or publisher_match.group("version") != manifest_version:
+        fail("Blender Extensions publisher default version does not match the manifest")
 
     expected_release_files = [
         ADDON / f"RELEASE_NOTES_{manifest_version}.md",
         ROOT / "release-notes" / f"{manifest_version}.md",
+        ROOT / "release-notes" / f"{manifest_version}-blender-extensions.md",
     ]
     missing_release_files = [
         str(path.relative_to(ROOT)) for path in expected_release_files if not path.is_file()
     ]
     if missing_release_files:
         fail("Missing current release notes: " + ", ".join(missing_release_files))
+    extension_notes = expected_release_files[-1].read_bytes().decode("utf-8-sig").strip()
+    # Match PowerShell/.NET String.Length, including supplementary characters.
+    notes_length = len(extension_notes.encode("utf-16-le")) // 2
+    if not 0 < notes_length <= 1024:
+        fail(f"Blender Extensions release notes must fit the publisher's 1024-character limit; found {notes_length}")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     if manifest_version not in readme or "Blender 5.2" not in readme:
         fail("README does not advertise the current release and Blender 5.2 support")
@@ -92,6 +114,15 @@ def main() -> None:
     platforms = set(data.get("platforms", []))
     if platforms != EXPECTED_PLATFORMS:
         fail(f"Unexpected platform set: {sorted(platforms)}")
+
+    release_gate = RELEASE_GATE.read_text(encoding="utf-8")
+    missing_gate_packages = [
+        f"frame_by_plane-{manifest_version}-{platform.replace('-', '_')}.zip"
+        for platform in sorted(platforms)
+        if f"frame_by_plane-{manifest_version}-{platform.replace('-', '_')}.zip" not in release_gate
+    ]
+    if missing_gate_packages:
+        fail("Release gate is missing current packages: " + ", ".join(missing_gate_packages))
 
     wheels = data.get("wheels", [])
     if not wheels:

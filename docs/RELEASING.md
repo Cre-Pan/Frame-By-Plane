@@ -16,6 +16,9 @@ Use an official Blender **5.2.x LTS** executable:
 python frame_by_plane/tests/run_blender_lts.py \
   --blender /path/to/blender \
   --all
+
+python frame_by_plane/tests/run_7_2_feature_gate.py \
+  --blender /path/to/blender
 ```
 
 The release is not ready unless the generated combined report says `"passed": true`. Preserve the report and logs for the release audit.
@@ -34,6 +37,7 @@ Expected packages:
 ```text
 frame_by_plane-X.Y.Z-windows_x64.zip
 frame_by_plane-X.Y.Z-windows_arm64.zip
+frame_by_plane-X.Y.Z-macos_x64.zip
 frame_by_plane-X.Y.Z-macos_arm64.zip
 frame_by_plane-X.Y.Z-linux_x64.zip
 ```
@@ -53,9 +57,9 @@ Both scripts normalize ZIP metadata after Blender's build so identical source pr
 
 1. Commit source and documentation to a release branch.
 2. Open a pull request and let repository validation complete.
-3. Create a semantic tag such as `v7.1.18` after the release commit is merged.
-4. Set the release title to `Frame By Plane 7.1.18 LTS`.
-5. Paste `release-notes/7.1.18.md` into the GitHub Release.
+3. Create the semantic tag `v7.2.0` on the tested release commit.
+4. Set the release title to `Frame By Plane 7.2.0 Pre-release` and enable GitHub's pre-release flag.
+5. Paste `release-notes/7.2.0.md` into the GitHub Release.
 6. Attach all platform-specific ZIP files and `SHA256SUMS.txt`.
 7. Verify the latest-release link, README asset names, repository description, topics and Wiki navigation.
 8. Publish the release.
@@ -79,11 +83,11 @@ finally {
 }
 ```
 
-Run a validation-only pass first. The script locates the four platform-specific ZIPs, verifies their CRC data and generated manifests, validates the 1024-character release-note limit, and sends no request under `-WhatIf`. When present, `release-notes/X.Y.Z-blender-extensions.md` is selected automatically so the complete GitHub notes can remain unchanged; otherwise the script uses `release-notes/X.Y.Z.md`:
+Run a validation-only pass first. The script locates the five platform-specific ZIPs, verifies their CRC data and generated manifests, validates the 1024-character release-note limit, and sends no request under `-WhatIf`. When present, `release-notes/X.Y.Z-blender-extensions.md` is selected automatically so the complete GitHub notes can remain unchanged; otherwise the script uses `release-notes/X.Y.Z.md`:
 
 ```powershell
 .\tools\publish_blender_extensions.ps1 `
-    -Version 7.1.18 `
+    -Version 7.2.0 `
     -PackageDirectory .\dist `
     -WhatIf
 ```
@@ -92,11 +96,11 @@ Perform the real upload with the same inputs:
 
 ```powershell
 .\tools\publish_blender_extensions.ps1 `
-    -Version 7.1.18 `
+    -Version 7.2.0 `
     -PackageDirectory .\dist
 ```
 
-The command always requires typing `UPLOAD 7.1.18` before it sends the first request. It uses only the official `https://extensions.blender.org/api/v1/extensions/frame_by_plane/versions/upload/` endpoint, never writes or prints the token, requires HTTP 201 plus the documented JSON fields, and stops with a clear error if any platform upload is rejected. Remove the process variable afterwards:
+The command always requires typing `UPLOAD 7.2.0` before it sends the first request. It uses only the official `https://extensions.blender.org/api/v1/extensions/frame_by_plane/versions/upload/` endpoint, never writes or prints the token, requires HTTP 201 plus the JSON object documented by the OpenAPI schema, validates package identity fields when the server returns them, and stops with a clear error if any platform upload is rejected. Remove the process variable afterwards:
 
 ```powershell
 Remove-Item Env:BLENDER_EXTENSIONS_TOKEN

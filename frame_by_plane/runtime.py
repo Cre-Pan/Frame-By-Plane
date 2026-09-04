@@ -196,14 +196,6 @@ def fbp_object_name(obj) -> str:
         return ""
 
 
-def fbp_operator_finished(result) -> bool:
-    """Return whether a Blender operator result contains ``FINISHED``."""
-    try:
-        return "FINISHED" in result
-    except TypeError:
-        return False
-
-
 _DATA_UNAVAILABLE = object()
 
 
@@ -501,9 +493,7 @@ def _retire_reloaded_redraw_timer_early(callback):
     return False
 
 
-_PREVIOUS_REDRAW_TIMER_RETIRED_EARLY = _retire_reloaded_redraw_timer_early(
-    _PREVIOUS_REDRAW_TIMER
-)
+_retire_reloaded_redraw_timer_early(_PREVIOUS_REDRAW_TIMER)
 
 
 

@@ -1396,23 +1396,6 @@ def iter_fbp_rigs_in_collection(collection, recursive=True):
         return
 
 
-def get_child_fbp_collections(collection):
-    if not collection:
-        return []
-    try:
-        context = getattr(bpy, "context", None)
-        scene = getattr(context, "scene", None) if context else None
-        tree = fbp_build_canonical_collection_tree(scene)
-        key = int(collection.as_pointer())
-        children = [
-            child for child in tree.get("children", {}).get(key, ())
-            if collection_has_fbp_content(child, True)
-        ]
-        return sort_collections_for_layer_view(context, children)
-    except FBP_DATA_ERRORS:
-        return []
-
-
 def get_layer_item_for_rig(context, rig):
     if not rig:
         return None
@@ -1593,11 +1576,6 @@ def fbp_cache_procedural_preview_on_item(item, mat, fallback_kind='SOLID'):
             pass
 
 
-def fbp_mask_icon(is_on):
-    """Use the requested UV clip icons for the holdout/mask state."""
-    return fbp_icon("CLIPUV_DEHLT") if is_on else 'CLIPUV_HLT'
-
-
 def fbp_select_rig_icon(is_locked, is_selected=False):
     """Checkbox icon for rig selection. Locked layers use Blender's used-layer icon."""
     if is_locked:
@@ -1614,32 +1592,6 @@ def fbp_select_plane_icon(rig, context):
         return fbp_icon("RESTRICT_SELECT_ON") if plane.hide_select else 'RESTRICT_SELECT_OFF'
     except ReferenceError:
         return fbp_icon("RESTRICT_SELECT_ON")
-
-
-def fbp_collection_select_icon(collection, context):
-    """Checkbox icon for collection rig selection."""
-    rigs, gp_canvases = _collection_ui_members(collection)
-    members = [
-        member for member in tuple(rigs) + tuple(gp_canvases)
-        if object_in_view_layer(member, context)
-    ]
-    if members and all(bool(getattr(member, "hide_select", False)) for member in members):
-        return fbp_icon("LAYER_USED")
-    if members and all(bool(member.select_get()) for member in members):
-        return fbp_icon("CHECKBOX_HLT")
-    return fbp_icon("CHECKBOX_DEHLT")
-
-
-def fbp_collection_plane_icon(collection, context):
-    """Icon for linked image/color plane selectability inside a collection."""
-    planes = []
-    for rig in _collection_rigs_for_ui(collection):
-        plane = getattr(rig, 'fbp_plane_target', None)
-        if plane and object_in_view_layer(plane, context):
-            planes.append(plane)
-    if planes and all(getattr(p, 'hide_select', True) for p in planes):
-        return fbp_icon("RESTRICT_SELECT_ON")
-    return fbp_icon("RESTRICT_SELECT_OFF")
 
 
 def _fbp_normalize_layer_color_tag(color_tag):
@@ -1734,24 +1686,6 @@ def fbp_set_ui_units_x(ui_layout, units):
         ui_layout.ui_units_x = units
     except FBP_DATA_IO_ERRORS:
         pass
-
-
-def fbp_collection_rows_are_disabled(collection, context):
-    """Return whether collection text/icon should look inactive while controls stay usable."""
-    if collection_is_hidden_in_view_layer(context, collection):
-        return True
-    rigs, gp_canvases = _collection_ui_members(collection)
-    members = [
-        (member, False) for member in rigs if object_in_view_layer(member, context)
-    ]
-    members.extend(
-        (member, True) for member in gp_canvases if object_in_view_layer(member, context)
-    )
-    if members and all(bool(getattr(member, "hide_select", False)) for member, _is_gp in members):
-        return True
-    if members and all(not _collection_member_visible(member, is_gp=is_gp) for member, is_gp in members):
-        return True
-    return False
 
 
 def collect_project_image_paths():
@@ -2832,22 +2766,6 @@ def sort_rigs_by_depth_for_layer_view(context, rigs):
     return sort_rigs_for_layer_view(context, rigs)
 
 
-def sort_collections_for_layer_view(context, collections):
-    if getattr(context.scene, 'fbp_sort_layers_alpha', False):
-        return sorted(collections, key=lambda c: natural_sort_key(c.name))
-    depth_ctx = fbp_make_depth_context_cache(context)
-    def _collection_depth(coll):
-        rigs, gp_canvases = _collection_ui_members(coll)
-        members = tuple(rigs) + tuple(gp_canvases)
-        if not members:
-            return 0.0
-        return sum(
-            fbp_layer_depth_value_from_cache(member, depth_ctx)
-            for member in members
-        ) / max(1, len(members))
-    return sorted(collections, key=lambda c: (_collection_depth(c), natural_sort_key(c.name)))
-
-
 # ── LAYER UI BOOLEAN HELPERS ─────────────────────────────────────────────────
 
 def _safe_layer_obj(layer_item):
@@ -3059,15 +2977,6 @@ def _collection_gp_canvases_for_ui(collection):
 def _collection_ui_members(collection):
     """Return mesh rigs and GP Drawing Planes represented by one folder row."""
     return _collection_rigs_for_ui(collection), _collection_gp_canvases_for_ui(collection)
-
-
-def _collection_member_visible(member, *, is_gp=False):
-    try:
-        if is_gp:
-            return bool(getattr(member, "fbp_gp_canvas_visible", True))
-        return bool(getattr(member, "fbp_is_visible", True))
-    except FBP_DATA_ERRORS:
-        return False
 
 
 def get_collection_selected(self):

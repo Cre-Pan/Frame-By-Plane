@@ -90,7 +90,7 @@ def _retire_background_monitors_on_reload():
     return retired
 
 
-_RETIRED_BACKGROUND_MONITORS = _retire_background_monitors_on_reload()
+_retire_background_monitors_on_reload()
 _FBP_BG_RENDER_MODAL_TIMERS = []
 _FBP_BG_RENDER_APP_WATCHDOGS = set()
 _FBP_ACTIVE_BG_RENDER_OPERATOR = None

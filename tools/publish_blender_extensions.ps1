@@ -10,17 +10,17 @@ explicit typed confirmation before sending any request. Use -WhatIf for a full
 local validation without an upload.
 
 .EXAMPLE
-.\tools\publish_blender_extensions.ps1 -Version 7.1.18 -PackageDirectory .\dist -WhatIf
+.\tools\publish_blender_extensions.ps1 -Version 7.2.0 -PackageDirectory .\dist -WhatIf
 
 .EXAMPLE
-.\tools\publish_blender_extensions.ps1 -Version 7.1.18 -PackageDirectory .\dist
+.\tools\publish_blender_extensions.ps1 -Version 7.2.0 -PackageDirectory .\dist
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "Medium")]
 param(
     [ValidatePattern("^\d+\.\d+\.\d+$")]
-    [string]$Version = "7.1.18",
+    [string]$Version = "7.2.0",
 
-    [ValidateSet("all", "linux_x64", "macos_arm64", "windows_arm64", "windows_x64")]
+    [ValidateSet("all", "linux_x64", "macos_arm64", "macos_x64", "windows_arm64", "windows_x64")]
     [string]$Platform = "all",
 
     [string]$PackageDirectory,
@@ -49,6 +49,7 @@ $ApiOrigin = [Uri]"https://extensions.blender.org"
 $ExpectedPlatforms = @(
     "linux_x64",
     "macos_arm64",
+    "macos_x64",
     "windows_arm64",
     "windows_x64"
 )
@@ -386,11 +387,7 @@ $packages = @(
     }
 )
 
-$token = [Environment]::GetEnvironmentVariable("BLENDER_EXTENSIONS_TOKEN", "Process")
-if ([string]::IsNullOrWhiteSpace($token)) {
-    throw "BLENDER_EXTENSIONS_TOKEN is not set in the current process environment."
-}
-
+$token = $null
 try {
     $escapedExtensionId = [Uri]::EscapeDataString($ExtensionId)
     $uploadUri = [Uri]::new($ApiOrigin, "/api/v1/extensions/$escapedExtensionId/versions/upload/")
@@ -410,6 +407,11 @@ try {
     if ($IsValidationOnly) {
         Write-Host "WhatIf: validation completed; no API request was sent."
         return
+    }
+
+    $token = [Environment]::GetEnvironmentVariable("BLENDER_EXTENSIONS_TOKEN", "Process")
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "BLENDER_EXTENSIONS_TOKEN is not set in the current process environment."
     }
 
     $requiredConfirmation = "UPLOAD $Version"
@@ -449,20 +451,29 @@ try {
         catch {
             throw "Upload returned HTTP 201 for '$($package.Name)' but the response was not valid JSON."
         }
+        if ($null -eq $responseJson -or $responseJson -is [Array] -or $responseJson -is [string]) {
+            throw "Upload returned HTTP 201 for '$($package.Name)' but the response was not a JSON object."
+        }
 
-        $messageProperty = $responseJson.PSObject.Properties["message"]
         $extensionProperty = $responseJson.PSObject.Properties["extension_id"]
         $fileProperty = $responseJson.PSObject.Properties["version_file"]
-        if (
-            $null -eq $messageProperty -or
-            $null -eq $extensionProperty -or
-            $null -eq $fileProperty -or
-            [string]$messageProperty.Value -cne "Extension version uploaded successfully!" -or
-            [string]$extensionProperty.Value -cne $ExtensionId -or
-            [string]$fileProperty.Value -cne $package.Name
-        ) {
+        $extensionMismatch = (
+            $null -ne $extensionProperty -and
+            [string]$extensionProperty.Value -cne $ExtensionId
+        )
+        $returnedFileName = if ($null -ne $fileProperty) {
+            [IO.Path]::GetFileName([string]$fileProperty.Value)
+        }
+        else {
+            ""
+        }
+        $fileMismatch = (
+            $null -ne $fileProperty -and
+            $returnedFileName -cne $package.Name
+        )
+        if ($extensionMismatch -or $fileMismatch) {
             $safeResponse = Format-ApiError -Body $result.Body -Secret $token
-            throw "Upload returned HTTP 201 but an unexpected response for '$($package.Name)': $safeResponse"
+            throw "Upload returned HTTP 201 but mismatched package identity for '$($package.Name)': $safeResponse"
         }
 
         $uploaded.Add($package.Name)

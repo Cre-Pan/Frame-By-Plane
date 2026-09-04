@@ -31,22 +31,22 @@ jobs:
             runner: ubuntu-24.04
             python_arch: x64
             asset: blender-5.2.0-linux-x64.tar.xz
-            package: frame_by_plane-7.1.18-linux_x64.zip
+            package: frame_by_plane-7.2.0-linux_x64.zip
           - platform: macos_arm64
             runner: macos-15
             python_arch: arm64
             asset: blender-5.2.0-macos-arm64.dmg
-            package: frame_by_plane-7.1.18-macos_arm64.zip
+            package: frame_by_plane-7.2.0-macos_arm64.zip
           - platform: windows_arm64
             runner: windows-11-arm
             python_arch: arm64
             asset: blender-5.2.0-windows-arm64.zip
-            package: frame_by_plane-7.1.18-windows_arm64.zip
+            package: frame_by_plane-7.2.0-windows_arm64.zip
           - platform: windows_x64
             runner: windows-2025
             python_arch: x64
             asset: blender-5.2.0-windows-x64.zip
-            package: frame_by_plane-7.1.18-windows_x64.zip
+            package: frame_by_plane-7.2.0-windows_x64.zip
     env:
       BLENDER_VERSION: "5.2.0"
       BLENDER_ASSET: ${{ matrix.asset }}
@@ -161,6 +161,13 @@ jobs:
           "$BLENDER_BIN" --background --factory-startup --command extension validate
           "dist/$BLENDER_PACKAGE"
 
+      - name: Validate macOS Intel package structure
+        if: matrix.platform == 'linux_x64'
+        shell: bash
+        run: >-
+          "$BLENDER_BIN" --background --factory-startup --command extension validate
+          "dist/frame_by_plane-7.2.0-macos_x64.zip"
+
       - name: Validate native package on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -188,6 +195,18 @@ jobs:
           python frame_by_plane\tests\run_blender_lts.py --blender $env:BLENDER_BIN --output $output --background-timeout 1200
           if ($LASTEXITCODE -ne 0) { throw "Native background suite failed: $LASTEXITCODE" }
 
+      - name: Run Frame By Plane 7.2 feature gate
+        if: runner.os != 'Windows'
+        shell: bash
+        run: python frame_by_plane/tests/run_7_2_feature_gate.py --blender "$BLENDER_BIN"
+
+      - name: Run Frame By Plane 7.2 feature gate on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python frame_by_plane\tests\run_7_2_feature_gate.py --blender $env:BLENDER_BIN
+          if ($LASTEXITCODE -ne 0) { throw "Frame By Plane 7.2 feature gate failed: $LASTEXITCODE" }
+
       - name: Run Linux interactive regression suite
         if: matrix.platform == 'linux_x64'
         shell: bash
@@ -197,6 +216,24 @@ jobs:
             --interactive \
             --output "$FBP_CI_RESULTS/interactive.json" \
             --interactive-timeout 1200
+
+      - name: Check scene-index recovery and scheduler reentrancy
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export FBP_PRERELEASE_REPORT="$FBP_CI_RESULTS/prerelease-runtime.json"
+          export FBP_PRERELEASE_STRICT=1 FBP_PRERELEASE_BENCHMARK=0
+          "$BLENDER_BIN" --background --factory-startup --python-exit-code 1 --python tools/audit_prerelease_runtime.py
+
+      - name: Check scene-index recovery and scheduler reentrancy on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:FBP_PRERELEASE_REPORT = Join-Path $env:FBP_CI_RESULTS "prerelease-runtime.json"
+          $env:FBP_PRERELEASE_STRICT = "1"
+          $env:FBP_PRERELEASE_BENCHMARK = "0"
+          & $env:BLENDER_BIN --background --factory-startup --python-exit-code 1 --python tools/audit_prerelease_runtime.py
+          if ($LASTEXITCODE -ne 0) { throw "Pre-release runtime checks failed: $LASTEXITCODE" }
 
       - name: Install and smoke-test native package
         if: runner.os != 'Windows'
@@ -212,7 +249,13 @@ jobs:
             "${GITHUB_WORKSPACE}/dist/$BLENDER_PACKAGE"
           export FBP_PACKAGE_SMOKE_REPORT="$FBP_CI_RESULTS/installed-smoke.json"
           export FBP_PACKAGE_SMOKE_BLEND="$FBP_CI_RESULTS/installed-smoke.blend"
-          "$BLENDER_BIN" --background --python tools/installed_package_smoke.py
+          "$BLENDER_BIN" --background --python-exit-code 1 --python tools/installed_package_smoke.py
+          export FBP_INSTALLED_CONTRACT_REPORT="$FBP_CI_RESULTS/installed-contract.json"
+          "$BLENDER_BIN" --background --python-exit-code 1 --python tools/installed_release_contract.py
+          python frame_by_plane/tests/run_7_2_feature_gate.py \
+            --blender "$BLENDER_BIN" \
+            --installed \
+            --package bl_ext.fbp_audit.frame_by_plane
 
       - name: Install and smoke-test native package on Windows
         if: runner.os == 'Windows'
@@ -228,8 +271,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Extension installation failed: $LASTEXITCODE" }
           $env:FBP_PACKAGE_SMOKE_REPORT = Join-Path $env:FBP_CI_RESULTS "installed-smoke.json"
           $env:FBP_PACKAGE_SMOKE_BLEND = Join-Path $env:FBP_CI_RESULTS "installed-smoke.blend"
-          & $env:BLENDER_BIN --background --python tools\installed_package_smoke.py
+          & $env:BLENDER_BIN --background --python-exit-code 1 --python tools\installed_package_smoke.py
           if ($LASTEXITCODE -ne 0) { throw "Installed package smoke failed: $LASTEXITCODE" }
+          $env:FBP_INSTALLED_CONTRACT_REPORT = Join-Path $env:FBP_CI_RESULTS "installed-contract.json"
+          & $env:BLENDER_BIN --background --python-exit-code 1 --python tools/installed_release_contract.py
+          if ($LASTEXITCODE -ne 0) { throw "Installed release contract failed: $LASTEXITCODE" }
+          python frame_by_plane\tests\run_7_2_feature_gate.py --blender $env:BLENDER_BIN --installed --package bl_ext.fbp_audit.frame_by_plane
+          if ($LASTEXITCODE -ne 0) { throw "Installed Frame By Plane 7.2 feature gate failed: $LASTEXITCODE" }
 
       - name: Upload native evidence
         if: always()
@@ -241,3 +289,12 @@ jobs:
           path: |
             ${{ env.FBP_CI_RESULTS }}/**
             dist/${{ matrix.package }}
+
+      - name: Upload macOS Intel package-only evidence
+        if: matrix.platform == 'linux_x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-5.2-macos_x64-package-only
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/frame_by_plane-7.2.0-macos_x64.zip

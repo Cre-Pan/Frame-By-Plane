@@ -26,7 +26,6 @@ from .safe_tasks import cancel_scheduled_prefixes, schedule_once
 from .shortcut_runtime import (
     addon_keymap,
     native_keymap_names,
-    primary_modifier_name,
     primary_modifier_pressed,
     refresh_keymap_registration,
     remove_matching_keymap_items,
@@ -71,7 +70,7 @@ def _retire_previous_scrub_runtime_early():
     return retired
 
 
-_RETIRED_SCRUB_RUNTIME_HANDLES = _retire_previous_scrub_runtime_early()
+_retire_previous_scrub_runtime_early()
 
 
 _OVERLAY_MARGIN_PX = 28.0
@@ -88,34 +87,45 @@ _ONION_HANDLE_HIT_PADDING_PX = 5.0
 _BOOKMARK_PREFIX = "✦ - "
 _LEGACY_BOOKMARK_PREFIXES = ("✦ - ", "✦-", "✦ ", "★ ")
 _BOOKMARK_STATE_KEY = "_fbp_scrub_bookmarks_v1"
-_BOOKMARK_DEFAULT_COLOR = "WHITE"
+_BOOKMARK_DEFAULT_COLOR = "NONE"
 _BOOKMARK_COLOR_ITEMS = (
-    ("WHITE", "White", "White bookmark", "STRIP_COLOR_01", 0),
-    ("GREY", "Grey", "Grey bookmark", "STRIP_COLOR_02", 1),
-    ("YELLOW", "Yellow", "Yellow bookmark", "STRIP_COLOR_03", 2),
-    ("RED", "Red", "Red bookmark", "STRIP_COLOR_04", 3),
-    ("ORANGE", "Orange", "Orange bookmark", "STRIP_COLOR_05", 4),
-    ("GREEN", "Green", "Green bookmark", "STRIP_COLOR_06", 5),
-    ("BLUE", "Blue", "Blue bookmark", "STRIP_COLOR_07", 6),
-    ("MAGENTA", "Magenta", "Magenta bookmark", "STRIP_COLOR_08", 7),
-    ("PURPLE", "Purple", "Purple bookmark", "STRIP_COLOR_09", 8),
+    (
+        "NONE",
+        "None",
+        "Automatically use white or black to contrast with the Viewport",
+        "SNAP_FACE",
+        0,
+    ),
+    ("GREY", "Grey", "Grey bookmark", "STRIP_COLOR_09", 1),
+    ("RED", "Red", "Red bookmark", "STRIP_COLOR_01", 2),
+    ("ORANGE", "Orange", "Orange bookmark", "STRIP_COLOR_02", 3),
+    ("YELLOW", "Yellow", "Yellow bookmark", "STRIP_COLOR_03", 4),
+    ("GREEN", "Green", "Green bookmark", "STRIP_COLOR_04", 5),
+    ("CYAN", "Cyan", "Cyan bookmark", "STRIP_COLOR_05", 6),
+    ("PURPLE", "Purple", "Purple bookmark", "STRIP_COLOR_06", 7),
+    ("MAGENTA", "Magenta", "Magenta bookmark", "STRIP_COLOR_07", 8),
 )
 _BOOKMARK_COLORS = {
-    "WHITE": (0.94, 0.94, 0.94, 0.88),
+    "NONE": (0.94, 0.94, 0.94, 0.88),
     "GREY": (0.47, 0.47, 0.47, 0.88),
-    "YELLOW": (0.95, 0.73, 0.12, 0.90),
     "RED": (0.82, 0.16, 0.15, 0.90),
     "ORANGE": (0.95, 0.39, 0.08, 0.90),
+    "YELLOW": (0.95, 0.73, 0.12, 0.90),
     "GREEN": (0.18, 0.67, 0.25, 0.90),
-    "BLUE": (0.15, 0.42, 0.92, 0.90),
-    "MAGENTA": (0.90, 0.17, 0.62, 0.90),
+    "CYAN": (0.10, 0.72, 0.78, 0.90),
     "PURPLE": (0.48, 0.22, 0.82, 0.90),
+    "MAGENTA": (0.90, 0.17, 0.62, 0.90),
+}
+_BOOKMARK_COLOR_ALIASES = {
+    # Preserve bookmarks stored by 7.1.19 and earlier while exposing the
+    # simplified palette requested for the Scrub Bar.
+    "WHITE": "NONE",
+    "BLUE": "CYAN",
 }
 _BOOKMARK_POINTER_UIDS = globals().get("_BOOKMARK_POINTER_UIDS", {})
 if not isinstance(_BOOKMARK_POINTER_UIDS, dict):
     _BOOKMARK_POINTER_UIDS = {}
 _BOOKMARK_HIT_RADIUS_PX = 9.0
-_MARKER_HIT_RADIUS_PX = 7.0
 _CURSOR_LABEL_CAPTURE_PX = 10.0
 _KEYFRAME_HIT_PADDING_PX = 5.0
 _DRAG_THRESHOLD_PX = 4.0
@@ -131,7 +141,8 @@ _PREVIEW_DRAW_HANDLE = None
 _PREVIEW_ACTIVE = False
 _PREVIEW_STATE = None
 _HEADER_REGISTERED = False
-_ORIGINAL_VIEW3D_HEADER_DRAW = None
+_ORIGINAL_VIEW3D_XFORM_DRAW = None
+_ORIGINAL_VIEW3D_GP_LAYER_DRAW = None
 _SCRUB_FRAME_CLIPBOARD = None
 # Process-only frame navigation memory. Blender includes Scene.frame_current in
 # history snapshots, so a GP stroke made immediately after Scrub Slider
@@ -167,13 +178,6 @@ _DEFAULT_BLENDER_KEYFRAME_COLORS = {
     "GENERATED": {"passive": (0x58 / 255, 0x58 / 255, 0x58 / 255, 1.0), "selected": (0xA2 / 255, 0x89 / 255, 0x62 / 255, 1.0)},
 }
 _KEYFRAME_TYPE_BY_ID = {item[0]: item for item in _KEYFRAME_TYPE_DEFINITIONS}
-_SNAP_TARGET_LABELS = {
-    "FRAME": "Frames",
-    "SECOND": "Seconds",
-    "MARKER": "Markers",
-    "KEY": "Keyframes",
-    "STRIP": "Strips",
-}
 _SNAP_TARGET_ORDER = ("FRAME", "SECOND", "MARKER", "KEY", "STRIP")
 
 
@@ -778,14 +782,6 @@ def grease_pencil_keyframe_records(obj):
     return tuple(records[number] for number in sorted(records))
 
 
-def grease_pencil_keyframes(obj):
-    records = grease_pencil_keyframe_records(obj)
-    return (
-        tuple(record[0] for record in records),
-        tuple(record[0] for record in records if record[2]),
-    )
-
-
 def grease_pencil_editable_frames(obj, *, visible_only=True):
     """Return editable ``(layer, frame)`` pairs without collapsing layers."""
     result = []
@@ -1120,7 +1116,8 @@ def inverted_rgb(color):
 
 def _apply_inverted_scrub_ink(target, context):
     """Use transparent slider chrome with ink inverted from the Viewport."""
-    inverse = inverted_rgb(viewport_background_color(context))
+    background = viewport_background_color(context)
+    inverse = inverted_rgb(background)
     target._theme_style = "INVERT"
     target._surface_color = (0.0, 0.0, 0.0, 0.0)
     target._line_color = (*inverse, 1.0)
@@ -1128,6 +1125,10 @@ def _apply_inverted_scrub_ink(target, context):
     target._major_tick_color = (*inverse, 1.0)
     target._second_tick_color = (*inverse, 1.0)
     target._text_color = (*inverse, 1.0)
+    # Blender's untagged Timeline markers use a binary light/dark contrast,
+    # not the literal RGB inverse used by the rest of our transparent scrub
+    # chrome.  Keep the None bookmark tag equally neutral on coloured worlds.
+    target._bookmark_none_color = contrast_palette(background)["foreground"]
     return inverse
 
 
@@ -1179,20 +1180,6 @@ def scrub_display_range(scene, center_frame, visible_count):
     left = max(int(minimum), int(left))
     right = min(int(maximum), max(left, int(right)))
     return left, right
-
-def continuous_scrub_offset(delta_pixels, half_extent, maximum_range):
-    """Map cursor motion continuously to an integer frame offset."""
-    try:
-        delta = float(delta_pixels)
-        extent = max(1.0, float(half_extent))
-        maximum = max(1, int(maximum_range))
-    except (TypeError, ValueError, OverflowError):
-        return 0
-    if not math.isfinite(delta) or not math.isfinite(extent):
-        return 0
-    normalized = max(-1.0, min(1.0, delta / extent))
-    return max(-maximum, min(maximum, int(round(normalized * maximum))))
-
 
 def scrub_overlay_layout(region_or_width, height=None, *, position="BOTTOM", vertical=None, ui_scale=1.0, length_ratio=0.84, edge_offset=42.0):
     """Return an axis layout on any edge of the active Viewport."""
@@ -1518,11 +1505,19 @@ def _next_bookmark_default_label(scene):
 
 def _bookmark_color_tag(value):
     identifier = str(value or _BOOKMARK_DEFAULT_COLOR).upper()
+    identifier = _BOOKMARK_COLOR_ALIASES.get(identifier, identifier)
     return identifier if identifier in _BOOKMARK_COLORS else _BOOKMARK_DEFAULT_COLOR
 
 
-def _bookmark_color(value, *, selected=False):
-    base = _BOOKMARK_COLORS[_bookmark_color_tag(value)]
+def _bookmark_color(value, *, selected=False, none_color=None):
+    identifier = _bookmark_color_tag(value)
+    if identifier == "NONE" and none_color is not None:
+        try:
+            base = tuple(float(channel) for channel in none_color[:3]) + (0.88,)
+        except (TypeError, ValueError, OverflowError, IndexError):
+            base = _BOOKMARK_COLORS[identifier]
+    else:
+        base = _BOOKMARK_COLORS[identifier]
     if not selected:
         return base
     return tuple(min(1.0, channel * 0.62 + 0.38) for channel in base[:3]) + (1.0,)
@@ -2080,25 +2075,6 @@ def relative_scrub_target(
             return 0.0, 0.0
 
 
-def playhead_snap_label(settings, *, shift=False, ctrl=False, slow_factor=0.2):
-    """Describe the effective scrub mode, including temporary modifiers."""
-    if ctrl:
-        label = f"{primary_modifier_name()} · Snap Keyframes"
-    elif not bool((settings or {}).get("enabled", False)):
-        label = "Snap Off"
-    else:
-        targets = normalize_playhead_snap_targets((settings or {}).get("targets", ()))
-        labels = [_SNAP_TARGET_LABELS[target] for target in _SNAP_TARGET_ORDER if target in targets]
-        label = "Snap · " + (" + ".join(labels) if labels else "Frames")
-    if shift:
-        try:
-            factor = max(0.02, min(1.0, float(slow_factor)))
-        except (TypeError, ValueError, OverflowError):
-            factor = 0.2
-        label += f" · Shift {factor:.2f}×"
-    return label
-
-
 def _is_live_grease_pencil_object(obj):
     if obj is None:
         return False
@@ -2505,7 +2481,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _duplicate_pending = False
     _duplicate_sources = ()
     _preview_signature = None
-    _show_info = False
     _hover_frame = None
     _cursor_label_bounds = None
     _cache_checked_at = 0.0
@@ -2773,7 +2748,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._magnetic_offset = 0.0
             self._magnetic_target_offset = 0.0
             self._cursor_label_bounds = None
-        self._show_info = bool(getattr(preferences, "gp_scrub_show_info", False))
         self._sync_magnetic_preferences(context)
         _apply_inverted_scrub_ink(self, context)
 
@@ -4129,7 +4103,11 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                         continue
                     axis_x, axis_y = self._frame_position(frame, left, right, layout)
                     selected = bool(record.get("selected", False))
-                    color = _bookmark_color(record.get("color_tag"), selected=selected)
+                    color = _bookmark_color(
+                        record.get("color_tag"),
+                        selected=selected,
+                        none_color=getattr(self, "_bookmark_none_color", self._line_color),
+                    )
                     stem_width = max(0.4, bookmark_stem_width * (1.35 if selected else 1.0) * scale_ui)
                     base_offset = bookmark_distance * scale_ui
                     triangle_depth = max(4.0, 8.0 * triangle_scale) * scale_ui
@@ -4216,21 +4194,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 _draw_uniform_batch(shader, batch_for_shader, "TRIS", triangles, fill)
                 _draw_uniform_batch(shader, batch_for_shader, "LINES", lines, key_border)
 
-            snap_label = playhead_snap_label(
-                self._snap_settings,
-                shift=self._shift_held,
-                ctrl=self._ctrl_held,
-                slow_factor=self._slow_factor,
-            )
-            direct_factor = float(getattr(self, "_shortcut_direct_factor", 0.0) or 0.0)
-            if shortcut_pending and direct_factor > 0.0:
-                snap_label += " · Direct" if direct_factor >= 0.999 else f" · Magnet {int(round(direct_factor * 100.0))}%"
-            if persistent and not shortcut_pending:
-                snap_label = (
-                    "A bookmark · G move · Shift+D duplicate · X delete · "
-                    "double-click rename · R drawing type · "
-                    f"Wheel zoom · {primary_modifier_name()}+wheel pan · drag onion dots"
-                )
             if layout["vertical"]:
                 top_frame, bottom_frame = (left, right) if self._invert_vertical else (right, left)
                 endpoint_x = float(layout["x"]) + 13.0
@@ -4243,16 +4206,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     endpoint_x = float(layout["x"]) - 13.0 - float(endpoint_width)
                 _draw_text(blf, top_frame, endpoint_x, layout["y1"] - 5.0, 10, secondary)
                 _draw_text(blf, bottom_frame, endpoint_x, layout["y0"] - 5.0, 10, secondary)
-                if bool(getattr(self, "_show_info", False)):
-                    info_x = float(layout["x"]) + 13.0
-                    if self._position == "RIGHT":
-                        blf.size(0, 10)
-                        info_x = (
-                            float(layout["x"])
-                            - 13.0
-                            - float(blf.dimensions(0, str(snap_label))[0])
-                        )
-                    _draw_text(blf, snap_label, info_x, layout["y0"] + 12.0, 10, secondary)
             else:
                 text_y = (
                     float(layout["y"]) - 24.0
@@ -4261,13 +4214,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 )
                 _draw_text(blf, left, layout["x0"] - 7.0, text_y, 10, secondary)
                 _draw_text(blf, right, layout["x1"] - 7.0, text_y, 10, secondary)
-                if bool(getattr(self, "_show_info", False)):
-                    info_y = (
-                        float(layout["y"]) - 42.0
-                        if self._position == "TOP"
-                        else float(layout["y"]) + 31.0
-                    )
-                    _draw_text(blf, snap_label, layout["x0"], info_y, 10, secondary)
 
             # Draw the current-frame cursor last so no timeline text or marker can cover it.
             label_text = str(int(self._current_frame))
@@ -4513,8 +4459,6 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._cursor_color = (*cursor_color, 1.0)
         self._cursor_text_color = (*cursor_text_color, 1.0)
         _apply_inverted_scrub_ink(self, context)
-        preferences = fbp_get_addon_preferences(context)
-        self._show_info = bool(getattr(preferences, "gp_scrub_show_info", False))
         self._sync_magnetic_preferences(context)
         self._activation_event_type = str(getattr(event, "type", "") or "")
         self._mouse_x = float(getattr(event, "mouse_region_x", 0.0) or 0.0)
@@ -5696,7 +5640,7 @@ class FBP_OT_AddScrubBookmark(Operator):
 
     name: StringProperty(name="Name", default="")
     color_tag: EnumProperty(
-        name="Color",
+        name="Tag Color",
         description="Color tag used by the Frame By Plane Scrub Bar",
         items=_BOOKMARK_COLOR_ITEMS,
         default=_BOOKMARK_DEFAULT_COLOR,
@@ -5716,7 +5660,7 @@ class FBP_OT_AddScrubBookmark(Operator):
     def draw(self, _context):
         layout = self.layout
         layout.prop(self, "name")
-        layout.prop(self, "color_tag", text="Color")
+        layout.prop(self, "color_tag", text="Tag Color")
 
     def execute(self, context):
         scene = getattr(context, "scene", None)
@@ -5755,6 +5699,12 @@ class FBP_OT_RenameScrubBookmark(Operator):
 
     bookmark_uid: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     name: StringProperty(name="Name", default="")
+    color_tag: EnumProperty(
+        name="Tag Color",
+        description="Color tag used by the Frame By Plane Scrub Bar",
+        items=_BOOKMARK_COLOR_ITEMS,
+        default=_BOOKMARK_DEFAULT_COLOR,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -5773,10 +5723,13 @@ class FBP_OT_RenameScrubBookmark(Operator):
             return {"CANCELLED"}
         self.bookmark_uid = record["uid"]
         self.name = record["name"]
+        self.color_tag = _bookmark_color_tag(record.get("color_tag"))
         return context.window_manager.invoke_props_dialog(self, width=320)
 
     def draw(self, _context):
-        self.layout.prop(self, "name")
+        layout = self.layout
+        layout.prop(self, "name")
+        layout.prop(self, "color_tag", text="Tag Color")
 
     def execute(self, context):
         scene = getattr(context, "scene", None)
@@ -5795,6 +5748,7 @@ class FBP_OT_RenameScrubBookmark(Operator):
                 entry["label"] = label
                 entry["marker_name"] = _bookmark_native_name(label)
                 entry["frame"] = int(getattr(record["marker"], "frame", record["frame"]))
+                entry["color_tag"] = _bookmark_color_tag(self.color_tag)
                 break
         _save_bookmark_state(scene, entries)
         reconcile_scrub_bookmarks(scene)
@@ -6092,44 +6046,16 @@ class FBP_MT_ScrubBookmarkColor(Menu):
             operator.color_tag = identifier
 
 
-class FBP_MT_ScrubBookmarkMenu(Menu):
-    bl_idname = "FBP_MT_scrub_bookmark"
-    bl_label = "Bookmark"
+def selected_keyframe_type_icon(selected_frames):
+    """Return the active Blender keyframe icon, or the generic mixed icon."""
 
-    def draw(self, context):
-        layout = self.layout
-        scene = getattr(context, "scene", None)
-        records = scrub_bookmark_records(scene)
-        selected = tuple(record for record in records if record["selected"])
-
-        row = layout.row()
-        row.enabled = bool(selected)
-        row.menu(FBP_MT_ScrubBookmarkColor.bl_idname, text="Color Tag", icon="STRIP_COLOR_01")
-        layout.separator()
-        layout.operator(FBP_OT_AddScrubBookmark.bl_idname, text="New", icon="ADD")
-        row = layout.row()
-        row.enabled = len(selected) == 1
-        row.operator(FBP_OT_RenameScrubBookmark.bl_idname, text="Rename Selected", icon="GREASEPENCIL")
-        row = layout.row()
-        row.enabled = bool(selected)
-        row.operator(FBP_OT_DuplicateScrubBookmarks.bl_idname, text="Duplicate Selected", icon="DUPLICATE")
-
-        layout.separator()
-        row = layout.row()
-        row.enabled = bool(records)
-        operator = row.operator(FBP_OT_SelectScrubBookmarks.bl_idname, text="Select All", icon="PROP_ON")
-        operator.action = "SELECT"
-        row = layout.row()
-        row.enabled = bool(selected)
-        operator = row.operator(FBP_OT_SelectScrubBookmarks.bl_idname, text="Deselect All", icon="PROP_OFF")
-        operator.action = "DESELECT"
-        layout.separator()
-        row = layout.row()
-        row.enabled = bool(selected)
-        row.operator(FBP_OT_RemoveScrubBookmark.bl_idname, text="Delete Selected", icon="X")
-        row = layout.row()
-        row.enabled = bool(records)
-        row.operator(FBP_OT_DeleteAllScrubBookmarks.bl_idname, text="Delete All", icon="TRASH")
+    selected_types = {
+        _normalized_keyframe_type(getattr(frame, "keyframe_type", "KEYFRAME"))
+        for _layer, frame in tuple(selected_frames or ())
+    }
+    if len(selected_types) != 1:
+        return "KEYFRAME"
+    return _KEYFRAME_TYPE_BY_ID[next(iter(selected_types))][2]
 
 
 class FBP_MT_GreasePencilScrubContextMenu(Menu):
@@ -6143,39 +6069,59 @@ class FBP_MT_GreasePencilScrubContextMenu(Menu):
         selected_frames = selected_grease_pencil_frames(obj) if gp_live else ()
         has_selected_frames = bool(selected_frames)
         has_frames = bool(grease_pencil_editable_frames(obj)) if gp_live else False
-        can_paste = bool(gp_live and _SCRUB_FRAME_CLIPBOARD is not None)
+        keyframe_type_icon = selected_keyframe_type_icon(selected_frames)
+
+        layout.operator(
+            FBP_OT_AddScrubBookmark.bl_idname,
+            text="Add Bookmark",
+            icon="BOOKMARKS",
+        )
+        layout.separator()
+
+        row = layout.row()
+        row.enabled = has_frames
+        select_operator = row.operator(
+            FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname,
+            text="Select All",
+            icon="PROP_ON",
+        )
+        select_operator.action = "SELECT"
+        row = layout.row()
+        row.enabled = has_selected_frames
+        deselect_operator = row.operator(
+            FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname,
+            text="Deselect All",
+            icon="PROP_OFF",
+        )
+        deselect_operator.action = "DESELECT"
+        layout.separator()
 
         row = layout.row()
         row.enabled = has_selected_frames
-        row.operator(FBP_OT_CopyGreasePencilScrubKeyframes.bl_idname, text="Copy", icon="COPYDOWN")
-        row = layout.row()
-        row.enabled = can_paste
-        row.operator(FBP_OT_PasteGreasePencilScrubKeyframes.bl_idname, text="Paste", icon="PASTEDOWN")
-        layout.separator()
-        row = layout.row()
-        row.enabled = has_selected_frames
-        row.operator(FBP_OT_DuplicateGreasePencilScrubKeyframes.bl_idname, text="Duplicate", icon="DUPLICATE")
-        row = layout.row()
-        row.enabled = has_selected_frames
-        row.operator(FBP_OT_DeleteGreasePencilScrubKeyframes.bl_idname, text="Delete", icon="X")
-        layout.separator()
-        row = layout.row()
-        row.enabled = has_selected_frames
-        row.menu(FBP_MT_GreasePencilScrubKeyframeType.bl_idname, text="Keyframe Type", icon="KEY_HLT")
+        row.menu(
+            FBP_MT_GreasePencilScrubKeyframeType.bl_idname,
+            text="Keyframe Type",
+            icon=keyframe_type_icon,
+        )
         row = layout.row()
         row.enabled = has_selected_frames
         row.menu(FBP_MT_GreasePencilScrubMirror.bl_idname, text="Mirror", icon="MOD_MIRROR")
         layout.separator()
-        layout.menu(FBP_MT_ScrubBookmarkMenu.bl_idname, text="Bookmark", icon="MARKER_HLT")
-        layout.separator()
-        row = layout.row()
-        row.enabled = has_frames
-        select_operator = row.operator(FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname, text="Select All Drawings", icon="PROP_ON")
-        select_operator.action = "SELECT"
+
         row = layout.row()
         row.enabled = has_selected_frames
-        deselect_operator = row.operator(FBP_OT_SelectAllGreasePencilScrubKeyframes.bl_idname, text="Deselect Drawings", icon="PROP_OFF")
-        deselect_operator.action = "DESELECT"
+        row.operator(
+            FBP_OT_DuplicateGreasePencilScrubKeyframes.bl_idname,
+            text="Duplicate (Shift+D)",
+            icon="DUPLICATE",
+        )
+        row = layout.row()
+        row.enabled = has_selected_frames
+        row.operator(
+            FBP_OT_DeleteGreasePencilScrubKeyframes.bl_idname,
+            text="Delete",
+            icon="TRASH",
+        )
 
 
 class FBP_PT_GreasePencilScrubSliderPopover(Panel):
@@ -6194,10 +6140,6 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
 
         if preferences is not None and hasattr(preferences, "gp_scrub_position"):
             layout.prop(preferences, "gp_scrub_position", text="Viewport Edge")
-        layout.label(
-            text="Transparent · Lines and text invert the Viewport",
-            icon="SHADING_SOLID",
-        )
 
         obj = _scrub_target_object(context)
         gp_data = getattr(obj, "data", None) if _is_live_grease_pencil_object(obj) else None
@@ -6220,14 +6162,6 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
                     icon="BOOKMARKS",
                     toggle=True,
                 )
-            if hasattr(preferences, "gp_scrub_show_info"):
-                layout.prop(
-                    preferences,
-                    "gp_scrub_show_info",
-                    text="Show Interaction Info",
-                    toggle=True,
-                )
-
         if gp_data is not None:
             layout.separator()
             layout.label(text="Onion Skin", icon="ONIONSKIN_ON")
@@ -6265,9 +6199,13 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
         scene = getattr(context, "scene", None)
         if scene is not None:
             layout.separator()
-            row = layout.row(align=True)
-            row.operator(FBP_OT_AddScrubBookmark.bl_idname, text="Add Bookmark", icon="MARKER_HLT")
-            row.operator(FBP_OT_RemoveScrubBookmark.bl_idname, text="", icon="X")
+            row = layout.row()
+            row.enabled = bool(selected_scrub_bookmark_records(scene))
+            row.operator(
+                FBP_OT_RemoveScrubBookmark.bl_idname,
+                text="Delete Selected Bookmark",
+                icon="TRASH",
+            )
         if scene is not None and hasattr(scene, "use_preview_range"):
             layout.separator()
             layout.prop(
@@ -6312,108 +6250,185 @@ def _draw_scrub_header_control(layout, context):
     )
 
 
-class _FBPHeaderLayoutProxy:
-    """Inject the slider immediately after the header's first right spacer."""
-
-    __slots__ = ("_layout", "_context", "_inserted")
-
-    def __init__(self, layout, context):
-        self._layout = layout
-        self._context = context
-        self._inserted = False
-
-    def __setattr__(self, name, value):
-        if name in self.__slots__:
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._layout, name, value)
-
-    def separator_spacer(self):
-        result = self._layout.separator_spacer()
-        if not self._inserted:
-            self._inserted = True
-            try:
-                _draw_scrub_header_control(self._layout, self._context)
-            except Exception as exc:
-                # The Scrub Slider is optional UI. A bad preference state or a
-                # future header API change must never abort Blender's native
-                # header and hide the editor-type/menu controls.
-                fbp_warn_once(
-                    "scrub.header_injection",
-                    "Could not draw the Scrub Slider header control",
-                    exc,
-                )
-        return result
-
-    def __getattr__(self, name):
-        return getattr(self._layout, name)
+_HEADER_XFORM_EXCLUDED_MODES = {
+    "PAINT_GREASE_PENCIL",
+    "SCULPT_GREASE_PENCIL",
+    "SCULPT",
+    "VERTEX_PAINT",
+    "VERTEX_GREASE_PENCIL",
+    "WEIGHT_PAINT",
+    "WEIGHT_GREASE_PENCIL",
+    "TEXTURE_PAINT",
+}
+_HEADER_GP_CENTER_MODES = {
+    "PAINT_GREASE_PENCIL",
+    "SCULPT_GREASE_PENCIL",
+    "VERTEX_GREASE_PENCIL",
+    "WEIGHT_GREASE_PENCIL",
+}
 
 
-class _FBPHeaderSelfProxy:
-    __slots__ = ("_header", "layout")
-
-    def __init__(self, header, context):
-        self._header = header
-        self.layout = _FBPHeaderLayoutProxy(header.layout, context)
-
-    def __getattr__(self, name):
-        return getattr(self._header, name)
+def _native_header_uses_xform_template(context):
+    obj = getattr(context, "active_object", None)
+    object_mode = "OBJECT" if obj is None else str(getattr(obj, "mode", "OBJECT") or "OBJECT")
+    return object_mode not in _HEADER_XFORM_EXCLUDED_MODES
 
 
-def _draw_view3d_header_with_scrub(self, context):
-    original = getattr(
-        _draw_view3d_header_with_scrub,
-        "_fbp_original_draw",
-        None,
-    )
-    if original is None:
-        return None
+def _native_header_uses_gp_center_hook(context):
+    obj = getattr(context, "active_object", None)
+    object_mode = "OBJECT" if obj is None else str(getattr(obj, "mode", "OBJECT") or "OBJECT")
+    return object_mode in _HEADER_GP_CENTER_MODES
+
+
+def _draw_xform_template_with_scrub(layout, context):
+    """Add the Scrub controls inside Blender's native centered header lane."""
+
     try:
-        return original(_FBPHeaderSelfProxy(self, context), context)
+        _draw_scrub_header_control(layout, context)
     except Exception as exc:
-        # The proxy exists only to position one optional icon. If Blender changes
-        # the native header layout contract, retry the untouched native draw so
-        # an add-on UI regression can never blank the complete Viewport header.
         fbp_warn_once(
-            "scrub.header_proxy_fallback",
-            "Scrub Slider header injection failed; restored Blender's native header",
+            "scrub.header_center_control",
+            "Could not draw the centered Scrub Slider header control",
             exc,
         )
-        return original(self, context)
+    original = getattr(_draw_xform_template_with_scrub, "_fbp_original_draw", None)
+    if not callable(original):
+        return None
+    try:
+        return original(layout, context)
+    except Exception as exc:
+        # This helper is optional. Never allow it to abort the complete native
+        # header if Blender changes the transform-template implementation.
+        fbp_warn_once(
+            "scrub.header_center_native",
+            "Could not draw Blender's transform header controls",
+            exc,
+        )
+        return None
+
+
+def _draw_gp_layer_panel_with_scrub(context, layout):
+    """Insert the Scrub controls in Blender's centered Grease Pencil lane."""
+
+    if _native_header_uses_gp_center_hook(context):
+        try:
+            _draw_scrub_header_control(layout, context)
+        except Exception as exc:
+            fbp_warn_once(
+                "scrub.header_gp_center_control",
+                "Could not draw the centered Grease Pencil Scrub Slider control",
+                exc,
+            )
+    original = getattr(_draw_gp_layer_panel_with_scrub, "_fbp_original_draw", None)
+    if not callable(original):
+        return None
+    try:
+        return original(context, layout)
+    except Exception as exc:
+        # The native layer popover is optional UI. Isolate it from the complete
+        # View3D header so a future Blender signature change cannot blank the
+        # region that contains the menus and viewport controls.
+        fbp_warn_once(
+            "scrub.header_gp_center_native",
+            "Could not draw Blender's Grease Pencil layer header control",
+            exc,
+        )
+        return None
+
+
+def _draw_scrub_header_callback(self, context):
+    """Fallback for modes where Blender skips its centered transform lane."""
+
+    try:
+        if (
+            _native_header_uses_xform_template(context)
+            or _native_header_uses_gp_center_hook(context)
+        ):
+            return
+        _draw_scrub_header_control(self.layout, context)
+    except Exception as exc:
+        # Blender's native header has already drawn when append callbacks run.
+        # A bad preference or future API change therefore cannot blank it.
+        fbp_warn_once(
+            "scrub.header_callback",
+            "Could not draw the Scrub Slider header control",
+            exc,
+        )
 
 
 def _register_header():
-    global _HEADER_REGISTERED, _ORIGINAL_VIEW3D_HEADER_DRAW
+    global _HEADER_REGISTERED, _ORIGINAL_VIEW3D_XFORM_DRAW
+    global _ORIGINAL_VIEW3D_GP_LAYER_DRAW
     if _HEADER_REGISTERED:
         return
     try:
+        from bl_ui import space_view3d as native_view3d
+
         header_type = bpy.types.VIEW3D_HT_header
-        original = header_type.draw
-        while bool(getattr(original, "_fbp_scrub_header_patch", False)):
+        original = header_type.draw_xform_template
+        while bool(getattr(original, "_fbp_scrub_xform_patch", False)):
             original = getattr(original, "_fbp_original_draw", original)
-        _ORIGINAL_VIEW3D_HEADER_DRAW = original
-        _draw_view3d_header_with_scrub._fbp_original_draw = original
-        _draw_view3d_header_with_scrub._fbp_scrub_header_patch = True
-        header_type.draw = _draw_view3d_header_with_scrub
+        _ORIGINAL_VIEW3D_XFORM_DRAW = original
+        _draw_xform_template_with_scrub._fbp_original_draw = original
+        _draw_xform_template_with_scrub._fbp_scrub_xform_patch = True
+        header_type.draw_xform_template = staticmethod(_draw_xform_template_with_scrub)
+
+        gp_original = native_view3d.draw_topbar_grease_pencil_layer_panel
+        while bool(getattr(gp_original, "_fbp_scrub_gp_layer_patch", False)):
+            gp_original = getattr(gp_original, "_fbp_original_draw", gp_original)
+        _ORIGINAL_VIEW3D_GP_LAYER_DRAW = gp_original
+        _draw_gp_layer_panel_with_scrub._fbp_original_draw = gp_original
+        _draw_gp_layer_panel_with_scrub._fbp_scrub_gp_layer_patch = True
+        native_view3d.draw_topbar_grease_pencil_layer_panel = _draw_gp_layer_panel_with_scrub
+
+        try:
+            header_type.remove(_draw_scrub_header_callback)
+        except (RuntimeError, ValueError):
+            pass
+        header_type.append(_draw_scrub_header_callback)
         _HEADER_REGISTERED = True
-    except FBP_DATA_ERRORS as exc:
+    except Exception as exc:
+        # Registration spans a helper patch and an official append callback.
+        # Roll both back if either half fails so a partial UI hook cannot leak
+        # into the current Blender session.
+        _unregister_header()
         fbp_warn("Could not add the Grease Pencil Scrub Slider header icon", exc)
 
 
 def _unregister_header():
-    global _HEADER_REGISTERED, _ORIGINAL_VIEW3D_HEADER_DRAW
+    global _HEADER_REGISTERED, _ORIGINAL_VIEW3D_XFORM_DRAW
+    global _ORIGINAL_VIEW3D_GP_LAYER_DRAW
+    try:
+        bpy.types.VIEW3D_HT_header.remove(_draw_scrub_header_callback)
+    except (AttributeError, RuntimeError, ValueError):
+        pass
     try:
         header_type = bpy.types.VIEW3D_HT_header
-        current = header_type.draw
-        if bool(getattr(current, "_fbp_scrub_header_patch", False)):
-            header_type.draw = getattr(
-                current,
-                "_fbp_original_draw",
-                _ORIGINAL_VIEW3D_HEADER_DRAW,
+        current = header_type.draw_xform_template
+        if bool(getattr(current, "_fbp_scrub_xform_patch", False)):
+            header_type.draw_xform_template = staticmethod(
+                getattr(
+                    current,
+                    "_fbp_original_draw",
+                    _ORIGINAL_VIEW3D_XFORM_DRAW,
+                )
             )
-    except FBP_DATA_ERRORS:
+    except (AttributeError, RuntimeError, ValueError):
         pass
-    _ORIGINAL_VIEW3D_HEADER_DRAW = None
+    try:
+        from bl_ui import space_view3d as native_view3d
+
+        current_gp = native_view3d.draw_topbar_grease_pencil_layer_panel
+        if bool(getattr(current_gp, "_fbp_scrub_gp_layer_patch", False)):
+            native_view3d.draw_topbar_grease_pencil_layer_panel = getattr(
+                current_gp,
+                "_fbp_original_draw",
+                _ORIGINAL_VIEW3D_GP_LAYER_DRAW,
+            )
+    except (AttributeError, ImportError, RuntimeError, ValueError):
+        pass
+    _ORIGINAL_VIEW3D_XFORM_DRAW = None
+    _ORIGINAL_VIEW3D_GP_LAYER_DRAW = None
     _HEADER_REGISTERED = False
 
 
@@ -6468,8 +6483,6 @@ class _ScrubPreviewOverlay:
         self._text_color = (*text_color, 1.0)
         self._cursor_color = (*cursor_color, 1.0)
         self._cursor_text_color = (*cursor_text_color, 1.0)
-        preferences = fbp_get_addon_preferences(context)
-        self._show_info = bool(getattr(preferences, "gp_scrub_show_info", False))
         _apply_inverted_scrub_ink(self, context)
         try:
             self._ui_scale = max(0.5, float(context.preferences.system.ui_scale))
@@ -6639,7 +6652,6 @@ _classes = (
     FBP_MT_GreasePencilScrubKeyframeType,
     FBP_MT_GreasePencilScrubMirror,
     FBP_MT_ScrubBookmarkColor,
-    FBP_MT_ScrubBookmarkMenu,
     FBP_MT_GreasePencilScrubContextMenu,
     FBP_PT_GreasePencilScrubSliderPopover,
     FBP_OT_GreasePencilScrubPreview,

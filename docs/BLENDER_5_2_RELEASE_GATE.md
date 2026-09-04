@@ -1,6 +1,6 @@
 # Blender 5.2 native release gate
 
-The `Blender 5.2 native release gate` workflow turns the residual platform risk from the 7.1.18 audit into an explicit pre-publication check.
+The `Blender 5.2 native release gate` workflow turns platform and UI risk into an explicit pre-publication check for 7.2.0, including the focused dual-color Grease Pencil, Close Gap, compositor opt-in and lifecycle regressions.
 
 ## When it runs
 
@@ -21,7 +21,7 @@ The workflow is intentionally not run for every commit because each native job d
 
 `windows-11-arm` is a GitHub public-preview runner. Runner availability and billing depend on repository visibility and account plan; an unavailable runner is a failed/incomplete release gate, not an implicit pass. Current labels are documented in the [GitHub-hosted runners reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 
-The official Blender 5.2.0 checksum listing contains a macOS ARM64 image but no macOS x64 image. The release surface therefore excludes `macos_x64` instead of claiming runtime coverage that cannot be reproduced with an official Blender build. The source of truth is Blender's [official SHA-256 listing](https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256).
+The official Blender 5.2.0 checksum listing contains a macOS ARM64 image but no macOS x64 image. The workflow therefore builds and structurally validates the fifth `macos_x64` package during the Linux job, but does not report a native runtime pass that cannot be reproduced with an official Blender build. The source of truth is Blender's [official SHA-256 listing](https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256).
 
 ## Checks per platform
 
@@ -39,12 +39,14 @@ Each job:
 10. starts a transaction before real File Open, File Revert and New File and verifies no orphan owner or partial data;
 11. uploads the JSON/log/Blend evidence and native ZIP for 14 days.
 
+The Linux job also validates and uploads the fifth `macos_x64` ZIP as package-only evidence. It is not installed on ARM64 or relabeled as a native smoke result.
+
 Test reports use an absolute directory below `runner.temp`. This keeps Windows transaction-manifest paths below legacy path-length limits and prevents Blender's changed working directory from separating a report from the launcher that verifies it.
 
 Linux x64 additionally runs the interactive suite under Xvfb, including two-window contention, 20 Undo/Redo cycles and 300 Layer Tree/Grease Pencil redraws.
 
 ## Release rule
 
-A public release should require all four matrix jobs to pass. `extension validate` alone is insufficient: it checks package structure, while the matrix exercises the package on its declared OS/architecture.
+A public release should require all four native matrix jobs to pass, including the Linux job's separate `macos_x64` structural check. `extension validate` alone is insufficient for platforms with an official runtime: it checks package structure, while the native matrix exercises the package on its declared OS/architecture.
 
 The workflow never uploads to GitHub Releases or Blender Extensions. Publication remains a separate manual action with its own confirmation and token handling.

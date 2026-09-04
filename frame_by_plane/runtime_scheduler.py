@@ -1194,6 +1194,22 @@ def _dispatch():
             current = _TASKS.get(key)
             if current is not record:
                 continue
+            # Earlier callbacks in this very batch can start Undo/load/render,
+            # invalidate Main, or restart another key with a later deadline.
+            # The due list is only a snapshot, never execution permission.
+            if (
+                not bool(current.get("persistent", False))
+                and _coerce_int(current.get("epoch", -1), -1) != _SCHEDULER_EPOCH
+            ):
+                _TASKS.pop(key, None)
+                _METRICS["cancelled"] += 1
+                continue
+            current_time = _now()
+            if (
+                _finite_due_at(current.get("due_at", current_time), current_time) > current_time
+                or _task_guard_delay(current) > 0.0
+            ):
+                continue
             generation = _nonnegative_int(record.get("generation", 0))
             callback = record.get("callback")
             if not callable(callback):

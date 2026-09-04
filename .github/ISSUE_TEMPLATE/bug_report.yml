@@ -7,7 +7,7 @@ body:
     id: fbp-version
     attributes:
       label: Frame By Plane version
-      placeholder: 7.1.18
+      placeholder: 7.2.0
     validations:
       required: true
   - type: input
@@ -25,6 +25,7 @@ body:
         - Windows x64
         - Windows ARM64
         - macOS Apple Silicon
+        - macOS Intel
         - Linux x64
         - Other
     validations:

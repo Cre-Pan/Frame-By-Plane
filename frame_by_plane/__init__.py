@@ -25,7 +25,7 @@ _MODULE_NAMES = (
     "safe_tasks", "transactions", "generation_transaction", "project_schema", "fbp_dirty", "lifecycle", "effect_schema", "effect_instances", "object_masks",
     # Register Object properties before the Effects UI/handler. On unregister
     # the reverse order removes the frame handler before deleting its RNA props.
-    "properties", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "grease_pencil_scrub", "grease_pencil_bridge", "layer_sets", "grease_pencil_workflow", "grease_pencil_limited_loop", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "scene_sync", "persistence",
+    "camera_output", "properties", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "timeline_backport", "grease_pencil_scrub", "grease_pencil_bridge", "gp_vertex_colors", "layer_sets", "grease_pencil_workflow", "grease_pencil_limited_loop", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "scene_sync", "persistence",
     "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural",
@@ -47,12 +47,18 @@ if _IS_BACKGROUND:
     _MODULE_NAMES = tuple(name for name in _MODULE_NAMES if name not in _BACKGROUND_SKIP_MODULES)
 
 _loaded_modules = []
+# Snapshot reload state before the import loop. A module imported transitively
+# by an earlier sibling is part of this first enable, not evidence of an in-place
+# development reload, and must not be executed twice.
+_preexisting_modules = {
+    name: globals().get(name)
+    for name in _MODULE_NAMES
+}
 _imports_started = time.perf_counter() if _PROFILE_ENV_ENABLED else 0.0
 for _name in _MODULE_NAMES:
-    # Check before importing. import_module() automatically exposes the
-    # submodule on this package, so checking globals afterwards caused every
-    # module to be imported and immediately reloaded even on the first enable.
-    _existing_module = globals().get(_name)
+    # ``import_module`` may return a sibling imported transitively earlier in
+    # this loop. Reload only modules that existed before the loop began.
+    _existing_module = _preexisting_modules.get(_name)
     _module_started = time.perf_counter() if _PROFILE_ENV_ENABLED else 0.0
     if _existing_module is None:
         _module = importlib.import_module(f".{_name}", __package__)

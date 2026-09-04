@@ -46,7 +46,7 @@ def _retire_previous_gpu_popup_early():
         return False
 
 
-_PREVIOUS_GPU_POPUP_RETIRED = _retire_previous_gpu_popup_early()
+_retire_previous_gpu_popup_early()
 _ACTIVE_GPU_POPUP = None
 
 

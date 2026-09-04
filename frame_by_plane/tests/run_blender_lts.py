@@ -11,6 +11,8 @@ import sys
 import uuid
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = Path(__file__).resolve().with_name("blender_lts_suite.py")
 from runner_process import run_logged_process

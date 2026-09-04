@@ -50,7 +50,7 @@ def _retire_previous_tutorial_operator_early():
         return False
 
 
-_PREVIOUS_TUTORIAL_RETIRED = _retire_previous_tutorial_operator_early()
+_retire_previous_tutorial_operator_early()
 
 
 # -----------------------------------------------------------------------------

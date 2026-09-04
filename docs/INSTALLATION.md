@@ -1,6 +1,6 @@
 # Installation
 
-Frame By Plane 7.1 LTS requires **Blender 5.2.x LTS**. Blender 5.1 and earlier are outside the supported runtime contract.
+Frame By Plane 7.2 requires **Blender 5.2.x LTS**. Blender 5.1 and earlier are outside the supported runtime contract. Version 7.2.0 is initially distributed as a GitHub pre-release for production validation.
 
 ## Recommended installation
 
@@ -21,11 +21,12 @@ In Blender:
 | Standard Windows PC | `windows_x64` |
 | Windows ARM device | `windows_arm64` |
 | Apple Silicon Mac | `macos_arm64` |
+| Intel Mac | `macos_x64` |
 | 64-bit Linux | `linux_x64` |
 
 The universal package contains every supported wheel and is larger. Platform-specific packages are recommended.
 
-Blender's official 5.2.0 release archive and checksum list contain no macOS Intel image. Intel Mac users should remain on a Blender version that still supports their hardware; Frame By Plane 7.1.18 targets Blender 5.2.x and therefore does not ship a `macos_x64` package.
+The Intel package remains available for compatible Blender 5.2 x64 installations. Blender's official 5.2.0 checksum list currently contains only a macOS ARM64 image, so `macos_x64` is structurally validated but cannot be smoke-tested against an official 5.2.0 Intel distribution in the release gate.
 
 ## Updating an existing installation
 
@@ -34,7 +35,7 @@ Blender's official 5.2.0 release archive and checksum list contain no macOS Inte
 3. Restart Blender if the previous version was enabled during the update.
 4. Open **Project Health** when updating an important production file and review the diagnostic result.
 
-Frame By Plane 7.1.18 does not change the project schema and requires no manual data migration.
+Frame By Plane 7.2.0 does not change the project schema and requires no manual migration. Legacy White Scrub Bar bookmarks become adaptive None tags, while legacy Blue tags become Cyan automatically. Grease Pencil dual Stroke/Fill state is runtime-managed and does not rewrite old drawings when the add-on is enabled.
 
 ## Verify the installed version
 

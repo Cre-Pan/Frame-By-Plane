@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "7.1.18"
+version = "7.2.0"
 name = "Frame By Plane"
 tagline = "Image sequences, Grease Pencil and 2.5D animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
@@ -11,6 +11,7 @@ tags = ["3D View", "Animation"]
 platforms = [
   "windows-x64",
   "windows-arm64",
+  "macos-x64",
   "macos-arm64",
   "linux-x64",
 ]
@@ -32,6 +33,8 @@ wheels = [
   "./wheels/psd_tools-1.17.3-cp313-cp313-win_amd64.whl",
   "./wheels/pillow-12.2.0-cp313-cp313-win_arm64.whl",
   "./wheels/psd_tools-1.17.3-cp313-cp313-win_arm64.whl",
+  "./wheels/pillow-12.2.0-cp313-cp313-macosx_10_13_x86_64.whl",
+  "./wheels/psd_tools-1.17.3-cp313-abi3-macosx_10_13_x86_64.whl",
   "./wheels/pillow-12.2.0-cp313-cp313-macosx_11_0_arm64.whl",
   "./wheels/psd_tools-1.17.3-cp313-abi3-macosx_11_0_arm64.whl",
   "./wheels/pillow-12.2.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
@@ -57,7 +60,6 @@ paths_exclude_pattern = [
   "STATIC_AUDIT_*.json",
   "PACKAGE_VALIDATION_*.json",
   "tests/",
-  "wheels/*macosx_10_13_x86_64.whl",
   "*.sha256",
   "*.log",
   "*.diff",

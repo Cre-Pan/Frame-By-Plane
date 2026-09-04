@@ -92,18 +92,6 @@ FBP_COMPOSITOR_EFFECT_ITEMS = (
 FBP_COMPOSITOR_ADD_EFFECT_ITEMS = tuple(
     item for item in FBP_COMPOSITOR_EFFECT_ITEMS if item[0] != 'NONE'
 )
-FBP_COMPOSITOR_EFFECT_SETTING_NAMES = (
-    "effect_mix",
-    "glow_threshold",
-    "glow_strength",
-    "glow_size",
-    "blur_size",
-    "defocus_f_stop",
-    "defocus_blur_max",
-    "color_temperature",
-    "color_tint",
-)
-
 _FBP_ROOT_ROLE_BY_IDNAME = {
     "FBPCompositorLayerSetNode": "layer_set",
     "FBPCompositorOutputNode": "output",
@@ -2711,11 +2699,17 @@ def _build_compact_node_tree(scene, context=None, native_group=False, activate_c
     render = getattr(scene, "render", None)
     use_compositing_before = bool(getattr(render, "use_compositing", False)) if render is not None else False
     scene.compositing_node_group = tree
-    # Blender may update scene render state when a compositor root group is
-    # assigned. Restore the exact pre-sync value so FBP never opts native F12
-    # rendering into compositing as a side effect.
+    # Assigning a compositor root may change Blender's native render state. A
+    # managed FBP graph is renderable only after the explicit scene opt-in;
+    # detached graph maintenance preserves the artist's pre-sync state.
     if render is not None:
-        render.use_compositing = use_compositing_before
+        if activate_compositor or bool(getattr(scene, "fbp_compositor_enabled", False)):
+            _apply_render_compositor_opt_in(
+                scene,
+                managed_activation=bool(activate_compositor),
+            )
+        else:
+            render.use_compositing = use_compositing_before
     if callable(fbp_sync_layer_set_nodes):
         try:
             fbp_sync_layer_set_nodes(scene, tree=tree, source_node=group)
@@ -2752,7 +2746,6 @@ def _fbp_sync_compositor_impl(scene, context=None, native_group=False, activate_
         scene.fbp_compositor_previous_film_transparent = bool(
             scene.render.film_transparent
         )
-    scene.render.film_transparent = bool(scene.fbp_compositor_transparent)
     root = _ensure_shadow_root(scene)
     _sync_shadow_collections(scene, root)
     _sync_view_layers(scene, root)
@@ -2763,7 +2756,7 @@ def _fbp_sync_compositor_impl(scene, context=None, native_group=False, activate_
     generation = _mark_compositor_layer_node_schema(scene, tree)
     if activate_compositor:
         # ``enabled`` means the FBP graph is managed and may receive live syncs;
-        # it does not opt native Render Image into compositing.
+        # only ``fbp_compositor_render_enabled`` opts Render Image into it.
         scene.fbp_compositor_enabled = True
     group_count = len(fbp_compositor_group_collections(scene))
     effect_count = sum(
@@ -3096,10 +3089,63 @@ def fbp_compositor_assignment_count(scene, layer_id):
 
 
 def _update_transparency(scene, _context):
+    """Apply the desired alpha mode only while FBP is opted into rendering."""
+    if not bool(getattr(scene, "fbp_compositor_enabled", False)):
+        return
+    if not bool(getattr(scene, "fbp_compositor_render_enabled", False)):
+        return
     try:
         scene.render.film_transparent = bool(scene.fbp_compositor_transparent)
     except FBP_DATA_ERRORS:
         pass
+
+
+def _apply_render_compositor_opt_in(scene, *, managed_activation=False):
+    """Apply the explicit FBP render opt-in without touching an artist graph.
+
+    Blender 5.2 starts new scenes with ``RenderSettings.use_compositing`` set to
+    true even when no compositor graph exists.  Preserving that native default
+    after assigning the generated FBP graph therefore enables the compositor as
+    an accidental side effect.  FBP uses its own scene-level opt-in while its
+    managed graph is active and restores the pre-FBP values when it is not.
+    """
+    if scene is None:
+        return False
+    if not (
+        bool(managed_activation)
+        or bool(getattr(scene, "fbp_compositor_enabled", False))
+    ):
+        return False
+    if not managed_activation:
+        tree = getattr(scene, "compositing_node_group", None)
+        try:
+            if (
+                tree is None
+                or not bool(tree.get(FBP_COMPOSITOR_TREE_TAG, False))
+                or str(tree.get("fbp_compositor_scene_id", "") or "") != _scene_id(scene)
+            ):
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+    render = getattr(scene, "render", None)
+    if render is None:
+        return False
+    enabled = bool(getattr(scene, "fbp_compositor_render_enabled", False))
+    try:
+        render.use_compositing = enabled
+        render.film_transparent = (
+            bool(getattr(scene, "fbp_compositor_transparent", True))
+            if enabled
+            else bool(getattr(scene, "fbp_compositor_previous_film_transparent", False))
+        )
+    except FBP_DATA_ERRORS:
+        return False
+    return enabled
+
+
+def _update_render_compositor_opt_in(scene, _context):
+    """Update native render state only after the managed graph exists."""
+    _apply_render_compositor_opt_in(scene)
 
 
 _FBP_PENDING_COMPOSITOR_SCENES = set()
@@ -3816,7 +3862,11 @@ class FBP_OT_CompositorPackageAction(_FBP_CompositorPreviewPoll, Operator):
             if changed == 0 and 0 <= scene.fbp_compositor_layer_index < len(scene.fbp_compositor_layers):
                 scene.fbp_compositor_layers[scene.fbp_compositor_layer_index].expose_output = value
         try:
-            fbp_sync_compositor(scene)
+            fbp_sync_compositor(
+                scene,
+                context=context,
+                activate_compositor=True,
+            )
         except (RuntimeError, AttributeError, ReferenceError, TypeError, ValueError) as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
@@ -4482,6 +4532,7 @@ classes = (
 _SCENE_PROPERTIES = (
     "fbp_compositor_scene_id",
     "fbp_compositor_enabled",
+    "fbp_compositor_render_enabled",
     "fbp_compositor_transparent",
     "fbp_compositor_include_unassigned",
     "fbp_compositor_disable_unmanaged_layers",
@@ -4512,9 +4563,21 @@ def register():
     try:
         bpy.types.Scene.fbp_compositor_scene_id = StringProperty(options={'HIDDEN'})
         bpy.types.Scene.fbp_compositor_enabled = BoolProperty(default=False, options={'HIDDEN'})
+        bpy.types.Scene.fbp_compositor_render_enabled = BoolProperty(
+            name="Use Compositor in Render",
+            description=(
+                "Explicitly use the managed Frame By Plane compositor for renders; "
+                "leave disabled to build and edit the graph without activating it"
+            ),
+            default=False,
+            update=_update_render_compositor_opt_in,
+        )
         bpy.types.Scene.fbp_compositor_transparent = BoolProperty(
             name="Transparent Film",
-            description="Enable transparent film immediately for alpha-ready output",
+            description=(
+                "Use transparent film for alpha-ready output while the Frame By Plane "
+                "compositor is enabled for renders"
+            ),
             default=True,
             update=_update_transparency,
         )
@@ -4537,7 +4600,7 @@ def register():
         bpy.types.Scene.fbp_compositor_layers = CollectionProperty(type=FBP_CompositorLayer)
         bpy.types.Scene.fbp_compositor_layer_index = IntProperty(default=0)
         bpy.types.Scene.fbp_compositor_previous_group = PointerProperty(type=NodeTree)
-        bpy.types.Scene.fbp_compositor_previous_use_compositing = BoolProperty(default=True, options={'HIDDEN'})
+        bpy.types.Scene.fbp_compositor_previous_use_compositing = BoolProperty(default=False, options={'HIDDEN'})
         bpy.types.Scene.fbp_compositor_previous_film_transparent = BoolProperty(
             default=False,
             options={'HIDDEN'},

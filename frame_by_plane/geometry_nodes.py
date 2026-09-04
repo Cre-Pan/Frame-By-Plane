@@ -58,6 +58,11 @@ from .interface_preferences import (
     fbp_uilist_row_layouts,
 )
 from .feature_scope import fbp_feature_enabled
+from .generic_mesh_metadata import (
+    mesh_modifier_metadata,
+    remove_mesh_modifier,
+    set_mesh_modifier_metadata,
+)
 from .transactions import FBPTransaction
 
 from .custom_effects import (
@@ -5107,6 +5112,9 @@ def _fbp_interface_socket_for_name(inputs, socket_name):
     stripped = name.strip()
     if stripped.lower().startswith("base "):
         aliases.append(stripped[5:].strip())
+    elif stripped.lower() == "seed":
+        # Saved 7.1 files may still expose the former Felt Fuzz label.
+        aliases.append("Base Seed")
     if stripped.lower().endswith(" seed"):
         aliases.append("Seed")
     if stripped.lower() in {"base w", "animate w"}:
@@ -6003,6 +6011,15 @@ def _fbp_append_effect_group_from_library(
     return node_group
 
 
+def _fbp_prepare_canonical_effect_group(effect_id, node_group):
+    """Upgrade bundled contracts once, before per-rig private copies exist."""
+    if node_group is None:
+        return None
+    if effect_id == FBP_EFFECT_FELT_FUZZ and not _fbp_patch_alpha_mask(node_group):
+        return None
+    return node_group
+
+
 def _fbp_load_effect_group(effect_id):
     effect_id = fbp_normalize_effect_id(effect_id)
     definition = fbp_effect_definition(effect_id)
@@ -6034,7 +6051,10 @@ def _fbp_load_effect_group(effect_id):
 
     cached = _fbp_cached_effect_group(effect_id, asset_id)
     if cached is not None:
-        return cached
+        prepared = _fbp_prepare_canonical_effect_group(effect_id, cached)
+        if prepared is not None:
+            return prepared
+        _FBP_EFFECT_GROUP_CACHE.pop(effect_id, None)
 
     candidates = []
     # Exact-name lookup is O(1); the shared asset index handles renamed groups
@@ -6060,6 +6080,14 @@ def _fbp_load_effect_group(effect_id):
 
     if candidates:
         node_group = min(candidates, key=lambda item: item[0])[1]
+        unprepared_group = node_group
+        node_group = _fbp_prepare_canonical_effect_group(effect_id, node_group)
+        if node_group is None:
+            try:
+                if int(getattr(unprepared_group, "users", 0) or 0) == 0:
+                    _fbp_remove_node_group(unprepared_group)
+            except FBP_DATA_ERRORS:
+                pass
         if bool(definition.get("builtin", False)) and not _builtin_group_is_complete(node_group, definition):
             try:
                 if int(getattr(node_group, "users", 0) or 0) == 0:
@@ -6085,6 +6113,7 @@ def _fbp_load_effect_group(effect_id):
         node_group = _fbp_append_effect_group_from_library(
             effect_id, definition, canonical_name, source_names, asset_id, warn=False
         )
+        node_group = _fbp_prepare_canonical_effect_group(effect_id, node_group)
         if node_group is not None:
             if _builtin_group_is_complete(node_group, definition):
                 return _fbp_store_effect_group_cache(effect_id, node_group)
@@ -6115,6 +6144,7 @@ def _fbp_load_effect_group(effect_id):
     node_group = _fbp_append_effect_group_from_library(
         effect_id, definition, canonical_name, source_names, asset_id, warn=True
     )
+    node_group = _fbp_prepare_canonical_effect_group(effect_id, node_group)
     return _fbp_store_effect_group_cache(effect_id, node_group) if node_group else None
 
 
@@ -8251,6 +8281,8 @@ def _fbp_remove_duplicate_effect_modifiers(rig, effect_id, keep):
 
 
 def _fbp_cast_effect_value(prop_name, value):
+    if prop_name == "fbp_infinite_rotation_direction" and isinstance(value, str):
+        return -1.0 if value == "RIGHT" else 1.0
     enum_values = {
         "fbp_wind_pin_edge": {"LEFT": 0.0, "RIGHT": 1.0, "BOTTOM": 2.0, "TOP": 3.0, "ALL": 4.0, "VERTEX_GROUP": 5.0},
         "fbp_wind_motion_mode": {"SWAY": 0.0, "FLOW": 1.0, "RIPPLE": 2.0},
@@ -8539,8 +8571,6 @@ def fbp_update_geometry_effect(
             value = _fbp_effective_quality_value(
                 rig, effect_id, prop_name, value
             )
-        if prop_name == "fbp_infinite_rotation_direction":
-            value = -1.0 if str(value) == "RIGHT" else 1.0
         value = _fbp_cast_effect_value(prop_name, value)
         updated = _fbp_set_modifier_input(
             modifier,
@@ -25382,7 +25412,8 @@ def fbp_generic_mesh_effect_matrix():
         elif alpha_aware:
             supported = False
             reason = "Requires Frame By Plane image alpha and media metadata"
-        elif bool(definition.get("camera_dependent", False)):
+        elif bool(definition.get("camera_aware", False) or definition.get("camera_dependent", False)
+                  or definition.get("camera_contract")):
             supported = False
             reason = "Requires a Frame By Plane camera contract"
         else:
@@ -25417,28 +25448,27 @@ def _fbp_generic_mesh_modifier_snapshot(modifier):
     """Capture one modifier using short-lived Python values for rollback."""
     if modifier is None:
         return None
-    properties = {}
-    try:
-        keys = tuple(modifier.keys())
-    except FBP_DATA_ERRORS:
-        keys = ()
-    for key in keys:
-        try:
-            value = modifier[key]
-            if hasattr(value, "to_list"):
-                value = value.to_list()
-            else:
-                try:
-                    value = copy.deepcopy(value)
-                except (TypeError, ValueError, RuntimeError):
-                    pass
-            properties[str(key)] = value
-        except FBP_DATA_ERRORS:
+    inputs = {}
+    for item in modifier.node_group.interface.items_tree:
+        if getattr(item, "item_type", "") != "SOCKET" or item.in_out != "INPUT":
             continue
+        handle = _fbp_modifier_input_handle(modifier, item.identifier)
+        if handle is None:
+            continue
+        values = {}
+        for attr in ("type", "attribute_name", "value"):
+            if not hasattr(handle, attr):
+                continue
+            value = getattr(handle, attr)
+            if getattr(handle.bl_rna.properties.get(attr), "is_array", False):
+                value = tuple(value)
+            values[attr] = value
+        inputs[item.identifier] = values
     state = {
         "name": str(getattr(modifier, "name", "") or ""),
         "node_group": getattr(modifier, "node_group", None),
-        "properties": properties,
+        "inputs": inputs,
+        "metadata": mesh_modifier_metadata(modifier),
     }
     for attr in ("show_viewport", "show_render", "show_in_editmode", "show_on_cage"):
         try:
@@ -25454,18 +25484,13 @@ def _fbp_restore_generic_mesh_modifier(modifier, state):
     try:
         modifier.name = str(state.get("name", modifier.name) or modifier.name)
         modifier.node_group = state.get("node_group")
-        desired = dict(state.get("properties", {}) or {})
-        for key in tuple(modifier.keys()):
-            if str(key) not in desired:
-                try:
-                    del modifier[key]
-                except FBP_DATA_ERRORS:
-                    pass
-        for key, value in desired.items():
-            try:
-                modifier[key] = value
-            except FBP_DATA_ERRORS:
-                pass
+        for identifier, values in state.get("inputs", {}).items():
+            handle = _fbp_modifier_input_handle(modifier, identifier)
+            if handle is None:
+                return False
+            for attr, value in values.items():
+                setattr(handle, attr, value)
+        set_mesh_modifier_metadata(modifier, state.get("metadata", {}))
         for attr in ("show_viewport", "show_render", "show_in_editmode", "show_on_cage"):
             if attr in state:
                 try:
@@ -25754,9 +25779,9 @@ def fbp_generic_mesh_duplicate_effects(obj):
         return {}
     for modifier in modifiers:
         try:
-            if getattr(modifier, "type", "") != "NODES" or not bool(modifier.get("fbp_generic_mesh_effect", False)):
+            if not mesh_modifier_metadata(modifier).get("fbp_generic_mesh_effect", False):
                 continue
-            effect_id = fbp_normalize_effect_id(modifier.get("fbp_effect_id", ""))
+            effect_id = fbp_normalize_effect_id(mesh_modifier_metadata(modifier).get("fbp_effect_id", ""))
             if effect_id:
                 counts[effect_id] = counts.get(effect_id, 0) + 1
         except FBP_DATA_ERRORS:
@@ -25776,9 +25801,9 @@ def fbp_repair_generic_mesh_duplicates(obj):
         return 0
     for modifier in modifiers:
         try:
-            if getattr(modifier, "type", "") != "NODES" or not bool(modifier.get("fbp_generic_mesh_effect", False)):
+            if not mesh_modifier_metadata(modifier).get("fbp_generic_mesh_effect", False):
                 continue
-            effect_id = fbp_normalize_effect_id(modifier.get("fbp_effect_id", ""))
+            effect_id = fbp_normalize_effect_id(mesh_modifier_metadata(modifier).get("fbp_effect_id", ""))
             if not effect_id:
                 continue
             if effect_id in seen:
@@ -25790,7 +25815,7 @@ def fbp_repair_generic_mesh_duplicates(obj):
     removed = 0
     for modifier in reversed(duplicates):
         try:
-            obj.modifiers.remove(modifier)
+            remove_mesh_modifier(modifier)
             removed += 1
         except FBP_DATA_ERRORS:
             continue
@@ -25811,9 +25836,9 @@ def _fbp_generic_mesh_owned_effect_modifiers(obj, effect_id):
         try:
             if getattr(modifier, "type", "") != "NODES":
                 continue
-            if not bool(modifier.get("fbp_generic_mesh_effect", False)):
+            if not mesh_modifier_metadata(modifier).get("fbp_generic_mesh_effect", False):
                 continue
-            if fbp_normalize_effect_id(modifier.get("fbp_effect_id", "")) != effect_id:
+            if fbp_normalize_effect_id(mesh_modifier_metadata(modifier).get("fbp_effect_id", "")) != effect_id:
                 continue
             found.append((int(index), modifier))
         except FBP_DATA_ERRORS:
@@ -25839,7 +25864,7 @@ def _fbp_restore_generic_mesh_effect_state(obj, effect_id, snapshots):
     effect_id = fbp_normalize_effect_id(effect_id)
     try:
         for _index, modifier in reversed(_fbp_generic_mesh_owned_effect_modifiers(obj, effect_id)):
-            obj.modifiers.remove(modifier)
+            remove_mesh_modifier(modifier)
         for state in tuple(snapshots or ()):
             modifier = obj.modifiers.new(
                 name=str(state.get("name", "Frame By Plane Mesh Effect") or "Frame By Plane Mesh Effect"),
@@ -25902,9 +25927,9 @@ def fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, *, scene=None):
             if getattr(candidate, "type", "") != "NODES":
                 continue
             try:
-                owned = bool(candidate.get("fbp_generic_mesh_effect", False))
+                owned = bool(mesh_modifier_metadata(candidate).get("fbp_generic_mesh_effect", False))
                 candidate_effect_id = fbp_normalize_effect_id(
-                    candidate.get("fbp_effect_id", "")
+                    mesh_modifier_metadata(candidate).get("fbp_effect_id", "")
                 )
             except FBP_DATA_ERRORS:
                 owned = False
@@ -25918,23 +25943,28 @@ def fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, *, scene=None):
             created_modifier = True
         modifier.name = modifier_name
         modifier.node_group = source_group
-        modifier["fbp_generic_mesh_effect"] = True
-        modifier["fbp_effect_id"] = str(effect_id)
-        modifier["fbp_effect_schema"] = 1
-        modifier["fbp_input_topology"] = str(topology.get("classification", "MESH") or "MESH")
-        modifier["fbp_input_vertices"] = int(topology.get("vertices", 0) or 0)
-        modifier["fbp_input_edges"] = int(topology.get("edges", 0) or 0)
-        modifier["fbp_input_polygons"] = int(topology.get("polygons", 0) or 0)
+        set_mesh_modifier_metadata(modifier, {
+            "fbp_generic_mesh_effect": True,
+            "fbp_effect_id": str(effect_id),
+            "fbp_effect_schema": 1,
+            "fbp_input_topology": str(topology.get("classification", "MESH") or "MESH"),
+            "fbp_input_vertices": int(topology.get("vertices", 0) or 0),
+            "fbp_input_edges": int(topology.get("edges", 0) or 0),
+            "fbp_input_polygons": int(topology.get("polygons", 0) or 0),
+        })
         for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
             if not hasattr(obj, prop_name):
                 continue
             value = _fbp_cast_effect_value(prop_name, getattr(obj, prop_name))
             _fbp_set_modifier_input(modifier, source_group, socket_name, value, interface_inputs)
+            identifier = _fbp_interface_socket_for_name(interface_inputs, socket_name)
+            if not _fbp_effect_values_equal(_fbp_modifier_input_get(modifier, identifier), value):
+                raise RuntimeError(f"Generic Mesh input {socket_name} did not retain its requested value")
         valid, reason = fbp_validate_generic_mesh_object(obj)
         if not valid:
             if created_modifier:
                 try:
-                    obj.modifiers.remove(modifier)
+                    remove_mesh_modifier(modifier)
                 except FBP_DATA_ERRORS:
                     pass
             else:
@@ -25948,7 +25978,7 @@ def fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, *, scene=None):
     except FBP_DATA_ERRORS as exc:
         if created_modifier and modifier is not None:
             try:
-                obj.modifiers.remove(modifier)
+                remove_mesh_modifier(modifier)
             except FBP_DATA_ERRORS:
                 pass
         elif modifier is not None and previous_modifier_state is not None:
@@ -26076,8 +26106,8 @@ class FBP_OT_RemoveGenericMeshEffects(Operator):
         for obj in _fbp_selected_generic_mesh_targets(context):
             try:
                 for modifier in tuple(obj.modifiers):
-                    if getattr(modifier, "type", "") == "NODES" and bool(modifier.get("fbp_generic_mesh_effect", False)):
-                        obj.modifiers.remove(modifier)
+                    if mesh_modifier_metadata(modifier).get("fbp_generic_mesh_effect", False):
+                        remove_mesh_modifier(modifier)
                         removed += 1
             except FBP_DATA_ERRORS:
                 continue
@@ -29714,17 +29744,6 @@ class FBP_OT_SetEffectViewport(Operator):
         if changed == 0:
             return {"CANCELLED"}
         return {"FINISHED"}
-
-
-def fbp_effect_order_warning(rig, effect_id):
-    """Keep custom effect orders warning-free.
-
-    Frame by Plane only enforces structural barriers that Blender itself needs:
-    UV fields are evaluated before image sampling, color fields after sampling,
-    and mesh effects remain real modifiers.  Within each compatible chain the
-    user's order is authoritative, so a non-default order is not an error.
-    """
-    return ""
 
 
 def _fbp_effect_chain_key(effect_id):

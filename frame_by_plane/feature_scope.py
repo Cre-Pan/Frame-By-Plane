@@ -6,6 +6,8 @@ cannot accidentally remain visible or executable after its toggle is disabled.
 
 from __future__ import annotations
 
+from .generic_mesh_metadata import mesh_modifier_metadata
+
 from .support_policy import (
     FBP_FEATURE_DEFINITIONS,
     FBP_FEATURE_LTS,
@@ -131,7 +133,7 @@ def fbp_preview_feature_usage(scene=None):
                 continue
             for modifier in modifiers:
                 try:
-                    if bool(modifier.get("fbp_generic_mesh_effect", False)):
+                    if mesh_modifier_metadata(modifier).get("fbp_generic_mesh_effect", False):
                         generic_count += 1
                 except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                     continue

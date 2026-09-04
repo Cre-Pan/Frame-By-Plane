@@ -359,7 +359,7 @@ def _retire_generation_ui_on_reload():
     return retired
 
 
-_RETIRED_GENERATION_UI_HANDLES = _retire_generation_ui_on_reload()
+_retire_generation_ui_on_reload()
 _FBP_GENERATION_OPERATORS = []
 FBP_GENERATION_OVERLAY = {
     "handle": None,

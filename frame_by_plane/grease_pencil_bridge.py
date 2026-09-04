@@ -21,13 +21,14 @@ import bpy
 from bpy.app.handlers import persistent
 from bpy.props import (
     BoolProperty,
+    CollectionProperty,
     EnumProperty,
     FloatProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
 )
-from bpy.types import Operator, Panel, Menu
+from bpy.types import Operator, Panel, Menu, PropertyGroup, UIList
 from mathutils import Matrix, Vector
 
 from .ui_list_state import invoke_with_selection_modifiers, transient_get, transient_set
@@ -91,7 +92,17 @@ from .effects_registry import GP_MASK_EFFECT_IDS
 from .node_sockets import node_input, socket_is_available
 
 from .ui_icons import ui_icon, ui_icon_kwargs, ui_label_icon_kwargs
-from .ui_style import adaptive_row, configure_layout, empty_state, hint_row, section_gap, section_header
+from .ui_style import (
+    FBP_UI_EFFECT_MAX_ROWS,
+    FBP_UI_EFFECT_MIN_ROWS,
+    adaptive_row,
+    configure_layout,
+    empty_state,
+    hint_row,
+    list_rows,
+    section_gap,
+    section_header,
+)
 
 
 SERVICE_ID = "grease_pencil_bridge"
@@ -127,8 +138,8 @@ KEY_PLANE_DISTANCE = "fbp_gp_plane_distance"
 KEY_CAMERA_DISTANCE = "fbp_gp_camera_distance"
 KEY_CANVAS_KIND = "fbp_gp_canvas_kind"
 KEY_GP_NATIVE_EFFECT_ID = "fbp_gp_native_effect_id"
-KEY_GP_NATIVE_EFFECT_OPEN = "fbp_gp_native_effect_open"
 KEY_GP_NATIVE_EFFECT_REGISTRY = "fbp_gp_native_effect_registry"
+KEY_GP_NATIVE_EFFECT_ACTIVE = "fbp_gp_native_effect_active"
 KEY_CANVAS_SOLO = "fbp_gp_canvas_solo"
 KEY_CANVAS_CLIPPING = "fbp_gp_canvas_clipping"
 KEY_CYCLES_PROXY = "fbp_gp_cycles_proxy"
@@ -239,7 +250,27 @@ _GP_NATIVE_EFFECT_LIBRARY_GROUPS = (
     ("Utility", "MODIFIER", ("GP_ARRAY", "GP_MIRROR", "GP_FLIP")),
     ("Surface", "MOD_SHRINKWRAP", ("SURFACE_CONFORM",)),
 )
-_GP_UNAVAILABLE_EFFECTS_CACHE = None
+
+
+class FBP_GPNativeEffectItem(PropertyGroup):
+    """Lightweight UIList mirror of one FBP-owned native GP stack item."""
+
+    effect_id: StringProperty(
+        name="Effect ID",
+        description="Stable Frame By Plane Grease Pencil effect identifier",
+        default="",
+        options={"SKIP_SAVE"},
+    )
+    label: StringProperty(name="Effect", default="Effect", options={"SKIP_SAVE"})
+    backend: StringProperty(
+        name="Backend",
+        description="Blender Shader Effect or Grease Pencil Modifier backend",
+        default="",
+        options={"SKIP_SAVE"},
+    )
+    stack_index: IntProperty(name="Native Stack Index", default=-1, options={"SKIP_SAVE"})
+
+
 _GP_NATIVE_TYPE_SUPPORT_CACHE = {}
 _GP_NATIVE_ATTR_RESOLVE_CACHE = {}
 _GP_EFFECT_COMPATIBILITY_FILTER_ITEMS = (
@@ -261,6 +292,12 @@ _GP_EFFECT_COMPATIBILITY_FILTER_ITEMS = (
         "Show pixel, alpha or shader effects that do not have a native Grease Pencil backend",
     ),
 )
+_GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION = {
+    "NATIVE": ("Native", "CHECKMARK"),
+    "OBJECT_UNAVAILABLE": ("Unavailable", "ERROR"),
+    "GEOMETRY_CANDIDATE": ("GN Candidate", "GEOMETRY_NODES"),
+    "RASTER_ONLY": ("Raster", "IMAGE_DATA"),
+}
 _GP_OWNER_ID_LOOKUP_CACHE = None
 _GP_OBJECT_TYPES = frozenset({"GREASEPENCIL"})
 _GP_NATIVE_ATTR_ALIASES = {
@@ -329,8 +366,6 @@ _GP_NATIVE_ATTR_ALIASES = {
 
 def _clear_gp_native_effect_ui_cache():
     """Clear lightweight GP native-effect UI caches."""
-    global _GP_UNAVAILABLE_EFFECTS_CACHE
-    _GP_UNAVAILABLE_EFFECTS_CACHE = None
     _GP_NATIVE_TYPE_SUPPORT_CACHE.clear()
     _GP_NATIVE_ATTR_RESOLVE_CACHE.clear()
 
@@ -361,8 +396,9 @@ _RNA_PROPERTIES = (
     "fbp_gp_ui_show_unavailable_effects",
     "fbp_gp_effect_compatibility_filter",
     "fbp_gp_effect_compatibility_search",
-    "fbp_gp_ui_show_effect_library",
-    "fbp_gp_ui_show_effect_settings",
+    "fbp_gp_effect_items",
+    "fbp_gp_effect_items_index",
+    "fbp_gp_effect_items_signature",
     "fbp_gp_ui_show_material_52",
     "fbp_gp_canvas_render",
     "fbp_gp_cycles_proxy",
@@ -2668,6 +2704,22 @@ def _active_gp_material_style(canvas):
     return material, style
 
 
+def _gp_external_settings_undo_safe(canvas):
+    """GP edit undo does not store Material/Object IDs in Blender 5.2.
+
+    Keep native material writes outside Edit Mode. Do not toggle modes inside
+    a slider update or try to repair material values from an undo_post handler.
+    Check all objects: multi-object Edit Mode and a pinned panel have the same
+    native history limitation even when this particular canvas is not active.
+    """
+    try:
+        if str(getattr(canvas, 'mode', 'OBJECT')) == 'EDIT':
+            return False
+        return not bool(getattr(bpy.context, 'edit_object', None))
+    except FBP_DATA_ERRORS:
+        return False
+
+
 def _draw_gp_52_material_settings(layout, canvas):
     """Expose Blender 5.2 Dots/Squares placement and randomization controls."""
     material, style = _active_gp_material_style(canvas)
@@ -2692,6 +2744,14 @@ def _draw_gp_52_material_settings(layout, canvas):
     if material is not None:
         name_row = box.row(align=True)
         name_row.label(text=str(getattr(material, "name", "Material") or "Material"), icon="MATERIAL")
+
+    undo_safe = _gp_external_settings_undo_safe(canvas)
+    if not undo_safe:
+        hint_row(box, "Material Undo requires Object Mode", icon="INFO")
+        box.operator("object.mode_set", text="Edit Material in Object Mode", icon="OBJECT_DATA").mode = 'OBJECT'
+    controls = box.column()
+    controls.enabled = undo_safe
+    box = controls
 
     mode_row = box.row(align=True)
     mode_row.label(text="Shape", icon="STROKE")
@@ -6016,14 +6076,131 @@ def _gp_native_effect_stack_state(canvas):
     return (active, tuple(ordered), backend_lengths, duplicate_counts)
 
 
+def _gp_native_effect_items_signature(ordered_active):
+    """Return a primitive signature for the managed part of both GP backends."""
+    return "|".join(
+        f"{str(effect_id)}:{str(backend)}:{int(index)}:{_gp_native_item_name(item)}"
+        for effect_id, item, backend, index in tuple(ordered_active or ())
+    )
+
+
+def _gp_native_effect_index_update(canvas, _context):
+    """Persist UIList selection by stable effect ID instead of transient index."""
+    try:
+        items = canvas.fbp_gp_effect_items
+        index = int(canvas.fbp_gp_effect_items_index)
+        if 0 <= index < len(items):
+            canvas[KEY_GP_NATIVE_EFFECT_ACTIVE] = str(items[index].effect_id or "").upper()
+    except FBP_DATA_ERRORS:
+        pass
+
+
+def _gp_sync_native_effect_items(canvas, ordered_active=None):
+    """Synchronize the virtual GP UIList outside redraw-sensitive scan paths."""
+    if not is_gp_drawing_canvas(canvas) or not hasattr(canvas, "fbp_gp_effect_items"):
+        return ()
+    if ordered_active is None:
+        _active, ordered_active, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
+    ordered_active = tuple(ordered_active or ())
+    signature = _gp_native_effect_items_signature(ordered_active)
+    try:
+        items = canvas.fbp_gp_effect_items
+        previous_id = str(canvas.get(KEY_GP_NATIVE_EFFECT_ACTIVE, "") or "").upper()
+        if not previous_id and 0 <= int(canvas.fbp_gp_effect_items_index) < len(items):
+            previous_id = str(items[int(canvas.fbp_gp_effect_items_index)].effect_id or "").upper()
+        items.clear()
+        for effect_id, _native_item, backend, stack_index in ordered_active:
+            definition = _gp_native_effect_definition(effect_id)
+            row = items.add()
+            row.effect_id = str(effect_id or "").upper()
+            row.label = str(definition[1] if definition else effect_id.replace("_", " ").title())
+            row.backend = str(backend or "")
+            row.stack_index = int(stack_index)
+
+        ids = [str(row.effect_id or "").upper() for row in items]
+        if previous_id in ids:
+            index = ids.index(previous_id)
+        elif ids:
+            index = min(max(0, int(getattr(canvas, "fbp_gp_effect_items_index", 0))), len(ids) - 1)
+        else:
+            index = 0
+        canvas.fbp_gp_effect_items_index = index
+        canvas.fbp_gp_effect_items_signature = signature
+        if ids:
+            canvas[KEY_GP_NATIVE_EFFECT_ACTIVE] = ids[index]
+        else:
+            try:
+                del canvas[KEY_GP_NATIVE_EFFECT_ACTIVE]
+            except KeyError:
+                pass
+        return tuple(ids)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not synchronize the Grease Pencil Effect Stack list", exc)
+        return ()
+
+
+def _gp_schedule_native_effect_items_sync(canvas, ordered_active):
+    """Queue one safe virtual-list rebuild when Blender's native stacks change."""
+    if not is_gp_drawing_canvas(canvas) or not hasattr(canvas, "fbp_gp_effect_items_signature"):
+        return False
+    desired = _gp_native_effect_items_signature(ordered_active)
+    try:
+        if str(canvas.fbp_gp_effect_items_signature or "") == desired:
+            return False
+        runtime_key = fbp_obj_runtime_key(canvas)
+        canvas_name = str(getattr(canvas, "name", "") or "")
+    except FBP_DATA_ERRORS:
+        return False
+
+    def _sync_rows():
+        objects = fbp_main_data_collection("objects", None)
+        if objects is None:
+            return None
+        target = fbp_find_id_by_runtime_key(objects, runtime_key, canvas_name)
+        if target is not None and is_gp_drawing_canvas(target):
+            _gp_sync_native_effect_items(target)
+        return None
+
+    schedule_once(
+        f"fbp_gp_effect_items_sync.{runtime_key or canvas_name}",
+        _sync_rows,
+        first_interval=0.0,
+    )
+    return True
+
+
+def _gp_active_native_effect_id(canvas, ordered_active=None):
+    """Resolve the selected UIList effect while surviving rebuilds and Undo."""
+    if not is_gp_drawing_canvas(canvas):
+        return ""
+    ordered_ids = tuple(
+        str(effect_id or "").upper()
+        for effect_id, _item, _backend, _index in tuple(ordered_active or ())
+    ) if ordered_active is not None else tuple(_gp_native_effect_instances(canvas))
+    valid = set(ordered_ids)
+    try:
+        items = canvas.fbp_gp_effect_items
+        index = int(canvas.fbp_gp_effect_items_index)
+        if 0 <= index < len(items):
+            selected = str(items[index].effect_id or "").upper()
+            if selected in valid:
+                return selected
+        stored = str(canvas.get(KEY_GP_NATIVE_EFFECT_ACTIVE, "") or "").upper()
+        if stored in valid:
+            return stored
+    except FBP_DATA_ERRORS:
+        pass
+    return ordered_ids[0] if ordered_ids else ""
+
+
 _GP_NATIVE_EFFECT_DEFAULTS = {
     "PIXELATE": (("size", (8, 8)), ("use_antialiasing", False)),
-    "RIM": (("offset", (2, -2)), ("blur", (1, 1))),
-    "SHADOW": (("offset", (8, -8)), ("blur", (4, 4))),
+    "RIM": (("offset", (2, -2)), ("blur", (1, 1)), ("samples", 4)),
+    "SHADOW": (("offset", (8, -8)), ("blur", (4, 4)), ("samples", 4)),
     "SWIRL": (("radius", 1.0), ("angle", 0.785398)),
     "WAVE_WARP": (("amplitude", 0.05), ("period", 20.0), ("phase", 0.0)),
     "GAUSSIAN_BLUR": (("size", (6.0, 6.0)), ("samples", 8)),
-    "GP_GLOW": (("threshold", 0.35), ("intensity", 0.35), ("blur", (6.0, 6.0))),
+    "GP_GLOW": (("threshold", 0.35), ("opacity", 0.35), ("size", (6.0, 6.0)), ("samples", 8)),
     "GP_COLORIZE": (("factor", 1.0),),
     "GP_OPACITY": (("factor", 1.0),),
     "GP_FLIP": (("flip_horizontal", False), ("flip_vertical", True)),
@@ -6032,7 +6209,7 @@ _GP_NATIVE_EFFECT_DEFAULTS = {
     "HUE_SATURATION": (("hue", 0.5), ("saturation", 1.0), ("value", 1.0)),
     "RECOLOR": (("factor", 1.0),),
     "THICKNESS": (("thickness_factor", 1.1),),
-    "CUTOUT_OUTLINE": (("thickness", 1), ("sample_length", 0.2)),
+    "CUTOUT_OUTLINE": (("thickness", 1), ("sample_length", 0.2), ("subdivision", 3)),
     "GP_ARRAY": (("count", 2), ("relative_offset", (0.08, 0.0, 0.0))),
     "GP_BUILD": (("start_frame", 1), ("end_frame", 40)),
     "GP_DASH": (("dash_length", 0.18), ("gap_length", 0.08)),
@@ -6083,6 +6260,29 @@ def _gp_move_native_effect(canvas, effect_id, direction):
         move = getattr(collection, "move", None)
         if callable(move):
             move(index, target)
+            _gp_sync_native_effect_items(canvas)
+            return True
+        definition = _gp_native_effect_definition(effect_id)
+        backend = str(definition[3] if definition else "")
+        context = getattr(bpy, "context", None)
+        if context is None:
+            return False
+        with context.temp_override(object=canvas, active_object=canvas):
+            if backend == "SHADER_FX" and bpy.ops.object.shaderfx_move_to_index.poll():
+                result = bpy.ops.object.shaderfx_move_to_index(
+                    shaderfx=str(getattr(item, "name", "") or ""),
+                    index=target,
+                )
+            elif backend == "MODIFIER" and bpy.ops.object.modifier_move_to_index.poll():
+                result = bpy.ops.object.modifier_move_to_index(
+                    modifier=str(getattr(item, "name", "") or ""),
+                    index=target,
+                    use_selected_objects=False,
+                )
+            else:
+                return False
+        if "FINISHED" in result:
+            _gp_sync_native_effect_items(canvas)
             return True
     except FBP_DATA_ERRORS:
         pass
@@ -6148,6 +6348,7 @@ def _gp_add_native_effect(canvas, effect_id):
                     setattr(item, target_attr, target)
             except FBP_DATA_ERRORS:
                 pass
+        _gp_sync_native_effect_items(canvas)
         return item
     except FBP_DATA_ERRORS as exc:
         fbp_warn(f"Could not add native Grease Pencil effect {effect_id}", exc)
@@ -6191,6 +6392,8 @@ def _gp_repair_native_effect_duplicates(canvas):
                 removed += 1
             except FBP_DATA_ERRORS as exc:
                 fbp_warn(f"Could not remove duplicate native Grease Pencil effect {effect_id}", exc)
+    if removed:
+        _gp_sync_native_effect_items(canvas)
     return removed
 
 
@@ -6214,6 +6417,8 @@ def _gp_remove_native_effect(canvas, effect_id):
             removed = True
     except FBP_DATA_ERRORS as exc:
         fbp_warn(f"Could not remove native Grease Pencil effect {effect_id}", exc)
+    if removed:
+        _gp_sync_native_effect_items(canvas)
     return removed
 
 
@@ -6247,40 +6452,6 @@ def _gp_native_item_name(item):
         return ""
 
 
-def _gp_native_effect_open(item, default=True):
-    """Return whether the inline Frame By Plane settings for an item are open."""
-    try:
-        value = item.get(KEY_GP_NATIVE_EFFECT_OPEN, None)
-        if value is not None:
-            return bool(value)
-    except FBP_DATA_ERRORS:
-        pass
-    _owner, _registry, _token, metadata = _gp_native_effect_registry_metadata(item)
-    return bool(metadata.get("open", bool(default)))
-
-
-def _gp_set_native_effect_open(item, state):
-    try:
-        item[KEY_GP_NATIVE_EFFECT_OPEN] = bool(state)
-        if bool(item.get(KEY_GP_NATIVE_EFFECT_OPEN, not bool(state))) == bool(state):
-            return True
-    except FBP_DATA_ERRORS:
-        pass
-    return _gp_update_native_effect_registry(item, open=bool(state))
-
-
-def _gp_set_all_native_effects_open(canvas, state):
-    """Expand or collapse every managed native GP effect in one action."""
-    _active, ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
-    changed = 0
-    for _effect_id, item, _backend, _index in ordered:
-        if _gp_native_effect_open(item, default=True) == bool(state):
-            continue
-        if _gp_set_native_effect_open(item, bool(state)):
-            changed += 1
-    return changed
-
-
 _GP_NATIVE_EFFECT_UI_PROPS = {
     "PIXELATE": ((("size", "Pixel Size", False), ("use_antialiasing", "Antialiasing", False)),),
     "RIM": ((("rim_color", "Color", False),), (("offset", "Offset", False), ("blur", "Blur", False)), (("mode", "Blend", False),)),
@@ -6288,7 +6459,7 @@ _GP_NATIVE_EFFECT_UI_PROPS = {
     "SWIRL": ((("radius", "Radius", False), ("angle", "Angle", False)), (("use_transparent", "Transparent", False),)),
     "WAVE_WARP": ((("orientation", "Direction", False),), (("amplitude", "Amplitude", False), ("period", "Period", False)), (("phase", "Phase", False),)),
     "GAUSSIAN_BLUR": ((("size", "Size", False), ("samples", "Samples", False)), (("rotation", "Rotation", False),)),
-    "GP_GLOW": ((("glow_color", "Color", False),), (("threshold", "Threshold", True), ("intensity", "Intensity", True)), (("blur", "Blur", False),)),
+    "GP_GLOW": ((("glow_color", "Color", False),), (("threshold", "Threshold", True), ("opacity", "Opacity", True)), (("size", "Size", False), ("samples", "Samples", False))),
     "GP_COLORIZE": ((("low_color", "Low", False), ("high_color", "High", False)), (("factor", "Factor", True), ("color_mode", "Affect", False))),
     "GP_OPACITY": ((("factor", "Opacity", True), ("use_uniform_opacity", "Uniform", False)),),
     "GP_FLIP": ((("flip_horizontal", "Horizontal", False), ("flip_vertical", "Vertical", False)),),
@@ -6309,6 +6480,33 @@ _GP_NATIVE_EFFECT_UI_PROPS = {
     "GP_TEXTURE": ((("uv_offset", "Offset", False),), (("uv_scale", "Scale", False), ("uv_rotation", "Rotation", False))),
     "GP_TIME_OFFSET": ((("frame_offset", "Offset", False), ("frame_scale", "Scale", False)), (("use_custom_frame_range", "Frame Range", False),)),
     "SURFACE_CONFORM": ((("target", "Target", False),), (("wrap_method", "Method", False), ("wrap_mode", "Snap", False)), (("surface_offset", "Offset", False),)),
+}
+
+_GP_NATIVE_EFFECT_ADVANCED_UI_PROPS = {
+    "RIM": (
+        (("mask_color", "Mask Color", False), ("samples", "Samples", False)),
+    ),
+    "SHADOW": (
+        (("samples", "Samples", False), ("use_wave", "Wave", False)),
+        (("orientation", "Direction", False),),
+        (("amplitude", "Amplitude", False), ("period", "Period", False)),
+        (("phase", "Phase", False),),
+        (("use_object", "Use Object", False), ("object", "Object", False)),
+        (("scale", "Scale", False),),
+    ),
+    "GAUSSIAN_BLUR": (
+        (("use_dof_mode", "Depth of Field", False),),
+    ),
+    "GP_GLOW": (
+        (("mode", "Mode", False), ("blend_mode", "Blend", False)),
+        (("select_color", "Select Color", False),),
+        (("rotation", "Rotation", False), ("use_glow_under", "Glow Under", False)),
+    ),
+    "CUTOUT_OUTLINE": (
+        (("subdivision", "Subdivisions", False),),
+        (("outline_material", "Material", False),),
+        (("object", "Target", False),),
+    ),
 }
 
 
@@ -6333,20 +6531,20 @@ def _gp_draw_native_effect_prop_spec(layout, item, spec):
     return drawn
 
 
-def _draw_gp_native_effect_settings(layout, effect_id, item, *, index=-1, total=1, duplicate_count=1):
+def _gp_native_effect_prop_spec_available(item, spec):
+    return any(
+        _gp_resolve_native_attr(item, attr_name)
+        for row_spec in tuple(spec or ())
+        for attr_name, _label, _slider in tuple(row_spec or ())
+    )
+
+
+def _draw_gp_native_effect_settings(layout, effect_id, item, *, duplicate_count=1):
     box = layout.box()
     header = box.row(align=True)
     definition = _gp_native_effect_definition(effect_id)
     label = definition[1] if definition else effect_id.replace("_", " ").title()
     icon = definition[2] if definition else "MODIFIER"
-    expanded = _gp_native_effect_open(item, default=True)
-    twist = header.operator(
-        "fbp.toggle_gp_native_effect_settings",
-        text="",
-        icon="DOWNARROW_HLT" if expanded else "RIGHTARROW_THIN",
-        emboss=False,
-    )
-    twist.effect_id = effect_id
     header.label(text=label, icon=icon)
 
     if int(duplicate_count or 0) > 1:
@@ -6362,33 +6560,68 @@ def _draw_gp_native_effect_settings(layout, effect_id, item, *, index=-1, total=
         name.alignment = 'RIGHT'
         name.label(text=item_name)
 
-    up_row = header.row(align=True)
-    up_row.enabled = bool(index > 0)
-    up = up_row.operator("fbp.move_gp_native_effect", text="", icon="TRIA_UP", emboss=False)
-    up.effect_id = effect_id
-    up.direction = -1
-    down_row = header.row(align=True)
-    down_row.enabled = bool(index >= 0 and index < total - 1)
-    down = down_row.operator("fbp.move_gp_native_effect", text="", icon="TRIA_DOWN", emboss=False)
-    down.effect_id = effect_id
-    down.direction = 1
     reset_row = header.row(align=True)
     reset_row.enabled = _gp_native_effect_has_defaults(effect_id)
     reset = reset_row.operator("fbp.reset_gp_native_effect", text="", icon=ui_icon("action.reset"), emboss=False)
     reset.effect_id = effect_id
     _gp_draw_native_bool_icon(header, item, "show_viewport", icon_on="RESTRICT_VIEW_OFF", icon_off="RESTRICT_VIEW_ON")
     _gp_draw_native_bool_icon(header, item, "show_render", icon_on="RESTRICT_RENDER_OFF", icon_off="RESTRICT_RENDER_ON")
-    remove = header.operator("fbp.toggle_gp_native_effect", text="", icon=ui_icon("action.delete"), emboss=False)
-    remove.effect_id = effect_id
-
-    if not expanded:
-        return
-
     spec = _GP_NATIVE_EFFECT_UI_PROPS.get(str(effect_id or "").upper(), ())
-    if not _gp_draw_native_effect_prop_spec(box, item, spec):
+    drew_settings = _gp_draw_native_effect_prop_spec(box, item, spec)
+    advanced_spec = _GP_NATIVE_EFFECT_ADVANCED_UI_PROPS.get(
+        str(effect_id or "").upper(), ()
+    )
+    if advanced_spec and _gp_native_effect_prop_spec_available(item, advanced_spec):
+        advanced = box.row(align=True)
+        advanced.active = False
+        advanced.label(text="Advanced", icon="PREFERENCES")
+        drew_settings |= _gp_draw_native_effect_prop_spec(
+            box, item, advanced_spec
+        )
+    if not drew_settings:
         fallback = box.row(align=True)
         fallback.enabled = False
         fallback.label(text="Native Settings in Blender", icon="BLANK1")
+
+
+class FBP_UL_GPNativeEffectStack(UIList):
+    """Real Blender UIList backed by a safe mirror of both native GP stacks."""
+
+    bl_idname = "FBP_UL_GPNativeEffectStack"
+
+    def draw_item(self, _context, layout, data, item, _icon, _active_data, _active_propname, _index):
+        effect_id = str(getattr(item, "effect_id", "") or "").upper()
+        definition = _gp_native_effect_definition(effect_id)
+        label = str(getattr(item, "label", "Effect") or "Effect")
+        effect_icon = definition[2] if definition else "MODIFIER"
+        backend = str(getattr(item, "backend", "") or "")
+
+        if self.layout_type in {"GRID"}:
+            layout.alignment = "CENTER"
+            layout.label(text="", icon=effect_icon)
+            return
+
+        row = layout.row(align=True)
+        row.label(text="", icon="GRIP_V")
+        row.label(text=label, icon=effect_icon)
+        row.label(
+            text="",
+            icon="SHADING_RENDERED" if backend == "SHADER_FX" else "MODIFIER",
+        )
+        _definition, _collection, native_item, _stack_index = _gp_native_effect_location(data, effect_id)
+        if native_item is None:
+            warning = row.row(align=True)
+            warning.alert = True
+            warning.label(text="", icon="ERROR")
+            return
+        _gp_draw_native_bool_icon(
+            row, native_item, "show_viewport",
+            icon_on="RESTRICT_VIEW_OFF", icon_off="RESTRICT_VIEW_ON",
+        )
+        _gp_draw_native_bool_icon(
+            row, native_item, "show_render",
+            icon_on="RESTRICT_RENDER_OFF", icon_off="RESTRICT_RENDER_ON",
+        )
 
 
 def fbp_gp_effect_backend_matrix():
@@ -6505,70 +6738,6 @@ def _fbp_gp_effect_compatibility_report_text(canvas=None):
     return "\n".join(lines)
 
 
-def _gp_unavailable_effects():
-    """Return the cached public FBP effects without a native GP backend."""
-    global _GP_UNAVAILABLE_EFFECTS_CACHE
-    if _GP_UNAVAILABLE_EFFECTS_CACHE is not None:
-        return _GP_UNAVAILABLE_EFFECTS_CACHE
-    try:
-        disabled = [
-            (record["label"], record["effect_id"], record["tier"], record["reason"])
-            for record in fbp_gp_effect_backend_matrix()
-            if record["tier"] != "NATIVE"
-        ]
-        disabled.sort(key=lambda item: item[0].lower())
-        _GP_UNAVAILABLE_EFFECTS_CACHE = tuple(disabled)
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        _GP_UNAVAILABLE_EFFECTS_CACHE = ()
-    return _GP_UNAVAILABLE_EFFECTS_CACHE
-
-
-def _gp_draw_native_effect_button(grid, canvas, active_items, effect_id, label=None):
-    definition = _gp_native_effect_definition(effect_id)
-    if definition is None:
-        return False
-    _effect_id, default_label, icon, _backend, _native_type = definition
-    supported = _gp_native_effect_supported(canvas, definition)
-    active = active_items.get(_effect_id) is not None
-    cell = grid.row(align=True)
-    cell.enabled = bool(supported or active)
-    op = cell.operator(
-        "fbp.toggle_gp_native_effect",
-        text=str(label or default_label),
-        icon="CHECKBOX_HLT" if active else (icon if supported else "LOCKED"),
-        depress=active,
-    )
-    op.effect_id = _effect_id
-    return True
-
-
-def _gp_draw_native_effect_library(layout, canvas, active_items, *, compact=False):
-    """Draw available native GP effects grouped by artistic purpose."""
-    drawn = set()
-    columns = 2 if not compact else 1
-    for group_label, group_icon, effect_ids in _GP_NATIVE_EFFECT_LIBRARY_GROUPS:
-        group_ids = [effect_id for effect_id in effect_ids if _gp_native_effect_definition(effect_id) is not None]
-        if not group_ids:
-            continue
-        supported_count = sum(1 for effect_id in group_ids if _gp_native_effect_supported(canvas, _gp_native_effect_definition(effect_id)))
-        active_count = sum(1 for effect_id in group_ids if active_items.get(str(effect_id).upper()) is not None)
-        label = group_label if supported_count else f"{group_label} — Unavailable"
-        row = layout.row(align=True)
-        row.enabled = bool(supported_count or active_count)
-        row.label(text=label, icon=group_icon if supported_count or active_count else "LOCKED")
-        grid = layout.grid_flow(row_major=True, columns=columns, even_columns=True, even_rows=False, align=True)
-        for effect_id in group_ids:
-            if _gp_draw_native_effect_button(grid, canvas, active_items, effect_id):
-                drawn.add(str(effect_id).upper())
-    # Safety net for definitions added later without being assigned to a group.
-    ungrouped = [effect_id for effect_id in _GP_NATIVE_EFFECT_DEFINITIONS if effect_id not in drawn]
-    if ungrouped:
-        layout.label(text="Other", icon="MODIFIER")
-        grid = layout.grid_flow(row_major=True, columns=columns, even_columns=True, even_rows=False, align=True)
-        for effect_id in ungrouped:
-            _gp_draw_native_effect_button(grid, canvas, active_items, effect_id)
-
-
 def draw_gp_native_effects_ui(layout, context, canvas=None):
     """Draw Grease Pencil effects with the same stack-first rhythm as image planes."""
     canvas = canvas or _active_canvas(context)
@@ -6576,8 +6745,15 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
         layout.label(text="Grease Pencil masks do not own effects", icon="BLANK1")
         return
 
-    active_items, ordered_active, backend_lengths, duplicate_counts = _gp_native_effect_stack_state(canvas)
+    if not _gp_external_settings_undo_safe(canvas):
+        hint_row(layout, "Effect Undo requires Object Mode", icon="INFO")
+        layout.operator("object.mode_set", text="Edit Effects in Object Mode", icon="OBJECT_DATA").mode = 'OBJECT'
+        layout = layout.column()
+        layout.enabled = False
+
+    _active_items, ordered_active, _backend_lengths, duplicate_counts = _gp_native_effect_stack_state(canvas)
     active_count = len(ordered_active)
+    _gp_schedule_native_effect_items_sync(canvas, ordered_active)
 
     header = layout.row(align=True)
     header.label(text="Grease Pencil Effects", **ui_label_icon_kwargs("menu.gp_layer", fallback="menu.gp_layer"))
@@ -6602,43 +6778,36 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
 
     stack_row = layout.row(align=False)
     stack_box = stack_row.box()
-    stack_header = stack_box.row(align=True)
-    stack_header.label(text="Effect Stack", icon="SHADERFX")
-    stack_header.label(text="Native Grease Pencil backend", icon="CHECKMARK")
-    if active_count:
-        expand = stack_header.operator(
-            "fbp.set_all_gp_native_effect_settings",
-            text="",
-            icon="DOWNARROW_HLT",
-            emboss=False,
-        )
-        expand.expanded = True
-        collapse = stack_header.operator(
-            "fbp.set_all_gp_native_effect_settings",
-            text="",
-            icon="RIGHTARROW_THIN",
-            emboss=False,
-        )
-        collapse.expanded = False
+    stack_header = section_header(
+        stack_box,
+        "Effect Stack",
+        icon="SHADERFX",
+        count=active_count,
+    )
+    stack_header.label(text="Shader FX + Modifiers", icon="CHECKMARK")
+    stack_rows = list_rows(
+        active_count,
+        minimum=FBP_UI_EFFECT_MIN_ROWS,
+        maximum=FBP_UI_EFFECT_MAX_ROWS,
+    )
+    stack_box.template_list(
+        "FBP_UL_GPNativeEffectStack",
+        "STACK",
+        canvas,
+        "fbp_gp_effect_items",
+        canvas,
+        "fbp_gp_effect_items_index",
+        rows=stack_rows,
+    )
 
-    if active_count:
-        backend_labels = {"SHADER_FX": ("Shader Effects", "SHADING_RENDERED"), "MODIFIER": ("Modifiers", "MODIFIER")}
-        last_backend = None
-        for effect_id, item, backend, stack_index in ordered_active:
-            if backend != last_backend:
-                label, icon = backend_labels.get(backend, ("Effects", "SHADERFX"))
-                stack_box.label(text=label, icon=icon)
-                last_backend = backend
-            _draw_gp_native_effect_settings(
-                stack_box, effect_id, item,
-                index=stack_index,
-                total=backend_lengths.get(backend, 1),
-                duplicate_count=duplicate_counts.get(effect_id, 1),
-            )
-    else:
-        empty = stack_box.row(align=True)
-        empty.enabled = False
-        empty.label(text="No Grease Pencil effects", icon="BLANK1")
+    active_effect_id = _gp_active_native_effect_id(canvas, ordered_active)
+    _definition, active_collection, active_item, active_stack_index = _gp_native_effect_location(
+        canvas, active_effect_id
+    )
+    try:
+        active_backend_total = len(active_collection) if active_collection is not None else 0
+    except FBP_DATA_ERRORS:
+        active_backend_total = 0
 
     controls = stack_row.column(align=True)
     try:
@@ -6646,21 +6815,44 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
         fbp_set_ui_units_x(controls, 1.25)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
-    controls.menu("FBP_MT_gp_native_effects", text="", icon="ADD")
+    controls.menu("FBP_MT_gp_native_effect_actions", text="", icon="COLLAPSEMENU")
     controls.separator()
-    controls.prop(
-        canvas, "fbp_gp_ui_show_effect_library",
-        text="",
-        toggle=True,
-        icon="DOWNARROW_HLT" if bool(getattr(canvas, "fbp_gp_ui_show_effect_library", False)) else "RIGHTARROW_THIN",
+    move_group = controls.column(align=True)
+    up_row = move_group.row(align=True)
+    up_row.enabled = bool(active_item is not None and active_stack_index > 0)
+    up = up_row.operator("fbp.move_gp_native_effect", text="", icon="SORT_DESC")
+    up.effect_id = active_effect_id
+    up.direction = -1
+    down_row = move_group.row(align=True)
+    down_row.enabled = bool(
+        active_item is not None
+        and active_stack_index >= 0
+        and active_stack_index < active_backend_total - 1
     )
+    down = down_row.operator("fbp.move_gp_native_effect", text="", icon="SORT_ASC")
+    down.effect_id = active_effect_id
+    down.direction = 1
+    controls.separator()
+    remove = controls.row(align=True)
+    remove.enabled = bool(active_item is not None)
+    remove_op = remove.operator("fbp.toggle_gp_native_effect", text="", icon="TRASH")
+    remove_op.effect_id = active_effect_id
+    controls.menu("FBP_MT_gp_native_effects", text="", icon="ADD")
 
-    show_library = bool(getattr(canvas, "fbp_gp_ui_show_effect_library", False)) or not active_count
-    if show_library:
-        library = layout.box()
-        title = library.row(align=True)
-        title.label(text="Add Grease Pencil Effect", icon="ADD")
-        _gp_draw_native_effect_library(library, canvas, active_items)
+    if active_effect_id and active_item is not None:
+        _draw_gp_native_effect_settings(
+            layout,
+            active_effect_id,
+            active_item,
+            duplicate_count=duplicate_counts.get(active_effect_id, 1),
+        )
+    elif not active_count:
+        hint_row(
+            layout,
+            "No effects. Use + to add one.",
+            icon="INFO",
+            disabled=True,
+        )
 
     show_compatibility = bool(getattr(canvas, "fbp_gp_ui_show_unavailable_effects", False))
     compatibility = layout.box()
@@ -6682,10 +6874,22 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
             actual_tier = str(record.get("tier", "RASTER_ONLY") or "RASTER_ONLY")
             counts[actual_tier] = counts.get(actual_tier, 0) + 1
         summary = compatibility.row(align=True)
-        summary.label(text=f"Native supported {counts['NATIVE']}", icon="CHECKMARK")
-        summary.label(text=f"Native unavailable {counts['OBJECT_UNAVAILABLE']}", icon="ERROR")
-        summary.label(text=f"GN {counts['GEOMETRY_CANDIDATE']}", icon="MOD_NODES")
-        summary.label(text=f"Raster {counts['RASTER_ONLY']}", icon="IMAGE_DATA")
+        summary.label(
+            text=f"Native supported {counts['NATIVE']}",
+            icon=_GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION["NATIVE"][1],
+        )
+        summary.label(
+            text=f"Native unavailable {counts['OBJECT_UNAVAILABLE']}",
+            icon=_GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION["OBJECT_UNAVAILABLE"][1],
+        )
+        summary.label(
+            text=f"GN {counts['GEOMETRY_CANDIDATE']}",
+            icon=_GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION["GEOMETRY_CANDIDATE"][1],
+        )
+        summary.label(
+            text=f"Raster {counts['RASTER_ONLY']}",
+            icon=_GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION["RASTER_ONLY"][1],
+        )
         summary.operator(
             "fbp.copy_gp_effect_compatibility_report",
             text="Copy Report",
@@ -6720,17 +6924,14 @@ def draw_gp_native_effects_ui(layout, context, canvas=None):
             )
         )
         if visible:
-            tier_labels = {
-                "NATIVE": ("Native", "CHECKMARK"),
-                "OBJECT_UNAVAILABLE": ("Unavailable", "ERROR"),
-                "GEOMETRY_CANDIDATE": ("GN Candidate", "MOD_NODES"),
-                "RASTER_ONLY": ("Raster", "IMAGE_DATA"),
-            }
             compact = len(records) >= 50
             for record in visible:
                 item = compatibility.row(align=True) if compact else compatibility.box()
                 tier = str(record.get("tier", "RASTER_ONLY") or "RASTER_ONLY")
-                tier_label, icon = tier_labels.get(tier, (tier.title(), "INFO"))
+                tier_label, icon = _GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION.get(
+                    tier,
+                    (tier.title(), "INFO"),
+                )
                 heading = item if compact else item.row(align=True)
                 heading.label(text=str(record.get("label", "Effect") or "Effect"), icon=icon)
                 heading.label(text=tier_label)
@@ -6774,6 +6975,98 @@ class FBP_OT_CopyGPEffectCompatibilityReport(Operator):
         return {"FINISHED"}
 
 
+def _gp_draw_native_effect_group_menu(layout, context, group_index):
+    canvas = _active_canvas(context)
+    if not is_gp_drawing_canvas(canvas):
+        layout.label(text="Select a Grease Pencil Drawing Plane", icon="BLANK1")
+        return
+    active_items, _ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
+    _label, _group_icon, effect_ids = _GP_NATIVE_EFFECT_LIBRARY_GROUPS[int(group_index)]
+    for effect_id in tuple(effect_ids or ()):
+        definition = _gp_native_effect_definition(effect_id)
+        if definition is None:
+            continue
+        _effect_id, effect_label, icon, _backend, _native_types = definition
+        supported = _gp_native_effect_supported(canvas, definition)
+        active = active_items.get(_effect_id) is not None
+        row = layout.row(align=False)
+        row.enabled = bool(supported or active)
+        op = row.operator(
+            "fbp.toggle_gp_native_effect",
+            text=str(effect_label),
+            icon="CHECKBOX_HLT" if active else (icon if supported else "LOCKED"),
+            depress=active,
+        )
+        op.effect_id = _effect_id
+
+
+class FBP_MT_GPNativeStylize(Menu):
+    bl_idname = "FBP_MT_gp_native_stylize"
+    bl_label = "Stylize"
+
+    def draw(self, context):
+        _gp_draw_native_effect_group_menu(self.layout, context, 0)
+
+
+class FBP_MT_GPNativeLightEdge(Menu):
+    bl_idname = "FBP_MT_gp_native_light_edge"
+    bl_label = "Light & Edge"
+
+    def draw(self, context):
+        _gp_draw_native_effect_group_menu(self.layout, context, 1)
+
+
+class FBP_MT_GPNativeWarp(Menu):
+    bl_idname = "FBP_MT_gp_native_warp"
+    bl_label = "Warp"
+
+    def draw(self, context):
+        _gp_draw_native_effect_group_menu(self.layout, context, 2)
+
+
+class FBP_MT_GPNativeStroke(Menu):
+    bl_idname = "FBP_MT_gp_native_stroke"
+    bl_label = "Stroke"
+
+    def draw(self, context):
+        _gp_draw_native_effect_group_menu(self.layout, context, 3)
+
+
+class FBP_MT_GPNativeMotionBuild(Menu):
+    bl_idname = "FBP_MT_gp_native_motion_build"
+    bl_label = "Motion & Build"
+
+    def draw(self, context):
+        _gp_draw_native_effect_group_menu(self.layout, context, 4)
+
+
+class FBP_MT_GPNativeUtility(Menu):
+    bl_idname = "FBP_MT_gp_native_utility"
+    bl_label = "Utility"
+
+    def draw(self, context):
+        _gp_draw_native_effect_group_menu(self.layout, context, 5)
+
+
+class FBP_MT_GPNativeSurface(Menu):
+    bl_idname = "FBP_MT_gp_native_surface"
+    bl_label = "Surface"
+
+    def draw(self, context):
+        _gp_draw_native_effect_group_menu(self.layout, context, 6)
+
+
+_GP_NATIVE_EFFECT_GROUP_MENUS = (
+    FBP_MT_GPNativeStylize,
+    FBP_MT_GPNativeLightEdge,
+    FBP_MT_GPNativeWarp,
+    FBP_MT_GPNativeStroke,
+    FBP_MT_GPNativeMotionBuild,
+    FBP_MT_GPNativeUtility,
+    FBP_MT_GPNativeSurface,
+)
+
+
 class FBP_MT_GPNativeEffects(Menu):
     bl_idname = "FBP_MT_gp_native_effects"
     bl_label = "Grease Pencil Effects"
@@ -6783,56 +7076,47 @@ class FBP_MT_GPNativeEffects(Menu):
         if not is_gp_drawing_canvas(canvas):
             self.layout.label(text="Select a Grease Pencil Drawing Plane", icon="BLANK1")
             return
-        active_items, _ordered_active, _backend_lengths, _duplicate_counts = _gp_native_effect_stack_state(canvas)
-        _gp_draw_native_effect_library(self.layout, canvas, active_items, compact=True)
+        layout = configure_layout(self.layout)
+        active_items, _ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
+        for menu_class, (label, icon, effect_ids) in zip(
+            _GP_NATIVE_EFFECT_GROUP_MENUS,
+            _GP_NATIVE_EFFECT_LIBRARY_GROUPS,
+            strict=True,
+        ):
+            supported_or_active = any(
+                active_items.get(str(effect_id).upper()) is not None
+                or _gp_native_effect_supported(canvas, _gp_native_effect_definition(effect_id))
+                for effect_id in tuple(effect_ids or ())
+            )
+            row = layout.row(align=False)
+            row.enabled = bool(supported_or_active)
+            row.menu(menu_class.bl_idname, text=str(label), icon=str(icon))
 
 
-class FBP_OT_ToggleGPNativeEffectSettings(Operator):
-    bl_idname = "fbp.toggle_gp_native_effect_settings"
-    bl_label = "Toggle Grease Pencil Effect Settings"
-    bl_description = "Show or hide the inline Frame By Plane controls for this Grease Pencil effect"
-    bl_options = {"INTERNAL"}
+class FBP_MT_GPNativeEffectActions(Menu):
+    bl_idname = "FBP_MT_gp_native_effect_actions"
+    bl_label = "Grease Pencil Effect Stack Actions"
 
-    effect_id: StringProperty(description='Internal stable effect identifier used by this button. Example: PIXELATE, SHADOW or GRADIENT_MASK.', name="Effect", default="", options={"SKIP_SAVE"})
-
-    @classmethod
-    def poll(cls, context):
-        return is_gp_drawing_canvas(_active_canvas(context))
-
-    def execute(self, context):
-        canvas = _active_canvas(context)
-        _definition, _collection, item, _index = _gp_native_effect_location(canvas, self.effect_id)
-        if item is None:
-            return {"CANCELLED"}
-        _gp_set_native_effect_open(item, not _gp_native_effect_open(item, default=True))
-        return {"FINISHED"}
-
-
-class FBP_OT_SetAllGPNativeEffectSettings(Operator):
-    bl_idname = "fbp.set_all_gp_native_effect_settings"
-    bl_label = "Set All Grease Pencil Effect Settings"
-    bl_description = "Expand or collapse the inline controls for every active Grease Pencil effect"
-    bl_options = {"INTERNAL"}
-
-    expanded: BoolProperty(
-        name="Expanded",
-        description="Show every inline native Grease Pencil effect control",
-        default=True,
-        options={"SKIP_SAVE"},
-    )
-
-    @classmethod
-    def poll(cls, context):
+    def draw(self, context):
+        layout = configure_layout(self.layout)
         canvas = _active_canvas(context)
         if not is_gp_drawing_canvas(canvas):
-            return False
-        _active, ordered, _lengths, _duplicates = _gp_native_effect_stack_state(canvas)
-        return bool(ordered)
-
-    def execute(self, context):
-        canvas = _active_canvas(context)
-        _gp_set_all_native_effects_open(canvas, bool(self.expanded))
-        return {"FINISHED"}
+            layout.label(text="Select a Grease Pencil Drawing Plane", icon="INFO")
+            return
+        active_id = _gp_active_native_effect_id(canvas)
+        reset = layout.row(align=False)
+        reset.enabled = bool(active_id and _gp_native_effect_has_defaults(active_id))
+        op = reset.operator("fbp.reset_gp_native_effect", text="Reset Selected", icon=ui_icon("action.reset"))
+        op.effect_id = active_id
+        layout.separator()
+        layout.operator("fbp.repair_gp_native_effect_duplicates", text="Repair Duplicates", icon="FILE_REFRESH")
+        layout.separator()
+        layout.prop(
+            canvas,
+            "fbp_gp_ui_show_unavailable_effects",
+            text="Compatibility Matrix",
+            icon="INFO",
+        )
 
 
 class FBP_OT_RepairGPNativeEffectDuplicates(Operator):
@@ -6844,7 +7128,7 @@ class FBP_OT_RepairGPNativeEffectDuplicates(Operator):
     @classmethod
     def poll(cls, context):
         canvas = _active_canvas(context)
-        if not is_gp_drawing_canvas(canvas):
+        if not is_gp_drawing_canvas(canvas) or not _gp_external_settings_undo_safe(canvas):
             return False
         _active, _ordered, _lengths, duplicate_counts = _gp_native_effect_stack_state(canvas)
         return any(int(count or 0) > 1 for count in duplicate_counts.values())
@@ -6873,7 +7157,8 @@ class FBP_OT_ResetGPNativeEffect(Operator):
 
     @classmethod
     def poll(cls, context):
-        return is_gp_drawing_canvas(_active_canvas(context))
+        canvas = _active_canvas(context)
+        return is_gp_drawing_canvas(canvas) and _gp_external_settings_undo_safe(canvas)
 
     def execute(self, context):
         canvas = _active_canvas(context)
@@ -6898,7 +7183,8 @@ class FBP_OT_MoveGPNativeEffect(Operator):
 
     @classmethod
     def poll(cls, context):
-        return is_gp_drawing_canvas(_active_canvas(context))
+        canvas = _active_canvas(context)
+        return is_gp_drawing_canvas(canvas) and _gp_external_settings_undo_safe(canvas)
 
     def execute(self, context):
         canvas = _active_canvas(context)
@@ -6921,7 +7207,8 @@ class FBP_OT_ToggleGPNativeEffect(Operator):
 
     @classmethod
     def poll(cls, context):
-        return is_gp_drawing_canvas(_active_canvas(context))
+        canvas = _active_canvas(context)
+        return is_gp_drawing_canvas(canvas) and _gp_external_settings_undo_safe(canvas)
 
     def execute(self, context):
         canvas = _active_canvas(context)
@@ -10292,6 +10579,11 @@ def clear_grease_pencil_runtime_caches():
     _clear_gp_output_caches()
     _clear_gp_geometry_cache()
     _clear_gp_distance_cache()
+    try:
+        from .gp_mask_raster import clear_runtime_caches as clear_mask_raster_caches
+        clear_mask_raster_caches()
+    except (ImportError, AttributeError, RuntimeError):
+        pass
     _invalidate_gp_binding_cache()
     _invalidate_gp_owner_cache()
     lifecycle_errors = clear_runtime_collections(globals())
@@ -10582,8 +10874,25 @@ def _register_properties():
         default="",
         options={"SKIP_SAVE"},
     )
-    bpy.types.Object.fbp_gp_ui_show_effect_library = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Effect Library", default=False, options={"SKIP_SAVE"})
-    bpy.types.Object.fbp_gp_ui_show_effect_settings = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Effect Settings", default=True, options={"SKIP_SAVE"})
+    bpy.types.Object.fbp_gp_effect_items = CollectionProperty(
+        name="Grease Pencil Effect Stack",
+        description="Runtime UIList mirror of Frame By Plane-owned native Grease Pencil effects",
+        type=FBP_GPNativeEffectItem,
+        options={"SKIP_SAVE"},
+    )
+    bpy.types.Object.fbp_gp_effect_items_index = IntProperty(
+        name="Active Grease Pencil Effect",
+        description="Selected row in the Grease Pencil Effect Stack",
+        default=0,
+        min=0,
+        options={"SKIP_SAVE"},
+        update=_gp_native_effect_index_update,
+    )
+    bpy.types.Object.fbp_gp_effect_items_signature = StringProperty(
+        name="Grease Pencil Effect Stack Signature",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
     bpy.types.Object.fbp_gp_ui_show_material_52 = BoolProperty(
         name="Stroke Material",
         description="Show Blender 5.2 Dots and Squares placement/randomization controls for the active Grease Pencil material",
@@ -10737,12 +11046,24 @@ def refresh_keymaps():
     return refresh_keymap_registration(_register_gp_mask_edit_keymaps)
 
 
+property_classes = (
+    FBP_GPNativeEffectItem,
+)
+
+
 classes = (
+    FBP_UL_GPNativeEffectStack,
+    FBP_MT_GPNativeStylize,
+    FBP_MT_GPNativeLightEdge,
+    FBP_MT_GPNativeWarp,
+    FBP_MT_GPNativeStroke,
+    FBP_MT_GPNativeMotionBuild,
+    FBP_MT_GPNativeUtility,
+    FBP_MT_GPNativeSurface,
     FBP_OT_SafeGPMaskShrinkFatten,
     FBP_MT_GPNativeEffects,
+    FBP_MT_GPNativeEffectActions,
     FBP_OT_CopyGPEffectCompatibilityReport,
-    FBP_OT_ToggleGPNativeEffectSettings,
-    FBP_OT_SetAllGPNativeEffectSettings,
     FBP_OT_RepairGPNativeEffectDuplicates,
     FBP_OT_ResetGPNativeEffect,
     FBP_OT_MoveGPNativeEffect,
@@ -10816,9 +11137,12 @@ def prepare_shutdown(context=None):
 
 def register():
     clear_grease_pencil_runtime_caches()
+    property_classes_registered = False
     properties_registered = False
     classes_registered = False
     try:
+        register_classes(property_classes)
+        property_classes_registered = True
         _register_properties()
         properties_registered = True
         is_background = bool(getattr(bpy.app, "background", False))
@@ -10848,6 +11172,8 @@ def register():
             # Property registration is not atomic; remove any prefix that was
             # assigned before Blender raised.
             _unregister_properties()
+        if property_classes_registered:
+            unregister_classes(property_classes)
         raise
 
 
@@ -10859,6 +11185,7 @@ def unregister():
     clear_grease_pencil_runtime_caches()
     unregister_classes(classes)
     _unregister_properties()
+    unregister_classes(property_classes)
 
 
 __all__ = (

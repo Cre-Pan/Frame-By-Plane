@@ -168,6 +168,60 @@ from .interface_preferences import (
 )
 
 
+_FBP_IMPORT_DIRECTORY_PROPERTIES = (
+    "fbp_project_path",
+    "fbp_last_directory",
+)
+
+
+def _fbp_scene_import_directory(scene, *property_names):
+    """Return the first configured import folder without assuming RNA exists.
+
+    Blender can keep an already-open operator alive for a few UI events while
+    an add-on is being reloaded or a startup template is replacing the current
+    file.  Reading an RNA property directly in that interval turns a harmless
+    stale click into an AttributeError.  File-browser entry points use this
+    helper so registration problems are reported cleanly instead.
+    """
+    names = property_names or _FBP_IMPORT_DIRECTORY_PROPERTIES
+    for name in names:
+        try:
+            value = str(getattr(scene, name, "") or "")
+        except FBP_DATA_ERRORS:
+            continue
+        if value:
+            return value
+    return ""
+
+
+def _fbp_require_import_scene_properties(operator, scene):
+    """Refuse import from a partially registered Blender session cleanly."""
+    missing = []
+    for name in _FBP_IMPORT_DIRECTORY_PROPERTIES:
+        if scene is None:
+            missing.append(name)
+            continue
+        try:
+            getattr(scene, name)
+        except FBP_DATA_ERRORS:
+            # ``hasattr`` only absorbs AttributeError.  A Scene wrapper kept by
+            # an open operator across New/Open/Reload can instead raise
+            # ReferenceError after its owning Main has been replaced.
+            missing.append(name)
+    missing = tuple(missing)
+    if not missing:
+        return True
+    try:
+        operator.report(
+            {'ERROR'},
+            "Frame By Plane is not fully registered. Restart Blender, then "
+            "disable and re-enable the extension before importing.",
+        )
+    except FBP_DATA_ERRORS:
+        pass
+    return False
+
+
 def _fbp_draw_import_alpha_crop_options(layout, scene, context=None):
     """Draw the shared import-only transparent-border crop controls responsively."""
     row = adaptive_row(layout, context, align=False) if context is not None else layout.row(align=False)
@@ -461,10 +515,6 @@ def _fbp_incremental_operator_entry(operator, context=None):
     if len(candidates) == 1:
         return candidates[0]
     return key, {}
-
-
-def _fbp_incremental_operator_state(operator, context=None):
-    return _fbp_incremental_operator_entry(operator, context)[1]
 
 
 def _fbp_retire_incremental_runtime(context, operator, runtime_state, *, close_iterator):
@@ -1590,12 +1640,14 @@ class FBP_OT_EditPendingPlane(Operator):
 
     def invoke(self, context, event):
         del event
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         pending = getattr(context.scene, 'fbp_pending_planes', ())
         ensure_unique_item_identities(pending, 'stable_id')
         if not (0 <= int(self.index) < len(pending)):
             return {'CANCELLED'}
         self.target_uid = str(getattr(pending[int(self.index)], 'stable_id', '') or '')
-        path = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        path = _fbp_scene_import_directory(context.scene)
         if path:
             self.directory = path
         context.window_manager.fileselect_add(self)
@@ -2436,7 +2488,9 @@ class FBP_OT_ImportSequence(Operator):
         return "Video Plane" if self.media_filter == 'VIDEO' else "Image Sequence"
 
     def invoke(self, context, event):
-        path = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
+        path = _fbp_scene_import_directory(context.scene)
         if path:
             self.directory = path
         self.filter_glob = _fbp_media_filter_glob(self.media_filter)
@@ -2622,12 +2676,14 @@ class FBP_OT_ReplaceSequence(Operator):
 
     def invoke(self, context, event):
         del event
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         rig = fbp_resolve_rig_from_any_object(getattr(context, 'object', None), context)
         if not rig:
             return {'CANCELLED'}
         self.rig_name = str(getattr(rig, 'name', '') or '')
         self.rig_key = fbp_obj_runtime_token(rig)
-        path = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        path = _fbp_scene_import_directory(context.scene)
         if path:
             self.directory = path
         context.window_manager.fileselect_add(self)
@@ -2843,7 +2899,13 @@ class FBP_OT_RenameSequenceForBlender(Operator):
                 directory,
                 f".fbp_sequence_rename_{stamp}-{attempt_id}.json",
             )
-            temporary = manifest + f".{uuid.uuid4().hex}.tmp"
+            # Keep the temporary basename short.  Appending another UUID to
+            # the already descriptive manifest can cross Win32's legacy
+            # MAX_PATH limit even when the final manifest itself is valid.
+            temporary = os.path.join(
+                directory,
+                f".fbp_rename_tmp_{uuid.uuid4().hex[:12]}",
+            )
             try:
                 # Reserve the final name exclusively, then atomically replace
                 # that reservation with the complete fsynced JSON document.
@@ -2878,7 +2940,11 @@ class FBP_OT_RenameSequenceForBlender(Operator):
     def _finalize_rename_manifest(manifest_path, status, *, detail=""):
         if not manifest_path:
             return False
-        temporary = f"{manifest_path}.{uuid.uuid4().hex}.tmp"
+        manifest_directory = os.path.dirname(manifest_path)
+        temporary = os.path.join(
+            manifest_directory,
+            f".fbp_rename_tmp_{uuid.uuid4().hex[:12]}",
+        )
         try:
             with open(manifest_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
@@ -3548,6 +3614,8 @@ class FBP_OT_ClearGenerationReport(Operator):
 
 def _fbp_execute_single_plane_import(operator, context, directory, filenames):
     """Build one FBP rig from already resolved media filenames."""
+    if not _fbp_require_import_scene_properties(operator, getattr(context, "scene", None)):
+        return {'CANCELLED'}
     directory = bpy.path.abspath(str(directory or ""))
     filenames = [
         str(name) for name in (filenames or ())
@@ -3636,7 +3704,9 @@ class FBP_OT_ImportSingleImage(Operator):
     )
 
     def invoke(self, context, event):
-        path = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
+        path = _fbp_scene_import_directory(context.scene)
         if path:
             self.directory = path
         context.window_manager.fileselect_add(self)
@@ -3799,6 +3869,8 @@ class FBP_OT_ImportFolderMultiplane(Operator):
         return context.window_manager.invoke_props_dialog(self, width=500)
 
     def invoke(self, context, event):
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         base = ""
         if self.from_clipboard:
             base = _fbp_folder_path_from_clipboard(context)
@@ -3806,7 +3878,10 @@ class FBP_OT_ImportFolderMultiplane(Operator):
                 self.report({'WARNING'}, "Clipboard does not contain a valid folder path. Use Copy as path first")
                 return {'CANCELLED'}
         elif self.use_last_folder:
-            for raw in (context.scene.fbp_last_directory, context.scene.fbp_project_path):
+            for raw in (
+                _fbp_scene_import_directory(context.scene, "fbp_last_directory"),
+                _fbp_scene_import_directory(context.scene, "fbp_project_path"),
+            ):
                 candidate = bpy.path.abspath(str(raw or ""))
                 if candidate and os.path.isdir(candidate):
                     base = os.path.abspath(os.path.normpath(candidate))
@@ -3818,7 +3893,9 @@ class FBP_OT_ImportFolderMultiplane(Operator):
         if base:
             return self._open_preflight(context, base)
 
-        path = context.scene.fbp_last_directory or context.scene.fbp_project_path
+        path = _fbp_scene_import_directory(
+            context.scene, "fbp_last_directory", "fbp_project_path",
+        )
         if path and os.path.isdir(bpy.path.abspath(path)):
             self.directory = path
         self.preflight_ready = False
@@ -4873,7 +4950,11 @@ class FBP_OT_ImportToonBoomExport(Operator):
         return context.window_manager.invoke_props_dialog(self, width=520)
 
     def invoke(self, context, event):
-        path = context.scene.fbp_last_directory or context.scene.fbp_project_path
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
+        path = _fbp_scene_import_directory(
+            context.scene, "fbp_last_directory", "fbp_project_path",
+        )
         if path and os.path.isdir(bpy.path.abspath(path)):
             self.directory = path
         self.preflight_ready = False
@@ -5389,6 +5470,8 @@ class FBP_OT_ImportPSD(Operator):
         self.preflight_ready = True
 
     def invoke(self, context, event):
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         path = _fbp_import_absolute_path(self)
         if path and os.path.isfile(path):
             try:
@@ -5397,7 +5480,7 @@ class FBP_OT_ImportPSD(Operator):
                 self.report({'ERROR'}, str(exc))
                 return {'CANCELLED'}
             return context.window_manager.invoke_props_dialog(self, width=560)
-        start = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        start = _fbp_scene_import_directory(context.scene)
         if start:
             self.filepath = os.path.join(bpy.path.abspath(start), "")
         context.window_manager.fileselect_add(self)
@@ -5622,6 +5705,8 @@ class FBP_OT_ImportProcreate(Operator):
         self.preflight_ready = True
 
     def invoke(self, context, event):
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         if not fbp_feature_enabled(getattr(context, 'scene', None), 'procreate_import'):
             self.report({'WARNING'}, "Enable Procreate Preview in Frame By Plane Preferences")
             return {'CANCELLED'}
@@ -5633,7 +5718,7 @@ class FBP_OT_ImportProcreate(Operator):
                 self.report({'ERROR'}, str(exc))
                 return {'CANCELLED'}
             return context.window_manager.invoke_props_dialog(self, width=580)
-        start = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        start = _fbp_scene_import_directory(context.scene)
         if start:
             self.filepath = os.path.join(bpy.path.abspath(start), "")
         context.window_manager.fileselect_add(self)
@@ -6140,6 +6225,8 @@ class FBP_OT_PopupSinglePlane(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def invoke(self, context, event):
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         try:
             from .live_tutorial import fbp_notify_tutorial_action
             fbp_notify_tutorial_action(context, "image_open_importer")
@@ -6192,12 +6279,19 @@ class FBP_OT_PopupMultiplane(Operator):
     folder: StringProperty(description="Folder selected for the compact Multiplane import workflow.", name="Folder", subtype='DIR_PATH', default="")
 
     def invoke(self, context, event):
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         try:
             from .live_tutorial import fbp_notify_tutorial_action
             fbp_notify_tutorial_action(context, "multi_open_importer")
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
-        self.folder = context.scene.fbp_project_path or context.scene.fbp_parent_import_path or context.scene.fbp_last_directory
+        self.folder = _fbp_scene_import_directory(
+            context.scene,
+            "fbp_project_path",
+            "fbp_parent_import_path",
+            "fbp_last_directory",
+        )
         return context.window_manager.invoke_props_dialog(
             self,
             width=_FBP_SHIFT_A_MULTIPLANE_POPUP_WIDTH,

@@ -29,7 +29,6 @@ from .runtime_scheduler import (
 # Deferred callback closures are tied to one Python/RNA generation. Reusing the
 # old facade dictionaries during an in-place extension reload can keep stale
 # Object/Scene wrappers alive even after the scheduler timer was retired.
-_PREVIOUS_SCHEDULED_COUNT = len(globals().get("_SCHEDULED_KEYS", ()) or ())
 _SCHEDULED_KEYS = set()
 _SCHEDULED_RUNNERS = {}
 _SCHEDULED_CALLBACKS = {}

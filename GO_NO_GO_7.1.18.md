@@ -25,13 +25,13 @@ This is not an authorization to publish. The follow-up audit explicitly required
 | Compile/register/background | PASS | Blender 5.2 suite, 0 failures |
 | Install/activate/save/reopen | PASS | Final Windows x64 ZIP in isolated profile |
 | Eevee/Cycles | PASS | Tiny background render outputs produced |
-| Package validation | PASS | Four declared-platform ZIPs pass Blender 5.2 validation |
+| Package validation | PASS | Five declared-platform ZIPs pass Blender 5.2 validation |
 
 No P0 blocker remains in the tested environment.
 
 ## Accepted risks
 
-1. **Native platform runtime coverage.** Runtime tests were executed locally on Windows x64. Linux x64, macOS ARM64 and Windows ARM64 packages passed structural validation locally; the new native GitHub Actions gate is configured but has not run remotely yet. This is the principal release risk.
+1. **Native platform runtime coverage.** Runtime tests were executed locally on Windows x64. Linux x64, macOS ARM64 and Windows ARM64 packages passed structural validation locally; macOS x64 is package-only because Blender's official 5.2.0 checksum list currently has no Intel image. The native GitHub Actions gate is configured but has not run remotely yet. This is the principal release risk.
 2. **Single-call cancellation granularity.** A long individual Blender API call cannot be interrupted; cancellation occurs at the next safe checkpoint.
 3. **Historical Generic Mesh fixture.** `CAMERA_SCALE_LOCK` artist-modifier preservation is skipped because its node asset is not present in the bundled regression fixture. Generic Mesh matrix, topology and group contracts pass.
 4. **Synchronous profile UI.** The profiler refuses unsafe contexts and restores the frame, but does not provide mid-run Cancel. The measurement is limited to 120 CPU-side frame evaluations.
@@ -44,7 +44,7 @@ Before an actual public upload:
 
 - review and explicitly approve this GO decision;
 - confirm that the final upload files match the SHA-256 values in `FOLLOWUP_AUDIT_7.1.18.md`;
-- require all four jobs in the `Blender 5.2 native release gate` workflow to pass before upload;
+- require all four native jobs and the fifth `macos_x64` package-only check in the `Blender 5.2 native release gate` workflow to pass before upload;
 - keep the version at 7.1.18 unless a separate versioning decision is made;
 - run the existing PowerShell publisher only after its own confirmation prompt and only with `BLENDER_EXTENSIONS_TOKEN` supplied through the environment;
 - publish GitHub/Blender Extensions as a separate, explicitly authorized action.

@@ -176,7 +176,7 @@ def _resolve_cached_names(scene, names):
     return tuple(resolved)
 
 
-def _cache_scene_rigs(scene_key, signature, rigs):
+def _cache_scene_rigs(scene_key, signature, rigs, *, complete=False):
     if not scene_key or not scene_key[0]:
         return
     if len(_SCENE_RIG_CACHE) >= _MAX_SCENE_CACHE_ENTRIES and scene_key not in _SCENE_RIG_CACHE:
@@ -185,6 +185,7 @@ def _cache_scene_rigs(scene_key, signature, rigs):
         "signature": signature,
         "checked_at": time.monotonic(),
         "rig_names": tuple(str(getattr(rig, "name", "") or "") for rig in rigs),
+        "complete": bool(complete),
     }
 
 
@@ -208,6 +209,7 @@ def iter_scene_fbp_rigs(scene, *, fallback=False):
             if (
                 cached.get("signature") == signature
                 and now - float(cached.get("checked_at", 0.0) or 0.0) <= ttl
+                and (not fallback or bool(cached.get("complete", False)))
             ):
                 if names:
                     resolved = _resolve_cached_names(scene, names)
@@ -215,9 +217,9 @@ def iter_scene_fbp_rigs(scene, *, fallback=False):
                         for rig in resolved:
                             yield rig
                         return
-                elif not fallback:
-                    # Hot paths may reuse a short-lived negative cache. Explicit
-                    # recovery callers must still be allowed to scan the Scene.
+                else:
+                    # Reuse a negative result only if it met the requested
+                    # completeness. An empty mirror is not a Scene scan.
                     return
         except FBP_DATA_ERRORS:
             pass
@@ -237,6 +239,7 @@ def iter_scene_fbp_rigs(scene, *, fallback=False):
     except FBP_DATA_ERRORS:
         rigs = []
 
+    scan_complete = False
     if fallback:
         # Repair/load fallback: Undo or a just-completed rename can
         # leave one or more transient mirror rows stale while other rows are
@@ -251,15 +254,16 @@ def iter_scene_fbp_rigs(scene, *, fallback=False):
                     continue
                 seen.add(key)
                 rigs.append(rig)
+            scan_complete = True
         except FBP_DATA_ERRORS:
             pass
 
-    _cache_scene_rigs(scene_key, signature, rigs)
+    _cache_scene_rigs(scene_key, signature, rigs, complete=scan_complete)
     for rig in rigs:
         yield rig
 
 
-def _cache_scene_planes(scene_key, signature, planes):
+def _cache_scene_planes(scene_key, signature, planes, *, complete=False):
     if not scene_key or not scene_key[0]:
         return
     if len(_SCENE_PLANE_CACHE) >= _MAX_SCENE_CACHE_ENTRIES and scene_key not in _SCENE_PLANE_CACHE:
@@ -268,6 +272,7 @@ def _cache_scene_planes(scene_key, signature, planes):
         "signature": signature,
         "checked_at": time.monotonic(),
         "plane_names": tuple(str(getattr(plane, "name", "") or "") for plane in planes),
+        "complete": bool(complete),
     }
 
 
@@ -303,6 +308,7 @@ def iter_scene_fbp_planes(scene, *, fallback=False):
             if (
                 cached.get("signature") == signature
                 and now - float(cached.get("checked_at", 0.0) or 0.0) <= ttl
+                and (not fallback or bool(cached.get("complete", False)))
             ):
                 resolved = _resolve_cached_planes(scene, names)
                 if len(resolved) == len(names):
@@ -327,9 +333,10 @@ def iter_scene_fbp_planes(scene, *, fallback=False):
     except FBP_DATA_ERRORS:
         planes = []
 
-    if not planes and fallback:
-        # Repair/load fallback for layers whose rig pointer mirror has not
-        # been restored yet.  The default path stays rig-owned for speed.
+    scan_complete = False
+    if fallback:
+        # A partly restored rig mirror can contain some, but not all planes.
+        # Merge every scene-owned plane before marking this cache complete.
         try:
             for plane in tuple(getattr(scene, "objects", ()) or ()):  # scene-local only
                 if not is_fbp_plane(plane) or not object_in_scene(plane, scene):
@@ -339,10 +346,11 @@ def iter_scene_fbp_planes(scene, *, fallback=False):
                     continue
                 seen.add(key)
                 planes.append(plane)
+            scan_complete = True
         except FBP_DATA_ERRORS:
             pass
 
-    _cache_scene_planes(scene_key, signature, planes)
+    _cache_scene_planes(scene_key, signature, planes, complete=scan_complete)
     for plane in planes:
         yield plane
 

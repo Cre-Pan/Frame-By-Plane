@@ -18,7 +18,6 @@ from .ui_icons import custom_icon_generation, layer_custom_icon_value, ui_icon, 
 from .ui_style import adaptive_row, configure_layout, hint_row, section_gap, section_header
 from .shortcut_runtime import (
     alt_shortcut_label,
-    primary_modifier_name,
     primary_shortcut_label,
     refresh_all_shortcuts,
 )
@@ -690,6 +689,117 @@ def update_interface_preferences_cb(self, context):
     )
 
 
+def _fbp_camera_data_from_context(scene, context):
+    """Return the selected camera data, falling back to the Scene camera."""
+    obj = getattr(context, "object", None) if context is not None else None
+    if getattr(obj, "type", None) != 'CAMERA':
+        obj = getattr(scene, "camera", None) if scene is not None else None
+    data = getattr(obj, "data", None) if obj is not None else None
+    return data if data is not None else None
+
+
+def _fbp_camera_update_blocked(scene):
+    return bool(
+        fbp_undo_guard_active()
+        or fbp_is_silent_property_update(scene)
+    )
+
+
+def update_camera_ratio_cb(scene, context):
+    """Apply a chosen Frame By Plane aspect preset immediately."""
+    if _fbp_camera_update_blocked(scene):
+        return
+    try:
+        from .core import apply_camera_ratio_settings
+        apply_camera_ratio_settings(scene)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not apply the Frame By Plane camera ratio", exc)
+    fbp_request_redraw(
+        context,
+        area_types={'VIEW_3D', 'PROPERTIES'},
+        all_windows=True,
+    )
+
+
+def update_camera_projection_cb(scene, context):
+    """Keep the selected or Scene camera in sync with generation controls."""
+    if _fbp_camera_update_blocked(scene):
+        return
+    camera_data = _fbp_camera_data_from_context(scene, context)
+    if camera_data is None:
+        return
+    try:
+        projection = str(getattr(scene, 'fbp_camera_projection', 'PERSP') or 'PERSP')
+        camera_data.type = 'ORTHO' if projection == 'ORTHO' else 'PERSP'
+        if camera_data.type == 'ORTHO':
+            camera_data.ortho_scale = max(
+                0.001,
+                float(getattr(scene, 'fbp_camera_ortho_scale', 10.0) or 10.0),
+            )
+        else:
+            camera_data.lens = max(
+                1.0,
+                float(getattr(scene, 'fbp_camera_lens', 50.0) or 50.0),
+            )
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not update the active camera projection", exc)
+    fbp_request_redraw(context, area_types={'VIEW_3D', 'PROPERTIES'}, all_windows=True)
+
+
+def update_camera_lens_cb(scene, context):
+    if _fbp_camera_update_blocked(scene):
+        return
+    camera_data = _fbp_camera_data_from_context(scene, context)
+    if camera_data is None:
+        return
+    try:
+        camera_data.lens = max(
+            1.0,
+            float(getattr(scene, 'fbp_camera_lens', 50.0) or 50.0),
+        )
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not update the active camera lens", exc)
+    fbp_request_redraw(context, area_types={'VIEW_3D', 'PROPERTIES'}, all_windows=True)
+
+
+def update_camera_ortho_scale_cb(scene, context):
+    if _fbp_camera_update_blocked(scene):
+        return
+    camera_data = _fbp_camera_data_from_context(scene, context)
+    if camera_data is None:
+        return
+    try:
+        camera_data.ortho_scale = max(
+            0.001,
+            float(getattr(scene, 'fbp_camera_ortho_scale', 10.0) or 10.0),
+        )
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not update the active orthographic camera scale", exc)
+    fbp_request_redraw(context, area_types={'VIEW_3D', 'PROPERTIES'}, all_windows=True)
+
+
+def update_camera_clipping_cb(scene, context):
+    if _fbp_camera_update_blocked(scene):
+        return
+    camera_data = _fbp_camera_data_from_context(scene, context)
+    if camera_data is None:
+        return
+    try:
+        clip_start = max(
+            0.001,
+            float(getattr(scene, 'fbp_camera_clip_start', 0.1) or 0.1),
+        )
+        clip_end = max(
+            clip_start + 0.001,
+            float(getattr(scene, 'fbp_camera_clip_end', 1000.0) or 1000.0),
+        )
+        camera_data.clip_start = clip_start
+        camera_data.clip_end = clip_end
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not update the active camera clipping range", exc)
+    fbp_request_redraw(context, area_types={'VIEW_3D', 'PROPERTIES'}, all_windows=True)
+
+
 def update_shift_a_menu_position_cb(self, context):
     """Re-register the Shift+A entry at its newly selected location."""
     if fbp_undo_guard_active() or fbp_is_silent_property_update(self):
@@ -839,12 +949,6 @@ class FBP_AddonPreferences(AddonPreferences):
             ('RIGHT', "East", "Vertical slider on the right", 'TRIA_RIGHT', 3),
         ),
         default='LEFT',
-        update=update_interface_preferences_cb,
-    )
-    gp_scrub_show_info: BoolProperty(
-        name="Show Interaction Info",
-        description="Show the Snap status and keyboard help beside the Scrub Slider",
-        default=False,
         update=update_interface_preferences_cb,
     )
     gp_scrub_invert_vertical: BoolProperty(
@@ -1798,7 +1902,6 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'gp_scrub_position', text='Position')
                 row = _row(preview_box)
                 row.prop(self, 'gp_scrub_max_range', text='Visible Frames')
-                row.prop(self, 'gp_scrub_show_info', text='Interaction Info', toggle=True)
                 if self.gp_scrub_position in {'LEFT', 'RIGHT'}:
                     row.prop(self, 'gp_scrub_invert_vertical', text='Invert Vertical', toggle=True)
                 hint_row(preview_box, 'The live preview updates appearance and placement; bookmark and onion interactions remain available in the persistent Scrub Bar.', icon='INFO')
@@ -2107,7 +2210,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 scope.label(text=f'Core target: {FBP_LTS_TARGET_VERSION}', icon='CHECKMARK')
                 scope.label(text='Preview features are excluded from the LTS promise', icon='INFO')
                 row = _row(body)
-                row.prop(self, 'default_preview_compositor', text='Compositor', toggle=True, icon='NODE_COMPOSITING')
+                row.prop(self, 'default_preview_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                 row.prop(self, 'default_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                 row.prop(self, 'default_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
                 scene = getattr(context, 'scene', None)
@@ -2116,7 +2219,7 @@ class FBP_AddonPreferences(AddonPreferences):
                     configure_layout(current)
                     current.label(text='Current File', icon='FILE_BLEND')
                     row = _row(current)
-                    row.prop(scene, 'fbp_experimental_compositor', text='Compositor', toggle=True, icon='NODE_COMPOSITING')
+                    row.prop(scene, 'fbp_experimental_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                     row.prop(scene, 'fbp_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                     row.prop(scene, 'fbp_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
                     enabled_preview = [
@@ -4189,6 +4292,29 @@ def update_experimental_compositor_cb(self, _context):
         pass
 
 def register_properties():
+    from .camera_output import (
+        CAMERA_RESOLUTION_ITEMS, camera_aspect_get, camera_aspect_set,
+        camera_resolution_get, camera_resolution_set,
+        camera_width_get, camera_width_set, camera_height_get, camera_height_set,
+        FBP_CameraFormatPreset,
+    )
+    _FBP_SCENE_RNA.fbp_camera_aspect = StringProperty(
+        name="Aspect Ratio", description="Output shape, landscape by default. Use Swap Dimensions for portrait. Keeps the longest pixel dimension; accounts for non-square pixels",
+        get=camera_aspect_get, set=camera_aspect_set, options=set())
+    _FBP_SCENE_RNA.fbp_camera_resolution = EnumProperty(
+        name="Resolution", description="Pixel budget on the longest side, independent of aspect ratio. HD is 1920, 2K is 2048, 4K/8K use UHD dimensions",
+        items=CAMERA_RESOLUTION_ITEMS, get=camera_resolution_get,
+        set=camera_resolution_set, options=set())
+    _FBP_SCENE_RNA.fbp_camera_width = IntProperty(
+        name="Width", description="Width in pixels; linked height follows the aspect ratio. Switches resolution to Custom",
+        min=4, max=65536, get=camera_width_get, set=camera_width_set, options=set())
+    _FBP_SCENE_RNA.fbp_camera_height = IntProperty(
+        name="Height", description="Height in pixels; linked width follows the aspect ratio. Switches resolution to Custom",
+        min=4, max=65536, get=camera_height_get, set=camera_height_set, options=set())
+    _FBP_SCENE_RNA.fbp_camera_dimensions_linked = BoolProperty(
+        name="Link Dimensions", default=True, options=set(),
+        description="Keep the current aspect ratio when editing either pixel dimension. Unlinked edits create a Custom aspect")
+    _FBP_SCENE_RNA.fbp_camera_format_presets = CollectionProperty(type=FBP_CameraFormatPreset)
     _FBP_SCENE_RNA.fbp_last_directory = StringProperty(name="Last Folder", description="Last folder used by Frame By Plane file browsers", subtype='DIR_PATH', default="")
     _FBP_SCENE_RNA.fbp_effect_mask_edit_target = StringProperty(
         name="Effect Mask Editor",
@@ -4202,26 +4328,32 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_cam_ratio = EnumProperty(description="Select the output aspect-ratio preset used when Frame By Plane creates or configures a camera. The preset updates render width and height while Custom keeps the current resolution.",
         name="Camera Ratio",
         items=CAMERA_RATIO_ITEMS,
-        default='4_3')
+        default='4_3',
+        update=update_camera_ratio_cb)
     _FBP_SCENE_RNA.fbp_camera_projection = EnumProperty(
         name="Camera Projection",
         description="Projection used by newly generated Frame By Plane cameras",
         items=CAMERA_PROJECTION_ITEMS,
-        default='PERSP')
+        default='PERSP',
+        update=update_camera_projection_cb)
     _FBP_SCENE_RNA.fbp_camera_lens = FloatProperty(
         name="Perspective Lens",
         description="Lens in millimeters used by newly generated perspective cameras",
-        default=50.0, min=1.0, max=500.0)
+        default=50.0, min=1.0, max=500.0,
+        update=update_camera_lens_cb)
     _FBP_SCENE_RNA.fbp_camera_ortho_scale = FloatProperty(
         name="Orthographic Scale",
         description="View scale used by newly generated orthographic cameras",
-        default=10.0, min=0.001, soft_max=100.0)
+        default=10.0, min=0.001, soft_max=100.0,
+        update=update_camera_ortho_scale_cb)
     _FBP_SCENE_RNA.fbp_camera_clip_start = FloatProperty(
         name="Clip Start", description="Near clipping distance for newly generated cameras",
-        default=0.1, min=0.001, soft_max=10.0, unit='LENGTH')
+        default=0.1, min=0.001, soft_max=10.0, unit='LENGTH',
+        update=update_camera_clipping_cb)
     _FBP_SCENE_RNA.fbp_camera_clip_end = FloatProperty(
         name="Clip End", description="Far clipping distance for newly generated cameras",
-        default=1000.0, min=1.0, soft_max=10000.0, unit='LENGTH')
+        default=1000.0, min=1.0, soft_max=10000.0, unit='LENGTH',
+        update=update_camera_clipping_cb)
     _FBP_SCENE_RNA.fbp_show_previews = BoolProperty(
         name="List Thumbnails",
         description="Show thumbnails inside layer, frame and Cutout library lists; the large active Cutout preview always remains visible",

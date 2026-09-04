@@ -14,7 +14,10 @@ import tomllib
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+
+# Blender's embedded Python can ignore PYTHONDONTWRITEBYTECODE during add-on
+# loading. Keep release-gate runs from dirtying the audited source tree.
+sys.dont_write_bytecode = True
 
 SOURCE = Path(os.environ["FBP_TEST_SOURCE"]).resolve()
 REPORT = Path(os.environ["FBP_TEST_REPORT"]).resolve()
@@ -39,7 +42,13 @@ def _source_release_version():
 
 RELEASE_VERSION, RELEASE_PARTS = _source_release_version()
 RELEASE_TOKEN = RELEASE_VERSION.replace(".", "_")
-PREVIOUS_RELEASE = ".".join(str(part) for part in (RELEASE_PARTS[0], RELEASE_PARTS[1], max(0, RELEASE_PARTS[2] - 1)))
+if RELEASE_PARTS[2] > 0:
+    _previous_parts = (RELEASE_PARTS[0], RELEASE_PARTS[1], RELEASE_PARTS[2] - 1)
+elif RELEASE_PARTS[1] > 0:
+    _previous_parts = (RELEASE_PARTS[0], RELEASE_PARTS[1] - 1, 999)
+else:
+    _previous_parts = (max(0, RELEASE_PARTS[0] - 1), 999, 999)
+PREVIOUS_RELEASE = ".".join(str(part) for part in _previous_parts)
 
 
 class SkipTest(RuntimeError):
@@ -160,6 +169,299 @@ def test_release_sync(_module):
     assert policy.FBP_LTS_TARGET_VERSION == RELEASE_VERSION, (policy.FBP_LTS_TARGET_VERSION, RELEASE_VERSION)
     assert constants.FBP_FEEDBACK_RELEASE == RELEASE_VERSION
     return RELEASE_VERSION
+
+
+def test_control_panel_and_camera_contract(module):
+    """Exercise panel placement switches and live camera proxy callbacks."""
+    del module
+    ui = importlib.import_module(f"{PACKAGE}.ui")
+
+    assert ui.FBP_PT_ImagePlaneData.bl_context == "data"
+    assert not getattr(ui.FBP_PT_ImagePlaneData, "bl_parent_id", "")
+    assert ui.FBP_PT_ImagePlaneData in ui.ui_classes
+    assert ui.FBP_PT_ToolSequence in ui.ui_classes
+    assert ui.FBP_PT_FrameByPlaneSidebarAnchor in ui.ui_classes
+    assert ui.FBP_PT_ToolSidebarAnchor in ui.ui_classes
+    assert ui.FBP_PT_LayerStack.bl_parent_id == ui.FBP_PT_FrameByPlaneSidebarAnchor.bl_idname
+    assert ui.FBP_PT_ToolLayerStack.bl_parent_id == ui.FBP_PT_ToolSidebarAnchor.bl_idname
+    assert ui.FBP_PT_LayerStack in ui.FBP_PT_ToolLayerStack.__mro__[1:]
+    assert ui.FBP_PT_Sequence in ui.FBP_PT_ToolSequence.__mro__[1:]
+
+    class FakePreferences:
+        show_control_panel_properties = True
+        show_control_panel_n_panel = True
+        show_panel_layers = True
+        show_panel_grease_pencil = True
+        show_panel_layer_settings = True
+
+    original_preferences = ui._fbp_ui_preferences
+    original_context_available = ui._fbp_tool_ui_context_available
+    original_active_plane = ui._fbp_active_plane_context
+    original_scene_gp = ui._fbp_scene_has_drawing_gp
+    try:
+        ui._fbp_ui_preferences = lambda _context: FakePreferences()
+        ui._fbp_tool_ui_context_available = lambda _context: True
+        ui._fbp_active_plane_context = lambda _context: bpy.context.object
+        ui._fbp_scene_has_drawing_gp = lambda _context: True
+
+        mesh = bpy.data.meshes.new("FBP Panel Contract Mesh")
+        obj = bpy.data.objects.new("FBP Panel Contract Rig", mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        assert ui.FBP_PT_LayerStack.poll(bpy.context)
+        assert ui.FBP_PT_GreasePencilStack.poll(bpy.context)
+        assert ui.FBP_PT_Sequence.poll(bpy.context)
+        assert ui.FBP_PT_ToolLayerStack.poll(bpy.context)
+        assert ui.FBP_PT_ToolGreasePencilStack.poll(bpy.context)
+        assert ui.FBP_PT_ToolSequence.poll(bpy.context)
+        assert ui.FBP_PT_ImagePlaneData.poll(bpy.context)
+    finally:
+        ui._fbp_ui_preferences = original_preferences
+        ui._fbp_tool_ui_context_available = original_context_available
+        ui._fbp_active_plane_context = original_active_plane
+        ui._fbp_scene_has_drawing_gp = original_scene_gp
+
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.object.camera_add()
+    camera_object = bpy.context.object
+    camera_data = camera_object.data
+    scene = bpy.context.scene
+    scene.camera = camera_object
+
+    scene.fbp_camera_projection = 'ORTHO'
+    assert camera_data.type == 'ORTHO'
+    scene.fbp_camera_ortho_scale = 7.25
+    assert math.isclose(camera_data.ortho_scale, 7.25)
+    scene.fbp_camera_projection = 'PERSP'
+    assert camera_data.type == 'PERSP'
+    scene.fbp_camera_lens = 63.0
+    assert math.isclose(camera_data.lens, 63.0)
+    scene.fbp_camera_clip_start = 0.25
+    scene.fbp_camera_clip_end = 725.0
+    assert math.isclose(camera_data.clip_start, 0.25)
+    assert math.isclose(camera_data.clip_end, 725.0)
+    scene.fbp_cam_ratio = 'HD_16_9'
+    assert (scene.render.resolution_x, scene.render.resolution_y) == (1920, 1080)
+
+    return {
+        "data_panel": ui.FBP_PT_ImagePlaneData.bl_idname,
+        "tool_panels": [
+            ui.FBP_PT_ToolLayerStack.bl_idname,
+            ui.FBP_PT_ToolGreasePencilStack.bl_idname,
+            ui.FBP_PT_ToolSequence.bl_idname,
+        ],
+        "n_panel_root_panels": 1,
+        "camera_projection": camera_data.type,
+        "camera_lens": camera_data.lens,
+        "camera_ratio": [scene.render.resolution_x, scene.render.resolution_y],
+    }
+
+
+def test_camera_output_format(_module):
+    output = importlib.import_module(f"{PACKAGE}.camera_output")
+    core = importlib.import_module(f"{PACKAGE}.core")
+    scene = bpy.data.scenes.new("FBP Camera Output Regression")
+    try:
+        scene.fbp_camera_aspect = '16:9'
+        checked = {}
+        for key, longest in output.RESOLUTION_PRESETS[1:]:
+            scene.fbp_camera_resolution = key
+            expected = output.resolution_for_aspect(output.parse_aspect_ratio('16:9'), longest)
+            assert (scene.render.resolution_x, scene.render.resolution_y) == expected
+            assert scene.fbp_camera_resolution == key
+            checked[key] = expected
+        scene.fbp_camera_aspect = '9:16'
+        assert (scene.render.resolution_x, scene.render.resolution_y) == (7680, 4320)
+        output.swap_camera_dimensions(scene)
+        assert (scene.render.resolution_x, scene.render.resolution_y) == (4320, 7680)
+        scene.fbp_camera_aspect = '1:1'
+        assert scene.render.resolution_x == scene.render.resolution_y == 7680
+        assert output.swap_camera_dimensions(scene) is False
+        scene.fbp_camera_resolution = 'CUSTOM'
+        scene.fbp_camera_fit_source_aspect = True
+        scene.fbp_camera_dimensions_linked = False
+        scene.fbp_camera_width = 1234
+        scene.fbp_camera_height = 987
+        core.apply_camera_ratio_settings(scene)
+        assert (scene.render.resolution_x, scene.render.resolution_y) == (1234, 987)
+        assert scene.fbp_camera_aspect == '1234:987'
+        assert scene.fbp_cam_ratio == 'CUSTOM'
+
+        assert len(output.ASPECT_PRESETS) == 10
+        previous_ratio = 0
+        scene.render.resolution_percentage = 37
+        for key, label in output.ASPECT_PRESETS:
+            with bpy.context.temp_override(scene=scene):
+                assert 'FINISHED' in bpy.ops.fbp.set_camera_aspect(preset=key)
+            ratio = output.parse_aspect_ratio(scene.fbp_camera_aspect)
+            assert ratio >= 1 and ratio > previous_ratio
+            assert output.camera_aspect_menu_label(scene) == label
+            assert scene.render.resolution_percentage == 37
+            original = scene.render.resolution_x, scene.render.resolution_y
+            output.swap_camera_dimensions(scene)
+            assert (scene.render.resolution_x, scene.render.resolution_y) == original[::-1]
+            assert output.camera_aspect_menu_label(scene) == label
+            output.swap_camera_dimensions(scene)
+            assert (scene.render.resolution_x, scene.render.resolution_y) == original
+            previous_ratio = ratio
+        scene.fbp_camera_resolution = 'HD'
+        scene.fbp_camera_aspect = '4:5'
+        assert (scene.render.resolution_x, scene.render.resolution_y) == (1920, 1536)
+        assert output.camera_aspect_menu_label(scene) == '4:5'
+
+        class Layout:
+            def __init__(self, captured, parent=None, align=False):
+                self.captured, self.parent, self.align = captured, parent, align
+            def row(self, **kwargs):
+                return Layout(self.captured, self, kwargs.get('align', False))
+            column = row
+            def prop(self, owner, key, **kwargs):
+                self.captured[key] = (self, kwargs)
+            def label(self, **kwargs):
+                self.captured['label_icon'] = kwargs.get('icon')
+            def menu(self, identifier, **kwargs):
+                self.captured['menu'] = (identifier, kwargs.get('text'))
+            def operator(self, identifier, **kwargs):
+                assert self.align is False
+                self.captured['operator'] = (identifier, kwargs.get('icon'), kwargs.get('text'))
+            def popover(self, **kwargs):
+                self.captured['presets'] = kwargs
+        for resolution in ('HD', 'CUSTOM'):
+            scene.fbp_camera_resolution = resolution
+            for width in (320, 800):
+                for linked in (False, True):
+                    scene.fbp_camera_dimensions_linked = linked
+                    captured = {}
+                    output.draw_camera_output(Layout(captured), scene, available_width=width)
+                    assert captured['menu'] == ('FBP_MT_camera_aspect', '4:5')
+                    assert captured['label_icon'] == 'IMAGE_BACKGROUND'
+                    assert captured['operator'] == ('fbp.swap_camera_dimensions', 'RENDER_SWAP_DIMENSIONS', '')
+                    assert captured['presets']['panel'] == 'FBP_PT_camera_format_presets'
+                    pixel_row = captured['fbp_camera_width'][0]
+                    assert pixel_row is captured['fbp_camera_height'][0]
+                    assert pixel_row is captured['fbp_camera_dimensions_linked'][0]
+                    assert pixel_row.align is False
+                    resolution_row = captured['fbp_camera_resolution'][0]
+                    assert (pixel_row.parent is resolution_row) == (width >= 540)
+                    assert captured['fbp_camera_width'][1]['text'] == 'Width (px)'
+                    assert captured['fbp_camera_height'][1]['text'] == 'Height (px)'
+                    assert captured['fbp_camera_dimensions_linked'][1]['icon'] == ('LINKED' if linked else 'UNLINKED')
+                    assert set(captured) == {'menu', 'label_icon', 'operator', 'presets',
+                        'fbp_camera_resolution', 'fbp_camera_width', 'fbp_camera_height',
+                        'fbp_camera_dimensions_linked'}
+        icons = bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items
+        assert {'IMAGE_BACKGROUND', 'RENDER_SWAP_DIMENSIONS', 'LINKED', 'UNLINKED', 'PRESET'} <= set(icons.keys())
+        scene.render.resolution_x = 1200
+        scene.render.resolution_y = 800
+        assert scene.fbp_camera_aspect == '3:2'
+        assert scene.fbp_camera_resolution == 'CUSTOM'
+        scene.render.pixel_aspect_x = 2.0
+        scene.render.pixel_aspect_y = 1.0
+        scene.fbp_camera_aspect = '16:9'
+        original = (scene.render.resolution_x, scene.render.resolution_y,
+                    scene.render.pixel_aspect_x, scene.render.pixel_aspect_y)
+        output.swap_camera_dimensions(scene)
+        assert scene.fbp_camera_aspect == '9:16'
+        assert scene.render.pixel_aspect_x == 1.0 and scene.render.pixel_aspect_y == 2.0
+        output.swap_camera_dimensions(scene)
+        assert (scene.render.resolution_x, scene.render.resolution_y,
+                scene.render.pixel_aspect_x, scene.render.pixel_aspect_y) == original
+        return {'presets': checked, 'aspect_presets': len(output.ASPECT_PRESETS),
+                'landscape_default_and_swap': True, 'responsive_pixel_fields': True,
+                'native_icons_valid': True, 'non_square_pixel_swap': True,
+                'native_output_edits_reflected': True, 'draw_read_only': True}
+    finally:
+        bpy.data.scenes.remove(scene)
+
+
+def test_camera_pixels_and_presets(_module):
+    output = importlib.import_module(f"{PACKAGE}.camera_output")
+    scene = bpy.data.scenes.new('FBP Linked Camera Regression')
+    loaded = None
+    try:
+        def size():
+            return scene.render.resolution_x, scene.render.resolution_y
+        assert scene.fbp_camera_dimensions_linked is True
+        scene.fbp_camera_aspect = '1:1'
+        scene.fbp_camera_height = 1000
+        assert size() == (1000, 1000)
+        scene.fbp_camera_width = 1200
+        assert size() == (1200, 1200)
+        assert scene.fbp_camera_resolution == 'CUSTOM'
+        assert output.camera_aspect_menu_label(scene) == '1:1'
+        scene.fbp_camera_aspect = '16:9'
+        scene.fbp_camera_width = 1920
+        assert size() == (1920, 1080)
+        scene.fbp_camera_height = 720
+        assert size() == (1280, 720)
+        output.swap_camera_dimensions(scene)
+        scene.fbp_camera_height = 1920
+        assert size() == (1080, 1920)
+        scene.fbp_camera_dimensions_linked = False
+        scene.fbp_camera_width = 1000
+        assert size() == (1000, 1920)
+        assert output.camera_aspect_menu_label(scene) == 'Custom'
+        scene.fbp_camera_dimensions_linked = True
+        assert size() == (1000, 1920)  # Re-link never resizes the image.
+        scene.fbp_camera_height = 960
+        assert size() == (500, 960)
+        assert output.camera_aspect_menu_label(scene) == 'Custom'
+        scene.fbp_camera_aspect = '1:1'
+        assert output.camera_aspect_menu_label(scene) == '1:1'
+
+        scene.render.pixel_aspect_x = 2.0
+        scene.fbp_camera_aspect = '16:9'
+        scene.fbp_camera_height = 1080
+        assert size() == (960, 1080)
+        scene.fbp_camera_width = 1920
+        assert size() == (1920, 2160)
+        # Reject a linked overflow/underflow atomically, with a visible error.
+        scene.render.pixel_aspect_x = 1.0
+        scene.fbp_camera_aspect = '32:9'
+        original = size()
+        scene.fbp_camera_height = 65536
+        assert size() == original and scene.get(output._ERROR_KEY)
+        scene.fbp_camera_width = 4
+        assert size() == original and scene.get(output._ERROR_KEY)
+        scene.fbp_camera_width = 1920
+        assert size() == (1920, 540) and not scene.get(output._ERROR_KEY)
+
+        scene.render.resolution_percentage = 37
+        scene.fbp_camera_dimensions_linked = False
+        scene.fbp_camera_width = 1234
+        scene.fbp_camera_height = 987
+        with bpy.context.temp_override(scene=scene):
+            assert bpy.ops.fbp.save_camera_format_preset(name='My Format') == {'FINISHED'}
+            assert bpy.ops.fbp.save_camera_format_preset(name='My Format') == {'FINISHED'}
+            assert [p.name for p in scene.fbp_camera_format_presets] == ['My Format', 'My Format 2']
+            scene.fbp_camera_aspect = '16:9'
+            scene.fbp_camera_resolution = 'HD'
+            scene.fbp_camera_dimensions_linked = True
+            assert bpy.ops.fbp.apply_camera_format_preset(index=0) == {'FINISHED'}
+            assert size() == (1234, 987)
+            assert not scene.fbp_camera_dimensions_linked
+            assert output.camera_aspect_menu_label(scene) == 'Custom'
+            assert scene.render.resolution_percentage == 37
+            assert bpy.ops.fbp.apply_camera_format_preset(index=99) == {'CANCELLED'}
+            assert bpy.ops.fbp.remove_camera_format_preset(index=1) == {'FINISHED'}
+            assert bpy.ops.fbp.remove_camera_format_preset(index=99) == {'CANCELLED'}
+        # Presets persist with scene data rather than a process-local cache.
+        preset_file = WORKDIR / 'camera-format-presets.blend'
+        bpy.data.libraries.write(str(preset_file), {scene})
+        with bpy.data.libraries.load(str(preset_file), link=False) as (source, target):
+            target.scenes = [scene.name]
+        loaded = target.scenes[0]
+        assert loaded.fbp_camera_format_presets[0].name == 'My Format'
+        assert loaded.fbp_camera_format_presets[0].width == 1234
+        assert loaded.fbp_camera_format_presets[0].linked is False
+        return {'linked_default': True, 'both_axes_and_orientations': True,
+                'unlinked_custom_aspect': True, 'non_square_pixels': True,
+                'bounds_atomic': True, 'preset_save_apply_remove_persistence': True}
+    finally:
+        if loaded is not None:
+            bpy.data.scenes.remove(loaded)
+        bpy.data.scenes.remove(scene)
 
 
 def _owned_handler_count(handler_list, callback_name, module_suffix):
@@ -835,6 +1137,52 @@ def test_incremental_lifecycle_and_deep_rollback(_module):
 
 def test_synchronous_media_generation(_module):
     operator_import = importlib.import_module(f"{PACKAGE}.operator_import")
+    scene = bpy.context.scene
+    assert hasattr(bpy.types.Scene, "fbp_project_path")
+    assert hasattr(bpy.types.Scene, "fbp_last_directory")
+    assert hasattr(scene, "fbp_project_path")
+    assert hasattr(scene, "fbp_last_directory")
+
+    reports = []
+
+    class MissingImportProperties:
+        pass
+
+    class ReportingOperator:
+        def report(self, level, message):
+            reports.append((set(level), str(message)))
+
+    incomplete_result = operator_import.FBP_OT_ImportSingleImage.invoke(
+        ReportingOperator(),
+        type("ImportContext", (), {"scene": MissingImportProperties()})(),
+        None,
+    )
+    assert incomplete_result == {'CANCELLED'}, incomplete_result
+    assert reports and reports[-1][0] == {'ERROR'}, reports
+    assert "not fully registered" in reports[-1][1], reports
+
+    class StaleImportScene:
+        def __getattribute__(self, name):
+            if str(name).startswith("fbp_"):
+                raise ReferenceError("StructRNA of type Scene has been removed")
+            return super().__getattribute__(name)
+
+    stale_result = operator_import.FBP_OT_ImportSingleImage.invoke(
+        ReportingOperator(),
+        type("StaleImportContext", (), {"scene": StaleImportScene()})(),
+        None,
+    )
+    assert stale_result == {'CANCELLED'}, stale_result
+    assert reports[-1][0] == {'ERROR'}, reports
+    assert "not fully registered" in reports[-1][1], reports
+
+    directory_probe = type(
+        "ImportDirectoryProbe",
+        (),
+        {"fbp_project_path": "", "fbp_last_directory": str(WORKDIR)},
+    )()
+    assert operator_import._fbp_scene_import_directory(directory_probe) == str(WORKDIR)
+
     fixture_path = WORKDIR / "fbp_generation_fixture.png"
     fixture_image = bpy.data.images.new(
         "FBP Generation Fixture Source",
@@ -892,6 +1240,8 @@ def test_synchronous_media_generation(_module):
         "generated_rigs": 1,
         "background_mode": bool(bpy.app.background),
         "rollback_restored": True,
+        "partial_registration_guard": True,
+        "stale_scene_guard": True,
     }
 
 
@@ -1243,6 +1593,76 @@ def test_scrub_bar_regressions(_module):
     assert scrub._bookmark_native_name("Shot A") == "✦ - Shot A"
     assert scrub._bookmark_label_from_name("✦ - Shot A") == "Shot A"
     assert len(scrub._BOOKMARK_COLOR_ITEMS) == 9
+    assert {
+        identifier: icon
+        for identifier, _label, _description, icon, _index in scrub._BOOKMARK_COLOR_ITEMS
+    } == {
+        "NONE": "SNAP_FACE",
+        "GREY": "STRIP_COLOR_09",
+        "RED": "STRIP_COLOR_01",
+        "ORANGE": "STRIP_COLOR_02",
+        "YELLOW": "STRIP_COLOR_03",
+        "GREEN": "STRIP_COLOR_04",
+        "CYAN": "STRIP_COLOR_05",
+        "PURPLE": "STRIP_COLOR_06",
+        "MAGENTA": "STRIP_COLOR_07",
+    }
+    assert scrub._bookmark_color_tag("WHITE") == "NONE"
+    assert scrub._bookmark_color_tag("BLUE") == "CYAN"
+    assert scrub._bookmark_color_tag("CYAN") == "CYAN"
+    assert scrub._bookmark_color_tag("unknown") == "NONE"
+    assert scrub._bookmark_color("BLUE") == scrub._BOOKMARK_COLORS["CYAN"]
+    assert scrub._bookmark_color("CYAN") == scrub._BOOKMARK_COLORS["CYAN"]
+    adaptive_none = scrub._bookmark_color(
+        "NONE",
+        none_color=(0.12, 0.34, 0.56, 1.0),
+    )
+    assert adaptive_none == (0.12, 0.34, 0.56, 0.88), adaptive_none
+    class FakeScrubInk:
+        pass
+
+    original_background_color = scrub.viewport_background_color
+    try:
+        scrub.viewport_background_color = lambda _context: (0.90, 0.80, 0.70)
+        fake_scrub_ink = FakeScrubInk()
+        scrub._apply_inverted_scrub_ink(fake_scrub_ink, bpy.context)
+        assert fake_scrub_ink._bookmark_none_color[:3] == (0.035, 0.035, 0.035)
+        scrub.viewport_background_color = lambda _context: (0.10, 0.12, 0.15)
+        scrub._apply_inverted_scrub_ink(fake_scrub_ink, bpy.context)
+        assert fake_scrub_ink._bookmark_none_color[:3] == (0.97, 0.97, 0.97)
+    finally:
+        scrub.viewport_background_color = original_background_color
+
+    class FakeKeyframe:
+        def __init__(self, keyframe_type):
+            self.keyframe_type = keyframe_type
+
+    assert scrub.selected_keyframe_type_icon(()) == "KEYFRAME"
+    assert scrub.selected_keyframe_type_icon(((None, FakeKeyframe("EXTREME")),)) == "KEYTYPE_EXTREME_VEC"
+    assert scrub.selected_keyframe_type_icon((
+        (None, FakeKeyframe("EXTREME")),
+        (None, FakeKeyframe("BREAKDOWN")),
+    )) == "KEYFRAME"
+
+    native_header_draw = bpy.types.VIEW3D_HT_header.draw
+    assert not bool(getattr(native_header_draw, "_fbp_scrub_header_patch", False))
+    from bl_ui import space_view3d as native_view3d
+
+    native_gp_layer_draw = getattr(
+        native_view3d.draw_topbar_grease_pencil_layer_panel,
+        "_fbp_original_draw",
+        native_view3d.draw_topbar_grease_pencil_layer_panel,
+    )
+    scrub._unregister_header()
+    assert bpy.types.VIEW3D_HT_header.draw is native_header_draw
+    assert native_view3d.draw_topbar_grease_pencil_layer_panel is native_gp_layer_draw
+    scrub._register_header()
+    assert bpy.types.VIEW3D_HT_header.draw is native_header_draw
+    assert bool(getattr(
+        native_view3d.draw_topbar_grease_pencil_layer_panel,
+        "_fbp_scrub_gp_layer_patch",
+        False,
+    ))
 
     keys = (10, 20, 30, 40, 60, 70)
     assert scrub._onion_endpoint_frame(50, 2, "BEFORE", "RELATIVE", keys) == 30
@@ -1278,6 +1698,16 @@ def test_scrub_bar_regressions(_module):
 
 def test_gp_support(_module):
     bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
+    blender_icons = {
+        item.identifier
+        for item in bpy.types.UILayout.bl_rna.functions["operator"]
+        .parameters["icon"].enum_items
+    }
+    presentation_icons = {
+        icon
+        for _label, icon in bridge._GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION.values()
+    }
+    assert presentation_icons <= blender_icons, sorted(presentation_icons - blender_icons)
     summary = bridge.fbp_gp_effect_support_summary()
     assert len(bridge.GP_NATIVE_EFFECTS) >= 27, len(bridge.GP_NATIVE_EFFECTS)
     assert summary["total"] == sum(
@@ -1297,6 +1727,39 @@ def test_gp_support(_module):
     assert "This report stays local" in report, report
     assert hasattr(bpy.types.Object, "fbp_gp_effect_compatibility_filter")
     return summary
+
+
+def test_gp_runtime_cache_cleanup(_module):
+    bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
+    raster = importlib.import_module(f"{PACKAGE}.gp_mask_raster")
+    raster._RGBA_CACHE["release-gate"] = (object(), 64)
+    raster._GRID_CACHE["release-gate"] = (object(), object(), 96)
+    raster._RGBA_CACHE_BYTES = 64
+    raster._GRID_CACHE_BYTES = 96
+    bridge.clear_grease_pencil_runtime_caches()
+    assert not raster._RGBA_CACHE and raster._RGBA_CACHE_BYTES == 0
+    assert not raster._GRID_CACHE and raster._GRID_CACHE_BYTES == 0
+    return {"rgba_bytes": 0, "grid_bytes": 0, "reload_cleanup": True}
+
+
+def test_felt_fuzz_canonical_contract(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    builtin = importlib.import_module(f"{PACKAGE}.builtin_effects")
+    registry = importlib.import_module(f"{PACKAGE}.effects_registry")
+    effect_id = registry.FBP_EFFECT_FELT_FUZZ
+    definition = registry.fbp_effect_definition(effect_id)
+    group = geo._fbp_load_effect_group(effect_id)
+    assert group is not None
+    assert builtin._builtin_group_is_complete(group, definition)
+    assert int(group.get("fbp_alpha_mask_patch_version", 0) or 0) >= geo.FBP_ALPHA_MASK_PATCH_VERSION
+    node_count = len(group.nodes)
+    cached = geo._fbp_load_effect_group(effect_id)
+    assert cached is group
+    assert len(cached.nodes) == node_count
+    inputs = geo._fbp_interface_inputs(group)
+    assert "Seed" in inputs
+    assert "Alpha Threshold" in inputs and "Alpha Resolution" in inputs
+    return {"nodes": node_count, "canonical_upgrade_once": True}
 
 
 def test_audited_operator_tooltips(_module):
@@ -1348,11 +1811,21 @@ def test_audited_operator_tooltips(_module):
 def test_preview_scope_policy(_module):
     feature_scope = importlib.import_module(f"{PACKAGE}.feature_scope")
 
-    class PreviewModifier(dict):
-        pass
+    class PreviewModifier:
+        type = "NODES"
+        id_data = {"fbp_generic_mesh_modifiers_v1": '{"test":{"fbp_generic_mesh_effect":true}}'}
+
+        class node_group:
+            class interface:
+                items_tree = (type('Socket', (), dict(item_type='SOCKET', in_out='INPUT',
+                               name='FBP Generic Mesh Owner', identifier='owner'))(),)
+
+        class properties:
+            class inputs:
+                owner = type('Value', (), dict(value='test'))()
 
     class PreviewObject:
-        modifiers = (PreviewModifier(fbp_generic_mesh_effect=True),)
+        modifiers = (PreviewModifier(),)
 
     class PreviewScene:
         fbp_experimental_compositor = True
@@ -1536,12 +2009,79 @@ def test_gp_native_apply(_module):
         if item is not None:
             added.append(effect_id)
     if added:
-        assert bridge._gp_set_all_native_effects_open(canvas, False) == len(added)
+        instances = bridge._gp_native_effect_instances(canvas)
+        bridge._gp_sync_native_effect_items(canvas)
+        list_ids = [str(row.effect_id) for row in canvas.fbp_gp_effect_items]
+        ordered_ids = [
+            effect_id
+            for effect_id, _item, _backend, _index
+            in bridge._gp_native_effect_stack_state(canvas)[1]
+        ]
+        assert list_ids == ordered_ids, (list_ids, ordered_ids)
+        assert hasattr(bpy.types, "FBP_UL_GPNativeEffectStack")
+        assert hasattr(bpy.types, "FBP_MT_gp_native_effect_actions")
         assert all(
-            not bridge._gp_native_effect_open(item, default=True)
-            for item in bridge._gp_native_effect_instances(canvas).values()
+            hasattr(bpy.types, menu_class.bl_idname)
+            for menu_class in bridge._GP_NATIVE_EFFECT_GROUP_MENUS
         )
-        assert bridge._gp_set_all_native_effects_open(canvas, True) == len(added)
+        grouped_ids = {
+            effect_id
+            for _label, _icon, effect_ids in bridge._GP_NATIVE_EFFECT_LIBRARY_GROUPS
+            for effect_id in effect_ids
+        }
+        assert grouped_ids == {definition[0] for definition in bridge.GP_NATIVE_EFFECTS}
+
+        same_backend_pair = next((
+            (first, second)
+            for first, second in zip(ordered_ids, ordered_ids[1:])
+            if bridge._gp_native_effect_definition(first)[3]
+            == bridge._gp_native_effect_definition(second)[3]
+        ), None)
+        if same_backend_pair:
+            first, second = same_backend_pair
+            canvas.fbp_gp_effect_items_index = list_ids.index(first)
+            assert bridge._gp_active_native_effect_id(canvas) == first
+            assert bridge._gp_move_native_effect(canvas, first, 1)
+            moved_ids = [str(row.effect_id) for row in canvas.fbp_gp_effect_items]
+            assert moved_ids.index(first) == moved_ids.index(second) + 1, moved_ids
+            assert bridge._gp_active_native_effect_id(canvas) == first
+            assert bridge._gp_move_native_effect(canvas, first, -1)
+
+        expected_controls = {
+            "RIM": {"mask_color", "samples"},
+            "SHADOW": {
+                "samples", "use_wave", "orientation", "amplitude", "period",
+                "phase", "use_object", "object", "scale",
+            },
+            "GAUSSIAN_BLUR": {"use_dof_mode"},
+            "GP_GLOW": {
+                "opacity", "size", "samples", "mode", "blend_mode",
+                "select_color", "rotation", "use_glow_under",
+            },
+            "CUTOUT_OUTLINE": {"subdivision", "outline_material", "object"},
+        }
+        for effect_id, logical_names in expected_controls.items():
+            item = instances.get(effect_id)
+            if item is None:
+                continue
+            unresolved = {
+                name for name in logical_names
+                if not bridge._gp_resolve_native_attr(item, name)
+            }
+            assert not unresolved, {effect_id: sorted(unresolved)}
+
+        glow = instances.get("GP_GLOW")
+        if glow is not None:
+            opacity_attr = bridge._gp_resolve_native_attr(glow, "opacity")
+            size_attr = bridge._gp_resolve_native_attr(glow, "size")
+            samples_attr = bridge._gp_resolve_native_attr(glow, "samples")
+            assert abs(float(getattr(glow, opacity_attr)) - 0.35) < 1.0e-5
+            assert tuple(round(float(value), 5) for value in getattr(glow, size_attr)) == (6.0, 6.0)
+            assert int(getattr(glow, samples_attr)) == 8
+            setattr(glow, opacity_attr, 0.9)
+            assert bridge._gp_reset_native_effect(canvas, "GP_GLOW")
+            assert abs(float(getattr(glow, opacity_attr)) - 0.35) < 1.0e-5
+
         effect_id = added[0]
         definition = bridge._gp_native_effect_definition(effect_id)
         collection = bridge._gp_native_effect_collection(canvas, definition[3])
@@ -1556,8 +2096,6 @@ def test_gp_native_apply(_module):
         assert bridge._gp_native_effect_id_from_item(
             duplicate, bridge._gp_native_effect_definitions()
         ) == effect_id
-        assert bridge._gp_set_native_effect_open(duplicate, False)
-        assert not bridge._gp_native_effect_open(duplicate, default=True)
         _active, _ordered, _lengths, duplicates = bridge._gp_native_effect_stack_state(canvas)
         assert duplicates.get(effect_id, 0) == 2, duplicates
         assert bridge._gp_repair_native_effect_duplicates(canvas) == 1
@@ -1568,7 +2106,83 @@ def test_gp_native_apply(_module):
     if not supported:
         raise SkipTest("This Blender build exposed no supported native GP effect type")
     assert added, {"supported": supported}
-    return {"supported_by_blender": len(supported), "created_and_removed": len(added)}
+    assert len(canvas.fbp_gp_effect_items) == 0
+    return {
+        "supported_by_blender": len(supported),
+        "created_and_removed": len(added),
+        "visual_control_contracts": 5,
+        "glow_defaults_reset": True,
+        "ui_list_and_grouped_menu": True,
+    }
+
+
+def test_timeline_backport(_module):
+    timeline = importlib.import_module(f"{PACKAGE}.timeline_backport")
+    workspace = bpy.context.workspace
+    window = bpy.context.window
+    assert window is not None
+    assert hasattr(workspace, "show_jump_to_endpoints")
+    assert hasattr(workspace, "show_jump_to_keyframes")
+    assert hasattr(workspace, "show_jump_by_delta")
+    assert hasattr(workspace, "use_scene_time_sync_follow_scene")
+    assert hasattr(workspace, "fbp_use_scene_time_sync")
+    assert hasattr(bpy.types, "FBP_PT_time_jump")
+    assert hasattr(bpy.types, "FBP_PT_dopesheet_time_sync")
+    assert hasattr(bpy.types, "FBP_PT_graph_time_sync")
+    assert hasattr(bpy.types, "FBP_PT_nla_time_sync")
+    assert hasattr(bpy.types, "FBP_PT_sequencer_time_sync")
+    assert sum(
+        getattr(handler, "__name__", "") == "fbp_timeline_scene_time_sync"
+        for handler in bpy.app.handlers.frame_change_post
+    ) == 1
+
+    original_scene = window.scene
+    original_sequencer_scene = workspace.sequencer_scene
+    original_sync = bool(workspace.fbp_use_scene_time_sync)
+    original_follow = bool(workspace.use_scene_time_sync_follow_scene)
+    original_native_sync = bool(workspace.use_scene_time_sync)
+    master = bpy.data.scenes.new("FBP Timeline Backport Master")
+    source = bpy.data.scenes.new("FBP Timeline Backport Source")
+    source.frame_start = 1
+    strip = master.sequence_editor_create().strips.new_scene(
+        "FBP Timeline Scene Strip", source, 3, 20
+    )
+    try:
+        workspace.sequencer_scene = master
+        workspace.fbp_use_scene_time_sync = True
+        workspace.use_scene_time_sync_follow_scene = False
+        assert workspace.use_scene_time_sync is False
+        window.scene = source
+
+        master.frame_set(25)
+        timeline.fbp_timeline_scene_time_sync(master)
+        assert source.frame_current == 6, (master.frame_current, source.frame_current)
+        assert window.scene == source
+
+        source.frame_set(12)
+        timeline.fbp_timeline_scene_time_sync(source)
+        assert master.frame_current == 31, (master.frame_current, source.frame_current)
+        assert window.scene == source
+
+        strip.use_reverse_frames = True
+        mapped = timeline._timeline_to_scene_frame(master, strip, 25.0)
+        assert mapped is not None
+        assert abs(timeline._scene_to_timeline_frame(master, strip, mapped) - 25.0) < 1.0e-6
+    finally:
+        window.scene = original_scene
+        workspace.sequencer_scene = original_sequencer_scene
+        workspace.use_scene_time_sync_follow_scene = original_follow
+        workspace.fbp_use_scene_time_sync = original_sync
+        workspace.use_scene_time_sync = original_native_sync
+        bpy.data.scenes.remove(master)
+        bpy.data.scenes.remove(source)
+
+    return {
+        "compact_jump_controls": True,
+        "all_time_editor_popovers": 4,
+        "bidirectional_scene_strip_sync": True,
+        "follow_scene_split": True,
+    }
 
 
 def test_generic_mesh_matrix(_module):
@@ -1577,6 +2191,7 @@ def test_generic_mesh_matrix(_module):
     assert matrix and all("reason" in item for item in matrix)
     assert any(item["supported"] for item in matrix)
     assert all(not item["supported"] for item in matrix if item["alpha_aware"])
+    assert not geo.fbp_generic_mesh_effect_support('CAMERA_SCALE_LOCK')['supported']
     return {"total": len(matrix), "supported": sum(item["supported"] for item in matrix)}
 
 
@@ -1668,19 +2283,28 @@ def test_generic_mesh_supported_group_contracts(_module):
 
 
 def test_generic_mesh_apply(_module):
+    scene = bpy.context.scene
+    enabled = scene.fbp_preview_generic_mesh_effects
+    try:
+        scene.fbp_preview_generic_mesh_effects = True
+        return _test_generic_mesh_apply_enabled(_module)
+    finally:
+        scene.fbp_preview_generic_mesh_effects = enabled
+
+
+def _test_generic_mesh_apply_enabled(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    metadata = geo.mesh_modifier_metadata
     supported = [item["effect_id"] for item in geo.fbp_generic_mesh_effect_matrix() if item["supported"]]
-    if not supported:
-        raise SkipTest("No Generic Mesh backend is marked supported")
+    assert supported, "No Generic Mesh backend is marked supported"
     bpy.ops.mesh.primitive_grid_add(x_subdivisions=4, y_subdivisions=4)
     obj = bpy.context.object
     effect_id = supported[0]
     changed = geo.fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, scene=bpy.context.scene)
-    if not changed:
-        raise SkipTest(f"Bundled node asset for {effect_id} was unavailable in this test environment")
-    owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
-    assert len(owned) == 1 and owned[0].get("fbp_effect_id") == effect_id
-    assert owned[0].get("fbp_input_topology") in {
+    assert changed, f"Supported Generic Mesh effect {effect_id} failed application with Preview enabled"
+    owned = [m for m in obj.modifiers if metadata(m).get("fbp_generic_mesh_effect", False)]
+    assert len(owned) == 1 and metadata(owned[0]).get("fbp_effect_id") == effect_id
+    assert metadata(owned[0]).get("fbp_input_topology") in {
         "CLOSED_MANIFOLD", "OPEN_SURFACE", "NON_MANIFOLD", "LOOSE_GEOMETRY", "WIRE", "POINTS", "EMPTY"
     }
     valid, reason = geo.fbp_validate_generic_mesh_object(obj)
@@ -1690,7 +2314,9 @@ def test_generic_mesh_apply(_module):
     # result must restore its previous name, group and custom inputs.
     current = owned[0]
     current.name = "FBP Mesh Effect — Rollback Sentinel"
-    current["fbp_test_sentinel"] = 42
+    input_id = geo._fbp_interface_socket_for_name(geo._fbp_interface_inputs(current.node_group), 'Mirror X')
+    assert input_id
+    geo._fbp_modifier_input_set(current, input_id, True)
     original_validator = geo.fbp_validate_generic_mesh_object
     geo.fbp_validate_generic_mesh_object = lambda *_args, **_kwargs: (False, "forced runner rollback")
     try:
@@ -1698,36 +2324,35 @@ def test_generic_mesh_apply(_module):
     finally:
         geo.fbp_validate_generic_mesh_object = original_validator
     assert current.name == "FBP Mesh Effect — Rollback Sentinel"
-    assert current.get("fbp_test_sentinel") == 42
+    assert geo.fbp_modifier_input_get(current, input_id) is True
 
     node_group = current.node_group
     obj.modifiers.remove(current)
     artist = obj.modifiers.new(name="Artist Nodes — Must Survive", type="NODES")
     artist.node_group = node_group
-    assert not bool(artist.get("fbp_generic_mesh_effect", False))
+    assert not metadata(artist)
     assert geo.fbp_apply_geometry_effect_to_mesh_object(obj, effect_id, scene=bpy.context.scene)
-    owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    owned = [m for m in obj.modifiers if metadata(m).get("fbp_generic_mesh_effect", False)]
     assert len(owned) == 1
-    assert obj.modifiers.get(artist.name) is artist
-    assert not bool(artist.get("fbp_generic_mesh_effect", False))
+    assert obj.modifiers.get(artist.name) == artist
+    assert not metadata(artist)
 
-    owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    owned = [m for m in obj.modifiers if metadata(m).get("fbp_generic_mesh_effect", False)]
     assert len(owned) == 1
     duplicate = obj.modifiers.new(name="FBP Duplicate Owned Modifier", type="NODES")
     duplicate.node_group = owned[0].node_group
-    duplicate["fbp_generic_mesh_effect"] = True
-    duplicate["fbp_effect_id"] = effect_id
+    geo.set_mesh_modifier_metadata(duplicate, metadata(owned[0]))
     assert geo.fbp_generic_mesh_duplicate_effects(obj).get(effect_id) == 2
     assert geo.fbp_repair_generic_mesh_duplicates(obj) == 1
     assert not geo.fbp_generic_mesh_duplicate_effects(obj)
-    assert obj.modifiers.get(artist.name) is artist
+    assert obj.modifiers.get(artist.name) == artist
 
     # Multi-object application is atomic: a failure on the second target must
     # restore the first object's FBP modifier and remove the second object's
     # newly-created modifier, while preserving artist modifiers on both.
-    first_owned = next(m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False)))
+    first_owned = next(m for m in obj.modifiers if metadata(m).get("fbp_generic_mesh_effect", False))
     first_owned.name = "FBP Atomic Rollback Sentinel"
-    first_owned["fbp_atomic_sentinel"] = 73
+    geo._fbp_modifier_input_set(first_owned, input_id, True)
     bpy.ops.mesh.primitive_grid_add(x_subdivisions=3, y_subdivisions=3)
     failing_obj = bpy.context.object
     failing_obj.name = "FBP Atomic Failure Target"
@@ -1736,7 +2361,7 @@ def test_generic_mesh_apply(_module):
 
     original_validator = geo.fbp_validate_generic_mesh_object
     def atomic_validator(target, *_args, **_kwargs):
-        if target is failing_obj:
+        if target == failing_obj:
             return False, "forced atomic batch failure"
         return original_validator(target, *_args, **_kwargs)
     geo.fbp_validate_generic_mesh_object = atomic_validator
@@ -1747,12 +2372,12 @@ def test_generic_mesh_apply(_module):
     finally:
         geo.fbp_validate_generic_mesh_object = original_validator
     assert changed == 0 and "rolled back" in failure, (changed, failure)
-    restored_owned = [m for m in obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
+    restored_owned = [m for m in obj.modifiers if metadata(m).get("fbp_generic_mesh_effect", False)]
     assert len(restored_owned) == 1
     assert restored_owned[0].name == "FBP Atomic Rollback Sentinel"
-    assert restored_owned[0].get("fbp_atomic_sentinel") == 73
-    assert not [m for m in failing_obj.modifiers if bool(m.get("fbp_generic_mesh_effect", False))]
-    assert failing_obj.modifiers.get(failing_artist.name) is failing_artist
+    assert geo.fbp_modifier_input_get(restored_owned[0], input_id) is True
+    assert not [m for m in failing_obj.modifiers if metadata(m).get("fbp_generic_mesh_effect", False)]
+    assert failing_obj.modifiers.get(failing_artist.name) == failing_artist
 
     return {
         "effect": effect_id,
@@ -2239,6 +2864,43 @@ def test_interactive_generation_lock_windows(_module):
     }
 
 
+def test_interactive_scrub_header_contract(_module):
+    """Keep the native header draw intact while using its centered lane."""
+    if bpy.app.background:
+        raise SkipTest("Interactive UI required")
+    header = bpy.types.VIEW3D_HT_header
+    centered = header.draw_xform_template
+    from bl_ui import space_view3d as native_view3d
+
+    gp_centered = native_view3d.draw_topbar_grease_pencil_layer_panel
+    assert not bool(getattr(header.draw, "_fbp_scrub_header_patch", False))
+    assert bool(getattr(centered, "_fbp_scrub_xform_patch", False))
+    assert callable(getattr(centered, "_fbp_original_draw", None))
+    assert bool(getattr(gp_centered, "_fbp_scrub_gp_layer_patch", False))
+    assert callable(getattr(gp_centered, "_fbp_original_draw", None))
+    viewports = []
+    for window in tuple(bpy.context.window_manager.windows):
+        screen = getattr(window, "screen", None)
+        for area in tuple(getattr(screen, "areas", ()) or ()):
+            if area.type != "VIEW_3D":
+                continue
+            headers = [
+                (int(region.width), int(region.height))
+                for region in area.regions
+                if region.type == "HEADER"
+            ]
+            assert headers, "View3D has no header region"
+            assert all(width > 0 and height >= 20 for width, height in headers), headers
+            viewports.append(headers)
+    assert viewports, "Interactive test has no View3D area"
+    return {
+        "native_draw_preserved": True,
+        "centered_xform_patch": True,
+        "centered_gp_layer_patch": True,
+        "viewports": len(viewports),
+    }
+
+
 def test_interactive_reload_and_splash(module):
     if bpy.app.background:
         raise SkipTest("Interactive UI required")
@@ -2264,6 +2926,7 @@ def test_interactive_reload_and_splash(module):
         _redraw_all(2)
     module.unregister()
     module.register()
+    test_interactive_scrub_header_contract(module)
     feedback = importlib.import_module(f"{PACKAGE}.feedback")
     safe_tasks = importlib.import_module(f"{PACKAGE}.safe_tasks")
     scheduled = feedback.fbp_schedule_whats_new_prompt(delay=0.05)
@@ -2324,6 +2987,9 @@ def run_background():
     if module:
         tests = (
             ("release_metadata_sync", test_release_sync),
+            ("control_panel_and_camera_contract", test_control_panel_and_camera_contract),
+            ("camera_output_format", test_camera_output_format),
+            ("camera_pixels_and_presets", test_camera_pixels_and_presets),
             ("effect_evolution_handler_lifecycle", test_effect_evolution_handler_lifecycle),
             ("registration_failure_transaction", test_registration_failure_transaction),
             ("generation_timer_deadline", test_generation_timer_deadline),
@@ -2338,7 +3004,10 @@ def run_background():
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),
             ("scrub_bar_regressions", test_scrub_bar_regressions),
+            ("timeline_pr_162412_backport", test_timeline_backport),
             ("gp_effect_support", test_gp_support),
+            ("gp_runtime_cache_cleanup", test_gp_runtime_cache_cleanup),
+            ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("preview_scope_policy", test_preview_scope_policy),
             ("irreversible_action_contracts", test_irreversible_action_contracts),
@@ -2377,6 +3046,7 @@ def run_interactive():
             record("undo_redo_20_cycles", lambda: test_undo_redo(module))
             record("icon_runtime_contract", lambda: test_icon_runtime_contract(module))
             record("generation_lock_two_windows", lambda: test_interactive_generation_lock_windows(module))
+            record("scrub_header_native_center_contract", lambda: test_interactive_scrub_header_contract(module))
             record("layer_tree_gp_redraw_stress", lambda: test_interactive_layer_tree_gp(module))
             record("preferences_reload_and_splash", lambda: test_interactive_reload_and_splash(module))
         finish(module)

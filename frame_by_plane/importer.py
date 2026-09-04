@@ -16,8 +16,6 @@ from .runtime import (
     FBP_DATA_ERRORS,
     FBP_DATA_IO_ERRORS,
     fbp_request_redraw,
-    fbp_runtime_get,
-    fbp_runtime_set,
     fbp_warn,
 )
 from .materials import do_update_emission, do_update_opacity
@@ -512,20 +510,6 @@ def fbp_queue_fast_import_rig_name(name):
         return False
 
 
-def _fbp_context_value(context, name):
-    """Resolve context members without assuming the global window is active."""
-    try:
-        value = getattr(context, name, None) if context is not None else None
-    except FBP_DATA_ERRORS:
-        value = None
-    if value is not None:
-        return value
-    try:
-        return getattr(getattr(bpy, "context", None), name, None)
-    except FBP_DATA_ERRORS:
-        return None
-
-
 def fbp_begin_fast_import(context):
     """Begin native rebuild batching without owning Undo or UI progress.
 
@@ -544,9 +528,6 @@ def fbp_begin_fast_import(context):
 
 def _fbp_restore_fast_import_runtime(context, *, request_redraw=True):
     """Clear batching state without touching process-wide Undo or progress."""
-    # Remove the legacy marker left by builds made before 7.1.18's follow-up
-    # transaction coordinator.  Never derive or write the current preference.
-    fbp_runtime_set("fbp_fast_import_undo_state", -1, context)
     fbp_set_fast_import_queued_names([], context)
     if request_redraw:
         fbp_request_redraw(context, all_windows=True)

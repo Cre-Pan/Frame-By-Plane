@@ -176,13 +176,6 @@ MOTION_EFFECT_DEFAULT_PRESET = {
     "FOLLOW": "FOLLOW_PATH",
 }
 
-MOTION_AXIS_ITEMS = (
-    ("X", "X", "Use the X axis"),
-    ("Y", "Y", "Use the Y axis"),
-    ("Z", "Z", "Use the Z axis"),
-    ("ALL", "XYZ", "Use all configured channels"),
-)
-
 MOTION_SPACE_ITEMS = (
     ("LOCAL", "Local", "Evaluate position offsets in the target's local space"),
     ("WORLD", "World", "Convert position offsets from world space into the target's local space"),
@@ -318,12 +311,6 @@ MOTION_FAMILY_LABELS = {
     "SECONDARY": "Secondary Motion",
     "FOLLOW": "Follow",
 }
-
-MOTION_FAMILY_ORDER = (
-    "DRIFT", "SWING", "BREATHING", "LOOP", "NOISE",
-    "NATURE", "BOUNCE", "CHARACTER", "SECONDARY", "FOLLOW",
-)
-
 
 def _motion_effect_for_preset(preset):
     """Return the visible Motion effect family for a stored preset."""

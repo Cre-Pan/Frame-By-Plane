@@ -66,18 +66,23 @@ The single skip is `generic_mesh_artist_modifier_preservation`: the historical `
 
 The final `windows-x64` ZIP was installed and enabled through Blender's extension CLI in an isolated user profile. The installed module created an FBP Grease Pencil canvas, saved a `.blend`, reopened it, preserved the FBP marker and retained registered operators. With a transaction active, real File Open, File Revert and New File operations each retired the owner and its partial data. No source-checkout import was used for this smoke test.
 
+## Bookmark Color Tag visual validation
+
+The real Blender 5.2 menu reproduced a name/swatch mismatch: the nine Bookmark labels were paired with sequential `STRIP_COLOR` icons whose native order did not match the custom Bookmark palette. The menu now uses explicit `COLORSET` icons for White, Grey, Yellow, Red, Orange, Green, Blue, Magenta and Purple. A second interactive capture confirmed that every displayed name matches its swatch. Stored identifiers and Scrub Bar RGBA values are unchanged, so existing bookmarks require no migration.
+
 ## Package validation
 
-All four supported archives were rebuilt deterministically and passed Blender 5.2 `extension validate`:
+All five declared-platform archives were rebuilt deterministically and passed Blender 5.2 `extension validate`:
 
 | Package | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `frame_by_plane-7.1.18-linux_x64.zip` | 11,277,444 | `11C01C521BE02FAFBFA0FAF75F5A31B5B112BC8F45B232DBC90532F8633977E0` |
-| `frame_by_plane-7.1.18-macos_arm64.zip` | 8,547,076 | `E60776CB72F65B9F00916515DA2EAF3AF79C99AC79F57758E59CA6F8FC47E280` |
-| `frame_by_plane-7.1.18-windows_arm64.zip` | 6,669,707 | `DDC45441D4761D12291379BB541A5414CC1383A34B51DC2E972A23E01E93434F` |
-| `frame_by_plane-7.1.18-windows_x64.zip` | 11,122,844 | `2435CB9BB72C80903AFDAC531DEDB22FE82D0E6B875C387E5284FF90B0729B70` |
+| `frame_by_plane-7.1.18-linux_x64.zip` | 11,277,458 | `0C56441543E42F16DF2F3A241C32FE3202BB0D330724242B1809637AD732DD72` |
+| `frame_by_plane-7.1.18-macos_arm64.zip` | 8,547,090 | `9A40880DF98E4102CB2446B2F48EB3FC32AD7C874333774F65853D823AFF70D7` |
+| `frame_by_plane-7.1.18-macos_x64.zip` | 9,160,658 | `CE665C82B3C72894EE604BA1C230EB4B446F641CD5EB1E4960F4C20508D97A14` |
+| `frame_by_plane-7.1.18-windows_arm64.zip` | 6,669,721 | `E4D06D6E60EEA5159D0543C72D6A7A32EDF92B795F41C498687C266BB3A4EA51` |
+| `frame_by_plane-7.1.18-windows_x64.zip` | 11,122,858 | `A9432B592486BB9A0E892C3D4C60A5294B8687882E7360760719413076900D40` |
 
-Blender's official 5.2.0 checksum listing contains no macOS x64 distribution. The unsupported `macos_x64` package was removed from the 7.1.18 release surface instead of retaining an untestable compatibility claim.
+The macOS x64 package is retained as requested and passes structural validation. It remains package-only in the automated gate because Blender's official 5.2.0 checksum listing currently contains no Intel runtime image.
 
 `extension validate` checks package structure and platform metadata; it is not equivalent to running Blender on Linux, macOS or Windows ARM64.
 

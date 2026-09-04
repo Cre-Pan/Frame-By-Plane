@@ -4132,11 +4132,9 @@ class FBP_OT_PopupGenerateCamera(Operator):
         row = box.row(align=True)
         row.prop(sc, "fbp_camera_clip_start", text="Clip Start")
         row.prop(sc, "fbp_camera_clip_end", text="Clip End")
-        box.prop(sc, "fbp_cam_ratio", text="Camera Ratio")
-        if sc.fbp_cam_ratio == 'CUSTOM':
-            row = box.row(align=True)
-            row.prop(sc.render, "resolution_x", text="Width")
-            row.prop(sc.render, "resolution_y", text="Height")
+        from .camera_output import draw_camera_output
+        draw_camera_output(box, sc, context, available_width=360)
+        box.prop(sc, "fbp_camera_fit_source_aspect", text="Use Source Aspect on Import")
         row = box.row(align=True)
         row.prop(sc, "fbp_cam_pivot", text="Cursor Pivot", toggle=True, icon=fbp_icon("PIVOT_CURSOR"))
         row.prop(sc, "fbp_auto_scale", text="Fit Layers", toggle=True, icon=fbp_icon("FULLSCREEN_ENTER"))

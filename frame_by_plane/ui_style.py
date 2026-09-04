@@ -8,12 +8,10 @@ code to operators or scene logic.
 
 FBP_UI_GAP_SECTION = 0.35
 FBP_UI_ROW_SCALE = 1.0
-FBP_UI_ROW_SCALE_PRIMARY = 1.06
 FBP_UI_LIST_MIN_ROWS = 7
 FBP_UI_EFFECT_MIN_ROWS = 10
 FBP_UI_EFFECT_MAX_ROWS = 14
 FBP_UI_COMPACT_WIDTH = 360.0
-FBP_UI_NARROW_WIDTH = 300.0
 _UI_METRIC_CACHE = globals().get("_UI_METRIC_CACHE", {})
 if not isinstance(_UI_METRIC_CACHE, dict):
     _UI_METRIC_CACHE = {}
@@ -146,11 +144,6 @@ def _density_row_scale(_context):
 def is_compact(context, threshold=FBP_UI_COMPACT_WIDTH):
     """True when the current editor region should use vertically stacked controls."""
     return logical_region_width(context) < _density_threshold(context, threshold)
-
-
-def is_narrow(context, threshold=FBP_UI_NARROW_WIDTH):
-    """True for exceptionally narrow sidebars where labels must be abbreviated."""
-    return logical_region_width(context) < float(threshold)
 
 
 def adaptive_row(
