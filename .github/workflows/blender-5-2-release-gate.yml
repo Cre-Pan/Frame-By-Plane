@@ -51,11 +51,13 @@ jobs:
       BLENDER_VERSION: "5.2.0"
       BLENDER_ASSET: ${{ matrix.asset }}
       BLENDER_PACKAGE: ${{ matrix.package }}
-      FBP_CI_RESULTS: ${{ runner.temp }}/fbp-results/${{ matrix.platform }}
-      BLENDER_USER_CONFIG: ${{ runner.temp }}/fbp-user/config
-      BLENDER_USER_SCRIPTS: ${{ runner.temp }}/fbp-user/scripts
-      BLENDER_USER_DATAFILES: ${{ runner.temp }}/fbp-user/datafiles
-      BLENDER_USER_EXTENSIONS: ${{ runner.temp }}/fbp-user/extensions
+      # Job-level env expressions cannot use the runner context. Keep the
+      # isolated Blender profile inside the disposable Actions workspace.
+      FBP_CI_RESULTS: ${{ github.workspace }}/work/fbp-results/${{ matrix.platform }}
+      BLENDER_USER_CONFIG: ${{ github.workspace }}/work/fbp-user/config
+      BLENDER_USER_SCRIPTS: ${{ github.workspace }}/work/fbp-user/scripts
+      BLENDER_USER_DATAFILES: ${{ github.workspace }}/work/fbp-user/datafiles
+      BLENDER_USER_EXTENSIONS: ${{ github.workspace }}/work/fbp-user/extensions
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
