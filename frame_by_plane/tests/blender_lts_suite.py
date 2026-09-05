@@ -5,7 +5,6 @@ import importlib.util
 import json
 import math
 import os
-import stat
 import sys
 import time
 import tracemalloc
@@ -1899,7 +1898,6 @@ def test_irreversible_action_contracts(_module):
     preset_path = preset_dir / "effect_presets.json"
     preset_payload = '{"PIXELATE": {"Audit": {"size": 4}}}\n'
     preset_path.write_text(preset_payload, encoding="utf-8")
-    original_preset_mode = stat.S_IMODE(preset_path.stat().st_mode)
     original_preset_path = geometry_nodes._fbp_user_preset_path
     geometry_nodes._fbp_user_preset_path = lambda: preset_path
     try:
@@ -1929,15 +1927,18 @@ def test_irreversible_action_contracts(_module):
         assert corrupt_copy.read_text(encoding="utf-8") == "{corrupted json"
         assert json.loads(preset_path.read_text(encoding="utf-8"))["PIXELATE"]["Recovered"]
 
-        preset_path.chmod(stat.S_IREAD)
-        read_only_contents = preset_path.read_text(encoding="utf-8")
+        # A read-only file can still be atomically replaced when its parent is
+        # writable on Unix. Use a regular file as the parent instead, which is
+        # a deterministic write failure on every supported operating system.
+        invalid_parent = preset_dir / "not-a-directory"
+        invalid_parent.write_text("FBP audit blocker", encoding="utf-8")
+        geometry_nodes._fbp_user_preset_path = lambda: invalid_parent / "effect_presets.json"
         try:
             assert not geometry_nodes._fbp_save_user_presets(
                 {"PIXELATE": {"Must Not Replace": {"size": 99}}}
             )
-            assert preset_path.read_text(encoding="utf-8") == read_only_contents
         finally:
-            preset_path.chmod(original_preset_mode)
+            geometry_nodes._fbp_user_preset_path = lambda: preset_path
 
         preset_path.write_text("{still corrupted", encoding="utf-8")
         backup_path.write_text("{backup corrupted", encoding="utf-8")
@@ -1947,10 +1948,6 @@ def test_irreversible_action_contracts(_module):
         )
         assert not prepared and "corrupt" in prepare_error.lower(), prepare_error
     finally:
-        try:
-            preset_path.chmod(original_preset_mode)
-        except OSError:
-            pass
         geometry_nodes._fbp_user_preset_path = original_preset_path
 
     assert "Blender Undo cannot restore" in geometry_nodes.FBP_OT_SaveEffectPreset.bl_description
@@ -2416,9 +2413,11 @@ def test_compositor(_module):
     sets = importlib.import_module(f"{PACKAGE}.compositor_sets")
     tree = sets._root_tree(scene)
     rgb = tree.nodes.new("CompositorNodeRGB")
-    rgb.name = "Artist RGB — Must Survive"
+    rgb_name = "Artist RGB — Must Survive"
+    rgb.name = rgb_name
     mix = tree.nodes.new("ShaderNodeMix")
-    mix.name = "Artist Mix — Must Survive"
+    mix_name = "Artist Mix — Must Survive"
+    mix.name = mix_name
     mix.data_type = "RGBA"
     color_b = next(
         socket for socket in mix.inputs
@@ -2432,10 +2431,12 @@ def test_compositor(_module):
 
     group_tree = bpy.data.node_groups.new("FBP Artist Group Tree", "CompositorNodeTree")
     group_rgb = group_tree.nodes.new("CompositorNodeRGB")
-    group_rgb.name = "Artist Group RGB"
+    group_rgb_name = "Artist Group RGB"
+    group_rgb.name = group_rgb_name
     group_rgb.outputs[0].default_value = (0.8, 0.1, 0.2, 1.0)
     group_node = tree.nodes.new("CompositorNodeGroup")
-    group_node.name = "Artist Group — Must Survive"
+    group_node_name = "Artist Group — Must Survive"
+    group_node.name = group_node_name
     group_node.node_tree = group_tree
 
     # Nested group safety limits must propagate to the root completeness flag.
@@ -2486,8 +2487,8 @@ def test_compositor(_module):
     assert graph_before == sets.fbp_compositor_artist_graph_snapshot(scene)
 
     issues = sets.fbp_validate_composite(scene)
-    current_rgb = tree.nodes.get(rgb.name)
-    current_mix = tree.nodes.get(mix.name)
+    current_rgb = tree.nodes.get(rgb_name)
+    current_mix = tree.nodes.get(mix_name)
     assert current_rgb is not None and current_mix is not None
     assert current_rgb.as_pointer() == rgb.as_pointer()
     assert current_mix.as_pointer() == mix.as_pointer()
@@ -2495,24 +2496,26 @@ def test_compositor(_module):
 
     # Exercise the same rollback primitive used by Safe Repair.
     backup_state = sets._fbp_safe_repair_backup(scene)
-    unsafe_rgb = scene.compositing_node_group.nodes.get(rgb.name)
-    unsafe_mix = scene.compositing_node_group.nodes.get(mix.name)
+    unsafe_rgb = scene.compositing_node_group.nodes.get(rgb_name)
+    unsafe_mix = scene.compositing_node_group.nodes.get(mix_name)
     unsafe_rgb.label = "Unsafe Mutation"
     unsafe_rgb.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
     unsafe_mix.blend_type = "SCREEN"
     group_rgb.outputs[0].default_value = (0.0, 1.0, 0.0, 1.0)
     assert sets._fbp_safe_repair_restore(scene, backup_state)
     restored_tree = scene.compositing_node_group
-    restored_rgb = restored_tree.nodes.get(rgb.name)
-    restored_mix = restored_tree.nodes.get(mix.name)
+    # The failed root can be removed during rollback, invalidating every RNA
+    # node wrapper it owned. Resolve the restored nodes with captured strings.
+    restored_rgb = restored_tree.nodes.get(rgb_name)
+    restored_mix = restored_tree.nodes.get(mix_name)
     assert restored_rgb is not None and restored_mix is not None
     assert restored_rgb.label == original_label
     assert tuple(restored_rgb.outputs[0].default_value) == original_color
     assert restored_mix.blend_type == original_blend
     assert restored_mix.get("artist_note") == "preserve"
-    restored_group = restored_tree.nodes.get(group_node.name)
+    restored_group = restored_tree.nodes.get(group_node_name)
     assert restored_group is not None and restored_group.node_tree is not None
-    restored_group_rgb = restored_group.node_tree.nodes.get(group_rgb.name)
+    restored_group_rgb = restored_group.node_tree.nodes.get(group_rgb_name)
     assert restored_group_rgb is not None
     assert tuple(restored_group_rgb.outputs[0].default_value) == original_group_color
     assert not bool(restored_group.node_tree.get("fbp_safe_repair_nested_backup", False))
