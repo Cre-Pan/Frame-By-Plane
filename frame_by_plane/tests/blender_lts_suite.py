@@ -2566,6 +2566,11 @@ def test_save_reopen(_module):
 
 
 def test_tiny_render(_module):
+    if os.environ.get("FBP_TEST_SKIP_NATIVE_RENDER", "") == "1":
+        raise SkipTest(
+            "Hosted background runners do not provide a portable GPU context; "
+            "the native render smoke test is required on the release workstation"
+        )
     scene = bpy.context.scene
     previous_group = getattr(scene, "compositing_node_group", None)
     previous_use_compositing = bool(scene.render.use_compositing)
@@ -2589,13 +2594,9 @@ def test_tiny_render(_module):
     scene.camera = camera
     rendered = {}
     engines = (
-        (("cycles", "CYCLES"),)
-        if os.environ.get("FBP_TEST_HEADLESS_RENDER_SAFE_ONLY", "") == "1"
-        else (
-            ("workbench", "BLENDER_WORKBENCH"),
-            ("eevee", "BLENDER_EEVEE"),
-            ("cycles", "CYCLES"),
-        )
+        ("workbench", "BLENDER_WORKBENCH"),
+        ("eevee", "BLENDER_EEVEE"),
+        ("cycles", "CYCLES"),
     )
     try:
         for label, engine in engines:

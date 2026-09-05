@@ -58,9 +58,10 @@ jobs:
       BLENDER_USER_SCRIPTS: ${{ github.workspace }}/work/fbp-user/scripts
       BLENDER_USER_DATAFILES: ${{ github.workspace }}/work/fbp-user/datafiles
       BLENDER_USER_EXTENSIONS: ${{ github.workspace }}/work/fbp-user/extensions
-      # Workbench and Eevee need a real GPU context. CI background runs use the
-      # CPU-safe Cycles smoke render; interactive coverage exercises the UI.
-      FBP_TEST_HEADLESS_RENDER_SAFE_ONLY: "1"
+      # Blender 5.2 initializes a GPU context even for a Cycles CPU render on
+      # some hosted runners. The release workstation runs the native render
+      # smoke; CI still validates, installs, reopens and exercises each package.
+      FBP_TEST_SKIP_NATIVE_RENDER: "1"
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
