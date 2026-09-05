@@ -58,6 +58,9 @@ jobs:
       BLENDER_USER_SCRIPTS: ${{ github.workspace }}/work/fbp-user/scripts
       BLENDER_USER_DATAFILES: ${{ github.workspace }}/work/fbp-user/datafiles
       BLENDER_USER_EXTENSIONS: ${{ github.workspace }}/work/fbp-user/extensions
+      # Workbench and Eevee need a real GPU context. CI background runs use the
+      # CPU-safe Cycles smoke render; interactive coverage exercises the UI.
+      FBP_TEST_HEADLESS_RENDER_SAFE_ONLY: "1"
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
@@ -280,6 +283,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Installed release contract failed: $LASTEXITCODE" }
           python frame_by_plane\tests\run_7_2_feature_gate.py --blender $env:BLENDER_BIN --installed --package bl_ext.fbp_audit.frame_by_plane
           if ($LASTEXITCODE -ne 0) { throw "Installed Frame By Plane 7.2 feature gate failed: $LASTEXITCODE" }
+
+      - name: Prepare native evidence permissions on Unix
+        if: always() && runner.os != 'Windows'
+        shell: bash
+        run: chmod -R u+r "$FBP_CI_RESULTS" || true
 
       - name: Upload native evidence
         if: always()

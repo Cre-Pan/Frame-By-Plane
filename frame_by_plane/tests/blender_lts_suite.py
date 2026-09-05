@@ -80,6 +80,8 @@ def record(name, callback):
             "error": str(exc),
             "traceback": traceback.format_exc(),
         })
+    finally:
+        _write_checkpoint()
 
 
 def _write_json_atomic(path, payload):
@@ -87,6 +89,27 @@ def _write_json_atomic(path, payload):
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     temp.replace(path)
+
+
+def _write_checkpoint():
+    """Keep completed results available even if Blender itself crashes later."""
+    payload = {
+        "suite": SUITE,
+        "run_id": RUN_ID,
+        "blender": bpy.app.version_string,
+        "addon_release": RELEASE_VERSION,
+        "results": RESULTS,
+        "passed": False,
+        "in_progress": True,
+        "failed": sum(item["status"] == "FAIL" for item in RESULTS),
+        "skipped": sum(item["status"] == "SKIP" for item in RESULTS),
+        "workdir": str(WORKDIR),
+    }
+    try:
+        _write_json_atomic(REPORT, payload)
+    except OSError:
+        # A diagnostic checkpoint must never change the test result.
+        pass
 
 
 def reset_file():
@@ -1876,6 +1899,7 @@ def test_irreversible_action_contracts(_module):
     preset_path = preset_dir / "effect_presets.json"
     preset_payload = '{"PIXELATE": {"Audit": {"size": 4}}}\n'
     preset_path.write_text(preset_payload, encoding="utf-8")
+    original_preset_mode = stat.S_IMODE(preset_path.stat().st_mode)
     original_preset_path = geometry_nodes._fbp_user_preset_path
     geometry_nodes._fbp_user_preset_path = lambda: preset_path
     try:
@@ -1913,7 +1937,7 @@ def test_irreversible_action_contracts(_module):
             )
             assert preset_path.read_text(encoding="utf-8") == read_only_contents
         finally:
-            preset_path.chmod(stat.S_IWRITE)
+            preset_path.chmod(original_preset_mode)
 
         preset_path.write_text("{still corrupted", encoding="utf-8")
         backup_path.write_text("{backup corrupted", encoding="utf-8")
@@ -1924,7 +1948,7 @@ def test_irreversible_action_contracts(_module):
         assert not prepared and "corrupt" in prepare_error.lower(), prepare_error
     finally:
         try:
-            preset_path.chmod(stat.S_IWRITE)
+            preset_path.chmod(original_preset_mode)
         except OSError:
             pass
         geometry_nodes._fbp_user_preset_path = original_preset_path
@@ -2561,12 +2585,17 @@ def test_tiny_render(_module):
     camera.rotation_euler = (cube.location - camera.location).to_track_quat("-Z", "Y").to_euler()
     scene.camera = camera
     rendered = {}
-    try:
-        for label, engine in (
+    engines = (
+        (("cycles", "CYCLES"),)
+        if os.environ.get("FBP_TEST_HEADLESS_RENDER_SAFE_ONLY", "") == "1"
+        else (
             ("workbench", "BLENDER_WORKBENCH"),
             ("eevee", "BLENDER_EEVEE"),
             ("cycles", "CYCLES"),
-        ):
+        )
+    )
+    try:
+        for label, engine in engines:
             scene.render.engine = engine
             if engine == "CYCLES":
                 scene.cycles.samples = 1
