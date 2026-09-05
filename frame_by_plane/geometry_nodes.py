@@ -26128,7 +26128,7 @@ class FBP_MT_GenericMeshEffects(Menu):
         scope.alert = True
         scope.label(text="Generic Mesh Effects · Preview", icon="INFO")
         scope.operator("fbp.copy_preview_diagnostics", text="Copy Diagnostics", icon="COPYDOWN")
-        layout.label(text="Outside the Frame By Plane 7.1 LTS stability promise")
+        layout.label(text="Outside the Frame By Plane 7.2 LTS stability promise")
         if not fbp_feature_enabled(getattr(context, "scene", None), "generic_mesh_effects"):
             layout.label(text="Generic Mesh Preview is disabled", icon="INFO")
             return

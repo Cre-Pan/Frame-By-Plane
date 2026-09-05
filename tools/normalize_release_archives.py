@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -61,9 +62,14 @@ def cli_args() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
+    parser.add_argument("--manifest", type=Path, help="Only normalize this manifest's release version")
     args = parser.parse_args(cli_args())
     directory = args.directory.expanduser().resolve()
-    archives = sorted(directory.glob("frame_by_plane-*.zip"))
+    pattern = "frame_by_plane-*.zip"
+    if args.manifest:
+        version = tomllib.loads(args.manifest.read_text(encoding="utf-8"))["version"]
+        pattern = f"frame_by_plane-{version}-*.zip"
+    archives = sorted(directory.glob(pattern))
     if not archives:
         parser.error(f"No Frame By Plane ZIP archives found in {directory}")
     for archive in archives:

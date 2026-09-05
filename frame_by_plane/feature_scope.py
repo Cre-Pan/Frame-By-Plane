@@ -172,7 +172,7 @@ def fbp_preview_diagnostics_text(scene=None):
         f"Feature scope schema: {FBP_FEATURE_SCOPE_SCHEMA}",
         f"Enabled Preview features: {enabled}/{len(records)}",
         f"Preview features with stored data: {used}/{len(records)}",
-        "Policy: Preview data remains readable but is outside the Frame By Plane 7.1 LTS stability promise.",
+        "Policy: Preview data remains readable but is outside the Frame By Plane 7.2 LTS stability promise.",
         "",
     ]
     for record in records:

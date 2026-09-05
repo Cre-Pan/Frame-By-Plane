@@ -1419,7 +1419,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     default_preview_compositor: BoolProperty(
         name="Compositor Layers",
-        description="Enable the Compositor Layers preview in newly initialized files; it is outside the Frame By Plane 7.1 LTS core scope",
+        description="Enable the Compositor Layers preview in newly initialized files; it is outside the Frame By Plane 7.2 LTS core scope",
         default=False,
     )
     default_preview_procreate_import: BoolProperty(
@@ -4723,7 +4723,7 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_experimental_compositor = BoolProperty(
         name="Compositor Preview",
         description=(
-            "Enable the preview Compositor Layers workflow. This feature is outside the Frame By Plane 7.1 LTS core scope; "
+            "Enable the preview Compositor Layers workflow. This feature is outside the Frame By Plane 7.2 LTS core scope; "
             "disable it to hide and prevent selection of that section"
         ),
         default=False,
@@ -4731,12 +4731,12 @@ def register_properties():
     )
     _FBP_SCENE_RNA.fbp_preview_procreate_import = BoolProperty(
         name="Procreate Preview",
-        description="Enable the Procreate archive/tile decoder. This importer is outside the Frame By Plane 7.1 LTS core scope",
+        description="Enable the Procreate archive/tile decoder. This importer is outside the Frame By Plane 7.2 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_preview_generic_mesh_effects = BoolProperty(
         name="Generic Mesh Preview",
-        description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 7.1 LTS core scope",
+        description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 7.2 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_color_plane_type = EnumProperty(

@@ -8,13 +8,16 @@ OUTPUT_DIRECTORY="$REPOSITORY_ROOT/dist"
 
 mkdir -p "$OUTPUT_DIRECTORY"
 
-"$BLENDER_EXECUTABLE" --command extension build \
+"$BLENDER_EXECUTABLE" --factory-startup --command extension build \
   --source-dir "$SOURCE_DIRECTORY" \
   --output-dir "$OUTPUT_DIRECTORY" \
   --split-platforms
 
 "$BLENDER_EXECUTABLE" --background --factory-startup \
   --python "$REPOSITORY_ROOT/tools/normalize_release_archives.py" \
-  -- "$OUTPUT_DIRECTORY"
+  -- "$OUTPUT_DIRECTORY" --manifest "$SOURCE_DIRECTORY/blender_manifest.toml"
 
 echo "Deterministic platform packages created in: $OUTPUT_DIRECTORY"
+
+"$BLENDER_EXECUTABLE" --background --factory-startup --python-exit-code 1 \
+  --python "$REPOSITORY_ROOT/tools/audit_release_packages.py" -- "$OUTPUT_DIRECTORY"

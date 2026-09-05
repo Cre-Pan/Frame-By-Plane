@@ -193,6 +193,90 @@ def test_release_sync(_module):
     return RELEASE_VERSION
 
 
+def test_feedback_update_popup_contract(_module):
+    """Keep automatic release notes pending until Preferences is gone."""
+    feedback = importlib.import_module(f"{PACKAGE}.feedback")
+
+    class FakeArea:
+        def __init__(self, area_type):
+            self.type = area_type
+
+    class FakeScreen:
+        def __init__(self, *area_types):
+            self.areas = tuple(FakeArea(value) for value in area_types)
+
+    class FakeWindow:
+        def __init__(self, *area_types):
+            self.screen = FakeScreen(*area_types)
+
+    assert not feedback._feedback_windows_show_preferences(())
+    assert not feedback._feedback_windows_show_preferences((FakeWindow("VIEW_3D"),))
+    assert feedback._feedback_windows_show_preferences((
+        FakeWindow("VIEW_3D"),
+        FakeWindow("PREFERENCES"),
+    ))
+    assert feedback._feedback_windows_show_preferences((
+        FakeWindow("PREFERENCES", "OUTLINER"),
+    ))
+
+    previous_deadline = feedback._FBP_AUTO_PROMPT_DEADLINE
+    try:
+        feedback._FBP_AUTO_PROMPT_DEADLINE = 1.0
+        retry = feedback._defer_auto_prompt_for_preferences(100.0)
+        assert retry == feedback.FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS
+        assert feedback._FBP_AUTO_PROMPT_DEADLINE == (
+            100.0 + feedback.FBP_AUTO_PROMPT_WINDOW_SECONDS
+        )
+    finally:
+        feedback._FBP_AUTO_PROMPT_DEADLINE = previous_deadline
+
+    titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
+    assert titles == (
+        "Dual Grease Pencil Colors",
+        "Edit Mode Color Control",
+        "Smarter Camera Settings",
+        "Bug Fixes",
+        "Better User Interface",
+    )
+    assert all("7.1" not in item[1] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
+    # Fresh assets must be decoded once; reused assets still refresh on update.
+    from types import SimpleNamespace
+
+    class FakeImages:
+        def __init__(self):
+            self.count = 0
+            self.reloads = 0
+            self.image = SimpleNamespace(reload=self.reload)
+
+        def __len__(self):
+            return self.count
+
+        def reload(self):
+            self.reloads += 1
+
+        def load(self, _path, check_existing):
+            assert check_existing
+            self.count = 1
+            return self.image
+
+    fake_images = FakeImages()
+    original_bpy = feedback.bpy
+    try:
+        feedback.bpy = SimpleNamespace(data=SimpleNamespace(images=fake_images))
+        assert feedback._load_splash_image_from_disk("cover.png") is fake_images.image
+        assert fake_images.reloads == 0
+        assert feedback._load_splash_image_from_disk("cover.png") is fake_images.image
+        assert fake_images.reloads == 1
+    finally:
+        feedback.bpy = original_bpy
+    return {
+        "preferences_detected": True,
+        "deadline_suspended": True,
+        "release_items": len(titles),
+        "fresh_image_decoded_once": True,
+    }
+
+
 def test_control_panel_and_camera_contract(module):
     """Exercise panel placement switches and live camera proxy callbacks."""
     del module
@@ -1863,7 +1947,7 @@ def test_preview_scope_policy(_module):
     assert all(item["used"] for item in usage), usage
     assert next(item for item in usage if item["id"] == "compositor_layers")["enabled"]
     diagnostics = feature_scope.fbp_preview_diagnostics_text(PreviewScene())
-    assert "outside the Frame By Plane 7.1 LTS stability promise" in diagnostics
+    assert "outside the Frame By Plane 7.2 LTS stability promise" in diagnostics
     assert "no file paths, project media or telemetry" in diagnostics
 
     project_health = importlib.import_module(f"{PACKAGE}.project_health")
@@ -2953,10 +3037,43 @@ def test_interactive_reload_and_splash(module):
         prefs.whats_new_enabled = True
         prefs.whats_new_last_seen_version = PREVIOUS_RELEASE
 
-    before = len(bpy.context.window_manager.windows)
+    before_windows = tuple(bpy.context.window_manager.windows)
+    before = len(before_windows)
     if bpy.ops.screen.userpref_show.poll():
         bpy.ops.screen.userpref_show("INVOKE_DEFAULT")
         _redraw_all(2)
+    preference_windows = []
+    for window in tuple(bpy.context.window_manager.windows):
+        screen = getattr(window, "screen", None)
+        areas = tuple(getattr(screen, "areas", ()) or ()) if screen else ()
+        preference_area = next(
+            (area for area in areas if str(getattr(area, "type", "")) == "PREFERENCES"),
+            None,
+        )
+        if preference_area is not None:
+            preference_windows.append((window, screen, preference_area))
+    # Blender may create a new temporary window or reuse an existing secondary
+    # window for Preferences. Either is a valid update path; it is safe to close
+    # the Preferences owner here as long as another Blender window remains.
+    dedicated_preferences = (
+        preference_windows
+        if len(tuple(bpy.context.window_manager.windows)) > 1
+        else []
+    )
+    if not dedicated_preferences:
+        raise SkipTest("Could not open a dedicated Preferences window")
+
+    # Earlier Undo tests run in this same synchronous timer callback and have
+    # no idle beat to release their guards. Begin the update scenario with a
+    # clean runtime, just as an extension enable does in ordinary Blender UI.
+    module.unregister()
+    module.register()
+    # Simulate an update notice that is already waiting in Preferences before
+    # a second reload. That pending notice must survive scheduler teardown.
+    feedback._FBP_AUTO_PROMPT_RELEASE = ""
+    feedback._FBP_AUTO_PROMPT_DEADLINE = 0.0
+    assert feedback.fbp_schedule_whats_new_prompt(delay=0.05)
+    assert feedback._try_show_whats_new_prompt() == feedback.FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS
     module.unregister()
     module.register()
     test_interactive_scrub_header_contract(module)
@@ -2974,11 +3091,41 @@ def test_interactive_reload_and_splash(module):
             first_interval=0.05,
         )
     assert scheduled, "What's New prompt was not scheduled after update"
-    for _ in range(8):
-        _redraw_all(1)
-        time.sleep(0.03)
+    pending_retry = feedback._try_show_whats_new_prompt()
+    assert pending_retry == feedback.FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS
+    assert feedback._ACTIVE_GPU_POPUP is None, "Automatic popup interrupted Preferences"
+    assert prefs.whats_new_last_seen_version == PREVIOUS_RELEASE
+
+    for window, screen, area in dedicated_preferences:
+        region = next(
+            (item for item in tuple(getattr(area, "regions", ()) or ())
+             if str(getattr(item, "type", "")) == "WINDOW"),
+            None,
+        )
+        override = {"window": window, "area": area}
+        if region is not None:
+            override["region"] = region
+        with bpy.context.temp_override(**override):
+            assert bpy.ops.wm.window_close.poll(), "Preferences window cannot be closed"
+            bpy.ops.wm.window_close()
+
+    # This test itself runs inside a Blender timer callback, so sleeping here
+    # would prevent the shared scheduler from advancing. Execute its payload
+    # synchronously after the actual Preferences window has closed.
+    post_close_retry = feedback._try_show_whats_new_prompt()
+    assert post_close_retry is None, post_close_retry
+    assert feedback._ACTIVE_GPU_POPUP is not None, "Popup did not appear after closing Preferences"
+    assert not feedback.fbp_schedule_whats_new_prompt(), "Already presented popup was requeued"
     after = len(bpy.context.window_manager.windows)
-    return {"scheduled": True, "windows_before": before, "windows_after": after}
+    feedback.quiesce_feedback_runtime()
+    return {
+        "scheduled": True,
+        "deferred_while_preferences_open": True,
+        "pending_notice_survived_reload": True,
+        "shown_after_preferences_closed": True,
+        "windows_before": before,
+        "windows_after": after,
+    }
 
 
 def finish(module):
@@ -3020,6 +3167,7 @@ def run_background():
     if module:
         tests = (
             ("release_metadata_sync", test_release_sync),
+            ("feedback_update_popup_contract", test_feedback_update_popup_contract),
             ("control_panel_and_camera_contract", test_control_panel_and_camera_contract),
             ("camera_output_format", test_camera_output_format),
             ("camera_pixels_and_presets", test_camera_pixels_and_presets),

@@ -28,7 +28,7 @@ from .runtime import (
     fbp_registration_busy,
     fbp_warn,
 )
-from .safe_tasks import schedule_once
+from .safe_tasks import schedule_once, scheduled_task_pending
 from .ui_style import configure_layout
 
 
@@ -123,39 +123,41 @@ _FBP_WHATS_NEW_PREVIEW_COLLECTION = None
 _FBP_WHATS_NEW_COVER_ICON_ID = 0
 _FBP_GPU_UNIFORM_SHADER = None
 _FBP_GPU_IMAGE_SHADER = None
-# The automatic release splash is a short startup opportunity, not a durable
-# background task. Keeping this state across an in-place module reload prevents
-# Undo, file loading, or an unrelated later edit from resurrecting the popup.
+# Keep the automatic release-splash state across an in-place extension reload.
+# The normal presentation window is deliberately short, but time spent inside
+# Preferences is suspended: an update performed there must wait until the user
+# closes/leaves Preferences instead of opening a dialog inside that editor.
 _FBP_AUTO_PROMPT_RELEASE = str(globals().get("_FBP_AUTO_PROMPT_RELEASE", "") or "")
 _FBP_AUTO_PROMPT_DEADLINE = float(globals().get("_FBP_AUTO_PROMPT_DEADLINE", 0.0) or 0.0)
 FBP_AUTO_PROMPT_WINDOW_SECONDS = 30.0
+FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS = 0.50
 
 # Keep the public update popup deliberately user-facing. Internal audits and release-gate mechanics belong in diagnostic reports,
 # not in the first screen shown after an update.
 FBP_PUBLIC_RELEASE_ITEMS = (
     (
-        "Grease Pencil Workflow",
-        "Grease Pencil is now a first-class part of Frame By Plane, from drawing and layer control to effects and masks.",
+        "Dual Grease Pencil Colors",
+        "Independent Stroke and Fill control in Draw Mode.",
+        "COLOR",
+    ),
+    (
+        "Edit Mode Color Control",
+        "Recolor selected strokes and fills in one click.",
         "OUTLINER_OB_GREASEPENCIL",
     ),
     (
-        "Floating Scrub Slider",
-        "A compact Viewport timeline provides frame navigation and Grease Pencil key editing without leaving the canvas.",
-        "ACTION",
+        "Smarter Camera Settings",
+        "Aspect presets, orientation and linked pixel sizes.",
+        "IMAGE_BACKGROUND",
     ),
     (
-        "Expanded Effects",
-        "Gradient Map, Channel Mixer, Bloom, Filter Presets and the unified mixed Effect Stack are included in the 7.1 workflow.",
-        "SHADERFX",
+        "Bug Fixes",
+        "Based on user reviews. Rate Frame By Plane and give feedback!",
+        "GHOST_DISABLED",
     ),
     (
-        "Grease Pencil Masks",
-        "New layer-based Grease Pencil mask tools integrate with shape, channel and procedural masks.",
-        "MOD_MASK",
-    ),
-    (
-        "Refined Interface",
-        "New original icons, denser lists and stronger boundary feedback remove dead ends and reduce accidental no-op actions.",
+        "Better User Interface",
+        "User interface and stability improvements.",
         "PREFERENCES",
     ),
 )
@@ -533,6 +535,48 @@ def _defer_centered_feedback_invoke(
     )
 
 
+def _feedback_windows_show_preferences(windows):
+    """Inspect a window snapshot without retaining any of its RNA wrappers."""
+    try:
+        for window in tuple(windows or ()):
+            screen = getattr(window, "screen", None)
+            areas = tuple(getattr(screen, "areas", ()) or ()) if screen else ()
+            if any(
+                str(getattr(area, "type", "") or "") == "PREFERENCES"
+                for area in areas
+            ):
+                return True
+    except FBP_DATA_ERRORS:
+        # A window can disappear while its RNA list is being traversed. Treat
+        # that beat as unsettled; the next poll resolves the live UI afresh.
+        return True
+    return False
+
+
+def _feedback_preferences_open(window_manager=None):
+    """Return whether any live Blender window is currently showing Preferences.
+
+    Only primitive state escapes this function. In particular, no Window,
+    Screen or Area RNA wrapper is retained while a dedicated Preferences window
+    is being destroyed after an extension update.
+    """
+    if bool(getattr(bpy.app, "background", False)):
+        return False
+    try:
+        wm = window_manager or getattr(bpy.context, "window_manager", None)
+        windows = tuple(getattr(wm, "windows", ()) or ()) if wm else ()
+        return _feedback_windows_show_preferences(windows)
+    except FBP_DATA_ERRORS:
+        return True
+
+
+def _defer_auto_prompt_for_preferences(now):
+    """Suspend expiry while Preferences owns the user's attention."""
+    global _FBP_AUTO_PROMPT_DEADLINE
+    _FBP_AUTO_PROMPT_DEADLINE = float(now) + FBP_AUTO_PROMPT_WINDOW_SECONDS
+    return FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS
+
+
 def _feedback_window_context():
     """Return ``(window_context, retry_delay)`` for safe feedback UI."""
     if bool(getattr(bpy.app, "background", False)):
@@ -560,33 +604,6 @@ def _feedback_window_context():
     except FBP_DATA_ERRORS:
         return None, 0.5
 
-    # Extension updates often run in a dedicated Preferences window. Prefer
-    # that window explicitly so the native dialog cannot open behind it in the
-    # main View3D window. No Window/Area wrapper survives this function call.
-    for window in windows:
-        screen = getattr(window, "screen", None)
-        try:
-            areas = tuple(getattr(screen, "areas", ()) or ()) if screen else ()
-        except FBP_DATA_ERRORS:
-            areas = ()
-        preference_area = next(
-            (candidate for candidate in areas
-             if str(getattr(candidate, "type", "") or "") == "PREFERENCES"),
-            None,
-        )
-        if preference_area is None:
-            continue
-        try:
-            regions = tuple(getattr(preference_area, "regions", ()) or ())
-        except FBP_DATA_ERRORS:
-            regions = ()
-        region = next(
-            (candidate for candidate in regions
-             if str(getattr(candidate, "type", "") or "") == "WINDOW"),
-            None,
-        )
-        return (window, screen, preference_area, region), None
-
     for window in windows:
         screen = getattr(window, "screen", None)
         if screen is not None:
@@ -603,16 +620,22 @@ def _try_show_whats_new_prompt():
         return 0.20
     prefs = _preferences()
     if not _whats_new_is_pending(prefs):
+        _FBP_AUTO_PROMPT_DEADLINE = 0.0
+        return None
+    if _ACTIVE_GPU_POPUP is not None:
+        _FBP_AUTO_PROMPT_DEADLINE = 0.0
         return None
 
     now = time.monotonic()
-    # Extension updates are commonly completed while Preferences is still open.
-    # The operator has a native Preferences-dialog path, so invoking there is
-    # safer than waiting for the editor to close (which could consume the only
-    # automatic opportunity). Context is resolved fresh on every retry.
+    # Automatic release notes never interrupt Preferences. Keep the deadline
+    # sliding while any Preferences editor/window exists, then use a freshly
+    # resolved creative-workspace context as soon as the user leaves it.
+    if _feedback_preferences_open():
+        return _defer_auto_prompt_for_preferences(now)
+
     if _FBP_AUTO_PROMPT_DEADLINE and now > _FBP_AUTO_PROMPT_DEADLINE:
-        # Updating from Preferences can keep Blender busy for the entire initial
-        # window. Do not permanently consume this release's notice.
+        # Do not permanently consume an update notice if Blender never reached
+        # a safe presentation context. A later enable/restart may claim it.
         _FBP_AUTO_PROMPT_RELEASE = ""
         _FBP_AUTO_PROMPT_DEADLINE = 0.0
         return None
@@ -624,21 +647,32 @@ def _try_show_whats_new_prompt():
     window, screen, area, region = window_context
     try:
         with bpy.context.temp_override(**_feedback_override(window, screen, area, region)):
-            result = bpy.ops.fbp.whats_new_prompt('INVOKE_DEFAULT')
+            # The GPU card centers itself. Complete its invocation in this UI
+            # beat so a reload cannot drop a second, deferred invocation after
+            # the automatic request has already been considered successful.
+            result = bpy.ops.fbp.whats_new_prompt('INVOKE_DEFAULT', centered_invoke=True)
         if 'CANCELLED' in result:
             # Context can still be settling immediately after an extension
             # update. Retry on the next UI beat instead of waiting seconds.
             return 0.15
     except FBP_DATA_ERRORS as exc:
         fbp_warn("Could not show Frame By Plane release notes", exc)
+        return 0.25
+    _FBP_AUTO_PROMPT_DEADLINE = 0.0
     return None
 
 
 def _claim_auto_whats_new_prompt(*, now=None):
     """Claim this release's sole automatic splash opportunity."""
     global _FBP_AUTO_PROMPT_RELEASE, _FBP_AUTO_PROMPT_DEADLINE
-    if _FBP_AUTO_PROMPT_RELEASE == FBP_CURRENT_RELEASE:
+    if _FBP_AUTO_PROMPT_RELEASE == FBP_CURRENT_RELEASE and (
+        not _FBP_AUTO_PROMPT_DEADLINE
+        or scheduled_task_pending("fbp_whats_new_prompt")
+    ):
         return False
+    # A positive deadline denotes an unshown request. Enable/reload may retire
+    # the scheduler while Preferences is still open; allow that request to be
+    # queued again. A presented popup has deadline zero and stays one-shot.
     current_time = time.monotonic() if now is None else float(now)
     _FBP_AUTO_PROMPT_RELEASE = FBP_CURRENT_RELEASE
     _FBP_AUTO_PROMPT_DEADLINE = current_time + FBP_AUTO_PROMPT_WINDOW_SECONDS
@@ -963,13 +997,17 @@ def _gpu_draw_texture(texture, x, y, width, height):
 
 def _load_splash_image_from_disk(path):
     """Load a splash asset and refresh same-path images after addon updates."""
-    image = bpy.data.images.load(str(path), check_existing=True)
-    try:
-        image.reload()
-    except FBP_DATA_ERRORS:
-        # A newly loaded image is already current; reload is only required when
-        # Blender returned an existing datablock from a previous addon build.
-        pass
+    images = bpy.data.images
+    previous_count = len(images)
+    image = images.load(str(path), check_existing=True)
+    # Image loading runs synchronously on Blender's main thread. A new
+    # datablock is already decoded: only a reused one needs refreshing after
+    # an in-place update. Avoid a second disk read/decode on the first load.
+    if len(images) == previous_count:
+        try:
+            image.reload()
+        except FBP_DATA_ERRORS:
+            pass
     return image
 
 

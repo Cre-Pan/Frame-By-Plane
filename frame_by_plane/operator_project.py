@@ -202,7 +202,7 @@ class FBP_OT_CopyPreviewDiagnostics(Operator):
     bl_idname = "fbp.copy_preview_diagnostics"
     bl_label = "Copy Preview Diagnostics"
     bl_description = (
-        "Copy enabled Preview features, detected Preview data and the 7.1 LTS scope policy "
+        "Copy enabled Preview features, detected Preview data and the 7.2 LTS scope policy "
         "without including project paths, media or telemetry"
     )
     bl_options = {"INTERNAL"}
@@ -443,7 +443,6 @@ class FBP_OT_ApplyPreferencesToScene(Operator):
 
 
 # SECTION - Effects Regression Scene #
-
 
 
 

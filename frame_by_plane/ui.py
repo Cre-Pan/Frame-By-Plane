@@ -3443,7 +3443,7 @@ def _fbp_draw_preview_scope_badge(layout, label):
     badge = layout.row(align=True)
     badge.alert = True
     badge.label(text=f"{label} · Preview", icon="INFO")
-    badge.label(text="Outside the 7.1 LTS stability promise")
+    badge.label(text="Outside the 7.2 LTS stability promise")
     badge.operator("fbp.copy_preview_diagnostics", text="Copy Diagnostics", icon="COPYDOWN")
 
 

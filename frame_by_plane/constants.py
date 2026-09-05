@@ -19,7 +19,7 @@ FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
 
 # Final LTS runtime policy. Keep these values aligned with blender_manifest.toml.
 FBP_RELEASE_CHANNEL = "LTS"
-FBP_RELEASE_CHANNEL_LABEL = "7.1 LTS"
+FBP_RELEASE_CHANNEL_LABEL = "7.2 LTS"
 FBP_LTS_TARGET_VERSION = _FBP_LTS_TARGET_VERSION
 FBP_BLENDER_VERSION_MIN = (5, 2, 0)
 FBP_BLENDER_VERSION_MIN_STRING = ".".join(str(part) for part in FBP_BLENDER_VERSION_MIN)
@@ -29,7 +29,7 @@ FBP_SUPPORTED_PLATFORM_IDS = _FBP_LTS_PLATFORM_IDS
 FBP_SUPPORTED_PLATFORM_LABEL = _FBP_LTS_PLATFORM_LABEL
 FBP_STRICT_RUNTIME_SCOPE = True
 
-# Core scope being stabilized for the 7.1 LTS target. Preview features remain available only
+# Core scope being stabilized for the 7.2 LTS target. Preview features remain available only
 # behind their explicit opt-in and are not part of the LTS stability promise.
 FBP_LTS_CORE_SCOPE = _FBP_LTS_CORE_SCOPE
 FBP_LTS_PREVIEW_SCOPE = _FBP_LTS_PREVIEW_SCOPE

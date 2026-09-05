@@ -1,4 +1,4 @@
-# Frame By Plane 7.2.0 Pre-release
+# Frame By Plane 7.2.0
 
 Frame By Plane 7.2 brings a complete dual-color Grease Pencil workflow to Blender 5.2 while retaining the camera, effect, timeline, import and stability work from 7.1.19.
 
@@ -18,7 +18,13 @@ Frame By Plane 7.2 brings a complete dual-color Grease Pencil workflow to Blende
 - Selected layer settings use Object Data Properties; Tool and N-Panel sections share the same controls.
 - Image-plane, Generic Mesh and Grease Pencil effects retain artist data and use consistent list/grouped-menu UI.
 - Scrub Bar, Timeline sync, import lifecycle and Animation/Storyboard template handling include the 7.1.19 stability fixes.
+- After an in-Preferences update, What’s New waits until Preferences is closed or left before appearing in the creative workspace.
 
-## Candidate status
+## Release cleanup
 
-This build is a GitHub pre-release for Blender 5.2.x LTS. The complete background, interactive, focused 7.2 and isolated install gates pass on Windows x64; the five platform packages are validated structurally and built deterministically.
+- Final original 7.2 artwork with unchanged buttons and reload-safe popup scheduling.
+- Fresh splash images are decoded once; existing images are refreshed after updates.
+- Strict runtime-only ZIP inventory, source matching, platform wheel and license checks.
+- Saved-project migrations remain supported. Generic Mesh remains opt-in Preview.
+
+Requires Blender 5.2.x LTS. macOS Intel is package-validated, not natively runtime-tested.

@@ -6,7 +6,7 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
-## What's new in the 7.2.0 pre-release
+## What's new in 7.2.0
 
 - Separate Grease Pencil Stroke and Fill colors in Draw, Vertex Paint and Edit modes, including Both mode and mixed-selection swatches.
 - `X` swaps Stroke/Fill, `Shift+X` samples Stroke, and Draw-mode `G` toggles Close Gap without replacing Edit-mode Grab.
@@ -16,7 +16,9 @@ It works like Blender's native **Images as Planes**, but adds production control
 - Cleaner Object Data and Tool panels, selectable image/GP effect lists, grouped icon menus and synchronized time editors.
 - All 7.1.19 import, Scrub Bar, bookmark, Generic Mesh, performance and Blender 5.2 stability fixes remain included.
 
-See the complete [7.2.0 pre-release notes](release-notes/7.2.0.md).
+The update splash uses the final 7.2 artwork and waits until you leave or close Preferences after updating.
+
+See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 ## Core features
 

@@ -489,7 +489,7 @@ def scan_project_health(scene, *, repair=False):
             _issue(
                 "WARNING",
                 "PREVIEW_FEATURE",
-                f"Preview limitation (not an LTS error): {definition['label']} is enabled outside the Frame By Plane 7.1 LTS core scope",
+                f"Preview limitation (not an LTS error): {definition['label']} is enabled outside the Frame By Plane 7.2 LTS core scope",
                 repair_hint=str(definition.get("disable_hint", "") or "Disable the preview feature for an LTS-only project"),
             ),
             seen,

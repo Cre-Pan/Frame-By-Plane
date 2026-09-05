@@ -2,7 +2,15 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [7.2.0] — 2026-09-04 — Pre-release
+## [7.2.0] — 2026-09-05
+
+### Stable release polish
+
+- Integrated the final original 7.2 artwork with unchanged splash buttons.
+- Deferred automatic What's New until Preferences is closed or left, preserving pending notices across add-on reloads.
+- Avoided a redundant splash image decode on first load while refreshing existing images after updates.
+- Added strict runtime-only package inventory and source/wheel/license checks to both build scripts.
+- Extended exclusions for bytecode, temporary work directories and Blender backups; retained saved-project compatibility.
 
 ### Grease Pencil color workflow
 

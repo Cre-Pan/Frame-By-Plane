@@ -90,7 +90,7 @@ EXACT_TOOLTIPS = {
         "Inspect dropped media or its parent folder, show a confirmation preview for multi-layer or large imports, then create compatible Single Plane or Multiplane data. Source files are never modified; changed folder snapshots, unsupported media and unsafe forced modes are rejected, generation is transactional and cancellable between chunks, and created Blender data supports Undo."
     ),
 
-    # Compositor Layers is explicitly Preview in the 7.1 LTS policy.
+    # Compositor Layers is explicitly Preview in the 7.2 LTS policy.
     "fbp.stack_row_action": (
         "Add, remove, duplicate, reorder or select a row in the active Composite Stack. This Preview action changes only the current scene's managed compositor package, supports Blender Undo, skips stale row IDs and is disabled until Compositor Preview is enabled for the file."
     ),

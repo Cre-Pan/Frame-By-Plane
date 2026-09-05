@@ -19,6 +19,7 @@ _fbp_update_backups/
 # Build output
 /dist/
 /release/
+/work/
 *.zip
 *.sha256
 SHA256SUMS*.txt
