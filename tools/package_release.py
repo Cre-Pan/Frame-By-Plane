@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-VERSION = "7.2.0"
+VERSION = "7.2.1"
 ARCHIVE_PREFIX = f"frame_by_plane-{VERSION}"
 PLATFORMS = (
     "linux_x64",

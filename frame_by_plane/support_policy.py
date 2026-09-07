@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 
-FBP_LTS_TARGET_VERSION = "7.2.0"
+FBP_LTS_TARGET_VERSION = "7.2.1"
 FBP_LTS_BLENDER_SERIES = "5.2"
 FBP_LTS_PLATFORM_IDS = (
     "windows-x64",

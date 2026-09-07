@@ -1764,11 +1764,28 @@ def test_scrub_bar_regressions(_module):
     assert native_view3d.draw_topbar_grease_pencil_layer_panel is native_gp_layer_draw
     scrub._register_header()
     assert bpy.types.VIEW3D_HT_header.draw is native_header_draw
-    assert bool(getattr(
-        native_view3d.draw_topbar_grease_pencil_layer_panel,
-        "_fbp_scrub_gp_layer_patch",
-        False,
-    ))
+    assert native_view3d.draw_topbar_grease_pencil_layer_panel is native_gp_layer_draw
+    assert sum(bool(getattr(callback, "_fbp_scrub_center_patch", False))
+               for callback in native_header_draw._draw_funcs) == 1
+
+    # The root spacer, rather than mode-specific controls, defines the start
+    # of the centered lane. Insert exactly once and preserve both spacers.
+    events = []
+
+    class HeaderLayout:
+        def separator_spacer(self):
+            events.append("spacer")
+
+    original_control = scrub._draw_scrub_header_control
+    try:
+        scrub._draw_scrub_header_control = lambda _layout, _context: events.append("scrub")
+        layout = scrub._ScrubCenterLayoutProxy(HeaderLayout(), bpy.context)
+        layout.separator_spacer()
+        events.append("native_center_controls")
+        layout.separator_spacer()
+        assert events == ["spacer", "scrub", "native_center_controls", "spacer"]
+    finally:
+        scrub._draw_scrub_header_control = original_control
 
     keys = (10, 20, 30, 40, 60, 70)
     assert scrub._onion_endpoint_frame(50, 2, "BEFORE", "RELATIVE", keys) == 30
@@ -2986,15 +3003,11 @@ def test_interactive_scrub_header_contract(_module):
     if bpy.app.background:
         raise SkipTest("Interactive UI required")
     header = bpy.types.VIEW3D_HT_header
-    centered = header.draw_xform_template
-    from bl_ui import space_view3d as native_view3d
-
-    gp_centered = native_view3d.draw_topbar_grease_pencil_layer_panel
     assert not bool(getattr(header.draw, "_fbp_scrub_header_patch", False))
-    assert bool(getattr(centered, "_fbp_scrub_xform_patch", False))
-    assert callable(getattr(centered, "_fbp_original_draw", None))
-    assert bool(getattr(gp_centered, "_fbp_scrub_gp_layer_patch", False))
-    assert callable(getattr(gp_centered, "_fbp_original_draw", None))
+    callbacks = [callback for callback in header.draw._draw_funcs
+                 if bool(getattr(callback, "_fbp_scrub_center_patch", False))]
+    assert len(callbacks) == 1
+    assert callable(callbacks[0]._fbp_original_draw)
     viewports = []
     for window in tuple(bpy.context.window_manager.windows):
         screen = getattr(window, "screen", None)
@@ -3012,8 +3025,7 @@ def test_interactive_scrub_header_contract(_module):
     assert viewports, "Interactive test has no View3D area"
     return {
         "native_draw_preserved": True,
-        "centered_xform_patch": True,
-        "centered_gp_layer_patch": True,
+        "centered_first_spacer_hook": True,
         "viewports": len(viewports),
     }
 

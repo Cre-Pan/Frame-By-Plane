@@ -128,6 +128,13 @@ try:
     assert module._apply_selected_cyclic(bpy.context, False) == 2
     assert not any(stroke.cyclic for stroke in drawing.strokes)
 
+    # Explicit Off must also apply to mixed Edit selections when the saved
+    # drawing option is already Off; the active button is not a blind toggle.
+    state.close_strokes = False
+    drawing.strokes[0].cyclic = True
+    assert bpy.ops.fbp.toggle_gp_close_gap(action="OFF") == {"FINISHED"}
+    assert not any(stroke.cyclic for stroke in drawing.strokes)
+
     # Unrelated or transform-only depsgraph traffic must not invalidate the
     # expensive Edit selection cache. GP geometry/selection updates must.
     unrelated_data = bpy.data.meshes.new("FBP Unrelated Depsgraph Data")
@@ -404,6 +411,7 @@ try:
             if root is None:
                 self.calls = []
                 self.children = []
+                self.operator_calls = []
             self.enabled = True
             self.ui_units_x = 0.0
             self.scale_x = 1.0
@@ -432,23 +440,32 @@ try:
 
         def operator(self, operator_id, **kwargs):
             self.root.calls.append(("operator", operator_id, kwargs.get("icon")))
-            return self
+            properties = SimpleNamespace()
+            self.root.operator_calls.append((operator_id, kwargs, properties, self))
+            return properties
 
     fake_layout = FakeLayout()
     assert module._draw_header_color_pair(fake_layout, bpy.context, owner=draw_owner)
-    assert fake_layout.calls == [
+    assert fake_layout.calls[:3] == [
         ("color", "stroke_color", "FBP_PT_gp_stroke_color_popover"),
         ("operator", "paint.brush_colors_flip", "ARROW_LEFTRIGHT"),
         ("color", "fill_color", "FBP_PT_gp_fill_color_popover"),
-        ("operator", "fbp.toggle_gp_close_gap", "LOOP_BACK"),
     ]
     assert [child.ui_units_x for child in fake_layout.children] == [
-        7.75,
+        0.0,
+        6.25,
         2.5,
         1.25,
         2.5,
-        1.5,
+        0.0,
+        2.5,
     ]
+    assert fake_layout.operator_calls[0][1]["emboss"] is True
+    gaps = fake_layout.operator_calls[1:]
+    assert [item[2].action for item in gaps] == ["OFF", "ON"]
+    assert all(item[3].align is True for item in gaps)
+    assert sum(item[1]["depress"] for item in gaps) == 1
+    assert all(item[1].get("icon_value", 0) or item[1].get("icon") for item in gaps)
 
     # Pin Mode belongs immediately after Material / Color Attribute and before
     # the semantic swatches.
@@ -477,12 +494,23 @@ try:
     line_types.prop_enum(draw_settings, "stroke_type", "STROKE", text="")
     caps = proxy.row(align=True)
     caps.prop(draw_settings, "caps_type", text="")
-    assert settings_layout.calls == [
-        ("enum", "stroke_type", "STROKE"),
-        ("operator", "fbp.toggle_gp_close_gap", "LOOP_BACK"),
-        ("property", "caps_type", None),
+    assert [call[:2] for call in settings_layout.calls] == [
+        ("enum", "stroke_type"),
+        ("operator", "fbp.toggle_gp_close_gap"),
+        ("operator", "fbp.toggle_gp_close_gap"),
+        ("property", "caps_type"),
     ]
-    assert [child.align for child in settings_layout.children] == [True, False, True]
+    assert [child.align for child in settings_layout.children] == [True, False, True, True]
+
+    state.close_strokes = False
+    assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
+    assert state.close_strokes
+    assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
+    assert state.close_strokes  # Clicking the active choice must not toggle it.
+    assert bpy.ops.fbp.toggle_gp_close_gap(action="OFF") == {"FINISHED"}
+    assert not state.close_strokes
+    assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
+    assert state.close_strokes  # G keeps its existing toggle behavior.
 
     print("FBPTEST gp_dual_vertex_colors: PASS")
 except Exception:

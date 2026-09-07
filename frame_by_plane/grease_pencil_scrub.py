@@ -141,8 +141,6 @@ _PREVIEW_DRAW_HANDLE = None
 _PREVIEW_ACTIVE = False
 _PREVIEW_STATE = None
 _HEADER_REGISTERED = False
-_ORIGINAL_VIEW3D_XFORM_DRAW = None
-_ORIGINAL_VIEW3D_GP_LAYER_DRAW = None
 _SCRUB_FRAME_CLIPBOARD = None
 # Process-only frame navigation memory. Blender includes Scene.frame_current in
 # history snapshots, so a GP stroke made immediately after Scrub Slider
@@ -6250,185 +6248,89 @@ def _draw_scrub_header_control(layout, context):
     )
 
 
-_HEADER_XFORM_EXCLUDED_MODES = {
-    "PAINT_GREASE_PENCIL",
-    "SCULPT_GREASE_PENCIL",
-    "SCULPT",
-    "VERTEX_PAINT",
-    "VERTEX_GREASE_PENCIL",
-    "WEIGHT_PAINT",
-    "WEIGHT_GREASE_PENCIL",
-    "TEXTURE_PAINT",
-}
-_HEADER_GP_CENTER_MODES = {
-    "PAINT_GREASE_PENCIL",
-    "SCULPT_GREASE_PENCIL",
-    "VERTEX_GREASE_PENCIL",
-    "WEIGHT_GREASE_PENCIL",
-}
+class _ScrubCenterLayoutProxy:
+    """Insert once immediately after the native header's first flexible spacer."""
+
+    __slots__ = ("_layout", "_context", "_inserted")
+
+    def __init__(self, layout, context):
+        object.__setattr__(self, "_layout", layout)
+        object.__setattr__(self, "_context", context)
+        object.__setattr__(self, "_inserted", False)
+
+    def __getattr__(self, name):
+        return getattr(self._layout, name)
+
+    def __setattr__(self, name, value):
+        if name in self.__slots__:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._layout, name, value)
+
+    def separator_spacer(self, *args, **kwargs):
+        result = self._layout.separator_spacer(*args, **kwargs)
+        if not self._inserted:
+            self._inserted = True
+            try:
+                _draw_scrub_header_control(self._layout, self._context)
+            except Exception as exc:
+                # An optional add-on button must not suppress native controls.
+                fbp_warn_once("scrub.header_center_control",
+                              "Could not draw the centered Scrub Bar controls", exc)
+        return result
 
 
-def _native_header_uses_xform_template(context):
-    obj = getattr(context, "active_object", None)
-    object_mode = "OBJECT" if obj is None else str(getattr(obj, "mode", "OBJECT") or "OBJECT")
-    return object_mode not in _HEADER_XFORM_EXCLUDED_MODES
+class _ScrubCenterHeaderProxy:
+    __slots__ = ("_header", "layout")
+
+    def __init__(self, header, context):
+        self._header = header
+        self.layout = _ScrubCenterLayoutProxy(header.layout, context)
+
+    def __getattr__(self, name):
+        return getattr(self._header, name)
 
 
-def _native_header_uses_gp_center_hook(context):
-    obj = getattr(context, "active_object", None)
-    object_mode = "OBJECT" if obj is None else str(getattr(obj, "mode", "OBJECT") or "OBJECT")
-    return object_mode in _HEADER_GP_CENTER_MODES
-
-
-def _draw_xform_template_with_scrub(layout, context):
-    """Add the Scrub controls inside Blender's native centered header lane."""
-
-    try:
-        _draw_scrub_header_control(layout, context)
-    except Exception as exc:
-        fbp_warn_once(
-            "scrub.header_center_control",
-            "Could not draw the centered Scrub Slider header control",
-            exc,
-        )
-    original = getattr(_draw_xform_template_with_scrub, "_fbp_original_draw", None)
-    if not callable(original):
-        return None
-    try:
-        return original(layout, context)
-    except Exception as exc:
-        # This helper is optional. Never allow it to abort the complete native
-        # header if Blender changes the transform-template implementation.
-        fbp_warn_once(
-            "scrub.header_center_native",
-            "Could not draw Blender's transform header controls",
-            exc,
-        )
-        return None
-
-
-def _draw_gp_layer_panel_with_scrub(context, layout):
-    """Insert the Scrub controls in Blender's centered Grease Pencil lane."""
-
-    if _native_header_uses_gp_center_hook(context):
-        try:
-            _draw_scrub_header_control(layout, context)
-        except Exception as exc:
-            fbp_warn_once(
-                "scrub.header_gp_center_control",
-                "Could not draw the centered Grease Pencil Scrub Slider control",
-                exc,
-            )
-    original = getattr(_draw_gp_layer_panel_with_scrub, "_fbp_original_draw", None)
-    if not callable(original):
-        return None
-    try:
-        return original(context, layout)
-    except Exception as exc:
-        # The native layer popover is optional UI. Isolate it from the complete
-        # View3D header so a future Blender signature change cannot blank the
-        # region that contains the menus and viewport controls.
-        fbp_warn_once(
-            "scrub.header_gp_center_native",
-            "Could not draw Blender's Grease Pencil layer header control",
-            exc,
-        )
-        return None
-
-
-def _draw_scrub_header_callback(self, context):
-    """Fallback for modes where Blender skips its centered transform lane."""
-
-    try:
-        if (
-            _native_header_uses_xform_template(context)
-            or _native_header_uses_gp_center_hook(context)
-        ):
-            return
-        _draw_scrub_header_control(self.layout, context)
-    except Exception as exc:
-        # Blender's native header has already drawn when append callbacks run.
-        # A bad preference or future API change therefore cannot blank it.
-        fbp_warn_once(
-            "scrub.header_callback",
-            "Could not draw the Scrub Slider header control",
-            exc,
-        )
+def _draw_scrub_center_header(self, context):
+    # Execute Blender's original function unchanged. Only its root layout's
+    # first spacer is intercepted; no copied header, source rewriting or mode
+    # branches. Other add-ons' appended/prepended callbacks stay in place.
+    original = _draw_scrub_center_header._fbp_original_draw
+    return original(_ScrubCenterHeaderProxy(self, context), context)
 
 
 def _register_header():
-    global _HEADER_REGISTERED, _ORIGINAL_VIEW3D_XFORM_DRAW
-    global _ORIGINAL_VIEW3D_GP_LAYER_DRAW
+    global _HEADER_REGISTERED
     if _HEADER_REGISTERED:
         return
     try:
-        from bl_ui import space_view3d as native_view3d
-
-        header_type = bpy.types.VIEW3D_HT_header
-        original = header_type.draw_xform_template
-        while bool(getattr(original, "_fbp_scrub_xform_patch", False)):
-            original = getattr(original, "_fbp_original_draw", original)
-        _ORIGINAL_VIEW3D_XFORM_DRAW = original
-        _draw_xform_template_with_scrub._fbp_original_draw = original
-        _draw_xform_template_with_scrub._fbp_scrub_xform_patch = True
-        header_type.draw_xform_template = staticmethod(_draw_xform_template_with_scrub)
-
-        gp_original = native_view3d.draw_topbar_grease_pencil_layer_panel
-        while bool(getattr(gp_original, "_fbp_scrub_gp_layer_patch", False)):
-            gp_original = getattr(gp_original, "_fbp_original_draw", gp_original)
-        _ORIGINAL_VIEW3D_GP_LAYER_DRAW = gp_original
-        _draw_gp_layer_panel_with_scrub._fbp_original_draw = gp_original
-        _draw_gp_layer_panel_with_scrub._fbp_scrub_gp_layer_patch = True
-        native_view3d.draw_topbar_grease_pencil_layer_panel = _draw_gp_layer_panel_with_scrub
-
-        try:
-            header_type.remove(_draw_scrub_header_callback)
-        except (RuntimeError, ValueError):
-            pass
-        header_type.append(_draw_scrub_header_callback)
-        _HEADER_REGISTERED = True
+        header = bpy.types.VIEW3D_HT_header
+        callbacks = header._dyn_ui_initialize()
+        # Locate Blender's own callback, not another add-on's prepend.
+        for index, callback in enumerate(callbacks):
+            if (getattr(callback, "__module__", "") == "bl_ui.space_view3d"
+                    and getattr(callback, "__name__", "") == "draw"):
+                _draw_scrub_center_header._fbp_original_draw = callback
+                _draw_scrub_center_header._fbp_scrub_center_patch = True
+                callbacks[index] = _draw_scrub_center_header
+                _HEADER_REGISTERED = True
+                return
+        fbp_warn_once("scrub.header_center_missing",
+                      "Native View3D header callback not found; Scrub Bar header hook skipped")
     except Exception as exc:
-        # Registration spans a helper patch and an official append callback.
-        # Roll both back if either half fails so a partial UI hook cannot leak
-        # into the current Blender session.
         _unregister_header()
-        fbp_warn("Could not add the Grease Pencil Scrub Slider header icon", exc)
+        fbp_warn("Could not add the Grease Pencil Scrub Bar header icon", exc)
 
 
 def _unregister_header():
-    global _HEADER_REGISTERED, _ORIGINAL_VIEW3D_XFORM_DRAW
-    global _ORIGINAL_VIEW3D_GP_LAYER_DRAW
+    global _HEADER_REGISTERED
     try:
-        bpy.types.VIEW3D_HT_header.remove(_draw_scrub_header_callback)
+        callbacks = getattr(bpy.types.VIEW3D_HT_header.draw, "_draw_funcs", ())
+        for index, callback in enumerate(callbacks):
+            if bool(getattr(callback, "_fbp_scrub_center_patch", False)):
+                callbacks[index] = callback._fbp_original_draw
     except (AttributeError, RuntimeError, ValueError):
         pass
-    try:
-        header_type = bpy.types.VIEW3D_HT_header
-        current = header_type.draw_xform_template
-        if bool(getattr(current, "_fbp_scrub_xform_patch", False)):
-            header_type.draw_xform_template = staticmethod(
-                getattr(
-                    current,
-                    "_fbp_original_draw",
-                    _ORIGINAL_VIEW3D_XFORM_DRAW,
-                )
-            )
-    except (AttributeError, RuntimeError, ValueError):
-        pass
-    try:
-        from bl_ui import space_view3d as native_view3d
-
-        current_gp = native_view3d.draw_topbar_grease_pencil_layer_panel
-        if bool(getattr(current_gp, "_fbp_scrub_gp_layer_patch", False)):
-            native_view3d.draw_topbar_grease_pencil_layer_panel = getattr(
-                current_gp,
-                "_fbp_original_draw",
-                _ORIGINAL_VIEW3D_GP_LAYER_DRAW,
-            )
-    except (AttributeError, ImportError, RuntimeError, ValueError):
-        pass
-    _ORIGINAL_VIEW3D_XFORM_DRAW = None
-    _ORIGINAL_VIEW3D_GP_LAYER_DRAW = None
     _HEADER_REGISTERED = False
 
 

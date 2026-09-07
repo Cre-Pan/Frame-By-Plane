@@ -6,6 +6,10 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
+## Prepared update: 7.2.1
+
+Grease Pencil Gap Off/On icons, improved color-control spacing and consistent Scrub Bar placement. See the [7.2.1 release notes](release-notes/7.2.1.md). This source update includes the final high-contrast Gap icons; the public GitHub release is still 7.2.0.
+
 ## What's new in 7.2.0
 
 - Separate Grease Pencil Stroke and Fill colors in Draw, Vertex Paint and Edit modes, including Both mode and mixed-selection swatches.

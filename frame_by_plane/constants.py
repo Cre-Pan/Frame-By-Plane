@@ -14,7 +14,7 @@ from .support_policy import (
 
 # Release metadata lives here so the add-on header, preferences and local
 # What's New UI cannot silently drift apart during incremental releases.
-FBP_VERSION = (7, 2, 0)
+FBP_VERSION = (7, 2, 1)
 FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
 
 # Final LTS runtime policy. Keep these values aligned with blender_manifest.toml.

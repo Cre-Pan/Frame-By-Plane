@@ -31,22 +31,22 @@ jobs:
             runner: ubuntu-24.04
             python_arch: x64
             asset: blender-5.2.0-linux-x64.tar.xz
-            package: frame_by_plane-7.2.0-linux_x64.zip
+            package: frame_by_plane-7.2.1-linux_x64.zip
           - platform: macos_arm64
             runner: macos-15
             python_arch: arm64
             asset: blender-5.2.0-macos-arm64.dmg
-            package: frame_by_plane-7.2.0-macos_arm64.zip
+            package: frame_by_plane-7.2.1-macos_arm64.zip
           - platform: windows_arm64
             runner: windows-11-arm
             python_arch: arm64
             asset: blender-5.2.0-windows-arm64.zip
-            package: frame_by_plane-7.2.0-windows_arm64.zip
+            package: frame_by_plane-7.2.1-windows_arm64.zip
           - platform: windows_x64
             runner: windows-2025
             python_arch: x64
             asset: blender-5.2.0-windows-x64.zip
-            package: frame_by_plane-7.2.0-windows_x64.zip
+            package: frame_by_plane-7.2.1-windows_x64.zip
     env:
       BLENDER_VERSION: "5.2.0"
       BLENDER_ASSET: ${{ matrix.asset }}
@@ -172,7 +172,7 @@ jobs:
         shell: bash
         run: >-
           "$BLENDER_BIN" --background --factory-startup --command extension validate
-          "dist/frame_by_plane-7.2.0-macos_x64.zip"
+          "dist/frame_by_plane-7.2.1-macos_x64.zip"
 
       - name: Validate native package on Windows
         if: runner.os == 'Windows'
@@ -308,4 +308,4 @@ jobs:
           name: blender-5.2-macos_x64-package-only
           if-no-files-found: error
           retention-days: 14
-          path: dist/frame_by_plane-7.2.0-macos_x64.zip
+          path: dist/frame_by_plane-7.2.1-macos_x64.zip

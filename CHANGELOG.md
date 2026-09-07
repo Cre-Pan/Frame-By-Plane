@@ -2,6 +2,14 @@
 
 All notable public changes to Frame By Plane are documented here.
 
+## [7.2.1] — Prepared 2026-09-07
+
+- Added paired Gap Off/On icons with separate grouping and explicit, idempotent choices.
+- Replaced both Gap assets with the final high-contrast artwork supplied on September 7.
+- Separated the GP color pair from Pin Mode and restored the Swap Colors button background in Draw, Vertex Paint and Edit modes.
+- Placed Scrub Bar controls first in the centered Viewport lane across all six GP modes without copying Blender's header source.
+- Fixed explicit Gap Off for mixed open/closed Edit selections; preserved Draw-only G toggle and Undo handling.
+
 ## [7.2.0] — 2026-09-05
 
 ### Stable release polish
