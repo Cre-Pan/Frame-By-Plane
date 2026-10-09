@@ -18,6 +18,10 @@ All notable public changes to Frame By Plane are documented here.
 - **Copy / Paste Effect Stack** now pastes an exact copy: duplicated effects keep every instance with its own settings, and the visible stack order and effect groups are preserved. Previously only one instance per effect was pasted, with the active instance's values, and the order could change the look of the result.
 - **Effect Stack Presets** now restore the saved stack order. Existing presets benefit too, because the order was already stored in them.
 - Copying a stack or saving a preset no longer changes the source layer: duplicated effects were silently added to the group of their first instance.
+- **Hide in Render** now works for every Image effect. The render only applied it to animated or Evolve effects, so other effects hidden for the render still appeared in F12 output. Mesh-effect render quality settings are now applied to every Mesh effect for the same reason.
+- Toggling render visibility for a duplicated effect with several layers selected now reaches every instance.
+- In stacks that mix Image and Mesh effects, hiding an effect, Solo, duplicating an instance and removing an instance are now reflected in the final result and in what Mesh effects read. Previously the change only appeared after another edit.
+- Removing an effect instance that a local mask was attached to now returns the mask to the layer cleanly; Project Health no longer reports a missing receiver.
 
 ## [7.2.1] — Prepared 2026-09-07
 
