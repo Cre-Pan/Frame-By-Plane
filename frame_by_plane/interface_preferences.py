@@ -840,7 +840,6 @@ def fbp_uilist_icon_flags(context=None, profile_id=None):
     if cached is not None:
         return cached
     scoped = dict(profile_base)
-    profile = fbp_uilist_profile_definition(profile_id) or {}
     for key in fbp_uilist_profile_columns(profile_id):
         if fbp_uilist_is_spacer(key):
             scoped[key] = bool(preset == "CUSTOM" and key in visible)

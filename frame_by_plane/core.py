@@ -2692,7 +2692,6 @@ def fbp_frame_change_handler(scene):
     if fbp_undo_guard_active():
         return
     render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
-    external_masks_changed = False
     if not render_guard_active:
         _fbp_schedule_native_coverage_refresh_if_scene_range_changed(scene)
     if render_guard_active:
@@ -2718,7 +2717,7 @@ def fbp_frame_change_handler(scene):
             needs_drawing = False
 
     if not needs_procedural and not needs_drawing:
-        if (needs_frame_ui or external_masks_changed) and not fbp_is_rendering_now():
+        if needs_frame_ui and not fbp_is_rendering_now():
             fbp_tag_view3d_ui_redraw()
         return
 
@@ -2731,7 +2730,7 @@ def fbp_frame_change_handler(scene):
         _fbp_schedule_viewport_frame_sync(scene)
         return
 
-    changed = external_masks_changed
+    changed = False
     has_procedural_rigs = False
     if needs_drawing:
         try:
