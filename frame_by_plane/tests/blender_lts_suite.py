@@ -2702,6 +2702,7 @@ def test_effect_operator_cleanup_contract(_module):
 
             # Re-adding an effect already on the layer never moves it into
             # the selected group.
+            assert ops.select_effect(effect_id="SWIRL") == {"FINISHED"}
             assert ops.add_effect(effect_id="BRIGHTNESS_CONTRAST") == {"FINISHED"}
             assert not geo.fbp_effect_group_id_for_rig(rig, "BRIGHTNESS_CONTRAST", normalize=False)
             assert ops.select_effect(
