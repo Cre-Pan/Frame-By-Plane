@@ -2368,6 +2368,20 @@ def fbp_render_guard_pre(scene):
             fbp_ensure_native_render_output(scene)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not validate the native compositor output", exc)
+    try:
+        # Rebuilding View Layers or compositor groups inside render_init
+        # crashes Blender, so a pending setup can only be reported here.
+        if (
+            scene is not None
+            and bool(getattr(scene, "fbp_compositor_render_enabled", False))
+            and bool(scene.get("fbp_compositor_needs_refresh", False))
+        ):
+            fbp_warn_once(
+                "compositor_render_out_of_date",
+                "Rendering with an out-of-date compositor setup; press Refresh in the Compositor panel",
+            )
+    except FBP_DATA_ERRORS:
+        pass
 
     if bool(fbp_runtime_get("fbp_render_guard_active", False)):
         return
