@@ -364,10 +364,6 @@ def blender_52_runtime_contract(*, refresh=False):
     return _clone_report(report)
 
 
-def blender_52_capability(name, default=False):
-    return bool(blender_52_runtime_contract().get("capabilities", {}).get(str(name), default))
-
-
 def assert_supported_runtime():
     """Fail before registration when the active build is outside LTS scope."""
     report = blender_52_runtime_contract(refresh=True)

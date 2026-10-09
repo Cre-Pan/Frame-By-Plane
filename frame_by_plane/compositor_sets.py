@@ -4387,34 +4387,6 @@ def _remove_duplicate_state_items(collection, identity_attr):
     return len(remove)
 
 
-def fbp_compositor_artist_node_snapshot(scene):
-    """Return primitive identities for user-authored root compositor nodes.
-
-    The snapshot excludes all managed Frame By Plane nodes and contains no RNA
-    wrappers, so it is safe to compare across sync, repair and Undo boundaries.
-    """
-    tree = getattr(scene, "compositing_node_group", None) if scene is not None else None
-    if tree is None:
-        return ()
-    records = []
-    try:
-        nodes = tuple(getattr(tree, "nodes", ()) or ())
-    except FBP_DATA_ERRORS:
-        return ()
-    for node in nodes:
-        try:
-            if bool(node.get("fbp_owned", False)) or _node_role_without_idprops(node):
-                continue
-            records.append((
-                str(getattr(node, "name", "") or ""),
-                str(getattr(node, "bl_idname", "") or ""),
-                int(node.as_pointer()),
-            ))
-        except FBP_DATA_ERRORS:
-            continue
-    return tuple(sorted(records))
-
-
 def _fbp_snapshot_error(errors, path, reason):
     if errors is None:
         return

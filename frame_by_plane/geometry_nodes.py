@@ -356,15 +356,6 @@ _FBP_CAMERA_BINDING_CACHE = {}
 # The scheduler deliberately retires callbacks from the previous generation on
 # reload, so inheriting these dictionaries would leave requests that can never
 # complete and may suppress the first valid sync after reinstalling the addon.
-_FBP_RELOAD_DROPPED_EFFECT_SYNC_RECORDS = sum(
-    len(value) if isinstance(value, dict) else 0
-    for value in (
-        globals().get("_FBP_CUSTOM_SHADER_SYNC_PENDING"),
-        globals().get("_FBP_CUSTOM_GEOMETRY_INIT_PENDING"),
-        globals().get("_FBP_COLOR_RAMP_SYNC_PENDING"),
-        globals().get("_FBP_RELATION_SYNC_PENDING"),
-    )
-)
 _FBP_CUSTOM_SHADER_SYNC_PENDING = {}
 _FBP_CUSTOM_GEOMETRY_INIT_PENDING = {}
 # Socket/state caches are keyed by runtime RNA identity. Rebuild them after an
@@ -5230,21 +5221,6 @@ def _fbp_modifier_input_get(modifier, identifier, default=None):
 def fbp_modifier_input_get(modifier, identifier, default=None):
     """Public read-only bridge for diagnostics and extension integrations."""
     return _fbp_modifier_input_get(modifier, identifier, default)
-
-
-def fbp_modifier_input_has(modifier, identifier):
-    """Public Blender 5.2 GN modifier-input presence query."""
-    return _fbp_modifier_input_has(modifier, identifier)
-
-
-def fbp_modifier_input_is_visible(modifier, identifier):
-    """Return Blender 5.2's conditional visibility state for one GN input."""
-    return _fbp_modifier_input_is_visible(modifier, identifier)
-
-
-def fbp_modifier_input_is_used(modifier, identifier):
-    """Return whether Blender 5.2 currently evaluates one GN input."""
-    return _fbp_modifier_input_is_used(modifier, identifier)
 
 
 def fbp_node_group_interface_52_issues(node_group):
@@ -15649,51 +15625,6 @@ def _fbp_effect_runtime_profile(rig):
     _FBP_EFFECT_RUNTIME_PROFILE_CACHE[key] = profile
     return profile
 
-def fbp_effect_runtime_diagnostics(scene=None):
-    """Return lightweight counters for the Effects performance profiler."""
-    scene = scene or getattr(bpy.context, "scene", None)
-    rigs = tuple(_fbp_scene_effect_runtime_rigs(scene)) if scene is not None else ()
-    result = {
-        "effect_rigs": len(rigs),
-        "geometry_source_sync_rigs": 0,
-        "shader_source_sync_rigs": 0,
-        "animated_effects": 0,
-        "evolve_effects": 0,
-        "profile_cache_entries": len(_FBP_EFFECT_RUNTIME_PROFILE_CACHE),
-        "step_cache_entries": len(_FBP_EFFECT_EVOLVE_STEP_CACHE),
-        "handler_runs": int(_FBP_EFFECT_RUNTIME_STATS.get("handler_runs", 0) or 0),
-        "handler_guard_skips": int(_FBP_EFFECT_RUNTIME_STATS.get("handler_guard_skips", 0) or 0),
-        "rigs_scanned": int(_FBP_EFFECT_RUNTIME_STATS.get("rigs_scanned", 0) or 0),
-        "rig_updates": int(_FBP_EFFECT_RUNTIME_STATS.get("rig_updates", 0) or 0),
-        "held_step_skips": int(_FBP_EFFECT_RUNTIME_STATS.get("held_step_skips", 0) or 0),
-        "scene_idle_skips": int(_FBP_EFFECT_RUNTIME_STATS.get("scene_idle_skips", 0) or 0),
-        "handler_timing": fbp_effect_runtime_profile_metrics(),
-        "reload_dropped_sync_records": int(_FBP_RELOAD_DROPPED_EFFECT_SYNC_RECORDS or 0),
-    }
-    for rig in rigs:
-        try:
-            profile = _fbp_effect_runtime_profile(rig)
-            result["geometry_source_sync_rigs"] += int(
-                bool(profile.get("geometry_source_sync", False))
-            )
-            result["shader_source_sync_rigs"] += int(
-                bool(profile.get("shader_source_sync", False))
-            )
-            result["animated_effects"] += len(
-                profile.get("animated_effect_properties", {}) or {}
-            )
-            result["evolve_effects"] += sum(
-                1
-                for effect_id, property_key in (profile.get("evolve_pairs", ()) or ())
-                if bool(getattr(rig, property_key, False))
-                and _fbp_effect_evolution_is_visible(rig, effect_id)
-            )
-        except FBP_DATA_ERRORS:
-            continue
-    result["profile_cache_entries"] = len(_FBP_EFFECT_RUNTIME_PROFILE_CACHE)
-    result["step_cache_entries"] = len(_FBP_EFFECT_EVOLVE_STEP_CACHE)
-    return result
-
 
 def fbp_effect_ids_for_rig(rig, *, refresh_custom=False):
     if refresh_custom:
@@ -17092,26 +17023,6 @@ def fbp_effect_stack_v2_report(rig, *, repair=False):
     }
 
 
-def fbp_effect_instance_record_for_rig(rig, instance_id):
-    instance_id = str(instance_id or "")
-    if not instance_id:
-        return None
-    return next(
-        (
-            dict(record)
-            for record in fbp_effect_instance_records_for_rig(
-                rig, ensure=False, sync_storage=False
-            )
-            if str(record.get("instance_id", "") or "") == instance_id
-        ),
-        None,
-    )
-
-
-def fbp_effect_instance_token_for_rig(rig, effect_id):
-    instance_id = fbp_effect_instance_id_for_rig(rig, effect_id, ensure=False)
-    return effect_instance_token(effect_id, instance_id)
-
 def fbp_persist_effect_stacks(rigs):
     """Write the reconciled Effect Data Model once per layer after a batch edit.
 
@@ -17606,11 +17517,6 @@ def fbp_active_effect_instance_id(rig):
     except FBP_DATA_ERRORS:
         pass
     return ""
-
-
-def fbp_active_effect_instance_token(rig):
-    effect_id = fbp_active_effect_id(rig)
-    return effect_instance_token(effect_id, fbp_active_effect_instance_id(rig))
 
 
 def fbp_active_effect_group_id(rig):
@@ -18658,11 +18564,6 @@ def _fbp_geometry_effect_id_for_modifier(modifier):
         if not bool(definition.get("builtin", False)) and tagged_effect == effect_id:
             return effect_id
     return ""
-
-
-def fbp_geometry_effect_id_for_modifier(modifier):
-    """Return the registered Geometry effect represented by one modifier."""
-    return _fbp_geometry_effect_id_for_modifier(modifier)
 
 
 def _fbp_modifier_pointer(modifier):
