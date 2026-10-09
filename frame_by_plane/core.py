@@ -2368,6 +2368,20 @@ def fbp_render_guard_pre(scene):
             fbp_ensure_native_render_output(scene)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not validate the native compositor output", exc)
+    try:
+        # Rebuilding View Layers or compositor groups inside render_init
+        # crashes Blender, so a pending setup can only be reported here.
+        if (
+            scene is not None
+            and bool(getattr(scene, "fbp_compositor_render_enabled", False))
+            and bool(scene.get("fbp_compositor_needs_refresh", False))
+        ):
+            fbp_warn_once(
+                "compositor_render_out_of_date",
+                "Rendering with an out-of-date compositor setup; press Refresh in the Compositor panel",
+            )
+    except FBP_DATA_ERRORS:
+        pass
 
     if bool(fbp_runtime_get("fbp_render_guard_active", False)):
         return
@@ -2496,7 +2510,13 @@ def fbp_render_guard_complete(scene):
             is_fbp_child = False
         if not is_fbp_child:
             # Generic headless sessions may not return to an event loop after
-            # rendering. Retain the historical process-local cleanup contract.
+            # rendering, and a blocking headless render has already finished
+            # here. Restore render-only effect states now, then clear the
+            # process-local session even if a value could not be restored.
+            try:
+                _fbp_restore_render_session_state(scene)
+            except Exception as exc:
+                fbp_warn("Could not restore effect state after headless render", exc)
             _fbp_clear_render_runtime_state()
             return
     now = time.monotonic()
@@ -2692,7 +2712,6 @@ def fbp_frame_change_handler(scene):
     if fbp_undo_guard_active():
         return
     render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
-    external_masks_changed = False
     if not render_guard_active:
         _fbp_schedule_native_coverage_refresh_if_scene_range_changed(scene)
     if render_guard_active:
@@ -2718,7 +2737,7 @@ def fbp_frame_change_handler(scene):
             needs_drawing = False
 
     if not needs_procedural and not needs_drawing:
-        if (needs_frame_ui or external_masks_changed) and not fbp_is_rendering_now():
+        if needs_frame_ui and not fbp_is_rendering_now():
             fbp_tag_view3d_ui_redraw()
         return
 
@@ -2731,7 +2750,7 @@ def fbp_frame_change_handler(scene):
         _fbp_schedule_viewport_frame_sync(scene)
         return
 
-    changed = external_masks_changed
+    changed = False
     has_procedural_rigs = False
     if needs_drawing:
         try:

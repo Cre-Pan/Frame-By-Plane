@@ -222,15 +222,6 @@ def resolve_layer_set(scene, layer_set):
     return tuple(resolved), tuple(missing)
 
 
-def active_layer_set_objects(scene):
-    """Public API for effects/tools that want the active reusable selection."""
-    layer_set, _index = _active_layer_set(scene)
-    if layer_set is None:
-        return ()
-    resolved, _missing = resolve_layer_set(scene, layer_set)
-    return tuple(target for _member, target in resolved)
-
-
 def audit_layer_sets(scene, *, repair=False):
     """Validate saved selections without deleting any scene object."""
     stats = {

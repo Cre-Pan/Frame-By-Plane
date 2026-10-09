@@ -2,6 +2,53 @@
 
 All notable public changes to Frame By Plane are documented here.
 
+## [Unreleased]
+
+### Effect stack performance
+
+- Reordering an effect chain now writes the complete order once and rebuilds each material stage once, instead of rebuilding the stage for every one-step move. Adding effects to a populated stack is roughly twice as fast (16-effect stack: about 1.7 s → 0.8 s in total).
+- Shader-stage order lookups scan each material once instead of recomputing node tokens two or three times per node.
+- Mixed stacks (Image effects plus at least one Mesh effect) are about three times faster to edit: a 12-effect mixed stack drops from about 2.8 s to 0.95 s of total add time. The stack order is computed once per refresh, Mesh-effect modifiers are identified without re-reading node-group tags per registered effect, and composite stage materials only write socket values that actually changed (this also avoids needless material re-evaluation during playback).
+
+### Compositor
+
+- The Compositor panel now starts with one **Compositor | Refresh | Live Update** row. Compositor turns the tools off as well as on, and Refresh rebuilds the setup; it is highlighted when changes are waiting or nothing has been built yet.
+- **Live Update** is off by default: adding layers or effects or changing an effect type no longer rebuilds the compositor after every click. Effect values (mix, thresholds, colors) still update immediately. Turning Live Update on applies any waiting change, and enabling **Use Compositor in Render** brings a waiting setup up to date before rendering.
+- The compositor **Color Grade** effect now changes the image. It used a Color Balance mode that ignores Temperature and Tint, and wrote the same value to both white points, which cancel out.
+- A copied scene (Full or Linked Copy) no longer renders the original scene's layers into every managed compositor layer.
+- With Live Update off, dragging an effect value after changing its type (or reordering) no longer writes into the old effect's node; it waits for Refresh like other structural edits.
+- Grouping, ungrouping, moving and removing compositor layers, reordering compositor effects and assigning groups now follow Live Update / Refresh, instead of always rebuilding immediately (and raising an error, for example when the last layer of a folder was removed).
+- **Share Unassigned Groups**, **Render Managed Layers Only** and View Layer names now mark the compositor for Refresh when changed.
+- With **Render Managed Layers Only** off, turning a native View Layer's render switch on or off is no longer undone by the next compositor sync.
+- **Restore Native Compositor** asks for confirmation, because it also deletes the editable Effects & Masks group.
+- The compositor no longer re-tags its tree on every scene update while the render opt-in is active, and two layer-remap dropdowns can no longer show garbled names.
+
+### Cleanup
+
+- Removed about 700 lines of code that nothing used: 31 helper functions (diagnostic snapshots, legacy timing probes, layer sorting and report helpers), two dead constants and three unused imports. The static orphan audit now lists only two Scrub Bar helpers, which are left as they are.
+
+### Fixes
+
+- Masks that sample the layer UV (Luma/Alpha Matte, Gradient, Noise, Wave, Voronoi, Channel, Color and Imported masks) no longer lose their UV input after a UV effect is moved or the stack is sorted. They previously appeared frozen until another rebuild.
+- Removing a duplicated (multi-instance) effect now also removes its per-instance viewport and render visibility data instead of leaving it on the layer.
+- **Clear Effect Stack** and **Remove Selected Effects** now update the saved effect-stack data, so removed effects (and their group membership) no longer remain as hidden records in the .blend file.
+- **Copy / Paste Effect Stack** now pastes an exact copy: duplicated effects keep every instance with its own settings, and the visible stack order and effect groups are preserved. Previously only one instance per effect was pasted, with the active instance's values, and the order could change the look of the result.
+- **Effect Stack Presets** now restore the saved stack order. Existing presets benefit too, because the order was already stored in them.
+- Copying a stack or saving a preset no longer changes the source layer: duplicated effects were silently added to the group of their first instance.
+- **Hide in Render** now works for every Image effect. The render only applied it to animated or Evolve effects, so other effects hidden for the render still appeared in F12 output. Mesh-effect render quality settings are now applied to every Mesh effect for the same reason.
+- Toggling render visibility for a duplicated effect with several layers selected now reaches every instance.
+- In stacks that mix Image and Mesh effects, hiding an effect, Solo, duplicating an instance and removing an instance are now reflected in the final result and in what Mesh effects read. Previously the change only appeared after another edit.
+- Removing an effect instance that a local mask was attached to now returns the mask to the layer cleanly; Project Health no longer reports a missing receiver.
+- Hiding a global (Layer) mask, in the viewport or for the render, no longer makes a semi-transparent layer more transparent. The hidden mask still multiplied the layer alpha once more (50 % alpha rendered at 25 %).
+- Adding an effect while an effect group (or one of its members) is selected now places the new effect inside that group. It was added to the top of the stack while joining the group, so the group also swallowed every row in between.
+- Switching an effect to another variant of its family (for example Pixelate → Hex Pixelate) keeps its place in the stack instead of moving it to the bottom. With two variants of one family on a layer (for example Swirl and Bulge Pinch), the switch now replaces the effect you clicked instead of the first one in the family. On a duplicated effect it replaces only the selected copy (the other copies and their settings stay), and a local mask attached to that copy moves to the new variant.
+- **Paste Effect Stack** and **Effect Stack Presets** keep local masks on the right duplicated effect, rebuild mask combinations in stack order, and no longer add ungrouped duplicated effects to a group. In Merge mode, masks attached to a replaced effect return to the layer instead of pointing at nothing.
+- Adding or removing an effect (including removing the last one) now updates the saved effect-stack data immediately.
+- Removing an Image effect that had a local mask no longer disconnects the UV input of the effect above it (for example Swirl above a masked Wave Warp), which made the layer render wrong until the next edit.
+- Re-adding an effect that is already on the layer no longer moves it, or its other copies, into the selected group. The same cause briefly grouped pasted copies.
+- After a variant switch, a local mask on a duplicable effect follows the new variant's exact copy, so removing that copy returns the mask to the layer.
+- **Duplicate** places the copy directly above the original effect, and a copy of a group member joins that group. The copy was listed at the bottom of the stack, although it was evaluated above the original, and the next reorder moved it to the bottom for real.
+
 ## [7.2.1] — Prepared 2026-09-07
 
 - Added paired Gap Off/On icons with separate grouping and explicit, idempotent choices.
