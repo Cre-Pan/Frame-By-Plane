@@ -2310,6 +2310,24 @@ def test_effect_duplicate_placement(_module):
             assert vignette_copy.startswith("VIGNETTE") and vignette_copy != vignette, order
             assert group_of(vignette_copy) == group_id
             assert not group_of(next(ref for ref in order if ref.startswith("POSTERIZE")))
+
+            # Copy Hue/Saturation (below the group) and move only the copy into
+            # the group; re-adding Hue/Saturation must not group the original.
+            hue = next(ref for ref in refs() if ref.startswith("HUE_SATURATION"))
+            assert ops.duplicate_effect_instance(
+                effect_id="HUE_SATURATION", instance_id=geo._fbp_effect_ref_instance_id(hue),
+            ) == {"FINISHED"}
+            order = refs()
+            hue_copy = order[order.index(hue) - 1]
+            assert geo.fbp_set_effect_group_id(
+                rig, "HUE_SATURATION", group_id, instance_id=geo._fbp_effect_ref_instance_id(hue_copy),
+            )
+            assert ops.select_effect(
+                effect_id="HUE_SATURATION", instance_id=geo._fbp_effect_ref_instance_id(hue_copy),
+            ) == {"FINISHED"}
+            assert ops.add_effect(effect_id="HUE_SATURATION") == {"FINISHED"}
+            assert group_of(hue_copy) == group_id
+            assert not group_of(hue), "re-adding an effect grouped its other copy"
             assert geo.fbp_effect_stack_v2_report(rig)["valid"]
     finally:
         for cls in reversed(registered):
@@ -2320,6 +2338,57 @@ def test_effect_duplicate_placement(_module):
             except (ReferenceError, RuntimeError):
                 pass
     return {"rows": len(order)}
+
+
+def test_effect_remove_masked_uv_instance(_module):
+    """Removing a UV effect with a local mask keeps the next UV effect wired."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Effect Remove Masked UV")
+    owned = [rig, *rig.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+
+    def links():
+        return [
+            sorted(
+                (link.from_node.name, link.from_socket.identifier, link.to_node.name, link.to_socket.identifier)
+                for link in material.node_tree.links
+            )
+            for material in geo._fbp_plane_materials(rig)
+        ]
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            ops = bpy.ops.fbp
+            for effect_id in ("WAVE_WARP", "SWIRL"):
+                assert ops.add_effect(effect_id=effect_id) == {"FINISHED"}, effect_id
+            wave = next(item.instance_id for item in rig.fbp_effects if item.effect_id == "WAVE_WARP")
+            assert ops.add_effect_mask(
+                mask_effect_id="GRADIENT_MASK", target_effect_id="WAVE_WARP", target_instance_id=wave,
+            ) == {"FINISHED"}
+            assert ops.remove_effect(effect_id="WAVE_WARP", instance_id=wave) == {"FINISHED"}
+        after_remove = links()
+        for material in geo._fbp_plane_materials(rig):
+            for stage in ("UV", "COLOR", "MASK"):
+                geo._fbp_rebuild_shader_stage(material, stage)
+        assert links() == after_remove, "removal left a stale UV graph"
+        for material in geo._fbp_plane_materials(rig):
+            swirl = geo._fbp_shader_effect_nodes(material, effect_id="SWIRL")
+            assert swirl and all(node.inputs[0].is_linked for node in swirl), material.name
+    finally:
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"materials": len(after_remove)}
 
 
 def _effect_stage_materials(geo, rig):
@@ -4037,6 +4106,7 @@ def run_background():
             ("effect_global_mask_hide_cycles", test_effect_global_mask_hide_cycles),
             ("effect_family_variant_keeps_position", test_effect_family_variant_keeps_position),
             ("effect_duplicate_placement", test_effect_duplicate_placement),
+            ("effect_remove_masked_uv_instance", test_effect_remove_masked_uv_instance),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),

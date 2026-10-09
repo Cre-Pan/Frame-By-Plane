@@ -9697,9 +9697,26 @@ def _fbp_stage_external_uv_source(material, _source_node=None, effect_nodes=()):
         )
         for node in effect_nodes
     )
+    def through_mask_mixers(socket):
+        # Local-mask UV mixers are deleted and rebuilt with the stage; follow
+        # them back to their unmasked input instead of returning a socket that
+        # is about to disappear (e.g. after the masked effect was removed).
+        seen = set()
+        while socket is not None and socket.node.get("fbp_local_effect_mask_helper"):
+            if socket.node in seen or len(socket.node.inputs) < 2:
+                return None
+            seen.add(socket.node)
+            unmasked = socket.node.inputs[1]
+            socket = unmasked.links[0].from_socket if unmasked.is_linked else None
+        if socket is None or socket.node in effect_set:
+            return None
+        return socket
+
     for link in material.node_tree.links:
         if link.to_socket in targets and link.from_node not in effect_set:
-            return link.from_socket
+            source = through_mask_mixers(link.from_socket)
+            if source is not None:
+                return source
     anchor = _fbp_shader_image_node(material) or _fbp_gradient_ramp_node(material)
     return _fbp_effect_texcoord_source(material, anchor)
 
@@ -13536,7 +13553,12 @@ def fbp_apply_shader_effect(rig, effect_id, *, rebuild=True, sync_items=True):
         if rebuild:
             changed = _fbp_rebuild_shader_stage(material, stage) or changed
     _fbp_set_enabled(rig, effect_id, True)
-    stored_group = _fbp_stored_effect_group_id(rig, effect_id)
+    # MULTI instances keep their own groups; an effect-wide assignment would
+    # pull every copy into the group of one of them.
+    stored_group = (
+        "" if _fbp_effect_uses_multi_instances(effect_id)
+        else _fbp_stored_effect_group_id(rig, effect_id)
+    )
     if stored_group:
         fbp_set_effect_group_id(rig, effect_id, stored_group)
     _fbp_invalidate_effect_ids_cache(rig)
@@ -25453,7 +25475,8 @@ def fbp_switch_effect_family_variant(rig, source_effect_id, target_effect_id):
     if tuple(fbp_effect_definition(target_effect_id).get("debug_modes", ()) or ()):
         fbp_set_effect_debug_mode(rig, target_effect_id, source_debug)
     for mask_effect_id in attached_masks:
-        fbp_set_effect_mask_target(rig, mask_effect_id, target_effect_id)
+        # Duplicable variants are addressed by their concrete instance.
+        fbp_set_effect_mask_target(rig, mask_effect_id, target_ref or target_effect_id)
 
     removed = (
         fbp_remove_effect_instance(
