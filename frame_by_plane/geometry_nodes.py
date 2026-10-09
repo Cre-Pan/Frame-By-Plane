@@ -27681,7 +27681,9 @@ def _fbp_reset_effect_color_ramp(rig, effect_id):
 def _fbp_capture_effect_state(rig, effect_id):
     effect_id = fbp_normalize_effect_id(effect_id)
     definition = fbp_effect_definition(effect_id)
-    group_id = fbp_effect_group_id_for_rig(rig, effect_id)
+    # Capturing is read-only. Normalizing a logical row without an instance id
+    # would copy one instance's group onto every duplicate of the effect.
+    group_id = fbp_effect_group_id_for_rig(rig, effect_id, normalize=False)
     return {
         "effect_id": effect_id,
         "properties": {
@@ -28089,6 +28091,58 @@ def _fbp_apply_preset_group_metadata(rig, payload, instance_map):
     fbp_sync_effect_groups(rig)
 
 
+def _fbp_snapshot_mixed_order(payload, instance_map):
+    """Return the captured Image / Mask / Mesh UI order with remapped instances.
+
+    The Effect Data Model records in ``data_model`` are stored in stack order,
+    so presets saved before this order was restored still carry it.
+    """
+    records = dict(payload.get("data_model", {}) or {}).get("instances", ()) or ()
+    tokens = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        effect_id = fbp_normalize_effect_id(record.get("effect_id", ""))
+        if not effect_id or effect_id == FBP_EFFECT_LAYER_BLEND:
+            continue
+        instance_id = ""
+        if _fbp_effect_uses_multi_instances(effect_id):
+            instance_id = instance_map.get(
+                (effect_id, str(record.get("instance_id", "") or "")), ""
+            )
+            if not instance_id:
+                continue
+        token = _fbp_effect_ref(effect_id, instance_id)
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _fbp_restore_snapshot_mixed_order(rig, payload, instance_map):
+    """Reorder pasted/preset rows to the captured order, in their own slots.
+
+    Rows that already existed only on the target (Merge mode) keep their
+    positions; the captured rows fill the remaining slots in captured order.
+    """
+    current = _fbp_mixed_effect_tokens(rig)
+    present = set(current)
+    wanted = [
+        token for token in _fbp_snapshot_mixed_order(payload, instance_map)
+        if token in present
+    ]
+    if len(wanted) < 2:
+        return False
+    wanted_set = set(wanted)
+    ordered = iter(wanted)
+    desired = [
+        next(ordered) if token in wanted_set else token
+        for token in current
+    ]
+    if desired == current:
+        return False
+    return _fbp_apply_mixed_effect_order(rig, desired)
+
+
 def fbp_apply_effect_stack_snapshot(
     rig,
     payload,
@@ -28211,6 +28265,10 @@ def fbp_apply_effect_stack_snapshot(
             states,
             force_shader_rebuild=True,
         )
+        # Restore the captured order first: group metadata is normalized into
+        # contiguous blocks, so applying it to a differently ordered stack
+        # would also capture the rows that currently sit between members.
+        _fbp_restore_snapshot_mixed_order(rig, payload, instance_map)
         _fbp_apply_preset_group_metadata(rig, payload, instance_map)
         fbp_effect_instance_records_for_rig(
             rig,
@@ -29047,9 +29105,14 @@ class FBP_OT_CopyEffectStack(Operator):
         rigs = _fbp_selected_rigs(context)
         if not rigs:
             return {"CANCELLED"}
-        effects = [_fbp_capture_effect_state(rigs[0], effect_id) for effect_id in fbp_effect_ids_for_rig(rigs[0])]
+        # The complete snapshot keeps duplicated instances, their own values,
+        # groups and the visible stack order, exactly like Effect Stack Presets.
+        snapshot = fbp_capture_effect_stack_snapshot(rigs[0])
+        effects = list(snapshot.get("effects", ()))
         _FBP_EFFECT_CLIPBOARD.clear()
-        _FBP_EFFECT_CLIPBOARD.update({"mode": "STACK", "effects": effects})
+        _FBP_EFFECT_CLIPBOARD.update(
+            {"mode": "STACK", "effects": effects, "snapshot": snapshot}
+        )
         self.report({"INFO"}, f"Copied {len(effects)} effect(s)")
         return {"FINISHED"}
 
@@ -29084,6 +29147,10 @@ class FBP_OT_PasteEffectStack(Operator):
                 "Paste cancelled: one or more effects are invalid or incompatible",
             )
             return {"CANCELLED"}
+
+        stack_snapshot = _FBP_EFFECT_CLIPBOARD.get("snapshot")
+        if isinstance(stack_snapshot, dict):
+            return self._paste_stack_snapshot(rigs, stack_snapshot, len(states))
 
         snapshots = [
             (
@@ -29157,6 +29224,33 @@ class FBP_OT_PasteEffectStack(Operator):
             f"Pasted {len(states)} effect(s) to {len(rigs)} layer(s)",
         )
         return {"FINISHED"} if changed else {"CANCELLED"}
+
+    def _paste_stack_snapshot(self, rigs, snapshot, effect_count):
+        """Merge a copied stack into every layer, restoring all on failure."""
+        backups = [(rig, fbp_capture_effect_stack_snapshot(rig)) for rig in rigs]
+        for rig in rigs:
+            result = fbp_apply_effect_stack_snapshot(rig, snapshot, mode="MERGE")
+            if result.get("success", False):
+                continue
+            for restored_rig, backup in backups:
+                fbp_apply_effect_stack_snapshot(
+                    restored_rig, backup, mode="REPLACE", _allow_rollback=False,
+                )
+                fbp_sync_effect_items(restored_rig)
+            self.report(
+                {"ERROR"},
+                "Paste failed; every selected layer was restored: "
+                + str(result.get("error", "") or "unknown error"),
+            )
+            return {"CANCELLED"}
+        fbp_sync_effect_items(
+            rigs[0], rigs, repair_assets=False, normalize_instance_ids=False
+        )
+        self.report(
+            {"INFO"},
+            f"Pasted {effect_count} effect(s) to {len(rigs)} layer(s)",
+        )
+        return {"FINISHED"}
 
 
 class FBP_OT_ClearEffectStack(Operator):

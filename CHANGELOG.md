@@ -15,6 +15,9 @@ All notable public changes to Frame By Plane are documented here.
 - Masks that sample the layer UV (Luma/Alpha Matte, Gradient, Noise, Wave, Voronoi, Channel, Color and Imported masks) no longer lose their UV input after a UV effect is moved or the stack is sorted. They previously appeared frozen until another rebuild.
 - Removing a duplicated (multi-instance) effect now also removes its per-instance viewport and render visibility data instead of leaving it on the layer.
 - **Clear Effect Stack** and **Remove Selected Effects** now update the saved effect-stack data, so removed effects (and their group membership) no longer remain as hidden records in the .blend file.
+- **Copy / Paste Effect Stack** now pastes an exact copy: duplicated effects keep every instance with its own settings, and the visible stack order and effect groups are preserved. Previously only one instance per effect was pasted, with the active instance's values, and the order could change the look of the result.
+- **Effect Stack Presets** now restore the saved stack order. Existing presets benefit too, because the order was already stored in them.
+- Copying a stack or saving a preset no longer changes the source layer: duplicated effects were silently added to the group of their first instance.
 
 ## [7.2.1] — Prepared 2026-09-07
 
