@@ -2275,6 +2275,74 @@ def test_effect_render_visibility_contract(_module):
     return {"render_backup_entries": len(backup)}
 
 
+def test_effect_render_visibility_cycles(_module):
+    """Render real pixels: a render-hidden effect must not reach the image."""
+    if (
+        os.environ.get("FBP_TEST_SKIP_NATIVE_RENDER", "") == "1"
+        and os.environ.get("FBP_TEST_CYCLES_RENDER", "") != "1"
+    ):
+        raise SkipTest("Native render disabled; set FBP_TEST_CYCLES_RENDER=1 for the Cycles CPU check")
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Effect Render Pixels")
+    owned = [rig, *rig.children_recursive]
+    camera = bpy.data.objects.new("FBP Render Pixels Camera", bpy.data.cameras.new("FBP Render Pixels Camera"))
+    scene.collection.objects.link(camera)
+    camera.location = (0.0, -6.0, 0.0)
+    camera.rotation_euler = (math.pi / 2.0, 0.0, 0.0)
+    previous = {
+        "camera": scene.camera, "engine": scene.render.engine,
+        "x": scene.render.resolution_x, "y": scene.render.resolution_y,
+        "percentage": scene.render.resolution_percentage, "filepath": scene.render.filepath,
+    }
+    hidden_objects = [obj for obj in scene.objects if obj not in owned and not obj.hide_render]
+    output = WORKDIR / "fbp_effect_render_pixels.png"
+
+    def render_center():
+        bpy.ops.render.render(write_still=True)
+        image = bpy.data.images.load(str(output), check_existing=False)
+        try:
+            width, height = image.size
+            index = ((height // 2) * width + width // 2) * 4
+            return tuple(image.pixels[index:index + 3])
+        finally:
+            bpy.data.images.remove(image)
+
+    try:
+        for obj in hidden_objects:
+            obj.hide_render = True
+        scene.camera = camera
+        scene.render.engine = "CYCLES"
+        scene.cycles.device = "CPU"
+        scene.cycles.samples = 4
+        scene.render.resolution_x, scene.render.resolution_y = 32, 24
+        scene.render.resolution_percentage = 100
+        scene.render.filepath = str(output)
+        assert geo.fbp_add_effect(rig, "INVERT", select_object_mask_helper=False, inherit_active_group=False)
+        inverted = render_center()
+        geo.fbp_set_effect_render_visible(rig, "INVERT", False)
+        hidden = render_center()
+        # The fixture is (0.2, 0.4, 0.8): Invert makes red brighter than blue.
+        assert inverted[0] > inverted[2], inverted
+        assert hidden[2] > hidden[0], f"render-hidden Invert still rendered: {hidden}"
+        nodes = geo._fbp_find_shader_effect_nodes_for_rig(rig, "INVERT")
+        assert nodes and not any(node.mute for node in nodes), "viewport state must be restored"
+    finally:
+        scene.camera = previous["camera"]
+        scene.render.engine = previous["engine"]
+        scene.render.resolution_x, scene.render.resolution_y = previous["x"], previous["y"]
+        scene.render.resolution_percentage = previous["percentage"]
+        scene.render.filepath = previous["filepath"]
+        for obj in hidden_objects:
+            obj.hide_render = False
+        for obj in reversed([*owned, camera]):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"inverted": [round(value, 3) for value in inverted], "hidden": [round(value, 3) for value in hidden]}
+
+
 def test_effect_operator_cleanup_contract(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     rig = _effect_stack_fixture_rig("FBP Effect Operator Cleanup")
@@ -3674,6 +3742,7 @@ def run_background():
             ("effect_mixed_stack_contract", test_effect_mixed_stack_contract),
             ("effect_stack_evaluation_order", test_effect_stack_evaluation_order),
             ("effect_render_visibility_contract", test_effect_render_visibility_contract),
+            ("effect_render_visibility_cycles", test_effect_render_visibility_cycles),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
