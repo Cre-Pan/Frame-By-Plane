@@ -9167,12 +9167,11 @@ def _fbp_shader_effect_nodes(material, effect_id=None, stage=None, instance_id="
         node_effect_id = _fbp_shader_effect_id(node)
         if not node_effect_id:
             continue
-        definition = fbp_effect_definition(node_effect_id)
         if effect_id and node_effect_id != effect_id:
             continue
         if instance_id and effect_instance_id(node) != instance_id:
             continue
-        if stage and definition.get("stage") != stage:
+        if stage and fbp_effect_definition(node_effect_id).get("stage") != stage:
             continue
         result.append(node)
     return result
@@ -9224,6 +9223,26 @@ def _fbp_canonical_shader_order_token(token):
     return effect_id
 
 
+def _fbp_stage_node_tokens(material, stage):
+    """Scan one material stage once for its concrete node tokens.
+
+    Returns ``(node_by_token, tokens_by_effect, node_tokens)`` where
+    ``node_tokens`` keeps node-tree order and ``node_by_token`` keeps the last
+    node for a repeated token, matching the previous dict-comprehension scans.
+    """
+    node_by_token = {}
+    tokens_by_effect = {}
+    node_tokens = []
+    for node in _fbp_shader_effect_nodes(material, stage=stage):
+        token = _fbp_shader_node_token(node)
+        if not token:
+            continue
+        node_by_token[token] = node
+        node_tokens.append(token)
+        tokens_by_effect.setdefault(_fbp_shader_effect_id(node), []).append(token)
+    return node_by_token, tokens_by_effect, node_tokens
+
+
 def _fbp_get_rig_shader_stage_order(rig, stage):
     try:
         raw = str(rig.get(_fbp_shader_order_key(stage), "") or "")
@@ -9265,18 +9284,9 @@ def _fbp_set_rig_shader_stage_order(rig, stage, order):
 
 def _fbp_get_shader_stage_order(material, stage):
     stage = str(stage or "")
-    nodes = list(_fbp_shader_effect_nodes(material, stage=stage))
-    active_by_token = {
-        _fbp_shader_node_token(node): node
-        for node in nodes
-        if _fbp_shader_node_token(node)
-    }
-    tokens_by_effect = {}
-    for node in nodes:
-        effect_id = _fbp_shader_effect_id(node)
-        token = _fbp_shader_node_token(node)
-        if effect_id and token:
-            tokens_by_effect.setdefault(effect_id, []).append(token)
+    active_by_token, tokens_by_effect, node_tokens = _fbp_stage_node_tokens(
+        material, stage
+    )
     raw = ""
     try:
         raw = str(material.get(_fbp_shader_order_key(stage), "") or "")
@@ -9291,26 +9301,16 @@ def _fbp_get_shader_stage_order(material, stage):
         for token in tokens_by_effect.get(effect_id, ()):
             if token not in order:
                 order.append(token)
-    for node in nodes:
-        token = _fbp_shader_node_token(node)
-        if token and token not in order:
+    for token in node_tokens:
+        if token not in order:
             order.append(token)
     return order
 
 
 def _fbp_set_shader_stage_order(material, stage, order):
-    nodes = list(_fbp_shader_effect_nodes(material, stage=stage))
-    active_by_token = {
-        _fbp_shader_node_token(node): node
-        for node in nodes
-        if _fbp_shader_node_token(node)
-    }
-    tokens_by_effect = {}
-    for node in nodes:
-        effect_id = _fbp_shader_effect_id(node)
-        token = _fbp_shader_node_token(node)
-        if effect_id and token:
-            tokens_by_effect.setdefault(effect_id, []).append(token)
+    active_by_token, tokens_by_effect, node_tokens = _fbp_stage_node_tokens(
+        material, stage
+    )
     normalized = []
     for raw_token in order:
         token = _fbp_canonical_shader_order_token(raw_token)
@@ -9323,9 +9323,8 @@ def _fbp_set_shader_stage_order(material, stage, order):
             if candidate not in normalized:
                 normalized.append(candidate)
                 break
-    for node in nodes:
-        token = _fbp_shader_node_token(node)
-        if token and token not in normalized:
+    for token in node_tokens:
+        if token not in normalized:
             normalized.append(token)
     value = "|".join(normalized)
     key = _fbp_shader_order_key(stage)
@@ -9338,11 +9337,7 @@ def _fbp_set_shader_stage_order(material, stage, order):
 
 
 def _fbp_stage_effect_nodes(material, stage):
-    nodes_by_token = {
-        _fbp_shader_node_token(node): node
-        for node in _fbp_shader_effect_nodes(material, stage=stage)
-        if _fbp_shader_node_token(node)
-    }
+    nodes_by_token = _fbp_stage_node_tokens(material, stage)[0]
     return [
         nodes_by_token[token]
         for token in _fbp_get_shader_stage_order(material, stage)
@@ -9861,6 +9856,36 @@ def _fbp_clear_mask_alpha_chain_links(material, mask_nodes):
     return changed
 
 
+def _fbp_local_target_by_mask(rig):
+    """Return ``{mask_effect_id: target_ref}`` for locally targeted masks."""
+    if not rig:
+        return {}
+    return {
+        mask_id: target
+        for target, mask_ids in _fbp_mask_target_map(rig).items()
+        for mask_id in mask_ids
+    }
+
+
+def _fbp_connect_base_mask_uv_inputs(
+    material, rig, mask_nodes, uv_source, *, local_target_by_mask=None
+):
+    """Feed the final layer UV into every mask that does not target a UV effect.
+
+    Masks attached to a UV effect receive that effect's incoming vector while
+    the UV stage is rebuilt. Every other mask samples the final layer UV, which
+    changes whenever the UV stage is reordered or rebuilt.
+    """
+    if local_target_by_mask is None:
+        local_target_by_mask = _fbp_local_target_by_mask(rig)
+    base_uv_masks = []
+    for node in tuple(mask_nodes or ()):
+        target_effect_id = local_target_by_mask.get(_fbp_shader_effect_id(node), "LAYER")
+        if str(fbp_effect_definition(target_effect_id).get("stage", "") or "") != "UV":
+            base_uv_masks.append(node)
+    return _fbp_connect_local_mask_uv_inputs(material, base_uv_masks, uv_source)
+
+
 def _fbp_relink_effect_alpha(material, effect_nodes, base_alpha):
     """Route effect alpha through local masks, then the global Mask Stack."""
     if not material or not material.node_tree:
@@ -9942,26 +9967,15 @@ def _fbp_relink_effect_alpha(material, effect_nodes, base_alpha):
         else:
             current = effect_alpha
 
-    uv_source = _fbp_auxiliary_uv_source(material)
     global_masks = []
-    local_target_by_mask = {
-        mask_id: target
-        for target, mask_ids in _fbp_mask_target_map(rig).items()
-        for mask_id in mask_ids
-    } if rig else {}
-    base_uv_masks = []
+    local_target_by_mask = _fbp_local_target_by_mask(rig)
     for index, node in enumerate(mask_nodes):
-        mask_effect_id = _fbp_shader_effect_id(node)
-        target_effect_id = local_target_by_mask.get(mask_effect_id, "LAYER")
-        target_definition = fbp_effect_definition(target_effect_id)
-        targets_uv_effect = str(target_definition.get("stage", "") or "") == "UV"
-        if not targets_uv_effect:
-            base_uv_masks.append(node)
         node.location = (180.0 + index * 190.0, -420.0)
-        if target_effect_id == "LAYER":
+        if local_target_by_mask.get(_fbp_shader_effect_id(node), "LAYER") == "LAYER":
             global_masks.append(node)
-    changed = _fbp_connect_local_mask_uv_inputs(
-        material, base_uv_masks, uv_source
+    changed = _fbp_connect_base_mask_uv_inputs(
+        material, rig, mask_nodes, _fbp_auxiliary_uv_source(material),
+        local_target_by_mask=local_target_by_mask,
     ) or changed
     current, mask_changed = _fbp_apply_global_mask_stack(
         material,
@@ -10095,6 +10109,11 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
         if current and target:
             _fbp_link_single(material.node_tree, current, target)
         _fbp_connect_color_aux_uv(material, image_node, current)
+        # Removing the old UV stage links also detached mask UV inputs that
+        # sampled the previous final UV; restore them from the new chain end.
+        _fbp_connect_base_mask_uv_inputs(
+            material, rig, _fbp_stage_effect_nodes(material, "MASK"), current
+        )
         try:
             material["fbp_shader_chain_wiring_version"] = FBP_SHADER_CHAIN_WIRING_VERSION
         except FBP_DATA_ERRORS:
@@ -30564,8 +30583,53 @@ def fbp_move_effect_selection_transactional(rigs, effect_refs, action):
 
 
 
+def _fbp_apply_shader_chain_order_direct(rig, stage, desired):
+    """Write one complete shader-stage order and rebuild each material once."""
+    _fbp_set_rig_shader_stage_order(rig, stage, desired)
+    for material in _fbp_plane_materials(rig):
+        active = _fbp_get_shader_stage_order(material, stage)
+        if not active:
+            continue
+        material_order = [item for item in desired if item in active]
+        material_order.extend(item for item in active if item not in material_order)
+        if material_order == active:
+            continue
+        _fbp_set_shader_stage_order(material, stage, material_order)
+        _fbp_rebuild_shader_stage(material, stage)
+    _fbp_invalidate_effect_ids_cache(rig)
+    if any(_fbp_effect_ref_instance_id(token) for token in desired):
+        fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
+
+
+def _fbp_apply_geometry_chain_order_direct(rig, desired):
+    """Reorder every managed Mesh-effect modifier in one exact pass."""
+    plane = _fbp_plane(rig)
+    if not plane:
+        return False
+    by_token = {}
+    try:
+        for modifier in plane.modifiers:
+            effect_id = _fbp_geometry_effect_id_for_modifier(modifier)
+            if effect_id and effect_id not in by_token:
+                by_token[effect_id] = modifier
+    except FBP_DATA_ERRORS:
+        return False
+    requested = [by_token[token] for token in desired if token in by_token]
+    if len(requested) != len(desired):
+        return False
+    if not _fbp_reorder_geometry_effect_modifiers(plane, requested):
+        return False
+    _fbp_invalidate_effect_ids_cache(rig)
+    return True
+
+
 def _fbp_apply_effect_chain_order(rig, chain_key, desired_order):
-    """Apply one concrete compatible-chain order using safe one-step moves."""
+    """Apply one concrete compatible-chain order.
+
+    The complete order is written in one pass so each material stage is
+    rebuilt once instead of once per one-step move. The one-step path remains
+    as a fallback for chains whose stored order cannot be resolved directly.
+    """
     desired = [
         _fbp_effect_ref(*_fbp_effect_ref_parts(item))
         for item in tuple(desired_order or ()) if item
@@ -30576,6 +30640,15 @@ def _fbp_apply_effect_chain_order(rig, chain_key, desired_order):
     if set(current) != set(desired) or len(current) != len(desired):
         return False
     changed = current != desired
+    if not changed:
+        return True
+    kind, stage = chain_key
+    if kind == "SHADER":
+        _fbp_apply_shader_chain_order_direct(rig, stage, desired)
+    elif kind == "GEOMETRY":
+        _fbp_apply_geometry_chain_order_direct(rig, desired)
+    if _fbp_effect_chain_tokens(rig, chain_key) == desired:
+        return True
     for target_index, token in enumerate(desired):
         while True:
             current = _fbp_effect_chain_tokens(rig, chain_key)

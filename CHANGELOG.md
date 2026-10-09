@@ -2,6 +2,17 @@
 
 All notable public changes to Frame By Plane are documented here.
 
+## [Unreleased]
+
+### Effect stack performance
+
+- Reordering an effect chain now writes the complete order once and rebuilds each material stage once, instead of rebuilding the stage for every one-step move. Adding effects to a populated stack is roughly twice as fast (16-effect stack: about 1.7 s → 0.8 s in total).
+- Shader-stage order lookups scan each material once instead of recomputing node tokens two or three times per node.
+
+### Fixes
+
+- Masks that sample the layer UV (Luma/Alpha Matte, Gradient, Noise, Wave, Voronoi, Channel, Color and Imported masks) no longer lose their UV input after a UV effect is moved or the stack is sorted. They previously appeared frozen until another rebuild.
+
 ## [7.2.1] — Prepared 2026-09-07
 
 - Added paired Gap Off/On icons with separate grouping and explicit, idempotent choices.
