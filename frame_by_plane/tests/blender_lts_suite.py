@@ -1885,6 +1885,109 @@ def test_felt_fuzz_canonical_contract(_module):
     return {"nodes": node_count, "canonical_upgrade_once": True}
 
 
+def _effect_stack_fixture_rig(name):
+    builder = importlib.import_module(f"{PACKAGE}.builder")
+    fixture_path = WORKDIR / "fbp_effect_stack_fixture.png"
+    if not fixture_path.is_file():
+        image = bpy.data.images.new("FBP Effect Stack Fixture", width=16, height=16, alpha=True)
+        try:
+            image.generated_color = (0.2, 0.4, 0.8, 1.0)
+            image.filepath_raw = str(fixture_path)
+            image.file_format = 'PNG'
+            image.save()
+        finally:
+            bpy.data.images.remove(image)
+    return builder.build_fbp_rig(
+        bpy.context, name, str(fixture_path.parent), [fixture_path.name],
+        (0.0, 0.0, 0.0), target_collection=bpy.context.scene.collection,
+    )
+
+
+def test_effect_stack_reorder_contract(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Effect Stack Reorder")
+    owned = [rig, *rig.children_recursive]
+    effects = (
+        "SWIRL", "BULGE_PINCH", "GRADIENT_MASK", "LUMA_MATTE",
+        "HUE_SATURATION", "PIXELATE", "POSTERIZE", "VIGNETTE",
+    )
+    rebuild_stage = geo._fbp_rebuild_shader_stage
+    rebuilds = []
+
+    def counting_rebuild(material, stage, *args, **kwargs):
+        rebuilds.append(stage)
+        return rebuild_stage(material, stage, *args, **kwargs)
+
+    def topology():
+        result = []
+        for material in geo._fbp_plane_materials(rig):
+            result.append(sorted(
+                (link.from_node.name, link.from_socket.identifier,
+                 link.to_node.name, link.to_socket.identifier)
+                for link in material.node_tree.links
+            ))
+        return result
+
+    def assert_canonical(label):
+        before = topology()
+        for material in geo._fbp_plane_materials(rig):
+            for stage in ("UV", "COLOR", "MASK"):
+                rebuild_stage(material, stage)
+        assert topology() == before, f"{label} left stale shader links"
+
+    def assert_mask_uv_follows_uv_chain(label):
+        for material in geo._fbp_plane_materials(rig):
+            uv_nodes = geo._fbp_stage_effect_nodes(material, "UV")
+            final_uv = geo._fbp_node_socket(
+                uv_nodes[-1].outputs,
+                geo.fbp_effect_definition(geo._fbp_shader_effect_id(uv_nodes[-1])).get("output_socket", ""),
+            )
+            for node in geo._fbp_stage_effect_nodes(material, "MASK"):
+                definition = geo.fbp_effect_definition(geo._fbp_shader_effect_id(node))
+                socket = geo._fbp_node_socket(node.inputs, definition.get("uv_input_socket", ""))
+                if socket is None:
+                    continue
+                assert socket.is_linked, f"{label}: {node.name} lost its UV input"
+                assert socket.links[0].from_socket == final_uv, (
+                    f"{label}: {node.name} samples {socket.links[0].from_node.name}"
+                )
+
+    geo._fbp_rebuild_shader_stage = counting_rebuild
+    try:
+        for effect_id in effects:
+            assert geo.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+        assert_mask_uv_follows_uv_chain("add")
+
+        # Moving a UV effect rebuilds only the UV stage; mask UV inputs must
+        # follow the new end of the UV chain instead of being left unlinked.
+        assert geo.fbp_move_effect(rig, "BULGE_PINCH", "DOWN")
+        assert_mask_uv_follows_uv_chain("UV move")
+        assert_canonical("UV move")
+
+        # A complete reorder writes each chain once rather than rebuilding a
+        # stage for every one-step move of an insertion sort. A MASK rebuild
+        # with local masks also refreshes UV and COLOR: at most five per material.
+        order = geo._fbp_mixed_effect_tokens(rig)
+        rebuilds.clear()
+        assert geo.fbp_sort_effect_stacks_transactional([rig], list(reversed(order)))
+        sort_rebuilds = len(rebuilds)
+        assert geo._fbp_mixed_effect_tokens(rig) != order
+        material_count = len(geo._fbp_plane_materials(rig))
+        assert sort_rebuilds <= 5 * material_count, (sort_rebuilds, material_count)
+        assert_mask_uv_follows_uv_chain("sort")
+        assert_canonical("sort")
+    finally:
+        geo._fbp_rebuild_shader_stage = rebuild_stage
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"effects": len(effects), "sort_stage_rebuilds": sort_rebuilds}
+
+
 def test_audited_operator_tooltips(_module):
     tooltips = importlib.import_module(f"{PACKAGE}.tooltips")
     audited = (
@@ -3201,6 +3304,7 @@ def run_background():
             ("gp_effect_support", test_gp_support),
             ("gp_runtime_cache_cleanup", test_gp_runtime_cache_cleanup),
             ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),
+            ("effect_stack_reorder_contract", test_effect_stack_reorder_contract),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("preview_scope_policy", test_preview_scope_policy),
             ("irreversible_action_contracts", test_irreversible_action_contracts),
