@@ -18158,20 +18158,24 @@ def fbp_add_effect(
         # to the same persistent folder.  If Blender cannot move it safely, the
         # effect remains valid and simply stays outside the group: a member
         # away from its folder would make the folder absorb the rows between.
+        # Only a row created by this call joins the group: re-adding an
+        # effect that is already on the layer must not move it.
         new_ref = next(
             (
                 token for token in _fbp_mixed_effect_tokens(rig)
                 if token not in tokens_before
                 and _fbp_effect_ref_effect_id(token) == effect_id
             ),
-            effect_id,
+            "",
         )
-        fbp_move_effect_selection_relative_transactional(
-            [rig], [new_ref], group_anchor, "AFTER"
-        )
+        if new_ref:
+            fbp_move_effect_selection_relative_transactional(
+                [rig], [new_ref], group_anchor, "AFTER"
+            )
         order = list(_fbp_mixed_effect_tokens(rig))
         placed = (
-            new_ref in order
+            bool(new_ref)
+            and new_ref in order
             and group_anchor in order
             and order.index(new_ref) == order.index(group_anchor) + 1
         )
