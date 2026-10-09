@@ -19357,7 +19357,6 @@ def _fbp_effect_solo_candidates(rig, view):
     except FBP_DATA_ERRORS:
         runtime_ids = ()
     for effect_id in runtime_ids:
-        definition = fbp_effect_definition(effect_id)
         if _fbp_effect_uses_multi_instances(effect_id):
             try:
                 chain_tokens = _fbp_effect_chain_tokens(
