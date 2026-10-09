@@ -14243,6 +14243,38 @@ def fbp_duplicate_effect_instance(
                     rig, effect_id, source_instance_id, new_instance_id
                 )
             _fbp_invalidate_effect_ids_cache(rig)
+            # Show the copy directly above its source, as the stage order
+            # above already evaluates it; otherwise the visible stack lists
+            # it at the bottom and the next reorder would move it there.
+            mixed = _fbp_mixed_effect_tokens(rig)
+            new_ref = _fbp_effect_ref(effect_id, new_instance_id)
+            source_ref = next(
+                (
+                    token for token in mixed
+                    if _fbp_effect_ref_effect_id(token) == effect_id
+                    and token != new_ref
+                    and (
+                        not source_instance_id
+                        or _fbp_effect_ref_instance_id(token) == source_instance_id
+                    )
+                ),
+                "",
+            )
+            desired = _fbp_relative_effect_order(rig, (new_ref,), source_ref, "BEFORE")
+            if desired and tuple(desired) != tuple(mixed):
+                _fbp_apply_mixed_effect_order(rig, desired)
+            # The copy of a group member belongs to the same group.
+            source_group_id = fbp_effect_group_id_for_rig(
+                rig,
+                effect_id,
+                instance_id=_fbp_effect_ref_instance_id(source_ref),
+                normalize=False,
+            ) if source_ref else ""
+            if source_group_id:
+                fbp_set_effect_group_id(
+                    rig, effect_id, source_group_id, instance_id=new_instance_id
+                )
+                fbp_sync_effect_groups(rig)
             fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
             # A mixed Image/Mesh stack needs a stage and composite materials
             # that include the new instance, exactly as after Add Effect.
@@ -25364,26 +25396,50 @@ def fbp_switch_effect_family_variant(rig, source_effect_id, target_effect_id):
     if fbp_effect_is_active(rig, target_effect_id):
         return False
 
-    visible = fbp_effect_visible_state(rig, source_effect_id)
-    render_visible = fbp_effect_render_visible_state(rig, source_effect_id)
+    # A duplicated (MULTI) effect switches only the selected instance; its
+    # other instances keep their own settings.
+    source_instances = [
+        _fbp_effect_ref_instance_id(token)
+        for token in _fbp_mixed_effect_tokens(rig)
+        if _fbp_effect_ref_effect_id(token) == source_effect_id
+    ]
+    source_instance = ""
+    if _fbp_effect_uses_multi_instances(source_effect_id) and source_instances:
+        active_instance = (
+            fbp_active_effect_instance_id(rig)
+            if fbp_active_effect_id(rig) == source_effect_id else ""
+        )
+        source_instance = (
+            active_instance if active_instance in source_instances
+            else source_instances[0]
+        )
+    partial = len(source_instances) > 1
+    source_ref = _fbp_effect_ref(source_effect_id, source_instance)
+
+    visible = fbp_effect_visible_state(rig, source_effect_id, source_instance)
+    render_visible = fbp_effect_render_visible_state(
+        rig, source_effect_id, source_instance
+    )
     solo_view = _fbp_effect_solo_view(source_effect_id)
     solo_before = tuple(fbp_effect_solo_ids(rig, solo_view))
     source_was_soloed = source_effect_id in solo_before
-    source_input = fbp_effect_input_source(rig, source_effect_id)
+    source_input = fbp_effect_input_source(rig, source_effect_id, source_instance)
     source_debug = fbp_effect_debug_mode(rig, source_effect_id)
-    attached_masks = tuple(fbp_masks_targeting_effect(rig, source_effect_id))
+    attached_masks = tuple(
+        fbp_masks_targeting_effect(rig, source_effect_id, source_instance)
+    )
     _fbp_store_family_variant_ramp(rig, source_effect_id)
 
-    _fbp_select_effect_row(rig, source_effect_id)
+    _fbp_select_effect_row(rig, source_effect_id, instance_id=source_instance)
     if not fbp_add_effect(
         rig, target_effect_id, sync_items=False, inherit_active_group=True
     ):
         return False
     # The variant takes over the source row's place in the stack.
     order = _fbp_mixed_effect_tokens(rig)
-    source_ref, target_ref = (
-        next((token for token in order if _fbp_effect_ref_effect_id(token) == effect_id), "")
-        for effect_id in (source_effect_id, target_effect_id)
+    target_ref = next(
+        (token for token in order if _fbp_effect_ref_effect_id(token) == target_effect_id),
+        "",
     )
     desired = _fbp_relative_effect_order(rig, (target_ref,), source_ref, "BEFORE")
     if desired and tuple(desired) != tuple(order):
@@ -25399,13 +25455,21 @@ def fbp_switch_effect_family_variant(rig, source_effect_id, target_effect_id):
     for mask_effect_id in attached_masks:
         fbp_set_effect_mask_target(rig, mask_effect_id, target_effect_id)
 
-    if not fbp_remove_effect(rig, source_effect_id, sync_items=False):
+    removed = (
+        fbp_remove_effect_instance(
+            rig, source_effect_id, source_instance, sync_items=False
+        )
+        if partial
+        else fbp_remove_effect(rig, source_effect_id, sync_items=False)
+    )
+    if not removed:
         fbp_remove_effect(rig, target_effect_id, sync_items=False)
         return False
     if source_was_soloed:
         desired_solo = {
             effect_id for effect_id in solo_before
-            if effect_id != source_effect_id and fbp_effect_is_active(rig, effect_id)
+            if (partial or effect_id != source_effect_id)
+            and fbp_effect_is_active(rig, effect_id)
         }
         desired_solo.add(target_effect_id)
         for effect_id in _fbp_effect_solo_candidates(rig, solo_view):

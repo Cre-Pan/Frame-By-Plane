@@ -2206,26 +2206,48 @@ def test_effect_family_variant_keeps_position(_module):
         assert order() == expected, (before, order())
         assert geo.fbp_effect_stack_v2_report(rig)["valid"]
 
-        # Two Wave variants on one layer: the operator replaces the clicked one.
-        registered = [cls for cls in geo.classes if cls.__name__ == "FBP_OT_SetEffectFamilyVariant"]
-        registered = [cls for cls in registered if not hasattr(bpy.types, cls.__name__)]
+        registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
         for cls in registered:
             bpy.utils.register_class(cls)
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
         try:
-            for obj in bpy.context.view_layer.objects:
-                obj.select_set(False)
-            rig.select_set(True)
-            bpy.context.view_layer.objects.active = rig
             with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
-                result = bpy.ops.fbp.set_effect_family_variant(
+                ops = bpy.ops.fbp
+                # Two Wave variants on one layer: the operator replaces the clicked one.
+                result = ops.set_effect_family_variant(
                     source_effect_id="BULGE_PINCH", target_effect_id="LENS_WARP",
                 )
+                assert result == {"FINISHED"}, result
+                expected = ["LENS_WARP" if effect_id == "BULGE_PINCH" else effect_id for effect_id in expected]
+                assert order() == expected, order()
+
+                # A duplicated effect switches only the selected instance.
+                assert ops.add_effect(effect_id="ADAPTIVE_THRESHOLD") == {"FINISHED"}
+                first = geo._fbp_effect_ref_instance_id(geo._fbp_mixed_effect_tokens(rig)[0])
+                assert ops.duplicate_effect_instance(
+                    effect_id="ADAPTIVE_THRESHOLD", instance_id=first,
+                ) == {"FINISHED"}
+                assert ops.select_effect(effect_id="ADAPTIVE_THRESHOLD", instance_id=first) == {"FINISHED"}
+                before = order()
+                assert before.count("ADAPTIVE_THRESHOLD") == 2, before
+                index = [
+                    geo._fbp_effect_ref_instance_id(token) for token in geo._fbp_mixed_effect_tokens(rig)
+                ].index(first)
+                assert ops.set_effect_family_variant(
+                    source_effect_id="ADAPTIVE_THRESHOLD", target_effect_id="EDGE_DETECT",
+                ) == {"FINISHED"}
+                tokens = geo._fbp_mixed_effect_tokens(rig)
+                assert order().count("ADAPTIVE_THRESHOLD") == 1, order()
+                assert order().count("EDGE_DETECT") == 1, order()
+                assert first not in [geo._fbp_effect_ref_instance_id(token) for token in tokens], tokens
+                assert order()[index] == "EDGE_DETECT", (before, order())
+                assert geo.fbp_effect_stack_v2_report(rig)["valid"]
         finally:
-            for cls in registered:
+            for cls in reversed(registered):
                 bpy.utils.unregister_class(cls)
-        assert result == {"FINISHED"}, result
-        expected = ["LENS_WARP" if effect_id == "BULGE_PINCH" else effect_id for effect_id in expected]
-        assert order() == expected, order()
     finally:
         for obj in reversed(owned):
             try:
@@ -2233,6 +2255,71 @@ def test_effect_family_variant_keeps_position(_module):
             except (ReferenceError, RuntimeError):
                 pass
     return {"order": expected}
+
+
+def test_effect_duplicate_placement(_module):
+    """A duplicated effect appears directly above its source, in its group."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Effect Duplicate Placement")
+    owned = [rig, *rig.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+
+    def refs():
+        return list(geo._fbp_mixed_effect_tokens(rig))
+
+    def group_of(ref):
+        effect_id, instance_id = geo._fbp_effect_ref_parts(ref)
+        return geo.fbp_effect_group_id_for_rig(rig, effect_id, instance_id=instance_id, normalize=False)
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            ops = bpy.ops.fbp
+            for effect_id in ("HUE_SATURATION", "ADAPTIVE_THRESHOLD", "VIGNETTE", "POSTERIZE"):
+                assert ops.add_effect(effect_id=effect_id) == {"FINISHED"}, effect_id
+            source = next(ref for ref in refs() if ref.startswith("ADAPTIVE_THRESHOLD"))
+            assert ops.duplicate_effect_instance(
+                effect_id="ADAPTIVE_THRESHOLD", instance_id=geo._fbp_effect_ref_instance_id(source),
+            ) == {"FINISHED"}
+            order = refs()
+            copy = order[order.index(source) - 1]
+            assert copy.startswith("ADAPTIVE_THRESHOLD") and copy != source, order
+
+            # Group Vignette with the two Adaptive Threshold rows, then copy the
+            # top member: the copy stays inside the group.
+            ops.set_effect_selection(mode="NONE")
+            for index, ref in enumerate((copy, source, next(r for r in refs() if r.startswith("VIGNETTE")))):
+                effect_id, instance_id = geo._fbp_effect_ref_parts(ref)
+                assert ops.select_effect(
+                    effect_id=effect_id, instance_id=instance_id, use_ctrl=bool(index),
+                ) == {"FINISHED"}
+            assert ops.create_effect_group() == {"FINISHED"}
+            vignette = next(ref for ref in refs() if ref.startswith("VIGNETTE"))
+            group_id = group_of(vignette)
+            assert group_id
+            assert ops.duplicate_effect_instance(
+                effect_id="VIGNETTE", instance_id=geo._fbp_effect_ref_instance_id(vignette),
+            ) == {"FINISHED"}
+            order = refs()
+            vignette_copy = order[order.index(vignette) - 1]
+            assert vignette_copy.startswith("VIGNETTE") and vignette_copy != vignette, order
+            assert group_of(vignette_copy) == group_id
+            assert not group_of(next(ref for ref in order if ref.startswith("POSTERIZE")))
+            assert geo.fbp_effect_stack_v2_report(rig)["valid"]
+    finally:
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"rows": len(order)}
 
 
 def _effect_stage_materials(geo, rig):
@@ -3949,6 +4036,7 @@ def run_background():
             ("effect_render_visibility_cycles", test_effect_render_visibility_cycles),
             ("effect_global_mask_hide_cycles", test_effect_global_mask_hide_cycles),
             ("effect_family_variant_keeps_position", test_effect_family_variant_keeps_position),
+            ("effect_duplicate_placement", test_effect_duplicate_placement),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
