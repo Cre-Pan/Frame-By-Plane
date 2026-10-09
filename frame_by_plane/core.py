@@ -2496,7 +2496,13 @@ def fbp_render_guard_complete(scene):
             is_fbp_child = False
         if not is_fbp_child:
             # Generic headless sessions may not return to an event loop after
-            # rendering. Retain the historical process-local cleanup contract.
+            # rendering, and a blocking headless render has already finished
+            # here. Restore render-only effect states now, then clear the
+            # process-local session even if a value could not be restored.
+            try:
+                _fbp_restore_render_session_state(scene)
+            except Exception as exc:
+                fbp_warn("Could not restore effect state after headless render", exc)
             _fbp_clear_render_runtime_state()
             return
     now = time.monotonic()

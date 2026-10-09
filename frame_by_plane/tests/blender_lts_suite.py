@@ -2153,6 +2153,196 @@ def test_effect_stack_copy_preset_fidelity(_module):
     return detail
 
 
+def _effect_stage_materials(geo, rig):
+    """Return ``{modifier name: [(socket, shader effect ids)]}`` for material inputs."""
+    result = {}
+    for modifier in geo._fbp_plane(rig).modifiers:
+        node_group = getattr(modifier, "node_group", None)
+        if getattr(modifier, "type", "") != "NODES" or node_group is None:
+            continue
+        for item in node_group.interface.items_tree:
+            if (
+                getattr(item, "in_out", "") != "INPUT"
+                or getattr(item, "socket_type", "") != "NodeSocketMaterial"
+            ):
+                continue
+            material = geo._fbp_modifier_input_get(modifier, item.identifier)
+            if material is not None:
+                result.setdefault(modifier.name, []).append((item.name, material))
+    return result
+
+
+def test_effect_stack_evaluation_order(_module):
+    """Each row is built only from the rows below it in the visible stack."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Effect Evaluation Order")
+    owned = [rig, *rig.children_recursive]
+    try:
+        for effect_id in ("HUE_SATURATION", "BRIGHTNESS_CONTRAST", "PAPER_SHARDS", "VIGNETTE"):
+            assert geo.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+        tokens = {geo._fbp_effect_ref_effect_id(token): token for token in geo._fbp_mixed_effect_tokens(rig)}
+        # UI top -> bottom: a color effect above a Mesh effect that reads color.
+        desired = [tokens[name] for name in ("VIGNETTE", "PAPER_SHARDS", "BRIGHTNESS_CONTRAST", "HUE_SATURATION")]
+        assert geo._fbp_apply_mixed_effect_order(rig, desired)
+        mesh = geo.fbp_find_effect_modifier(rig, "PAPER_SHARDS")
+        consumed = [
+            sorted(geo._fbp_shader_effect_id(node) for node in geo._fbp_shader_effect_nodes(material))
+            for _socket, material in _effect_stage_materials(geo, rig).get(mesh.name, ())
+        ]
+        assert consumed, "Paper Shards must read the cumulative lower-stack material"
+        for effect_ids in consumed:
+            assert effect_ids == ["BRIGHTNESS_CONTRAST", "HUE_SATURATION"], effect_ids
+
+        # Hiding a lower row must also reach the copied material the Mesh row reads.
+        assert geo.fbp_set_effect_visible(rig, "BRIGHTNESS_CONTRAST", False)
+        for _socket, material in _effect_stage_materials(geo, rig).get(mesh.name, ()):
+            for node in geo._fbp_shader_effect_nodes(material, effect_id="BRIGHTNESS_CONTRAST"):
+                assert node.mute, "hidden lower effect must be muted for the Mesh row"
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"mesh_inputs": len(consumed)}
+
+
+def test_effect_render_visibility_contract(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Effect Render Visibility")
+    owned = [rig, *rig.children_recursive]
+
+    def mutes():
+        state = {}
+        for material in geo._fbp_plane_materials(rig):
+            for node in geo._fbp_shader_effect_nodes(material):
+                state[(material.name, node.name)] = node.mute
+        for modifier_name, inputs in _effect_stage_materials(geo, rig).items():
+            for socket_name, material in inputs:
+                for node in geo._fbp_shader_effect_nodes(material):
+                    state[(modifier_name, socket_name, node.name)] = node.mute
+        return state
+
+    try:
+        for effect_id in ("HUE_SATURATION", "SWIRL", "MIRROR", "VIGNETTE"):
+            assert geo.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+        first_vignette = geo.effect_instance_id(
+            geo._fbp_find_shader_effect_nodes_for_rig(rig, "VIGNETTE")[0]
+        )
+        assert geo.fbp_duplicate_effect_instance(rig, "VIGNETTE", first_vignette)
+        second_vignette = next(
+            geo.effect_instance_id(node)
+            for node in geo._fbp_find_shader_effect_nodes_for_rig(rig, "VIGNETTE")
+            if geo.effect_instance_id(node) != first_vignette
+        )
+        # Whole-effect toggle on a MULTI effect, one exact instance, and a SINGLE effect.
+        geo.fbp_set_effect_render_visible(rig, "HUE_SATURATION", False)
+        geo.fbp_set_effect_render_visible(rig, "VIGNETTE", False, instance_id=second_vignette)
+        geo.fbp_set_effect_render_visible(rig, "SWIRL", False)
+        before = mutes()
+        assert not any(before.values()), "render-only toggles must not hide the viewport"
+
+        backup = geo.fbp_effect_render_guard_pre(scene=bpy.context.scene, rigs=[rig])
+        during = mutes()
+        hidden = {"HUE_SATURATION", "SWIRL"}
+        for node in geo._fbp_find_shader_effect_nodes_for_rig(rig, "VIGNETTE"):
+            expected = geo.effect_instance_id(node) == second_vignette
+            assert node.mute is expected, (node.name, node.mute)
+        for effect_id in hidden:
+            for node in geo._fbp_find_shader_effect_nodes_for_rig(rig, effect_id):
+                assert node.mute, f"{effect_id} must be hidden in the render"
+        composite_mutes = {key: value for key, value in during.items() if len(key) == 3}
+        assert composite_mutes and any(composite_mutes.values()), (
+            "Mesh-effect composite materials must mirror render-only mutes"
+        )
+
+        assert geo.fbp_effect_render_guard_post(backup) == []
+        after = mutes()
+        assert after == before, (
+            "render restore must return every node to its viewport state",
+            {key: (before.get(key), after.get(key)) for key in set(before) | set(after) if before.get(key) != after.get(key)},
+        )
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"render_backup_entries": len(backup)}
+
+
+def test_effect_render_visibility_cycles(_module):
+    """Render real pixels: a render-hidden effect must not reach the image."""
+    if (
+        os.environ.get("FBP_TEST_SKIP_NATIVE_RENDER", "") == "1"
+        and os.environ.get("FBP_TEST_CYCLES_RENDER", "") != "1"
+    ):
+        raise SkipTest("Native render disabled; set FBP_TEST_CYCLES_RENDER=1 for the Cycles CPU check")
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Effect Render Pixels")
+    owned = [rig, *rig.children_recursive]
+    camera = bpy.data.objects.new("FBP Render Pixels Camera", bpy.data.cameras.new("FBP Render Pixels Camera"))
+    scene.collection.objects.link(camera)
+    camera.location = (0.0, -6.0, 0.0)
+    camera.rotation_euler = (math.pi / 2.0, 0.0, 0.0)
+    previous = {
+        "camera": scene.camera, "engine": scene.render.engine,
+        "x": scene.render.resolution_x, "y": scene.render.resolution_y,
+        "percentage": scene.render.resolution_percentage, "filepath": scene.render.filepath,
+    }
+    hidden_objects = [obj for obj in scene.objects if obj not in owned and not obj.hide_render]
+    output = WORKDIR / "fbp_effect_render_pixels.png"
+
+    def render_center():
+        bpy.ops.render.render(write_still=True)
+        image = bpy.data.images.load(str(output), check_existing=False)
+        try:
+            width, height = image.size
+            index = ((height // 2) * width + width // 2) * 4
+            return tuple(image.pixels[index:index + 3])
+        finally:
+            bpy.data.images.remove(image)
+
+    try:
+        for obj in hidden_objects:
+            obj.hide_render = True
+        scene.camera = camera
+        scene.render.engine = "CYCLES"
+        scene.cycles.device = "CPU"
+        scene.cycles.samples = 4
+        scene.render.resolution_x, scene.render.resolution_y = 32, 24
+        scene.render.resolution_percentage = 100
+        scene.render.filepath = str(output)
+        assert geo.fbp_add_effect(rig, "INVERT", select_object_mask_helper=False, inherit_active_group=False)
+        inverted = render_center()
+        geo.fbp_set_effect_render_visible(rig, "INVERT", False)
+        hidden = render_center()
+        # The fixture is (0.2, 0.4, 0.8): Invert makes red brighter than blue.
+        assert inverted[0] > inverted[2], inverted
+        assert hidden[2] > hidden[0], f"render-hidden Invert still rendered: {hidden}"
+        nodes = geo._fbp_find_shader_effect_nodes_for_rig(rig, "INVERT")
+        assert nodes and not any(node.mute for node in nodes), "viewport state must be restored"
+    finally:
+        scene.camera = previous["camera"]
+        scene.render.engine = previous["engine"]
+        scene.render.resolution_x, scene.render.resolution_y = previous["x"], previous["y"]
+        scene.render.resolution_percentage = previous["percentage"]
+        scene.render.filepath = previous["filepath"]
+        for obj in hidden_objects:
+            obj.hide_render = False
+        for obj in reversed([*owned, camera]):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"inverted": [round(value, 3) for value in inverted], "hidden": [round(value, 3) for value in hidden]}
+
+
 def test_effect_operator_cleanup_contract(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     rig = _effect_stack_fixture_rig("FBP Effect Operator Cleanup")
@@ -3550,6 +3740,9 @@ def run_background():
             ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),
             ("effect_stack_reorder_contract", test_effect_stack_reorder_contract),
             ("effect_mixed_stack_contract", test_effect_mixed_stack_contract),
+            ("effect_stack_evaluation_order", test_effect_stack_evaluation_order),
+            ("effect_render_visibility_contract", test_effect_render_visibility_contract),
+            ("effect_render_visibility_cycles", test_effect_render_visibility_cycles),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),

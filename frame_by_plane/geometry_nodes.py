@@ -1005,6 +1005,26 @@ def _fbp_mask_target_map(rig):
 
 
 
+def _fbp_release_masks_targeting(rig, token, mask_effect_ids=None):
+    """Return local masks whose stored receiver is ``token`` to the layer.
+
+    Compare the stored reference, not the effective one: once the receiver
+    instance is gone the effective target already falls back to LAYER, which
+    would leave a dangling stored reference behind.
+    """
+    if mask_effect_ids is None:
+        mask_effect_ids = [
+            effect_id for effect_id in FBP_EFFECT_REGISTRY
+            if _fbp_effect_is_local_mask(effect_id)
+        ]
+    released = False
+    for mask_effect_id in tuple(mask_effect_ids):
+        if fbp_effect_mask_raw_target_ref(rig, mask_effect_id) == token:
+            fbp_set_effect_mask_target(rig, mask_effect_id, "LAYER")
+            released = True
+    return released
+
+
 def fbp_masks_targeting_effect(rig, effect_id, instance_id=""):
     effect_id = fbp_normalize_effect_id(effect_id)
     if not rig or not effect_id:
@@ -14207,6 +14227,9 @@ def fbp_duplicate_effect_instance(
                 )
             _fbp_invalidate_effect_ids_cache(rig)
             fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
+            # A mixed Image/Mesh stack needs a stage and composite materials
+            # that include the new instance, exactly as after Add Effect.
+            _fbp_refresh_mixed_pipeline(rig)
             if sync_items:
                 fbp_sync_effect_items(rig)
                 try:
@@ -14451,9 +14474,7 @@ def fbp_remove_effect_instance(rig, effect_id, instance_id, *, sync_items=True):
             _fbp_clear_effect_visibility(rig, token)
             _fbp_clear_effect_render_visibility(rig, token)
             _fbp_clear_effect_input_source(rig, effect_id, instance_id)
-            for mask_effect_id in targeted_masks:
-                if fbp_effect_mask_target_ref(rig, mask_effect_id) == token:
-                    fbp_set_effect_mask_target(rig, mask_effect_id, "LAYER")
+            _fbp_release_masks_targeting(rig, token, targeted_masks)
             _fbp_reconcile_effect_solo_after_removal(
                 rig, effect_id, solo_before, removed_instance_id=instance_id
             )
@@ -14485,6 +14506,8 @@ def fbp_remove_effect_instance(rig, effect_id, instance_id, *, sync_items=True):
     fbp_retire_effect_instance_state(rig, effect_id, instance_id)
     _fbp_invalidate_effect_ids_cache(rig)
     fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
+    # Drop the removed instance's mixed-stack stage and composite references.
+    _fbp_refresh_mixed_pipeline(rig)
     if sync_items:
         fbp_sync_effect_items(rig)
     return True
@@ -14518,9 +14541,7 @@ def fbp_recover_effect_instance_removal(rig, effect_id, instance_id):
         [item for item in _fbp_get_rig_shader_stage_order(rig, stage) if item != token],
     )
     fbp_set_effect_group_id(rig, effect_id, "", instance_id=instance_id)
-    for mask_effect_id in fbp_masks_targeting_effect(rig, effect_id, instance_id):
-        if fbp_effect_mask_target_ref(rig, mask_effect_id) == token:
-            fbp_set_effect_mask_target(rig, mask_effect_id, "LAYER")
+    _fbp_release_masks_targeting(rig, token)
     solo_view = _fbp_effect_solo_view(effect_id)
     _fbp_store_effect_solo_ids(
         rig,
@@ -14536,6 +14557,7 @@ def fbp_recover_effect_instance_removal(rig, effect_id, instance_id):
     fbp_retire_effect_instance_state(rig, effect_id, instance_id)
     _fbp_invalidate_effect_ids_cache(rig)
     fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
+    _fbp_refresh_mixed_pipeline(rig)
     fbp_sync_effect_items(rig)
     return not bool(
         _fbp_find_shader_effect_nodes_for_rig(
@@ -19214,7 +19236,7 @@ def fbp_effect_visible_state(rig, effect_id, instance_id=""):
     return bool(nodes) and all(not bool(getattr(node, "mute", False)) for node in nodes)
 
 
-def fbp_set_effect_visible(rig, effect_id, visible, instance_id=""):
+def fbp_set_effect_visible(rig, effect_id, visible, instance_id="", *, refresh_mixed=True):
     effect_id = fbp_normalize_effect_id(effect_id)
     definition = fbp_effect_definition(effect_id)
     visible = bool(visible)
@@ -19285,6 +19307,10 @@ def fbp_set_effect_visible(rig, effect_id, visible, instance_id=""):
         changed = _fbp_refresh_extrude_pixel_dependency(
             rig, force=True
         ) or changed
+    if changed and refresh_mixed:
+        # Mesh effects and mixed-stack stages read copied composite materials;
+        # mirror the new mute state so hiding an effect is visible there too.
+        _fbp_refresh_geometry_source_materials(rig)
     return changed
 
 
@@ -19470,8 +19496,10 @@ def fbp_toggle_effect_solo(rig, target_ids):
         effect_id, instance_id = _fbp_effect_ref_parts(token)
         state = token in current if current else True
         changed = fbp_set_effect_visible(
-            rig, effect_id, state, instance_id=instance_id
+            rig, effect_id, state, instance_id=instance_id, refresh_mixed=False
         ) or changed
+    if changed:
+        _fbp_refresh_geometry_source_materials(rig)
     changed = _fbp_store_effect_solo_ids(rig, view, current) or changed
     return changed
 
@@ -19561,6 +19589,15 @@ def fbp_set_effect_render_visible(rig, effect_id, visible, instance_id=""):
     instance_id = str(instance_id or "")
     storage_id = effect_instance_token(effect_id, instance_id) if instance_id else effect_id
     changed = _fbp_store_effect_render_visibility(rig, storage_id, visible)
+    if not instance_id and _fbp_effect_uses_multi_instances(effect_id):
+        # Renders read each instance's own state. A whole-effect toggle (multi
+        # layer selection, Copy to Selected) must therefore reach every instance.
+        for node in _fbp_find_shader_effect_nodes_for_rig(rig, effect_id):
+            node_instance_id = effect_instance_id(node)
+            if node_instance_id:
+                changed = _fbp_store_effect_render_visibility(
+                    rig, effect_instance_token(effect_id, node_instance_id), visible
+                ) or changed
     if definition.get("kind") == "GEOMETRY":
         modifier = fbp_find_effect_modifier(rig, effect_id)
         if modifier and bool(getattr(modifier, "show_render", True)) != visible:
@@ -19644,6 +19681,19 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
         except FBP_DATA_ERRORS:
             _fbp_invalidate_effect_runtime_profile(rig)
         local_mask_target_ids = set()
+        # The runtime profile only lists owners that need per-frame work, so
+        # render visibility and render quality scan every effect owner here.
+        shader_nodes = {}
+        for material in _fbp_plane_materials(rig):
+            for node in _fbp_shader_effect_nodes(material):
+                shader_nodes.setdefault(_fbp_shader_effect_id(node), []).append(node)
+        geometry_modifiers = {}
+        plane = _fbp_plane(rig, repair=False)
+        for modifier in tuple(getattr(plane, "modifiers", ()) or ()):
+            modifier_effect_id = _fbp_geometry_effect_id_for_modifier(modifier)
+            if modifier_effect_id:
+                geometry_modifiers.setdefault(modifier_effect_id, modifier)
+        muted_shader_nodes = False
         for effect_id in profile.get("effect_ids", ()):
             definition = fbp_effect_definition(effect_id)
             if effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
@@ -19666,7 +19716,7 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
                         pass
                 continue
             if definition.get("kind") == "SHADER":
-                for node in profile.get("shader_nodes", {}).get(effect_id, ()):
+                for node in shader_nodes.get(effect_id, ()):
                     try:
                         node_instance_id = effect_instance_id(node)
                         storage_id = (
@@ -19685,6 +19735,7 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
                             if locator is not None:
                                 backup.append(("NODE_MUTE_V2", *locator, current_mute))
                             node.mute = target_mute
+                            muted_shader_nodes = True
                             if _fbp_effect_is_local_mask(effect_id):
                                 local_target = fbp_effect_mask_target(rig, effect_id)
                                 if local_target != "LAYER":
@@ -19695,7 +19746,7 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
             contracts = _fbp_quality_contracts(definition)
             if not contracts:
                 continue
-            modifier = profile.get("geometry_modifiers", {}).get(effect_id)
+            modifier = geometry_modifiers.get(effect_id)
             node_group = getattr(modifier, "node_group", None) if modifier else None
             if not modifier or not node_group:
                 continue
@@ -19739,6 +19790,12 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
                 "LOCAL_MASK_REBUILD_V2", rig_key, rig_name,
                 tuple(local_mask_target_ids),
             ))
+        if muted_shader_nodes and geometry_modifiers:
+            # Mesh effects read copied composite materials; mirror the render
+            # mute state into them now and again after the mutes are restored.
+            _fbp_refresh_geometry_source_materials(rig)
+            rig_key, rig_name = _fbp_render_backup_rig_locator(rig)
+            backup.append(("GEOMETRY_SOURCE_REFRESH_V2", rig_key, rig_name))
     return backup
 
 
@@ -19768,6 +19825,11 @@ def fbp_effect_render_guard_post(backup):
                 constraint = getattr(rig, "constraints", None).get(constraint_name) if rig is not None else None
                 if constraint is not None and bool(getattr(constraint, "mute", False)) != bool(muted):
                     constraint.mute = bool(muted)
+            elif tag == "GEOMETRY_SOURCE_REFRESH_V2":
+                _tag, rig_key, rig_name = item
+                rig = _fbp_render_backup_resolve_rig(rig_key, rig_name)
+                if rig is not None:
+                    _fbp_refresh_geometry_source_materials(rig)
             elif tag == "LOCAL_MASK_REBUILD_V2":
                 _tag, rig_key, rig_name, target_ids = item
                 rig = _fbp_render_backup_resolve_rig(rig_key, rig_name)
@@ -30245,6 +30307,12 @@ def _fbp_remove_mixed_shader_stages(plane):
             or changed
         )
     return changed
+
+
+def _fbp_refresh_mixed_pipeline(rig):
+    """Re-sync mixed Image/Mesh stages after a structural instance change."""
+    changed = _fbp_sync_mixed_effect_pipeline(rig)
+    return _fbp_refresh_geometry_source_materials(rig) or changed
 
 
 def _fbp_sync_mixed_effect_pipeline(rig):
