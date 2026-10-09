@@ -2029,6 +2029,130 @@ def test_effect_mixed_stack_contract(_module):
     return {"stage_modifiers": len(stages), "mirrored_composites": len(mirrored)}
 
 
+def _flush_fbp_safe_tasks(rounds=80):
+    """Run queued FBP safe tasks the way Blender's timer loop would."""
+    safe_tasks = importlib.import_module(f"{PACKAGE}.safe_tasks")
+    dispatcher = safe_tasks.scheduled_dispatcher_callback()
+    for _index in range(rounds):
+        delay = dispatcher()
+        if not safe_tasks.scheduled_task_count():
+            return
+        time.sleep(min(float(delay or 0.02), 0.2))
+
+
+def test_effect_stack_copy_preset_fidelity(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    registry = importlib.import_module(f"{PACKAGE}.effects_registry")
+    rigs = [_effect_stack_fixture_rig(f"FBP Effect Copy {name}") for name in ("Source", "Paste", "Preset")]
+    source, pasted, preset = rigs
+    owned = [obj for rig in rigs for obj in (rig, *rig.children_recursive)]
+    registered = []
+    for cls in geo.classes:
+        if not hasattr(bpy.types, cls.__name__):
+            bpy.utils.register_class(cls)
+            registered.append(cls)
+
+    def override(rig):
+        return bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig])
+
+    def rows(rig):
+        return [(item.effect_id, item.instance_id) for item in rig.fbp_effects if item.effect_id]
+
+    def order(rig):
+        return [geo._fbp_effect_ref_effect_id(token) for token in geo._fbp_mixed_effect_tokens(rig)]
+
+    def grouped(rig):
+        return [
+            (effect_id, bool(geo.fbp_effect_group_id_for_rig(
+                rig, effect_id, instance_id=instance_id, normalize=False,
+            )))
+            for effect_id, instance_id in rows(rig)
+        ]
+
+    def node_values(rig):
+        result = []
+        for material in geo._fbp_plane_materials(rig):
+            for token in geo._fbp_mixed_effect_tokens(rig):
+                effect_id, instance_id = geo._fbp_effect_ref_parts(token)
+                for node in geo._fbp_shader_effect_nodes(
+                    material, effect_id=effect_id, instance_id=instance_id,
+                ):
+                    result.append((effect_id, [
+                        round(float(socket.default_value), 4) for socket in node.inputs
+                        if isinstance(getattr(socket, "default_value", None), (int, float))
+                    ]))
+        return result
+
+    try:
+        ops = bpy.ops.fbp
+        with override(source):
+            for effect_id in ("HUE_SATURATION", "SWIRL", "MIRROR", "VIGNETTE", "POSTERIZE"):
+                assert ops.add_effect(effect_id=effect_id) == {"FINISHED"}, effect_id
+            vignette = next(iid for eid, iid in rows(source) if eid == "VIGNETTE")
+            assert ops.duplicate_effect_instance(effect_id="VIGNETTE", instance_id=vignette) == {"FINISHED"}
+        _flush_fbp_safe_tasks()
+
+        # Edit every row the way the panel does: activate it, then change values.
+        for index, (effect_id, instance_id) in enumerate(rows(source)):
+            with override(source):
+                ops.select_effect(effect_id=effect_id, instance_id=instance_id)
+            _flush_fbp_safe_tasks()
+            for prop_name in registry.fbp_effect_definition(effect_id).get("property_map", {}):
+                prop = source.bl_rna.properties.get(prop_name)
+                if prop is None or prop.type != "FLOAT" or getattr(prop, "array_length", 0):
+                    continue
+                low, high = max(prop.soft_min, -2.0), min(prop.soft_max, 2.0)
+                setattr(source, prop_name, low + (high - low) * (0.2 + 0.1 * index))
+            _flush_fbp_safe_tasks()
+
+        # Group Posterize with its adjacent Vignette; the other Vignette stays out.
+        tokens = geo._fbp_mixed_effect_tokens(source)
+        posterize = order(source).index("POSTERIZE")
+        neighbour = next(
+            tokens[index] for index in (posterize - 1, posterize + 1)
+            if 0 <= index < len(tokens) and order(source)[index] == "VIGNETTE"
+        )
+        with override(source):
+            ops.set_effect_selection(mode="NONE")
+            ops.select_effect(
+                effect_id="POSTERIZE", instance_id=geo._fbp_effect_ref_instance_id(tokens[posterize]),
+            )
+            ops.select_effect(
+                effect_id="VIGNETTE", instance_id=geo._fbp_effect_ref_instance_id(neighbour),
+                use_ctrl=True,
+            )
+            assert ops.create_effect_group() == {"FINISHED"}
+        groups_before = grouped(source)
+        assert sum(flag for effect_id, flag in groups_before if effect_id == "VIGNETTE") == 1, groups_before
+
+        snapshot = geo.fbp_capture_effect_stack_snapshot(source)
+        assert grouped(source) == groups_before, "capturing a stack must not regroup the source"
+
+        with override(source):
+            assert ops.copy_effect_stack() == {"FINISHED"}
+        with override(pasted):
+            assert ops.paste_effect_stack() == {"FINISHED"}
+        _flush_fbp_safe_tasks()
+        result = geo.fbp_apply_effect_stack_snapshot(preset, snapshot, mode="REPLACE")
+        assert result["success"], result
+        _flush_fbp_safe_tasks()
+
+        for label, target in (("paste", pasted), ("preset", preset)):
+            assert order(target) == order(source), (label, order(source), order(target))
+            assert node_values(target) == node_values(source), label
+            assert grouped(target) == grouped(source), (label, grouped(source), grouped(target))
+        detail = {"rows": len(rows(source)), "grouped": sum(flag for _eid, flag in groups_before)}
+    finally:
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return detail
+
+
 def test_effect_operator_cleanup_contract(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     rig = _effect_stack_fixture_rig("FBP Effect Operator Cleanup")
@@ -3427,6 +3551,7 @@ def run_background():
             ("effect_stack_reorder_contract", test_effect_stack_reorder_contract),
             ("effect_mixed_stack_contract", test_effect_mixed_stack_contract),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
+            ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("preview_scope_policy", test_preview_scope_policy),
             ("irreversible_action_contracts", test_irreversible_action_contracts),
