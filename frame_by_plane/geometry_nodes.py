@@ -7733,7 +7733,7 @@ def _fbp_geometry_composite_material(
                 ):
                     continue
                 try:
-                    if hasattr(node, "image"):
+                    if hasattr(node, "image") and node.image != source_node.image:
                         node.image = source_node.image
                     for target_input in getattr(node, "inputs", ()):
                         source_input = _fbp_node_socket(
@@ -7745,13 +7745,7 @@ def _fbp_geometry_composite_material(
                             or not hasattr(target_input, "default_value")
                         ):
                             continue
-                        value = source_input.default_value
-                        target_input.default_value = (
-                            tuple(value)
-                            if hasattr(value, "__len__")
-                            and not isinstance(value, str)
-                            else value
-                        )
+                        _fbp_copy_socket_default(source_input, target_input)
                     for target_output in getattr(node, "outputs", ()):
                         source_output = _fbp_node_socket(
                             getattr(source_node, "outputs", ()),
@@ -7762,13 +7756,7 @@ def _fbp_geometry_composite_material(
                             or not hasattr(target_output, "default_value")
                         ):
                             continue
-                        value = source_output.default_value
-                        target_output.default_value = (
-                            tuple(value)
-                            if hasattr(value, "__len__")
-                            and not isinstance(value, str)
-                            else value
-                        )
+                        _fbp_copy_socket_default(source_output, target_output)
                     source_ramp = getattr(source_node, "color_ramp", None)
                     target_ramp = getattr(node, "color_ramp", None)
                     if source_ramp is not None and target_ramp is not None:
@@ -7779,9 +7767,13 @@ def _fbp_geometry_composite_material(
                         for source_element, target_element in zip(
                             source_ramp.elements, target_ramp.elements
                         ):
-                            target_element.position = source_element.position
-                            target_element.color = tuple(source_element.color)
-                        target_ramp.interpolation = source_ramp.interpolation
+                            if target_element.position != source_element.position:
+                                target_element.position = source_element.position
+                            color = tuple(source_element.color)
+                            if tuple(target_element.color) != color:
+                                target_element.color = color
+                        if target_ramp.interpolation != source_ramp.interpolation:
+                            target_ramp.interpolation = source_ramp.interpolation
                 except FBP_DATA_ERRORS:
                     continue
             source_nodes = {
@@ -7795,7 +7787,8 @@ def _fbp_geometry_composite_material(
                     continue
                 _fbp_copy_shader_instance_inputs(source_node, node)
                 try:
-                    node.mute = bool(source_node.mute)
+                    if node.mute != bool(source_node.mute):
+                        node.mute = bool(source_node.mute)
                 except FBP_DATA_ERRORS:
                     pass
             boundary_image = existing.node_tree.nodes.get(
@@ -13517,6 +13510,24 @@ def fbp_apply_shader_effect(rig, effect_id, *, rebuild=True, sync_items=True):
 
 
 
+def _fbp_copy_socket_default(source, target):
+    """Copy one socket ``default_value`` only when it differs.
+
+    Skipping identical writes avoids tagging the material for re-evaluation
+    every time a composite or duplicate is refreshed from its source.
+    """
+    value = source.default_value
+    if hasattr(value, "__len__") and not isinstance(value, str):
+        value = tuple(value)
+        current = tuple(target.default_value)
+    else:
+        current = target.default_value
+    if current == value:
+        return False
+    target.default_value = value
+    return True
+
+
 def _fbp_copy_shader_instance_inputs(source_node, target_node):
     """Copy editable group-node input values without copying links."""
     if source_node is None or target_node is None:
@@ -13530,11 +13541,7 @@ def _fbp_copy_shader_instance_inputs(source_node, target_node):
         if source is None or not hasattr(target, "default_value"):
             continue
         try:
-            value = getattr(source, "default_value")
-            if hasattr(value, "__len__") and not isinstance(value, str):
-                value = tuple(value)
-            target.default_value = value
-            changed = True
+            changed = _fbp_copy_socket_default(source, target) or changed
         except FBP_DATA_ERRORS:
             continue
     return changed
@@ -18500,8 +18507,27 @@ def _fbp_geometry_effect_id_for_modifier(modifier):
             return declared
     except FBP_DATA_ERRORS:
         pass
+    if not node_group:
+        return ""
+    # Same rules as _fbp_group_matches, with the group tags read once instead
+    # of once per registered Mesh effect for every unmanaged modifier.
+    try:
+        tagged_effect = fbp_normalize_effect_id(node_group.get("fbp_effect_id", ""))
+        tagged_asset = str(node_group.get("fbp_effect_asset_id", "") or "")
+        geometry_asset = _fbp_node_group_asset_id(node_group)
+    except FBP_DATA_ERRORS:
+        return ""
+    if not (tagged_effect or tagged_asset or geometry_asset):
+        return ""
     for effect_id, definition in FBP_EFFECT_REGISTRY.items():
-        if definition.get("kind") == "GEOMETRY" and _fbp_group_matches(node_group, effect_id):
+        if definition.get("kind") != "GEOMETRY":
+            continue
+        asset_id = str(definition.get("asset_id", "") or "")
+        if not asset_id:
+            continue
+        if tagged_asset == asset_id or geometry_asset == asset_id:
+            return effect_id
+        if not bool(definition.get("builtin", False)) and tagged_effect == effect_id:
             return effect_id
     return ""
 
@@ -30041,12 +30067,17 @@ def _fbp_remove_mixed_shader_stage_modifier(plane, modifier):
     return True
 
 
-def _fbp_mixed_shader_tokens_through(rig, stage_token):
-    """Return shader groups evaluated from the UI bottom through one row."""
+def _fbp_mixed_shader_tokens_through(rig, stage_token, order=None):
+    """Return shader groups evaluated from the UI bottom through one row.
+
+    ``order`` lets a caller that refreshes several stages reuse one
+    ``_fbp_mixed_effect_tokens`` result instead of rediscovering the stack.
+    """
     stage_token = str(stage_token or "")
     if stage_token == _FBP_MIXED_SHADER_STAGE_BASE:
         return ()
-    order = _fbp_mixed_effect_tokens(rig)
+    if order is None:
+        order = _fbp_mixed_effect_tokens(rig)
     if stage_token not in order:
         return ()
     suffix = order[order.index(stage_token):]
@@ -30059,8 +30090,8 @@ def _fbp_mixed_shader_tokens_through(rig, stage_token):
     )
 
 
-def _fbp_mixed_stage_material(rig, stage_token):
-    desired = _fbp_mixed_shader_tokens_through(rig, stage_token)
+def _fbp_mixed_stage_material(rig, stage_token, order=None):
+    desired = _fbp_mixed_shader_tokens_through(rig, stage_token, order)
     effect_id = (
         _fbp_effect_ref_effect_id(stage_token)
         if stage_token != _FBP_MIXED_SHADER_STAGE_BASE else ""
@@ -30080,10 +30111,13 @@ def _fbp_refresh_mixed_shader_stage_materials(rig):
     if plane is None:
         return False
     changed = False
+    order = None
     for modifier in _fbp_mixed_shader_stage_modifiers(plane):
         token = _fbp_mixed_shader_stage_token(modifier)
         node_group = getattr(modifier, "node_group", None)
-        material = _fbp_mixed_stage_material(rig, token)
+        if order is None:
+            order = _fbp_mixed_effect_tokens(rig)
+        material = _fbp_mixed_stage_material(rig, token, order)
         if node_group is None or material is None:
             continue
         changed = _fbp_set_modifier_input(

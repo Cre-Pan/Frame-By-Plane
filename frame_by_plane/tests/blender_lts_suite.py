@@ -1988,6 +1988,47 @@ def test_effect_stack_reorder_contract(_module):
     return {"effects": len(effects), "sort_stage_rebuilds": sort_rebuilds}
 
 
+def test_effect_mixed_stack_contract(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Effect Mixed Stack")
+    owned = [rig, *rig.children_recursive]
+    try:
+        for effect_id in ("HUE_SATURATION", "MIRROR", "VIGNETTE", "POSTERIZE"):
+            assert geo.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+        plane = geo._fbp_plane(rig)
+        identified = [geo._fbp_geometry_effect_id_for_modifier(modifier) for modifier in plane.modifiers]
+        assert identified.count("MIRROR") == 1, identified
+        stages = geo._fbp_mixed_shader_stage_modifiers(plane)
+        assert stages and all(geo._fbp_geometry_effect_id_for_modifier(stage) == "" for stage in stages)
+
+        # Composite stage materials mirror live values from the plane source.
+        source = geo._fbp_plane_source_material(rig)
+        source_node = geo._fbp_shader_effect_nodes(source, effect_id="HUE_SATURATION")[0]
+        socket = next(
+            item for item in source_node.inputs
+            if getattr(item, "type", "") == "VALUE" and not item.is_linked
+        )
+        socket.default_value = float(socket.default_value) + 0.25
+        geo._fbp_refresh_geometry_source_materials(rig)
+        mirrored = []
+        for material in bpy.data.materials:
+            if str(material.get("fbp_effect_composite_owner_id", "") or "") != geo._fbp_effect_stack_owner_id(rig):
+                continue
+            for node in geo._fbp_shader_effect_nodes(material, effect_id="HUE_SATURATION"):
+                mirrored.append(float(geo._fbp_node_socket(node.inputs, socket.name).default_value))
+        assert mirrored, "no composite contains Hue/Saturation"
+        assert all(abs(value - float(socket.default_value)) < 1e-6 for value in mirrored), mirrored
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"stage_modifiers": len(stages), "mirrored_composites": len(mirrored)}
+
+
 def test_effect_operator_cleanup_contract(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     rig = _effect_stack_fixture_rig("FBP Effect Operator Cleanup")
@@ -3384,6 +3425,7 @@ def run_background():
             ("gp_runtime_cache_cleanup", test_gp_runtime_cache_cleanup),
             ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),
             ("effect_stack_reorder_contract", test_effect_stack_reorder_contract),
+            ("effect_mixed_stack_contract", test_effect_mixed_stack_contract),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("preview_scope_policy", test_preview_scope_policy),
