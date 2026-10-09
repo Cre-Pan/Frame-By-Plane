@@ -3494,6 +3494,57 @@ def test_compositor(_module):
     }
 
 
+def test_compositor_scene_copy_isolation(_module):
+    """A copied scene must not render the source scene's shadow sources."""
+    compositor = importlib.import_module(f"{PACKAGE}.compositor")
+    sets = importlib.import_module(f"{PACKAGE}.compositor_sets")
+    scene = bpy.context.scene
+    rigs = [_effect_stack_fixture_rig(f"FBP Scene Copy {name}") for name in ("A", "B")]
+    owned = [obj for rig in rigs for obj in (rig, *rig.children_recursive)]
+    previous_preview = bool(scene.fbp_experimental_compositor)
+    was_managed = bool(scene.fbp_compositor_enabled)
+    layers_before = len(scene.fbp_compositor_layers)
+    copy = None
+
+    def foreign_roots(target):
+        token = compositor._scene_id(target)
+        return [
+            (view_layer.name, layer_collection.collection.name)
+            for view_layer in target.view_layers
+            if view_layer.get(compositor.FBP_COMPOSITOR_LAYER_TAG)
+            for layer_collection in compositor._walk_layer_collections(view_layer.layer_collection)
+            if layer_collection.collection.get(compositor.FBP_COMPOSITOR_ROOT_TAG)
+            and str(layer_collection.collection.get("fbp_compositor_scene_id", "")) != token
+            and not layer_collection.exclude
+        ]
+
+    try:
+        scene.fbp_experimental_compositor = True
+        compositor.fbp_auto_compositor_layers(scene)
+        compositor.fbp_sync_compositor(scene, context=bpy.context, activate_compositor=True)
+        copy = scene.copy()
+        assert sets.fbp_ensure_scene_copy_independence(copy)
+        compositor.fbp_sync_compositor(copy, context=bpy.context)
+        assert not foreign_roots(copy), foreign_roots(copy)
+        assert not foreign_roots(scene), foreign_roots(scene)
+        managed = sum(1 for layer in copy.view_layers if layer.get(compositor.FBP_COMPOSITOR_LAYER_TAG))
+    finally:
+        if copy is not None:
+            compositor.fbp_restore_compositor(copy, remove_generated=True)
+            bpy.data.scenes.remove(copy)
+        if not was_managed:
+            compositor.fbp_restore_compositor(scene, remove_generated=True)
+        while len(scene.fbp_compositor_layers) > layers_before:
+            scene.fbp_compositor_layers.remove(len(scene.fbp_compositor_layers) - 1)
+        scene.fbp_experimental_compositor = previous_preview
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"managed_layers": managed}
+
+
 def test_compositor_refresh_contract(_module):
     """Structural edits wait for Refresh unless Live Update is enabled."""
     scene = bpy.context.scene
@@ -4129,6 +4180,7 @@ def run_background():
             ("generic_mesh_group_contracts", test_generic_mesh_supported_group_contracts),
             ("generic_mesh_artist_modifier_preservation", test_generic_mesh_apply),
             ("compositor_artist_graph", test_compositor),
+            ("compositor_scene_copy_isolation", test_compositor_scene_copy_isolation),
             ("compositor_refresh_contract", test_compositor_refresh_contract),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),

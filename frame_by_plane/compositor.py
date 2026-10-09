@@ -500,39 +500,21 @@ def _collection_by_source_id(scene, source_id):
     return None
 
 
-def _is_layer_group(collection, rigs):
+def _is_layer_group(collection):
     if collection is None:
         return False
     try:
-        if bool(getattr(collection, "fbp_layer_group", False)):
-            return True
+        return bool(getattr(collection, "fbp_layer_group", False))
     except FBP_DATA_ERRORS:
-        pass
-    # Compatibility with groups created before the persistent marker existed:
-    # Ctrl+G changes the Layer List collection hint without physically relinking
-    # the rig. That mismatch is a reliable signature of a virtual group.
-    for rig in rigs:
-        if _primary_collection(rig) != collection:
-            continue
-        try:
-            if collection.objects.get(rig.name) != rig:
-                return True
-        except FBP_DATA_ERRORS:
-            continue
-    return False
+        return False
 
 
-def _top_layer_groups(scene, rigs, parent_map=None):
+def _top_layer_groups(scene, parent_map=None):
     parent_map = parent_map if parent_map is not None else _collection_parent_map(scene)
     groups = [
         collection for collection in _walk_collections(scene.collection)
-        if _is_layer_group(collection, rigs)
+        if _is_layer_group(collection)
     ]
-    for collection in groups:
-        try:
-            collection.fbp_layer_group = True
-        except FBP_DATA_ERRORS:
-            pass
     group_pointers = {int(collection.as_pointer()) for collection in groups}
     result = []
     for collection in groups:
@@ -634,7 +616,7 @@ def fbp_compositor_source_specs(scene, mode=None):
                 )
             specs.sort(key=lambda item: (item["order"], item["name"]), reverse=True)
             return tuple(specs)
-        groups = _top_layer_groups(scene, rigs, parent_map)
+        groups = _top_layer_groups(scene, parent_map)
         for rig in rigs:
             physical = _primary_collection(rig)
             hinted = bpy.data.collections.get(
@@ -926,6 +908,24 @@ def _ensure_shadow_root(scene):
             and str(collection.get("fbp_compositor_scene_id", "") or "") == scene_token
         ):
             return collection
+    # A copied scene receives a new id but keeps the source root: a Full Copy
+    # duplicated it (only this scene uses it, so adopt it), a Linked Copy
+    # shares the original scene's root (unlink it here; it stays there).
+    adopted = None
+    for collection in tuple(scene.collection.children):
+        if not bool(collection.get(FBP_COMPOSITOR_ROOT_TAG, False)):
+            continue
+        try:
+            shared = len(collection.users_scene) > 1
+        except FBP_DATA_ERRORS:
+            shared = True
+        if shared:
+            scene.collection.children.unlink(collection)
+        elif adopted is None:
+            collection["fbp_compositor_scene_id"] = scene_token
+            adopted = collection
+    if adopted is not None:
+        return adopted
     root = bpy.data.collections.new(f"FBP Compositor Sources • {_clean_name(scene.name)}")
     root[FBP_COMPOSITOR_ROOT_TAG] = True
     root["fbp_compositor_scene_id"] = scene_token
@@ -1087,7 +1087,11 @@ def _set_layer_collection_visibility(scene, view_layer, shadow_root, item):
                     for descendant in _walk_layer_collections(child):
                         descendant.exclude = False
             return
-        if bool(getattr(collection, "is_fbp_collection", False)):
+        if bool(getattr(collection, "is_fbp_collection", False)) or bool(
+            collection.get(FBP_COMPOSITOR_ROOT_TAG, False)
+        ):
+            # Another scene's (or a stale) shadow root would render its
+            # sources in every managed layer.
             layer_collection.exclude = True
             return
         layer_collection.exclude = False
@@ -1142,12 +1146,22 @@ def _sync_view_layers(scene, shadow_root):
             if layer_collection.collection == shadow_root:
                 layer_collection.exclude = True
                 break
-        if "fbp_compositor_original_use" not in layer:
-            layer["fbp_compositor_original_use"] = bool(layer.use)
         if bool(scene.fbp_compositor_disable_unmanaged_layers):
-            layer.use = False
+            if not layer.get("fbp_compositor_disabled", False):
+                # Files saved before this marker already hold the original
+                # while the layer sits disabled; keep that value.
+                if layer.use or "fbp_compositor_original_use" not in layer:
+                    layer["fbp_compositor_original_use"] = bool(layer.use)
+                layer["fbp_compositor_disabled"] = True
+            if layer.use:
+                layer.use = False
         else:
-            layer.use = bool(layer.get("fbp_compositor_original_use", True))
+            # Undo only our own disabling; afterwards the artist's toggles
+            # win and become the value Restore puts back.
+            if layer.get("fbp_compositor_disabled", False):
+                layer.use = bool(layer.get("fbp_compositor_original_use", True))
+                del layer["fbp_compositor_disabled"]
+            layer["fbp_compositor_original_use"] = bool(layer.use)
 
 
 def _socket(node, name, occurrence=0):
@@ -1289,9 +1303,13 @@ def _effect_output(
             tree.links.new(depth, node.inputs["Z"])
     elif effect_type == 'COLOR_GRADE':
         node = tree.nodes.new("CompositorNodeColorBalance")
-        _set_socket(node, "Type", "Offset/Power/Slope (ASC-CDL)")
-        _set_socket(node, "Temperature", effect.color_temperature)
-        _set_socket(node, "Tint", effect.color_tint)
+        # Temperature/Tint only act in White Point mode. The node has an
+        # Input and an Output pair with the same names; setting both equal
+        # cancels out, so only the Input white point follows the effect
+        # (a higher temperature corrects towards a warmer image).
+        _set_socket(node, "Type", "White Point")
+        _set_socket(node, "Temperature", effect.color_temperature, occurrence=0)
+        _set_socket(node, "Tint", effect.color_tint, occurrence=0)
     elif effect_type == 'PIXELATE':
         node = tree.nodes.new("CompositorNodePixelate")
         input_name = "Color"
@@ -1360,6 +1378,7 @@ def _effect_output(
     _tag_node(node, "source_effect", f"{layer_item.layer_id}:effect:{effect_index}")
     node["fbp_layer_id"] = layer_item.layer_id
     node["fbp_effect_index"] = effect_index
+    node["fbp_effect_type"] = effect_type
     processed = _blend_effect(
         tree,
         image_socket,
@@ -1533,17 +1552,29 @@ def fbp_ensure_native_render_output(scene, tree=None):
             (node for node in outputs if node.inputs.get("Image") is not None),
             None,
         )
+        # This also runs from depsgraph updates: write and tag only what
+        # actually changes, so a healthy tree never re-triggers evaluation.
+        changed = False
         if output is None:
             output = _tag_node(
                 tree.nodes.new("NodeGroupOutput"), "legacy_group_output"
             )
-        output.name = "FBP Composite Output"
-        output.label = "Output"
-        output.hide = False
-        output.location.x = max(930.0, float(getattr(output.location, "x", 930.0)))
+            changed = True
+        for attribute, value in (
+            ("name", "FBP Composite Output"), ("label", "Output"), ("hide", False),
+        ):
+            if getattr(output, attribute) != value:
+                setattr(output, attribute, value)
+                changed = True
+        if float(output.location.x) < 930.0:
+            output.location.x = 930.0
         for candidate in outputs:
-            candidate.is_active_output = candidate is output
-        output.is_active_output = True
+            if bool(candidate.is_active_output) != (candidate is output):
+                candidate.is_active_output = candidate is output
+                changed = True
+        if not output.is_active_output:
+            output.is_active_output = True
+            changed = True
 
         image_input = next(
             (
@@ -1581,9 +1612,11 @@ def fbp_ensure_native_render_output(scene, tree=None):
                     break
             if source is not None:
                 _replace_socket_input_link(tree, source, image_input)
+                changed = True
 
-        tree.update_tag()
-        scene.update_tag()
+        if changed:
+            tree.update_tag()
+            scene.update_tag()
         return output
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return None
@@ -1915,7 +1948,11 @@ def _capture_layers_package_links(scene, tree, node):
             continue
         for link in tuple(getattr(socket, "links", ())):
             try:
-                captured.append((key, link.to_node, link.to_socket))
+                # Store names, not RNA pointers: managed target nodes are
+                # deleted and recreated before the links are restored.
+                captured.append(
+                    (key, str(link.to_node.name), str(link.to_socket.identifier))
+                )
             except (AttributeError, ReferenceError):
                 continue
     return tuple(captured)
@@ -1931,9 +1968,17 @@ def _restore_layers_package_links(scene, tree, node, captured):
         if layer_id and name:
             outputs[layer_id] = node.outputs.get(name)
     restored = 0
-    for key, to_node, to_socket in captured or ():
+    for key, node_name, socket_identifier in captured or ():
         source = outputs.get(str(key or ""))
-        if source is None or to_node is None or to_socket is None:
+        to_node = tree.nodes.get(node_name) if source is not None else None
+        to_socket = next(
+            (
+                item for item in getattr(to_node, "inputs", ())
+                if item.identifier == socket_identifier
+            ),
+            None,
+        )
+        if to_socket is None:
             continue
         try:
             duplicate = any(
@@ -2826,6 +2871,8 @@ def fbp_restore_compositor(scene, remove_generated=True):
         if "fbp_compositor_original_use" in layer:
             layer.use = bool(layer["fbp_compositor_original_use"])
             del layer["fbp_compositor_original_use"]
+        if "fbp_compositor_disabled" in layer:
+            del layer["fbp_compositor_disabled"]
     if remove_generated:
         for collection in tuple(_walk_collections(scene.collection)):
             if (
@@ -3259,8 +3306,8 @@ def _apply_live_effect_settings(node, effect):
         node.f_stop = effect.defocus_f_stop
         node.blur_max = float(effect.defocus_blur_max)
     elif effect_type == 'COLOR_GRADE':
-        _set_socket(node, "Temperature", effect.color_temperature)
-        _set_socket(node, "Tint", effect.color_tint)
+        _set_socket(node, "Temperature", effect.color_temperature, occurrence=0)
+        _set_socket(node, "Tint", effect.color_tint, occurrence=0)
     elif effect_type == 'PIXELATE':
         _set_socket(node, "Size", int(effect.pixel_size))
     elif effect_type == 'VIGNETTE':
@@ -3301,6 +3348,10 @@ def _update_compositor_effect_parameter(effect, context):
         return
     node = next((candidate for candidate in source.nodes if candidate.get("fbp_role", "") == "source_effect" and candidate.get("fbp_layer_id", "") == layer.layer_id and int(candidate.get("fbp_effect_index", -1)) == index), None)
     mix = next((candidate for candidate in source.nodes if candidate.get("fbp_role", "") == "source_effect_mix" and candidate.get("fbp_uuid", "") == f"{layer.layer_id}:effect:{index}:mix"), None)
+    # With Live Update off, a type change or reorder waits for Refresh; the
+    # node at this index may then belong to another effect type.
+    if node is not None and str(node.get("fbp_effect_type", effect.effect_type)) != str(effect.effect_type):
+        node = None
     if node is None or mix is None:
         if effect.enabled and effect.effect_type != 'NONE':
             _schedule_compositor_update(effect, context)
@@ -3649,6 +3700,7 @@ class FBP_CompositorLayer(PropertyGroup):
     view_layer_name: StringProperty(
         name="View Layer",
         description="Name of the generated Blender View Layer",
+        update=_schedule_compositor_update,
     )
     enabled: BoolProperty(
         name="Visibility",
@@ -3999,13 +4051,18 @@ class FBP_OT_CompositorSelectRow(_FBP_CompositorPreviewPoll, Operator):
         return {'FINISHED'}
 
 
+_FBP_REMAP_ENUM_ITEMS = []
+
+
 def _compositor_delete_remap_items(self, context):
+    # Blender requires dynamic enum strings to stay referenced from Python.
     layer_id = str(getattr(self, "layer_id", "") or "")
-    return [
-        (str(item.source_key or item.layer_id), item.name, "Remap references to this compositor source")
+    _FBP_REMAP_ENUM_ITEMS[:] = [
+        (str(item.source_key or item.layer_id), str(item.name), "Remap references to this compositor source")
         for item in context.scene.fbp_compositor_layers
         if item.layer_id != layer_id and str(item.source_key or item.layer_id) != layer_id and not _is_folder_item(item)
     ] or [('NONE', "No replacement source", "")]
+    return _FBP_REMAP_ENUM_ITEMS
 
 
 def _compositor_source_dependencies(scene, layer_id):
@@ -4164,8 +4221,7 @@ class FBP_OT_CompositorLayerAction(_FBP_CompositorPreviewPoll, Operator):
             if resolved_folder is not None:
                 resolved_folder.selected = True
             scene.fbp_compositor_layer_index = insert_at
-            if scene.fbp_compositor_enabled:
-                fbp_sync_compositor(scene)
+            _request_compositor_update(scene)
             return {'FINISHED'}
         if self.action == 'UNGROUP_SELECTED':
             targets = [
@@ -4183,8 +4239,8 @@ class FBP_OT_CompositorLayerAction(_FBP_CompositorPreviewPoll, Operator):
                     targets = [active_item]
             for item in targets:
                 item.parent_folder_id = ""
-            if targets and scene.fbp_compositor_enabled:
-                fbp_sync_compositor(scene)
+            if targets:
+                _request_compositor_update(scene)
             return {'FINISHED'} if targets else {'CANCELLED'}
         if not (0 <= index < len(items)):
             return {'CANCELLED'}
@@ -4272,8 +4328,8 @@ class FBP_OT_CompositorLayerAction(_FBP_CompositorPreviewPoll, Operator):
                 return {'CANCELLED'}
             items.move(index, target)
             scene.fbp_compositor_layer_index = target
-        if items and scene.fbp_compositor_enabled:
-            fbp_sync_compositor(scene)
+        if items:
+            _request_compositor_update(scene)
         return {'FINISHED'}
 
 
@@ -4453,9 +4509,7 @@ class FBP_OT_CompositorEffectAction(_FBP_CompositorPreviewPoll, Operator):
             layer_item.effects_index = restore_active_index(
                 effects, "effect_uuid", active_uuid, fallback=min(selected_set),
             )
-        if scene.fbp_compositor_enabled:
-            _FBP_PENDING_COMPOSITOR_SCENES.discard(_scene_runtime_key(scene))
-            fbp_sync_compositor(scene)
+        _request_compositor_update(scene)
         return {'FINISHED'}
 
 
@@ -4483,8 +4537,7 @@ class FBP_OT_CompositorAssignGroup(_FBP_CompositorPreviewPoll, Operator):
                 self.report({'WARNING'}, "Select a compositor layer first")
                 return {'CANCELLED'}
             collection.fbp_compositor_layer_id = scene.fbp_compositor_layers[index].layer_id
-        if scene.fbp_compositor_enabled:
-            fbp_sync_compositor(scene)
+        _request_compositor_update(scene)
         return {'FINISHED'}
 
 
@@ -4534,6 +4587,17 @@ class FBP_OT_CompositorRestore(_FBP_CompositorPreviewPoll, Operator):
     bl_label = "Restore Native Compositor"
     bl_description = "Remove generated View Layers and restore the previous compositor setup"
     bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        # Restore also deletes the editable Effects & Masks group, including
+        # any nodes the artist added there.
+        return context.window_manager.invoke_confirm(
+            self, event,
+            title="Restore Native Compositor?",
+            message="Generated View Layers and the Effects & Masks group, including nodes you added to it, will be removed.",
+            confirm_text="Restore",
+            icon='WARNING',
+        )
 
     def execute(self, context):
         try:
@@ -4631,11 +4695,13 @@ def register():
             name="Share Unassigned Groups",
             description="Include groups without an explicit assignment in every managed layer",
             default=False,
+            update=_schedule_compositor_update,
         )
         bpy.types.Scene.fbp_compositor_disable_unmanaged_layers = BoolProperty(
             name="Render Managed Layers Only",
             description="Temporarily disable native View Layers that are not part of this stack to avoid duplicate rendering",
             default=True,
+            update=_schedule_compositor_update,
         )
         bpy.types.Scene.fbp_compositor_generation_mode = EnumProperty(
             name="Layer Source",

@@ -4019,11 +4019,16 @@ class FBP_OT_FreezeDerivedLayerSet(_FBP_CompositorPreviewPoll, Operator):
         return {'FINISHED'}
 
 
+_REMAP_ENUM_ITEMS = []
+
+
 def _remap_items(self, context):
-    return [
-        (record.source_uuid, record.name, record.layer_type)
+    # Blender requires dynamic enum strings to stay referenced from Python.
+    _REMAP_ENUM_ITEMS[:] = [
+        (str(record.source_uuid), str(record.name), str(record.layer_type))
         for record in context.scene.fbp_compositor_sources if record.valid
     ] or [('NONE', "No valid source", "")]
+    return _REMAP_ENUM_ITEMS
 
 
 class FBP_OT_RemapLayerSetSource(_FBP_CompositorPreviewPoll, Operator):
