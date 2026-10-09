@@ -3177,6 +3177,60 @@ def test_compositor(_module):
     }
 
 
+def test_compositor_refresh_contract(_module):
+    """Structural edits wait for Refresh unless Live Update is enabled."""
+    scene = bpy.context.scene
+    compositor = importlib.import_module(f"{PACKAGE}.compositor")
+    assert scene.fbp_compositor_live_update is False, "Live Update must default to off"
+    was_managed = bool(scene.fbp_compositor_enabled)
+    previous_preview = bool(scene.fbp_experimental_compositor)
+    scene.fbp_experimental_compositor = True
+    layer = compositor.fbp_add_compositor_layer(scene, "FBP Refresh Contract")
+    layer.layer_name = "FBP Refresh Contract"
+    layer.collection = scene.collection
+    compositor.fbp_sync_compositor(scene, context=bpy.context, activate_compositor=True)
+    syncs = []
+    original = compositor._fbp_sync_compositor_impl
+
+    def counting_sync(*args, **kwargs):
+        syncs.append(1)
+        return original(*args, **kwargs)
+
+    compositor._fbp_sync_compositor_impl = counting_sync
+    try:
+        compositor.fbp_sync_compositor(scene, context=bpy.context)
+        assert not compositor.fbp_compositor_needs_refresh(scene)
+        effect = layer.effects.add()
+        effect.effect_type = 'GLOW'
+        _flush_fbp_safe_tasks()
+        assert compositor.fbp_compositor_needs_refresh(scene), "structural edits must mark Refresh"
+        assert len(syncs) == 1, "Live Update off must not rebuild after an edit"
+
+        scene.fbp_compositor_live_update = True
+        _flush_fbp_safe_tasks()
+        assert len(syncs) == 2 and not compositor.fbp_compositor_needs_refresh(scene), (
+            "enabling Live Update must apply the pending change"
+        )
+        effect.effect_type = 'BLUR'
+        _flush_fbp_safe_tasks()
+        assert len(syncs) == 3, "Live Update must rebuild after a structural edit"
+    finally:
+        compositor._fbp_sync_compositor_impl = original
+        scene.fbp_compositor_live_update = False
+        index = next(
+            (i for i, item in enumerate(scene.fbp_compositor_layers) if item.name == "FBP Refresh Contract"),
+            -1,
+        )
+        if index >= 0:
+            scene.fbp_compositor_layers.remove(index)
+        if was_managed and len(scene.fbp_compositor_layers):
+            compositor.fbp_sync_compositor(scene, context=bpy.context)
+        else:
+            compositor.fbp_restore_compositor(scene)
+        scene.fbp_experimental_compositor = previous_preview
+    return {"rebuilds": len(syncs)}
+
+
 def test_toon_boom_contract(_module):
     importer = importlib.import_module(f"{PACKAGE}.operator_import")
     caps = importer.fbp_toon_boom_exchange_capabilities()
@@ -3754,6 +3808,7 @@ def run_background():
             ("generic_mesh_group_contracts", test_generic_mesh_supported_group_contracts),
             ("generic_mesh_artist_modifier_preservation", test_generic_mesh_apply),
             ("compositor_artist_graph", test_compositor),
+            ("compositor_refresh_contract", test_compositor_refresh_contract),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),

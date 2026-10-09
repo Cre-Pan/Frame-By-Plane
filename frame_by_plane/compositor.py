@@ -2773,6 +2773,7 @@ def _fbp_sync_compositor_impl(scene, context=None, native_group=False, activate_
         f"Synced {len(render_items)} layers, {folder_count} folders, "
         f"{effect_count} effects · {visible_nodes} visible stages"
     )
+    _set_compositor_needs_refresh(scene, False)
     return {
         "layers": len(render_items),
         "groups": group_count,
@@ -3146,6 +3147,14 @@ def _apply_render_compositor_opt_in(scene, *, managed_activation=False):
 def _update_render_compositor_opt_in(scene, _context):
     """Update native render state only after the managed graph exists."""
     _apply_render_compositor_opt_in(scene)
+    # Renders cannot rebuild the graph, so bring a pending setup up to date
+    # as soon as the compositor is opted into rendering.
+    if (
+        bool(getattr(scene, "fbp_compositor_render_enabled", False))
+        and bool(getattr(scene, "fbp_compositor_enabled", False))
+        and fbp_compositor_needs_refresh(scene)
+    ):
+        _queue_compositor_rebuild(scene)
 
 
 _FBP_PENDING_COMPOSITOR_SCENES = set()
@@ -3206,30 +3215,17 @@ def _flush_compositor_updates():
     return None
 
 
+def _update_compositor_live_update(scene, _context):
+    """Turning Live Update on applies any change that was waiting."""
+    if bool(getattr(scene, "fbp_compositor_live_update", False)) and fbp_compositor_needs_refresh(scene):
+        _request_compositor_update(scene)
+
+
 def _schedule_compositor_update(owner, context):
-    global _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING
-    if _FBP_COMPOSITOR_SYNCING:
-        return
     scene = getattr(context, "scene", None) if context is not None else None
     if scene is None:
         scene = getattr(owner, "id_data", None)
-    if scene is None or not bool(getattr(scene, "fbp_compositor_enabled", False)):
-        return
-    _queue_compositor_scene(scene)
-    if _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING:
-        if scheduled_task_pending("compositor.live_update"):
-            return
-        # Undo/load can invalidate the shared task while this module-local hint
-        # remains true. Re-arm instead of dropping the first following edit.
-        _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = False
-    _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = True
-    accepted = schedule_once(
-        "compositor.live_update",
-        _flush_compositor_updates,
-        first_interval=0.15,
-    )
-    if not accepted or not scheduled_task_pending("compositor.live_update"):
-        _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = False
+    _request_compositor_update(scene)
 
 
 def _existing_source_tree(scene):
@@ -3364,31 +3360,71 @@ def _update_compositor_indirect(owner, context):
     _schedule_compositor_update(owner, context)
 
 
-def fbp_schedule_compositor_update(scene):
-    """Debounce a source/effect rebuild after Layer List metadata changes."""
-    global _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING
-    if scene is None or not bool(getattr(scene, "fbp_compositor_enabled", False)):
+FBP_COMPOSITOR_NEEDS_REFRESH_KEY = "fbp_compositor_needs_refresh"
+
+
+def fbp_compositor_needs_refresh(scene):
+    """Return True when managed compositor inputs changed since the last sync."""
+    try:
+        return bool(scene.get(FBP_COMPOSITOR_NEEDS_REFRESH_KEY, False)) if scene else False
+    except FBP_DATA_ERRORS:
         return False
+
+
+def _set_compositor_needs_refresh(scene, needed):
+    try:
+        if bool(scene.get(FBP_COMPOSITOR_NEEDS_REFRESH_KEY, False)) != bool(needed):
+            if needed:
+                scene[FBP_COMPOSITOR_NEEDS_REFRESH_KEY] = True
+            else:
+                del scene[FBP_COMPOSITOR_NEEDS_REFRESH_KEY]
+    except (AttributeError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+def _request_compositor_update(scene):
+    """Rebuild after an edit with Live Update, otherwise wait for Refresh."""
+    if (
+        _FBP_COMPOSITOR_SYNCING
+        or scene is None
+        or not bool(getattr(scene, "fbp_compositor_enabled", False))
+    ):
+        return False
+    if not bool(getattr(scene, "fbp_compositor_live_update", False)):
+        _set_compositor_needs_refresh(scene, True)
+        return True
+    return _queue_compositor_rebuild(scene)
+
+
+def _queue_compositor_rebuild(scene):
+    """Schedule one debounced full compositor rebuild for ``scene``."""
+    global _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING
     try:
         _queue_compositor_scene(scene)
-        if _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING and not scheduled_task_pending(
-            "compositor.live_update"
-        ):
+        if _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING:
+            if scheduled_task_pending("compositor.live_update"):
+                return True
+            # Undo/load can invalidate the shared task while this module-local
+            # hint remains true. Re-arm instead of dropping the following edit.
             _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = False
-        if not _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING:
-            _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = True
-            accepted = schedule_once(
-                "compositor.live_update",
-                _flush_compositor_updates,
-                first_interval=0.15,
-            )
-            if not accepted or not scheduled_task_pending("compositor.live_update"):
-                _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = False
-                return False
+        _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = True
+        accepted = schedule_once(
+            "compositor.live_update",
+            _flush_compositor_updates,
+            first_interval=0.15,
+        )
+        if not accepted or not scheduled_task_pending("compositor.live_update"):
+            _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = False
+            return False
         return True
     except FBP_DATA_ERRORS:
         _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING = False
         return False
+
+
+def fbp_schedule_compositor_update(scene):
+    """Request a compositor update after Layer List metadata changes."""
+    return _request_compositor_update(scene)
 
 
 class FBP_CompositorEffect(PropertyGroup):
@@ -4533,6 +4569,7 @@ _SCENE_PROPERTIES = (
     "fbp_compositor_scene_id",
     "fbp_compositor_enabled",
     "fbp_compositor_render_enabled",
+    "fbp_compositor_live_update",
     "fbp_compositor_transparent",
     "fbp_compositor_include_unassigned",
     "fbp_compositor_disable_unmanaged_layers",
@@ -4571,6 +4608,15 @@ def register():
             ),
             default=False,
             update=_update_render_compositor_opt_in,
+        )
+        bpy.types.Scene.fbp_compositor_live_update = BoolProperty(
+            name="Live Update",
+            description=(
+                "Rebuild the compositor nodes automatically after every change. "
+                "When off, changes wait until you press Refresh"
+            ),
+            default=False,
+            update=_update_compositor_live_update,
         )
         bpy.types.Scene.fbp_compositor_transparent = BoolProperty(
             name="Transparent Film",
