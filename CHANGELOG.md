@@ -15,6 +15,10 @@ All notable public changes to Frame By Plane are documented here.
 - The Compositor panel now starts with one **Compositor | Refresh | Live Update** row. Compositor turns the tools off as well as on, and Refresh rebuilds the setup; it is highlighted when changes are waiting or nothing has been built yet.
 - **Live Update** is off by default: adding layers or effects or changing an effect type no longer rebuilds the compositor after every click. Effect values (mix, thresholds, colors) still update immediately. Turning Live Update on applies any waiting change, and enabling **Use Compositor in Render** brings a waiting setup up to date before rendering.
 
+### Cleanup
+
+- Removed about 700 lines of code that nothing used: 31 helper functions (diagnostic snapshots, legacy timing probes, layer sorting and report helpers), two dead constants and three unused imports. The static orphan audit now lists only two Scrub Bar helpers, which are left as they are.
+
 ### Fixes
 
 - Masks that sample the layer UV (Luma/Alpha Matte, Gradient, Noise, Wave, Voronoi, Channel, Color and Imported masks) no longer lose their UV input after a UV effect is moved or the stack is sorted. They previously appeared frozen until another rebuild.

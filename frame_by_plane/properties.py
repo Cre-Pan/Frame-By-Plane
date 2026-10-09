@@ -7276,17 +7276,6 @@ def register_properties():
 
 
 # SECTION 03 - Unregister properties #
-def fbp_registered_type_property_snapshot():
-    """Return immutable exact RNA ownership data for diagnostics."""
-    snapshot = {}
-    for raw_owner_name, registry in _FBP_REGISTERED_TYPE_PROPERTIES.items():
-        owner_name = _fbp_rna_property_name(raw_owner_name)
-        if not owner_name or not isinstance(registry, dict) or not registry:
-            continue
-        snapshot[owner_name] = tuple(registry)
-    return snapshot
-
-
 def _unregister_fbp_type_properties(owner, owner_name):
     """Remove only RNA properties assigned by this module generation."""
     owner_name = _fbp_rna_property_name(owner_name)

@@ -93,11 +93,6 @@ def fbp_history_runtime_snapshot():
     }
 
 
-def fbp_history_runtime_quiescent(snapshot=None):
-    """Return True only when no history transition can strand deferred work."""
-    state = snapshot if isinstance(snapshot, dict) else fbp_history_runtime_snapshot()
-    return not bool(state.get("active")) and not bool(state.get("cleanup_pending"))
-
 def fbp_cancel_deferred_mutation_tasks():
     """Discard one-shot datablock tasks that belong to the pre-Undo state.
 
@@ -247,18 +242,6 @@ def fbp_clear_effect_runtime_caches():
         invalidate_scene_index()
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
-
-
-def fbp_stop_playback_for_safe_operation():
-    """Stop playback in every Blender window before Main-changing operations."""
-    try:
-        return bool(
-            _scene_sync.fbp_stop_playback_for_datablock_cleanup(
-                getattr(bpy, "context", None)
-            )
-        )
-    except FBP_DATA_IO_ERRORS:
-        return False
 
 
 def fbp_deferred_post_undo_sync():
