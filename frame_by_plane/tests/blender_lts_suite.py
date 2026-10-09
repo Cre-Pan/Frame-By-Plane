@@ -1988,6 +1988,85 @@ def test_effect_stack_reorder_contract(_module):
     return {"effects": len(effects), "sort_stage_rebuilds": sort_rebuilds}
 
 
+def test_effect_operator_cleanup_contract(_module):
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Effect Operator Cleanup")
+    owned = [rig, *rig.children_recursive]
+    # Effect operators are interactive-only; register them for this test.
+    registered = []
+    for cls in geo.classes:
+        if not hasattr(bpy.types, cls.__name__):
+            bpy.utils.register_class(cls)
+            registered.append(cls)
+
+    def per_instance_state_keys():
+        return sorted(
+            key for key in rig.keys()
+            if key.startswith(("fbp_effect_visible_h_", "fbp_effect_render_visible_h_"))
+        )
+
+    def assert_persisted_stack_matches(label):
+        report = geo.fbp_effect_stack_v2_report(rig)
+        assert report["valid"], (label, report["issues"])
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            ops = bpy.ops.fbp
+            for effect_id in ("HUE_SATURATION", "POSTERIZE", "SWIRL"):
+                assert ops.add_effect(effect_id=effect_id) == {"FINISHED"}, effect_id
+
+            # Removing a whole MULTI effect retires its per-instance visibility.
+            keys_before = set(per_instance_state_keys())
+            assert ops.add_effect(effect_id="VIGNETTE") == {"FINISHED"}
+            geo.fbp_set_effect_visible(rig, "VIGNETTE", False)
+            geo.fbp_set_effect_visible(rig, "VIGNETTE", True)
+            vignette_keys = set(per_instance_state_keys()) - keys_before
+            assert vignette_keys, "a MULTI effect stores per-instance visibility"
+            assert geo.fbp_remove_effect(rig, "VIGNETTE")
+            leftover = vignette_keys & set(per_instance_state_keys())
+            assert not leftover, leftover
+
+            def instance_of(effect_id):
+                return next(
+                    (item.instance_id for item in rig.fbp_effects if item.effect_id == effect_id), ""
+                )
+
+            # Group two compatible COLOR effects; Swirl lives in the UV chain.
+            ops.set_effect_selection(mode="NONE")
+            assert ops.select_effect(
+                effect_id="HUE_SATURATION", instance_id=instance_of("HUE_SATURATION"),
+            ) == {"FINISHED"}
+            assert ops.select_effect(
+                effect_id="POSTERIZE", instance_id=instance_of("POSTERIZE"), use_ctrl=True,
+            ) == {"FINISHED"}
+            assert ops.create_effect_group() == {"FINISHED"}
+            ops.set_effect_selection(mode="NONE")
+            assert ops.select_effect(effect_id="SWIRL") == {"FINISHED"}
+            assert ops.remove_selected_effects() == {"FINISHED"}
+            assert_persisted_stack_matches("remove selected")
+
+            assert ops.clear_effect_stack() == {"FINISHED"}
+            assert_persisted_stack_matches("clear stack")
+            assert not per_instance_state_keys(), per_instance_state_keys()
+            stored = geo.decode_effect_stack(
+                rig.get(geo.FBP_EFFECT_STACK_KEY, ""), definitions=geo.fbp_effect_definition,
+            )
+            assert not stored.get("instances"), stored
+    finally:
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"operators_registered": len(registered)}
+
+
 def test_audited_operator_tooltips(_module):
     tooltips = importlib.import_module(f"{PACKAGE}.tooltips")
     audited = (
@@ -3305,6 +3384,7 @@ def run_background():
             ("gp_runtime_cache_cleanup", test_gp_runtime_cache_cleanup),
             ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),
             ("effect_stack_reorder_contract", test_effect_stack_reorder_contract),
+            ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("preview_scope_policy", test_preview_scope_policy),
             ("irreversible_action_contracts", test_irreversible_action_contracts),

@@ -14634,6 +14634,9 @@ def fbp_remove_shader_effect(rig, effect_id, *, sync_items=True):
     cleaned = _fbp_clear_effect_render_visibility(rig, effect_id) or cleaned
     if removed or cleaned:
         for instance_id in removed_instance_ids:
+            token = effect_instance_token(effect_id, instance_id)
+            _fbp_clear_effect_visibility(rig, token)
+            _fbp_clear_effect_render_visibility(rig, token)
             _fbp_clear_effect_input_source(rig, effect_id, instance_id)
             fbp_retire_effect_instance_state(rig, effect_id, instance_id)
         _fbp_invalidate_effect_ids_cache(rig)
@@ -29147,6 +29150,9 @@ class FBP_OT_ClearEffectStack(Operator):
                 changed += int(
                     fbp_remove_effect(rig, effect_id, sync_items=False)
                 )
+            # Batched removals skip per-effect syncing; persist the now-empty
+            # Effect Data Model so stale records cannot return on reload.
+            fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
         if changed and rigs:
             fbp_sync_effect_items(
                 rigs[0], rigs,
@@ -31576,6 +31582,12 @@ class FBP_OT_RemoveSelectedEffects(Operator):
                         )
         if not removed:
             return {"CANCELLED"}
+        # Batched removals skip per-effect syncing; persist the Effect Data
+        # Model once per layer so removed records cannot return on reload.
+        for target_rig in rigs:
+            fbp_effect_instance_records_for_rig(
+                target_rig, ensure=True, sync_storage=True
+            )
         fbp_sync_effect_items(
             rig, rigs, repair_assets=False, normalize_instance_ids=False
         )
