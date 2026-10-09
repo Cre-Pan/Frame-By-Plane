@@ -1005,6 +1005,14 @@ def _fbp_mask_target_map(rig):
 
 
 
+def _fbp_effect_is_global_mask(rig, effect_id):
+    """Return True for a MASK-stage effect that feeds the layer Mask Stack."""
+    effect_id = fbp_normalize_effect_id(effect_id)
+    if str(fbp_effect_definition(effect_id).get("stage", "") or "") != "MASK":
+        return False
+    return not _fbp_effect_is_local_mask(effect_id) or fbp_effect_mask_target(rig, effect_id) == "LAYER"
+
+
 def _fbp_release_masks_targeting(rig, token, mask_effect_ids=None):
     """Return local masks whose stored receiver is ``token`` to the layer.
 
@@ -7801,6 +7809,7 @@ def _fbp_geometry_composite_material(
                 for node in _fbp_shader_effect_nodes(source)
                 if _fbp_shader_node_token(node)
             }
+            mask_mute_changed = False
             for node in _fbp_shader_effect_nodes(existing):
                 source_node = source_nodes.get(_fbp_shader_node_token(node))
                 if source_node is None:
@@ -7809,8 +7818,13 @@ def _fbp_geometry_composite_material(
                 try:
                     if node.mute != bool(source_node.mute):
                         node.mute = bool(source_node.mute)
+                        if fbp_effect_definition(_fbp_shader_effect_id(node)).get("stage") == "MASK":
+                            mask_mute_changed = True
                 except FBP_DATA_ERRORS:
                     pass
+            if mask_mute_changed:
+                # Hidden masks must leave the copied Mask Stack, as on the plane.
+                _fbp_rebuild_shader_stage(existing, "MASK")
             boundary_image = existing.node_tree.nodes.get(
                 "FBP Effect Boundary Source Image"
             )
@@ -9441,7 +9455,10 @@ def _fbp_local_masks_by_target(rig, mask_nodes):
     for target, mask_ids in _fbp_mask_target_map(rig).items():
         if target == "LAYER":
             continue
-        resolved = [nodes_by_id[mask_id] for mask_id in mask_ids if mask_id in nodes_by_id]
+        # Combine in visible Mask-stage order (the order of ``mask_nodes``),
+        # not the cached effect-id order: Subtract/Difference depend on it.
+        wanted = set(mask_ids)
+        resolved = [node for mask_id, node in nodes_by_id.items() if mask_id in wanted]
         if resolved:
             result[target] = resolved
     return result
@@ -17041,6 +17058,18 @@ def fbp_effect_instance_token_for_rig(rig, effect_id):
     instance_id = fbp_effect_instance_id_for_rig(rig, effect_id, ensure=False)
     return effect_instance_token(effect_id, instance_id)
 
+def fbp_persist_effect_stacks(rigs):
+    """Write the reconciled Effect Data Model once per layer after a batch edit.
+
+    Operators that mutate with ``sync_items=False`` finish with a fast UI
+    sync, which never writes the persisted stack; without this call removed
+    or added rows would stay out of date in the saved .blend.
+    """
+    for rig in tuple(rigs or ()):
+        if rig is not None:
+            fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
+
+
 def fbp_sync_effect_items(
     rig, rigs=None, *, repair_assets=True, normalize_instance_ids=True
 ):
@@ -17986,6 +18015,9 @@ def fbp_add_effect(
             inherited_group_collapsed = fbp_effect_group_collapsed(
                 rig, inherited_group_id
             )
+    tokens_before = (
+        frozenset(_fbp_mixed_effect_tokens(rig)) if inherited_group_id else frozenset()
+    )
     if definition.get("kind") == "BASE":
         changed = _fbp_set_enabled(rig, effect_id, True)
         if effect_id == FBP_EFFECT_EMISSION:
@@ -18070,14 +18102,30 @@ def fbp_add_effect(
     ):
         # Place the new effect directly after the active member, then attach it
         # to the same persistent folder.  If Blender cannot move it safely, the
-        # effect remains valid and simply stays outside the group.
-        fbp_move_effect_selection_relative_transactional(
-            [rig], [effect_id], group_anchor, "AFTER"
+        # effect remains valid and simply stays outside the group: a member
+        # away from its folder would make the folder absorb the rows between.
+        new_ref = next(
+            (
+                token for token in _fbp_mixed_effect_tokens(rig)
+                if token not in tokens_before
+                and _fbp_effect_ref_effect_id(token) == effect_id
+            ),
+            effect_id,
         )
-        if fbp_set_effect_group_id(
+        fbp_move_effect_selection_relative_transactional(
+            [rig], [new_ref], group_anchor, "AFTER"
+        )
+        order = list(_fbp_mixed_effect_tokens(rig))
+        placed = (
+            new_ref in order
+            and group_anchor in order
+            and order.index(new_ref) == order.index(group_anchor) + 1
+        )
+        if placed and fbp_set_effect_group_id(
             rig,
             effect_id,
             inherited_group_id,
+            instance_id=_fbp_effect_ref_instance_id(new_ref),
             group_name=inherited_group_name,
         ):
             record = _fbp_effect_group_record(rig, inherited_group_id)
@@ -19303,6 +19351,11 @@ def fbp_set_effect_visible(rig, effect_id, visible, instance_id="", *, refresh_m
                 changed = _fbp_rebuild_mask_target_routing(
                     material, target_effect_id, target_effect_id
                 ) or changed
+    if changed and _fbp_effect_is_global_mask(rig, effect_id):
+        # A muted group node passes its alpha input through, which would
+        # multiply the layer alpha by itself. Rewire the Mask Stack instead.
+        for material in _fbp_plane_materials(rig):
+            _fbp_rebuild_shader_stage(material, "MASK")
     if changed and effect_id == FBP_EFFECT_PIXELATE:
         changed = _fbp_refresh_extrude_pixel_dependency(
             rig, force=True
@@ -19694,6 +19747,7 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
             if modifier_effect_id:
                 geometry_modifiers.setdefault(modifier_effect_id, modifier)
         muted_shader_nodes = False
+        global_mask_muted = False
         for effect_id in profile.get("effect_ids", ()):
             definition = fbp_effect_definition(effect_id)
             if effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
@@ -19736,6 +19790,8 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
                                 backup.append(("NODE_MUTE_V2", *locator, current_mute))
                             node.mute = target_mute
                             muted_shader_nodes = True
+                            if _fbp_effect_is_global_mask(rig, effect_id):
+                                global_mask_muted = True
                             if _fbp_effect_is_local_mask(effect_id):
                                 local_target = fbp_effect_mask_target(rig, effect_id)
                                 if local_target != "LAYER":
@@ -19790,6 +19846,11 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
                 "LOCAL_MASK_REBUILD_V2", rig_key, rig_name,
                 tuple(local_mask_target_ids),
             ))
+        if global_mask_muted:
+            for material in _fbp_plane_materials(rig):
+                _fbp_rebuild_shader_stage(material, "MASK")
+            rig_key, rig_name = _fbp_render_backup_rig_locator(rig)
+            backup.append(("MASK_STAGE_REBUILD_V2", rig_key, rig_name))
         if muted_shader_nodes and geometry_modifiers:
             # Mesh effects read copied composite materials; mirror the render
             # mute state into them now and again after the mutes are restored.
@@ -19825,6 +19886,12 @@ def fbp_effect_render_guard_post(backup):
                 constraint = getattr(rig, "constraints", None).get(constraint_name) if rig is not None else None
                 if constraint is not None and bool(getattr(constraint, "mute", False)) != bool(muted):
                     constraint.mute = bool(muted)
+            elif tag == "MASK_STAGE_REBUILD_V2":
+                _tag, rig_key, rig_name = item
+                rig = _fbp_render_backup_resolve_rig(rig_key, rig_name)
+                if rig is not None:
+                    for material in _fbp_plane_materials(rig):
+                        _fbp_rebuild_shader_stage(material, "MASK")
             elif tag == "GEOMETRY_SOURCE_REFRESH_V2":
                 _tag, rig_key, rig_name = item
                 rig = _fbp_render_backup_resolve_rig(rig_key, rig_name)
@@ -25312,6 +25379,15 @@ def fbp_switch_effect_family_variant(rig, source_effect_id, target_effect_id):
         rig, target_effect_id, sync_items=False, inherit_active_group=True
     ):
         return False
+    # The variant takes over the source row's place in the stack.
+    order = _fbp_mixed_effect_tokens(rig)
+    source_ref, target_ref = (
+        next((token for token in order if _fbp_effect_ref_effect_id(token) == effect_id), "")
+        for effect_id in (source_effect_id, target_effect_id)
+    )
+    desired = _fbp_relative_effect_order(rig, (target_ref,), source_ref, "BEFORE")
+    if desired and tuple(desired) != tuple(order):
+        _fbp_apply_mixed_effect_order(rig, desired)
     _fbp_copy_shared_family_properties(rig, source_effect_id, target_effect_id)
     _fbp_restore_family_variant_ramp(rig, target_effect_id)
     fbp_set_effect_visible(rig, target_effect_id, visible)
@@ -25370,7 +25446,12 @@ class FBP_OT_SetEffectFamilyVariant(Operator):
         for rig in rigs:
             if fbp_effect_is_active(rig, self.target_effect_id):
                 continue
-            current_effect_id = next((
+            # Replace the clicked row; other selected layers fall back to the
+            # first active variant of the same family.
+            source_effect_id = fbp_normalize_effect_id(self.source_effect_id)
+            current_effect_id = source_effect_id if fbp_effect_is_active(
+                rig, source_effect_id
+            ) else next((
                 effect_id for effect_id, _label in variants
                 if fbp_effect_is_active(rig, effect_id)
             ), "")
@@ -27040,6 +27121,9 @@ class FBP_OT_AddEffect(Operator):
                 f"{definition.get('label', self.effect_id)} is not compatible with: {names}",
             )
             return {"CANCELLED"}
+        tokens_before = {
+            rig: frozenset(_fbp_mixed_effect_tokens(rig)) for rig in compatible
+        }
         changed_rigs = [
             rig for rig in compatible
             if fbp_add_effect(rig, self.effect_id, sync_items=False)
@@ -27056,19 +27140,28 @@ class FBP_OT_AddEffect(Operator):
             else:
                 self.report({"ERROR"}, f"{definition.get('label', self.effect_id)} is not compatible with the selected layers")
             return {"CANCELLED"}
-        # New effects appear at the top of the visible layer stack. The mixed
-        # pipeline converts that UI order to Blender's bottom-to-top evaluation
-        # order and builds the required Image/Geometry adapter stages.
+        # New effects appear at the top of the visible layer stack, unless they
+        # joined the active group, which already placed them inside it. The
+        # mixed pipeline converts that UI order to Blender's bottom-to-top
+        # evaluation order and builds the required Image/Geometry adapter stages.
         for rig in changed_rigs:
             order = list(_fbp_mixed_effect_tokens(rig))
+            matches = [
+                token for token in order
+                if _fbp_effect_ref_effect_id(token) == requested_id
+            ]
+            # Prefer the row this Add created; re-adding an existing effect
+            # brings its first row to the top as before.
             target = next(
-                (
-                    token for token in order
-                    if _fbp_effect_ref_effect_id(token) == requested_id
-                ),
-                "",
+                (token for token in matches if token not in tokens_before[rig]),
+                matches[0] if matches else "",
             )
-            if target:
+            if target and order[0] != target and not fbp_effect_group_id_for_rig(
+                rig,
+                requested_id,
+                instance_id=_fbp_effect_ref_instance_id(target),
+                normalize=False,
+            ):
                 desired = [target] + [
                     token for token in order if token != target
                 ]
@@ -27090,12 +27183,25 @@ class FBP_OT_AddEffect(Operator):
             context.scene.fbp_effects_view = "3D" if category == "3D" else ("MASK" if category == "MASK" else "2D")
         except FBP_DATA_ERRORS:
             pass
+        fbp_persist_effect_stacks(changed_rigs)
         fbp_sync_effect_items(
             active_rig, rigs, repair_assets=False, normalize_instance_ids=False
         )
-        effect_id = fbp_normalize_effect_id(self.effect_id)
+        effect_id = requested_id
+        new_instance = next(
+            (
+                _fbp_effect_ref_instance_id(token)
+                for token in _fbp_mixed_effect_tokens(active_rig)
+                if token not in tokens_before.get(active_rig, ())
+                and _fbp_effect_ref_effect_id(token) == effect_id
+            ),
+            "",
+        )
         for index, item in enumerate(getattr(active_rig, "fbp_effects", ())):
-            if fbp_normalize_effect_id(getattr(item, "effect_id", "")) == effect_id:
+            if (
+                fbp_normalize_effect_id(getattr(item, "effect_id", "")) == effect_id
+                and (not new_instance or getattr(item, "instance_id", "") == new_instance)
+            ):
                 active_rig.fbp_effects_index = index
                 break
         # Reveal shader-only results once, as part of the explicit Add action.
@@ -28108,12 +28214,12 @@ def _fbp_apply_preset_group_metadata(rig, payload, instance_map):
         effect_id = fbp_normalize_effect_id(record.get("effect_id", ""))
         targets_by_effect.setdefault(effect_id, []).append(record)
     source_offsets = {}
+    assignments = []
     for source in source_records:
         if not isinstance(source, dict):
             continue
         effect_id = fbp_normalize_effect_id(source.get("effect_id", ""))
-        group_id = str(source.get("group_id", "") or "")
-        if not effect_id or not group_id:
+        if not effect_id:
             continue
         source_instance = str(source.get("instance_id", "") or "")
         target_instance = instance_map.get((effect_id, source_instance), "")
@@ -28126,6 +28232,22 @@ def _fbp_apply_preset_group_metadata(rig, payload, instance_map):
                 else ""
             )
             source_offsets[effect_id] = offset + 1
+        assignments.append(
+            (effect_id, target_instance, str(source.get("group_id", "") or ""))
+        )
+    # The captured records decide membership for every applied row. Rebuilt
+    # MULTI instances can inherit a provisional group while they are restored;
+    # clear those first so a split group never absorbs the rows between.
+    for effect_id, target_instance, group_id in assignments:
+        if not group_id and fbp_effect_group_id_for_rig(
+            rig, effect_id, instance_id=target_instance, normalize=False
+        ):
+            fbp_set_effect_group_id(
+                rig, effect_id, "", instance_id=target_instance
+            )
+    for effect_id, target_instance, group_id in assignments:
+        if not group_id:
+            continue
         group = groups.get(group_id, {})
         fbp_set_effect_group_id(
             rig,
@@ -28307,10 +28429,17 @@ def fbp_apply_effect_stack_snapshot(
         for state in states:
             effect_id = fbp_normalize_effect_id(state.get("effect_id", ""))
             if _fbp_effect_is_local_mask(effect_id):
+                # Pasted MULTI instances receive new ids; follow the receiver.
+                target_effect, target_instance = _fbp_effect_ref_parts(
+                    state.get("mask_target", "LAYER")
+                )
+                target_instance = instance_map.get(
+                    (target_effect, target_instance), target_instance
+                )
                 fbp_set_effect_mask_target(
                     rig,
                     effect_id,
-                    state.get("mask_target", "LAYER"),
+                    _fbp_effect_ref(target_effect, target_instance) if target_effect else "LAYER",
                 )
         mask_stack_payload = payload.get("mask_stack")
         if isinstance(mask_stack_payload, dict):
@@ -28331,6 +28460,15 @@ def fbp_apply_effect_stack_snapshot(
         # would also capture the rows that currently sit between members.
         _fbp_restore_snapshot_mixed_order(rig, payload, instance_map)
         _fbp_apply_preset_group_metadata(rig, payload, instance_map)
+        # Merge mode replaces a target's own MULTI instances; masks that were
+        # attached to them return to the layer instead of dangling.
+        fbp_local_effect_mask_contract_report(rig, repair=True)
+        # Paste/preset is a one-shot batch: rebuild every stage once so mask
+        # combinations follow the final order regardless of application order.
+        for material in _fbp_plane_materials(rig):
+            for stage in ("UV", "COLOR", "MASK"):
+                _fbp_rebuild_shader_stage(material, stage)
+        _fbp_refresh_mixed_pipeline(rig)
         fbp_effect_instance_records_for_rig(
             rig,
             ensure=True,
@@ -29331,9 +29469,7 @@ class FBP_OT_ClearEffectStack(Operator):
                 changed += int(
                     fbp_remove_effect(rig, effect_id, sync_items=False)
                 )
-            # Batched removals skip per-effect syncing; persist the now-empty
-            # Effect Data Model so stale records cannot return on reload.
-            fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
+        fbp_persist_effect_stacks(rigs)
         if changed and rigs:
             fbp_sync_effect_items(
                 rigs[0], rigs,
@@ -31777,12 +31913,7 @@ class FBP_OT_RemoveSelectedEffects(Operator):
                         )
         if not removed:
             return {"CANCELLED"}
-        # Batched removals skip per-effect syncing; persist the Effect Data
-        # Model once per layer so removed records cannot return on reload.
-        for target_rig in rigs:
-            fbp_effect_instance_records_for_rig(
-                target_rig, ensure=True, sync_storage=True
-            )
+        fbp_persist_effect_stacks(rigs)
         fbp_sync_effect_items(
             rig, rigs, repair_assets=False, normalize_instance_ids=False
         )
@@ -32596,6 +32727,7 @@ class FBP_OT_RemoveEffect(Operator):
                 and fbp_remove_effect(rig, effect_id, sync_items=False)
             )
         )
+        fbp_persist_effect_stacks(rigs)
         fbp_sync_effect_items(
             rigs[0], rigs, repair_assets=False, normalize_instance_ids=False
         )
@@ -32640,6 +32772,7 @@ class FBP_OT_RemoveActiveEffect(Operator):
                 for rig in rigs
                 if fbp_remove_effect(rig, effect_id, sync_items=False)
             )
+        fbp_persist_effect_stacks(rigs)
         fbp_sync_effect_items(
             active_rig, rigs,
             repair_assets=False,
