@@ -398,16 +398,16 @@ EXACT_TOOLTIPS = {
         "Choose a folder, reuse the last import folder or read a copied folder path. Frame By Plane scans supported images, numbered image sequences, videos and subfolders, then opens a confirmation preview with counts and the first detected layer names. Auto Detect creates one Single Plane for one logical layer or a Multiplane for several layers. Forced Single Plane is accepted only for one real root-level still, video or numbered sequence. When additional layers would be ignored, a separate root-only confirmation is required. The reviewed folder snapshot fingerprints both the detected structure and lightweight source-file metadata, so generation stops if files are renamed, removed, replaced or edited before import. Dialog-only choices reuse the current preview instead of rechecking every source file, while confirmation always performs the final validation. Very large imports require explicit confirmation. Blender 5.2 does not pass ordinary dropped folders to extension File Handlers, so use this action or drop any supported media file from the target folder."
     ),
     "fbp.popup_single_plane": (
-        "Open the Single Plane setup, then choose any supported still or animated image. Multiple selected images become one image sequence; video files use the separate Video Plane action."
+        "Open the Add Plane dialog on Image Plane. The dropdown at the top switches to Video, Color, Gradient or Holdout without leaving the dialog. For images, multiple selected files become one image sequence; Fit Camera to New Plane is off by default so the current framing is kept."
     ),
     "fbp.popup_video_plane": (
-        "Open the Video Plane setup, then choose one supported movie file. Timing, playback, orientation, filtering, emission and camera tracking are applied during generation."
+        "Open the Add Plane dialog on Video Plane, then choose one supported movie file. The dropdown at the top switches to the other single-plane types."
     ),
     "fbp.popup_multiplane": (
         "Open the expanded Multiplane setup for scanning a layered folder and generating its camera-depth arrangement. Source aspect, camera pivot, layer spacing, fit, timing, material, orientation and alpha-crop controls are available before generation."
     ),
     "fbp.popup_color_plane": (
-        "Open the expanded procedural-plane setup and create a solid Color, editable Gradient or Holdout plane at the active camera ratio. Placement orientation and camera tracking can be set before creation."
+        "Open the Add Plane dialog on a solid Color, editable Gradient or Holdout plane at the active camera ratio. The dropdown at the top switches to the other single-plane types."
     ),
     "fbp.create_color_plane_from_hex": (
         "Read a hexadecimal color code from the clipboard and create a solid Frame By Plane Color Plane using that value. Invalid or unsupported clipboard text is rejected without changing the scene."
@@ -710,7 +710,6 @@ _MODULE_USE_WHEN = {
     "feedback": "Use when: you want release notes, support links or review links; no project data is submitted automatically.",
     "geometry_nodes": "Use when: you are editing the selected layer's effect stack, generated mesh helpers, masks or effect presets.",
     "grease_pencil_bridge": "Use when: Grease Pencil should behave like a Frame By Plane layer, mask or drawing canvas.",
-    "grease_pencil_limited_loop": "Use when: you need a controlled Grease Pencil loop range that leaves later animation free.",
     "grease_pencil_workflow": "Use when: switching between reference, draw, mask and review states for a Grease Pencil workflow.",
     "motion_runtime": "Use when: adding, linking, distributing or baking procedural Motion inside the effect workflow.",
     "operator_import": "Use when: bringing external media into the scene as generated Frame By Plane layers.",

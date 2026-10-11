@@ -116,70 +116,6 @@ def json_safe_value(value):
         return str(value)
 
 
-def gp_native_property_snapshot(bridge, item, effect_id):
-    result = {}
-    for row in bridge._GP_NATIVE_EFFECT_UI_PROPS.get(str(effect_id).upper(), ()):
-        for attr_name, label, slider in row:
-            resolved = bridge._gp_resolve_native_attr(item, attr_name)
-            if not resolved or resolved in result:
-                continue
-            try:
-                value = getattr(item, resolved)
-            except Exception:
-                continue
-            metadata = {
-                "logical_name": attr_name,
-                "label": label,
-                "slider": bool(slider),
-                "value": json_safe_value(value),
-            }
-            try:
-                prop = item.bl_rna.properties.get(resolved)
-                metadata.update({
-                    "type": str(getattr(prop, "type", "") or ""),
-                    "subtype": str(getattr(prop, "subtype", "") or ""),
-                    "array_length": int(getattr(prop, "array_length", 0) or 0),
-                    "hard_min": json_safe_value(getattr(prop, "hard_min", None)),
-                    "hard_max": json_safe_value(getattr(prop, "hard_max", None)),
-                    "default": json_safe_value(
-                        getattr(prop, "default_array", ())
-                        if int(getattr(prop, "array_length", 0) or 0)
-                        else getattr(prop, "default", None)
-                    ),
-                })
-            except Exception:
-                pass
-            result[resolved] = metadata
-    return result
-
-
-def gp_native_rna_snapshot(item):
-    result = {}
-    try:
-        properties = tuple(item.bl_rna.properties)
-    except Exception:
-        return result
-    for prop in properties:
-        identifier = str(getattr(prop, "identifier", "") or "")
-        if not identifier or identifier == "rna_type":
-            continue
-        try:
-            if bool(getattr(prop, "is_readonly", False)):
-                continue
-            value = getattr(item, identifier)
-        except Exception:
-            continue
-        result[identifier] = {
-            "name": str(getattr(prop, "name", identifier) or identifier),
-            "description": str(getattr(prop, "description", "") or ""),
-            "type": str(getattr(prop, "type", "") or ""),
-            "subtype": str(getattr(prop, "subtype", "") or ""),
-            "array_length": int(getattr(prop, "array_length", 0) or 0),
-            "value": json_safe_value(value),
-        }
-    return result
-
-
 def evaluate_rig(geometry, rig):
     started = time.perf_counter()
     bpy.context.view_layer.update()
@@ -305,86 +241,6 @@ def audit_effect(geometry, builtin, rig, effect_id, definition):
     return record
 
 
-def audit_gp_native_effect(bridge, canvas, definition):
-    effect_id, label, _icon, backend, native_types = definition
-    record = {
-        "effect_id": effect_id,
-        "label": label,
-        "kind": "GP_NATIVE",
-        "backend": backend,
-        "native_types": list(native_types),
-        "status": "FAIL",
-        "issues": [],
-    }
-    try:
-        supported = bool(bridge._gp_native_effect_supported(canvas, definition))
-        record["supported_for_fixture"] = supported
-        record["resolved_native_type"] = str(
-            bridge._gp_supported_native_type(canvas, definition) or ""
-        )
-        started = time.perf_counter()
-        item = bridge._gp_add_native_effect(canvas, effect_id) if supported else None
-        record["add_seconds"] = time.perf_counter() - started
-        record["added"] = item is not None
-        active = bridge._gp_native_effect_instances(canvas).get(effect_id)
-        record["active_after_add"] = active is not None
-        if active is not None:
-            record["properties"] = gp_native_property_snapshot(
-                bridge, active, effect_id
-            )
-            record["rna_properties"] = gp_native_rna_snapshot(active)
-        if supported and (item is None or active is None):
-            record["issues"].append("supported native effect did not become active")
-        if not supported and item is not None:
-            record["issues"].append("unsupported native effect was unexpectedly added")
-        if item is not None:
-            bpy.context.view_layer.update()
-            started = time.perf_counter()
-            removed = bool(bridge._gp_remove_native_effect(canvas, effect_id))
-            record["remove_seconds"] = time.perf_counter() - started
-            record["removed"] = removed
-            record["active_after_remove"] = (
-                bridge._gp_native_effect_instances(canvas).get(effect_id) is not None
-            )
-            if not removed or record["active_after_remove"]:
-                record["issues"].append("native effect did not cleanly deactivate")
-        else:
-            record["removed"] = False
-            record["active_after_remove"] = False
-        record["status"] = "PASS" if not record["issues"] else "FAIL"
-    except Exception as exc:
-        record["error"] = f"{type(exc).__name__}: {exc}"
-        record["traceback"] = traceback.format_exc()
-        try:
-            bridge._gp_remove_native_effect(canvas, effect_id)
-        except Exception:
-            pass
-    return record
-
-
-def audit_gp_native(payload):
-    bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
-    result = bpy.ops.fbp.add_grease_pencil_canvas(
-        "EXEC_DEFAULT",
-        canvas_name="FBP GP Native Effect Audit",
-        owner_name="__FREE__",
-        enter_draw_mode=False,
-    )
-    if "FINISHED" not in result:
-        raise RuntimeError(f"Could not create Grease Pencil audit canvas: {result}")
-    canvas = bpy.context.object
-    definitions = [
-        definition for definition in bridge.GP_NATIVE_EFFECTS
-        if not EFFECT_IDS or str(definition[0]).upper() in EFFECT_IDS
-    ] * REPEATS
-    payload["expected"] = len(definitions)
-    for definition in definitions:
-        payload["effects"].append(
-            audit_gp_native_effect(bridge, canvas, definition)
-        )
-        write_report(payload)
-
-
 def main():
     started = time.perf_counter()
     payload = {
@@ -406,27 +262,24 @@ def main():
         builtin = importlib.import_module(f"{PACKAGE}.builtin_effects")
         builder = importlib.import_module(f"{PACKAGE}.builder")
         payload["registry_issues"] = list(registry.FBP_EFFECT_REGISTRY_ISSUES)
-        if KIND == "GP_NATIVE":
-            audit_gp_native(payload)
-        else:
-            ensure_camera()
-            make_fixture(builder, "FBP Effect Audit Source", (0.0, 0.0, -0.1))
-            rig = make_fixture(builder, "FBP Effect Audit Target", (0.0, 0.0, 0.0))
-            bpy.context.view_layer.objects.active = rig
-            rig.select_set(True)
+        ensure_camera()
+        make_fixture(builder, "FBP Effect Audit Source", (0.0, 0.0, -0.1))
+        rig = make_fixture(builder, "FBP Effect Audit Target", (0.0, 0.0, 0.0))
+        bpy.context.view_layer.objects.active = rig
+        rig.select_set(True)
 
-            definitions = [
-                (effect_id, definition)
-                for effect_id, definition in registry.FBP_EFFECT_REGISTRY.items()
-                if (KIND == "ALL" or str(definition.get("kind", "")).upper() == KIND)
-                and (not EFFECT_IDS or str(effect_id).upper() in EFFECT_IDS)
-            ] * REPEATS
-            payload["expected"] = len(definitions)
-            for effect_id, definition in definitions:
-                payload["effects"].append(
-                    audit_effect(geometry, builtin, rig, effect_id, definition)
-                )
-                write_report(payload)
+        definitions = [
+            (effect_id, definition)
+            for effect_id, definition in registry.FBP_EFFECT_REGISTRY.items()
+            if (KIND == "ALL" or str(definition.get("kind", "")).upper() == KIND)
+            and (not EFFECT_IDS or str(effect_id).upper() in EFFECT_IDS)
+        ] * REPEATS
+        payload["expected"] = len(definitions)
+        for effect_id, definition in definitions:
+            payload["effects"].append(
+                audit_effect(geometry, builtin, rig, effect_id, definition)
+            )
+            write_report(payload)
         failed = [item["effect_id"] for item in payload["effects"] if item["status"] != "PASS"]
         payload["failed"] = failed
         payload["passed"] = len(payload["effects"]) - len(failed)

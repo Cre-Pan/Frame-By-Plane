@@ -103,11 +103,6 @@ _ACTION_SPECS = {
         "Repair supported Grease Pencil drawing/exposure timing metadata.",
         "TIME",
     ),
-    "REPAIR_GP_LOOP": (
-        "Repair GP Loop",
-        "Reconcile supported Limited Loop metadata and generated timing.",
-        "FILE_REFRESH",
-    ),
     "REPAIR_MOTION": (
         "Repair Motion",
         "Reconcile supported Motion metadata and base-transform records.",
@@ -202,8 +197,6 @@ def _fix_action_for_issue(issue):
         return "REPAIR_GP_MASK"
     if code == "GP_TIMING":
         return "REPAIR_GP_TIMING"
-    if code == "GP_LIMITED_LOOP":
-        return "REPAIR_GP_LOOP"
     if code == "MOTION":
         return "REPAIR_MOTION"
     if code == "MASK":
@@ -415,10 +408,6 @@ def execute_project_doctor_action(scene, issue, action_id=""):
             from .grease_pencil_workflow import audit_gp_workflow
 
             changed = _repaired_count(audit_gp_workflow(scene, repair=True))
-        elif action_id == "REPAIR_GP_LOOP":
-            from .grease_pencil_limited_loop import audit_limited_loops
-
-            changed = _repaired_count(audit_limited_loops(scene, repair=True))
         elif action_id == "REPAIR_MOTION":
             from .motion_runtime import audit_motion_system
 

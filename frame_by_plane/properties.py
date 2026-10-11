@@ -927,7 +927,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     shortcut_gp_frame_scrub: BoolProperty(
         name="Grease Pencil Frame Scrub",
-        description="Tap < in any 3D View mode to toggle the interactive Scrub Bar, or hold it for momentary scrubbing",
+        description="Hold < in any 3D View mode for momentary scrubbing. The Scrub Bar button in the Viewport header pins the bar",
         default=True,
         update=update_shortcut_preferences_cb,
     )
@@ -1004,6 +1004,36 @@ class FBP_AddonPreferences(AddonPreferences):
         default=0.22,
         min=0.01,
         max=1.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_to_start: BoolProperty(
+        name="Return to Start Frame",
+        description="After scrubbing with <, release it and the playhead glides back to the frame you started from",
+        default=True,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_duration: FloatProperty(
+        name="Return Time",
+        description="Seconds the playhead takes to glide back to the start frame, easing in and out",
+        default=0.35,
+        min=0.05,
+        max=1.5,
+        subtype='TIME_ABSOLUTE',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_tap_toggles: BoolProperty(
+        name="Tap < Pins the Bar",
+        description="A quick tap of < shows or hides the persistent Scrub Bar. Off: only the Scrub Bar button in the Viewport header pins it",
+        default=False,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_distance_ramp: FloatProperty(
+        name="Speed Ramp Distance",
+        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away, reaching full Sensitivity at this distance from the magnet range. 0 uses full Sensitivity right outside the magnet range",
+        default=320.0,
+        min=0.0,
+        max=2000.0,
+        subtype='PIXEL',
         update=update_interface_preferences_cb,
     )
     gp_scrub_show_onion_handles: BoolProperty(
@@ -1910,12 +1940,19 @@ class FBP_AddonPreferences(AddonPreferences):
                 configure_layout(motion_box)
                 motion_box.label(text='Scrubbing and Layout', icon='MOUSE_MOVE')
                 row = _row(motion_box)
-                row.prop(self, 'gp_scrub_sensitivity', text='Sensitivity', slider=True)
-                row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
-                row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
+                row.prop(self, 'gp_scrub_return_to_start', text='Return to Start Frame', toggle=True, icon='LOOP_BACK')
+                duration = row.row(align=True)
+                duration.enabled = self.gp_scrub_return_to_start
+                duration.prop(self, 'gp_scrub_return_duration', text='Return Time')
+                row.prop(self, 'gp_scrub_tap_toggles', text='Tap < Pins the Bar', toggle=True, icon='PINNED')
                 row = _row(motion_box)
+                row.prop(self, 'gp_scrub_sensitivity', text='Far Speed', slider=True)
+                row.prop(self, 'gp_scrub_distance_ramp', text='Speed Ramp Distance')
+                row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
+                row = _row(motion_box)
+                row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
                 row.prop(self, 'gp_scrub_edge_offset', text='Edge Offset')
-                hint_row(motion_box, 'Hold <: relative sensitivity away from the axis, exact cursor mapping inside the magnetic zone.', icon='TIME')
+                hint_row(motion_box, 'Hold <: exact on the Scrub Bar, faster the further the pointer moves away. Release to glide back.', icon='TIME')
 
                 magnet_box = body.box()
                 configure_layout(magnet_box)
@@ -1968,7 +2005,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_cursor_color', text='Cursor Color')
                 row.prop(self, 'gp_scrub_cursor_text_color', text='Cursor Text')
-                hint_row(appearance_box, f'Tap < to toggle · hold < to scrub · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
+                hint_row(appearance_box, f'Hold < to scrub · header button pins the bar · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
 
             body = _section(category, 'pref_ui_show_procedural', 'Procedural Planes', 'menu.color_plane', 'MATERIAL')
             if body:
@@ -4705,6 +4742,11 @@ def register_properties():
         name="Camera Uses Source Aspect",
         description="When generating a Frame By Plane camera, match the output resolution to the first generated layer source aspect instead of a fixed preset",
         default=True,
+    )
+    _FBP_SCENE_RNA.fbp_single_fit_camera = BoolProperty(
+        name="Fit Camera to New Plane",
+        description="When adding a Single Plane, change the output resolution to match the new image aspect. Off keeps the current camera framing",
+        default=False,
     )
     _FBP_SCENE_RNA.fbp_pre_track_cam = BoolProperty(name="Track Camera on New Layers", description="Add camera tracking to newly generated Frame By Plane layers", default=False)
     _FBP_SCENE_RNA.fbp_settings_section = EnumProperty(

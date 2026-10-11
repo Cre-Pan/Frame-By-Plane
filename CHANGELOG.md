@@ -4,6 +4,23 @@ All notable public changes to Frame By Plane are documented here.
 
 ## [Unreleased]
 
+### Grease Pencil
+
+- Removed the Frame By Plane Grease Pencil effect list and its grouped effect picker (Reset, Move, Toggle, Repair Duplicates and the compatibility report). Grease Pencil drawings now use Blender's own Modifiers and Visual Effects panels; effects already added to a drawing stay on it as normal Blender effects.
+- Removed **Draw on Canvas** (the Draw, Fill and Erase buttons next to a Drawing Plane), the **Ink Over Image** panel, **Create Missing / Current GP Drawings** and **Limited Loop Blocks**. Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
+- **Grease Pencil Drawing** in Shift+A is greyed out until a Frame By Plane plane is selected.
+
+### Scrub Bar
+
+- Holding **<** now follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away from it, up to **Far Speed** (Preferences, **Speed Ramp Distance**). Moving only across the bar no longer changes the frame.
+- Releasing **<** glides the playhead back to the frame where you started, easing in and out (**Return to Start Frame**, on by default, with **Return Time**). Any key or click during the glide lands on the start frame at once.
+- A quick tap of **<** no longer pins the Scrub Bar. Pin it from the Scrub Bar button or its menu in the Viewport header, or turn **Tap < Pins the Bar** back on in Preferences.
+
+### Add Plane dialog
+
+- **Single Plane**, **Video Plane**, **Color Plane**, **Gradient Plane** and **Holdout Plane** open one **Add Plane** dialog with the plane type in a dropdown at the top, so you can switch type without closing it. Settings are grouped into Animation, Plane and Material, Camera, and Placement sections.
+- Adding a Single Plane no longer changes the scene resolution to the new image's aspect. Turn on **Fit Camera to New Plane** in the dialog to get the previous behavior.
+
 ### Effect stack performance
 
 - Reordering an effect chain now writes the complete order once and rebuilds each material stage once, instead of rebuilding the stage for every one-step move. Adding effects to a populated stack is roughly twice as fast (16-effect stack: about 1.7 s → 0.8 s in total).
