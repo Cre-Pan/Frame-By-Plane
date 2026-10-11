@@ -1,10 +1,10 @@
-"""Runtime support and feature policy for Frame By Plane 7.2 LTS."""
+"""Runtime support and feature policy for Frame By Plane 7.5 LTS."""
 
 from __future__ import annotations
 
 
 
-FBP_LTS_TARGET_VERSION = "7.2.1"
+FBP_LTS_TARGET_VERSION = "7.5.0"
 FBP_LTS_BLENDER_SERIES = "5.2"
 FBP_LTS_PLATFORM_IDS = (
     "windows-x64",
@@ -17,7 +17,7 @@ FBP_LTS_PLATFORM_LABEL = (
     "Windows x64/ARM64, macOS Intel/Apple Silicon and Linux x64"
 )
 FBP_LTS_SUPPORT_STATEMENT = (
-    "Frame By Plane 7.2 LTS is supported on Blender 5.2.x for Windows "
+    "Frame By Plane 7.5 LTS is supported on Blender 5.2.x for Windows "
     "x64/ARM64, macOS Intel/Apple Silicon and Linux x64."
 )
 

@@ -719,6 +719,62 @@ def _drawing_selection_values(drawing, domain):
         return _MISSING
 
 
+def _material_visibility(obj):
+    """Return per-slot ``(shows_stroke, shows_fill)`` for the object's materials."""
+    flags = []
+    for slot in tuple(getattr(obj, "material_slots", ()) or ()):
+        try:
+            settings = getattr(getattr(slot, "material", None), "grease_pencil", None)
+            if settings is None:
+                flags.append((True, True))
+                continue
+            if hasattr(settings, "is_stroke_visible"):
+                # Blender 5.2: visibility follows the material's opacities.
+                shows = (bool(settings.is_stroke_visible), bool(settings.is_fill_visible))
+            else:
+                shows = (bool(settings.show_stroke), bool(settings.show_fill))
+            # A material that draws neither tells nothing; keep both.
+            flags.append(shows if any(shows) else (True, True))
+        except FBP_DATA_ERRORS:
+            flags.append((True, True))
+    return tuple(flags)
+
+
+def _drawing_material_indices(drawing):
+    try:
+        attribute = drawing.attributes.get("material_index")
+        if attribute is None:
+            return None
+        if str(attribute.domain) != "CURVE":
+            return _MISSING
+        values = array("i", [0]) * len(attribute.data)
+        attribute.data.foreach_get("value", values)
+        return values
+    except FBP_DATA_ERRORS:
+        return _MISSING
+
+
+def _curve_visibility(flags, material_indices, stroke, curve_index):
+    """Whether a curve's material draws its stroke and its fill."""
+    if not flags:
+        return True, True
+    if material_indices is None:
+        index = 0
+    elif material_indices is _MISSING:
+        try:
+            index = int(stroke.material_index)
+        except FBP_DATA_ERRORS:
+            return True, True
+    else:
+        try:
+            index = int(material_indices[curve_index])
+        except (IndexError, OverflowError):
+            return True, True
+    if 0 <= index < len(flags):
+        return flags[index]
+    return True, True
+
+
 def _selected_color_snapshot(context, obj):
     stroke_keys = set()
     fill_keys = set()
@@ -731,6 +787,7 @@ def _selected_color_snapshot(context, obj):
     point_count = 0
     curve_count = 0
     whole_stroke_selection = _edit_select_mode(context) == "STROKE"
+    visibility = _material_visibility(obj)
     for drawing in _iter_edit_drawings(context, obj):
         try:
             strokes = drawing.strokes
@@ -814,35 +871,44 @@ def _selected_color_snapshot(context, obj):
         )
         point_color_cache = {}
         curve_color_cache = {}
+        material_indices = _drawing_material_indices(drawing) if visibility else None
 
         for stroke, selector, stroke_offset, curve_index, selected_count in drawing_targets:
             curve_count += 1
             point_count += selected_count
-            try:
-                if point_colors is _MISSING:
-                    points = stroke.points
-                    indices = range(len(points)) if selector is None else selector
-                else:
-                    points = None
-                    indices = range(selected_count) if selector is None else selector
-                for local_index in indices:
+            # Only colors that are actually drawn count: a curve whose material
+            # hides its fill contributes no Fill swatch, and vice versa.
+            shows_stroke, shows_fill = _curve_visibility(
+                visibility, material_indices, stroke, curve_index
+            )
+            if shows_stroke:
+                try:
                     if point_colors is _MISSING:
-                        color = _rgba(points[local_index].vertex_color)
-                        key = _color_key(color)
+                        points = stroke.points
+                        indices = range(len(points)) if selector is None else selector
                     else:
-                        color, key = _attribute_color_summary(
-                            point_colors,
-                            stroke_offset + local_index,
-                            point_color_cache,
+                        points = None
+                        indices = range(selected_count) if selector is None else selector
+                    for local_index in indices:
+                        if point_colors is _MISSING:
+                            color = _rgba(points[local_index].vertex_color)
+                            key = _color_key(color)
+                        else:
+                            color, key = _attribute_color_summary(
+                                point_colors,
+                                stroke_offset + local_index,
+                                point_color_cache,
+                            )
+                        stroke_fingerprint = _record_color(
+                            color,
+                            key,
+                            stroke_keys,
+                            stroke_values,
+                            stroke_fingerprint,
                         )
-                    stroke_fingerprint = _record_color(
-                        color,
-                        key,
-                        stroke_keys,
-                        stroke_values,
-                        stroke_fingerprint,
-                    )
-            except FBP_DATA_ERRORS + (IndexError,):
+                except FBP_DATA_ERRORS + (IndexError,):
+                    pass
+            if not shows_fill:
                 continue
             if curve_colors is _MISSING:
                 try:
@@ -1383,6 +1449,81 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
     return changed
 
 
+def _swap_selected_per_stroke(context, *, record_undo=False):
+    """Swap each selected stroke's own line color with its own fill color.
+
+    The stroke color of a curve is read from its first selected point, so a
+    selection with many stroke colors and one fill swaps every curve on its
+    own instead of painting them all with a single color.
+    """
+    obj = _active_gp_object(context)
+    if obj is None or _context_mode(context) != "EDIT_GREASE_PENCIL":
+        return 0
+    point_groups = tuple(_RUNTIME.get("edit_point_targets", ()) or ())
+    fill_groups = tuple(_RUNTIME.get("edit_fill_targets", ()) or ())
+    changed = 0
+    undo_started = False
+    if record_undo:
+        undo_started = _begin_edit_color_undo("STROKE")
+    for point_group, fill_group in zip(point_groups, fill_groups):
+        drawing, total_points, _selected_points, point_batches = point_group
+        _fill_drawing, total_curves, _selected_curves, fill_batches = fill_group
+        point_values = _drawing_color_attribute(drawing, "vertex_color")
+        fill_values = _drawing_color_attribute(drawing, "fill_color")
+        if point_values is _MISSING or fill_values is _MISSING:
+            for (stroke, selector, _offset, _count), (_stroke, _curve_index) in zip(point_batches, fill_batches):
+                try:
+                    points = stroke.points
+                    indices = range(len(points)) if selector is None else selector
+                    if not len(indices):
+                        continue
+                    line = _rgba(points[indices[0]].vertex_color)
+                    fill = _rgba(stroke.fill_color)
+                    for index in indices:
+                        points[index].vertex_color = fill
+                    stroke.fill_color = line
+                    changed += 1
+                except FBP_DATA_ERRORS + (IndexError,):
+                    continue
+            continue
+        if point_values is None:
+            point_values = array("f", [0.0]) * (total_points * 4)
+        if fill_values is None:
+            fill_values = array("f", [0.0]) * (total_curves * 4)
+        group_changed = 0
+        for (_stroke, selector, stroke_offset, stroke_selected_count), (_s, curve_index) in zip(point_batches, fill_batches):
+            indices = range(stroke_selected_count) if selector is None else selector
+            if not len(indices):
+                continue
+            first = (stroke_offset + indices[0]) * 4
+            line = point_values[first : first + 4]
+            fill_offset = curve_index * 4
+            fill = fill_values[fill_offset : fill_offset + 4]
+            if len(line) != 4 or len(fill) != 4:
+                continue
+            for local_index in indices:
+                offset = (stroke_offset + local_index) * 4
+                point_values[offset : offset + 4] = fill
+            fill_values[fill_offset : fill_offset + 4] = line
+            group_changed += 1
+        if not group_changed:
+            continue
+        point_attribute = _ensure_drawing_color_attribute(drawing, "vertex_color", "POINT")
+        fill_attribute = _ensure_drawing_color_attribute(drawing, "fill_color", "CURVE")
+        try:
+            point_attribute.data.foreach_set("color", point_values)
+            fill_attribute.data.foreach_set("color", fill_values)
+            changed += group_changed
+        except FBP_DATA_ERRORS + (AttributeError,):
+            continue
+    if changed:
+        _tag_gp_color_update(obj)
+        if record_undo and undo_started:
+            _RUNTIME["edit_undo_label"] = "Swap Grease Pencil Stroke / Fill Colors"
+            _schedule_edit_color_undo_commit()
+    return changed
+
+
 def _swatch_color_changed(item, context):
     global _STATE_GUARD
     if _STATE_GUARD:
@@ -1631,6 +1772,26 @@ class FBP_GPVertexColorState(PropertyGroup):
     selected_curves: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})
     swatches: CollectionProperty(type=FBP_GPColorSwatch, options={"HIDDEN", "SKIP_SAVE"})
     swatch_index: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})
+    replace_stroke_color: FloatVectorProperty(
+        name="Replacement Stroke Color",
+        description="Color that Replace All gives every selected stroke",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(0.0, 0.0, 0.0, 1.0),
+        options={"SKIP_SAVE"},
+    )
+    replace_fill_color: FloatVectorProperty(
+        name="Replacement Fill Color",
+        description="Color that Replace All gives every selected fill",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0),
+        options={"SKIP_SAVE"},
+    )
 
 
 class FBP_OT_SampleGPStrokeColor(Operator):
@@ -1759,7 +1920,7 @@ class FBP_OT_SampleGPStrokeColor(Operator):
 class FBP_OT_SwapGPVertexColors(Operator):
     bl_idname = "fbp.swap_gp_vertex_colors"
     bl_label = "Swap Stroke and Fill Colors"
-    bl_description = "Swap the semantic Stroke and Fill vertex colors"
+    bl_description = "Swap the Stroke and Fill colors. In Edit Mode every selected stroke swaps its own colors"
     bl_options = {"REGISTER"}
 
     @classmethod
@@ -1779,15 +1940,15 @@ class FBP_OT_SwapGPVertexColors(Operator):
         if _context_mode(context) == "EDIT_GREASE_PENCIL":
             _commit_edit_color_undo()
             _begin_edit_color_undo("STROKE")
-        _set_state_value(state, "stroke_color", old_fill)
-        _set_state_value(state, "fill_color", old_stroke)
-        if _context_mode(context) == "EDIT_GREASE_PENCIL":
-            _apply_selected_color(context, "STROKE", old_fill)
-            _apply_selected_color(context, "FILL", old_stroke)
+            _sync_edit_state(context, force=True)
+            # Each selected stroke swaps its own Stroke and Fill colors.
+            _swap_selected_per_stroke(context)
             _sync_edit_state(context, force=True)
             _RUNTIME["edit_undo_label"] = "Swap Grease Pencil Stroke / Fill Colors"
             _commit_edit_color_undo()
         else:
+            _set_state_value(state, "stroke_color", old_fill)
+            _set_state_value(state, "fill_color", old_stroke)
             _kind, _paint, _brush, owner, gp_settings, target_mode = _semantic_brush_context(context)
             if owner is not None and gp_settings is not None:
                 _canonical_brush_colors(state, owner, target_mode)
@@ -2034,78 +2195,180 @@ class FBP_PT_GPFillColorPopover(Panel):
 
 
 class FBP_UL_GPColorSwatches(UIList):
+    """Selected colors of one target; the list's filter keeps Stroke or Fill."""
+
     bl_idname = "FBP_UL_gp_color_swatches"
+    target = "STROKE"
 
     def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_property, _index=0, _flt_flag=0):
-        row = layout.row(align=True)
-        row.label(text="Stroke" if item.target == "STROKE" else "Fill",
-                  icon="GP_DRAW_STROKE" if item.target == "STROKE" else "GP_DRAW_FILL")
-        row.prop(item, "color", text="")
+        layout.prop(item, "color", text="")
+
+    def filter_items(self, _context, data, propname):
+        items = getattr(data, propname)
+        flags = [self.bitflag_filter_item if item.target == self.target else 0 for item in items]
+        return flags, []
 
 
-class FBP_PT_GPColorSwatchesPopover(Panel):
-    bl_idname = "FBP_PT_gp_color_swatches_popover"
-    bl_label = "Selected Colors"
+class FBP_UL_GPStrokeSwatches(FBP_UL_GPColorSwatches):
+    bl_idname = "FBP_UL_gp_stroke_swatches"
+    target = "STROKE"
+
+
+class FBP_UL_GPFillSwatches(FBP_UL_GPColorSwatches):
+    bl_idname = "FBP_UL_gp_fill_swatches"
+    target = "FILL"
+
+
+class FBP_OT_ReplaceAllGPColors(Operator):
+    bl_idname = "fbp.replace_all_gp_colors"
+    bl_label = "Replace All"
+    bl_description = "Give every selected stroke (or fill) the replacement color"
+    bl_options = {"REGISTER"}
+
+    target: EnumProperty(items=(("STROKE", "Stroke", ""), ("FILL", "Fill", "")), default="STROKE")
+
+    @classmethod
+    def poll(cls, context):
+        return _active_gp_object(context) is not None and _context_mode(context) == "EDIT_GREASE_PENCIL"
+
+    def execute(self, context):
+        state = _state(context)
+        if state is None:
+            return {"CANCELLED"}
+        color = state.replace_stroke_color if self.target == "STROKE" else state.replace_fill_color
+        _commit_edit_color_undo()
+        _sync_edit_state(context, force=True)
+        if not _apply_selected_color(context, self.target, _rgba(color), record_undo=True):
+            return {"CANCELLED"}
+        _sync_edit_state(context, force=True)
+        return {"FINISHED"}
+
+
+def _draw_target_swatch_popover(layout, context, target):
+    state = _state(context)
+    if state is None:
+        layout.label(text="Color state unavailable", icon="ERROR")
+        return
+    count = len(_swatch_items(state, target))
+    name = "Stroke" if target == "STROKE" else "Fill"
+    layout.label(text=f"{count} {name} Colors", icon="GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL")
+    layout.template_list(
+        FBP_UL_GPStrokeSwatches.bl_idname if target == "STROKE" else FBP_UL_GPFillSwatches.bl_idname,
+        "",
+        state,
+        "swatches",
+        state,
+        "swatch_index",
+        rows=8,
+        columns=4,
+        type="GRID",
+    )
+    row = layout.row(align=True)
+    row.prop(state, "replace_stroke_color" if target == "STROKE" else "replace_fill_color", text="")
+    replace = row.operator(FBP_OT_ReplaceAllGPColors.bl_idname, text="Replace All", icon="BRUSH_DATA")
+    replace.target = target
+    other = "Fill" if target == "STROKE" else "Stroke"
+    layout.operator("fbp.swap_gp_vertex_colors", text=f"Invert with {other}", icon="ARROW_LEFTRIGHT")
+
+
+class FBP_PT_GPStrokeSwatchesPopover(Panel):
+    bl_idname = "FBP_PT_gp_stroke_swatches_popover"
+    bl_label = "Stroke Colors"
     bl_space_type = "VIEW_3D"
     bl_region_type = "HEADER"
-    bl_ui_units_x = 12
+    bl_ui_units_x = 11
 
     @classmethod
     def poll(cls, context):
         return _active_gp_object(context) is not None and _context_mode(context) == "EDIT_GREASE_PENCIL"
 
     def draw(self, context):
-        layout = self.layout
-        state = _state(context)
-        if state is None:
-            layout.label(text="Color state unavailable", icon="ERROR")
-            return
-        stroke_count = len(_swatch_items(state, "STROKE"))
-        fill_count = len(_swatch_items(state, "FILL"))
-        layout.label(text=f"{stroke_count} stroke · {fill_count} fill colors")
-        layout.template_list(
-            FBP_UL_GPColorSwatches.bl_idname,
-            "",
-            state,
-            "swatches",
-            state,
-            "swatch_index",
-            rows=8,
+        _draw_target_swatch_popover(self.layout, context, "STROKE")
+
+
+class FBP_PT_GPFillSwatchesPopover(Panel):
+    bl_idname = "FBP_PT_gp_fill_swatches_popover"
+    bl_label = "Fill Colors"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = 11
+
+    @classmethod
+    def poll(cls, context):
+        return FBP_PT_GPStrokeSwatchesPopover.poll(context)
+
+    def draw(self, context):
+        _draw_target_swatch_popover(self.layout, context, "FILL")
+
+
+def header_swatch_layout(stroke_count, fill_count, limit=_HEADER_SWATCH_LIMIT):
+    """Return ``(stroke_inline, fill_inline)`` for the Edit Mode color strip.
+
+    Both sides stay inline while their colors fit in ``limit`` swatches.
+    Otherwise the larger side collapses into its own dropdown (one slot), and
+    the other side collapses too only if it still does not fit.
+    """
+    stroke_count = max(0, int(stroke_count))
+    fill_count = max(0, int(fill_count))
+    if stroke_count + fill_count <= limit:
+        return True, True
+    if stroke_count >= fill_count:
+        return False, fill_count + 1 <= limit
+    return stroke_count + 1 <= limit, False
+
+
+def _draw_header_side(layout, state, target, items, inline, *, enabled=True):
+    side = layout.row(align=True)
+    side.enabled = bool(enabled)
+    if not inline:
+        side.popover(
+            panel=(
+                FBP_PT_GPStrokeSwatchesPopover.bl_idname
+                if target == "STROKE"
+                else FBP_PT_GPFillSwatchesPopover.bl_idname
+            ),
+            text=f"{len(items)} {'Strokes' if target == 'STROKE' else 'Fills'}",
+            icon="GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL",
         )
-        layout.operator("fbp.swap_gp_vertex_colors", text="Swap Stroke / Fill", icon="ARROW_LEFTRIGHT")
+        return
+    if len(items) <= 1:
+        single = side.row(align=True)
+        single.ui_units_x = 2.5
+        single.prop_with_popover(
+            state,
+            "stroke_color" if target == "STROKE" else "fill_color",
+            text="",
+            panel="FBP_PT_gp_stroke_color_popover" if target == "STROKE" else "FBP_PT_gp_fill_color_popover",
+        )
+        return
+    for item in items:
+        swatch = side.row(align=True)
+        swatch.ui_units_x = 1.2
+        swatch.prop(item, "color", text="")
 
 
 def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
-    """Show every selected color: up to 12 swatches in a row, else a list popover."""
+    """Edit Mode strip: Stroke colors, swap, Fill colors; hides an empty side."""
     stroke_items = _swatch_items(state, "STROKE")
     fill_items = _swatch_items(state, "FILL")
-    stroke_unique = int(_RUNTIME.get("stroke_unique", 0) or 0)
-    fill_unique = int(_RUNTIME.get("fill_unique", 0) or 0)
-    total = stroke_unique + fill_unique
-    if stroke_unique <= 1 and fill_unique <= 1:
+    has_stroke = bool(state.stroke_available) and bool(stroke_items)
+    has_fill = bool(state.fill_available) and bool(fill_items)
+    if not has_stroke and not has_fill:
         return False
+    stroke_inline, fill_inline = header_swatch_layout(
+        len(stroke_items) if has_stroke else 0,
+        len(fill_items) if has_fill else 0,
+    )
     row = layout.row(align=True)
-    row.enabled = bool(enabled)
-    if total > _HEADER_SWATCH_LIMIT or total > len(stroke_items) + len(fill_items):
-        row.popover(
-            panel=FBP_PT_GPColorSwatchesPopover.bl_idname,
-            text=f"{total} Colors",
-            icon="COLOR",
-        )
-        return True
-    strokes = row.row(align=True)
-    for item in stroke_items:
-        swatch = strokes.row(align=True)
-        swatch.ui_units_x = 1.2
-        swatch.prop(item, "color", text="")
-    swap = row.row(align=True)
-    swap.ui_units_x = 1.25
-    swap.operator("fbp.swap_gp_vertex_colors", text="", icon="ARROW_LEFTRIGHT", emboss=True)
-    fills = row.row(align=True)
-    for item in fill_items:
-        swatch = fills.row(align=True)
-        swatch.ui_units_x = 1.2
-        swatch.prop(item, "color", text="")
+    if has_stroke:
+        _draw_header_side(row, state, "STROKE", stroke_items, stroke_inline, enabled=enabled)
+    if has_stroke and has_fill:
+        swap = row.row(align=True)
+        swap.ui_units_x = 1.25
+        swap.enabled = bool(enabled)
+        swap.operator("fbp.swap_gp_vertex_colors", text="", icon="ARROW_LEFTRIGHT", emboss=True)
+    if has_fill:
+        _draw_header_side(row, state, "FILL", fill_items, fill_inline, enabled=enabled)
     return True
 
 
@@ -2336,6 +2599,177 @@ def _draw_native_vertex_tool_settings(context, layout, tool):
     return True
 
 
+_ESSENTIAL_DRAW_BRUSH_FILE = "essentials_brushes-gp_draw.blend"
+_ESSENTIAL_DRAW_BRUSHES = None
+
+
+def _essential_draw_brush_names():
+    """Names of Blender's bundled Grease Pencil Draw brushes, read once."""
+    global _ESSENTIAL_DRAW_BRUSHES
+    if _ESSENTIAL_DRAW_BRUSHES is not None:
+        return _ESSENTIAL_DRAW_BRUSHES
+    names = ()
+    try:
+        import os
+
+        path = os.path.join(
+            bpy.utils.system_resource("DATAFILES", path="assets"),
+            "brushes",
+            _ESSENTIAL_DRAW_BRUSH_FILE,
+        )
+        if os.path.isfile(path):
+            with bpy.data.libraries.load(path, assets_only=True) as (source, _target):
+                names = tuple(sorted(str(name) for name in source.brushes))
+    except (OSError, *FBP_DATA_ERRORS):
+        names = ()
+    if names:
+        _ESSENTIAL_DRAW_BRUSHES = names
+    return names
+
+
+def _active_draw_brush(context):
+    try:
+        paint = context.scene.tool_settings.gpencil_paint
+        return paint.brush, paint.brush_asset_reference
+    except FBP_DATA_ERRORS:
+        return None, None
+
+
+class FBP_OT_SetGPDrawBrush(Operator):
+    bl_idname = "fbp.set_gp_draw_brush"
+    bl_label = "Set Draw Brush"
+    bl_description = "Choose the Draw Mode brush without leaving Edit Mode"
+    bl_options = {"REGISTER"}
+
+    asset_library_type: StringProperty(default="ESSENTIALS", options={"HIDDEN", "SKIP_SAVE"})
+    relative_asset_identifier: StringProperty(default="", options={"HIDDEN", "SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        return _active_gp_object(context) is not None
+
+    def execute(self, context):
+        mode = _context_mode(context)
+        # Blender activates brush assets only in their own paint mode, so hop
+        # into Draw Mode for the switch and come straight back.
+        try:
+            if mode != "PAINT_GREASE_PENCIL":
+                bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+            result = bpy.ops.brush.asset_activate(
+                asset_library_type=self.asset_library_type,
+                relative_asset_identifier=self.relative_asset_identifier,
+            )
+        except FBP_DATA_ERRORS as exc:
+            self.report({"WARNING"}, f"Could not set the Draw brush: {exc}")
+            result = {"CANCELLED"}
+        finally:
+            if mode == "EDIT_GREASE_PENCIL" and _context_mode(context) != mode:
+                try:
+                    bpy.ops.object.mode_set(mode="EDIT")
+                except FBP_DATA_ERRORS:
+                    pass
+        return {"FINISHED"} if "FINISHED" in result else {"CANCELLED"}
+
+
+class FBP_PT_GPEditBrushPopover(Panel):
+    bl_idname = "FBP_PT_gp_edit_brush_popover"
+    bl_label = "Draw Brush"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = 10
+
+    @classmethod
+    def poll(cls, context):
+        return _active_gp_object(context) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        _brush, reference = _active_draw_brush(context)
+        active = str(getattr(reference, "relative_asset_identifier", "") or "")
+        column = layout.column(align=True)
+        for name in _essential_draw_brush_names():
+            identifier = f"brushes/{_ESSENTIAL_DRAW_BRUSH_FILE}/Brush/{name}"
+            operator = column.operator(
+                FBP_OT_SetGPDrawBrush.bl_idname,
+                text=name,
+                icon="CHECKMARK" if identifier == active else "BRUSH_DATA",
+                depress=identifier == active,
+            )
+            operator.asset_library_type = "ESSENTIALS"
+            operator.relative_asset_identifier = identifier
+        local = [
+            brush
+            for brush in bpy.data.brushes
+            if getattr(brush, "use_paint_grease_pencil", False)
+            and brush.library is None
+            and brush.asset_data is not None
+        ]
+        if local:
+            layout.separator()
+            layout.label(text="This File")
+            column = layout.column(align=True)
+            for brush in local:
+                identifier = f"Brush/{brush.name}"
+                operator = column.operator(
+                    FBP_OT_SetGPDrawBrush.bl_idname,
+                    text=brush.name,
+                    icon="CHECKMARK" if identifier == active else "BRUSH_DATA",
+                    depress=identifier == active,
+                )
+                operator.asset_library_type = "LOCAL"
+                operator.relative_asset_identifier = identifier
+
+
+def _draw_edit_material_and_brush(layout, context):
+    """Material slot and Draw brush selectors, usable from Edit Mode."""
+    obj = _active_gp_object(context)
+    if obj is None:
+        return
+    row = layout.row(align=True)
+    material = getattr(obj, "active_material", None)
+    icon_id = 0
+    material_name = ""
+    if material is not None:
+        try:
+            material.preview_ensure()
+            if material.preview:
+                icon_id = material.preview.icon_id
+        except FBP_DATA_ERRORS:
+            icon_id = 0
+        material_name = material.name
+        if len(material_name) > 20:
+            material_name = material_name[:15] + ".." + material_name[-3:]
+    material_row = row.row(align=True)
+    material_row.ui_units_x = 7
+    material_row.popover(
+        panel="TOPBAR_PT_grease_pencil_materials",
+        text=material_name,
+        translate=False,
+        icon_value=icon_id,
+    )
+    brush, _reference = _active_draw_brush(context)
+    brush_icon = 0
+    try:
+        if brush is not None and brush.preview is not None:
+            brush_icon = brush.preview.icon_id
+    except FBP_DATA_ERRORS:
+        brush_icon = 0
+    brush_row = row.row(align=True)
+    brush_row.ui_units_x = 6
+    if brush_icon:
+        brush_row.popover(
+            panel=FBP_PT_GPEditBrushPopover.bl_idname,
+            text=getattr(brush, "name", "") or "Brush",
+            icon_value=brush_icon,
+        )
+    else:
+        brush_row.popover(
+            panel=FBP_PT_GPEditBrushPopover.bl_idname,
+            text=getattr(brush, "name", "") or "Brush",
+            icon="BRUSH_DATA",
+        )
+
+
 def _draw_native_edit_tool_settings(context, layout, _tool):
     """Place Edit colors where paint modes expose their native brush color."""
     state = _state(context)
@@ -2350,6 +2784,8 @@ def _draw_native_edit_tool_settings(context, layout, _tool):
     )
     if needs_initial_sync:
         _sync_edit_state(context, force=True)
+    layout.separator(factor=0.4)
+    _draw_edit_material_and_brush(layout, context)
     layout.separator(factor=0.4)
     _draw_header_color_pair(layout, context, enabled=True)
     return True
@@ -2481,8 +2917,13 @@ classes = (
     FBP_PT_GPVertexColors,
     FBP_PT_GPStrokeColorPopover,
     FBP_PT_GPFillColorPopover,
-    FBP_UL_GPColorSwatches,
-    FBP_PT_GPColorSwatchesPopover,
+    FBP_UL_GPStrokeSwatches,
+    FBP_UL_GPFillSwatches,
+    FBP_OT_ReplaceAllGPColors,
+    FBP_PT_GPStrokeSwatchesPopover,
+    FBP_PT_GPFillSwatchesPopover,
+    FBP_OT_SetGPDrawBrush,
+    FBP_PT_GPEditBrushPopover,
 )
 
 
@@ -2499,6 +2940,7 @@ def register():
         )
         registered_properties = True
         register_classes(classes)
+        _essential_draw_brush_names()
         _register_tool_header()
         _register_sample_color_keymaps()
         _register_brush_color_timer()

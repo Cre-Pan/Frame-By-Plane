@@ -231,13 +231,42 @@ def test_feedback_update_popup_contract(_module):
     finally:
         feedback._FBP_AUTO_PROMPT_DEADLINE = previous_deadline
 
+    # The splash appears after every installation: fresh, update or reinstall.
+    from types import SimpleNamespace as _Prefs
+
+    fresh = _Prefs(whats_new_enabled=True, whats_new_last_seen_version="", whats_new_install_stamp="")
+    assert feedback._whats_new_is_pending(fresh)
+    upgraded = _Prefs(
+        whats_new_enabled=True,
+        whats_new_last_seen_version=PREVIOUS_RELEASE,
+        whats_new_install_stamp="",
+    )
+    assert feedback._whats_new_is_pending(upgraded)
+    seen = _Prefs(
+        whats_new_enabled=True,
+        whats_new_last_seen_version=feedback.FBP_CURRENT_RELEASE,
+        whats_new_install_stamp=feedback._install_stamp(),
+    )
+    assert not feedback._whats_new_is_pending(seen)
+    reinstalled = _Prefs(
+        whats_new_enabled=True,
+        whats_new_last_seen_version=feedback.FBP_CURRENT_RELEASE,
+        whats_new_install_stamp=feedback.FBP_CURRENT_RELEASE + ":1",
+    )
+    assert feedback._whats_new_is_pending(reinstalled)
+    disabled = _Prefs(whats_new_enabled=False, whats_new_last_seen_version="", whats_new_install_stamp="")
+    assert not feedback._whats_new_is_pending(disabled)
+    marked = _Prefs(whats_new_enabled=True, whats_new_last_seen_version="", whats_new_install_stamp="")
+    assert feedback._mark_whats_new_seen(marked, persist=False)
+    assert not feedback._whats_new_is_pending(marked)
+
     titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     assert titles == (
-        "Dual Grease Pencil Colors",
-        "Edit Mode Color Control",
-        "Smarter Camera Settings",
+        "Magnetic Scrub Bar",
+        "Every Selected Color",
+        "Material and Brush in Edit Mode",
+        "One Add Plane Dialog",
         "Bug Fixes",
-        "Better User Interface",
     )
     assert all("7.1" not in item[1] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     # Fresh assets must be decoded once; reused assets still refresh on update.
@@ -2841,7 +2870,7 @@ def test_preview_scope_policy(_module):
     assert all(item["used"] for item in usage), usage
     assert next(item for item in usage if item["id"] == "compositor_layers")["enabled"]
     diagnostics = feature_scope.fbp_preview_diagnostics_text(PreviewScene())
-    assert "outside the Frame By Plane 7.2 LTS stability promise" in diagnostics
+    assert "outside the Frame By Plane 7.5 LTS stability promise" in diagnostics
     assert "no file paths, project media or telemetry" in diagnostics
 
     project_health = importlib.import_module(f"{PACKAGE}.project_health")

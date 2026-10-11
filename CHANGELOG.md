@@ -2,18 +2,28 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [Unreleased]
+## [7.5.0] - Unreleased
+
+Version bumped to 7.5.0; later updates continue as 7.5.x.
+
+### Release splash
+
+- The release splash now opens after every installation of Frame By Plane: a fresh install, an update, or reinstalling the same version, from Blender Extensions or by drag and drop. Starting Blender again does not show it. **Show After Install / Update** in Preferences still turns it off.
 
 ### Grease Pencil
 
 - Removed the Frame By Plane Grease Pencil effect list and its grouped effect picker (Reset, Move, Toggle, Repair Duplicates and the compatibility report). Grease Pencil drawings now use Blender's own Modifiers and Visual Effects panels; effects already added to a drawing stay on it as normal Blender effects.
 - Removed **Draw on Canvas** (the Draw, Fill and Erase buttons next to a Drawing Plane), the **Ink Over Image** panel, **Create Missing / Current GP Drawings** and **Limited Loop Blocks**. Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 - **Grease Pencil Drawing** in Shift+A is greyed out until a Frame By Plane plane is selected.
-- In Edit Mode, selecting strokes with different colors shows every distinct Stroke and Fill color in the Tool Header (`Stroke colors ⇄ Fill colors`), up to 12 swatches; identical colors share one swatch. With more than 12, a **Colors** dropdown lists them all. Changing a swatch recolors only the selected strokes or fills that use that color.
+- In Edit Mode, selecting strokes with different colors shows every distinct Stroke and Fill color in the Tool Header (`Stroke colors ⇄ Fill colors`), up to 12 swatches; identical colors share one swatch. With more than 12, the larger side collapses into its own **Strokes** or **Fills** dropdown with a color list, **Replace All** and **Invert with Fill/Stroke**. Changing a swatch recolors only the selected strokes or fills that use that color.
+- Only colors that are drawn count: if the selected strokes' material hides fills, the Fill side and the swap button disappear (and the other way round).
+- **Swap Stroke / Fill** in Edit Mode now swaps each selected stroke's own colors, instead of painting every stroke with one color.
+- Edit Mode's Tool Header has the **Material** selector (with Assign) and a **Draw brush** selector, so both can be changed without leaving Edit Mode.
 
 ### Scrub Bar
 
 - Holding **<** now follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away from it, up to **Far Speed** (Preferences, **Speed Ramp Distance**). Moving only across the bar no longer changes the frame.
+- Fixed: after releasing **<** the playhead stayed on the scrubbed frame until the next key press. Blender events carry no timer handle, so the glide never ticked; Scrub Bar edge scrolling and the hover magnet were affected the same way.
 - Releasing **<** snaps the playhead back to the frame where you started like a magnet: it accelerates, passes the start frame by a frame or two and settles on it (**Return to Start Frame**, on by default, with **Return Time** and **Bounce**). Any key or click during the glide lands on the start frame at once.
 - The Scrub Bar menu in the Viewport header is split into collapsible sections (Scrub Bar, Return to Start, Scrub Speed, Onion Skin, Bookmarks, Preview Range). **Length** is now in the Scrub Bar section, goes down to 10% of the Viewport and updates the bar while it is shown.
 - A quick tap of **<** no longer pins the Scrub Bar. Pin it from the Scrub Bar button or its menu in the Viewport header, or turn **Tap < Pins the Bar** back on in Preferences.

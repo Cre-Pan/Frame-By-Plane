@@ -4798,11 +4798,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
 
         if self._returning:
             if event_type == "TIMER":
-                try:
-                    owned_timer = getattr(event, "timer", None) is self._timer
-                except FBP_DATA_ERRORS:
-                    owned_timer = False
-                if owned_timer:
+                if self._timer is not None:
                     result = self._tick_return(context)
                     if result is not None:
                         return result
@@ -5035,11 +5031,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return {"PASS_THROUGH"}
 
         if event_type == "TIMER":
-            try:
-                owned_timer = getattr(event, "timer", None) is self._timer
-            except FBP_DATA_ERRORS:
-                owned_timer = False
-            if owned_timer:
+            # bpy.types.Event exposes no timer handle, so any window TIMER
+            # drives the time-based ticks while this session owns a timer.
+            if self._timer is not None:
                 if self._shortcut_pending and in_window:
                     self._edge_tick(context)
                 elif self._is_persistent:

@@ -132,6 +132,68 @@ try:
     drawing.strokes[1].fill_color = (0.7, 0.6, 0.5, 0.4)
     module._sync_edit_state(bpy.context, force=True)
 
+    # Swap inverts every selected stroke on its own: its first selected point
+    # color becomes its fill, and its fill paints its selected points.
+    assert module._swap_selected_per_stroke(bpy.context) == 2
+    assert close_color(drawing.strokes[0].points[0].vertex_color, (0.1, 0.2, 0.3, 0.4))
+    assert close_color(drawing.strokes[0].points[1].vertex_color, (0.1, 0.2, 0.3, 0.4))
+    assert close_color(drawing.strokes[0].points[2].vertex_color, point_colors[2])
+    assert close_color(drawing.strokes[0].fill_color, point_colors[0])
+    assert close_color(drawing.strokes[1].points[0].vertex_color, (0.7, 0.6, 0.5, 0.4))
+    assert close_color(drawing.strokes[1].fill_color, point_colors[3])
+    for index, point in enumerate(point for stroke in drawing.strokes for point in stroke.points):
+        point.vertex_color = point_colors[index]
+    drawing.strokes[0].fill_color = (0.1, 0.2, 0.3, 0.4)
+    drawing.strokes[1].fill_color = (0.7, 0.6, 0.5, 0.4)
+
+    # A material that hides fills contributes no Fill swatches.
+    style = material.grease_pencil
+    stroke_rgba = tuple(style.color)
+    fill_rgba = tuple(style.fill_color)
+    style.fill_color = (*fill_rgba[:3], 0.0)
+    assert style.is_fill_visible is False
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert state.fill_available is False
+    assert module._swatch_items(state, "FILL") == []
+    assert len(module._swatch_items(state, "STROKE")) == 3
+    style.fill_color = fill_rgba
+    style.color = (*stroke_rgba[:3], 0.0)
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert state.stroke_available is False
+    assert len(module._swatch_items(state, "FILL")) == 2
+    style.color = stroke_rgba
+    module._sync_edit_state(bpy.context, force=True)
+
+    # Header strip: both sides inline up to 12; the larger side collapses first.
+    assert module.header_swatch_layout(11, 1) == (True, True)
+    assert module.header_swatch_layout(12, 1) == (False, True)
+    assert module.header_swatch_layout(1, 12) == (True, False)
+    assert module.header_swatch_layout(13, 13) == (False, False)
+    assert module.header_swatch_layout(6, 6) == (True, True)
+
+    # Replace All gives every selected stroke one color.
+    state.replace_stroke_color = (0.25, 0.5, 0.75, 1.0)
+    assert bpy.ops.fbp.replace_all_gp_colors(target="STROKE") == {"FINISHED"}
+    assert close_color(drawing.strokes[0].points[0].vertex_color, (0.25, 0.5, 0.75, 1.0))
+    assert close_color(drawing.strokes[1].points[0].vertex_color, (0.25, 0.5, 0.75, 1.0))
+    assert close_color(drawing.strokes[0].points[2].vertex_color, point_colors[2])
+    for index, point in enumerate(point for stroke in drawing.strokes for point in stroke.points):
+        point.vertex_color = point_colors[index]
+    module._sync_edit_state(bpy.context, force=True)
+
+    # The Draw brush can be chosen without leaving Edit Mode.
+    names = module._essential_draw_brush_names()
+    assert "Ink Pen" in names and "Pencil" in names, names
+    result = bpy.ops.fbp.set_gp_draw_brush(
+        asset_library_type="ESSENTIALS",
+        relative_asset_identifier="brushes/essentials_brushes-gp_draw.blend/Brush/Ink Pen",
+    )
+    assert result == {"FINISHED"}, result
+    assert bpy.context.mode == "EDIT_GREASE_PENCIL"
+    assert bpy.context.scene.tool_settings.gpencil_paint.brush.name == "Ink Pen"
+    assert tuple(module._drawing_selection_values(drawing, "POINT")) == (1, 1, 0, 1, 0)
+    module._sync_edit_state(bpy.context, force=True)
+
     # Native Stroke Select marks every point in a selected stroke. The fast
     # path reads one selection bit per stroke and still builds full targets.
     bpy.context.scene.tool_settings.gpencil_selectmode_edit = "STROKE"

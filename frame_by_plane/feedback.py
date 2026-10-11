@@ -136,29 +136,29 @@ FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS = 0.50
 # not in the first screen shown after an update.
 FBP_PUBLIC_RELEASE_ITEMS = (
     (
-        "Dual Grease Pencil Colors",
-        "Independent Stroke and Fill control in Draw Mode.",
+        "Magnetic Scrub Bar",
+        "Release < and the playhead snaps back to where you started.",
+        "TIME",
+    ),
+    (
+        "Every Selected Color",
+        "Each Stroke and Fill color as its own swatch in Edit Mode.",
         "COLOR",
     ),
     (
-        "Edit Mode Color Control",
-        "Recolor selected strokes and fills in one click.",
-        "OUTLINER_OB_GREASEPENCIL",
+        "Material and Brush in Edit Mode",
+        "Pick the material and the Draw brush without leaving Edit Mode.",
+        "BRUSH_DATA",
     ),
     (
-        "Smarter Camera Settings",
-        "Aspect presets, orientation and linked pixel sizes.",
-        "IMAGE_BACKGROUND",
+        "One Add Plane Dialog",
+        "Image, Video, Color, Gradient and Holdout in one place.",
+        "IMAGE_PLANE",
     ),
     (
         "Bug Fixes",
         "Based on user reviews. Rate Frame By Plane and give feedback!",
         "GHOST_DISABLED",
-    ),
-    (
-        "Better User Interface",
-        "User interface and stability improvements.",
-        "PREFERENCES",
     ),
 )
 
@@ -178,14 +178,26 @@ def _version_tuple(value):
     return tuple(int(part) for part in match.groups()) if match else ()
 
 
-def _whats_new_is_pending(prefs):
-    """Check pending release notes when preferences are already initialized.
+def _install_stamp():
+    """Identify this installation of the package, not only its version.
 
-    Fresh installs start with an empty ``whats_new_last_seen_version``. Treat
-    that as no pending popup so the add-on never opens a first-run splash
-    unexpectedly. Once a user has viewed/dismissed the notes, every later
-    intermediate release key may show the popup once. This keeps active testers
-    informed without resurrecting the first-run splash on a clean install.
+    Installing an extension (from Blender Extensions or by drag and drop)
+    extracts fresh files, so the package's modification time changes even when
+    the same version is installed again. A normal Blender start keeps it.
+    """
+    try:
+        stamp = Path(__file__).resolve().with_name("__init__.py").stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    return f"{FBP_CURRENT_RELEASE}:{stamp}"
+
+
+def _whats_new_is_pending(prefs):
+    """Show the release splash once after every installation or update.
+
+    A fresh install (no stored version), a different version and a reinstall
+    of the same version (new install stamp) all count as an installation.
+    Starting Blender again with the same installed files does not.
     """
     if prefs is None:
         return False
@@ -193,22 +205,10 @@ def _whats_new_is_pending(prefs):
         if not bool(getattr(prefs, "whats_new_enabled", True)):
             return False
         seen = str(getattr(prefs, "whats_new_last_seen_version", "") or "").strip()
-        if not seen:
-            # Establish a silent baseline on first install. This prevents a
-            # startup splash from appearing immediately, while still allowing
-            # a later release-family upgrade to show release notes once.
-            _mark_whats_new_seen(prefs)
-            return False
-        if seen == FBP_CURRENT_RELEASE:
-            return False
-        current_key = _version_tuple(FBP_CURRENT_RELEASE)
-        seen_key = _version_tuple(seen)
-        # Never advertise a release older than the stored 7.1.x feedback key.
-        # Exact feedback keys are used so intermediate development releases can
-        # still show What’s New once after the user has an established baseline.
-        if seen_key and current_key and current_key <= seen_key:
-            return False
-        return bool(current_key and seen_key)
+        if seen != FBP_CURRENT_RELEASE:
+            return True
+        stamp = str(getattr(prefs, "whats_new_install_stamp", "") or "").strip()
+        return stamp != _install_stamp()
     except FBP_DATA_ERRORS:
         return False
 
@@ -238,8 +238,14 @@ def _mark_whats_new_seen(prefs, *, persist=True):
         return False
     try:
         current_value = str(getattr(prefs, "whats_new_last_seen_version", "") or "")
+        current_stamp = str(getattr(prefs, "whats_new_install_stamp", "") or "")
+        stamp = _install_stamp()
         prefs.whats_new_last_seen_version = FBP_CURRENT_RELEASE
-        if bool(persist) and current_value != FBP_CURRENT_RELEASE:
+        try:
+            prefs.whats_new_install_stamp = stamp
+        except FBP_DATA_ERRORS:
+            pass
+        if bool(persist) and (current_value != FBP_CURRENT_RELEASE or current_stamp != stamp):
             _save_feedback_preferences_soon()
         return True
     except FBP_DATA_ERRORS:
