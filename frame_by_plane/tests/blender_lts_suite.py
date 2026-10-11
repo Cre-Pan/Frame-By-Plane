@@ -1690,6 +1690,23 @@ def test_scrub_bar_regressions(_module):
     assert early > 28, early  # eases in: slow start
     assert scrub.scrub_return_frame(30, 10, 0.5, 0.35) == (10, True)
 
+    # With a bounce the playhead passes the start frame, then settles on it.
+    assert scrub.scrub_return_overshoot(30, 29, 0.1) == 0.0
+    assert math.isclose(scrub.scrub_return_overshoot(30, 10, 0.1), 2.0 / 20.0)
+    assert math.isclose(scrub.scrub_return_overshoot(14, 10, 0.1), 1.0 / 4.0)
+    assert math.isclose(scrub.scrub_return_overshoot(110, 10, 0.5), 3.0 / 100.0)
+    frames = [
+        scrub.scrub_return_frame(30, 10, step * 0.01, 0.45, 0.1)[0]
+        for step in range(46)
+    ]
+    assert min(frames) == 8, frames
+    assert frames[-1] == 10, frames
+    assert frames.index(8) < len(frames) - 1
+    assert scrub.scrub_return_frame(30, 10, 0.5, 0.45, 0.1) == (10, True)
+    assert math.isclose(scrub.scrub_return_curve(0.0, 0.1), 0.0)
+    assert math.isclose(scrub.scrub_return_curve(1.0, 0.1), 1.0)
+    assert math.isclose(scrub.scrub_return_curve(scrub._RETURN_BOUNCE_PEAK, 0.1), 1.1)
+
     # A tap no longer pins the bar unless the preference asks for it.
     assert scrub.scrub_release_action(0.05, False, False, tap_toggles=False) == "FINISH_MOMENTARY"
     assert scrub.scrub_release_action(0.05, False, True, tap_toggles=False) == "KEEP_PERSISTENT"

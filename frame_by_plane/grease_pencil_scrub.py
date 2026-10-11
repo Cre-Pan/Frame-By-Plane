@@ -257,7 +257,7 @@ def scrub_preferences(context=None):
     try:
         sensitivity = max(0.1, min(12.0, float(getattr(preferences, "gp_scrub_sensitivity", 2.0))))
         slow_factor = max(0.02, min(1.0, float(getattr(preferences, "gp_scrub_shift_factor", 0.2))))
-        length_ratio = max(0.2, min(1.0, float(getattr(preferences, "gp_scrub_length_ratio", 0.5))))
+        length_ratio = max(0.1, min(1.0, float(getattr(preferences, "gp_scrub_length_ratio", 0.5))))
         offset = max(8.0, min(240.0, float(getattr(preferences, "gp_scrub_edge_offset", 240.0))))
         tick_scale = max(0.25, min(3.0, float(getattr(preferences, "gp_scrub_tick_scale", 0.5))))
         line_width = max(0.5, min(6.0, float(getattr(preferences, "gp_scrub_line_width", 1.0))))
@@ -1200,7 +1200,7 @@ def scrub_overlay_layout(region_or_width, height=None, *, position="BOTTOM", ver
         height_value = float(height or 1.0)
     scale = max(0.5, float(ui_scale))
     margin = _OVERLAY_MARGIN_PX * scale
-    ratio = max(0.2, min(1.0, float(length_ratio)))
+    ratio = max(0.1, min(1.0, float(length_ratio)))
     offset = max(margin, float(edge_offset) * scale)
     position = str(position or "BOTTOM").upper()
     if vertical is not None:
@@ -2080,8 +2080,50 @@ def scrub_return_ease(progress):
     return 1.0 - ((-2.0 * t + 2.0) ** 3) * 0.5
 
 
-def scrub_return_frame(start_frame, target_frame, elapsed, duration):
-    """Return ``(frame, finished)`` for the glide back to the start frame."""
+_RETURN_BOUNCE_PEAK = 0.68
+
+
+def scrub_return_curve(progress, overshoot=0.0):
+    """Magnet curve: accelerate toward the target, pass it, then settle back.
+
+    ``overshoot`` is the fraction of the travel distance passed beyond the
+    target before settling. Zero gives the plain ease-in-out glide.
+    """
+    try:
+        t = max(0.0, min(1.0, float(progress)))
+        bounce = max(0.0, float(overshoot))
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    if not (math.isfinite(t) and math.isfinite(bounce)):
+        return 1.0
+    if bounce <= 1.0e-6:
+        return scrub_return_ease(t)
+    peak = _RETURN_BOUNCE_PEAK
+    if t < peak:
+        return (1.0 + bounce) * scrub_return_ease(t / peak)
+    return 1.0 + bounce * (1.0 - scrub_return_ease((t - peak) / (1.0 - peak)))
+
+
+def scrub_return_overshoot(start_frame, target_frame, bounce):
+    """Return the overshoot fraction so the bounce passes at least one frame.
+
+    The playhead lands on whole frames, so a tiny proportional overshoot would
+    round away. The bounce is kept between one and three frames past the
+    target, and disabled for one-frame trips.
+    """
+    try:
+        span = abs(float(target_frame) - float(start_frame))
+        amount = max(0.0, float(bounce))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not (math.isfinite(span) and math.isfinite(amount)) or amount <= 1.0e-6 or span < 2.0:
+        return 0.0
+    frames = max(1.0, min(3.0, span * amount))
+    return frames / span
+
+
+def scrub_return_frame(start_frame, target_frame, elapsed, duration, bounce=0.0):
+    """Return ``(frame, finished)`` for the magnetic glide back to the start frame."""
     try:
         start = float(start_frame)
         target = float(target_frame)
@@ -2091,7 +2133,7 @@ def scrub_return_frame(start_frame, target_frame, elapsed, duration):
         return int(round(float(target_frame))), True
     if not all(math.isfinite(value) for value in (start, target, progress)) or progress >= 1.0:
         return int(round(target)), True
-    eased = scrub_return_ease(progress)
+    eased = scrub_return_curve(progress, scrub_return_overshoot(start, target, bounce))
     return int(round(start + (target - start) * eased)), False
 
 
@@ -2510,7 +2552,8 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _cursor_over_axis = False
     _cursor_kind = ""
     _return_to_start = True
-    _return_duration = 0.35
+    _return_duration = 0.45
+    _return_bounce = 0.1
     _tap_toggles = False
     _distance_ramp = 320.0
     _returning = False
@@ -2712,7 +2755,10 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         try:
             self._return_to_start = bool(getattr(preferences, "gp_scrub_return_to_start", True))
             self._return_duration = max(
-                0.05, min(1.5, float(getattr(preferences, "gp_scrub_return_duration", 0.35)))
+                0.05, min(1.5, float(getattr(preferences, "gp_scrub_return_duration", 0.45)))
+            )
+            self._return_bounce = max(
+                0.0, min(0.5, float(getattr(preferences, "gp_scrub_return_bounce", 0.1)))
             )
             self._tap_toggles = bool(getattr(preferences, "gp_scrub_tap_toggles", False))
             self._distance_ramp = max(
@@ -2720,7 +2766,8 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             )
         except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
             self._return_to_start = True
-            self._return_duration = 0.35
+            self._return_duration = 0.45
+            self._return_bounce = 0.1
             self._tap_toggles = False
             self._distance_ramp = 320.0
         if not self._magnetic_enabled:
@@ -2791,6 +2838,17 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         if position in {"TOP", "BOTTOM", "LEFT", "RIGHT"} and position != self._position:
             self._position = position
             self._vertical = position in {"LEFT", "RIGHT"}
+            self._magnetic_offset = 0.0
+            self._magnetic_target_offset = 0.0
+            self._cursor_label_bounds = None
+        try:
+            length_ratio = max(0.1, min(1.0, float(getattr(preferences, "gp_scrub_length_ratio", self._length_ratio))))
+            edge_offset = max(8.0, min(240.0, float(getattr(preferences, "gp_scrub_edge_offset", self._edge_offset))))
+        except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+            length_ratio, edge_offset = self._length_ratio, self._edge_offset
+        if length_ratio != self._length_ratio or edge_offset != self._edge_offset:
+            self._length_ratio = length_ratio
+            self._edge_offset = edge_offset
             self._magnetic_offset = 0.0
             self._magnetic_target_offset = 0.0
             self._cursor_label_bounds = None
@@ -3534,6 +3592,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._return_target_frame,
             time.monotonic() - float(self._return_started),
             self._return_duration,
+            self._return_bounce,
         )
         self._set_frame(context.scene, frame)
         self._tag_redraw()
@@ -6303,96 +6362,141 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
             icon="PINNED" if pinned else "UNPINNED",
             depress=pinned,
         )
-        if preferences is not None and hasattr(preferences, "gp_scrub_return_to_start"):
-            layout.prop(
-                preferences,
-                "gp_scrub_return_to_start",
-                text="Return to Start Frame",
-                icon="LOOP_BACK",
-                toggle=True,
+
+        if preferences is not None:
+            body = _scrub_popover_section(layout, "fbp_scrub_bar", "Scrub Bar", "ACTION")
+            if body is not None:
+                if hasattr(preferences, "gp_scrub_length_ratio"):
+                    body.prop(preferences, "gp_scrub_length_ratio", text="Length", slider=True)
+                if hasattr(preferences, "gp_scrub_position"):
+                    body.prop(preferences, "gp_scrub_position", text="Viewport Edge")
+                if hasattr(preferences, "gp_scrub_edge_offset"):
+                    body.prop(preferences, "gp_scrub_edge_offset", text="Edge Offset")
+                if hasattr(preferences, "gp_scrub_max_range"):
+                    body.prop(preferences, "gp_scrub_max_range", text="Visible Frames")
+
+            body = _scrub_popover_section(layout, "fbp_scrub_return", "Return to Start", "LOOP_BACK")
+            if body is not None and hasattr(preferences, "gp_scrub_return_to_start"):
+                body.prop(
+                    preferences,
+                    "gp_scrub_return_to_start",
+                    text="Return to Start Frame",
+                    toggle=True,
+                )
+                timing = body.column(align=True)
+                timing.enabled = bool(preferences.gp_scrub_return_to_start)
+                if hasattr(preferences, "gp_scrub_return_duration"):
+                    timing.prop(preferences, "gp_scrub_return_duration", text="Return Time")
+                if hasattr(preferences, "gp_scrub_return_bounce"):
+                    timing.prop(preferences, "gp_scrub_return_bounce", text="Bounce", slider=True)
+
+            body = _scrub_popover_section(
+                layout, "fbp_scrub_speed", "Scrub Speed", "MOUSE_MOVE", default_closed=True
             )
-        if preferences is not None and hasattr(preferences, "gp_scrub_position"):
-            layout.separator()
-            layout.prop(preferences, "gp_scrub_position", text="Viewport Edge")
+            if body is not None:
+                if hasattr(preferences, "gp_scrub_sensitivity"):
+                    body.prop(preferences, "gp_scrub_sensitivity", text="Far Speed", slider=True)
+                if hasattr(preferences, "gp_scrub_distance_ramp"):
+                    body.prop(preferences, "gp_scrub_distance_ramp", text="Speed Ramp Distance")
+                if hasattr(preferences, "gp_scrub_shift_factor"):
+                    body.prop(preferences, "gp_scrub_shift_factor", text="Shift Slowdown", slider=True)
 
         obj = _scrub_target_object(context)
         gp_data = getattr(obj, "data", None) if _is_live_grease_pencil_object(obj) else None
 
-        if preferences is not None:
-            layout.separator()
-            if hasattr(preferences, "gp_scrub_show_onion_handles"):
-                layout.prop(
+        body = _scrub_popover_section(
+            layout, "fbp_scrub_onion", "Onion Skin", "ONIONSKIN_ON", default_closed=True
+        )
+        if body is not None:
+            if preferences is not None and hasattr(preferences, "gp_scrub_show_onion_handles"):
+                body.prop(
                     preferences,
                     "gp_scrub_show_onion_handles",
                     text="Onion Range Interface",
-                    icon="ONIONSKIN_ON",
                     toggle=True,
                 )
-            if hasattr(preferences, "gp_scrub_show_bookmarks"):
-                layout.prop(
-                    preferences,
-                    "gp_scrub_show_bookmarks",
-                    text="Show Bookmarks",
-                    icon="BOOKMARKS",
-                    toggle=True,
-                )
-        if gp_data is not None:
-            layout.separator()
-            layout.label(text="Onion Skin", icon="ONIONSKIN_ON")
-            overlay = getattr(getattr(context, "space_data", None), "overlay", None)
-            if overlay is not None and hasattr(overlay, "use_gpencil_onion_skin"):
-                layout.prop(overlay, "use_gpencil_onion_skin", text="Viewport Onion Skin", toggle=True)
-            if hasattr(gp_data, "onion_mode"):
-                layout.prop(gp_data, "onion_mode", text="Range Type")
-            if hasattr(gp_data, "onion_keyframe_type"):
-                layout.prop(gp_data, "onion_keyframe_type", text="Keyframe Type")
-            onion_mode = str(getattr(gp_data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
-            if onion_mode != "SELECTED":
-                ranges = layout.row(align=True)
-                range_label = "Frames" if onion_mode == "ABSOLUTE" else "Keyframes"
-                if hasattr(gp_data, "ghost_before_range"):
-                    ranges.prop(gp_data, "ghost_before_range", text=f"{range_label} Before")
-                if hasattr(gp_data, "ghost_after_range"):
-                    ranges.prop(gp_data, "ghost_after_range", text=f"{range_label} After")
-            if hasattr(gp_data, "onion_factor"):
-                layout.prop(gp_data, "onion_factor", text="Opacity", slider=True)
-            display = layout.row(align=True)
-            if hasattr(gp_data, "use_onion_fade"):
-                display.prop(gp_data, "use_onion_fade", text="Fade", toggle=True)
-            if hasattr(gp_data, "use_onion_loop"):
-                display.prop(gp_data, "use_onion_loop", text="Loop", toggle=True)
-            if hasattr(gp_data, "use_ghost_custom_colors"):
-                layout.prop(gp_data, "use_ghost_custom_colors", text="Custom Colors", toggle=True)
-                colors = layout.row(align=True)
-                colors.enabled = bool(getattr(gp_data, "use_ghost_custom_colors", False))
-                if hasattr(gp_data, "before_color"):
-                    colors.prop(gp_data, "before_color", text="Before")
-                if hasattr(gp_data, "after_color"):
-                    colors.prop(gp_data, "after_color", text="After")
+            if gp_data is None:
+                body.label(text="Select a Grease Pencil object", icon="INFO")
+            else:
+                _draw_scrub_onion_settings(body, context, gp_data)
 
         scene = getattr(context, "scene", None)
-        if scene is not None:
-            layout.separator()
-            row = layout.row()
-            row.enabled = bool(selected_scrub_bookmark_records(scene))
-            row.operator(
-                FBP_OT_RemoveScrubBookmark.bl_idname,
-                text="Delete Selected Bookmark",
-                icon="TRASH",
-            )
+        body = _scrub_popover_section(
+            layout, "fbp_scrub_bookmarks", "Bookmarks", "BOOKMARKS", default_closed=True
+        )
+        if body is not None:
+            if preferences is not None and hasattr(preferences, "gp_scrub_show_bookmarks"):
+                body.prop(preferences, "gp_scrub_show_bookmarks", text="Show Bookmarks", toggle=True)
+            if scene is not None:
+                row = body.row()
+                row.enabled = bool(selected_scrub_bookmark_records(scene))
+                row.operator(
+                    FBP_OT_RemoveScrubBookmark.bl_idname,
+                    text="Delete Selected Bookmark",
+                    icon="TRASH",
+                )
+
         if scene is not None and hasattr(scene, "use_preview_range"):
-            layout.separator()
-            layout.prop(
-                scene,
-                "use_preview_range",
-                text="Use Timeline Preview Range",
-                toggle=True,
+            body = _scrub_popover_section(
+                layout, "fbp_scrub_preview", "Preview Range", "PREVIEW_RANGE", default_closed=True
             )
-            bounds = layout.column(align=True)
-            bounds.active = bool(scene.use_preview_range)
-            row = bounds.row(align=True)
-            row.prop(scene, "frame_preview_start", text="In")
-            row.prop(scene, "frame_preview_end", text="Out")
+            if body is not None:
+                body.prop(
+                    scene,
+                    "use_preview_range",
+                    text="Use Timeline Preview Range",
+                    toggle=True,
+                )
+                bounds = body.column(align=True)
+                bounds.active = bool(scene.use_preview_range)
+                row = bounds.row(align=True)
+                row.prop(scene, "frame_preview_start", text="In")
+                row.prop(scene, "frame_preview_end", text="Out")
+
+
+def _scrub_popover_section(layout, idname, label, icon, *, default_closed=False):
+    """Draw a collapsible popover section; return its body or None when closed."""
+    try:
+        header, body = layout.panel(idname, default_closed=default_closed)
+    except (AttributeError, TypeError, RuntimeError):
+        layout.separator()
+        layout.label(text=label, icon=icon)
+        return layout.column()
+    header.label(text=label, icon=icon)
+    return body
+
+
+def _draw_scrub_onion_settings(layout, context, gp_data):
+    overlay = getattr(getattr(context, "space_data", None), "overlay", None)
+    if overlay is not None and hasattr(overlay, "use_gpencil_onion_skin"):
+        layout.prop(overlay, "use_gpencil_onion_skin", text="Viewport Onion Skin", toggle=True)
+    if hasattr(gp_data, "onion_mode"):
+        layout.prop(gp_data, "onion_mode", text="Range Type")
+    if hasattr(gp_data, "onion_keyframe_type"):
+        layout.prop(gp_data, "onion_keyframe_type", text="Keyframe Type")
+    onion_mode = str(getattr(gp_data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
+    if onion_mode != "SELECTED":
+        ranges = layout.row(align=True)
+        range_label = "Frames" if onion_mode == "ABSOLUTE" else "Keyframes"
+        if hasattr(gp_data, "ghost_before_range"):
+            ranges.prop(gp_data, "ghost_before_range", text=f"{range_label} Before")
+        if hasattr(gp_data, "ghost_after_range"):
+            ranges.prop(gp_data, "ghost_after_range", text=f"{range_label} After")
+    if hasattr(gp_data, "onion_factor"):
+        layout.prop(gp_data, "onion_factor", text="Opacity", slider=True)
+    display = layout.row(align=True)
+    if hasattr(gp_data, "use_onion_fade"):
+        display.prop(gp_data, "use_onion_fade", text="Fade", toggle=True)
+    if hasattr(gp_data, "use_onion_loop"):
+        display.prop(gp_data, "use_onion_loop", text="Loop", toggle=True)
+    if hasattr(gp_data, "use_ghost_custom_colors"):
+        layout.prop(gp_data, "use_ghost_custom_colors", text="Custom Colors", toggle=True)
+        colors = layout.row(align=True)
+        colors.enabled = bool(getattr(gp_data, "use_ghost_custom_colors", False))
+        if hasattr(gp_data, "before_color"):
+            colors.prop(gp_data, "before_color", text="Before")
+        if hasattr(gp_data, "after_color"):
+            colors.prop(gp_data, "after_color", text="After")
 
 
 def _draw_scrub_header_control(layout, context):

@@ -966,7 +966,7 @@ class FBP_AddonPreferences(AddonPreferences):
         update=update_interface_preferences_cb,
     )
     gp_scrub_length_ratio: FloatProperty(
-        name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.2, max=1.0,
+        name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.1, max=1.0,
         update=update_interface_preferences_cb,
     )
     gp_scrub_edge_offset: FloatProperty(
@@ -1014,11 +1014,20 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     gp_scrub_return_duration: FloatProperty(
         name="Return Time",
-        description="Seconds the playhead takes to glide back to the start frame, easing in and out",
-        default=0.35,
+        description="Seconds the playhead takes to glide back to the start frame, including the bounce",
+        default=0.45,
         min=0.05,
         max=1.5,
         subtype='TIME_ABSOLUTE',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_bounce: FloatProperty(
+        name="Bounce",
+        description="How far the playhead passes the start frame before settling, like a magnet snapping back. 0 lands without bouncing",
+        subtype='FACTOR',
+        default=0.1,
+        min=0.0,
+        max=0.5,
         update=update_interface_preferences_cb,
     )
     gp_scrub_tap_toggles: BoolProperty(
@@ -1944,6 +1953,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 duration = row.row(align=True)
                 duration.enabled = self.gp_scrub_return_to_start
                 duration.prop(self, 'gp_scrub_return_duration', text='Return Time')
+                duration.prop(self, 'gp_scrub_return_bounce', text='Bounce', slider=True)
                 row.prop(self, 'gp_scrub_tap_toggles', text='Tap < Pins the Bar', toggle=True, icon='PINNED')
                 row = _row(motion_box)
                 row.prop(self, 'gp_scrub_sensitivity', text='Far Speed', slider=True)

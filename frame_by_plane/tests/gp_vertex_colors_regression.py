@@ -104,6 +104,34 @@ try:
     assert len(module._RUNTIME["edit_fill_targets"]) == 1
     assert len(module._RUNTIME["edit_fill_targets"][0][3]) == 2
 
+    # Every distinct selected color gets its own swatch; editing one swatch
+    # recolors only the selected elements that use that color.
+    stroke_items = module._swatch_items(state, "STROKE")
+    fill_items = module._swatch_items(state, "FILL")
+    assert len(stroke_items) == 3 and len(fill_items) == 2
+    assert close_color(stroke_items[1].color, point_colors[1])
+    swatch_stroke = (0.3, 0.3, 0.9, 1.0)
+    stroke_items[1].color = swatch_stroke
+    assert close_color(drawing.strokes[0].points[1].vertex_color, swatch_stroke)
+    assert close_color(drawing.strokes[0].points[0].vertex_color, point_colors[0])
+    assert close_color(drawing.strokes[1].points[0].vertex_color, point_colors[3])
+    assert close_color(drawing.strokes[0].points[2].vertex_color, point_colors[2])
+    swatch_fill = (0.5, 0.5, 0.5, 1.0)
+    fill_items[0].color = swatch_fill
+    assert close_color(drawing.strokes[0].fill_color, swatch_fill)
+    assert close_color(drawing.strokes[1].fill_color, (0.7, 0.6, 0.5, 0.4))
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert close_color(module._swatch_items(state, "STROKE")[1].color, swatch_stroke)
+    # Merging two swatches into one color collapses them into one slot.
+    module._swatch_items(state, "FILL")[1].color = swatch_fill
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert len(module._swatch_items(state, "FILL")) == 1
+    assert state.fill_mixed is False
+    drawing.strokes[0].points[1].vertex_color = point_colors[1]
+    drawing.strokes[0].fill_color = (0.1, 0.2, 0.3, 0.4)
+    drawing.strokes[1].fill_color = (0.7, 0.6, 0.5, 0.4)
+    module._sync_edit_state(bpy.context, force=True)
+
     # Native Stroke Select marks every point in a selected stroke. The fast
     # path reads one selection bit per stroke and still builds full targets.
     bpy.context.scene.tool_settings.gpencil_selectmode_edit = "STROKE"
@@ -169,7 +197,7 @@ try:
             fingerprint,
         )
     assert len(unique_keys) == 12
-    assert len(swatches) == 8
+    assert len(swatches) == 12
     assert fingerprint != (0, 0)
 
     # A clean Edit cache must not rescan the selected geometry on every Tool

@@ -14,8 +14,16 @@ import time
 
 import bpy
 from bpy.app.handlers import persistent
-from bpy.props import BoolProperty, EnumProperty, FloatVectorProperty, IntProperty, PointerProperty
-from bpy.types import Operator, Panel, PropertyGroup
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    FloatVectorProperty,
+    IntProperty,
+    PointerProperty,
+    StringProperty,
+)
+from bpy.types import Operator, Panel, PropertyGroup, UIList
 
 from .registration import (
     append_handler_once,
@@ -41,6 +49,10 @@ _EDIT_SYNC_INTERVAL = 0.05
 _EDIT_SYNC_DEBOUNCE = 0.06
 _SAMPLE_INTERVAL = 1.0 / 60.0
 _COLOR_DECODE_CACHE_LIMIT = 256
+# Distinct selected colors kept per target; the header shows up to
+# _HEADER_SWATCH_LIMIT swatches in a row and lists the rest in a popover.
+_SWATCH_LIMIT = 64
+_HEADER_SWATCH_LIMIT = 12
 _RUNTIME = {
     "target": 0,
     "owner": 0,
@@ -676,7 +688,7 @@ def _record_color(color, key, unique_keys, swatches, fingerprint):
     if key in unique_keys:
         return fingerprint
     unique_keys.add(key)
-    if len(swatches) < 8:
+    if len(swatches) < _SWATCH_LIMIT:
         swatches.append((color, 1))
     return _fingerprint_add(fingerprint[0], fingerprint[1], key)
 
@@ -963,7 +975,52 @@ def _sync_edit_state(context=None, *, force=False):
         _set_state_value(state, "stroke_color", stroke_values[0][0])
     if fill_values:
         _set_state_value(state, "fill_color", fill_values[0][0])
+    if not _sync_swatch_items(state):
+        # Header redraws cannot write ID data; let the sync timer retry.
+        _RUNTIME["edit_signature"] = None
+        _RUNTIME["edit_dirty"] = True
     return True
+
+
+def _sync_swatch_items(state):
+    """Mirror the selected Stroke/Fill colors into the state's swatch list.
+
+    Items are updated in place and only trailing items are removed, so a
+    color picker opened on a swatch keeps pointing at a valid item.
+    """
+    global _STATE_GUARD
+    if state is None:
+        return False
+    desired = [("STROKE", color) for color, _count in tuple(_RUNTIME.get("stroke_swatches", ()) or ())]
+    desired.extend(("FILL", color) for color, _count in tuple(_RUNTIME.get("fill_swatches", ()) or ()))
+    _STATE_GUARD += 1
+    try:
+        items = state.swatches
+        while len(items) > len(desired):
+            items.remove(len(items) - 1)
+        for index, (target, color) in enumerate(desired):
+            item = items[index] if index < len(items) else items.add()
+            clean = _rgba(color)
+            if item.target != target:
+                item.target = target
+            if not _colors_close(item.source, clean):
+                item.source = clean
+            if not _colors_close(item.color, clean):
+                item.color = clean
+        if state.swatch_index >= len(items):
+            state.swatch_index = max(0, len(items) - 1)
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+    finally:
+        _STATE_GUARD = max(0, _STATE_GUARD - 1)
+
+
+def _swatch_items(state, target):
+    try:
+        return [item for item in state.swatches if item.target == target]
+    except FBP_DATA_ERRORS:
+        return []
 
 
 def _tag_gp_color_update(obj):
@@ -1211,10 +1268,154 @@ def _apply_selected_color(context, target, color, *, record_undo=False):
             _RUNTIME["stroke_swatches"] = ((clean, target_count),) if target_count else ()
             _RUNTIME["stroke_unique"] = 1 if target_count else 0
             _set_state_scalar(_state(context), "stroke_mixed", False)
+        _sync_swatch_items(_state(context))
         _tag_gp_color_update(obj)
         if record_undo and undo_started:
             _schedule_edit_color_undo_commit()
     return changed
+
+
+def _replace_selected_color(context, target, old_color, color, *, record_undo=False):
+    """Recolor only the selected points (or fills) whose color is ``old_color``."""
+    obj = _active_gp_object(context)
+    if obj is None or _context_mode(context) != "EDIT_GREASE_PENCIL":
+        return 0
+    old_key = _color_key(old_color)
+    clean = _rgba(color)
+    if _color_key(clean) == old_key:
+        return 0
+    clean_values = array("f", clean)
+    changed = 0
+    undo_started = False
+    undo_attempted = False
+
+    def prepare_change():
+        nonlocal undo_attempted, undo_started
+        if not record_undo or undo_attempted:
+            return
+        undo_attempted = True
+        undo_started = _begin_edit_color_undo(target)
+
+    def matches(raw, cache):
+        key = cache.get(raw)
+        if key is None:
+            key = _color_key(raw)
+            if len(cache) < _COLOR_DECODE_CACHE_LIMIT:
+                cache[raw] = key
+        return key == old_key
+
+    if target == "FILL":
+        for drawing, total_curves, _selected_count, batches in tuple(_RUNTIME.get("edit_fill_targets", ()) or ()):
+            values = _drawing_color_attribute(drawing, "fill_color")
+            if values is _MISSING:
+                for stroke, _curve_index in batches:
+                    try:
+                        if _color_key(stroke.fill_color) == old_key:
+                            prepare_change()
+                            stroke.fill_color = clean
+                            changed += 1
+                    except FBP_DATA_ERRORS:
+                        continue
+                continue
+            if values is None:
+                values = array("f", [0.0]) * (total_curves * 4)
+            cache = {}
+            group_changed = 0
+            for _stroke, curve_index in batches:
+                offset = curve_index * 4
+                raw = tuple(values[offset : offset + 4])
+                if len(raw) == 4 and matches(raw, cache):
+                    values[offset : offset + 4] = clean_values
+                    group_changed += 1
+            if not group_changed:
+                continue
+            prepare_change()
+            attribute = _ensure_drawing_color_attribute(drawing, "fill_color", "CURVE")
+            try:
+                attribute.data.foreach_set("color", values)
+                changed += group_changed
+            except FBP_DATA_ERRORS + (AttributeError,):
+                continue
+    else:
+        for drawing, total_points, _selected_count, batches in tuple(_RUNTIME.get("edit_point_targets", ()) or ()):
+            values = _drawing_color_attribute(drawing, "vertex_color")
+            if values is _MISSING:
+                for stroke, selector, _offset, _count in batches:
+                    try:
+                        points = stroke.points
+                        selected = points if selector is None else (points[index] for index in selector)
+                        for point in selected:
+                            if _color_key(point.vertex_color) == old_key:
+                                prepare_change()
+                                point.vertex_color = clean
+                                changed += 1
+                    except FBP_DATA_ERRORS + (IndexError,):
+                        continue
+                continue
+            if values is None:
+                values = array("f", [0.0]) * (total_points * 4)
+            cache = {}
+            group_changed = 0
+            for _stroke, selector, stroke_offset, stroke_selected_count in batches:
+                indices = range(stroke_selected_count) if selector is None else selector
+                for local_index in indices:
+                    offset = (stroke_offset + local_index) * 4
+                    raw = tuple(values[offset : offset + 4])
+                    if len(raw) == 4 and matches(raw, cache):
+                        values[offset : offset + 4] = clean_values
+                        group_changed += 1
+            if not group_changed:
+                continue
+            prepare_change()
+            attribute = _ensure_drawing_color_attribute(drawing, "vertex_color", "POINT")
+            try:
+                attribute.data.foreach_set("color", values)
+                changed += group_changed
+            except FBP_DATA_ERRORS + (AttributeError,):
+                continue
+    if changed:
+        # Let the sync timer rebuild the swatches once the edit settles.
+        _RUNTIME["edit_dirty"] = True
+        _RUNTIME["edit_last_dirty"] = time.perf_counter()
+        _tag_gp_color_update(obj)
+        if record_undo and undo_started:
+            _schedule_edit_color_undo_commit()
+    return changed
+
+
+def _swatch_color_changed(item, context):
+    global _STATE_GUARD
+    if _STATE_GUARD:
+        return
+    obj = _active_gp_object(context)
+    if obj is None or _context_mode(context) != "EDIT_GREASE_PENCIL":
+        return
+    if _RUNTIME.get("target") != int(obj.as_pointer()) or _RUNTIME.get("edit_signature") is None:
+        return
+    clean = _rgba(item.color)
+    _replace_selected_color(context, item.target, tuple(item.source), clean, record_undo=True)
+    _STATE_GUARD += 1
+    try:
+        item.source = clean
+    except FBP_DATA_ERRORS:
+        pass
+    finally:
+        _STATE_GUARD = max(0, _STATE_GUARD - 1)
+
+
+class FBP_GPColorSwatch(PropertyGroup):
+    color: FloatVectorProperty(
+        name="Color",
+        description="One color in the selection. Changing it recolors only the selected strokes or fills that use it",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(0.0, 0.0, 0.0, 1.0),
+        update=_swatch_color_changed,
+    )
+    source: FloatVectorProperty(size=4, default=(0.0, 0.0, 0.0, 1.0), options={"HIDDEN"})
+    target: StringProperty(default="STROKE", options={"HIDDEN"})
 
 
 def _apply_selected_cyclic(context, close_stroke, *, record_undo=False):
@@ -1428,6 +1629,8 @@ class FBP_GPVertexColorState(PropertyGroup):
     fill_mixed: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
     selected_points: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})
     selected_curves: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})
+    swatches: CollectionProperty(type=FBP_GPColorSwatch, options={"HIDDEN", "SKIP_SAVE"})
+    swatch_index: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})
 
 
 class FBP_OT_SampleGPStrokeColor(Operator):
@@ -1663,13 +1866,14 @@ def _draw_mixed_swatches(layout, target):
     row = layout.row(align=True)
     row.label(text=f"Mixed · {unique_count} colors")
     chips = row.row(align=True)
-    for color, _count in values:
+    for color, _count in tuple(values)[:_HEADER_SWATCH_LIMIT]:
         try:
             chips.template_node_socket(color=_rgba(color))
         except FBP_DATA_ERRORS:
             break
-    if unique_count > len(values):
-        chips.label(text=f"+{unique_count - len(values)}")
+    shown = min(len(values), _HEADER_SWATCH_LIMIT)
+    if unique_count > shown:
+        chips.label(text=f"+{unique_count - shown}")
 
 
 def _draw_paint_color_controls(layout, context, state):
@@ -1829,11 +2033,93 @@ class FBP_PT_GPFillColorPopover(Panel):
         _draw_color_popover(self.layout, context, "fill_color")
 
 
+class FBP_UL_GPColorSwatches(UIList):
+    bl_idname = "FBP_UL_gp_color_swatches"
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_property, _index=0, _flt_flag=0):
+        row = layout.row(align=True)
+        row.label(text="Stroke" if item.target == "STROKE" else "Fill",
+                  icon="GP_DRAW_STROKE" if item.target == "STROKE" else "GP_DRAW_FILL")
+        row.prop(item, "color", text="")
+
+
+class FBP_PT_GPColorSwatchesPopover(Panel):
+    bl_idname = "FBP_PT_gp_color_swatches_popover"
+    bl_label = "Selected Colors"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = 12
+
+    @classmethod
+    def poll(cls, context):
+        return _active_gp_object(context) is not None and _context_mode(context) == "EDIT_GREASE_PENCIL"
+
+    def draw(self, context):
+        layout = self.layout
+        state = _state(context)
+        if state is None:
+            layout.label(text="Color state unavailable", icon="ERROR")
+            return
+        stroke_count = len(_swatch_items(state, "STROKE"))
+        fill_count = len(_swatch_items(state, "FILL"))
+        layout.label(text=f"{stroke_count} stroke · {fill_count} fill colors")
+        layout.template_list(
+            FBP_UL_GPColorSwatches.bl_idname,
+            "",
+            state,
+            "swatches",
+            state,
+            "swatch_index",
+            rows=8,
+        )
+        layout.operator("fbp.swap_gp_vertex_colors", text="Swap Stroke / Fill", icon="ARROW_LEFTRIGHT")
+
+
+def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
+    """Show every selected color: up to 12 swatches in a row, else a list popover."""
+    stroke_items = _swatch_items(state, "STROKE")
+    fill_items = _swatch_items(state, "FILL")
+    stroke_unique = int(_RUNTIME.get("stroke_unique", 0) or 0)
+    fill_unique = int(_RUNTIME.get("fill_unique", 0) or 0)
+    total = stroke_unique + fill_unique
+    if stroke_unique <= 1 and fill_unique <= 1:
+        return False
+    row = layout.row(align=True)
+    row.enabled = bool(enabled)
+    if total > _HEADER_SWATCH_LIMIT or total > len(stroke_items) + len(fill_items):
+        row.popover(
+            panel=FBP_PT_GPColorSwatchesPopover.bl_idname,
+            text=f"{total} Colors",
+            icon="COLOR",
+        )
+        return True
+    strokes = row.row(align=True)
+    for item in stroke_items:
+        swatch = strokes.row(align=True)
+        swatch.ui_units_x = 1.2
+        swatch.prop(item, "color", text="")
+    swap = row.row(align=True)
+    swap.ui_units_x = 1.25
+    swap.operator("fbp.swap_gp_vertex_colors", text="", icon="ARROW_LEFTRIGHT", emboss=True)
+    fills = row.row(align=True)
+    for item in fill_items:
+        swatch = fills.row(align=True)
+        swatch.ui_units_x = 1.2
+        swatch.prop(item, "color", text="")
+    return True
+
+
 def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, include_close=True):
     """Draw the semantic pair in the native brush-color footprint."""
     state = _state(context)
     if state is None:
         return False
+    if owner is None and _context_mode(context) == "EDIT_GREASE_PENCIL":
+        group = layout.row(align=False)
+        if _draw_header_swatch_strip(group, context, state, enabled=enabled):
+            if include_close:
+                _draw_header_close_stroke(group, context, enabled=enabled)
+            return True
     group = layout.row(align=False)
     row = group.row(align=True)
     row.ui_units_x = 6.25
@@ -2186,7 +2472,7 @@ def _unregister_sample_color_keymaps():
             pass
 
 
-property_classes = (FBP_GPVertexColorState,)
+property_classes = (FBP_GPColorSwatch, FBP_GPVertexColorState)
 classes = (
     FBP_OT_SampleGPStrokeColor,
     FBP_OT_SwapGPVertexColors,
@@ -2195,6 +2481,8 @@ classes = (
     FBP_PT_GPVertexColors,
     FBP_PT_GPStrokeColorPopover,
     FBP_PT_GPFillColorPopover,
+    FBP_UL_GPColorSwatches,
+    FBP_PT_GPColorSwatchesPopover,
 )
 
 
