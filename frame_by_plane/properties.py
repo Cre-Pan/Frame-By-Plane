@@ -981,7 +981,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     gp_scrub_mouse_magnet_distance: FloatProperty(
         name="Precise Range",
-        description="While holding <, the playhead follows the pointer exactly within this distance of the Scrub Bar",
+        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and blends into relative scrubbing up to this distance from it",
         default=96.0,
         min=24.0,
         max=240.0,
@@ -1038,7 +1038,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     gp_scrub_distance_ramp: FloatProperty(
         name="Speed Ramp Distance",
-        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away, reaching full Sensitivity at this distance from the magnet range. 0 uses full Sensitivity right outside the magnet range",
+        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away, reaching Far Speed at this distance beyond the Precise Range. 0 uses Far Speed right outside the Precise Range",
         default=320.0,
         min=0.0,
         max=2000.0,
@@ -1975,7 +1975,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 magnet_box.label(text='Precise Range', icon='SNAP_ON')
                 row = _row(magnet_box)
                 row.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
-                hint_row(magnet_box, 'While holding <, the playhead follows the pointer exactly within this distance of the Scrub Bar.', icon='INFO')
+                hint_row(magnet_box, 'Hold <: exact on the Scrub Bar, blending into relative scrubbing up to this distance.', icon='INFO')
 
                 onion_box = body.box()
                 configure_layout(onion_box)

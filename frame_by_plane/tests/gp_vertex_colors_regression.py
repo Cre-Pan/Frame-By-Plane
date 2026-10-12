@@ -202,60 +202,12 @@ try:
         stub = StubLayout()
         module._draw_target_swatch_popover(stub, bpy.context, target)
         assert any(call[0] == "template_list" for call in stub.calls)
-    module._draw_edit_material_and_brush(StubLayout(), bpy.context)
-    module.FBP_PT_GPEditBrushPopover.draw(StubPanel(), bpy.context)
-    module.FBP_PT_GPVertexColors.draw(StubPanel(), bpy.context)
-
-    # The Draw brush can be chosen without leaving Edit Mode.
-    names = module._essential_draw_brush_names()
-    assert "Ink Pen" in names and "Pencil" in names, names
-    result = bpy.ops.fbp.set_gp_draw_brush(
-        asset_library_type="ESSENTIALS",
-        relative_asset_identifier="brushes/essentials_brushes-gp_draw.blend/Brush/Ink Pen",
-    )
-    assert result == {"FINISHED"}, result
-    assert bpy.context.mode == "EDIT_GREASE_PENCIL"
-    assert bpy.context.scene.tool_settings.gpencil_paint.brush.name == "Ink Pen"
-    assert tuple(module._drawing_selection_values(drawing, "POINT")) == (1, 1, 0, 1, 0)
-    module._sync_edit_state(bpy.context, force=True)
-
-    # Only brushes that draw strokes are offered, and the selected strokes
-    # took the chosen brush: they are tagged and the header names it.
-    assert not {"Fill", "Tint", "Eraser Hard", "Eraser Soft", "Eraser Stroke"} & set(names), names
-    drawing = obj.data.layers.active.current_frame().drawing
-    assert module._RUNTIME["edit_brush_label"] == "Ink Pen", module._RUNTIME["edit_brush_label"]
-    tags = [item.value for item in drawing.attributes[module._STROKE_BRUSH_ATTRIBUTE].data]
-    assert tags[0] == tags[1] != 0, tags
-    peak = max(point.opacity for point in drawing.strokes[0].points)
-    assert abs(peak - 1.0) < 1.0e-5, peak
-    result = bpy.ops.fbp.set_gp_draw_brush(
-        asset_library_type="ESSENTIALS",
-        relative_asset_identifier="brushes/essentials_brushes-gp_draw.blend/Brush/Pencil Soft",
-    )
-    assert result == {"FINISHED"}, result
-    drawing = obj.data.layers.active.current_frame().drawing
-    assert abs(drawing.strokes[0].softness - 0.2) < 1.0e-4, drawing.strokes[0].softness
-    soft_slot = drawing.strokes[0].material_index
-    assert obj.material_slots[soft_slot].material.name.startswith("Pencil Soft")
-    assert module._RUNTIME["edit_brush_label"] == "Pencil Soft"
-    # Untagged strokes are recognized by a pinned material, otherwise unknown;
-    # different brushes read as Mixed.
-    drawing.attributes.remove(drawing.attributes[module._STROKE_BRUSH_ATTRIBUTE])
-    module._sync_edit_state(bpy.context, force=True)
-    assert module._RUNTIME["edit_brush_label"] == "Pencil Soft"
-    drawing.strokes[1].material_index = 0
-    module._sync_edit_state(bpy.context, force=True)
-    assert module._RUNTIME["edit_brush_label"] == "Mixed", module._RUNTIME["edit_brush_label"]
-    module._tag_stroke_brush(drawing, obj.data, "Pen", (0, 1))
-    module._sync_edit_state(bpy.context, force=True)
-    assert module._RUNTIME["edit_brush_label"] == "Pen"
     stub = StubLayout()
-    module._draw_edit_material_and_brush(stub, bpy.context)
-    popovers = [call for call in stub.calls if call[0] == "popover"]
-    assert popovers[0][2]["panel"] == module.FBP_PT_GPEditBrushPopover.bl_idname
-    assert popovers[0][2]["text"] == "Pen"
-    assert popovers[1][2]["panel"] == "TOPBAR_PT_grease_pencil_materials"
-    module.FBP_PT_GPEditBrushPopover.draw(StubPanel(), bpy.context)
+    module._draw_edit_material(stub, bpy.context)
+    assert [call[2]["panel"] for call in stub.calls if call[0] == "popover"] == [
+        "TOPBAR_PT_grease_pencil_materials"
+    ]
+    module.FBP_PT_GPVertexColors.draw(StubPanel(), bpy.context)
 
     # Native Stroke Select marks every point in a selected stroke. The fast
     # path reads one selection bit per stroke and still builds full targets.
@@ -520,10 +472,6 @@ try:
     assert newest.cyclic is False
     assert close_color(drawing.strokes[0].fill_color, old_fill)
     assert tuple(module._new_draw_curve_indices(4, 6, False)) == (4, 5)
-    # A newly drawn stroke remembers the brush that drew it.
-    brush_name = bpy.context.scene.tool_settings.gpencil_paint.brush.name
-    newest_tag = drawing.attributes[module._STROKE_BRUSH_ATTRIBUTE].data[len(drawing.strokes) - 1].value
-    assert module._stroke_brush_registry(obj.data)[newest_tag - 1] == brush_name
     assert tuple(module._new_draw_curve_indices(4, 6, True)) == (0, 1)
 
     # Closure is independent from Both and works in every Draw target mode.

@@ -8,7 +8,7 @@ from audit_release_packages import ROOT, audit_package
 
 class PackageAuditTests(unittest.TestCase):
     source = ROOT / "frame_by_plane"
-    package = ROOT / "dist/frame_by_plane-7.5.3-windows_x64.zip"
+    package = ROOT / "dist/frame_by_plane-7.5.4-windows_x64.zip"
 
     def altered(self, *, extra=None, omitted=None, changed=None):
         temporary = tempfile.TemporaryDirectory()

@@ -55,12 +55,17 @@ class StubLayout:
 class _StubOperatorProperties:
     def __init__(self, idname):
         module, _dot, operator = str(idname).partition(".")
-        rna = getattr(getattr(bpy.ops, module), operator).get_rna_type()
-        object.__setattr__(self, "_properties", {prop.identifier for prop in rna.properties})
+        try:
+            rna = getattr(getattr(bpy.ops, module), operator).get_rna_type()
+            properties = {prop.identifier for prop in rna.properties}
+        except KeyError:
+            # Background Blender skips some UI-only operators; nothing to check.
+            properties = None
+        object.__setattr__(self, "_properties", properties)
         object.__setattr__(self, "_idname", idname)
 
     def __setattr__(self, name, value):
-        if name not in self._properties:
+        if self._properties is not None and name not in self._properties:
             raise AttributeError(f"{self._idname} has no property {name!r}")
 
 

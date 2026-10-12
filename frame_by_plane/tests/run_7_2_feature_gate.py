@@ -18,6 +18,7 @@ TESTS = (
     "compositor_opt_in_regression.py",
     "image_properties_regression.py",
     "addon_lifecycle_regression.py",
+    "ui_draw_sweep.py",
 )
 
 

@@ -2,15 +2,19 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [7.5.3] - Unreleased
+## [7.5.4] - Unreleased
 
 Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### Fixes
 
-- Edit Mode header order is now Brush, Material, then the colors, with a gap between each.
-- The Edit Mode brush button shows the brush of the selected strokes, **Mixed** when they differ, or **Unknown** for older strokes it cannot recognize. Picking a brush from it restyles the selected strokes (hardness, caps, opacity and, for brushes that pin one, the material); their shape, width and colors stay. New strokes remember the brush that drew them.
-- The brush list only offers brushes that draw strokes: erasers, Fill and Tint are gone from it.
+- Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
+- A click right after the return glide is hit-tested where the pointer really is, so drawing straight away is no longer taken as a Scrub Bar click.
+- The return glide lands on the start frame even when it lies outside the scene or preview range.
+- Older saved Mouse Magnet on/off and Strength values no longer shrink the Precise Range; Precise Range is also in the Scrub Bar menu under Scrub Speed.
+- Editing a swatch can no longer move the open color picker onto another color group when two colors become equal.
+- Swap in Edit Mode says why when nothing can be swapped.
+- The Scrub Bar menu aligns its labels and is a little wider.
 - The Scrub Bar no longer slides left and right toward the mouse. **Mouse Magnet** in Preferences is now **Precise Range**: the distance from the bar within which scrubbing with `<` follows the pointer exactly.
 - The Strokes and Fills dropdowns drew an empty list in Blender 5.2 (the list used a layout type Blender no longer accepts); the color list shows again.
 - A pinned Scrub Bar no longer redraws the viewport on every timer tick while the mouse rests in the 3D View; hover updates only redraw when the hovered key or bookmark changes. Timer events are no longer swallowed during a hold, and edge scrolling uses the remembered pointer position.
@@ -19,7 +23,6 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 - Stroke and Fill swatches live in separate lists, so a change on one side can never make an open color picker edit the other side.
 - Swap skips strokes whose material draws only a line or only a fill, instead of painting them with an empty color, and no longer adds an empty Undo step when nothing is selected.
 - The Edit Mode header no longer rescans the selection on every redraw before the first sync.
-- Choosing a Draw brush from Edit Mode first commits any pending color Undo step.
 - Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
 
 ### Release splash
@@ -34,7 +37,7 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 - In Edit Mode, selecting strokes with different colors shows every distinct Stroke and Fill color in the Tool Header (`Stroke colors ⇄ Fill colors`), up to 12 swatches; identical colors share one swatch. With more than 12, the larger side collapses into its own **Strokes** or **Fills** dropdown with a color list, **Replace All** and **Invert with Fill/Stroke**. Changing a swatch recolors only the selected strokes or fills that use that color.
 - Only colors that are drawn count: if the selected strokes' material hides fills, the Fill side and the swap button disappear (and the other way round).
 - **Swap Stroke / Fill** in Edit Mode now swaps each selected stroke's own colors, instead of painting every stroke with one color.
-- Edit Mode's Tool Header has the **Material** selector (with Assign) and a **Draw brush** selector, so both can be changed without leaving Edit Mode.
+- Edit Mode's Tool Header has the **Material** selector (with Assign), so the material can be changed without leaving Edit Mode.
 
 ### Scrub Bar
 
@@ -74,6 +77,13 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### Fixes
 
+- Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
+- A click right after the return glide is hit-tested where the pointer really is, so drawing straight away is no longer taken as a Scrub Bar click.
+- The return glide lands on the start frame even when it lies outside the scene or preview range.
+- Older saved Mouse Magnet on/off and Strength values no longer shrink the Precise Range; Precise Range is also in the Scrub Bar menu under Scrub Speed.
+- Editing a swatch can no longer move the open color picker onto another color group when two colors become equal.
+- Swap in Edit Mode says why when nothing can be swapped.
+- The Scrub Bar menu aligns its labels and is a little wider.
 - Masks that sample the layer UV (Luma/Alpha Matte, Gradient, Noise, Wave, Voronoi, Channel, Color and Imported masks) no longer lose their UV input after a UV effect is moved or the stack is sorted. They previously appeared frozen until another rebuild.
 - Removing a duplicated (multi-instance) effect now also removes its per-instance viewport and render visibility data instead of leaving it on the layer.
 - **Clear Effect Stack** and **Remove Selected Effects** now update the saved effect-stack data, so removed effects (and their group membership) no longer remain as hidden records in the .blend file.

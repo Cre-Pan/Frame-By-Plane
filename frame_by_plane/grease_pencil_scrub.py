@@ -2705,9 +2705,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     def _sync_magnetic_preferences(self, context):
         preferences = fbp_get_addon_preferences(context)
         try:
-            self._magnetic_enabled = bool(
-                getattr(preferences, "gp_scrub_mouse_magnet", True)
-            )
+            # Mouse Magnet on/off and Strength are no longer in the UI; older
+            # saved values must not shrink the Precise Range.
+            self._magnetic_enabled = True
             self._magnetic_distance = max(
                 24.0,
                 min(
@@ -2721,19 +2721,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     ),
                 ),
             )
-            self._magnetic_strength = max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        getattr(
-                            preferences,
-                            "gp_scrub_mouse_magnet_strength",
-                            1.0,
-                        )
-                    ),
-                ),
-            )
+            self._magnetic_strength = 1.0
             self._magnetic_smoothing = max(
                 0.01,
                 min(
@@ -3585,7 +3573,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
 
     def _end_return(self, context):
         """Land on the start frame; a momentary session then closes."""
-        self._set_frame(context.scene, self._return_target_frame)
+        self._set_frame(context.scene, self._return_target_frame, clamp=False)
         self._returning = False
         if self._return_keep_persistent:
             self._tag_redraw()
@@ -3598,7 +3586,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return
         self._returning = False
         try:
-            self._set_frame(context.scene, self._return_target_frame)
+            self._set_frame(context.scene, self._return_target_frame, clamp=False)
         except FBP_DATA_ERRORS:
             pass
 
@@ -3867,9 +3855,11 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             fbp_warn("Could not update Grease Pencil onion range", exc)
             return False
 
-    def _set_frame(self, scene, target):
-        minimum, maximum = scene_frame_bounds(scene)
-        target = max(minimum, min(maximum, int(target)))
+    def _set_frame(self, scene, target, *, clamp=True):
+        target = int(target)
+        if clamp:
+            minimum, maximum = scene_frame_bounds(scene)
+            target = max(minimum, min(maximum, target))
         try:
             current = int(scene.frame_current)
         except FBP_DATA_ERRORS:
@@ -3940,8 +3930,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._relative_last_along = along
             self._drag_anchor_x = float(self._mouse_x)
             self._drag_anchor_y = float(self._mouse_y)
-            self._overflow_offset = 0
-            self._relative_last_overflow = 0
+            # Keep any scroll the bar already made: re-centring the window
+            # here would clamp the playhead back toward the start.
+            self._relative_last_overflow = int(self._overflow_offset)
         self._shortcut_direct_locked = direct_locked
         self._shortcut_direct_factor = factor
 
@@ -4791,6 +4782,16 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         modifier_changed = previous_shift != self._shift_held or previous_ctrl != self._ctrl_held
 
         if self._returning:
+            if event_type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+                # Keep the pointer current so a click right after the glide
+                # is hit-tested where it really happens.
+                self._cursor_in_owned_window = bool(in_window)
+                if in_window:
+                    try:
+                        self._mouse_x = float(getattr(event, "mouse_region_x"))
+                        self._mouse_y = float(getattr(event, "mouse_region_y"))
+                    except (AttributeError, TypeError, ValueError, OverflowError):
+                        pass
             if event_type == "TIMER":
                 if self._timer is not None:
                     result = self._tick_return(context)
@@ -4807,7 +4808,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 and event_type in {"GRLESS", "COMMA"}
                 and (event_type != "COMMA" or self._shift_held)
             )
-            self._set_frame(context.scene, self._return_target_frame)
+            self._set_frame(context.scene, self._return_target_frame, clamp=False)
             self._returning = False
             if restart:
                 self._begin_shortcut(context, event)
@@ -6338,6 +6339,7 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
     bl_label = "Scrub Slider"
     bl_space_type = "VIEW_3D"
     bl_region_type = "HEADER"
+    bl_ui_units_x = 13
 
     @classmethod
     def poll(cls, context):
@@ -6345,6 +6347,8 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
         preferences = fbp_get_addon_preferences(context)
 
         pinned = is_persistent_scrub_active(context)
@@ -6392,6 +6396,8 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
                     body.prop(preferences, "gp_scrub_distance_ramp", text="Speed Ramp Distance")
                 if hasattr(preferences, "gp_scrub_shift_factor"):
                     body.prop(preferences, "gp_scrub_shift_factor", text="Shift Slowdown", slider=True)
+                if hasattr(preferences, "gp_scrub_mouse_magnet_distance"):
+                    body.prop(preferences, "gp_scrub_mouse_magnet_distance", text="Precise Range")
 
         obj = _scrub_target_object(context)
         gp_data = getattr(obj, "data", None) if _is_live_grease_pencil_object(obj) else None
@@ -6442,6 +6448,7 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
                 bounds = body.column(align=True)
                 bounds.active = bool(scene.use_preview_range)
                 row = bounds.row(align=True)
+                row.use_property_split = False
                 row.prop(scene, "frame_preview_start", text="In")
                 row.prop(scene, "frame_preview_end", text="Out")
 
@@ -6469,6 +6476,7 @@ def _draw_scrub_onion_settings(layout, context, gp_data):
     onion_mode = str(getattr(gp_data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
     if onion_mode != "SELECTED":
         ranges = layout.row(align=True)
+        ranges.use_property_split = False
         range_label = "Frames" if onion_mode == "ABSOLUTE" else "Keyframes"
         if hasattr(gp_data, "ghost_before_range"):
             ranges.prop(gp_data, "ghost_before_range", text=f"{range_label} Before")
@@ -6477,6 +6485,7 @@ def _draw_scrub_onion_settings(layout, context, gp_data):
     if hasattr(gp_data, "onion_factor"):
         layout.prop(gp_data, "onion_factor", text="Opacity", slider=True)
     display = layout.row(align=True)
+    display.use_property_split = False
     if hasattr(gp_data, "use_onion_fade"):
         display.prop(gp_data, "use_onion_fade", text="Fade", toggle=True)
     if hasattr(gp_data, "use_onion_loop"):
@@ -6484,6 +6493,7 @@ def _draw_scrub_onion_settings(layout, context, gp_data):
     if hasattr(gp_data, "use_ghost_custom_colors"):
         layout.prop(gp_data, "use_ghost_custom_colors", text="Custom Colors", toggle=True)
         colors = layout.row(align=True)
+        colors.use_property_split = False
         colors.enabled = bool(getattr(gp_data, "use_ghost_custom_colors", False))
         if hasattr(gp_data, "before_color"):
             colors.prop(gp_data, "before_color", text="Before")

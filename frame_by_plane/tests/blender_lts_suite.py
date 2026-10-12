@@ -264,7 +264,7 @@ def test_feedback_update_popup_contract(_module):
     assert titles == (
         "Magnetic Scrub Bar",
         "Every Selected Color",
-        "Material and Brush in Edit Mode",
+        "Material in Edit Mode",
         "One Add Plane Dialog",
         "Bug Fixes",
     )

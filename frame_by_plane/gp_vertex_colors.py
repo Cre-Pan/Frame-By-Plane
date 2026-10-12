@@ -80,7 +80,6 @@ _RUNTIME = {
     "draw_drawing_pointer": 0,
     "draw_curve_count": 0,
     "edit_undo_label": "Grease Pencil Color",
-    "edit_brush_label": "",
 }
 
 
@@ -522,7 +521,6 @@ def _sync_draw_both_fill(context=None):
     except FBP_DATA_ERRORS:
         draw_on_back = False
     indices = tuple(_new_draw_curve_indices(previous_count, curve_count, draw_on_back))
-    _tag_stroke_brush(drawing, obj.data, str(getattr(brush, "name", "") or ""), indices)
     clean_fill = _rgba(state.fill_color)
     close_stroke = bool(state.close_strokes)
     changed = 0
@@ -1028,10 +1026,6 @@ def _sync_edit_state(context=None, *, force=False):
     _RUNTIME["edit_point_count"] = point_count
     _RUNTIME["edit_fill_targets"] = fill_targets
     _RUNTIME["edit_fill_count"] = curve_count
-    brush_label = _selected_stroke_brush_label(obj, fill_targets)
-    if brush_label != _RUNTIME.get("edit_brush_label"):
-        _RUNTIME["edit_brush_label"] = brush_label
-        _tag_view3d_redraw()
     if not force and signature == _RUNTIME.get("edit_signature"):
         return False
     _RUNTIME["edit_signature"] = signature
@@ -1076,12 +1070,19 @@ def _sync_swatch_items(state):
 
     Stroke and Fill live in separate collections, so a change on one side
     never shifts the other. Items are updated in place; while a swatch edit is
-    still being committed, items are not removed, so an open color picker keeps
-    pointing at a valid item.
+    still being committed they are left alone, so an open color picker keeps
+    pointing at the color group it was opened on.
     """
     global _STATE_GUARD
     if state is None:
         return False
+    if _EDIT_UNDO_PENDING and len(state.stroke_swatches) + len(state.fill_swatches):
+        # A swatch is being edited: rewriting items by position could hand the
+        # open color picker another color group (two colors that become equal
+        # merge and shift the rest). Keep them as they are until the edit is
+        # committed; the timer retries then.
+        _RUNTIME["swatch_dirty"] = True
+        return True
     stroke_colors = [color for color, _count in tuple(_RUNTIME.get("stroke_swatches", ()) or ())]
     fill_colors = [color for color, _count in tuple(_RUNTIME.get("fill_swatches", ()) or ())]
     allow_shrink = not _EDIT_UNDO_PENDING
@@ -1982,6 +1983,10 @@ class FBP_OT_SwapGPVertexColors(Operator):
             _sync_edit_state(context, force=True)
             # Each selected stroke swaps its own Stroke and Fill colors.
             if not _swap_selected_per_stroke(context, record_undo=True):
+                self.report(
+                    {"INFO"},
+                    "Nothing to swap: select strokes whose material shows both Stroke and Fill",
+                )
                 return {"CANCELLED"}
             _sync_edit_state(context, force=True)
             _RUNTIME["edit_undo_label"] = "Swap Grease Pencil Stroke / Fill Colors"
@@ -2638,359 +2643,6 @@ def _draw_native_vertex_tool_settings(context, layout, tool):
     return True
 
 
-_ESSENTIAL_DRAW_BRUSH_FILE = "essentials_brushes-gp_draw.blend"
-_ESSENTIAL_DRAW_BRUSHES = None
-# Each curve remembers the brush that drew it: an index (1-based) into a
-# newline-separated list of brush names stored on the Grease Pencil data.
-_STROKE_BRUSH_ATTRIBUTE = "fbp_brush"
-_STROKE_BRUSH_REGISTRY = "fbp_stroke_brushes"
-_STROKE_BRUSH_MIXED = "Mixed"
-_STROKE_BRUSH_UNKNOWN = "Unknown"
-
-
-def _essential_draw_brushes():
-    """Blender's bundled Grease Pencil brushes that draw strokes, read once.
-
-    Returns ``(name, pinned material name)`` pairs. Tint, Fill and the
-    erasers live in the same file but cannot be a stroke's brush.
-    """
-    global _ESSENTIAL_DRAW_BRUSHES
-    if _ESSENTIAL_DRAW_BRUSHES is not None:
-        return _ESSENTIAL_DRAW_BRUSHES
-    brushes = ()
-    try:
-        import os
-
-        path = os.path.join(
-            bpy.utils.system_resource("DATAFILES", path="assets"),
-            "brushes",
-            _ESSENTIAL_DRAW_BRUSH_FILE,
-        )
-        if os.path.isfile(path):
-            # Temporary data keeps the bundled brushes out of the user's file.
-            with bpy.data.temp_data() as temp:
-                with temp.libraries.load(path, assets_only=True) as (source, target):
-                    target.brushes = list(source.brushes)
-                found = []
-                for brush in target.brushes:
-                    if brush is None or str(getattr(brush, "gpencil_brush_type", "")) != "DRAW":
-                        continue
-                    material = getattr(brush.gpencil_settings, "material", None)
-                    pinned = bool(getattr(brush.gpencil_settings, "use_material_pin", False))
-                    found.append((str(brush.name), str(material.name) if pinned and material else ""))
-                brushes = tuple(sorted(found))
-    except (OSError, *FBP_DATA_ERRORS):
-        brushes = ()
-    if brushes:
-        _ESSENTIAL_DRAW_BRUSHES = brushes
-    return brushes
-
-
-def _essential_draw_brush_names():
-    return tuple(name for name, _material in _essential_draw_brushes())
-
-
-def _local_draw_brushes():
-    try:
-        return [
-            brush
-            for brush in bpy.data.brushes
-            if getattr(brush, "use_paint_grease_pencil", False)
-            and str(getattr(brush, "gpencil_brush_type", "")) == "DRAW"
-            and brush.library is None
-            and brush.asset_data is not None
-        ]
-    except FBP_DATA_ERRORS:
-        return []
-
-
-def _active_draw_brush(context):
-    try:
-        paint = context.scene.tool_settings.gpencil_paint
-        return paint.brush, paint.brush_asset_reference
-    except FBP_DATA_ERRORS:
-        return None, None
-
-
-def _stroke_brush_registry(data):
-    try:
-        raw = data.get(_STROKE_BRUSH_REGISTRY, "")
-    except FBP_DATA_ERRORS:
-        return []
-    return [name for name in str(raw or "").split("\n") if name] if raw else []
-
-
-def _stroke_brush_tag(data, name):
-    """The curve tag for ``name`` on this data, registering it if needed."""
-    names = _stroke_brush_registry(data)
-    if name in names:
-        return names.index(name) + 1
-    names.append(name)
-    try:
-        data[_STROKE_BRUSH_REGISTRY] = "\n".join(names)
-    except FBP_DATA_ERRORS:
-        return 0
-    return len(names)
-
-
-def _tag_stroke_brush(drawing, data, name, curve_indices):
-    """Record which brush drew these curves."""
-    curve_indices = tuple(curve_indices)
-    if not name or not curve_indices:
-        return 0
-    tag = _stroke_brush_tag(data, name)
-    if not tag:
-        return 0
-    try:
-        attribute = drawing.attributes.get(_STROKE_BRUSH_ATTRIBUTE)
-        if attribute is None:
-            attribute = drawing.attributes.new(_STROKE_BRUSH_ATTRIBUTE, "INT", "CURVE")
-        values = attribute.data
-        tagged = 0
-        for index in curve_indices:
-            if 0 <= index < len(values) and values[index].value != tag:
-                values[index].value = tag
-                tagged += 1
-        return tagged
-    except FBP_DATA_ERRORS:
-        return 0
-
-
-def _base_name(name):
-    """``Pencil Soft.001`` -> ``Pencil Soft``."""
-    head, dot, tail = str(name).rpartition(".")
-    return head if dot and tail.isdigit() and len(tail) == 3 else str(name)
-
-
-def _selected_stroke_brush_label(obj, fill_targets):
-    """Brush name shared by the selected curves, ``Mixed`` or ``Unknown``.
-
-    Curves drawn before Frame By Plane started tagging them are recognized
-    by the material an Essentials brush pins (Pencil Soft, Ink Pen Rough,
-    Airbrush); any other untagged curve is unknown.
-    """
-    data = getattr(obj, "data", None)
-    if data is None or not fill_targets:
-        return ""
-    registry = _stroke_brush_registry(data)
-    pinned = {material: name for name, material in _essential_draw_brushes() if material}
-    slot_brushes = []
-    for slot in tuple(getattr(obj, "material_slots", ()) or ()):
-        material = getattr(slot, "material", None)
-        slot_brushes.append(pinned.get(_base_name(material.name)) if material is not None else None)
-    found = set()
-    for drawing, _total_curves, _selected_count, batches in fill_targets:
-        try:
-            attribute = drawing.attributes.get(_STROKE_BRUSH_ATTRIBUTE)
-            if attribute is not None and str(attribute.domain) == "CURVE":
-                tags = array("i", [0]) * len(attribute.data)
-                attribute.data.foreach_get("value", tags)
-            else:
-                tags = None
-        except FBP_DATA_ERRORS:
-            tags = None
-        material_indices = None
-        for stroke, curve_index in batches:
-            name = None
-            if tags is not None and 0 <= curve_index < len(tags):
-                tag = int(tags[curve_index])
-                if 0 < tag <= len(registry):
-                    name = registry[tag - 1]
-            if name is None:
-                if material_indices is None:
-                    material_indices = _drawing_material_indices(drawing)
-                if material_indices is None:
-                    slot = 0
-                elif material_indices is _MISSING:
-                    try:
-                        slot = int(stroke.material_index)
-                    except FBP_DATA_ERRORS:
-                        slot = -1
-                else:
-                    slot = int(material_indices[curve_index]) if curve_index < len(material_indices) else -1
-                name = slot_brushes[slot] if 0 <= slot < len(slot_brushes) else None
-            found.add(name or _STROKE_BRUSH_UNKNOWN)
-            if len(found) > 1:
-                return _STROKE_BRUSH_MIXED
-    return next(iter(found), "")
-
-
-def _material_slot_for(obj, material):
-    """Index of ``material`` in the object's slots, adding it when missing."""
-    for index, slot in enumerate(tuple(obj.material_slots)):
-        if slot.material == material:
-            return index
-    obj.data.materials.append(material)
-    return len(obj.material_slots) - 1
-
-
-def _apply_brush_to_selected_strokes(context, brush):
-    """Restyle the selected curves as if ``brush`` had drawn them.
-
-    A curve keeps its shape, width and colors. It takes the brush's
-    hardness, caps, opacity (scaled so the pressure profile survives) and,
-    for brushes that pin one, its material.
-    """
-    obj = _active_gp_object(context)
-    if obj is None or brush is None:
-        return 0
-    _sync_edit_state(context, force=True)
-    settings = brush.gpencil_settings
-    softness = max(0.0, min(1.0, 1.0 - float(settings.hardness)))
-    cap = 1 if str(getattr(settings, "caps_type", "ROUND")) == "FLAT" else 0
-    strength = max(0.0, min(1.0, float(brush.strength)))
-    material_slot = None
-    if bool(getattr(settings, "use_material_pin", False)) and settings.material is not None:
-        try:
-            material_slot = _material_slot_for(obj, settings.material)
-        except FBP_DATA_ERRORS:
-            material_slot = None
-    changed = 0
-    for drawing, _total_curves, _selected_count, batches in tuple(_RUNTIME.get("edit_fill_targets", ()) or ()):
-        indices = []
-        for stroke, curve_index in batches:
-            try:
-                stroke.softness = softness
-                stroke.start_cap = cap
-                stroke.end_cap = cap
-                if material_slot is not None:
-                    stroke.material_index = material_slot
-                points = stroke.points
-                peak = max((float(point.opacity) for point in points), default=0.0)
-                if peak > 1.0e-6:
-                    scale = strength / peak
-                    for point in points:
-                        point.opacity = float(point.opacity) * scale
-                indices.append(curve_index)
-                changed += 1
-            except FBP_DATA_ERRORS:
-                continue
-        _tag_stroke_brush(drawing, obj.data, str(brush.name), indices)
-    if changed:
-        _tag_gp_color_update(obj)
-        _RUNTIME["edit_dirty"] = True
-        _sync_edit_state(context, force=True)
-    return changed
-
-
-class FBP_OT_SetGPDrawBrush(Operator):
-    bl_idname = "fbp.set_gp_draw_brush"
-    bl_label = "Set Brush"
-    bl_description = (
-        "Choose the Draw brush. In Edit Mode the selected strokes take its "
-        "look (hardness, caps, opacity and pinned material)"
-    )
-    bl_options = {"REGISTER", "UNDO"}
-
-    asset_library_type: StringProperty(default="ESSENTIALS", options={"HIDDEN", "SKIP_SAVE"})
-    relative_asset_identifier: StringProperty(default="", options={"HIDDEN", "SKIP_SAVE"})
-
-    @classmethod
-    def poll(cls, context):
-        return _active_gp_object(context) is not None
-
-    def execute(self, context):
-        mode = _context_mode(context)
-        _commit_edit_color_undo()
-        # Blender activates brush assets only in their own paint mode, so hop
-        # into Draw Mode for the switch and come straight back.
-        try:
-            if mode != "PAINT_GREASE_PENCIL":
-                bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
-            result = bpy.ops.brush.asset_activate(
-                asset_library_type=self.asset_library_type,
-                relative_asset_identifier=self.relative_asset_identifier,
-            )
-        except FBP_DATA_ERRORS as exc:
-            self.report({"WARNING"}, f"Could not set the Draw brush: {exc}")
-            result = {"CANCELLED"}
-        finally:
-            if mode == "EDIT_GREASE_PENCIL" and _context_mode(context) != mode:
-                try:
-                    bpy.ops.object.mode_set(mode="EDIT")
-                except FBP_DATA_ERRORS:
-                    pass
-        if "FINISHED" not in result:
-            return {"CANCELLED"}
-        if mode == "EDIT_GREASE_PENCIL" and _context_mode(context) == mode:
-            # The mode hop rebuilt the curves; drop stale stroke references.
-            _RUNTIME["edit_signature"] = None
-            brush, _reference = _active_draw_brush(context)
-            _apply_brush_to_selected_strokes(context, brush)
-        return {"FINISHED"}
-
-
-def _edit_brush_label(context):
-    if _context_mode(context) != "EDIT_GREASE_PENCIL":
-        return ""
-    return str(_RUNTIME.get("edit_brush_label", "") or "")
-
-
-class FBP_PT_GPEditBrushPopover(Panel):
-    bl_idname = "FBP_PT_gp_edit_brush_popover"
-    bl_label = "Brush"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "HEADER"
-    bl_ui_units_x = 10
-
-    @classmethod
-    def poll(cls, context):
-        return _active_gp_object(context) is not None
-
-    def draw(self, context):
-        layout = self.layout
-        _brush, reference = _active_draw_brush(context)
-        selection_label = _edit_brush_label(context)
-        if selection_label:
-            layout.label(text="Selected strokes use the brush you pick")
-            active = selection_label
-        else:
-            active = str(getattr(reference, "relative_asset_identifier", "") or "").rpartition("/")[2]
-        column = layout.column(align=True)
-        for name in _essential_draw_brush_names():
-            operator = column.operator(
-                FBP_OT_SetGPDrawBrush.bl_idname,
-                text=name,
-                icon="CHECKMARK" if name == active else "BRUSH_DATA",
-                depress=name == active,
-            )
-            operator.asset_library_type = "ESSENTIALS"
-            operator.relative_asset_identifier = f"brushes/{_ESSENTIAL_DRAW_BRUSH_FILE}/Brush/{name}"
-        local = _local_draw_brushes()
-        if local:
-            layout.separator()
-            layout.label(text="This File")
-            column = layout.column(align=True)
-            for brush in local:
-                operator = column.operator(
-                    FBP_OT_SetGPDrawBrush.bl_idname,
-                    text=brush.name,
-                    icon="CHECKMARK" if brush.name == active else "BRUSH_DATA",
-                    depress=brush.name == active,
-                )
-                operator.asset_library_type = "LOCAL"
-                operator.relative_asset_identifier = f"Brush/{brush.name}"
-
-
-def _draw_edit_brush_selector(layout, context):
-    brush, _reference = _active_draw_brush(context)
-    label = _edit_brush_label(context)
-    text = label or getattr(brush, "name", "") or "Brush"
-    brush_icon = 0
-    if not label or label == getattr(brush, "name", None):
-        try:
-            if brush is not None and brush.preview is not None:
-                brush_icon = brush.preview.icon_id
-        except FBP_DATA_ERRORS:
-            brush_icon = 0
-    brush_row = layout.row(align=True)
-    brush_row.ui_units_x = 6
-    if brush_icon:
-        brush_row.popover(panel=FBP_PT_GPEditBrushPopover.bl_idname, text=text, icon_value=brush_icon)
-    else:
-        brush_row.popover(panel=FBP_PT_GPEditBrushPopover.bl_idname, text=text, icon="BRUSH_DATA")
-
-
 def _draw_edit_material_selector(layout, obj):
     material = getattr(obj, "active_material", None)
     icon_id = 0
@@ -3015,14 +2667,11 @@ def _draw_edit_material_selector(layout, obj):
     )
 
 
-def _draw_edit_material_and_brush(layout, context):
-    """Brush, then material, usable from Edit Mode."""
+def _draw_edit_material(layout, context):
+    """Native material slot selector, usable from Edit Mode."""
     obj = _active_gp_object(context)
-    if obj is None:
-        return
-    _draw_edit_brush_selector(layout, context)
-    layout.separator()
-    _draw_edit_material_selector(layout, obj)
+    if obj is not None:
+        _draw_edit_material_selector(layout, obj)
 
 
 def _draw_native_edit_tool_settings(context, layout, _tool):
@@ -3044,7 +2693,7 @@ def _draw_native_edit_tool_settings(context, layout, _tool):
         _RUNTIME["edit_last_dirty"] = 0.0
         _RUNTIME["edit_last_sync"] = 0.0
     layout.separator(factor=0.4)
-    _draw_edit_material_and_brush(layout, context)
+    _draw_edit_material(layout, context)
     layout.separator()
     _draw_header_color_pair(layout, context, enabled=True)
     return True
@@ -3181,8 +2830,6 @@ classes = (
     FBP_OT_ReplaceAllGPColors,
     FBP_PT_GPStrokeSwatchesPopover,
     FBP_PT_GPFillSwatchesPopover,
-    FBP_OT_SetGPDrawBrush,
-    FBP_PT_GPEditBrushPopover,
 )
 
 
@@ -3199,7 +2846,6 @@ def register():
         )
         registered_properties = True
         register_classes(classes)
-        _essential_draw_brush_names()
         _register_tool_header()
         _register_sample_color_keymaps()
         _register_brush_color_timer()
