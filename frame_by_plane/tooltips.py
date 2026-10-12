@@ -655,9 +655,6 @@ EXACT_TOOLTIPS = {
     "fbp.restore_grease_pencil_reference_opacity": (
         "Restore the linked image-plane reference opacity used while drawing Grease Pencil masks or overlays.\n\nExample: if the source plane was dimmed to 50% for drawing, this returns it to the stored normal visibility."
     ),
-    "fbp.gp_set_workflow_state": (
-        "Switch the Grease Pencil workflow state used by Frame By Plane.\n\nExample: move between Reference, Draw, Mask and Review states without manually searching for the generated canvas."
-    ),
 }
 
 

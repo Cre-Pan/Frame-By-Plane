@@ -1,4 +1,4 @@
-# 🎞️ Frame By Plane — 7.5.0
+# 🎞️ Frame By Plane — 7.5.1
 
 A Grease Pencil, Scrub Bar and Add Plane update for Blender 5.2 LTS.
 
@@ -10,5 +10,11 @@ A Grease Pencil, Scrub Bar and Add Plane update for Blender 5.2 LTS.
 - 🖌️ **Material and brush in Edit Mode:** pick the material slot and the Draw brush without leaving Edit Mode.
 - ➕ **Add Plane dialog:** one dialog for Image, Video, Color, Gradient and Holdout planes; Fit Camera to New Plane is optional.
 - 🧹 **Leaner Grease Pencil tools:** the extra effect list, Ink Over Image, Create Missing Drawings and Limited Loop are gone.
+
+## 🛠️ Fixes in 7.5.1
+
+- A pinned Scrub Bar no longer redraws the viewport constantly while idle.
+- Swap and swatch edits are safer: stroke-only strokes keep their colors, and editing a swatch never recolors the other side.
+- Layers left locked by the old Limited Loop tool are unlocked on load.
 
 > Requires **Blender 5.2.x LTS**.

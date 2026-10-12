@@ -156,6 +156,9 @@ try:
     assert state.fill_available is False
     assert module._swatch_items(state, "FILL") == []
     assert len(module._swatch_items(state, "STROKE")) == 3
+    # Without a visible fill there is nothing to swap: colors stay as they are.
+    assert module._swap_selected_per_stroke(bpy.context) == 0
+    assert close_color(drawing.strokes[0].points[0].vertex_color, point_colors[0])
     style.fill_color = fill_rgba
     style.color = (*stroke_rgba[:3], 0.0)
     assert module._sync_edit_state(bpy.context, force=True)

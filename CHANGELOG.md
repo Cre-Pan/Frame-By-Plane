@@ -2,9 +2,20 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [7.5.0] - Unreleased
+## [7.5.1] - Unreleased
 
-Version bumped to 7.5.0; later updates continue as 7.5.x.
+Version bumped to 7.5.x (7.5.0 was an internal test build).
+
+### Fixes
+
+- A pinned Scrub Bar no longer redraws the viewport on every timer tick while the mouse rests in the 3D View; hover updates only redraw when the hovered key or bookmark changes. Timer events are no longer swallowed during a hold, and edge scrolling uses the remembered pointer position.
+- Pressing Shift or Ctrl while holding `<` before moving no longer jumps the playhead.
+- If the Viewport or object goes away during the return glide, the playhead still lands on the start frame.
+- Stroke and Fill swatches live in separate lists, so a change on one side can never make an open color picker edit the other side.
+- Swap skips strokes whose material draws only a line or only a fill, instead of painting them with an empty color, and no longer adds an empty Undo step when nothing is selected.
+- The Edit Mode header no longer rescans the selection on every redraw before the first sync.
+- Choosing a Draw brush from Edit Mode first commits any pending color Undo step.
+- Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
 
 ### Release splash
 

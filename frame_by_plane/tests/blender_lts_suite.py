@@ -1886,6 +1886,26 @@ def test_gp_support(_module):
     )
     for name in removed_types:
         assert not hasattr(bpy.types, name), name
+
+    # Files saved while the old Limited Loop guard held layers locked get
+    # their original lock states back on load.
+    data = bpy.data.grease_pencils.new("FBP Legacy Loop Locks")
+    canvas = bpy.data.objects.new("FBP Legacy Loop Locks", data)
+    try:
+        free = data.layers.new("Free")
+        kept = data.layers.new("Kept")
+        free.lock = True
+        kept.lock = True
+        canvas["fbp_gp_limited_loop_layer_locks"] = '{"Free": false, "Kept": true}'
+        canvas["fbp_gp_limited_loop_guard_message"] = "locked"
+        assert bridge._restore_legacy_limited_loop_locks(canvas)
+        assert free.lock is False and kept.lock is True
+        assert "fbp_gp_limited_loop_layer_locks" not in canvas
+        assert "fbp_gp_limited_loop_guard_message" not in canvas
+        assert not bridge._restore_legacy_limited_loop_locks(canvas)
+    finally:
+        bpy.data.objects.remove(canvas)
+        bpy.data.grease_pencils.remove(data)
     removed_ops = (
         "toggle_gp_native_effect", "reset_gp_native_effect", "move_gp_native_effect",
         "repair_gp_native_effect_duplicates", "copy_gp_effect_compatibility_report",

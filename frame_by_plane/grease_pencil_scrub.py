@@ -2938,10 +2938,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         axis_inside = self._mouse_in_axis(context)
         bookmark = self._bookmark_hit()
         interactive_inside = bool(axis_inside or bookmark is not None)
+        previous = (self._hover_bookmark_uid, self._hover_frame)
         self._hover_bookmark_uid = str(bookmark.get("uid") or "") if bookmark else ""
         self._hover_frame = self._keyframe_hit(context) if axis_inside and bookmark is None else None
         self._set_hover_cursor(context, interactive_inside)
-        self._tag_redraw()
+        if (self._hover_bookmark_uid, self._hover_frame) != previous:
+            self._tag_redraw()
 
     def _set_frame_from_axis(self, context):
         left, right = self._display_range(context.scene)
@@ -3608,6 +3610,16 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._tag_redraw()
             return None
         return self._finish(context)
+
+    def _land_return(self, context):
+        """Put the playhead on the start frame if a glide is interrupted."""
+        if not self._returning:
+            return
+        self._returning = False
+        try:
+            self._set_frame(context.scene, self._return_target_frame)
+        except FBP_DATA_ERRORS:
+            pass
 
     def _hold_window_active(self):
         """True while the momentary hold window is shown, including its glide."""
@@ -4767,6 +4779,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         except FBP_DATA_ERRORS:
             valid_session = False
         if not valid_session:
+            self._land_return(context)
             self._cleanup(context)
             return {"FINISHED"}
         try:
@@ -4933,6 +4946,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
 
         if (
             self._shortcut_pending
+            and self._shortcut_moved
             and not self._shortcut_anchor_pending
             and modifier_changed
             and in_window
@@ -5033,12 +5047,15 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         if event_type == "TIMER":
             # bpy.types.Event exposes no timer handle, so any window TIMER
             # drives the time-based ticks while this session owns a timer.
+            # TIMER events may carry no WINDOW region, so rely on the
+            # remembered pointer state, and never swallow other timers.
             if self._timer is not None:
-                if self._shortcut_pending and in_window:
-                    self._edge_tick(context)
+                if self._shortcut_pending:
+                    if self._cursor_in_owned_window:
+                        self._edge_tick(context)
                 elif self._is_persistent:
                     cursor_in_window = bool(self._cursor_in_owned_window)
-                    self._tick_magnetic_hover(
+                    moved = self._tick_magnetic_hover(
                         context,
                         release=scrub_magnet_should_release(
                             event_type,
@@ -5046,9 +5063,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                             cursor_in_owned_window=cursor_in_window,
                         ),
                     )
-                    if cursor_in_window and not self._interaction:
+                    if moved and cursor_in_window and in_window and not self._interaction:
                         self._set_idle_hover(context)
-            return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
+            return {"PASS_THROUGH"}
 
         if self._shortcut_pending:
             return {"RUNNING_MODAL"}

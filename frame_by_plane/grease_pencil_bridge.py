@@ -8612,6 +8612,41 @@ def fbp_gp_load_post(_dummy):
     )
 
 
+_LEGACY_LOOP_LAYER_LOCKS = "fbp_gp_limited_loop_layer_locks"
+_LEGACY_LOOP_GUARD_MESSAGE = "fbp_gp_limited_loop_guard_message"
+
+
+def _restore_legacy_limited_loop_locks(canvas):
+    """Unlock layers that the removed Limited Loop guard left locked in old files."""
+    try:
+        payload = canvas.get(_LEGACY_LOOP_LAYER_LOCKS)
+    except FBP_DATA_ERRORS:
+        return False
+    if payload is None:
+        return False
+    try:
+        import json
+
+        states = json.loads(str(payload or "{}"))
+    except (TypeError, ValueError):
+        states = {}
+    layers = getattr(getattr(canvas, "data", None), "layers", None)
+    if isinstance(states, dict) and layers is not None:
+        for name, locked in states.items():
+            try:
+                layer = layers.get(str(name))
+                if layer is not None:
+                    layer.lock = bool(locked)
+            except FBP_DATA_ERRORS:
+                continue
+    try:
+        canvas.pop(_LEGACY_LOOP_LAYER_LOCKS, None)
+        canvas.pop(_LEGACY_LOOP_GUARD_MESSAGE, None)
+    except FBP_DATA_ERRORS:
+        pass
+    return True
+
+
 def _fbp_gp_load_post_rebuild(_dummy):
     if not fbp_main_data_ready("scenes", "objects", "collections"):
         return 0.10
@@ -8631,6 +8666,7 @@ def _fbp_gp_load_post_rebuild(_dummy):
             seen.add(key)
             if not is_gp_canvas(canvas):
                 continue
+            _restore_legacy_limited_loop_locks(canvas)
             rig = gp_canvas_owner(canvas)
             kind = gp_canvas_kind(canvas)
             if rig is None and kind == "MASK":
