@@ -2,12 +2,14 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [7.5.1] - Unreleased
+## [7.5.2] - Unreleased
 
 Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### Fixes
 
+- The Scrub Bar no longer slides left and right toward the mouse. **Mouse Magnet** in Preferences is now **Precise Range**: the distance from the bar within which scrubbing with `<` follows the pointer exactly.
+- The Strokes and Fills dropdowns drew an empty list in Blender 5.2 (the list used a layout type Blender no longer accepts); the color list shows again.
 - A pinned Scrub Bar no longer redraws the viewport on every timer tick while the mouse rests in the 3D View; hover updates only redraw when the hovered key or bookmark changes. Timer events are no longer swallowed during a hold, and edge scrolling uses the remembered pointer position.
 - Pressing Shift or Ctrl while holding `<` before moving no longer jumps the playhead.
 - If the Viewport or object goes away during the return glide, the playhead still lands on the start frame.

@@ -2783,31 +2783,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         )
 
     def _update_magnetic_target(self, context, *, release=False):
-        region = self._owned_window_region()
-        if self._interaction:
-            self._magnetic_target_offset = float(self._magnetic_offset or 0.0)
-            return self._magnetic_target_offset
-        enabled = bool(
-            not release
-            and self._magnetic_enabled
-            and self._is_persistent
-            and not self._shortcut_pending
-            and region is not None
-            and str(getattr(region, "type", "") or "") == "WINDOW"
-        )
-        if not enabled:
-            self._magnetic_target_offset = 0.0
-            return 0.0
-        self._magnetic_target_offset = magnetic_scrub_axis_offset(
-            self._mouse_x,
-            self._mouse_y,
-            self._base_layout(region),
-            enabled=True,
-            capture_px=self._magnetic_distance
-            * max(0.75, float(self._ui_scale)),
-            strength=self._magnetic_strength,
-        )
-        return self._magnetic_target_offset
+        """Keep the bar where it is placed: it never slides toward the pointer.
+
+        The magnet range still sets where scrubbing with < is exact.
+        """
+        self._magnetic_target_offset = 0.0
+        return 0.0
 
     def _tick_magnetic_hover(self, context, *, release=False):
         self._update_magnetic_target(context, release=release)

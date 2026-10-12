@@ -2294,9 +2294,7 @@ def _draw_target_swatch_popover(layout, context, target):
         "stroke_swatches" if target == "STROKE" else "fill_swatches",
         state,
         "swatch_index",
-        rows=8,
-        columns=4,
-        type="GRID",
+        rows=6,
     )
     row = layout.row(align=True)
     row.prop(state, "replace_stroke_color" if target == "STROKE" else "replace_fill_color", text="")

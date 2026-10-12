@@ -980,8 +980,8 @@ class FBP_AddonPreferences(AddonPreferences):
         update=update_interface_preferences_cb,
     )
     gp_scrub_mouse_magnet_distance: FloatProperty(
-        name="Magnet Range",
-        description="Distance in pixels at which magnetic direct scrubbing and persistent bar attraction begin",
+        name="Precise Range",
+        description="While holding <, the playhead follows the pointer exactly within this distance of the Scrub Bar",
         default=96.0,
         min=24.0,
         max=240.0,
@@ -1972,14 +1972,10 @@ class FBP_AddonPreferences(AddonPreferences):
 
                 magnet_box = body.box()
                 configure_layout(magnet_box)
-                magnet_box.label(text='Mouse Magnet', icon='SNAP_ON')
+                magnet_box.label(text='Precise Range', icon='SNAP_ON')
                 row = _row(magnet_box)
-                row.prop(self, 'gp_scrub_mouse_magnet', text='Enabled', toggle=True)
-                controls = row.row(align=True)
-                controls.enabled = self.gp_scrub_mouse_magnet
-                controls.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
-                controls.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
-                controls.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
+                row.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
+                hint_row(magnet_box, 'While holding <, the playhead follows the pointer exactly within this distance of the Scrub Bar.', icon='INFO')
 
                 onion_box = body.box()
                 configure_layout(onion_box)

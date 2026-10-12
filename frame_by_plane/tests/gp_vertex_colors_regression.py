@@ -184,6 +184,28 @@ try:
         point.vertex_color = point_colors[index]
     module._sync_edit_state(bpy.context, force=True)
 
+    # Header strip, swatch popovers and Edit Mode selectors only use calls
+    # Blender accepts (a wrong keyword leaves a popover empty in the UI).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from ui_layout_stub import StubLayout, StubPanel
+
+    for limit in (12, 2):
+        previous_limit = module._HEADER_SWATCH_LIMIT
+        module._HEADER_SWATCH_LIMIT = limit
+        try:
+            stub = StubLayout()
+            assert module._draw_header_color_pair(stub, bpy.context, enabled=True)
+            assert any(call[0] == "prop" for call in stub.calls)
+        finally:
+            module._HEADER_SWATCH_LIMIT = previous_limit
+    for target in ("STROKE", "FILL"):
+        stub = StubLayout()
+        module._draw_target_swatch_popover(stub, bpy.context, target)
+        assert any(call[0] == "template_list" for call in stub.calls)
+    module._draw_edit_material_and_brush(StubLayout(), bpy.context)
+    module.FBP_PT_GPEditBrushPopover.draw(StubPanel(), bpy.context)
+    module.FBP_PT_GPVertexColors.draw(StubPanel(), bpy.context)
+
     # The Draw brush can be chosen without leaving Edit Mode.
     names = module._essential_draw_brush_names()
     assert "Ink Pen" in names and "Pencil" in names, names
