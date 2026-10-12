@@ -8,7 +8,6 @@ deferred work to run between edits, rather than testing only a blocked runtime.
 """
 import importlib
 import json
-import math
 import os
 from pathlib import Path
 import sys
@@ -269,10 +268,6 @@ def stages():
     assert snapshot() == changed
     result('gp_edit_rapid_history', '20 Undo/Redo pairs on point colors; mode and geometry preserved')
     assert not bridge._gp_external_settings_undo_safe(canvas())
-    with override():
-        assert not bpy.ops.fbp.toggle_gp_native_effect.poll()
-        assert not bpy.ops.fbp.reset_gp_native_effect.poll()
-        assert not bpy.ops.fbp.move_gp_native_effect.poll()
     # The exact installed 5.2 build skips Material-ID UI undo in GP Edit Mode.
     # The production UI now requires an explicit Object Mode switch first.
     with override():
@@ -309,22 +304,6 @@ def stages():
     yield 3.0
     assert snapshot() == changed
     result('gp_rapid_history', '20 Undo/Redo pairs plus settled-state assertion')
-    with override():
-        bpy.ops.fbp.toggle_gp_native_effect('EXEC_DEFAULT', effect_id='HUE_SATURATION')
-        bpy.ops.ed.undo_push(message='GP HSV effect baseline')
-    native = bridge._gp_native_effect_instance(canvas(), 'HUE_SATURATION')
-    before_hue = float(native.hue)
-    native.hue = .8
-    with override():
-        bpy.ops.ed.undo_push(message='GP HSV effect changed')
-        bpy.ops.ed.undo()
-    yield 2.8
-    assert math.isclose(bridge._gp_native_effect_instance(canvas(), 'HUE_SATURATION').hue, before_hue, abs_tol=1e-5)
-    with override():
-        bpy.ops.ed.redo()
-    yield 2.8
-    assert math.isclose(bridge._gp_native_effect_instance(canvas(), 'HUE_SATURATION').hue, .8, abs_tol=1e-5)
-    result('gp_hsv_effect_undo_redo', 'Native color modifier restores settings in Object Mode')
     with override():
         bpy.ops.object.mode_set(mode='OBJECT')
     yield .5

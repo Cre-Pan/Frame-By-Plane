@@ -489,7 +489,7 @@ def scan_project_health(scene, *, repair=False):
             _issue(
                 "WARNING",
                 "PREVIEW_FEATURE",
-                f"Preview limitation (not an LTS error): {definition['label']} is enabled outside the Frame By Plane 7.2 LTS core scope",
+                f"Preview limitation (not an LTS error): {definition['label']} is enabled outside the Frame By Plane 7.5 LTS core scope",
                 repair_hint=str(definition.get("disable_hint", "") or "Disable the preview feature for an LTS-only project"),
             ),
             seen,
@@ -1110,20 +1110,7 @@ def scan_project_health(scene, *, repair=False):
         for message in workflow_result.get("issues", ()) or ():
             _append_unique(issues, _issue("ERROR", "GP_TIMING", message, repair_hint="Select the canvas and synchronize Drawing Timing"), seen)
         for message in workflow_result.get("warnings", ()) or ():
-            _append_unique(issues, _issue("INFO", "GP_TIMING", message, repair_hint="Use Create Missing GP Drawings when explicit exposures are required"), seen)
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        pass
-
-    try:
-        from .grease_pencil_limited_loop import audit_limited_loops
-        loop_result = audit_limited_loops(scene, repair=repair)
-        repaired += int(loop_result.get("repaired", 0) or 0)
-        for key, value in (loop_result.get("stats", {}) or {}).items():
-            stats[key] += int(value or 0)
-        for message in loop_result.get("issues", ()) or ():
-            _append_unique(issues, _issue("ERROR", "GP_LIMITED_LOOP", message, repair_hint="Rebuild or remove the Limited Loop"), seen)
-        for message in loop_result.get("warnings", ()) or ():
-            _append_unique(issues, _issue("WARNING", "GP_LIMITED_LOOP", message, repair_hint="Rebuild the Limited Loop or move unexpected keyframes"), seen)
+            _append_unique(issues, _issue("INFO", "GP_TIMING", message, repair_hint="Draw the missing exposures or use Plane → GP in Drawing Timing"), seen)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
 

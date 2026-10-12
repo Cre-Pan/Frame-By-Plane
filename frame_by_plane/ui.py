@@ -3462,7 +3462,7 @@ def _fbp_draw_preview_scope_badge(layout, label):
     badge = layout.row(align=True)
     badge.alert = True
     badge.label(text=f"{label} · Preview", icon="INFO")
-    badge.label(text="Outside the 7.2 LTS stability promise")
+    badge.label(text="Outside the 7.5 LTS stability promise")
     badge.operator("fbp.copy_preview_diagnostics", text="Copy Diagnostics", icon="COPYDOWN")
 
 
@@ -5220,8 +5220,6 @@ def _fbp_draw_properties_modifier_effects(layout, context):
     try:
         from .grease_pencil_bridge import (
             draw_gp_mask_settings_ui,
-            draw_gp_native_effects_ui,
-            is_gp_drawing_canvas,
             is_gp_mask_canvas,
         )
         if is_gp_mask_canvas(active):
@@ -5254,9 +5252,6 @@ def _fbp_draw_properties_modifier_effects(layout, context):
                 draw_effects_ui(layout, context)
                 return
             draw_gp_mask_settings_ui(layout, context, active, embedded=False, header_actions=True)
-            return
-        if is_gp_drawing_canvas(active):
-            draw_gp_native_effects_ui(layout, context, active)
             return
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not draw Frame By Plane Grease Pencil modifiers UI", exc)
@@ -5376,9 +5371,11 @@ class FBP_PT_ModifierShortcuts(Panel):
         if active is None:
             return False
         try:
-            from .grease_pencil_bridge import is_gp_canvas
+            from .grease_pencil_bridge import is_gp_canvas, is_gp_mask_canvas
             if is_gp_canvas(active):
-                return True
+                # Drawing canvases use Blender's own Modifiers and Visual
+                # Effects panels; only GP masks have Frame By Plane settings.
+                return is_gp_mask_canvas(active)
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
         if str(getattr(active, "type", "") or "").upper() == "GREASEPENCIL":
@@ -5422,13 +5419,22 @@ class FBP_MT_FrameByPlaneMore(Menu):
         layout.operator("fbp.import_toon_boom_export", text="Import Toon Boom Export", icon=ui_icon("action.export"))
 
 
+def _fbp_shift_a_plane_selected(context):
+    """Return True when a Frame By Plane plane is selected or active."""
+    if get_selected_fbp_roots(context):
+        return True
+    try:
+        return fbp_resolve_rig_from_any_object(getattr(context, "object", None), context) is not None
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 class FBP_MT_FrameByPlaneAdd(Menu):
     bl_idname = "FBP_MT_frame_by_plane_add"
     bl_label = "Frame By Plane"
     bl_description = "Create Frame By Plane layers and multiplane projects"
 
     def draw(self, context):
-        del context
         layout = configure_layout(self.layout)
         # Every primary entry opens a popup or file browser. Force invoke
         # context so Shift+A never bypasses the operator's setup dialog.
@@ -5460,7 +5466,11 @@ class FBP_MT_FrameByPlaneAdd(Menu):
             text="Video Plane",
             **ui_icon_kwargs("menu.video_plane", fallback="FILE_MOVIE"),
         )
-        layout.operator(
+        # A Drawing Plane is placed from a selected plane, so the entry stays
+        # visible but inactive until one is selected.
+        gp_row = layout.row()
+        gp_row.enabled = _fbp_shift_a_plane_selected(context)
+        gp_row.operator(
             "fbp.add_grease_pencil_canvas",
             text="Grease Pencil Drawing",
             **ui_icon_kwargs("menu.gp_layer"),

@@ -104,6 +104,111 @@ try:
     assert len(module._RUNTIME["edit_fill_targets"]) == 1
     assert len(module._RUNTIME["edit_fill_targets"][0][3]) == 2
 
+    # Every distinct selected color gets its own swatch; editing one swatch
+    # recolors only the selected elements that use that color.
+    stroke_items = module._swatch_items(state, "STROKE")
+    fill_items = module._swatch_items(state, "FILL")
+    assert len(stroke_items) == 3 and len(fill_items) == 2
+    assert close_color(stroke_items[1].color, point_colors[1])
+    swatch_stroke = (0.3, 0.3, 0.9, 1.0)
+    stroke_items[1].color = swatch_stroke
+    assert close_color(drawing.strokes[0].points[1].vertex_color, swatch_stroke)
+    assert close_color(drawing.strokes[0].points[0].vertex_color, point_colors[0])
+    assert close_color(drawing.strokes[1].points[0].vertex_color, point_colors[3])
+    assert close_color(drawing.strokes[0].points[2].vertex_color, point_colors[2])
+    swatch_fill = (0.5, 0.5, 0.5, 1.0)
+    fill_items[0].color = swatch_fill
+    assert close_color(drawing.strokes[0].fill_color, swatch_fill)
+    assert close_color(drawing.strokes[1].fill_color, (0.7, 0.6, 0.5, 0.4))
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert close_color(module._swatch_items(state, "STROKE")[1].color, swatch_stroke)
+    # Merging two swatches into one color collapses them into one slot.
+    module._swatch_items(state, "FILL")[1].color = swatch_fill
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert len(module._swatch_items(state, "FILL")) == 1
+    assert state.fill_mixed is False
+    drawing.strokes[0].points[1].vertex_color = point_colors[1]
+    drawing.strokes[0].fill_color = (0.1, 0.2, 0.3, 0.4)
+    drawing.strokes[1].fill_color = (0.7, 0.6, 0.5, 0.4)
+    module._sync_edit_state(bpy.context, force=True)
+
+    # Swap inverts every selected stroke on its own: its first selected point
+    # color becomes its fill, and its fill paints its selected points.
+    assert module._swap_selected_per_stroke(bpy.context) == 2
+    assert close_color(drawing.strokes[0].points[0].vertex_color, (0.1, 0.2, 0.3, 0.4))
+    assert close_color(drawing.strokes[0].points[1].vertex_color, (0.1, 0.2, 0.3, 0.4))
+    assert close_color(drawing.strokes[0].points[2].vertex_color, point_colors[2])
+    assert close_color(drawing.strokes[0].fill_color, point_colors[0])
+    assert close_color(drawing.strokes[1].points[0].vertex_color, (0.7, 0.6, 0.5, 0.4))
+    assert close_color(drawing.strokes[1].fill_color, point_colors[3])
+    for index, point in enumerate(point for stroke in drawing.strokes for point in stroke.points):
+        point.vertex_color = point_colors[index]
+    drawing.strokes[0].fill_color = (0.1, 0.2, 0.3, 0.4)
+    drawing.strokes[1].fill_color = (0.7, 0.6, 0.5, 0.4)
+
+    # A material that hides fills contributes no Fill swatches.
+    style = material.grease_pencil
+    stroke_rgba = tuple(style.color)
+    fill_rgba = tuple(style.fill_color)
+    style.fill_color = (*fill_rgba[:3], 0.0)
+    assert style.is_fill_visible is False
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert state.fill_available is False
+    assert module._swatch_items(state, "FILL") == []
+    assert len(module._swatch_items(state, "STROKE")) == 3
+    # Without a visible fill there is nothing to swap: colors stay as they are.
+    assert module._swap_selected_per_stroke(bpy.context) == 0
+    assert close_color(drawing.strokes[0].points[0].vertex_color, point_colors[0])
+    style.fill_color = fill_rgba
+    style.color = (*stroke_rgba[:3], 0.0)
+    assert module._sync_edit_state(bpy.context, force=True)
+    assert state.stroke_available is False
+    assert len(module._swatch_items(state, "FILL")) == 2
+    style.color = stroke_rgba
+    module._sync_edit_state(bpy.context, force=True)
+
+    # Header strip: both sides inline up to 12; the larger side collapses first.
+    assert module.header_swatch_layout(11, 1) == (True, True)
+    assert module.header_swatch_layout(12, 1) == (False, True)
+    assert module.header_swatch_layout(1, 12) == (True, False)
+    assert module.header_swatch_layout(13, 13) == (False, False)
+    assert module.header_swatch_layout(6, 6) == (True, True)
+
+    # Replace All gives every selected stroke one color.
+    state.replace_stroke_color = (0.25, 0.5, 0.75, 1.0)
+    assert bpy.ops.fbp.replace_all_gp_colors(target="STROKE") == {"FINISHED"}
+    assert close_color(drawing.strokes[0].points[0].vertex_color, (0.25, 0.5, 0.75, 1.0))
+    assert close_color(drawing.strokes[1].points[0].vertex_color, (0.25, 0.5, 0.75, 1.0))
+    assert close_color(drawing.strokes[0].points[2].vertex_color, point_colors[2])
+    for index, point in enumerate(point for stroke in drawing.strokes for point in stroke.points):
+        point.vertex_color = point_colors[index]
+    module._sync_edit_state(bpy.context, force=True)
+
+    # Header strip, swatch popovers and Edit Mode selectors only use calls
+    # Blender accepts (a wrong keyword leaves a popover empty in the UI).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from ui_layout_stub import StubLayout, StubPanel
+
+    for limit in (12, 2):
+        previous_limit = module._HEADER_SWATCH_LIMIT
+        module._HEADER_SWATCH_LIMIT = limit
+        try:
+            stub = StubLayout()
+            assert module._draw_header_color_pair(stub, bpy.context, enabled=True)
+            assert any(call[0] == "prop" for call in stub.calls)
+        finally:
+            module._HEADER_SWATCH_LIMIT = previous_limit
+    for target in ("STROKE", "FILL"):
+        stub = StubLayout()
+        module._draw_target_swatch_popover(stub, bpy.context, target)
+        assert any(call[0] == "template_list" for call in stub.calls)
+    stub = StubLayout()
+    module._draw_edit_material(stub, bpy.context)
+    assert [call[2]["panel"] for call in stub.calls if call[0] == "popover"] == [
+        "TOPBAR_PT_grease_pencil_materials"
+    ]
+    module.FBP_PT_GPVertexColors.draw(StubPanel(), bpy.context)
+
     # Native Stroke Select marks every point in a selected stroke. The fast
     # path reads one selection bit per stroke and still builds full targets.
     bpy.context.scene.tool_settings.gpencil_selectmode_edit = "STROKE"
@@ -169,7 +274,7 @@ try:
             fingerprint,
         )
     assert len(unique_keys) == 12
-    assert len(swatches) == 8
+    assert len(swatches) == 12
     assert fingerprint != (0, 0)
 
     # A clean Edit cache must not rescan the selected geometry on every Tool
@@ -511,6 +616,40 @@ try:
     assert not state.close_strokes
     assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
     assert state.close_strokes  # G keeps its existing toggle behavior.
+
+    # First use: strokes without vertex colors read as transparent black.
+    # Picking a color over that must give it a visible alpha, and the Draw
+    # colors must survive a visit to Edit Mode.
+    assert module._promote_unset_alpha((0.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)) == (1.0, 0.0, 0.0, 1.0)
+    assert module._promote_unset_alpha((0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0)) == (0.0, 0.0, 0.0, 0.0)
+    assert module._promote_unset_alpha((1.0, 0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0)) == (1.0, 0.0, 0.0, 0.0)
+    fresh_data = bpy.data.grease_pencils.new("FBP First Use")
+    fresh = bpy.data.objects.new("FBP First Use", fresh_data)
+    bpy.context.scene.collection.objects.link(fresh)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.objects.active = fresh
+    fresh_layer = fresh_data.layers.new("Layer", set_active=True)
+    fresh_layer.frames.new(bpy.context.scene.frame_current).drawing.add_strokes([3])
+    bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+    module._sync_draw_state(bpy.context, force=True)
+    fresh_state = fresh.fbp_gp_vertex_color_state
+    fresh_state.stroke_color = (0.0, 0.0, 1.0, 1.0)
+    fresh_state.fill_color = (1.0, 1.0, 0.0, 1.0)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.grease_pencil.select_all(action="SELECT")
+    module._sync_edit_state(bpy.context, force=True)
+    assert tuple(fresh_state.stroke_swatches[0].color) == (0.0, 0.0, 0.0, 0.0)
+    swatch = fresh_state.stroke_swatches[0]
+    swatch.color = (1.0, 0.0, 0.0, 0.0)
+    fresh_drawing = fresh_data.layers.active.current_frame().drawing
+    assert close_color(fresh_drawing.strokes[0].points[0].vertex_color, (1.0, 0.0, 0.0, 1.0))
+    module._commit_edit_color_undo()
+    bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+    module._sync_draw_state(bpy.context)
+    assert close_color(fresh_state.stroke_color, (0.0, 0.0, 1.0, 1.0)), tuple(fresh_state.stroke_color)
+    assert close_color(fresh_state.fill_color, (1.0, 1.0, 0.0, 1.0)), tuple(fresh_state.fill_color)
+    _paint, _brush, fresh_owner, _settings = module._draw_brush_context(bpy.context)
+    assert close_color(fresh_owner.color, (0.0, 0.0, 1.0))
 
     print("FBPTEST gp_dual_vertex_colors: PASS")
 except Exception:

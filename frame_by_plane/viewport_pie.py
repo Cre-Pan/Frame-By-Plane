@@ -2442,25 +2442,8 @@ class FBP_MT_ViewportPie(Menu):
             split.separator()
             return
         if gp_canvas is not None:
-            effects = split.column(align=False)
-            effects.alignment = "CENTER"
-            _pie_start_south_list(effects, "Effects", "SHADERFX")
-            gp_row = _pie_fixed_button_row(
-                effects, "Grease Pencil Effects"
-            )
-            gp_row.menu(
-                "FBP_MT_gp_native_effects",
-                text="Grease Pencil Effects",
-                icon="OUTLINER_OB_GREASEPENCIL",
-            )
-            overflow = effects.row(align=False)
-            overflow.alignment = "CENTER"
-            _pie_icon_cell(overflow).menu(
-                "FBP_MT_pie_effect_domains",
-                text="",
-                icon="COLLAPSEMENU",
-            )
-            _pie_pad_south_list(effects, 2)
+            # Grease Pencil drawings use Blender's native effect stacks.
+            split.separator()
             return
         if not plane_rigs:
             split.separator()

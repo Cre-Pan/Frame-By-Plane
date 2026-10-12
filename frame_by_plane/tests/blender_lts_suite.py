@@ -231,13 +231,42 @@ def test_feedback_update_popup_contract(_module):
     finally:
         feedback._FBP_AUTO_PROMPT_DEADLINE = previous_deadline
 
+    # The splash appears after every installation: fresh, update or reinstall.
+    from types import SimpleNamespace as _Prefs
+
+    fresh = _Prefs(whats_new_enabled=True, whats_new_last_seen_version="", whats_new_install_stamp="")
+    assert feedback._whats_new_is_pending(fresh)
+    upgraded = _Prefs(
+        whats_new_enabled=True,
+        whats_new_last_seen_version=PREVIOUS_RELEASE,
+        whats_new_install_stamp="",
+    )
+    assert feedback._whats_new_is_pending(upgraded)
+    seen = _Prefs(
+        whats_new_enabled=True,
+        whats_new_last_seen_version=feedback.FBP_CURRENT_RELEASE,
+        whats_new_install_stamp=feedback._install_stamp(),
+    )
+    assert not feedback._whats_new_is_pending(seen)
+    reinstalled = _Prefs(
+        whats_new_enabled=True,
+        whats_new_last_seen_version=feedback.FBP_CURRENT_RELEASE,
+        whats_new_install_stamp=feedback.FBP_CURRENT_RELEASE + ":1",
+    )
+    assert feedback._whats_new_is_pending(reinstalled)
+    disabled = _Prefs(whats_new_enabled=False, whats_new_last_seen_version="", whats_new_install_stamp="")
+    assert not feedback._whats_new_is_pending(disabled)
+    marked = _Prefs(whats_new_enabled=True, whats_new_last_seen_version="", whats_new_install_stamp="")
+    assert feedback._mark_whats_new_seen(marked, persist=False)
+    assert not feedback._whats_new_is_pending(marked)
+
     titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     assert titles == (
-        "Dual Grease Pencil Colors",
-        "Edit Mode Color Control",
-        "Smarter Camera Settings",
+        "Magnetic Scrub Bar",
+        "Every Selected Color",
+        "Material in Edit Mode",
+        "One Add Plane Dialog",
         "Bug Fixes",
-        "Better User Interface",
     )
     assert all("7.1" not in item[1] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     # Fresh assets must be decoded once; reused assets still refresh on update.
@@ -1342,6 +1371,57 @@ def test_synchronous_media_generation(_module):
         )
         if temporary_registration:
             bpy.utils.unregister_class(operator_class)
+
+    # An Image Sequence can set the Scene In/Out to its animation (off by default).
+    sequence_names = []
+    for index in range(1, 4):
+        frame_image = bpy.data.images.new(f"FBP Range Fixture {index}", width=8, height=8, alpha=True)
+        try:
+            frame_image.generated_color = (0.1 * index, 0.3, 0.6, 1.0)
+            frame_image.filepath_raw = str(WORKDIR / f"fbp_range_{index:04d}.png")
+            frame_image.file_format = 'PNG'
+            frame_image.save()
+        finally:
+            bpy.data.images.remove(frame_image)
+        sequence_names.append(f"fbp_range_{index:04d}.png")
+    scene = bpy.context.scene
+    assert scene.fbp_pre_match_scene_range is False
+    previous = (scene.frame_start, scene.frame_end, scene.fbp_pre_duration, scene.frame_current)
+    scene.frame_start, scene.frame_end = 1, 250
+    scene.frame_current = 11
+    scene.fbp_pre_duration = 2
+    scene.fbp_pre_match_scene_range = True
+    snapshot = operator_import._fbp_multiplane_runtime_snapshot(bpy.context)
+    if temporary_registration:
+        bpy.utils.register_class(operator_class)
+    try:
+        result = bpy.ops.fbp.import_sequence(
+            'EXEC_DEFAULT',
+            synchronous=True,
+            filepath=str(WORKDIR / sequence_names[0]),
+            directory=str(WORKDIR),
+            files=[{"name": name} for name in sequence_names],
+            media_filter='IMAGES',
+        )
+        assert result == {'FINISHED'}, result
+        new_rig = [
+            obj
+            for obj in scene.objects
+            if bool(getattr(obj, "is_fbp_control", False))
+            and obj.as_pointer() not in before_rigs
+        ][-1]
+        first = int(new_rig.fbp_start_frame)
+        assert (scene.frame_start, scene.frame_end) == (first, first + 5), (
+            first,
+            scene.frame_start,
+            scene.frame_end,
+        )
+    finally:
+        assert operator_import._fbp_rollback_unexpected_multiplane_build(bpy.context, snapshot)
+        if temporary_registration:
+            bpy.utils.unregister_class(operator_class)
+        scene.fbp_pre_match_scene_range = False
+        scene.frame_start, scene.frame_end, scene.fbp_pre_duration, scene.frame_current = previous
     return {
         "fixture": str(fixture_path),
         "generated_rigs": 1,
@@ -1674,18 +1754,74 @@ def test_scrub_bar_regressions(_module):
         assert display == expected, (center, count, display)
         assert display[1] - display[0] + 1 == count
 
-    # Relative scrubbing must use the actual visible distance available on
-    # each side. At scene frame 1, a 1-50 window must reach frame 50.
-    target, _delta = scrub.relative_scrub_target(
-        1,
-        100.0,
-        24.5,
-        100.0,
-        sensitivity=1.0,
-        negative_radius=0.0,
-        positive_radius=49.0,
-    )
-    assert math.isclose(target, 50.0), target
+    # Relative scrubbing is exact at the magnet range and speeds up with the
+    # pointer's distance from the bar, reaching the far speed after the ramp.
+    assert scrub.scrub_distance_gain(40.0, 96.0, 320.0, 2.0) == 1.0
+    halfway = scrub.scrub_distance_gain(96.0 + 160.0, 96.0, 320.0, 2.0)
+    assert 1.0 < halfway < 2.0, halfway
+    assert math.isclose(scrub.scrub_distance_gain(2000.0, 96.0, 320.0, 2.0), 2.0)
+    assert scrub.scrub_distance_gain(97.0, 96.0, 0.0, 3.0) == 3.0
+
+    # Releasing < glides back with ease-in-out and lands exactly on the start.
+    # Scrubbing writes the frame like the Timeline when Audio Scrubbing is on.
+    audio_scene = bpy.context.scene
+    audio_previous = (bool(audio_scene.use_audio_scrub), int(audio_scene.frame_current))
+    for audio_on, frame in ((True, 7), (False, 9)):
+        audio_scene.use_audio_scrub = audio_on
+        scrub.scrub_scene_frame(audio_scene, frame)
+        assert audio_scene.frame_current == frame
+    audio_scene.use_audio_scrub, audio_scene.frame_current = audio_previous
+    assert scrub.FBP_OT_TimelineHoldScrub in scrub._classes
+
+    # While drawing, the bar shows only the active layer's keys.
+    layered_data = bpy.data.grease_pencils.new("FBP Scrub Layers")
+    layered = bpy.data.objects.new("FBP Scrub Layers", layered_data)
+    bpy.context.scene.collection.objects.link(layered)
+    previous_active = bpy.context.view_layer.objects.active
+    bpy.context.view_layer.objects.active = layered
+    back = layered_data.layers.new("Back")
+    back.frames.new(3)
+    front = layered_data.layers.new("Front", set_active=True)
+    front.frames.new(8)
+    try:
+        assert [record[0] for record in scrub.grease_pencil_keyframe_records(layered)] == [3, 8]
+        bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+        assert [record[0] for record in scrub.grease_pencil_keyframe_records(layered)] == [8]
+        assert [frame.frame_number for _layer, frame in scrub.grease_pencil_editable_frames(layered)] == [8]
+        bpy.ops.object.mode_set(mode="OBJECT")
+    finally:
+        bpy.context.view_layer.objects.active = previous_active
+        bpy.data.objects.remove(layered)
+        bpy.data.grease_pencils.remove(layered_data)
+    assert {"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR", "SEQUENCE_EDITOR"} <= scrub._TIMELINE_SCRUB_AREAS
+    assert scrub.scrub_return_frame(30, 10, 0.0, 0.35) == (30, False)
+    middle, finished = scrub.scrub_return_frame(30, 10, 0.175, 0.35)
+    assert middle == 20 and not finished, middle
+    early, _finished = scrub.scrub_return_frame(30, 10, 0.05, 0.35)
+    assert early > 28, early  # eases in: slow start
+    assert scrub.scrub_return_frame(30, 10, 0.5, 0.35) == (10, True)
+
+    # With a bounce the playhead passes the start frame, then settles on it.
+    assert scrub.scrub_return_overshoot(30, 29, 0.1) == 0.0
+    assert math.isclose(scrub.scrub_return_overshoot(30, 10, 0.1), 2.0 / 20.0)
+    assert math.isclose(scrub.scrub_return_overshoot(14, 10, 0.1), 1.0 / 4.0)
+    assert math.isclose(scrub.scrub_return_overshoot(110, 10, 0.5), 3.0 / 100.0)
+    frames = [
+        scrub.scrub_return_frame(30, 10, step * 0.01, 0.45, 0.1)[0]
+        for step in range(46)
+    ]
+    assert min(frames) == 8, frames
+    assert frames[-1] == 10, frames
+    assert frames.index(8) < len(frames) - 1
+    assert scrub.scrub_return_frame(30, 10, 0.5, 0.45, 0.1) == (10, True)
+    assert math.isclose(scrub.scrub_return_curve(0.0, 0.1), 0.0)
+    assert math.isclose(scrub.scrub_return_curve(1.0, 0.1), 1.0)
+    assert math.isclose(scrub.scrub_return_curve(scrub._RETURN_BOUNCE_PEAK, 0.1), 1.1)
+
+    # A tap no longer pins the bar unless the preference asks for it.
+    assert scrub.scrub_release_action(0.05, False, False, tap_toggles=False) == "FINISH_MOMENTARY"
+    assert scrub.scrub_release_action(0.05, False, True, tap_toggles=False) == "KEEP_PERSISTENT"
+    assert scrub.scrub_release_action(0.05, False, False, tap_toggles=True) == "ENABLE_PERSISTENT"
 
     # Leaving the exact direct zone must be distinguishable from the outer
     # transition so the modal operator can re-anchor at the exit position.
@@ -1821,36 +1957,54 @@ def test_scrub_bar_regressions(_module):
 
 
 def test_gp_support(_module):
+    """Removed Grease Pencil tools must stay unregistered."""
     bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
-    blender_icons = {
-        item.identifier
-        for item in bpy.types.UILayout.bl_rna.functions["operator"]
-        .parameters["icon"].enum_items
-    }
-    presentation_icons = {
-        icon
-        for _label, icon in bridge._GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION.values()
-    }
-    assert presentation_icons <= blender_icons, sorted(presentation_icons - blender_icons)
-    summary = bridge.fbp_gp_effect_support_summary()
-    assert len(bridge.GP_NATIVE_EFFECTS) >= 27, len(bridge.GP_NATIVE_EFFECTS)
-    assert summary["total"] == sum(
-        summary[key] for key in ("NATIVE", "GEOMETRY_CANDIDATE", "RASTER_ONLY")
-    ), summary
-    assert any(
-        item["effect_id"] == "SURFACE_CONFORM" and item["tier"] == "NATIVE"
-        for item in bridge.fbp_gp_effect_backend_matrix()
+    removed_types = (
+        "FBP_UL_GPNativeEffectStack",
+        "FBP_MT_gp_native_effects",
+        "FBP_MT_gp_native_effect_actions",
+        "FBP_PT_grease_pencil_ink_workflow",
+        "FBP_PT_grease_pencil_limited_loop",
     )
-    records = bridge._gp_effect_compatibility_records()
-    assert len(records) == summary["total"], (len(records), summary)
-    assert all(str(item.get("reason", "")).strip() for item in records), records
-    assert any("not available yet" in item["reason"].casefold() for item in records)
-    assert any("no native conversion is planned yet" in item["reason"].casefold() for item in records)
-    report = bridge._fbp_gp_effect_compatibility_report_text()
-    assert "Grease Pencil Effect Compatibility" in report, report
-    assert "This report stays local" in report, report
-    assert hasattr(bpy.types.Object, "fbp_gp_effect_compatibility_filter")
-    return summary
+    for name in removed_types:
+        assert not hasattr(bpy.types, name), name
+
+    # Files saved while the old Limited Loop guard held layers locked get
+    # their original lock states back on load.
+    data = bpy.data.grease_pencils.new("FBP Legacy Loop Locks")
+    canvas = bpy.data.objects.new("FBP Legacy Loop Locks", data)
+    try:
+        free = data.layers.new("Free")
+        kept = data.layers.new("Kept")
+        free.lock = True
+        kept.lock = True
+        canvas["fbp_gp_limited_loop_layer_locks"] = '{"Free": false, "Kept": true}'
+        canvas["fbp_gp_limited_loop_guard_message"] = "locked"
+        assert bridge._restore_legacy_limited_loop_locks(canvas)
+        assert free.lock is False and kept.lock is True
+        assert "fbp_gp_limited_loop_layer_locks" not in canvas
+        assert "fbp_gp_limited_loop_guard_message" not in canvas
+        assert not bridge._restore_legacy_limited_loop_locks(canvas)
+    finally:
+        bpy.data.objects.remove(canvas)
+        bpy.data.grease_pencils.remove(data)
+    removed_ops = (
+        "toggle_gp_native_effect", "reset_gp_native_effect", "move_gp_native_effect",
+        "repair_gp_native_effect_duplicates", "copy_gp_effect_compatibility_report",
+        "enter_grease_pencil_draw", "gp_set_workflow_state", "gp_create_missing_drawings",
+        "gp_create_current_exposure", "gp_add_loop_block", "gp_build_limited_loop",
+    )
+    for name in removed_ops:
+        try:
+            getattr(bpy.ops.fbp, name).get_rna_type()
+        except KeyError:
+            continue
+        raise AssertionError(f"fbp.{name} is still registered")
+    for name in ("fbp_gp_effect_items", "fbp_gp_effect_compatibility_filter", "fbp_gp_loop_blocks", "fbp_gp_missing_drawing_mode"):
+        assert not hasattr(bpy.types.Object, name), name
+    assert not hasattr(bridge, "GP_NATIVE_EFFECTS")
+    assert importlib.util.find_spec(f"{PACKAGE}.grease_pencil_limited_loop") is None
+    return {"removed_types": len(removed_types), "removed_operators": len(removed_ops)}
 
 
 def test_gp_runtime_cache_cleanup(_module):
@@ -2818,7 +2972,7 @@ def test_preview_scope_policy(_module):
     assert all(item["used"] for item in usage), usage
     assert next(item for item in usage if item["id"] == "compositor_layers")["enabled"]
     diagnostics = feature_scope.fbp_preview_diagnostics_text(PreviewScene())
-    assert "outside the Frame By Plane 7.2 LTS stability promise" in diagnostics
+    assert "outside the Frame By Plane 7.5 LTS stability promise" in diagnostics
     assert "no file paths, project media or telemetry" in diagnostics
 
     project_health = importlib.import_module(f"{PACKAGE}.project_health")
@@ -2961,134 +3115,6 @@ def test_irreversible_action_contracts(_module):
         "rename_manifest_finalized": True,
         "filesystem_undo_advertised": False,
         "targeted_repair_internal": True,
-    }
-
-
-def test_gp_native_apply(_module):
-    bridge = importlib.import_module(f"{PACKAGE}.grease_pencil_bridge")
-    result = bpy.ops.fbp.add_grease_pencil_canvas(
-        "EXEC_DEFAULT",
-        canvas_name="FBP GP Native Backend",
-        owner_name="__FREE__",
-        enter_draw_mode=False,
-    )
-    assert "FINISHED" in result, result
-    canvas = bpy.context.object
-    supported = []
-    added = []
-    for definition in bridge.GP_NATIVE_EFFECTS:
-        effect_id = definition[0]
-        if not bridge._gp_native_effect_supported(canvas, definition):
-            continue
-        supported.append(effect_id)
-        item = bridge._gp_add_native_effect(canvas, effect_id)
-        if item is not None:
-            added.append(effect_id)
-    if added:
-        instances = bridge._gp_native_effect_instances(canvas)
-        bridge._gp_sync_native_effect_items(canvas)
-        list_ids = [str(row.effect_id) for row in canvas.fbp_gp_effect_items]
-        ordered_ids = [
-            effect_id
-            for effect_id, _item, _backend, _index
-            in bridge._gp_native_effect_stack_state(canvas)[1]
-        ]
-        assert list_ids == ordered_ids, (list_ids, ordered_ids)
-        assert hasattr(bpy.types, "FBP_UL_GPNativeEffectStack")
-        assert hasattr(bpy.types, "FBP_MT_gp_native_effect_actions")
-        assert all(
-            hasattr(bpy.types, menu_class.bl_idname)
-            for menu_class in bridge._GP_NATIVE_EFFECT_GROUP_MENUS
-        )
-        grouped_ids = {
-            effect_id
-            for _label, _icon, effect_ids in bridge._GP_NATIVE_EFFECT_LIBRARY_GROUPS
-            for effect_id in effect_ids
-        }
-        assert grouped_ids == {definition[0] for definition in bridge.GP_NATIVE_EFFECTS}
-
-        same_backend_pair = next((
-            (first, second)
-            for first, second in zip(ordered_ids, ordered_ids[1:])
-            if bridge._gp_native_effect_definition(first)[3]
-            == bridge._gp_native_effect_definition(second)[3]
-        ), None)
-        if same_backend_pair:
-            first, second = same_backend_pair
-            canvas.fbp_gp_effect_items_index = list_ids.index(first)
-            assert bridge._gp_active_native_effect_id(canvas) == first
-            assert bridge._gp_move_native_effect(canvas, first, 1)
-            moved_ids = [str(row.effect_id) for row in canvas.fbp_gp_effect_items]
-            assert moved_ids.index(first) == moved_ids.index(second) + 1, moved_ids
-            assert bridge._gp_active_native_effect_id(canvas) == first
-            assert bridge._gp_move_native_effect(canvas, first, -1)
-
-        expected_controls = {
-            "RIM": {"mask_color", "samples"},
-            "SHADOW": {
-                "samples", "use_wave", "orientation", "amplitude", "period",
-                "phase", "use_object", "object", "scale",
-            },
-            "GAUSSIAN_BLUR": {"use_dof_mode"},
-            "GP_GLOW": {
-                "opacity", "size", "samples", "mode", "blend_mode",
-                "select_color", "rotation", "use_glow_under",
-            },
-            "CUTOUT_OUTLINE": {"subdivision", "outline_material", "object"},
-        }
-        for effect_id, logical_names in expected_controls.items():
-            item = instances.get(effect_id)
-            if item is None:
-                continue
-            unresolved = {
-                name for name in logical_names
-                if not bridge._gp_resolve_native_attr(item, name)
-            }
-            assert not unresolved, {effect_id: sorted(unresolved)}
-
-        glow = instances.get("GP_GLOW")
-        if glow is not None:
-            opacity_attr = bridge._gp_resolve_native_attr(glow, "opacity")
-            size_attr = bridge._gp_resolve_native_attr(glow, "size")
-            samples_attr = bridge._gp_resolve_native_attr(glow, "samples")
-            assert abs(float(getattr(glow, opacity_attr)) - 0.35) < 1.0e-5
-            assert tuple(round(float(value), 5) for value in getattr(glow, size_attr)) == (6.0, 6.0)
-            assert int(getattr(glow, samples_attr)) == 8
-            setattr(glow, opacity_attr, 0.9)
-            assert bridge._gp_reset_native_effect(canvas, "GP_GLOW")
-            assert abs(float(getattr(glow, opacity_attr)) - 0.35) < 1.0e-5
-
-        effect_id = added[0]
-        definition = bridge._gp_native_effect_definition(effect_id)
-        collection = bridge._gp_native_effect_collection(canvas, definition[3])
-        native_type = bridge._gp_supported_native_type(canvas, definition)
-        duplicate = bridge._gp_new_native_effect_item(
-            collection,
-            bridge._gp_native_effect_name(effect_id) + " Duplicate",
-            native_type,
-        )
-        assert duplicate is not None
-        assert bridge._gp_tag_native_effect_item(duplicate, effect_id)
-        assert bridge._gp_native_effect_id_from_item(
-            duplicate, bridge._gp_native_effect_definitions()
-        ) == effect_id
-        _active, _ordered, _lengths, duplicates = bridge._gp_native_effect_stack_state(canvas)
-        assert duplicates.get(effect_id, 0) == 2, duplicates
-        assert bridge._gp_repair_native_effect_duplicates(canvas) == 1
-        _active, _ordered, _lengths, duplicates = bridge._gp_native_effect_stack_state(canvas)
-        assert duplicates.get(effect_id, 0) == 1, duplicates
-    for effect_id in reversed(added):
-        assert bridge._gp_remove_native_effect(canvas, effect_id), effect_id
-    if not supported:
-        raise SkipTest("This Blender build exposed no supported native GP effect type")
-    assert added, {"supported": supported}
-    assert len(canvas.fbp_gp_effect_items) == 0
-    return {
-        "supported_by_blender": len(supported),
-        "created_and_removed": len(added),
-        "visual_control_contracts": 5,
-        "glow_defaults_reset": True,
-        "ui_list_and_grouped_menu": True,
     }
 
 
@@ -3875,17 +3901,10 @@ def test_interactive_layer_tree_gp(_module):
     assert "FINISHED" in result, result
     canvas = bpy.context.object
     ui_layout.fbp_refresh_layer_tree_rows(bpy.context)
-    canvas.fbp_gp_ui_show_unavailable_effects = True
-    canvas.fbp_gp_effect_compatibility_filter = "GEOMETRY_CANDIDATE"
     _redraw_all(2)
-    copy_result = bpy.ops.fbp.copy_gp_effect_compatibility_report("EXEC_DEFAULT")
-    assert "FINISHED" in copy_result, copy_result
-    assert "Grease Pencil Effect Compatibility" in bpy.context.window_manager.clipboard
     preview_result = bpy.ops.fbp.copy_preview_diagnostics("EXEC_DEFAULT")
     assert "FINISHED" in preview_result, preview_result
     assert "Preview Feature Diagnostics" in bpy.context.window_manager.clipboard
-    canvas.fbp_gp_ui_show_unavailable_effects = False
-    canvas.fbp_gp_effect_compatibility_filter = "ALL"
 
     for index in range(300):
         scene.frame_set((index % 48) + 1)
@@ -4174,7 +4193,6 @@ def run_background():
             ("audited_operator_tooltips", test_audited_operator_tooltips),
             ("preview_scope_policy", test_preview_scope_policy),
             ("irreversible_action_contracts", test_irreversible_action_contracts),
-            ("gp_native_apply_remove", test_gp_native_apply),
             ("generic_mesh_matrix", test_generic_mesh_matrix),
             ("generic_mesh_topology_profiles", test_generic_mesh_topology_profiles),
             ("generic_mesh_group_contracts", test_generic_mesh_supported_group_contracts),

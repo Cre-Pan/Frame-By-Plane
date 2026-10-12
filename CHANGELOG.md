@@ -2,7 +2,65 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [Unreleased]
+## [7.5.4] - Unreleased
+
+Version bumped to 7.5.x (7.5.0 was an internal test build).
+
+### New
+
+- In Draw Mode the Scrub Bar shows, snaps to and edits only the active layer's keyframes; other modes still show every visible layer.
+- The Viewport header has a **Return to Start** toggle next to the Scrub Bar pin. The Onion Skin button left the header; the Onion Skin settings stay in the Scrub Bar menu.
+- **Set Scene In/Out from Media** (off by default) in the Add Plane dialog, the Multiplane dialog and the sidebar: after creating planes from an Image Sequence or a Video, the Scene Start and End cover their animation (one cycle, including Frame Hold). Still images never change the range.
+- The Scrub Bar plays the audio under the playhead when **Audio Scrubbing** is on (Blender's own Timeline setting, now also a toggle in the Scrub Bar menu).
+- Holding `<` (or Shift+,) in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer scrubs the playhead left and right from where it is, follows Shift Slowdown, and glides back to the start on release when Return to Start is on. Esc or right-click cancels.
+
+### Fixes
+
+- Strokes that never had a vertex color read as transparent black. Picking a Stroke or Fill color over one of those kept alpha 0, so nothing changed on screen; the first color picked over an unset one now gets full alpha.
+- Leaving Edit Mode no longer turns the Draw and Vertex Paint colors into the selection's colors (often transparent black on uncolored strokes, which also made new fills invisible). Paint modes get back the colors they had before Edit Mode.
+- Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
+- A click right after the return glide is hit-tested where the pointer really is, so drawing straight away is no longer taken as a Scrub Bar click.
+- The return glide lands on the start frame even when it lies outside the scene or preview range.
+- Older saved Mouse Magnet on/off and Strength values no longer shrink the Precise Range; Precise Range is also in the Scrub Bar menu under Scrub Speed.
+- Editing a swatch can no longer move the open color picker onto another color group when two colors become equal.
+- Swap in Edit Mode says why when nothing can be swapped.
+- The Scrub Bar menu aligns its labels and is a little wider.
+- The Scrub Bar no longer slides left and right toward the mouse. **Mouse Magnet** in Preferences is now **Precise Range**: the distance from the bar within which scrubbing with `<` follows the pointer exactly.
+- The Strokes and Fills dropdowns drew an empty list in Blender 5.2 (the list used a layout type Blender no longer accepts); the color list shows again.
+- A pinned Scrub Bar no longer redraws the viewport on every timer tick while the mouse rests in the 3D View; hover updates only redraw when the hovered key or bookmark changes. Timer events are no longer swallowed during a hold, and edge scrolling uses the remembered pointer position.
+- Pressing Shift or Ctrl while holding `<` before moving no longer jumps the playhead.
+- If the Viewport or object goes away during the return glide, the playhead still lands on the start frame.
+- Stroke and Fill swatches live in separate lists, so a change on one side can never make an open color picker edit the other side.
+- Swap skips strokes whose material draws only a line or only a fill, instead of painting them with an empty color, and no longer adds an empty Undo step when nothing is selected.
+- The Edit Mode header no longer rescans the selection on every redraw before the first sync.
+- Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
+
+### Release splash
+
+- The release splash now opens after every installation of Frame By Plane: a fresh install, an update, or reinstalling the same version, from Blender Extensions or by drag and drop. Starting Blender again does not show it. **Show After Install / Update** in Preferences still turns it off.
+
+### Grease Pencil
+
+- Removed the Frame By Plane Grease Pencil effect list and its grouped effect picker (Reset, Move, Toggle, Repair Duplicates and the compatibility report). Grease Pencil drawings now use Blender's own Modifiers and Visual Effects panels; effects already added to a drawing stay on it as normal Blender effects.
+- Removed **Draw on Canvas** (the Draw, Fill and Erase buttons next to a Drawing Plane), the **Ink Over Image** panel, **Create Missing / Current GP Drawings** and **Limited Loop Blocks**. Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
+- **Grease Pencil Drawing** in Shift+A is greyed out until a Frame By Plane plane is selected.
+- In Edit Mode, selecting strokes with different colors shows every distinct Stroke and Fill color in the Tool Header (`Stroke colors ⇄ Fill colors`), up to 12 swatches; identical colors share one swatch. With more than 12, the larger side collapses into its own **Strokes** or **Fills** dropdown with a color list, **Replace All** and **Invert with Fill/Stroke**. Changing a swatch recolors only the selected strokes or fills that use that color.
+- Only colors that are drawn count: if the selected strokes' material hides fills, the Fill side and the swap button disappear (and the other way round).
+- **Swap Stroke / Fill** in Edit Mode now swaps each selected stroke's own colors, instead of painting every stroke with one color.
+- Edit Mode's Tool Header has the **Material** selector (with Assign), so the material can be changed without leaving Edit Mode.
+
+### Scrub Bar
+
+- Holding **<** now follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away from it, up to **Far Speed** (Preferences, **Speed Ramp Distance**). Moving only across the bar no longer changes the frame.
+- Fixed: after releasing **<** the playhead stayed on the scrubbed frame until the next key press. Blender events carry no timer handle, so the glide never ticked; Scrub Bar edge scrolling and the hover magnet were affected the same way.
+- Releasing **<** snaps the playhead back to the frame where you started like a magnet: it accelerates, passes the start frame by a frame or two and settles on it (**Return to Start Frame**, on by default, with **Return Time** and **Bounce**). Any key or click during the glide lands on the start frame at once.
+- The Scrub Bar menu in the Viewport header is split into collapsible sections (Scrub Bar, Return to Start, Scrub Speed, Onion Skin, Bookmarks, Preview Range). **Length** is now in the Scrub Bar section, goes down to 10% of the Viewport and updates the bar while it is shown.
+- A quick tap of **<** no longer pins the Scrub Bar. Pin it from the Scrub Bar button or its menu in the Viewport header, or turn **Tap < Pins the Bar** back on in Preferences.
+
+### Add Plane dialog
+
+- **Single Plane**, **Video Plane**, **Color Plane**, **Gradient Plane** and **Holdout Plane** open one **Add Plane** dialog with the plane type in a dropdown at the top, so you can switch type without closing it. Settings are grouped into Animation, Plane and Material, Camera, and Placement sections.
+- Adding a Single Plane no longer changes the scene resolution to the new image's aspect. Turn on **Fit Camera to New Plane** in the dialog to get the previous behavior.
 
 ### Effect stack performance
 
@@ -29,6 +87,13 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
+- A click right after the return glide is hit-tested where the pointer really is, so drawing straight away is no longer taken as a Scrub Bar click.
+- The return glide lands on the start frame even when it lies outside the scene or preview range.
+- Older saved Mouse Magnet on/off and Strength values no longer shrink the Precise Range; Precise Range is also in the Scrub Bar menu under Scrub Speed.
+- Editing a swatch can no longer move the open color picker onto another color group when two colors become equal.
+- Swap in Edit Mode says why when nothing can be swapped.
+- The Scrub Bar menu aligns its labels and is a little wider.
 - Masks that sample the layer UV (Luma/Alpha Matte, Gradient, Noise, Wave, Voronoi, Channel, Color and Imported masks) no longer lose their UV input after a UV effect is moved or the stack is sorted. They previously appeared frozen until another rebuild.
 - Removing a duplicated (multi-instance) effect now also removes its per-instance viewport and render visibility data instead of leaving it on the layer.
 - **Clear Effect Stack** and **Remove Selected Effects** now update the saved effect-stack data, so removed effects (and their group membership) no longer remain as hidden records in the .blend file.

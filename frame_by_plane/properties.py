@@ -927,7 +927,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     shortcut_gp_frame_scrub: BoolProperty(
         name="Grease Pencil Frame Scrub",
-        description="Tap < in any 3D View mode to toggle the interactive Scrub Bar, or hold it for momentary scrubbing",
+        description="Hold < in any 3D View mode for momentary scrubbing. The Scrub Bar button in the Viewport header pins the bar",
         default=True,
         update=update_shortcut_preferences_cb,
     )
@@ -966,7 +966,7 @@ class FBP_AddonPreferences(AddonPreferences):
         update=update_interface_preferences_cb,
     )
     gp_scrub_length_ratio: FloatProperty(
-        name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.2, max=1.0,
+        name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.1, max=1.0,
         update=update_interface_preferences_cb,
     )
     gp_scrub_edge_offset: FloatProperty(
@@ -980,8 +980,8 @@ class FBP_AddonPreferences(AddonPreferences):
         update=update_interface_preferences_cb,
     )
     gp_scrub_mouse_magnet_distance: FloatProperty(
-        name="Magnet Range",
-        description="Distance in pixels at which magnetic direct scrubbing and persistent bar attraction begin",
+        name="Precise Range",
+        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and blends into relative scrubbing up to this distance from it",
         default=96.0,
         min=24.0,
         max=240.0,
@@ -1004,6 +1004,45 @@ class FBP_AddonPreferences(AddonPreferences):
         default=0.22,
         min=0.01,
         max=1.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_to_start: BoolProperty(
+        name="Return to Start Frame",
+        description="After scrubbing with <, release it and the playhead glides back to the frame you started from",
+        default=True,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_duration: FloatProperty(
+        name="Return Time",
+        description="Seconds the playhead takes to glide back to the start frame, including the bounce",
+        default=0.45,
+        min=0.05,
+        max=1.5,
+        subtype='TIME_ABSOLUTE',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_bounce: FloatProperty(
+        name="Bounce",
+        description="How far the playhead passes the start frame before settling, like a magnet snapping back. 0 lands without bouncing",
+        subtype='FACTOR',
+        default=0.1,
+        min=0.0,
+        max=0.5,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_tap_toggles: BoolProperty(
+        name="Tap < Pins the Bar",
+        description="A quick tap of < shows or hides the persistent Scrub Bar. Off: only the Scrub Bar button in the Viewport header pins it",
+        default=False,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_distance_ramp: FloatProperty(
+        name="Speed Ramp Distance",
+        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away, reaching Far Speed at this distance beyond the Precise Range. 0 uses Far Speed right outside the Precise Range",
+        default=320.0,
+        min=0.0,
+        max=2000.0,
+        subtype='PIXEL',
         update=update_interface_preferences_cb,
     )
     gp_scrub_show_onion_handles: BoolProperty(
@@ -1419,7 +1458,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     default_preview_compositor: BoolProperty(
         name="Compositor Layers",
-        description="Enable the Compositor Layers preview in newly initialized files; it is outside the Frame By Plane 7.2 LTS core scope",
+        description="Enable the Compositor Layers preview in newly initialized files; it is outside the Frame By Plane 7.5 LTS core scope",
         default=False,
     )
     default_preview_procreate_import: BoolProperty(
@@ -1684,8 +1723,14 @@ class FBP_AddonPreferences(AddonPreferences):
 
     whats_new_enabled: BoolProperty(
         name="What's New After Updates",
-        description="Show the local release-notes popup once after each new Frame By Plane release key. Fresh installs still create a silent baseline; intermediate updates can show their notes once. No telemetry or project data is collected",
+        description="Show the local release-notes splash once after every installation or update of Frame By Plane, from Blender Extensions or by drag and drop. No telemetry or project data is collected",
         default=True,
+    )
+    whats_new_install_stamp: StringProperty(
+        name="Last Shown Installation",
+        description="Identifies the installation the release splash was last shown for",
+        default="",
+        options={'HIDDEN'},
     )
     whats_new_last_seen_version: StringProperty(description='Whats New Last Seen Version value used by the current Frame By Plane tool. Changes are applied only to compatible Frame By Plane data.',
         name="Last Viewed What's New Version",
@@ -1813,7 +1858,7 @@ class FBP_AddonPreferences(AddonPreferences):
             body = _section(category, 'pref_ui_show_release', 'Onboarding', 'menu.shift_a_root', 'PRESET')
             if body:
                 row = _row(body)
-                row.prop(self, 'whats_new_enabled', text='Show After Updates', toggle=True, icon=fbp_icon('PRESET'))
+                row.prop(self, 'whats_new_enabled', text='Show After Install / Update', toggle=True, icon=fbp_icon('PRESET'))
                 splash = row.operator('fbp.whats_new_prompt', text="What's New", icon=fbp_icon('PRESET'))
                 splash.force = True
                 splash.start_tutorial = False
@@ -1910,23 +1955,27 @@ class FBP_AddonPreferences(AddonPreferences):
                 configure_layout(motion_box)
                 motion_box.label(text='Scrubbing and Layout', icon='MOUSE_MOVE')
                 row = _row(motion_box)
-                row.prop(self, 'gp_scrub_sensitivity', text='Sensitivity', slider=True)
-                row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
-                row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
+                row.prop(self, 'gp_scrub_return_to_start', text='Return to Start Frame', toggle=True, icon='LOOP_BACK')
+                duration = row.row(align=True)
+                duration.enabled = self.gp_scrub_return_to_start
+                duration.prop(self, 'gp_scrub_return_duration', text='Return Time')
+                duration.prop(self, 'gp_scrub_return_bounce', text='Bounce', slider=True)
+                row.prop(self, 'gp_scrub_tap_toggles', text='Tap < Pins the Bar', toggle=True, icon='PINNED')
                 row = _row(motion_box)
+                row.prop(self, 'gp_scrub_sensitivity', text='Far Speed', slider=True)
+                row.prop(self, 'gp_scrub_distance_ramp', text='Speed Ramp Distance')
+                row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
+                row = _row(motion_box)
+                row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
                 row.prop(self, 'gp_scrub_edge_offset', text='Edge Offset')
-                hint_row(motion_box, 'Hold <: relative sensitivity away from the axis, exact cursor mapping inside the magnetic zone.', icon='TIME')
+                hint_row(motion_box, 'Hold <: exact on the Scrub Bar, faster the further the pointer moves away. Release to glide back.', icon='TIME')
 
                 magnet_box = body.box()
                 configure_layout(magnet_box)
-                magnet_box.label(text='Mouse Magnet', icon='SNAP_ON')
+                magnet_box.label(text='Precise Range', icon='SNAP_ON')
                 row = _row(magnet_box)
-                row.prop(self, 'gp_scrub_mouse_magnet', text='Enabled', toggle=True)
-                controls = row.row(align=True)
-                controls.enabled = self.gp_scrub_mouse_magnet
-                controls.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
-                controls.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
-                controls.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
+                row.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
+                hint_row(magnet_box, 'Hold <: exact on the Scrub Bar, blending into relative scrubbing up to this distance.', icon='INFO')
 
                 onion_box = body.box()
                 configure_layout(onion_box)
@@ -1968,7 +2017,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_cursor_color', text='Cursor Color')
                 row.prop(self, 'gp_scrub_cursor_text_color', text='Cursor Text')
-                hint_row(appearance_box, f'Tap < to toggle · hold < to scrub · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
+                hint_row(appearance_box, f'Hold < to scrub · header button pins the bar · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
 
             body = _section(category, 'pref_ui_show_procedural', 'Procedural Planes', 'menu.color_plane', 'MATERIAL')
             if body:
@@ -4706,6 +4755,16 @@ def register_properties():
         description="When generating a Frame By Plane camera, match the output resolution to the first generated layer source aspect instead of a fixed preset",
         default=True,
     )
+    _FBP_SCENE_RNA.fbp_single_fit_camera = BoolProperty(
+        name="Fit Camera to New Plane",
+        description="When adding a Single Plane, change the output resolution to match the new image aspect. Off keeps the current camera framing",
+        default=False,
+    )
+    _FBP_SCENE_RNA.fbp_pre_match_scene_range = BoolProperty(
+        name="Set Scene In/Out from Media",
+        description="After creating planes from an Image Sequence or a Video, set the Scene Start and End frames to cover their animation (one cycle, including Frame Hold). Single still images never change the range",
+        default=False,
+    )
     _FBP_SCENE_RNA.fbp_pre_track_cam = BoolProperty(name="Track Camera on New Layers", description="Add camera tracking to newly generated Frame By Plane layers", default=False)
     _FBP_SCENE_RNA.fbp_settings_section = EnumProperty(
         name="Settings Section",
@@ -4723,7 +4782,7 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_experimental_compositor = BoolProperty(
         name="Compositor Preview",
         description=(
-            "Enable the preview Compositor Layers workflow. This feature is outside the Frame By Plane 7.2 LTS core scope; "
+            "Enable the preview Compositor Layers workflow. This feature is outside the Frame By Plane 7.5 LTS core scope; "
             "disable it to hide and prevent selection of that section"
         ),
         default=False,
@@ -4731,12 +4790,12 @@ def register_properties():
     )
     _FBP_SCENE_RNA.fbp_preview_procreate_import = BoolProperty(
         name="Procreate Preview",
-        description="Enable the Procreate archive/tile decoder. This importer is outside the Frame By Plane 7.2 LTS core scope",
+        description="Enable the Procreate archive/tile decoder. This importer is outside the Frame By Plane 7.5 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_preview_generic_mesh_effects = BoolProperty(
         name="Generic Mesh Preview",
-        description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 7.2 LTS core scope",
+        description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 7.5 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_color_plane_type = EnumProperty(
