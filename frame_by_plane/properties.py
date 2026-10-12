@@ -4760,6 +4760,11 @@ def register_properties():
         description="When adding a Single Plane, change the output resolution to match the new image aspect. Off keeps the current camera framing",
         default=False,
     )
+    _FBP_SCENE_RNA.fbp_pre_match_scene_range = BoolProperty(
+        name="Set Scene In/Out from Media",
+        description="After creating planes from an Image Sequence or a Video, set the Scene Start and End frames to cover their animation (one cycle, including Frame Hold). Single still images never change the range",
+        default=False,
+    )
     _FBP_SCENE_RNA.fbp_pre_track_cam = BoolProperty(name="Track Camera on New Layers", description="Add camera tracking to newly generated Frame By Plane layers", default=False)
     _FBP_SCENE_RNA.fbp_settings_section = EnumProperty(
         name="Settings Section",

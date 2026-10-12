@@ -6267,6 +6267,7 @@ class _FBPPlanePopupBase:
         row = adaptive_row(timing, context, align=False)
         row.prop(sc, "fbp_pre_duration", text="Frame Hold")
         row.prop(sc, "fbp_pre_loop_mode", text="")
+        timing.prop(sc, "fbp_pre_match_scene_range", text="Set Scene In/Out from Media", icon="PREVIEW_RANGE", toggle=True)
 
         section_gap(layout, 0.2)
         material = _fbp_shift_a_box(layout, "Plane and Material", "MATERIAL")
@@ -6394,6 +6395,7 @@ class FBP_OT_PopupMultiplane(Operator):
         row = adaptive_row(timing, context, align=False)
         row.prop(sc, "fbp_pre_duration", text="Frame Hold")
         row.prop(sc, "fbp_pre_loop_mode", text="")
+        timing.prop(sc, "fbp_pre_match_scene_range", text="Set Scene In/Out from Media", icon="PREVIEW_RANGE", toggle=True)
         row = adaptive_row(timing, context, align=False)
         row.prop(sc, "fbp_pre_orientation", text="")
         row.prop(sc, "fbp_pre_interpolation", text="")

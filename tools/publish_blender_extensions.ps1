@@ -10,15 +10,15 @@ explicit typed confirmation before sending any request. Use -WhatIf for a full
 local validation without an upload.
 
 .EXAMPLE
-.\tools\publish_blender_extensions.ps1 -Version 7.5.4 -PackageDirectory .\dist -WhatIf
+.\tools\publish_blender_extensions.ps1 -Version 7.5.5 -PackageDirectory .\dist -WhatIf
 
 .EXAMPLE
-.\tools\publish_blender_extensions.ps1 -Version 7.5.4 -PackageDirectory .\dist
+.\tools\publish_blender_extensions.ps1 -Version 7.5.5 -PackageDirectory .\dist
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "Medium")]
 param(
     [ValidatePattern("^\d+\.\d+\.\d+$")]
-    [string]$Version = "7.5.4",
+    [string]$Version = "7.5.5",
 
     [ValidateSet("all", "linux_x64", "macos_arm64", "macos_x64", "windows_arm64", "windows_x64")]
     [string]$Platform = "all",

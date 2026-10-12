@@ -3866,7 +3866,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             current = target - 1
         if target != current:
             try:
-                scene.frame_set(target)
+                scrub_scene_frame(scene, target)
                 self._has_frame_change = True
             except FBP_DATA_ERRORS as exc:
                 fbp_warn("Could not scrub the Grease Pencil frame", exc)
@@ -6370,6 +6370,9 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
                     body.prop(preferences, "gp_scrub_edge_offset", text="Edge Offset")
                 if hasattr(preferences, "gp_scrub_max_range"):
                     body.prop(preferences, "gp_scrub_max_range", text="Visible Frames")
+                scene = getattr(context, "scene", None)
+                if scene is not None and hasattr(scene, "use_audio_scrub"):
+                    body.prop(scene, "use_audio_scrub", text="Audio Scrubbing", icon="SPEAKER", toggle=True)
 
             body = _scrub_popover_section(layout, "fbp_scrub_return", "Return to Start", "LOOP_BACK")
             if body is not None and hasattr(preferences, "gp_scrub_return_to_start"):
@@ -6814,7 +6817,156 @@ class FBP_OT_GreasePencilScrubPreview(Operator):
         return {"FINISHED"}
 
 
+_TIMELINE_SCRUB_AREAS = frozenset({"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR", "SEQUENCE_EDITOR"})
+_TIMELINE_SCRUB_KEYMAPS = ("Dopesheet", "Graph Editor", "NLA Editor", "Sequencer")
+
+
+def scrub_scene_frame(scene, frame):
+    """Move the playhead, playing the audio under it when Audio Scrubbing is on.
+
+    ``frame_set`` evaluates the scene at once but never seeks the sound;
+    writing ``frame_current`` is what Blender's own Timeline scrubbing does to
+    play the audio snippet.
+    """
+    frame = int(frame)
+    if bool(getattr(scene, "use_audio_scrub", False)):
+        scene.frame_current = frame
+    scene.frame_set(frame)
+
+
+class FBP_OT_TimelineHoldScrub(Operator):
+    bl_idname = "fbp.timeline_hold_scrub"
+    bl_label = "Hold to Scrub"
+    bl_description = (
+        "Hold < and move left or right to scrub the playhead from where it is. "
+        "Shift slows it down; Esc or right-click cancels"
+    )
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        area = getattr(context, "area", None)
+        region = getattr(context, "region", None)
+        return bool(
+            area is not None
+            and str(area.type) in _TIMELINE_SCRUB_AREAS
+            and region is not None
+            and str(region.type) == "WINDOW"
+            and getattr(context, "scene", None) is not None
+        )
+
+    def _view_frame(self, context, region_x):
+        try:
+            return float(context.region.view2d.region_to_view(float(region_x), 0.0)[0])
+        except FBP_DATA_ERRORS:
+            return None
+
+    def invoke(self, context, event):
+        scene = context.scene
+        self._start_frame = int(scene.frame_current)
+        self._frame = float(self._start_frame)
+        self._last_x = float(event.mouse_region_x)
+        self._activation_type = str(event.type)
+        self._timer = None
+        self._returning = False
+        preferences = fbp_get_addon_preferences(context)
+        try:
+            self._shift_factor = max(0.02, min(1.0, float(getattr(preferences, "gp_scrub_shift_factor", 0.25))))
+            self._return_to_start = bool(getattr(preferences, "gp_scrub_return_to_start", True))
+            self._return_duration = max(0.05, min(1.5, float(getattr(preferences, "gp_scrub_return_duration", 0.45))))
+            self._return_bounce = max(0.0, min(0.5, float(getattr(preferences, "gp_scrub_return_bounce", 0.1))))
+        except (TypeError, ValueError, OverflowError):
+            self._shift_factor, self._return_to_start = 0.25, True
+            self._return_duration, self._return_bounce = 0.45, 0.1
+        if self._view_frame(context, self._last_x) is None:
+            return {"PASS_THROUGH"}
+        context.window_manager.modal_handler_add(self)
+        try:
+            context.window.cursor_modal_set("SCROLL_X")
+        except FBP_DATA_ERRORS:
+            pass
+        return {"RUNNING_MODAL"}
+
+    def _set(self, context, frame):
+        try:
+            if int(frame) != int(context.scene.frame_current):
+                scrub_scene_frame(context.scene, frame)
+        except FBP_DATA_ERRORS:
+            pass
+
+    def _finish(self, context, result):
+        if self._timer is not None:
+            try:
+                context.window_manager.event_timer_remove(self._timer)
+            except FBP_DATA_ERRORS:
+                pass
+            self._timer = None
+        try:
+            context.window.cursor_modal_restore()
+        except FBP_DATA_ERRORS:
+            pass
+        return result
+
+    def _begin_return(self, context):
+        self._returning = True
+        self._return_from = int(context.scene.frame_current)
+        self._return_started = time.monotonic()
+        self._timer = context.window_manager.event_timer_add(1.0 / 60.0, window=context.window)
+        try:
+            context.window.cursor_modal_restore()
+        except FBP_DATA_ERRORS:
+            pass
+
+    def modal(self, context, event):
+        event_type = str(event.type)
+        if self._returning:
+            if event_type == "TIMER":
+                frame, finished = scrub_return_frame(
+                    self._return_from,
+                    self._start_frame,
+                    time.monotonic() - self._return_started,
+                    self._return_duration,
+                    self._return_bounce,
+                )
+                self._set(context, frame)
+                if finished:
+                    self._set(context, self._start_frame)
+                    return self._finish(context, {"FINISHED"})
+                return {"PASS_THROUGH"}
+            if event.value == "PRESS":
+                # New input lands the glide at once.
+                self._set(context, self._start_frame)
+                return self._finish(context, {"FINISHED", "PASS_THROUGH"})
+            return {"PASS_THROUGH"}
+        if event_type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            self._set(context, self._start_frame)
+            return self._finish(context, {"CANCELLED"})
+        if event_type == "WINDOW_DEACTIVATE" or scrub_activation_released(
+            event_type, event.value, self._activation_type
+        ):
+            if self._return_to_start and int(context.scene.frame_current) != self._start_frame:
+                self._begin_return(context)
+                return {"RUNNING_MODAL"}
+            return self._finish(context, {"FINISHED"})
+        if event_type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            x = float(event.mouse_region_x)
+            previous = self._view_frame(context, self._last_x)
+            current = self._view_frame(context, x)
+            self._last_x = x
+            if previous is None or current is None:
+                return {"RUNNING_MODAL"}
+            step = current - previous
+            if event.shift:
+                step *= self._shift_factor
+            self._frame += step
+            self._set(context, int(round(self._frame)))
+            return {"RUNNING_MODAL"}
+        return {"RUNNING_MODAL"}
+
+
+
 _classes = (
+    FBP_OT_TimelineHoldScrub,
     FBP_OT_GreasePencilFrameScrub,
     FBP_OT_ToggleGreasePencilScrubSlider,
     FBP_OT_ToggleScrubOnionInterface,
@@ -6887,6 +7039,29 @@ def _register_keymaps():
                     f"Could not register {keymap_name} scrub shortcut {event_type}",
                     exc,
                 )
+    # Animation editors get a plain hold-to-scrub on the same key.
+    for requested_name in _TIMELINE_SCRUB_KEYMAPS:
+        candidates = native_keymap_names((requested_name,))
+        keymap_name = candidates[0] if candidates else requested_name
+        keymap = addon_keymap(keymap_name, fallback_space_type="EMPTY", fallback_region_type="WINDOW")
+        if keymap is None:
+            continue
+        remove_matching_keymap_items(
+            keymap,
+            lambda item: str(getattr(item, "idname", "") or "") == FBP_OT_TimelineHoldScrub.bl_idname,
+        )
+        for event_type, shift in (("GRLESS", False), ("COMMA", True)):
+            try:
+                item = keymap.keymap_items.new(
+                    FBP_OT_TimelineHoldScrub.bl_idname,
+                    type=event_type,
+                    value="PRESS",
+                    shift=shift,
+                )
+                _GP_SCRUB_KEYMAPS.append((keymap, item))
+                registered = True
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f"Could not register {keymap_name} scrub shortcut {event_type}", exc)
     return registered
 
 

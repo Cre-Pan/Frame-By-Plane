@@ -1371,6 +1371,57 @@ def test_synchronous_media_generation(_module):
         )
         if temporary_registration:
             bpy.utils.unregister_class(operator_class)
+
+    # An Image Sequence can set the Scene In/Out to its animation (off by default).
+    sequence_names = []
+    for index in range(1, 4):
+        frame_image = bpy.data.images.new(f"FBP Range Fixture {index}", width=8, height=8, alpha=True)
+        try:
+            frame_image.generated_color = (0.1 * index, 0.3, 0.6, 1.0)
+            frame_image.filepath_raw = str(WORKDIR / f"fbp_range_{index:04d}.png")
+            frame_image.file_format = 'PNG'
+            frame_image.save()
+        finally:
+            bpy.data.images.remove(frame_image)
+        sequence_names.append(f"fbp_range_{index:04d}.png")
+    scene = bpy.context.scene
+    assert scene.fbp_pre_match_scene_range is False
+    previous = (scene.frame_start, scene.frame_end, scene.fbp_pre_duration, scene.frame_current)
+    scene.frame_start, scene.frame_end = 1, 250
+    scene.frame_current = 11
+    scene.fbp_pre_duration = 2
+    scene.fbp_pre_match_scene_range = True
+    snapshot = operator_import._fbp_multiplane_runtime_snapshot(bpy.context)
+    if temporary_registration:
+        bpy.utils.register_class(operator_class)
+    try:
+        result = bpy.ops.fbp.import_sequence(
+            'EXEC_DEFAULT',
+            synchronous=True,
+            filepath=str(WORKDIR / sequence_names[0]),
+            directory=str(WORKDIR),
+            files=[{"name": name} for name in sequence_names],
+            media_filter='IMAGES',
+        )
+        assert result == {'FINISHED'}, result
+        new_rig = [
+            obj
+            for obj in scene.objects
+            if bool(getattr(obj, "is_fbp_control", False))
+            and obj.as_pointer() not in before_rigs
+        ][-1]
+        first = int(new_rig.fbp_start_frame)
+        assert (scene.frame_start, scene.frame_end) == (first, first + 5), (
+            first,
+            scene.frame_start,
+            scene.frame_end,
+        )
+    finally:
+        assert operator_import._fbp_rollback_unexpected_multiplane_build(bpy.context, snapshot)
+        if temporary_registration:
+            bpy.utils.unregister_class(operator_class)
+        scene.fbp_pre_match_scene_range = False
+        scene.frame_start, scene.frame_end, scene.fbp_pre_duration, scene.frame_current = previous
     return {
         "fixture": str(fixture_path),
         "generated_rigs": 1,
@@ -1712,6 +1763,16 @@ def test_scrub_bar_regressions(_module):
     assert scrub.scrub_distance_gain(97.0, 96.0, 0.0, 3.0) == 3.0
 
     # Releasing < glides back with ease-in-out and lands exactly on the start.
+    # Scrubbing writes the frame like the Timeline when Audio Scrubbing is on.
+    audio_scene = bpy.context.scene
+    audio_previous = (bool(audio_scene.use_audio_scrub), int(audio_scene.frame_current))
+    for audio_on, frame in ((True, 7), (False, 9)):
+        audio_scene.use_audio_scrub = audio_on
+        scrub.scrub_scene_frame(audio_scene, frame)
+        assert audio_scene.frame_current == frame
+    audio_scene.use_audio_scrub, audio_scene.frame_current = audio_previous
+    assert scrub.FBP_OT_TimelineHoldScrub in scrub._classes
+    assert {"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR", "SEQUENCE_EDITOR"} <= scrub._TIMELINE_SCRUB_AREAS
     assert scrub.scrub_return_frame(30, 10, 0.0, 0.35) == (30, False)
     middle, finished = scrub.scrub_return_frame(30, 10, 0.175, 0.35)
     assert middle == 20 and not finished, middle

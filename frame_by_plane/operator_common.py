@@ -838,7 +838,46 @@ def _fbp_store_generation_report(context, *, mode="Sequence", generated_rigs=Non
         sc["fbp_generation_report_json"] = json.dumps(report)
     except FBP_DATA_IO_ERRORS:
         sc["fbp_generation_report_json"] = "{}"
+    if not cancelled and generated_rigs:
+        fbp_match_scene_range_to_rigs(sc, generated_rigs)
     return report
+
+
+def fbp_rig_animation_range(rig):
+    """First and last frame of one cycle of an animated media plane, or None.
+
+    Single still images (one row) have no animation range.
+    """
+    try:
+        rows = tuple(getattr(rig, "fbp_images", ()) or ())
+        if len(rows) < 2:
+            return None
+        from .native_backend import _durations_from_rig, _playback_span_frames
+
+        durations = _durations_from_rig(rig, len(rows), getattr(rig, "fbp_global_duration", 1))
+        loop_mode = str(getattr(rig, "fbp_loop_mode", "NONE") or "NONE")
+        start = int(getattr(rig, "fbp_start_frame", 1) or 1)
+        return start, start + _playback_span_frames(len(rows), durations, loop_mode) - 1
+    except (ImportError, *FBP_DATA_IO_ERRORS):
+        return None
+
+
+def fbp_match_scene_range_to_rigs(scene, rigs, *, force=False):
+    """Set the Scene In/Out to cover the new media planes when the option is on."""
+    if scene is None or not (force or bool(getattr(scene, "fbp_pre_match_scene_range", False))):
+        return False
+    ranges = [value for value in (fbp_rig_animation_range(rig) for rig in rigs or ()) if value]
+    if not ranges:
+        return False
+    start = min(first for first, _last in ranges)
+    end = max(last for _first, last in ranges)
+    try:
+        # Blender pushes End when Start passes it, so write Start first.
+        scene.frame_start = start
+        scene.frame_end = max(start, end)
+    except FBP_DATA_IO_ERRORS:
+        return False
+    return True
 
 def _fbp_generation_report(context):
     try:
