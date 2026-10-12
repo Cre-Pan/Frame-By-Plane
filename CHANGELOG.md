@@ -8,6 +8,8 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### New
 
+- In Draw Mode the Scrub Bar shows, snaps to and edits only the active layer's keyframes; other modes still show every visible layer.
+- The Viewport header has a **Return to Start** toggle next to the Scrub Bar pin. The Onion Skin button left the header; the Onion Skin settings stay in the Scrub Bar menu.
 - **Set Scene In/Out from Media** (off by default) in the Add Plane dialog, the Multiplane dialog and the sidebar: after creating planes from an Image Sequence or a Video, the Scene Start and End cover their animation (one cycle, including Frame Hold). Still images never change the range.
 - The Scrub Bar plays the audio under the playhead when **Audio Scrubbing** is on (Blender's own Timeline setting, now also a toggle in the Scrub Bar menu).
 - Holding `<` (or Shift+,) in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer scrubs the playhead left and right from where it is, follows Shift Slowdown, and glides back to the start on release when Return to Start is on. Esc or right-click cancels.

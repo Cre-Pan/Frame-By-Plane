@@ -764,15 +764,37 @@ def _normalized_keyframe_type(value):
     return key_type if key_type in _KEYFRAME_TYPE_BY_ID else "KEYFRAME"
 
 
+def _scrub_shows_active_layer_only(obj):
+    """While drawing, the Scrub Bar shows and edits only the active layer."""
+    try:
+        return str(getattr(obj, "mode", "") or "") == "PAINT_GREASE_PENCIL"
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _scrub_layers(obj):
+    data = getattr(obj, "data", None)
+    layers = getattr(data, "layers", None)
+    if layers is None:
+        return ()
+    if _scrub_shows_active_layer_only(obj):
+        active = getattr(layers, "active", None)
+        return (active,) if active is not None else ()
+    return tuple(layers)
+
+
 def grease_pencil_keyframe_records(obj):
-    """Return ``(frame, type, active_layer, selected)`` records for visible layers."""
+    """Return ``(frame, type, active_layer, selected)`` records for visible layers.
+
+    In Draw Mode only the active layer counts.
+    """
     records = {}
     try:
         data = getattr(obj, "data", None)
         layers = getattr(data, "layers", None)
         active_layer = getattr(layers, "active", None)
         active_pointer = _rna_pointer(active_layer)
-        for layer in tuple(layers or ()):
+        for layer in _scrub_layers(obj):
             try:
                 if bool(getattr(layer, "hide", False)):
                     continue
@@ -795,8 +817,7 @@ def grease_pencil_editable_frames(obj, *, visible_only=True):
     """Return editable ``(layer, frame)`` pairs without collapsing layers."""
     result = []
     try:
-        data = getattr(obj, "data", None)
-        for layer in tuple(getattr(data, "layers", ()) or ()):
+        for layer in _scrub_layers(obj):
             if visible_only:
                 try:
                     if bool(getattr(layer, "hide", False)) or bool(
@@ -6515,18 +6536,16 @@ def _draw_scrub_header_control(layout, context):
         **floating_timeline_icon_kwargs("ACTION"),
     )
     preferences = fbp_get_addon_preferences(context)
-    onion_row = row.row(align=True)
-    onion_row.enabled = _is_live_grease_pencil_object(_scrub_target_object(context))
-    onion_row.operator(
-        FBP_OT_ToggleScrubOnionInterface.bl_idname,
-        text="",
-        icon="ONIONSKIN_ON",
-        depress=bool(
-            getattr(preferences, "gp_scrub_show_onion_handles", True)
-            if preferences is not None
-            else True
-        ),
-    )
+    if preferences is not None and hasattr(preferences, "gp_scrub_return_to_start"):
+        # Return to Start is used often enough to sit next to the pin; the
+        # Onion Skin interface stays in the menu.
+        row.prop(
+            preferences,
+            "gp_scrub_return_to_start",
+            text="",
+            icon="LOOP_BACK",
+            toggle=True,
+        )
     row.popover(
         panel=FBP_PT_GreasePencilScrubSliderPopover.bl_idname,
         text="",

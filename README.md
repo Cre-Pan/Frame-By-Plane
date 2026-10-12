@@ -6,9 +6,9 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
-## Prepared update: 7.5.6
+## Prepared update: 7.5.7
 
-Magnetic Scrub Bar return with a bounce, collapsible Scrub Bar menu, every selected Stroke/Fill color as its own swatch in Edit Mode, a Material selector in Edit Mode, and one Add Plane dialog for every plane type. See the [7.5.6 release notes](release-notes/7.5.6.md).
+Magnetic Scrub Bar return with a bounce, collapsible Scrub Bar menu, every selected Stroke/Fill color as its own swatch in Edit Mode, a Material selector in Edit Mode, and one Add Plane dialog for every plane type. See the [7.5.7 release notes](release-notes/7.5.7.md).
 
 ## What's new in 7.2.0
 

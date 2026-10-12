@@ -1772,6 +1772,27 @@ def test_scrub_bar_regressions(_module):
         assert audio_scene.frame_current == frame
     audio_scene.use_audio_scrub, audio_scene.frame_current = audio_previous
     assert scrub.FBP_OT_TimelineHoldScrub in scrub._classes
+
+    # While drawing, the bar shows only the active layer's keys.
+    layered_data = bpy.data.grease_pencils.new("FBP Scrub Layers")
+    layered = bpy.data.objects.new("FBP Scrub Layers", layered_data)
+    bpy.context.scene.collection.objects.link(layered)
+    previous_active = bpy.context.view_layer.objects.active
+    bpy.context.view_layer.objects.active = layered
+    back = layered_data.layers.new("Back")
+    back.frames.new(3)
+    front = layered_data.layers.new("Front", set_active=True)
+    front.frames.new(8)
+    try:
+        assert [record[0] for record in scrub.grease_pencil_keyframe_records(layered)] == [3, 8]
+        bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+        assert [record[0] for record in scrub.grease_pencil_keyframe_records(layered)] == [8]
+        assert [frame.frame_number for _layer, frame in scrub.grease_pencil_editable_frames(layered)] == [8]
+        bpy.ops.object.mode_set(mode="OBJECT")
+    finally:
+        bpy.context.view_layer.objects.active = previous_active
+        bpy.data.objects.remove(layered)
+        bpy.data.grease_pencils.remove(layered_data)
     assert {"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR", "SEQUENCE_EDITOR"} <= scrub._TIMELINE_SCRUB_AREAS
     assert scrub.scrub_return_frame(30, 10, 0.0, 0.35) == (30, False)
     middle, finished = scrub.scrub_return_frame(30, 10, 0.175, 0.35)

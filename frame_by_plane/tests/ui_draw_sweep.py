@@ -67,6 +67,9 @@ try:
     bpy.data.materials.create_gpencil_data(material)
     data.materials.append(material)
 
+    # Background Blender skips the Viewport-only modules; import them so their
+    # panels are drawn too.
+    importlib.import_module(addon.__name__ + ".grease_pencil_scrub")
     panels = sorted(_addon_panels(), key=lambda cls: cls.__name__)
     drawn = 0
     for mode in ("OBJECT", "EDIT", "PAINT_GREASE_PENCIL"):
@@ -96,6 +99,23 @@ try:
         drawn += 1
     except (TypeError, AttributeError) as exc:
         failures.append(f"Preferences: {exc}\n{traceback.format_exc()}")
+
+    # The Viewport header strip: pin, Return to Start, menu.
+    scrub = importlib.import_module(addon.__name__ + ".grease_pencil_scrub")
+    available = scrub._scrub_header_available
+    scrub._scrub_header_available = lambda _context: True
+    try:
+        header = StubLayout()
+        scrub._draw_scrub_header_control(header, bpy.context)
+        drawn += 1
+        assert any(call[0] == "prop" and call[1][1] == "gp_scrub_return_to_start" for call in header.calls)
+        popover_cls = scrub.FBP_PT_GreasePencilScrubSliderPopover
+        popover_cls.draw(_PanelProxy(popover_cls), bpy.context)
+        drawn += 1
+    except (TypeError, AttributeError) as exc:
+        failures.append(f"Scrub header: {exc}")
+    finally:
+        scrub._scrub_header_available = available
 
     assert drawn > 5, drawn
     assert not failures, "\n".join(failures)
