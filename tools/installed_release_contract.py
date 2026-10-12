@@ -39,7 +39,7 @@ def main():
     operator_import = importlib.import_module(f"{BASE}.operator_import")
     importlib.import_module(f"{BASE}.timeline_backport")
 
-    assert constants.FBP_VERSION_STRING == "7.5.5"
+    assert constants.FBP_VERSION_STRING == "7.5.6"
     assert hasattr(bpy.ops.fbp, "import_folder_multiplane")
     assert hasattr(bpy.ops.fbp, "create_color_plane_from_hex")
 

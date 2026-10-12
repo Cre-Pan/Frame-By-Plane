@@ -617,6 +617,40 @@ try:
     assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
     assert state.close_strokes  # G keeps its existing toggle behavior.
 
+    # First use: strokes without vertex colors read as transparent black.
+    # Picking a color over that must give it a visible alpha, and the Draw
+    # colors must survive a visit to Edit Mode.
+    assert module._promote_unset_alpha((0.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)) == (1.0, 0.0, 0.0, 1.0)
+    assert module._promote_unset_alpha((0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0)) == (0.0, 0.0, 0.0, 0.0)
+    assert module._promote_unset_alpha((1.0, 0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0)) == (1.0, 0.0, 0.0, 0.0)
+    fresh_data = bpy.data.grease_pencils.new("FBP First Use")
+    fresh = bpy.data.objects.new("FBP First Use", fresh_data)
+    bpy.context.scene.collection.objects.link(fresh)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.objects.active = fresh
+    fresh_layer = fresh_data.layers.new("Layer", set_active=True)
+    fresh_layer.frames.new(bpy.context.scene.frame_current).drawing.add_strokes([3])
+    bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+    module._sync_draw_state(bpy.context, force=True)
+    fresh_state = fresh.fbp_gp_vertex_color_state
+    fresh_state.stroke_color = (0.0, 0.0, 1.0, 1.0)
+    fresh_state.fill_color = (1.0, 1.0, 0.0, 1.0)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.grease_pencil.select_all(action="SELECT")
+    module._sync_edit_state(bpy.context, force=True)
+    assert tuple(fresh_state.stroke_swatches[0].color) == (0.0, 0.0, 0.0, 0.0)
+    swatch = fresh_state.stroke_swatches[0]
+    swatch.color = (1.0, 0.0, 0.0, 0.0)
+    fresh_drawing = fresh_data.layers.active.current_frame().drawing
+    assert close_color(fresh_drawing.strokes[0].points[0].vertex_color, (1.0, 0.0, 0.0, 1.0))
+    module._commit_edit_color_undo()
+    bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+    module._sync_draw_state(bpy.context)
+    assert close_color(fresh_state.stroke_color, (0.0, 0.0, 1.0, 1.0)), tuple(fresh_state.stroke_color)
+    assert close_color(fresh_state.fill_color, (1.0, 1.0, 0.0, 1.0)), tuple(fresh_state.fill_color)
+    _paint, _brush, fresh_owner, _settings = module._draw_brush_context(bpy.context)
+    assert close_color(fresh_owner.color, (0.0, 0.0, 1.0))
+
     print("FBPTEST gp_dual_vertex_colors: PASS")
 except Exception:
     traceback.print_exc()

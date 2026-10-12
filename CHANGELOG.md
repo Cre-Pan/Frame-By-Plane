@@ -14,6 +14,8 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### Fixes
 
+- Strokes that never had a vertex color read as transparent black. Picking a Stroke or Fill color over one of those kept alpha 0, so nothing changed on screen; the first color picked over an unset one now gets full alpha.
+- Leaving Edit Mode no longer turns the Draw and Vertex Paint colors into the selection's colors (often transparent black on uncolored strokes, which also made new fills invisible). Paint modes get back the colors they had before Edit Mode.
 - Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
 - A click right after the return glide is hit-tested where the pointer really is, so drawing straight away is no longer taken as a Scrub Bar click.
 - The return glide lands on the start frame even when it lies outside the scene or preview range.

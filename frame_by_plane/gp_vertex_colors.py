@@ -53,6 +53,7 @@ _COLOR_DECODE_CACHE_LIMIT = 256
 # _HEADER_SWATCH_LIMIT swatches in a row and lists the rest in a popover.
 _SWATCH_LIMIT = 64
 _HEADER_SWATCH_LIMIT = 12
+_PAINT_MODES = frozenset({"PAINT_GREASE_PENCIL", "VERTEX_GREASE_PENCIL"})
 _RUNTIME = {
     "target": 0,
     "owner": 0,
@@ -80,6 +81,7 @@ _RUNTIME = {
     "draw_drawing_pointer": 0,
     "draw_curve_count": 0,
     "edit_undo_label": "Grease Pencil Color",
+    "paint_colors": None,
 }
 
 
@@ -97,6 +99,28 @@ def _rgba(value, default=(0.0, 0.0, 0.0, 1.0)):
         min(1.0, max(0.0, values[2])),
         min(1.0, max(0.0, alpha)),
     )
+
+
+def _visible_alpha(color):
+    """Paint colors are always drawn: an alpha of 0 (an unset color) reads as 1."""
+    color = _rgba(color)
+    return color if color[3] > 0.0 else color[:3] + (1.0,)
+
+
+def _promote_unset_alpha(previous, color):
+    """Give a first color picked over an unset one a visible alpha.
+
+    Strokes without vertex colors read as transparent black (alpha 0). A
+    color picker keeps that alpha, so the new color would not show; when the
+    previous color was unset and only RGB changed, use alpha 1 instead.
+    """
+    color = _rgba(color)
+    if previous is None or color[3] > 0.0:
+        return color
+    previous = _rgba(previous, default=(0.0, 0.0, 0.0, 0.0))
+    if previous[3] > 0.0 or _colors_close(previous[:3], color[:3]):
+        return color
+    return color[:3] + (1.0,)
 
 
 def _color_key(value):
@@ -268,6 +292,9 @@ def _semantic_brush_context(context=None):
 def _canonical_brush_colors(state, owner, mode):
     stroke = _rgba(getattr(state, "stroke_color", (0.0, 0.0, 0.0, 1.0)))
     fill = _rgba(getattr(state, "fill_color", (1.0, 1.0, 1.0, 1.0)))
+    # Remember the paint colors: Edit Mode reuses the same state for the
+    # selection's colors, and returning to a paint mode must restore these.
+    _RUNTIME["paint_colors"] = (stroke, fill)
     if mode == "FILL":
         primary, secondary = fill, stroke
     else:
@@ -334,6 +361,16 @@ def _sync_paint_state(context, brush_kind, owner, gp_settings, mode, *, force=Fa
         return True
 
     if _RUNTIME["context_mode"] != context_mode:
+        previous_mode = _RUNTIME["context_mode"]
+        if previous_mode not in _PAINT_MODES:
+            # Back from Edit Mode (or Object Mode): the state holds the
+            # selection's colors, which must not become the brush colors.
+            saved = _RUNTIME.get("paint_colors")
+            if not saved:
+                _initialize_paint_state(context, state, obj, owner, mode, brush_kind)
+                return True
+            _set_state_value(state, "stroke_color", _visible_alpha(saved[0]))
+            _set_state_value(state, "fill_color", _visible_alpha(saved[1]))
         _RUNTIME["context_mode"] = context_mode
         _RUNTIME["owner"] = owner_pointer
         _RUNTIME["brush_kind"] = brush_kind
@@ -1573,10 +1610,12 @@ def _swatch_color_changed(item, context):
         return
     if _RUNTIME.get("target") != int(obj.as_pointer()) or _RUNTIME.get("edit_signature") is None:
         return
-    clean = _rgba(item.color)
+    clean = _promote_unset_alpha(tuple(item.source), item.color)
     _replace_selected_color(context, item.target, tuple(item.source), clean, record_undo=True)
     _STATE_GUARD += 1
     try:
+        if not _colors_close(item.color, clean):
+            item.color = clean
         item.source = clean
     except FBP_DATA_ERRORS:
         pass
@@ -1653,6 +1692,11 @@ def _state_color_changed(state, context, target):
     color = _rgba(state.stroke_color if target == "STROKE" else state.fill_color)
     mode = _context_mode(context)
     if mode == "EDIT_GREASE_PENCIL":
+        swatches = tuple(_RUNTIME.get("stroke_swatches" if target == "STROKE" else "fill_swatches", ()) or ())
+        visible = _promote_unset_alpha(swatches[0][0] if swatches else None, color)
+        if visible != color:
+            color = visible
+            _set_state_value(state, "stroke_color" if target == "STROKE" else "fill_color", color)
         _apply_selected_color(context, target, color, record_undo=True)
     _kind, _paint, _brush, owner, gp_settings, target_mode = _semantic_brush_context(context)
     if owner is not None and gp_settings is not None:
