@@ -2,12 +2,15 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [7.5.2] - Unreleased
+## [7.5.3] - Unreleased
 
 Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### Fixes
 
+- Edit Mode header order is now Brush, Material, then the colors, with a gap between each.
+- The Edit Mode brush button shows the brush of the selected strokes, **Mixed** when they differ, or **Unknown** for older strokes it cannot recognize. Picking a brush from it restyles the selected strokes (hardness, caps, opacity and, for brushes that pin one, the material); their shape, width and colors stay. New strokes remember the brush that drew them.
+- The brush list only offers brushes that draw strokes: erasers, Fill and Tint are gone from it.
 - The Scrub Bar no longer slides left and right toward the mouse. **Mouse Magnet** in Preferences is now **Precise Range**: the distance from the bar within which scrubbing with `<` follows the pointer exactly.
 - The Strokes and Fills dropdowns drew an empty list in Blender 5.2 (the list used a layout type Blender no longer accepts); the color list shows again.
 - A pinned Scrub Bar no longer redraws the viewport on every timer tick while the mouse rests in the 3D View; hover updates only redraw when the hovered key or bookmark changes. Timer events are no longer swallowed during a hold, and edge scrolling uses the remembered pointer position.

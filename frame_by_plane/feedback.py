@@ -147,7 +147,7 @@ FBP_PUBLIC_RELEASE_ITEMS = (
     ),
     (
         "Material and Brush in Edit Mode",
-        "Pick the material and the Draw brush without leaving Edit Mode.",
+        "Pick brush and material in Edit Mode; restyle selected strokes.",
         "BRUSH_DATA",
     ),
     (
