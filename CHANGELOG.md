@@ -35,6 +35,10 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 - The Edit Mode header no longer rescans the selection on every redraw before the first sync.
 - Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
 
+### Languages
+
+- The interface is translated into Italian, Spanish, French, German, Simplified Chinese and Japanese. **Preferences → Interface → Language** is Automatic by default (follows Blender's language); it can also be set to English or to one fixed language.
+
 ### Files and storage
 
 - Effect presets are saved in the extension's user folder (`bpy.utils.extension_path_user`) instead of Blender's config folder or `~/.frame_by_plane`. Existing presets are copied over once; the old file is left in place.

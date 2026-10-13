@@ -10,6 +10,7 @@ A Grease Pencil, Scrub Bar and Add Plane update for Blender 5.2 LTS.
 - 🎬 **Set Scene In/Out from Media:** an option (off by default) in Add Plane and Multiplane that fits the Scene range to a new Image Sequence or Video.
 - 🎨 **Every selected color:** Edit Mode shows each distinct Stroke and Fill color as its own swatch, with dropdowns, Replace All and per-stroke Invert.
 - 🖌️ **Material in Edit Mode:** pick the material slot without leaving Edit Mode.
+- 🌍 **Six languages:** Italian, Spanish, French, German, Simplified Chinese and Japanese. Frame By Plane follows Blender's language, or pick one in Preferences → Interface → Language.
 - ➕ **Add Plane dialog:** one dialog for Image, Video, Color, Gradient and Holdout planes; Fit Camera to New Plane is optional.
 - 🧹 **Leaner Grease Pencil tools:** see *Removed in 7.5* below.
 
