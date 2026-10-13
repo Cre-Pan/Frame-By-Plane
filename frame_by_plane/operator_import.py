@@ -65,6 +65,7 @@ from .generation_transaction import (
     commit_active_generation,
     retire_active_generation,
 )
+from .user_storage import fbp_media_cache_roots, fbp_project_assets_dir, fbp_user_data_dir
 from .layered_import import (
     FBP_LAYERED_EXTENSIONS,
     fbp_default_psd_cache_root,
@@ -5040,27 +5041,19 @@ class FBP_OT_ImportToonBoomExport(Operator):
 
 
 def _fbp_layered_cache_root(context, source_path):
-    """Prefer a persistent cache beside the layered source, then Blender data."""
+    """Prefer the project's assets folder, then beside the source, then user data."""
     extension = os.path.splitext(str(source_path or ""))[1].lower()
-    preferred = (
+    beside_source = (
         fbp_default_procreate_cache_root(source_path)
         if extension == '.procreate'
         else fbp_default_psd_cache_root(source_path)
     )
-    try:
-        os.makedirs(preferred, exist_ok=True)
-        return preferred
-    except OSError:
-        pass
-    try:
-        fallback = bpy.utils.user_resource(
-            'DATAFILES', path=os.path.join('frame_by_plane', 'layered_cache'), create=True,
-        )
-    except FBP_DATA_ERRORS:
-        fallback = ""
-    if fallback:
-        os.makedirs(fallback, exist_ok=True)
-        return fallback
+    for root in fbp_media_cache_roots('layers', beside_source):
+        try:
+            os.makedirs(root, exist_ok=True)
+            return root
+        except OSError:
+            continue
     raise OSError("No writable persistent folder is available for extracted layered-document images")
 
 
@@ -6618,20 +6611,15 @@ def _fbp_clipboard_storage_directory(context):
     """Return a writable persistent folder for clipboard-created PNG files."""
     candidates = []
     scene = context.scene
+    assets_directory = fbp_project_assets_dir('clipboard')
+    if assets_directory:
+        candidates.append(assets_directory)
     project_path = bpy.path.abspath(getattr(scene, 'fbp_project_path', '') or '')
     if project_path and os.path.isdir(project_path):
         candidates.append(os.path.join(project_path, 'Clipboard'))
-
-    try:
-        user_directory = bpy.utils.user_resource(
-            'DATAFILES',
-            path=os.path.join('frame_by_plane', 'clipboard'),
-            create=True,
-        )
-        if user_directory:
-            candidates.append(user_directory)
-    except (AttributeError, RuntimeError, TypeError, ValueError, OSError):
-        pass
+    user_directory = fbp_user_data_dir('clipboard', create=False)
+    if user_directory:
+        candidates.append(user_directory)
 
     candidates.append(os.path.join(tempfile.gettempdir(), 'frame_by_plane_clipboard'))
 
