@@ -35,6 +35,12 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 - The Edit Mode header no longer rescans the selection on every redraw before the first sync.
 - Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
 
+### Files and storage
+
+- Effect presets are saved in the extension's user folder (`bpy.utils.extension_path_user`) instead of Blender's config folder or `~/.frame_by_plane`. Existing presets are copied over once; the old file is left in place.
+- Generated media (PSD/Procreate layers, converted animated images, native sequence proxies, clipboard images) goes into an `assets` folder next to the saved `.blend`. Unsaved files still write next to the source media; the extension user folder is the last resort.
+- Icons and the Geometry Nodes library are CC0-1.0; splash artwork is CC-BY-4.0 (see THIRD_PARTY_NOTICES.md).
+
 ### Release splash
 
 - The release splash now opens after every installation of Frame By Plane: a fresh install, an update, or reinstalling the same version, from Blender Extensions or by drag and drop. Starting Blender again does not show it. **Show After Install / Update** in Preferences still turns it off.

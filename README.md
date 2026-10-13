@@ -41,7 +41,7 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 ### Grease Pencil, masks and effects
 
 - Create Drawing Planes linked to image layers or use independent Grease Pencil canvases.
-- Apply native Blender Grease Pencil modifiers and Shader Effects from a reorderable list and grouped icon menu.
+- Use Blender's own Grease Pencil Modifiers and Visual Effects panels on Drawing Planes.
 - Build shape, color, luminance, channel, gradient, noise, imported and Grease Pencil masks.
 - Use non-destructive distortion, blur, color, light, stylization and compositing effects.
 
@@ -66,11 +66,11 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-7.2.0-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-7.2.0-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-7.2.0-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-7.2.0-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-7.2.0-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-7.5.7-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-7.5.7-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-7.5.7-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-7.5.7-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-7.5.7-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.

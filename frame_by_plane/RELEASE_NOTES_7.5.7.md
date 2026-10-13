@@ -11,7 +11,24 @@ A Grease Pencil, Scrub Bar and Add Plane update for Blender 5.2 LTS.
 - 🎨 **Every selected color:** Edit Mode shows each distinct Stroke and Fill color as its own swatch, with dropdowns, Replace All and per-stroke Invert.
 - 🖌️ **Material in Edit Mode:** pick the material slot without leaving Edit Mode.
 - ➕ **Add Plane dialog:** one dialog for Image, Video, Color, Gradient and Holdout planes; Fit Camera to New Plane is optional.
-- 🧹 **Leaner Grease Pencil tools:** the extra effect list, Ink Over Image, Create Missing Drawings and Limited Loop are gone.
+- 🧹 **Leaner Grease Pencil tools:** see *Removed in 7.5* below.
+
+## 🗑️ Removed in 7.5
+
+These tools are gone. Files that used them still open; effects already on a drawing stay as normal Blender effects.
+
+- **Grease Pencil effect list** and its grouped picker (Reset, Move, Toggle, Repair Duplicates, compatibility report). Use Blender's own Modifiers and Visual Effects panels.
+- **Draw on Canvas** (the Draw, Fill and Erase buttons next to a Drawing Plane).
+- **Ink Over Image** panel.
+- **Create Missing / Current GP Drawings**.
+- **Limited Loop Blocks**. Layers they left locked are unlocked on load.
+
+Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
+
+## 📁 Where files are saved
+
+- Effect presets now live in the extension's own user folder. Presets from earlier versions are copied there automatically.
+- Media that Frame By Plane generates (PSD and Procreate layers, converted animated images, image-sequence proxies, pasted clipboard images) now goes into an `assets` folder next to your saved `.blend`, so the project folder can be moved or shared as a whole. Unsaved files still write next to the source media.
 
 ## 🛠️ Fixes in 7.5.7
 
