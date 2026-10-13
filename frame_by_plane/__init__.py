@@ -25,7 +25,7 @@ _MODULE_NAMES = (
     "safe_tasks", "transactions", "generation_transaction", "project_schema", "fbp_dirty", "lifecycle", "effect_schema", "effect_instances", "object_masks",
     # Register Object properties before the Effects UI/handler. On unregister
     # the reverse order removes the frame handler before deleting its RNA props.
-    "camera_output", "properties", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "timeline_backport", "grease_pencil_scrub", "grease_pencil_bridge", "gp_vertex_colors", "layer_sets", "grease_pencil_workflow", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "scene_sync", "persistence",
+    "camera_output", "properties", "i18n", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "timeline_backport", "grease_pencil_scrub", "grease_pencil_bridge", "gp_vertex_colors", "layer_sets", "grease_pencil_workflow", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "scene_sync", "persistence",
     "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural",
