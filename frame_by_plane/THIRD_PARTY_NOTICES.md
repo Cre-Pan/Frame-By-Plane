@@ -1,5 +1,19 @@
 # Third-Party Notices
 
+## Frame By Plane artwork and assets
+
+These files are original work by Alessandro Pannoli. They are not covered by a
+third-party license, and they are released under the terms below.
+
+- Icons (`assets/icons/`): CC0-1.0. Anyone may use, modify and redistribute
+  them for any purpose, without attribution.
+- Geometry Nodes library (`assets/fbp_geometry_nodes.blend`): CC0-1.0.
+- Splash and release artwork (`assets/splash/`): CC-BY-4.0. Reuse and
+  modification are allowed as long as Alessandro Pannoli is credited.
+
+CC0-1.0 and CC-BY-4.0 are compatible with the extension's GPL-3.0-or-later
+license.
+
 ## Blender-Image-To-ASCII
 
 The Frame By Plane **Ascii** effect adapts the fill/edge atlas concept and uses
