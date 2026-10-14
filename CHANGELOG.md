@@ -36,6 +36,10 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 - The Edit Mode header no longer rescans the selection on every redraw before the first sync.
 - Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
 
+### Apply Effects
+
+- **Apply Effects to New Layer** (Effects stack menu) bakes a layer's image effects with Cycles into a PNG sequence in `assets/baked/`, then adds a copy of the layer that plays it, so the result shows in Solid view too. Mesh effects stay live on the copy; the original layer is hidden, not changed.
+
 ### Languages
 
 - The interface is translated into Italian, Spanish, French, German, Simplified Chinese and Japanese. **Preferences → Interface → Language** is Automatic by default (follows Blender's language); it can also be set to English or to one fixed language.
