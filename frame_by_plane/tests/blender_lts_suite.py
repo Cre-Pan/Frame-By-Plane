@@ -1770,6 +1770,18 @@ def test_scrub_bar_regressions(_module):
         audio_scene.use_audio_scrub = audio_on
         scrub.scrub_scene_frame(audio_scene, frame)
         assert audio_scene.frame_current == frame
+    # Without Allow Negative Frames the playhead stops at 0, like Blender's own scrubbing.
+    edit_prefs = bpy.context.preferences.edit
+    negative_previous = bool(edit_prefs.use_negative_frames)
+    try:
+        edit_prefs.use_negative_frames = False
+        scrub.scrub_scene_frame(audio_scene, -5)
+        assert audio_scene.frame_current == 0, audio_scene.frame_current
+        edit_prefs.use_negative_frames = True
+        scrub.scrub_scene_frame(audio_scene, -5)
+        assert audio_scene.frame_current == -5, audio_scene.frame_current
+    finally:
+        edit_prefs.use_negative_frames = negative_previous
     audio_scene.use_audio_scrub, audio_scene.frame_current = audio_previous
     assert scrub.FBP_OT_TimelineHoldScrub in scrub._classes
 
