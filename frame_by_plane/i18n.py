@@ -4,8 +4,9 @@ Blender translates interface text at draw time by looking the English string up
 in the dictionaries registered with ``bpy.app.translations``. The catalogs in
 ``translations/<language>.json`` map each English string to its translation.
 
-* **Automatic** (default): every catalog is registered under its own Blender
-  locale, so the add-on follows the language chosen in Blender's Preferences.
+* **Automatic** (default): the catalog for Blender's current language is
+  registered, and re-registered when that language changes, so the add-on
+  follows Blender's Preferences. English users load no catalog at all.
 * **English**: nothing is registered.
 * **A specific language**: that catalog is registered under every Blender
   locale, so the add-on uses it whatever language Blender is set to.
@@ -64,6 +65,13 @@ def _catalog(code):
     return entries
 
 
+def _current_locale():
+    try:
+        return str(bpy.app.translations.locale or "")
+    except (AttributeError, RuntimeError):
+        return ""
+
+
 def _all_blender_locales():
     try:
         locales = tuple(bpy.app.translations.locales)
@@ -78,13 +86,14 @@ def _build(choice):
     if choice == "EN":
         return {}
     if choice == "AUTO":
-        table = {}
+        # Load only the catalog for Blender's current language; a language
+        # change in Preferences re-applies through the msgbus subscription.
+        current = _current_locale()
         for code, _name, locales in FBP_LANGUAGES:
-            catalog = _catalog(code)
-            if catalog:
-                for locale in locales:
-                    table[locale] = catalog
-        return table
+            if current in locales or current.split("_")[0] in locales:
+                catalog = _catalog(code)
+                return {current: catalog} if catalog else {}
+        return {}
     for code, _name, _locales in FBP_LANGUAGES:
         if code.upper() == choice:
             catalog = _catalog(code)
@@ -138,13 +147,34 @@ def update_interface_language_cb(self, context):
         pass
 
 
+_MSGBUS_OWNER = object()
+
+
+def _on_blender_language_changed():
+    if _preference_choice().upper() == "AUTO":
+        fbp_apply_interface_language("AUTO")
+
+
 def register():
-    # Preferences are registered later; this applies their saved value when
-    # they already exist (add-on reload) and the default otherwise.
+    # Registered after the add-on preferences, so their saved value applies.
     fbp_apply_interface_language()
+    try:
+        bpy.msgbus.subscribe_rna(
+            key=(bpy.types.PreferencesView, "language"),
+            owner=_MSGBUS_OWNER,
+            args=(),
+            notify=_on_blender_language_changed,
+            options={"PERSISTENT"},
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def unregister():
+    try:
+        bpy.msgbus.clear_by_owner(_MSGBUS_OWNER)
+    except (AttributeError, RuntimeError):
+        pass
     _unregister_translations()
     _catalog_cache.clear()
 
