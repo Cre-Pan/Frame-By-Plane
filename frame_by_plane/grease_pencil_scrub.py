@@ -6840,6 +6840,20 @@ _TIMELINE_SCRUB_AREAS = frozenset({"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDIT
 _TIMELINE_SCRUB_KEYMAPS = ("Dopesheet", "Graph Editor", "NLA Editor", "Sequencer")
 
 
+def negative_frames_allowed():
+    """Blender's Preferences > Animation > Timeline > Allow Negative Frames."""
+    try:
+        return bool(bpy.context.preferences.edit.use_negative_frames)
+    except (AttributeError, ReferenceError, RuntimeError):
+        return False
+
+
+def clamp_negative_frame(frame):
+    """Keep the playhead at 0 or later unless negative frames are allowed."""
+    frame = int(frame)
+    return frame if frame >= 0 or negative_frames_allowed() else 0
+
+
 def scrub_scene_frame(scene, frame):
     """Move the playhead, playing the audio under it when Audio Scrubbing is on.
 
@@ -6847,7 +6861,7 @@ def scrub_scene_frame(scene, frame):
     writing ``frame_current`` is what Blender's own Timeline scrubbing does to
     play the audio snippet.
     """
-    frame = int(frame)
+    frame = clamp_negative_frame(frame)
     if bool(getattr(scene, "use_audio_scrub", False)):
         scene.frame_current = frame
     scene.frame_set(frame)
@@ -6978,6 +6992,9 @@ class FBP_OT_TimelineHoldScrub(Operator):
             if event.shift:
                 step *= self._shift_factor
             self._frame += step
+            if self._frame < 0.0 and not negative_frames_allowed():
+                # Stay pinned at 0 so moving back right responds at once.
+                self._frame = 0.0
             self._set(context, int(round(self._frame)))
             return {"RUNNING_MODAL"}
         return {"RUNNING_MODAL"}
