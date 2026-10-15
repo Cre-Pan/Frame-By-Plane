@@ -404,29 +404,28 @@ def fbp_switch_off_image_effects(rig):
     Returns the number of effects switched off.
     """
     from .geometry_nodes import (
-        _fbp_effect_ref_parts,
-        _fbp_effect_solo_candidates,
         _fbp_refresh_geometry_source_materials,
         _fbp_store_effect_solo_ids,
         fbp_effect_definition,
+        fbp_effect_ids_for_rig,
         fbp_set_effect_render_visible,
         fbp_set_effect_visible,
     )
 
-    count = 0
+    effect_ids = [
+        effect_id for effect_id in dict.fromkeys(fbp_effect_ids_for_rig(rig))
+        if fbp_effect_definition(effect_id).get("kind") == "SHADER"
+    ]
+    for effect_id in effect_ids:
+        # Without an instance id both setters reach every instance of the effect.
+        fbp_set_effect_visible(rig, effect_id, False, refresh_mixed=False)
+        fbp_set_effect_render_visible(rig, effect_id, False)
     for view in ("2D", "MASK"):
-        for token in _fbp_effect_solo_candidates(rig, view):
-            effect_id, instance_id = _fbp_effect_ref_parts(token)
-            if fbp_effect_definition(effect_id).get("kind") != "SHADER":
-                continue
-            fbp_set_effect_visible(rig, effect_id, False, instance_id=instance_id, refresh_mixed=False)
-            fbp_set_effect_render_visible(rig, effect_id, False, instance_id=instance_id)
-            count += 1
         # A leftover Solo set would switch the effects back on when cleared.
         _fbp_store_effect_solo_ids(rig, view, set())
-    if count:
+    if effect_ids:
         _fbp_refresh_geometry_source_materials(rig)
-    return count
+    return len(effect_ids)
 
 
 def _load_baked_frames(rig, directory, files, start_frame):
