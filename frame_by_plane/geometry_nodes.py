@@ -29118,7 +29118,7 @@ class FBP_MT_EffectStackActions(Menu):
         clear_selection = layout.operator("fbp.set_effect_selection", text="Clear Effect Selection", icon="PROP_OFF")
         clear_selection.mode = "NONE"
         layout.separator()
-        layout.operator("fbp.apply_image_effects", text="Apply Effects to New Layer", icon="RENDER_STILL")
+        layout.operator("fbp.apply_image_effects", text="Apply Effects", icon="RENDER_STILL")
         layout.operator("fbp.clear_effect_stack", text="Clear Stack", icon="TRASH")
 
 

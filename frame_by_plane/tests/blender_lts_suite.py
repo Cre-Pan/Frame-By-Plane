@@ -2849,6 +2849,30 @@ def test_effect_bake_cycles(_module):
     return {"pixel": [round(value, 3) for value in pixel]}
 
 
+def test_effect_bake_switch_off(_module):
+    """After Apply Effects the image effects are switched off, not removed."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    bake = importlib.import_module(f"{PACKAGE}.effect_bake")
+    rig = _effect_stack_fixture_rig("FBP Effect Bake Switch Off")
+    owned = [rig, *rig.children_recursive]
+    try:
+        assert geo.fbp_add_effect(rig, "INVERT", select_object_mask_helper=False, inherit_active_group=False)
+        assert geo.fbp_effect_visible_state(rig, "INVERT")
+        assert bake.fbp_switch_off_image_effects(rig) >= 1
+        assert "INVERT" in tuple(geo.fbp_effect_ids_for_rig(rig)), "the effect must stay in the stack"
+        assert not geo.fbp_effect_visible_state(rig, "INVERT")
+        assert not geo.fbp_effect_render_visible_state(rig, "INVERT")
+        geo.fbp_set_effect_visible(rig, "INVERT", True)
+        assert geo.fbp_effect_visible_state(rig, "INVERT"), "the eye icon must switch it back on"
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"switched_off": True}
+
+
 def test_effect_operator_cleanup_contract(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     rig = _effect_stack_fixture_rig("FBP Effect Operator Cleanup")
@@ -4252,6 +4276,7 @@ def run_background():
             ("effect_render_visibility_cycles", test_effect_render_visibility_cycles),
             ("effect_global_mask_hide_cycles", test_effect_global_mask_hide_cycles),
             ("effect_bake_cycles", test_effect_bake_cycles),
+            ("effect_bake_switch_off", test_effect_bake_switch_off),
             ("effect_family_variant_keeps_position", test_effect_family_variant_keeps_position),
             ("effect_duplicate_placement", test_effect_duplicate_placement),
             ("effect_remove_masked_uv_instance", test_effect_remove_masked_uv_instance),

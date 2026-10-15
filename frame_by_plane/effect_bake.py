@@ -1,13 +1,15 @@
-"""Apply Effects: bake a layer's image effects into a new image sequence.
+"""Apply Effects: bake a layer's image effects into its pixels.
 
 Image effects are shader nodes in the plane material, so they only show in
 Material Preview and Rendered shading. This operator bakes the final colour
-and alpha of the plane material with Cycles, one PNG per frame, and creates a
-copy of the layer that plays the baked sequence without the shader effects.
-The original layer is hidden, never changed otherwise.
+and alpha of the plane material with Cycles, one PNG per frame, into
+``assets/baked`` beside the .blend. The layer then plays the baked frames and
+its image effects are switched off (not removed), so they can be switched back
+on. With "Keep Original" a copy of the layer plays the baked frames instead,
+and the original is hidden but otherwise left as it was.
 
 Geometry (mesh) effects are not baked: they are switched off while baking and
-stay on the new layer as live effects.
+stay live afterwards.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import os
 import re
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.types import Operator
 
 from .runtime import FBP_DATA_ERRORS, fbp_warn
@@ -143,28 +145,30 @@ class _MaterialRouting:
 
 
 def _bake_output_directory(rig):
+    """Return a new folder for one bake and the file prefix.
+
+    Every bake gets its own numbered folder: the layer may already play the
+    frames of an earlier bake, so those files are never overwritten.
+    """
     name = _safe_name(getattr(rig, "name", "layer"))
-    root = fbp_project_assets_dir("baked", name) or fbp_user_data_dir("baked", name)
-    if not root:
+    parent = fbp_project_assets_dir("baked", name) or fbp_user_data_dir("baked", name)
+    if not parent:
         raise OSError("No writable folder for the baked frames")
-    os.makedirs(root, exist_ok=True)
-    prefix = f"{name}_"
-    for entry in os.listdir(root):
-        if entry.startswith(prefix) and entry.endswith(".png"):
-            try:
-                os.remove(os.path.join(root, entry))
-            except OSError:
-                pass
-    return root, prefix
+    index = 1
+    while os.path.exists(os.path.join(parent, f"bake_{index:03d}")):
+        index += 1
+    root = os.path.join(parent, f"bake_{index:03d}")
+    os.makedirs(root)
+    return root, f"{name}_"
 
 
 class FBP_OT_ApplyImageEffects(Operator):
     bl_idname = "fbp.apply_image_effects"
-    bl_label = "Apply Effects to New Layer"
+    bl_label = "Apply Effects"
     bl_description = (
-        "Bake the image effects of the active layer into a new image sequence and "
-        "add a copy of the layer that plays it, so the result shows in Solid view too. "
-        "Mesh effects stay live. The original layer is hidden"
+        "Bake the image effects of the active layer into new images that the layer "
+        "then plays, so the result shows in Solid view too. The image effects are "
+        "switched off, not removed. Mesh effects stay live"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -176,6 +180,11 @@ class FBP_OT_ApplyImageEffects(Operator):
             ("CURRENT", "Current Frame", "Bake only the current frame into a still image"),
         ),
         default="SCENE",
+    )
+    keep_original: BoolProperty(
+        name="Keep Original",
+        description="Put the baked images on a copy of the layer and hide the original instead",
+        default=False,
     )
     rig_name: StringProperty(default="", options={"HIDDEN", "SKIP_SAVE"})
 
@@ -194,6 +203,7 @@ class FBP_OT_ApplyImageEffects(Operator):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "frames", expand=True)
+        layout.prop(self, "keep_original")
         scene = context.scene
         count = 1 if self.frames == "CURRENT" else max(1, scene.frame_end - scene.frame_start + 1)
         layout.label(text=f"{count} frame(s) baked with Cycles", icon="RENDER_ANIMATION")
@@ -239,14 +249,17 @@ class FBP_OT_ApplyImageEffects(Operator):
             self.report({"ERROR"}, f"Could not bake the effects: {exc}")
             return {"CANCELLED"}
 
-        new_rig = _create_baked_layer(context, rig, directory, files, frame_list[0])
-        if new_rig is None:
+        if self.keep_original:
+            target = _create_baked_layer(context, rig, directory, files, frame_list[0])
+        else:
+            target = rig if _apply_baked_frames(rig, directory, files, frame_list[0]) else None
+        if target is None:
             self.report(
                 {"WARNING"},
-                f"Baked {len(files)} frame(s) to {directory}, but could not create the new layer",
+                f"Baked {len(files)} frame(s) to {directory}, but could not load them on the layer",
             )
             return {"FINISHED"}
-        self.report({"INFO"}, f"Baked {len(files)} frame(s) into '{new_rig.name}'")
+        self.report({"INFO"}, f"Baked {len(files)} frame(s) into '{target.name}'")
         return {"FINISHED"}
 
 
@@ -384,10 +397,63 @@ def _bake_frames(context, rig, plane, materials, width, height, frame_list, dire
     return files
 
 
+def fbp_switch_off_image_effects(rig):
+    """Hide every image (shader) effect of a layer in viewport and render.
+
+    The effects stay in the stack, so the eye icons switch them back on.
+    Returns the number of effects switched off.
+    """
+    from .geometry_nodes import (
+        _fbp_effect_ref_parts,
+        _fbp_effect_solo_candidates,
+        _fbp_refresh_geometry_source_materials,
+        _fbp_store_effect_solo_ids,
+        fbp_effect_definition,
+        fbp_set_effect_render_visible,
+        fbp_set_effect_visible,
+    )
+
+    count = 0
+    for view in ("2D", "MASK"):
+        for token in _fbp_effect_solo_candidates(rig, view):
+            effect_id, instance_id = _fbp_effect_ref_parts(token)
+            if fbp_effect_definition(effect_id).get("kind") != "SHADER":
+                continue
+            fbp_set_effect_visible(rig, effect_id, False, instance_id=instance_id, refresh_mixed=False)
+            fbp_set_effect_render_visible(rig, effect_id, False, instance_id=instance_id)
+            count += 1
+        # A leftover Solo set would switch the effects back on when cleared.
+        _fbp_store_effect_solo_ids(rig, view, set())
+    if count:
+        _fbp_refresh_geometry_source_materials(rig)
+    return count
+
+
+def _load_baked_frames(rig, directory, files, start_frame):
+    from .core import fbp_replace_sequence_backend
+
+    rig.fbp_sequence_reversed = False
+    if not fbp_replace_sequence_backend(rig, directory, files, item_durations=[1] * len(files)):
+        raise RuntimeError("the baked frames could not be loaded")
+    rig.fbp_loop_mode = "NONE"
+    rig.fbp_start_frame = int(start_frame)
+    rig.fbp_opacity = 1.0  # Opacity is already in the baked alpha.
+
+
+def _apply_baked_frames(rig, directory, files, start_frame):
+    """Make the layer play the baked frames and switch its image effects off."""
+    try:
+        _load_baked_frames(rig, directory, files, start_frame)
+        fbp_switch_off_image_effects(rig)
+    except (ImportError, *FBP_DATA_ERRORS) as exc:
+        fbp_warn("Apply Effects could not load the baked frames", exc)
+        return False
+    return True
+
+
 def _create_baked_layer(context, rig, directory, files, start_frame):
     """Duplicate the layer, swap in the baked frames and drop shader effects."""
     try:
-        from .core import fbp_replace_sequence_backend
         from .effects_registry import FBP_EFFECT_REGISTRY
         from .geometry_nodes import (
             fbp_effect_ids_for_rig,
@@ -417,12 +483,7 @@ def _create_baked_layer(context, rig, directory, files, start_frame):
     if new_rig is None:
         return None
     try:
-        new_rig.fbp_sequence_reversed = False
-        if not fbp_replace_sequence_backend(new_rig, directory, files, item_durations=[1] * len(files)):
-            raise RuntimeError("the baked frames could not be loaded")
-        new_rig.fbp_loop_mode = "NONE"
-        new_rig.fbp_start_frame = int(start_frame)
-        new_rig.fbp_opacity = 1.0  # Opacity is already in the baked alpha.
+        _load_baked_frames(new_rig, directory, files, start_frame)
         for effect_id in tuple(fbp_effect_ids_for_rig(new_rig)):
             if FBP_EFFECT_REGISTRY.get(effect_id, {}).get("kind") == "SHADER":
                 fbp_remove_effect(new_rig, effect_id, sync_items=False)
@@ -451,4 +512,4 @@ def unregister():
             pass
 
 
-__all__ = ("FBP_OT_ApplyImageEffects",)
+__all__ = ("FBP_OT_ApplyImageEffects", "fbp_switch_off_image_effects")
