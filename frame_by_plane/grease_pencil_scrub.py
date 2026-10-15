@@ -4700,6 +4700,11 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         _ACTIVE_OPERATOR = self
         self._tag_redraw()
         _tag_all_view3d_redraw()
+        try:
+            from .live_tutorial import fbp_notify_tutorial_action
+            fbp_notify_tutorial_action(context, "draw_scrub")
+        except (ImportError, AttributeError, ReferenceError, RuntimeError):
+            pass
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):

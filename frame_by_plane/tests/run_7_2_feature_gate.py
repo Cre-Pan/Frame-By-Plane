@@ -15,6 +15,8 @@ TESTS = (
     "gp_vertex_colors_regression.py",
     "gp_vertex_color_undo_regression.py",
     "gp_paint_undo_regression.py",
+    "gp_draw_color_stability_regression.py",
+    "live_tutorial_regression.py",
     "compositor_opt_in_regression.py",
     "image_properties_regression.py",
     "addon_lifecycle_regression.py",

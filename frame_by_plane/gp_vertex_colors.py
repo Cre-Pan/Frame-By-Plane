@@ -80,6 +80,8 @@ _RUNTIME = {
     "draw_watch_object": 0,
     "draw_drawing_pointer": 0,
     "draw_curve_count": 0,
+    "draw_layer_pointer": 0,
+    "draw_scene_frame": None,
     "edit_undo_label": "Grease Pencil Color",
     "paint_colors": None,
 }
@@ -294,7 +296,12 @@ def _canonical_brush_colors(state, owner, mode):
     fill = _rgba(getattr(state, "fill_color", (1.0, 1.0, 1.0, 1.0)))
     # Remember the paint colors: Edit Mode reuses the same state for the
     # selection's colors, and returning to a paint mode must restore these.
+    # The Object copy is what Undo restores: the undo step Blender pushes
+    # right after leaving Edit Mode still holds the selection's colors.
     _RUNTIME["paint_colors"] = (stroke, fill)
+    _set_state_value(state, "paint_stroke_color", stroke)
+    _set_state_value(state, "paint_fill_color", fill)
+    _set_state_scalar(state, "paint_colors_valid", True)
     if mode == "FILL":
         primary, secondary = fill, stroke
     else:
@@ -306,18 +313,25 @@ def _canonical_brush_colors(state, owner, mode):
 
 
 def _initialize_paint_state(context, state, obj, owner, mode, brush_kind):
-    try:
-        primary = _rgba(tuple(owner.color) + (1.0,))
-    except FBP_DATA_ERRORS:
-        primary = (0.0, 0.0, 0.0, 1.0)
-    try:
-        secondary = _rgba(tuple(owner.secondary_color) + (1.0,))
-    except FBP_DATA_ERRORS:
-        secondary = (1.0, 1.0, 1.0, 1.0)
-    if mode == "FILL":
-        stroke, fill = secondary, primary
+    saved = _RUNTIME.get("paint_colors")
+    if saved:
+        # Every Draw tool (Fill, Erase, Tint...) and every object has its own
+        # brush with its own colors. Keep the Stroke / Fill pair the artist
+        # chose instead of adopting whatever the newly active brush holds.
+        stroke, fill = _visible_alpha(saved[0]), _visible_alpha(saved[1])
     else:
-        stroke, fill = primary, secondary
+        try:
+            primary = _rgba(tuple(owner.color) + (1.0,))
+        except FBP_DATA_ERRORS:
+            primary = (0.0, 0.0, 0.0, 1.0)
+        try:
+            secondary = _rgba(tuple(owner.secondary_color) + (1.0,))
+        except FBP_DATA_ERRORS:
+            secondary = (1.0, 1.0, 1.0, 1.0)
+        if mode == "FILL":
+            stroke, fill = secondary, primary
+        else:
+            stroke, fill = primary, secondary
     _set_state_value(state, "stroke_color", stroke)
     _set_state_value(state, "fill_color", fill)
     _set_state_scalar(state, "stroke_available", True)
@@ -470,16 +484,34 @@ def _reset_draw_both_tracking():
         draw_watch_object=0,
         draw_drawing_pointer=0,
         draw_curve_count=0,
+        draw_layer_pointer=0,
+        draw_scene_frame=None,
     )
 
 
-def _active_draw_drawing(obj):
+def _active_draw_target(obj):
+    """Return the active layer pointer, its keyframe number and its drawing."""
     try:
         layer = obj.data.layers.active
         frame = layer.current_frame() if layer is not None else None
-        return frame.drawing if frame is not None else None
+        layer_pointer = int(layer.as_pointer()) if layer is not None else 0
+        if frame is None:
+            return layer_pointer, None, None
+        return layer_pointer, int(frame.frame_number), frame.drawing
     except FBP_DATA_ERRORS:
-        return None
+        return 0, None, None
+
+
+def _new_keyframe_baseline(previous_count, curve_count, additive):
+    """Curves of a keyframe the brush just created that are not new strokes.
+
+    Auto Keying creates the keyframe when the first stroke starts. Additive
+    Drawing copies the previous keyframe's curves into it first; otherwise
+    the new keyframe starts empty, so every curve in it is new.
+    """
+    if additive:
+        return min(int(previous_count), int(curve_count))
+    return 0
 
 
 def _new_draw_curve_indices(previous_count, curve_count, draw_on_back):
@@ -520,10 +552,11 @@ def _sync_draw_both_fill(context=None):
     )
 
     object_pointer = int(obj.as_pointer())
-    drawing = _active_draw_drawing(obj)
+    layer_pointer, keyframe_number, drawing = _active_draw_target(obj)
     try:
         drawing_pointer = int(drawing.as_pointer()) if drawing is not None else 0
         curve_count = len(drawing.strokes) if drawing is not None else 0
+        scene_frame = int(context.scene.frame_current)
     except FBP_DATA_ERRORS:
         return 0
 
@@ -536,27 +569,47 @@ def _sync_draw_both_fill(context=None):
             draw_watch_object=object_pointer,
             draw_drawing_pointer=drawing_pointer,
             draw_curve_count=curve_count,
+            draw_layer_pointer=layer_pointer,
+            draw_scene_frame=scene_frame,
         )
         return 0
 
+    try:
+        tool_settings = context.scene.tool_settings
+        draw_on_back = bool(tool_settings.use_gpencil_draw_onback)
+        additive = bool(tool_settings.use_gpencil_draw_additive)
+    except FBP_DATA_ERRORS:
+        draw_on_back = additive = False
     previous_pointer = int(_RUNTIME.get("draw_drawing_pointer", 0) or 0)
     previous_count = int(_RUNTIME.get("draw_curve_count", 0) or 0)
     if drawing_pointer != previous_pointer:
         # A zero pointer becoming a real drawing means the native operator just
-        # created the first frame. Other pointer changes are ordinary frame or
-        # layer switches and must not recolor existing curves.
+        # created the first frame. A new drawing on the same layer, at the
+        # same scene frame, keyed exactly there, is the keyframe Auto Keying
+        # inserted for the stroke being drawn. Other pointer changes are
+        # ordinary frame or layer switches and must not recolor existing curves.
         created_first_drawing = previous_pointer == 0 and previous_count == 0
-        previous_count = 0 if created_first_drawing else curve_count
+        created_keyframe = bool(
+            drawing is not None
+            and layer_pointer
+            and layer_pointer == _RUNTIME.get("draw_layer_pointer")
+            and scene_frame == _RUNTIME.get("draw_scene_frame")
+            and keyframe_number == scene_frame
+        )
+        if created_first_drawing:
+            previous_count = 0
+        elif created_keyframe:
+            previous_count = _new_keyframe_baseline(previous_count, curve_count, additive)
+        else:
+            previous_count = curve_count
 
     _RUNTIME["draw_drawing_pointer"] = drawing_pointer
     _RUNTIME["draw_curve_count"] = curve_count
+    _RUNTIME["draw_layer_pointer"] = layer_pointer
+    _RUNTIME["draw_scene_frame"] = scene_frame
     if drawing is None or curve_count <= previous_count:
         return 0
 
-    try:
-        draw_on_back = bool(context.scene.tool_settings.use_gpencil_draw_onback)
-    except FBP_DATA_ERRORS:
-        draw_on_back = False
     indices = tuple(_new_draw_curve_indices(previous_count, curve_count, draw_on_back))
     clean_fill = _rgba(state.fill_color)
     close_stroke = bool(state.close_strokes)
@@ -581,13 +634,24 @@ def _sync_draw_both_fill(context=None):
 
 
 def _tag_view3d_redraw():
-    screen = getattr(getattr(bpy, "context", None), "screen", None)
-    for area in tuple(getattr(screen, "areas", ()) or ()):
-        try:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
-        except FBP_DATA_ERRORS:
-            continue
+    # Timers run without a window context, so context.screen can be None.
+    # The headers only show synchronized colors after this redraw.
+    context = getattr(bpy, "context", None)
+    screens = []
+    try:
+        for window in getattr(context.window_manager, "windows", ()) or ():
+            screens.append(window.screen)
+    except FBP_DATA_ERRORS:
+        pass
+    if not screens:
+        screens.append(getattr(context, "screen", None))
+    for screen in screens:
+        for area in tuple(getattr(screen, "areas", ()) or ()):
+            try:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+            except FBP_DATA_ERRORS:
+                continue
 
 
 def fbp_gp_brush_color_timer():
@@ -1795,6 +1859,12 @@ def fbp_gp_vertex_color_undo_post(_scene):
         state = _state(context)
         obj = _active_gp_object(context)
         if state is not None and obj is not None and owner is not None and gp_settings is not None:
+            if bool(getattr(state, "paint_colors_valid", False)):
+                # The restored step can predate the sync that followed an
+                # Edit Mode exit; its Stroke / Fill then hold the selection's
+                # colors, while the paint copy holds the real paint colors.
+                _set_state_value(state, "stroke_color", state.paint_stroke_color)
+                _set_state_value(state, "fill_color", state.paint_fill_color)
             try:
                 owner_pointer = int(owner.as_pointer())
             except FBP_DATA_ERRORS:
@@ -1848,6 +1918,21 @@ class FBP_GPVertexColorState(PropertyGroup):
         default=False,
         update=_close_strokes_changed,
     )
+    paint_stroke_color: FloatVectorProperty(
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(0.0, 0.0, 0.0, 1.0),
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    paint_fill_color: FloatVectorProperty(
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0),
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    paint_colors_valid: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
     stroke_available: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
     fill_available: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
     stroke_mixed: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
@@ -2129,13 +2214,11 @@ def _draw_mixed_swatches(layout, target):
 def _draw_paint_color_controls(layout, context, state):
     context_mode = _context_mode(context)
     if context_mode == "VERTEX_GREASE_PENCIL":
-        _sync_vertex_state(context)
         _paint, brush, _owner, gp_settings = _brush_context(context)
         mode_property = "vertex_mode"
         mode = _vertex_mode(gp_settings)
         label = "Vertex Paint"
     else:
-        _sync_draw_state(context)
         _paint, brush, _owner, gp_settings = _draw_brush_context(context)
         mode_property = "stroke_type"
         mode = _draw_mode(gp_settings)
@@ -2186,7 +2269,6 @@ class FBP_PT_GPVertexColors(Panel):
             _draw_paint_color_controls(layout, context, state)
             return
 
-        _sync_edit_state(context)
         if state.selected_points <= 0:
             row = layout.row(align=True)
             row.label(text="Select points or strokes to edit their colors", icon="INFO")
@@ -2213,18 +2295,7 @@ class FBP_PT_GPVertexColors(Panel):
         layout.operator("fbp.swap_gp_vertex_colors", text="Swap Stroke / Fill", icon="ARROW_LEFTRIGHT")
 
 
-def _sync_color_state_for_ui(context):
-    mode = _context_mode(context)
-    if mode == "EDIT_GREASE_PENCIL":
-        _sync_edit_state(context)
-    elif mode == "PAINT_GREASE_PENCIL":
-        _sync_draw_state(context)
-    elif mode == "VERTEX_GREASE_PENCIL":
-        _sync_vertex_state(context)
-
-
 def _draw_color_popover(layout, context, property_name):
-    _sync_color_state_for_ui(context)
     state = _state(context)
     if state is None:
         layout.label(text="Color state unavailable", icon="ERROR")
@@ -2644,7 +2715,6 @@ def _draw_native_draw_color_selector(context, layout, brush, gp_settings):
             or (pin_draw_mode and gp_settings.brush_draw_mode == "VERTEXCOLOR")
         )
         if show_vertex_color:
-            _sync_draw_state(context)
             color_row = layout.row(align=False)
             color_row.enabled = True
             _paint, _brush, owner, _settings = _draw_brush_context(context)
@@ -2673,7 +2743,6 @@ def _draw_native_vertex_tool_settings(context, layout, tool):
     drew_color_pair = False
     if brush.gpencil_vertex_brush_type not in {"BLUR", "AVERAGE", "SMEAR"}:
         layout.separator(factor=0.4)
-        _sync_vertex_state(context)
         _paint, _brush, owner, _gp_settings = _brush_context(context)
         _draw_header_color_pair(
             layout,
@@ -2984,5 +3053,8 @@ def unregister():
         draw_watch_object=0,
         draw_drawing_pointer=0,
         draw_curve_count=0,
+        draw_layer_pointer=0,
+        draw_scene_frame=None,
         edit_undo_label="Grease Pencil Color",
+        paint_colors=None,
     )
