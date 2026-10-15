@@ -7,6 +7,7 @@ from bpy.props import (
     CollectionProperty, PointerProperty, EnumProperty
 )
 from bpy.types import PropertyGroup, AddonPreferences
+from .i18n import FBP_LANGUAGE_ITEMS, update_interface_language_cb
 from .constants import (
     COLLECTION_COLOR_ENUM_ITEMS, FBP_LAYER_BLEND_MODE_ITEMS,
     FBP_BLENDER_VERSION_SERIES_STRING, FBP_LTS_TARGET_VERSION,
@@ -826,6 +827,13 @@ def update_shortcut_preferences_cb(self, context):
 class FBP_AddonPreferences(AddonPreferences):
     bl_idname = __package__ if __package__ else "frame_by_plane"
 
+    interface_language: EnumProperty(
+        name="Language",
+        description="Language of the Frame By Plane interface. Automatic follows Blender's language",
+        items=FBP_LANGUAGE_ITEMS,
+        default='AUTO',
+        update=update_interface_language_cb,
+    )
     shift_a_menu_position: EnumProperty(
         name="Shift+A Position",
         description="Choose where the Frame By Plane submenu appears in Blender's Add menu",
@@ -2050,6 +2058,8 @@ class FBP_AddonPreferences(AddonPreferences):
         if category:
             body = _section(category, 'pref_ui_show_interface', 'Interface Behavior', 'settings.display', 'PREFERENCES')
             if body:
+                row = _row(body)
+                row.prop(self, 'interface_language', text='Language')
                 row = _row(body)
                 row.prop(self, 'default_preview_mode', text='List Previews')
                 row = _row(body)

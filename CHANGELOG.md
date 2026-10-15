@@ -16,6 +16,7 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### Fixes
 
+- Holding `<` in the Timeline and other time editors no longer moves the playhead below frame 0 when **Allow Negative Frames** is off in Blender's Preferences.
 - Strokes that never had a vertex color read as transparent black. Picking a Stroke or Fill color over one of those kept alpha 0, so nothing changed on screen; the first color picked over an unset one now gets full alpha.
 - Leaving Edit Mode no longer turns the Draw and Vertex Paint colors into the selection's colors (often transparent black on uncolored strokes, which also made new fills invisible). Paint modes get back the colors they had before Edit Mode.
 - Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
@@ -34,6 +35,20 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 - Swap skips strokes whose material draws only a line or only a fill, instead of painting them with an empty color, and no longer adds an empty Undo step when nothing is selected.
 - The Edit Mode header no longer rescans the selection on every redraw before the first sync.
 - Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
+
+### Apply Effects
+
+- **Apply Effects** (Effects stack menu) bakes a layer's image effects with Cycles into PNG frames in `assets/baked/`, and the layer then plays them, so the result shows in Solid view too. The image effects are switched off, not removed, so the eye icons bring them back; mesh effects stay live. **Keep Original** puts the baked frames on a copy and hides the original instead.
+
+### Languages
+
+- The interface is translated into Italian, Spanish, French, German, Simplified Chinese and Japanese. **Preferences → Interface → Language** is Automatic by default (follows Blender's language); it can also be set to English or to one fixed language.
+
+### Files and storage
+
+- Effect presets are saved in the extension's user folder (`bpy.utils.extension_path_user`) instead of Blender's config folder or `~/.frame_by_plane`. Existing presets are copied over once; the old file is left in place.
+- Generated media (PSD/Procreate layers, converted animated images, native sequence proxies, clipboard images) goes into an `assets` folder next to the saved `.blend`. Unsaved files still write next to the source media; the extension user folder is the last resort.
+- Icons and the Geometry Nodes library are CC0-1.0; splash artwork is CC-BY-4.0 (see THIRD_PARTY_NOTICES.md).
 
 ### Release splash
 

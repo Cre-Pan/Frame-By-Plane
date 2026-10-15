@@ -6,6 +6,7 @@ import mathutils
 import os
 
 from .path_utils import natural_sort_key
+from .user_storage import fbp_media_cache_roots
 from .pillow_media import (
     FBP_PILLOW_CONVERT_EXTENSIONS,
     fbp_default_pillow_cache_root,
@@ -806,36 +807,25 @@ def fbp_prepare_media_source(context, directory, files_list, item_durations=None
     )
 
     def prepare_one(source_path, extension):
-        try:
-            return fbp_prepare_pillow_media(
-                source_path,
-                cache_root=fbp_default_pillow_cache_root(source_path),
-                fps=fps,
-            )
-        except OSError:
+        roots = fbp_media_cache_roots("media", fbp_default_pillow_cache_root(source_path))
+        last_error = None
+        for root in roots:
             try:
-                fallback_root = bpy.utils.user_resource(
-                    "DATAFILES",
-                    path=os.path.join("frame_by_plane", "media_cache"),
-                    create=True,
-                )
-                if not fallback_root:
-                    raise OSError("Blender did not provide a writable media cache")
-                return fbp_prepare_pillow_media(
-                    source_path,
-                    cache_root=fallback_root,
-                    fps=fps,
-                )
+                os.makedirs(root, exist_ok=True)
+                return fbp_prepare_pillow_media(source_path, cache_root=root, fps=fps)
+            except OSError as exc:
+                last_error = exc
+                continue
             except Exception as exc:
                 if extension in FBP_PILLOW_CONVERT_EXTENSIONS:
-                    raise RuntimeError(f"Could not convert {extension.lstrip('.').upper()} media: {exc}") from exc
+                    raise RuntimeError(f"Could not decode {extension.lstrip('.').upper()} media: {exc}") from exc
                 _fbp_warn("Animated image extraction skipped", exc)
                 return None
-        except Exception as exc:
-            if extension in FBP_PILLOW_CONVERT_EXTENSIONS:
-                raise RuntimeError(f"Could not decode {extension.lstrip('.').upper()} media: {exc}") from exc
-            _fbp_warn("Animated image extraction skipped", exc)
-            return None
+        exc = last_error or OSError("Blender did not provide a writable media cache")
+        if extension in FBP_PILLOW_CONVERT_EXTENSIONS:
+            raise RuntimeError(f"Could not convert {extension.lstrip('.').upper()} media: {exc}") from exc
+        _fbp_warn("Animated image extraction skipped", exc)
+        return None
 
     expanded_files = []
     expanded_durations = []

@@ -1770,6 +1770,18 @@ def test_scrub_bar_regressions(_module):
         audio_scene.use_audio_scrub = audio_on
         scrub.scrub_scene_frame(audio_scene, frame)
         assert audio_scene.frame_current == frame
+    # Without Allow Negative Frames the playhead stops at 0, like Blender's own scrubbing.
+    edit_prefs = bpy.context.preferences.edit
+    negative_previous = bool(edit_prefs.use_negative_frames)
+    try:
+        edit_prefs.use_negative_frames = False
+        scrub.scrub_scene_frame(audio_scene, -5)
+        assert audio_scene.frame_current == 0, audio_scene.frame_current
+        edit_prefs.use_negative_frames = True
+        scrub.scrub_scene_frame(audio_scene, -5)
+        assert audio_scene.frame_current == -5, audio_scene.frame_current
+    finally:
+        edit_prefs.use_negative_frames = negative_previous
     audio_scene.use_audio_scrub, audio_scene.frame_current = audio_previous
     assert scrub.FBP_OT_TimelineHoldScrub in scrub._classes
 
@@ -2781,6 +2793,84 @@ def test_effect_global_mask_hide_cycles(_module):
     assert abs(viewport_hidden - plain) < 0.02, (plain, viewport_hidden)
     assert abs(render_hidden - plain) < 0.02, (plain, render_hidden)
     return {"alpha": round(plain, 3), "viewport_hidden": round(viewport_hidden, 3), "render_hidden": round(render_hidden, 3)}
+
+
+def test_effect_bake_cycles(_module):
+    """Apply Effects bakes the shader effects into PNG pixels and restores the material."""
+    _skip_unless_cycles_render()
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    bake = importlib.import_module(f"{PACKAGE}.effect_bake")
+    rig = _effect_stack_fixture_rig("FBP Effect Bake")
+    owned = [rig, *rig.children_recursive]
+
+    def links(materials):
+        return [
+            sorted(
+                (link.from_node.name, link.from_socket.identifier, link.to_node.name, link.to_socket.identifier)
+                for link in material.node_tree.links
+            )
+            for material in materials
+        ]
+
+    try:
+        assert geo.fbp_add_effect(rig, "INVERT", select_object_mask_helper=False, inherit_active_group=False)
+        plane = rig.fbp_plane_target
+        materials = bake._plane_materials(plane)
+        assert materials
+        before = links(materials)
+        width, height = bake._source_size(materials)
+        assert (width, height) == (16, 16), (width, height)
+        output = WORKDIR / "fbp_effect_bake"
+        output.mkdir(exist_ok=True)
+        files = bake._bake_frames(
+            bpy.context, rig, plane, materials, width, height,
+            [int(bpy.context.scene.frame_current)], str(output), "bake_",
+        )
+        assert files == ["bake_0001.png"], files
+        assert links(materials) == before, "the material graph must be restored after baking"
+        assert not any(
+            node.get(bake._BAKE_NODE_TAG) for material in materials for node in material.node_tree.nodes
+        ), "temporary bake nodes must be removed"
+        image = bpy.data.images.load(str(output / files[0]), check_existing=False)
+        try:
+            index = (8 * 16 + 8) * 4
+            pixel = tuple(image.pixels[index:index + 4])
+        finally:
+            bpy.data.images.remove(image)
+        # The fixture is (0.2, 0.4, 0.8): baked Invert makes red brighter than blue.
+        assert pixel[0] > pixel[2], pixel
+        assert pixel[3] > 0.99, pixel
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"pixel": [round(value, 3) for value in pixel]}
+
+
+def test_effect_bake_switch_off(_module):
+    """After Apply Effects the image effects are switched off, not removed."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    bake = importlib.import_module(f"{PACKAGE}.effect_bake")
+    rig = _effect_stack_fixture_rig("FBP Effect Bake Switch Off")
+    owned = [rig, *rig.children_recursive]
+    try:
+        assert geo.fbp_add_effect(rig, "INVERT", select_object_mask_helper=False, inherit_active_group=False)
+        assert geo.fbp_effect_visible_state(rig, "INVERT")
+        assert bake.fbp_switch_off_image_effects(rig) >= 1
+        assert "INVERT" in tuple(geo.fbp_effect_ids_for_rig(rig)), "the effect must stay in the stack"
+        assert not geo.fbp_effect_visible_state(rig, "INVERT")
+        assert not geo.fbp_effect_render_visible_state(rig, "INVERT")
+        geo.fbp_set_effect_visible(rig, "INVERT", True)
+        assert geo.fbp_effect_visible_state(rig, "INVERT"), "the eye icon must switch it back on"
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"switched_off": True}
 
 
 def test_effect_operator_cleanup_contract(_module):
@@ -4185,6 +4275,8 @@ def run_background():
             ("effect_render_visibility_contract", test_effect_render_visibility_contract),
             ("effect_render_visibility_cycles", test_effect_render_visibility_cycles),
             ("effect_global_mask_hide_cycles", test_effect_global_mask_hide_cycles),
+            ("effect_bake_cycles", test_effect_bake_cycles),
+            ("effect_bake_switch_off", test_effect_bake_switch_off),
             ("effect_family_variant_keeps_position", test_effect_family_variant_keeps_position),
             ("effect_duplicate_placement", test_effect_duplicate_placement),
             ("effect_remove_masked_uv_instance", test_effect_remove_masked_uv_instance),

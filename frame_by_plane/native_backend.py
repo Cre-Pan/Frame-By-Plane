@@ -18,6 +18,7 @@ from .runtime import (
 )
 from .layers import set_collection_color_tag, apply_collection_color_to_rig
 from .scene_sync import sync_layer_collection
+from .user_storage import fbp_media_cache_roots, fbp_project_assets_dir, fbp_user_data_dir
 
 
 FBP_NATIVE_HOLD_MARGIN = 500
@@ -382,8 +383,13 @@ def _native_sequence_needs_rename(files):
 
 
 def _native_proxy_cache_root(source_directory):
-    """Return a persistent writable cache root for native sequence proxies."""
-    source_root = Path(str(source_directory or "")) / ".frame_by_plane_cache"
+    """Return a persistent writable cache root for native sequence proxies.
+
+    A saved project keeps proxies in its ``assets/sequences`` folder; unsaved
+    files use a ``.frame_by_plane_cache`` folder beside the source frames. The
+    extension user folder is the last resort.
+    """
+    beside_source = Path(str(source_directory or "")) / ".frame_by_plane_cache"
 
     def writable_root(root):
         try:
@@ -395,22 +401,10 @@ def _native_proxy_cache_root(source_directory):
         except (OSError, RuntimeError, TypeError, ValueError):
             return None
 
-    # Media-local cache is deterministic and normally writable. Avoid asking
-    # Blender to create its user datafiles directory unless this first choice
-    # actually fails (important for portable/restricted installations).
-    root = writable_root(source_root)
-    if root is not None:
-        return root
-    try:
-        user_root = bpy.utils.user_resource(
-            'DATAFILES',
-            path='frame_by_plane/sequence_cache',
-            create=True,
-        )
-        if user_root:
-            return writable_root(Path(user_root))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        pass
+    for candidate in fbp_media_cache_roots('sequences', beside_source):
+        root = writable_root(Path(candidate))
+        if root is not None:
+            return root
     return None
 
 
@@ -1183,25 +1177,30 @@ def fbp_proxy_cache_roots_from_materials(materials):
             source_cache = directory_path / '.frame_by_plane_cache'
             if source_cache.is_dir():
                 roots.add(str(source_cache))
-    try:
-        user_root = bpy.utils.user_resource(
-            'DATAFILES', path='frame_by_plane/sequence_cache', create=False,
-        )
-        if user_root and os.path.isdir(user_root):
-            roots.add(os.path.abspath(user_root))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        pass
+    for user_root in _proxy_user_roots():
+        if os.path.isdir(user_root):
+            roots.add(user_root)
     return sorted(roots)
 
 
-def _official_proxy_user_root():
+def _proxy_user_roots():
+    """Cache roots owned by the extension: current, project and pre-7.6."""
+    roots = []
+    for value in (
+        fbp_user_data_dir('sequences', create=False),
+        fbp_project_assets_dir('sequences'),
+    ):
+        if value:
+            roots.append(os.path.abspath(value))
     try:
-        value = bpy.utils.user_resource(
+        legacy = bpy.utils.user_resource(
             'DATAFILES', path='frame_by_plane/sequence_cache', create=False,
         )
-        return os.path.normcase(os.path.abspath(value)) if value else ""
+        if legacy:
+            roots.append(os.path.abspath(legacy))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        return ""
+        pass
+    return roots
 
 
 def _allowed_proxy_root(root):
@@ -1210,7 +1209,9 @@ def _allowed_proxy_root(root):
         if root.is_symlink() or not root.is_dir():
             return False
         normalized = os.path.normcase(os.path.abspath(str(root)))
-        return root.name == '.frame_by_plane_cache' or normalized == _official_proxy_user_root()
+        return root.name == '.frame_by_plane_cache' or normalized in {
+            os.path.normcase(value) for value in _proxy_user_roots()
+        }
     except (OSError, RuntimeError, ValueError):
         return False
 

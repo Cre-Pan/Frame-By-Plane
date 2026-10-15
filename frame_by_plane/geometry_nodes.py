@@ -18,6 +18,7 @@ import importlib
 import json
 import math
 import time
+import tempfile
 import uuid
 
 import bpy
@@ -64,6 +65,7 @@ from .generic_mesh_metadata import (
     set_mesh_modifier_metadata,
 )
 from .transactions import FBPTransaction
+from .user_storage import fbp_legacy_config_file, fbp_migrate_legacy_user_file, fbp_user_data_dir
 
 from .custom_effects import (
     find_custom_effect_group,
@@ -28496,12 +28498,13 @@ def fbp_apply_effect_stack_snapshot(
 
 
 def _fbp_user_preset_path():
-    try:
-        root = Path(bpy.utils.user_resource("CONFIG", path="frame_by_plane", create=True))
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        root = Path.home() / ".frame_by_plane"
-        root.mkdir(parents=True, exist_ok=True)
-    return root / "effect_presets.json"
+    root = fbp_user_data_dir("presets")
+    if not root:
+        # Without a user folder, presets last for this session only.
+        root = os.path.join(tempfile.gettempdir(), "frame_by_plane_presets")
+    path = Path(root) / "effect_presets.json"
+    fbp_migrate_legacy_user_file(path, fbp_legacy_config_file("effect_presets.json"))
+    return path
 
 
 def _fbp_user_preset_stamp(path):
@@ -29115,6 +29118,7 @@ class FBP_MT_EffectStackActions(Menu):
         clear_selection = layout.operator("fbp.set_effect_selection", text="Clear Effect Selection", icon="PROP_OFF")
         clear_selection.mode = "NONE"
         layout.separator()
+        layout.operator("fbp.apply_image_effects", text="Apply Effects", icon="RENDER_STILL")
         layout.operator("fbp.clear_effect_stack", text="Clear Stack", icon="TRASH")
 
 
