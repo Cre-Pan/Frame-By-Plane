@@ -18,6 +18,9 @@ import json
 from pathlib import Path
 
 import bpy
+from bpy.app.handlers import persistent
+
+from .registration import append_handler_once, remove_handlers_by_name
 
 
 _TRANSLATIONS_DIR = Path(__file__).resolve().parent / "translations"
@@ -155,10 +158,9 @@ def _on_blender_language_changed():
         fbp_apply_interface_language("AUTO")
 
 
-def register():
-    # Registered after the add-on preferences, so their saved value applies.
-    fbp_apply_interface_language()
+def _subscribe_language_change():
     try:
+        bpy.msgbus.clear_by_owner(_MSGBUS_OWNER)
         bpy.msgbus.subscribe_rna(
             key=(bpy.types.PreferencesView, "language"),
             owner=_MSGBUS_OWNER,
@@ -170,7 +172,21 @@ def register():
         pass
 
 
+@persistent
+def fbp_i18n_load_post(_dummy=None):
+    # Blender clears message bus subscriptions when a file is loaded.
+    _subscribe_language_change()
+
+
+def register():
+    # Registered after the add-on preferences, so their saved value applies.
+    fbp_apply_interface_language()
+    _subscribe_language_change()
+    append_handler_once(bpy.app.handlers.load_post, fbp_i18n_load_post, module_suffix="i18n")
+
+
 def unregister():
+    remove_handlers_by_name(bpy.app.handlers.load_post, "fbp_i18n_load_post", module_suffix="i18n")
     try:
         bpy.msgbus.clear_by_owner(_MSGBUS_OWNER)
     except (AttributeError, RuntimeError):
