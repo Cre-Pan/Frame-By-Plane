@@ -224,7 +224,22 @@ def main():
     for item in runs:
         state = "PASS" if item["passed"] else "FAIL"
         print(f"[{state}] {item['suite']}: {item['report']}")
+        if not item["passed"]:
+            _print_failures(Path(item["report"]))
     return 0 if combined["passed"] else 1
+
+
+
+def _print_failures(path):
+    """Echo failed tests to the console, so CI logs show them without the artifact."""
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    for result in report.get("results", ()):
+        if result.get("status") == "FAIL":
+            print(f"  FAIL {result.get('name')}: {result.get('error')}")
+            print("    " + str(result.get("traceback", "")).strip().replace("\n", "\n    "))
 
 
 if __name__ == "__main__":

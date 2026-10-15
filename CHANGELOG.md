@@ -38,7 +38,7 @@ Version bumped to 7.5.x (7.5.0 was an internal test build).
 
 ### Apply Effects
 
-- **Apply Effects to New Layer** (Effects stack menu) bakes a layer's image effects with Cycles into a PNG sequence in `assets/baked/`, then adds a copy of the layer that plays it, so the result shows in Solid view too. Mesh effects stay live on the copy; the original layer is hidden, not changed.
+- **Apply Effects** (Effects stack menu) bakes a layer's image effects with Cycles into PNG frames in `assets/baked/`, and the layer then plays them, so the result shows in Solid view too. The image effects are switched off, not removed, so the eye icons bring them back; mesh effects stay live. **Keep Original** puts the baked frames on a copy and hides the original instead.
 
 ### Languages
 
