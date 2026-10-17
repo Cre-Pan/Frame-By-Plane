@@ -30,6 +30,13 @@ All notable public changes to Frame By Plane are documented here.
 - Touching a **Gradient Light** handle no longer resets **Shadow Position** to zero.
 - **Wave Mask** and **Voronoi Mask** get an on-plane arrow to rotate the pattern.
 
+### Lattice (Deform Plane)
+
+- **Poses**: one-click deformations — Sway, Arch, Squash / Stretch, Taper, Shear, Bulge / Pinch, Wave, Flag and Curl — each added as a slider that can be keyframed. Sliders mix freely and go from -1 to 1, so Squash becomes Stretch and Sway bends either way. **Custom** adds an empty pose and opens the cage to shape it; the pose is shown alone until **Back to Plane**.
+- Presets land exactly on the cage surface (the B-spline cage no longer softens them depending on the grid density), and a preset that needs more control points refines the cage automatically.
+- Changing the **Cage Grid** keeps the current shape, the poses and their animation instead of resetting the cage. Reset and Camera Flatten rewrite only the rest cage; poses keep their deformation on top of it.
+- Fixed: refitting the cage after a grid change used the deformed plane's bounds, so the cage grew by the amount of the current deformation.
+
 ### Cleanup
 
 - Removed about 700 lines of code that nothing used: 31 helper functions (diagnostic snapshots, legacy timing probes, layer sorting and report helpers), two dead constants and three unused imports. The static orphan audit now lists only two Scrub Bar helpers, which are left as they are.

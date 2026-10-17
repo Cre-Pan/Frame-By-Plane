@@ -2591,6 +2591,112 @@ def test_gradient_handles_cycles(_module):
     return {"across": [round(value, 3) for value in across], "ring": [round(value, 3) for value in ring]}
 
 
+def test_lattice_poses_contract(_module):
+    """Deformation poses are exact, animatable and survive grid changes."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    poses_module = importlib.import_module(f"{PACKAGE}.lattice_poses")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Lattice Poses", width=32)
+    owned = [rig, *rig.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+    frame = scene.frame_current
+
+    def edges():
+        bpy.context.view_layer.update()
+        evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh()
+        try:
+            ys = [vertex.co.y for vertex in mesh.vertices]
+            top = [vertex.co.x for vertex in mesh.vertices if abs(vertex.co.y - max(ys)) < 1.0e-4]
+            return {
+                "top_x": sum(top) / len(top),
+                "height": max(ys) - min(ys),
+                "right": max(vertex.co.x for vertex in mesh.vertices),
+            }
+        finally:
+            evaluated.to_mesh_clear()
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            ops = bpy.ops.fbp
+            assert ops.add_effect(effect_id="LATTICE") == {"FINISHED"}
+            plane = geo._fbp_plane(rig)
+            helper = geo._fbp_lattice_object(rig)
+            width = edges()["right"] * 2.0
+            # Presets are exact on a B-spline cage: Sway moves the top edge by
+            # 0.35 of the width, Squash/Stretch scales the height by 0.75/1.25.
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="SWAY") == {"FINISHED"}
+            sway = poses_module.lattice_poses(helper)[0]
+            assert abs(edges()["top_x"] - 0.35 * width) < 1.0e-3, edges()
+            sway.value = -1.0
+            assert abs(edges()["top_x"] + 0.35 * width) < 1.0e-3, edges()
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="SQUASH") == {"FINISHED"}
+            squash = poses_module.lattice_poses(helper)[1]
+            sway.value = 0.0
+            assert abs(edges()["height"] - 0.75) < 1.0e-3, edges()
+            squash.value = -1.0
+            assert abs(edges()["height"] - 1.25) < 1.0e-3, edges()
+            squash.value = 0.0
+            # Keyframed slider, then a preset that needs a denser cage and an
+            # explicit grid change: shape and animation are kept.
+            sway.value = 0.5
+            sway.keyframe_insert("value", frame=1)
+            sway.value = 1.0
+            sway.keyframe_insert("value", frame=20)
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="WAVE") == {"FINISHED"}
+            assert helper.data.points_u >= 6, helper.data.points_u
+            poses_module.lattice_poses(helper)[2].value = 0.0
+            rig.fbp_lattice_grid_preset = "LOOPS_4"
+            _flush_fbp_safe_tasks()
+            assert [pose.name for pose in poses_module.lattice_poses(helper)] == ["Sway", "Squash / Stretch", "Wave"]
+            scene.frame_set(20)
+            assert abs(edges()["top_x"] - 0.35 * width) < 1.0e-3, edges()
+            scene.frame_set(1)
+            assert abs(edges()["top_x"] - 0.175 * width) < 1.0e-3, edges()
+            # Reset rewrites the rest cage; poses keep their deformation.
+            assert ops.reset_lattice_helper(rig_name=rig.name) == {"FINISHED"}
+            _flush_fbp_safe_tasks()
+            scene.frame_set(20)
+            assert abs(edges()["top_x"] - 0.35 * width) < 1.0e-3, edges()
+            for pose in poses_module.lattice_poses(helper):
+                pose.value = 0.0
+            helper.data.shape_keys.animation_data_clear()
+            # Custom pose: the cage edit lands in the pose, not in the rest cage.
+            rest_right = edges()["right"]
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="") == {"FINISHED"}
+            assert helper.mode == "EDIT"
+            points = helper.data.points
+            bpy.ops.lattice.select_all(action="DESELECT")
+            points[len(points) - 1].select = True
+            bpy.ops.transform.translate(value=(0.3, 0.0, 0.0))
+            assert ops.finish_lattice_editing(rig_name=rig.name) == {"FINISHED"}
+            assert helper.mode == "OBJECT" and helper.active_shape_key_index == 0
+            custom = poses_module.lattice_poses(helper)[-1]
+            assert edges()["right"] > rest_right + 0.05, (rest_right, edges())
+            custom.value = 0.0
+            assert abs(edges()["right"] - rest_right) < 1.0e-4
+            for pose in list(poses_module.lattice_poses(helper)):
+                assert ops.remove_lattice_pose(rig_name=rig.name, pose_name=pose.name) == {"FINISHED"}
+            assert helper.data.shape_keys is None
+            assert abs(edges()["right"] - rest_right) < 1.0e-4
+    finally:
+        scene.frame_set(frame)
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"width": round(width, 3)}
+
+
 def _effect_stage_materials(geo, rig):
     """Return ``{modifier name: [(socket, shader effect ids)]}`` for material inputs."""
     result = {}
@@ -4371,6 +4477,7 @@ def run_background():
             ("effect_remove_masked_uv_instance", test_effect_remove_masked_uv_instance),
             ("effect_controls_roundtrip", test_effect_controls_roundtrip),
             ("gradient_handles_cycles", test_gradient_handles_cycles),
+            ("lattice_poses_contract", test_lattice_poses_contract),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
