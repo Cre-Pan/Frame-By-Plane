@@ -23,6 +23,13 @@ All notable public changes to Frame By Plane are documented here.
 - **Restore Native Compositor** asks for confirmation, because it also deletes the editable Effects & Masks group.
 - The compositor no longer re-tags its tree on every scene update while the render opt-in is active, and two layer-remap dropdowns can no longer show garbled names.
 
+### On-plane controls
+
+- **Gradient Mask**, **Gradient Light** and **Tilt-Shift** handles now line up with the effect on non-square images. The blue and orange bars sat along the UV direction, so on a 16:9 image the visible transition ran at a different angle than the bars. Existing projects render exactly as before; only the handle positions are corrected.
+- **Radial Gradient Mask** has its own handles: the yellow handle is the circle centre (drag to move, rotate to turn the handles), blue marks the inner radius where the mask is fully opaque and orange the outer radius where it reaches zero. The radial gradient is now a true circle on non-square images instead of an ellipse stretched to the image proportions (the shorter side keeps its size).
+- Touching a **Gradient Light** handle no longer resets **Shadow Position** to zero.
+- **Wave Mask** and **Voronoi Mask** get an on-plane arrow to rotate the pattern.
+
 ### Cleanup
 
 - Removed about 700 lines of code that nothing used: 31 helper functions (diagnostic snapshots, legacy timing probes, layer sorting and report helpers), two dead constants and three unused imports. The static orphan audit now lists only two Scrub Bar helpers, which are left as they are.

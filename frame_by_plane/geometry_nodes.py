@@ -10573,6 +10573,7 @@ def _fbp_set_shader_node_values(
         FBP_EFFECT_NOISE_MASK,
         FBP_EFFECT_VORONOI_MASK,
         FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_GRADIENT_MASK,
     }
     # Aspect is derived from the current plane/UV contract rather than an RNA
     # property, so refresh it on every scoped update as well as full rebuilds.
@@ -10891,6 +10892,7 @@ def fbp_refresh_aspect_dependent_effect_grids(rig):
         FBP_EFFECT_NOISE_MASK,
         FBP_EFFECT_VORONOI_MASK,
         FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_GRADIENT_MASK,
     ):
         if generated_mask_id in active_ids:
             # No RNA property changed: an empty property set updates only the
@@ -22401,6 +22403,15 @@ def fbp_draw_effect_settings(
                     box,
                     "Select any side or corner handle, then use G to edit the image bounds.",
                     icon="EMPTY_ARROWS",
+                )
+            elif (
+                effect_id == FBP_EFFECT_GRADIENT_MASK
+                and str(getattr(rig, "fbp_gradient_mask_type", "LINEAR") or "LINEAR") == "RADIAL"
+            ):
+                hint_row(
+                    box,
+                    "Yellow: move and turn the circle · Blue: inner radius · Orange: outer radius.",
+                    icon="INFO",
                 )
             elif effect_id in {FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_TILT_SHIFT}:
                 hint_row(
