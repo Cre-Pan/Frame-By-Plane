@@ -165,6 +165,9 @@ CONTROL_SPECS = {
     "CROSSHATCH": ({"role": "LINES", "mode": "ANGLE", "angle": "fbp_crosshatch_rotation"},),
     "EMBOSS": ({"role": "LIGHT", "mode": "ANGLE", "angle": "fbp_emboss_angle"},),
     "GOBO_SHADOWS": ({"role": "PATTERN", "mode": "ANGLE", "angle": "fbp_gobo_rotation"},),
+    # Wave/Voronoi masks are aspect-corrected in the shader, so the arrow maps 1:1.
+    "WAVE_MASK": ({"role": "DIRECTION", "mode": "ANGLE", "angle": "fbp_wave_mask_angle"},),
+    "VORONOI_MASK": ({"role": "PATTERN", "mode": "ANGLE", "angle": "fbp_voronoi_mask_angle"},),
     "GRADIENT_MASK": (
         {"role": "CENTER", "mode": "RANGE_CENTER", "range_mode": "GRADIENT_RANGE"},
         {"role": "IN", "mode": "GRADIENT_RANGE"},
@@ -1174,10 +1177,129 @@ def _range_reference_length(rig):
     return max(min(width, height) * 0.5, 1.0e-6)
 
 
-def _set_range_endpoint_transforms(rig, in_control, out_control, in_uv, out_uv):
-    """Place UV-space range boundaries with the correct plane-local angle."""
-    in_location = _uv_to_local(rig, *in_uv)
-    out_location = _uv_to_local(rig, *out_uv)
+def _uv_axis_scales(rig):
+    """Return plane-local units per UV unit along X and Y."""
+    _plane, bounds, uv_bounds = _plane_and_mapping(rig)
+    span_u = float(uv_bounds[1]) - float(uv_bounds[0])
+    span_v = float(uv_bounds[3]) - float(uv_bounds[2])
+    sx = (float(bounds[1]) - float(bounds[0])) / span_u if abs(span_u) > 1.0e-8 else 1.0
+    sy = (float(bounds[3]) - float(bounds[2])) / span_v if abs(span_v) > 1.0e-8 else 1.0
+    return (sx if abs(sx) > 1.0e-8 else 1.0), (sy if abs(sy) > 1.0e-8 else 1.0)
+
+
+def _range_local_direction(rig, uv_angle):
+    """Return the on-plane direction and rate of a UV-space linear coordinate.
+
+    Range shaders project UV onto ``(cos a, sin a)``. On a non-square plane the
+    lines of equal value are perpendicular to that vector in UV space but not on
+    the plane, so the handles must follow the coordinate's real gradient:
+    ``(cos a / sx, sin a / sy)``. ``rate`` is coordinate units per local unit.
+    """
+    sx, sy = _uv_axis_scales(rig)
+    gx, gy = math.cos(uv_angle) / sx, math.sin(uv_angle) / sy
+    rate = max(math.hypot(gx, gy), 1.0e-9)
+    return (gx / rate, gy / rate), rate
+
+
+def _range_uv_angle(rig, dx, dy):
+    """Inverse of :func:`_range_local_direction` for a plane-local handle vector."""
+    sx, sy = _uv_axis_scales(rig)
+    return math.atan2(float(dy) * sy, float(dx) * sx)
+
+
+def _gradient_is_radial(rig):
+    return str(getattr(rig, "fbp_gradient_mask_type", "LINEAR") or "LINEAR").upper() == "RADIAL"
+
+
+def _radial_axis_factors(rig):
+    """Match the Gradient Mask shader's physical radial scale (shorter side = 1)."""
+    try:
+        from .geometry_nodes import _fbp_rig_plane_aspect
+        aspect = max(float(_fbp_rig_plane_aspect(rig) or 1.0), 1.0e-6)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        aspect = 1.0
+    return max(aspect, 1.0), max(1.0 / aspect, 1.0)
+
+
+def _radial_distance(rig, dx, dy):
+    """Unscaled radial gradient distance of a plane-local offset from Center."""
+    sx, sy = _uv_axis_scales(rig)
+    ax, ay = _radial_axis_factors(rig)
+    return math.hypot(float(dx) / sx * ax, float(dy) / sy * ay)
+
+
+def _place_radial_gradient_controls(rig, in_control, out_control, center_control):
+    """Radial mode: Center on the circle centre, IN/OUT on the inner/outer radius.
+
+    The shader evaluates r = 1 - 2 * Scale * distance and fades from
+    Position - Feather / 2 (outer, 0) to Position + Feather / 2 (inner, 1).
+    """
+    cx = float(getattr(rig, "fbp_gradient_mask_center_x", 0.5))
+    cy = float(getattr(rig, "fbp_gradient_mask_center_y", 0.5))
+    angle = float(getattr(rig, "fbp_gradient_mask_angle", 0.0))
+    position = float(getattr(rig, "fbp_gradient_mask_position", 0.5))
+    scale = max(float(getattr(rig, "fbp_gradient_mask_scale", 1.0)), 1.0e-6)
+    feather = max(float(getattr(rig, "fbp_gradient_mask_feather", 0.2)), 0.0)
+    inner = max((1.0 - position - feather * 0.5) / (2.0 * scale), 0.0)
+    outer = max((1.0 - position + feather * 0.5) / (2.0 * scale), inner + 1.0e-4)
+    ux, uy = math.cos(angle), math.sin(angle)
+    per_unit = max(_radial_distance(rig, ux, uy), 1.0e-9)
+    t_in, t_out = inner / per_unit, outer / per_unit
+    mx, my = _uv_to_local(rig, cx, cy)
+    changed = _set_range_endpoint_locals(
+        in_control, out_control,
+        (mx + ux * t_in, my + uy * t_in),
+        (mx + ux * t_out, my + uy * t_out),
+    )
+    if center_control is not None:
+        changed = _set_control_transform(
+            center_control,
+            location=(mx, my),
+            angle=angle,
+            scale_x=max(0.05, 2.0 * t_out / _range_reference_length(rig)),
+        ) or changed
+    return changed
+
+
+def _radial_gradient_from_controls(rig, control, role, in_control, out_control, set_driven):
+    """Inverse of :func:`_place_radial_gradient_controls` for one moved handle."""
+    if role == "CENTER":
+        cx, cy = _local_to_uv(rig, control.location.x, control.location.y)
+        set_driven("fbp_gradient_mask_center_x", cx)
+        set_driven("fbp_gradient_mask_center_y", cy)
+        set_driven("fbp_gradient_mask_angle", float(control.rotation_euler.z))
+        return
+    mx, my = _uv_to_local(
+        rig,
+        float(getattr(rig, "fbp_gradient_mask_center_x", 0.5)),
+        float(getattr(rig, "fbp_gradient_mask_center_y", 0.5)),
+    )
+    scale = max(float(getattr(rig, "fbp_gradient_mask_scale", 1.0)), 1.0e-6)
+    radii = sorted(
+        _radial_distance(rig, float(item.location.x) - mx, float(item.location.y) - my)
+        for item in (in_control, out_control)
+    )
+    offset_x, offset_y = float(control.location.x) - mx, float(control.location.y) - my
+    if math.hypot(offset_x, offset_y) > 1.0e-6:
+        set_driven("fbp_gradient_mask_angle", math.atan2(offset_y, offset_x))
+    set_driven("fbp_gradient_mask_feather", 2.0 * scale * (radii[1] - radii[0]))
+    set_driven("fbp_gradient_mask_position", 1.0 - scale * (radii[0] + radii[1]))
+
+
+def _set_range_endpoints_around(rig, in_control, out_control, mid_uv, uv_angle, span):
+    """Place IN/OUT across ``span`` coordinate units centred on ``mid_uv``."""
+    (dx, dy), rate = _range_local_direction(rig, uv_angle)
+    mx, my = _uv_to_local(rig, *mid_uv)
+    half = max(float(span), 0.0) / rate * 0.5
+    return _set_range_endpoint_locals(
+        in_control, out_control,
+        (mx - dx * half, my - dy * half),
+        (mx + dx * half, my + dy * half),
+    )
+
+
+def _set_range_endpoint_locals(in_control, out_control, in_location, out_location):
+    """Place plane-local range boundaries facing each other."""
     local_angle = math.atan2(
         float(out_location[1]) - float(in_location[1]),
         float(out_location[0]) - float(in_location[0]),
@@ -1717,6 +1839,10 @@ def sync_controls_from_properties(rig, effect_id, *, create=False):
         ):
             return changed
         mode = _range_mode_for_effect(effect_id)
+        if mode == "GRADIENT_RANGE" and _gradient_is_radial(rig):
+            return _place_radial_gradient_controls(
+                rig, in_control, out_control, center_control
+            ) or changed
         if mode == "GRADIENT_RANGE":
             cx = float(getattr(rig, "fbp_gradient_mask_center_x", 0.5))
             cy = float(getattr(rig, "fbp_gradient_mask_center_y", 0.5))
@@ -1724,15 +1850,12 @@ def sync_controls_from_properties(rig, effect_id, *, create=False):
             position = float(getattr(rig, "fbp_gradient_mask_position", 0.5))
             scale = max(float(getattr(rig, "fbp_gradient_mask_scale", 1.0)), 1.0e-6)
             feather = max(float(getattr(rig, "fbp_gradient_mask_feather", 0.2)), 0.0)
-            dx, dy = math.cos(angle), math.sin(angle)
-            inv_scale = 1.0 / scale
-            mx = cx + dx * (position - 0.5) * inv_scale
-            my = cy + dy * (position - 0.5) * inv_scale
-            half = feather * inv_scale * 0.5
-            changed = _set_range_endpoint_transforms(
+            # t = Scale * dot(UV - Center, dir) + .5 reaches Position here.
+            offset = (position - 0.5) / scale
+            changed = _set_range_endpoints_around(
                 rig, in_control, out_control,
-                (mx - dx * half, my - dy * half),
-                (mx + dx * half, my + dy * half),
+                (cx + math.cos(angle) * offset, cy + math.sin(angle) * offset),
+                angle, feather / scale,
             ) or changed
         elif mode == "GRADIENT_LIGHT_RANGE":
             angle = float(getattr(rig, "fbp_gradient_light_angle", 0.0))
@@ -1740,27 +1863,20 @@ def sync_controls_from_properties(rig, effect_id, *, create=False):
             softness = max(float(getattr(rig, "fbp_gradient_softness", 0.2)), 0.001)
             center_x = float(getattr(rig, "fbp_gradient_light_center_x", 0.5))
             center_y = float(getattr(rig, "fbp_gradient_light_center_y", 0.5))
-            dx, dy = math.cos(angle), math.sin(angle)
-            mx = center_x + dx * position
-            my = center_y + dy * position
-            half = softness * 0.5
-            changed = _set_range_endpoint_transforms(
+            changed = _set_range_endpoints_around(
                 rig, in_control, out_control,
-                (mx - dx * half, my - dy * half),
-                (mx + dx * half, my + dy * half),
+                (center_x + math.cos(angle) * position, center_y + math.sin(angle) * position),
+                angle, softness,
             ) or changed
         elif mode == "TILT_RANGE":
             position = float(getattr(rig, "fbp_tilt_shift_position", 0.5))
             width = max(float(getattr(rig, "fbp_tilt_shift_width", 0.25)), 0.001)
-            band_angle = float(getattr(rig, "fbp_tilt_shift_angle", 0.0))
-            normal_angle = band_angle + math.pi * 0.5
-            nx, ny = math.cos(normal_angle), math.sin(normal_angle)
-            mx = 0.5 + nx * (position - 0.5)
-            my = 0.5 + ny * (position - 0.5)
-            changed = _set_range_endpoint_transforms(
+            normal_angle = float(getattr(rig, "fbp_tilt_shift_angle", 0.0)) + math.pi * 0.5
+            offset = position - 0.5
+            changed = _set_range_endpoints_around(
                 rig, in_control, out_control,
-                (mx - nx * width * 0.5, my - ny * width * 0.5),
-                (mx + nx * width * 0.5, my + ny * width * 0.5),
+                (0.5 + math.cos(normal_angle) * offset, 0.5 + math.sin(normal_angle) * offset),
+                normal_angle, width,
             ) or changed
         changed = _sync_range_center_from_endpoints(rig, effect_id, controls) or changed
     return changed
@@ -2070,7 +2186,15 @@ def sync_properties_from_control(control):
         in_control, out_control = _range_controls(rig, effect_id)
         if in_control is None or out_control is None:
             return False
-        if mode == "RANGE_CENTER":
+        radial = pair_mode == "GRADIENT_RANGE" and _gradient_is_radial(rig)
+        if radial:
+            _radial_gradient_from_controls(
+                rig, control, role, in_control, out_control, set_driven
+            )
+            _place_radial_gradient_controls(
+                rig, in_control, out_control, _range_center_control(rig, effect_id)
+            )
+        elif mode == "RANGE_CENTER":
             reference = _range_reference_length(rig)
             half_length = max(float(control.scale.x) * reference * 0.5, 1.0e-6)
             angle = float(control.rotation_euler.z)
@@ -2087,7 +2211,7 @@ def sync_properties_from_control(control):
             len(stored) >= 6 and len(current) >= 6
             and abs(float(current[5]) - float(stored[5])) > 1.0e-6
         )
-        if mode != "RANGE_CENTER" and rotation_changed and pair_mode in {"GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE", "TILT_RANGE"}:
+        if not radial and mode != "RANGE_CENTER" and rotation_changed and pair_mode in {"GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE", "TILT_RANGE"}:
             midpoint_x = (float(in_control.location.x) + float(out_control.location.x)) * 0.5
             midpoint_y = (float(in_control.location.y) + float(out_control.location.y)) * 0.5
             half_length = max(
@@ -2109,40 +2233,38 @@ def sync_properties_from_control(control):
                 location=(midpoint_x + dx, midpoint_y + dy),
                 angle=angle,
             )
-        u1, v1 = _local_to_uv(rig, in_control.location.x, in_control.location.y)
-        u2, v2 = _local_to_uv(rig, out_control.location.x, out_control.location.y)
-        if pair_mode == "TILT_RANGE":
-            dx, dy = u2 - u1, v2 - v1
-            normal_angle = math.atan2(dy, dx)
-            band_angle = normal_angle - math.pi * 0.5
-            nx, ny = math.cos(normal_angle), math.sin(normal_angle)
-            mx, my = (u1 + u2) * 0.5, (v1 + v2) * 0.5
-            position = 0.5 + (mx - 0.5) * nx + (my - 0.5) * ny
-            set_driven("fbp_tilt_shift_position", position)
-            set_driven("fbp_tilt_shift_width", max(math.hypot(dx, dy), 0.001))
-            set_driven("fbp_tilt_shift_angle", band_angle)
-        elif pair_mode == "GRADIENT_LIGHT_RANGE":
-            dx, dy = u2 - u1, v2 - v1
-            angle = math.atan2(dy, dx)
-            mx, my = (u1 + u2) * 0.5, (v1 + v2) * 0.5
-            set_driven("fbp_gradient_light_center_x", mx)
-            set_driven("fbp_gradient_light_center_y", my)
-            set_driven("fbp_gradient_light_angle", angle)
-            set_driven("fbp_gradient_shadow_position", 0.0)
-            set_driven("fbp_gradient_softness", max(math.hypot(dx, dy), 0.001))
-        else:
-            dx, dy = u2 - u1, v2 - v1
-            angle = math.atan2(dy, dx)
-            scale = max(float(getattr(rig, "fbp_gradient_mask_scale", 1.0)), 1.0e-6)
-            position = float(getattr(rig, "fbp_gradient_mask_position", 0.5))
-            mx, my = (u1 + u2) * 0.5, (v1 + v2) * 0.5
-            # Preserve the Position slider. The visible transition midpoint is
-            # offset from Center by (Position - .5) / Scale in shader space.
-            set_driven("fbp_gradient_mask_center_x", mx - math.cos(angle) * (position - 0.5) / scale)
-            set_driven("fbp_gradient_mask_center_y", my - math.sin(angle) * (position - 0.5) / scale)
-            set_driven("fbp_gradient_mask_angle", angle)
-            set_driven("fbp_gradient_mask_feather", math.hypot(dx, dy) * scale)
-        _sync_range_center_from_endpoints(rig, effect_id)
+        if not radial:
+            # Work from the plane-local handle vector: its direction is the
+            # coordinate's on-plane gradient, its length the transition span.
+            x1, y1 = float(in_control.location.x), float(in_control.location.y)
+            x2, y2 = float(out_control.location.x), float(out_control.location.y)
+            uv_angle = _range_uv_angle(rig, x2 - x1, y2 - y1)
+            _direction, rate = _range_local_direction(rig, uv_angle)
+            span = rate * math.hypot(x2 - x1, y2 - y1)
+            mx, my = _local_to_uv(rig, (x1 + x2) * 0.5, (y1 + y2) * 0.5)
+            ux, uy = math.cos(uv_angle), math.sin(uv_angle)
+            if pair_mode == "TILT_RANGE":
+                set_driven("fbp_tilt_shift_position", 0.5 + (mx - 0.5) * ux + (my - 0.5) * uy)
+                set_driven("fbp_tilt_shift_width", max(span, 0.001))
+                set_driven("fbp_tilt_shift_angle", uv_angle - math.pi * 0.5)
+            elif pair_mode == "GRADIENT_LIGHT_RANGE":
+                # Keep the Shadow Position slider: the handles' midpoint sits at
+                # Center + direction * Shadow Position (see the forward mapping).
+                position = float(getattr(rig, "fbp_gradient_shadow_position", 0.0))
+                set_driven("fbp_gradient_light_center_x", mx - ux * position)
+                set_driven("fbp_gradient_light_center_y", my - uy * position)
+                set_driven("fbp_gradient_light_angle", uv_angle)
+                set_driven("fbp_gradient_softness", max(span, 0.001))
+            else:
+                scale = max(float(getattr(rig, "fbp_gradient_mask_scale", 1.0)), 1.0e-6)
+                position = float(getattr(rig, "fbp_gradient_mask_position", 0.5))
+                # Preserve the Position slider. The visible transition midpoint is
+                # offset from Center by (Position - .5) / Scale in shader space.
+                set_driven("fbp_gradient_mask_center_x", mx - ux * (position - 0.5) / scale)
+                set_driven("fbp_gradient_mask_center_y", my - uy * (position - 0.5) / scale)
+                set_driven("fbp_gradient_mask_angle", uv_angle)
+                set_driven("fbp_gradient_mask_feather", span * scale)
+            _sync_range_center_from_endpoints(rig, effect_id)
 
     if changed_properties:
         _refresh_effect_from_control(rig, effect_id, changed_properties)

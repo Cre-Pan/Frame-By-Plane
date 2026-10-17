@@ -423,33 +423,6 @@ def fbp_warn_once(key, message, exc=None, *, event="", context=None):
     return True
 
 
-def fbp_recent_diagnostics(limit=50, *, minimum_level="DEBUG"):
-    """Return detached diagnostic records, newest last."""
-    try:
-        count = max(0, min(int(limit), _FBP_DIAGNOSTIC_LIMIT))
-    except (TypeError, ValueError):
-        count = 50
-    threshold = _FBP_DIAGNOSTIC_LEVELS.get(str(minimum_level or "DEBUG").upper(), 10)
-    records = [
-        dict(record)
-        for record in tuple(_FBP_DIAGNOSTICS)
-        if _FBP_DIAGNOSTIC_LEVELS.get(str(record.get("level", "INFO")), 20) >= threshold
-    ]
-    return tuple(records[-count:] if count else ())
-
-
-def fbp_diagnostics_summary():
-    """Return exact counts for Project Health reports."""
-    counts = {level.lower(): 0 for level in _FBP_DIAGNOSTIC_LEVELS}
-    for record in tuple(_FBP_DIAGNOSTICS):
-        level = str(record.get("level", "INFO") or "INFO").lower()
-        counts[level] = int(counts.get(level, 0)) + 1
-    counts["total"] = len(_FBP_DIAGNOSTICS)
-    counts["capacity"] = _FBP_DIAGNOSTIC_LIMIT
-    counts["dropped"] = max(0, _FBP_DIAGNOSTIC_SEQUENCE - len(_FBP_DIAGNOSTICS))
-    return counts
-
-
 def fbp_clear_diagnostics():
     """Clear runtime diagnostics without touching other transient state."""
     global _FBP_DIAGNOSTIC_SEQUENCE

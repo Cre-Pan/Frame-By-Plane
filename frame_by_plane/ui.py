@@ -33,6 +33,7 @@ from .render_output import (
 from .compositor import (
     FBP_COMPOSITOR_EFFECT_ITEMS,
     FBP_COMPOSITOR_TAG_LABELS,
+    fbp_compositor_needs_refresh,
 )
 from .runtime import fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
 from .feature_scope import fbp_feature_enabled
@@ -3438,6 +3439,24 @@ class FBP_MT_CompositorEffectListActions(Menu):
         remove.action = "REMOVE"
 
 
+def _fbp_draw_compositor_setup_row(layout, scene):
+    """On/off, Refresh and Live Update for the managed compositor setup."""
+    row = layout.row(align=True)
+    row.scale_y = 1.1
+    row.prop(
+        scene, "fbp_experimental_compositor",
+        text="Compositor", toggle=True, icon='NODE_COMPOSITING',
+    )
+    refresh = row.row(align=True)
+    # Highlight Refresh while edits are waiting or nothing has been built yet.
+    refresh.alert = bool(
+        fbp_compositor_needs_refresh(scene)
+        or not bool(getattr(scene, "fbp_compositor_enabled", False))
+    )
+    refresh.operator("fbp.compositor_sync", text="Refresh", icon='FILE_REFRESH')
+    row.prop(scene, "fbp_compositor_live_update", text="", toggle=True, icon='AUTO')
+
+
 def _fbp_draw_preview_scope_badge(layout, label):
     """Draw the shared, non-marketing Preview scope notice and diagnostics."""
     badge = layout.row(align=True)
@@ -3488,6 +3507,7 @@ class FBP_PT_OutputCompositor(Panel):
             )
             return
 
+        _fbp_draw_compositor_setup_row(content, sc)
         section_header(content, "Render", icon='IMAGE_ALPHA')
         render_opt_in = content.row(align=False)
         render_opt_in.scale_y = 1.1
@@ -3798,6 +3818,7 @@ class FBP_PT_CompositorNodeSidebar(Panel):
                 icon='NODE_COMPOSITING',
             )
             return
+        _fbp_draw_compositor_setup_row(layout, scene)
         render_opt_in = layout.row(align=False)
         render_opt_in.prop(
             scene,
