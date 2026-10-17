@@ -3733,15 +3733,20 @@ def _fbp_sync_lattice_detail_modifier(rig, plane, lattice_modifier=None):
 
 
 def _fbp_lattice_local_bounds(plane):
-    """Return stable undeformed local bounds for the image plane."""
+    """Return stable undeformed local bounds for the image plane.
+
+    Read the mesh data first: ``Object.bound_box`` reports the evaluated
+    object, so a deformed cage (or a Thickness effect) would otherwise refit
+    the Lattice around its own deformation.
+    """
     try:
-        points = [Vector(point) for point in tuple(plane.bound_box or ())]
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        points = [vertex.co.copy() for vertex in plane.data.vertices]
+    except FBP_DATA_ERRORS:
         points = []
     if not points:
         try:
-            points = [vertex.co.copy() for vertex in plane.data.vertices]
-        except FBP_DATA_ERRORS:
+            points = [Vector(point) for point in tuple(plane.bound_box or ())]
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             points = []
     if not points:
         points = [Vector((-0.5, -0.5, 0.0)), Vector((0.5, 0.5, 0.0))]
@@ -3833,22 +3838,21 @@ def _fbp_update_lattice_data(rig, helper):
     data = getattr(helper, "data", None) if helper else None
     if data is None:
         return False
-    topology_changed = False
     # Frame By Plane layers are planar, therefore the cage uses one depth
     # layer. Each visible grid intersection is one selectable control point: a
     # 2 × 2 cage has exactly four corner points rather than front/back pairs.
-    values = (
-        ("points_u", max(2, int(getattr(rig, "fbp_lattice_points_u", 4) or 4))),
-        ("points_v", max(2, int(getattr(rig, "fbp_lattice_points_v", 4) or 4))),
-        ("points_w", 1),
-    )
-    for attribute, value in values:
-        try:
-            if int(getattr(data, attribute)) != value:
-                setattr(data, attribute, value)
-                topology_changed = True
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
+    # Resizing resamples the current shape and its poses instead of resetting
+    # them (Blender also locks the resolution while poses exist).
+    try:
+        from .lattice_poses import resize_preserving_shape
+        topology_changed = resize_preserving_shape(
+            helper,
+            max(2, int(getattr(rig, "fbp_lattice_points_u", 4) or 4)),
+            max(2, int(getattr(rig, "fbp_lattice_points_v", 4) or 4)),
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not resize the Lattice cage", exc)
+        topology_changed = False
     interpolation = (
         "KEY_LINEAR"
         if _fbp_lattice_mode(rig) == "CAMERA_FLATTEN"
@@ -3886,23 +3890,22 @@ def _fbp_reset_lattice_points(helper):
         points_u = max(2, int(data.points_u))
         points_v = max(2, int(data.points_v))
         points_w = max(1, int(data.points_w))
-        points = data.points
+        coordinates = [0.0] * (points_u * points_v * points_w * 3)
         for u_index in range(points_u):
-            u = u_index / float(points_u - 1)
-            x = u - 0.5
+            x = u_index / float(points_u - 1) - 0.5
             for v_index in range(points_v):
-                v = v_index / float(points_v - 1)
-                y = v - 0.5
+                y = v_index / float(points_v - 1) - 0.5
                 for w_index in range(points_w):
                     z = 0.0 if points_w == 1 else (w_index / float(points_w - 1)) - 0.5
                     index = _fbp_lattice_point_index(
                         u_index, v_index, w_index, points_u, points_v
-                    )
-                    points[index].co_deform = (x, y, z)
-        data.update_tag()
-        helper.update_tag(refresh={'DATA'})
+                    ) * 3
+                    coordinates[index:index + 3] = (x, y, z)
+        # Poses keep their own deformation on top of the reset rest cage.
+        from .lattice_poses import write_rest_cage
+        write_rest_cage(helper, coordinates)
         return True
-    except FBP_DATA_ERRORS:
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, IndexError):
         return False
 
 
@@ -4040,7 +4043,9 @@ def _fbp_apply_lattice_camera_flatten(rig, *, scene=None, force=False):
 
         # One bulk RNA write replaces thousands of individual co_deform
         # assignments and is the dominant Camera Flatten performance gain.
-        points.foreach_set("co_deform", coordinates)
+        # With poses the Basis key is rewritten too (Blender evaluates keys).
+        from .lattice_poses import write_rest_cage
+        write_rest_cage(helper, coordinates)
 
         helper[_FBP_LATTICE_SCHEMA_KEY] = _FBP_LATTICE_SCHEMA_VERSION
         helper[_FBP_LATTICE_MODE_KEY] = "CAMERA_FLATTEN"
@@ -4197,7 +4202,7 @@ def _fbp_apply_lattice_effect(rig, *, select=False):
         resolution_changed = _fbp_update_lattice_data(rig, helper)
         if created_helper or resolution_changed:
             helper.matrix_world = _fbp_lattice_fit_matrix(plane)
-            if not _fbp_reset_lattice_points(helper):
+            if created_helper and not _fbp_reset_lattice_points(helper):
                 raise RuntimeError("Could not initialize the Lattice control points")
             _fbp_stabilize_lattice_helper(helper)
 
@@ -10573,6 +10578,7 @@ def _fbp_set_shader_node_values(
         FBP_EFFECT_NOISE_MASK,
         FBP_EFFECT_VORONOI_MASK,
         FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_GRADIENT_MASK,
     }
     # Aspect is derived from the current plane/UV contract rather than an RNA
     # property, so refresh it on every scoped update as well as full rebuilds.
@@ -10891,6 +10897,7 @@ def fbp_refresh_aspect_dependent_effect_grids(rig):
         FBP_EFFECT_NOISE_MASK,
         FBP_EFFECT_VORONOI_MASK,
         FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_GRADIENT_MASK,
     ):
         if generated_mask_id in active_ids:
             # No RNA property changed: an empty property set updates only the
@@ -22402,6 +22409,15 @@ def fbp_draw_effect_settings(
                     "Select any side or corner handle, then use G to edit the image bounds.",
                     icon="EMPTY_ARROWS",
                 )
+            elif (
+                effect_id == FBP_EFFECT_GRADIENT_MASK
+                and str(getattr(rig, "fbp_gradient_mask_type", "LINEAR") or "LINEAR") == "RADIAL"
+            ):
+                hint_row(
+                    box,
+                    "Yellow: move and turn the circle · Blue: inner radius · Orange: outer radius.",
+                    icon="INFO",
+                )
             elif effect_id in {FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_TILT_SHIFT}:
                 hint_row(
                     box,
@@ -22960,9 +22976,41 @@ def fbp_draw_effect_settings(
             reset_warning = grid_box.row(align=False)
             reset_warning.enabled = False
             reset_warning.label(
-                text="Changing the Cage Grid rebuilds its topology and resets point edits",
+                text="Changing the Cage Grid keeps the current shape and poses",
                 icon="BLANK1",
             )
+
+        def _draw_lattice_poses(target):
+            from .lattice_poses import PRESETS, lattice_poses
+            poses_box = target.box()
+            title = poses_box.row(align=False)
+            title.label(text="Poses", icon="SHAPEKEY_DATA")
+            poses = lattice_poses(helper) if helper is not None else ()
+            body = poses_box.column(align=True)
+            body.enabled = lattice_ready
+            for pose in poses:
+                row = body.row(align=True)
+                # A plain slider: hover and press I to keyframe the deformation.
+                row.prop(pose, "value", text=pose.name, slider=True)
+                edit_pose = row.operator("fbp.edit_lattice_pose", text="", icon="EDITMODE_HLT")
+                edit_pose.rig_name = rig_name
+                edit_pose.pose_name = pose.name
+                remove_pose = row.operator("fbp.remove_lattice_pose", text="", icon="X")
+                remove_pose.rig_name = rig_name
+                remove_pose.pose_name = pose.name
+            if not poses:
+                hint = poses_box.row(align=False)
+                hint.enabled = False
+                hint.label(text="Add a pose, then keyframe its slider to animate the deformation", icon="KEYFRAME_HLT")
+            add_grid = poses_box.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
+            add_grid.enabled = lattice_ready
+            for preset_id, (label, icon, _description, _function, _minimum) in PRESETS.items():
+                add = add_grid.operator("fbp.add_lattice_pose", text=label, icon=icon)
+                add.rig_name = rig_name
+                add.preset = preset_id
+            custom = add_grid.operator("fbp.add_lattice_pose", text="Custom", icon="EDITMODE_HLT")
+            custom.rig_name = rig_name
+            custom.preset = ""
 
         if lattice_mode == "CAMERA_FLATTEN":
             camera_box = box.box()
@@ -23010,6 +23058,7 @@ def fbp_draw_effect_settings(
                     text="Perspective baked: the correction now follows local layer animation",
                     icon="CHECKMARK",
                 )
+            _draw_lattice_poses(box)
             _draw_lattice_grid_controls(box, title="Planar Cage")
     elif effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
         _fbp_draw_effect_property(
@@ -33136,7 +33185,162 @@ class FBP_OT_FinishLatticeEditing(Operator):
         except FBP_DATA_ERRORS as exc:
             self.report({'ERROR'}, f"Could not return to the layer: {exc}")
             return {'CANCELLED'}
+        helper = _fbp_lattice_object(rig)
+        if helper is not None and _fbp_lattice_exit_edit(context, helper):
+            # A pose edit ends here: later cage edits shape the rest cage again.
+            from .lattice_poses import set_active_pose
+            try:
+                set_active_pose(helper, "")
+            except FBP_DATA_ERRORS:
+                pass
         return {'FINISHED'}
+
+
+def _fbp_lattice_exit_edit(context, helper):
+    """Leave Lattice Edit Mode on the cage itself, whatever object is active.
+
+    Edits made in Edit Mode reach the active shape key only on exit, so this
+    must run before the active pose changes or a pose is added or removed.
+    """
+    if helper is None or str(getattr(helper, "mode", "OBJECT") or "OBJECT") == "OBJECT":
+        return True
+    # mode_set acts on the active object: make the cage active both in the
+    # View Layer and in any context override the caller runs under.
+    view_layer = getattr(context, "view_layer", None) or bpy.context.view_layer
+    previous = view_layer.objects.active
+    try:
+        view_layer.objects.active = helper
+        with bpy.context.temp_override(active_object=helper, object=helper, edit_object=helper):
+            bpy.ops.object.mode_set(mode="OBJECT")
+    except FBP_DATA_ERRORS:
+        return False
+    finally:
+        try:
+            if previous is not None and previous != helper:
+                view_layer.objects.active = previous
+        except FBP_DATA_ERRORS:
+            pass
+    return str(getattr(helper, "mode", "OBJECT") or "OBJECT") == "OBJECT"
+
+
+def _fbp_lattice_pose_rig(operator, context):
+    """Resolve the layer for a pose operator; poses need a Freeform cage."""
+    rig = bpy.data.objects.get(str(operator.rig_name or ""))
+    if rig is None or not _fbp_apply_lattice_effect(rig, select=False):
+        operator.report({'ERROR'}, _fbp_last_lattice_error(rig) or "Could not create the Lattice cage")
+        return None, None
+    if _fbp_lattice_mode(rig) == "CAMERA_FLATTEN":
+        operator.report({'WARNING'}, "Poses work on a Freeform cage: Bake or Freeze Camera Flatten first")
+        return None, None
+    helper = _fbp_lattice_object(rig)
+    if helper is None:
+        operator.report({'ERROR'}, "The Lattice cage is missing")
+        return None, None
+    return rig, helper
+
+
+class FBP_OT_AddLatticePose(Operator):
+    bl_idname = "fbp.add_lattice_pose"
+    bl_label = "Add Deformation Pose"
+    bl_description = "Add an animatable deformation slider. Presets shape it for you; Custom starts from the rest cage and opens it for editing. Sliders mix and can be keyframed"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    preset: StringProperty(name="Preset", description="Deformation preset; empty for a custom pose", default="", options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        from .lattice_poses import PRESETS, add_pose, preset_minimum_points, set_active_pose
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        # Commit the current edit to the key it belongs to first.
+        if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
+            return {'CANCELLED'}
+        rig, helper = _fbp_lattice_pose_rig(self, context)
+        if helper is None:
+            return {'CANCELLED'}
+        preset = str(self.preset or "").upper()
+        if preset and preset not in PRESETS:
+            return {'CANCELLED'}
+        need_u, need_v = preset_minimum_points(preset) if preset else (2, 2)
+        points_u = int(getattr(rig, "fbp_lattice_points_u", 4) or 4)
+        points_v = int(getattr(rig, "fbp_lattice_points_v", 4) or 4)
+        if points_u < need_u or points_v < need_v:
+            # A curve cannot be expressed with too few control points: refine
+            # the cage first (existing shape and poses are resampled).
+            loops_u, loops_v = _fbp_lattice_grid_loops(rig)
+            loops_u, loops_v = max(loops_u, need_u - 2), max(loops_v, need_v - 2)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_grid_preset", "CUSTOM")
+            fbp_set_rna_property_silent(rig, "fbp_lattice_link_loops", loops_u == loops_v)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_custom_loops_u", loops_u)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_custom_loops_v", loops_v)
+            _fbp_apply_lattice_grid_settings(rig)
+            if not _fbp_apply_lattice_effect(rig, select=False):
+                return {'CANCELLED'}
+            helper = _fbp_lattice_object(rig)
+            self.report({'INFO'}, f"Cage refined to {loops_u} × {loops_v} loops for a smooth {PRESETS[preset][0]}")
+        try:
+            pose = add_pose(helper, preset)
+        except FBP_DATA_ERRORS as exc:
+            self.report({'ERROR'}, f"Could not add the pose: {exc}")
+            return {'CANCELLED'}
+        _fbp_invalidate_live_lattice_cache()
+        if not preset:
+            set_active_pose(helper, pose.name)
+            if "FINISHED" not in bpy.ops.fbp.edit_lattice_helper(rig_name=rig.name):
+                set_active_pose(helper, "")
+            return {'FINISHED'}
+        set_active_pose(helper, "")
+        fbp_focus_lattice_ui(context, rig)
+        return {'FINISHED'}
+
+
+class FBP_OT_EditLatticePose(Operator):
+    bl_idname = "fbp.edit_lattice_pose"
+    bl_label = "Edit Pose"
+    bl_description = "Shape this pose in the cage: it is shown alone at full strength until you press Done"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    pose_name: StringProperty(name="Pose", options={'HIDDEN'})
+
+    def execute(self, context):
+        from .lattice_poses import set_active_pose
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        # Commit the current edit to the key it belongs to first.
+        if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
+            return {'CANCELLED'}
+        rig, helper = _fbp_lattice_pose_rig(self, context)
+        if helper is None or not set_active_pose(helper, self.pose_name):
+            return {'CANCELLED'}
+        if "FINISHED" not in bpy.ops.fbp.edit_lattice_helper(rig_name=rig.name):
+            set_active_pose(helper, "")
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class FBP_OT_RemoveLatticePose(Operator):
+    bl_idname = "fbp.remove_lattice_pose"
+    bl_label = "Remove Pose"
+    bl_description = "Remove this deformation pose and its animation"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    pose_name: StringProperty(name="Pose", options={'HIDDEN'})
+
+    def execute(self, context):
+        from .lattice_poses import remove_pose
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        helper = _fbp_lattice_object(rig) if rig is not None else None
+        if helper is None:
+            return {'CANCELLED'}
+        if not _fbp_lattice_exit_edit(context, helper):
+            return {'CANCELLED'}
+        try:
+            removed = remove_pose(helper, self.pose_name)
+        except FBP_DATA_ERRORS as exc:
+            self.report({'ERROR'}, f"Could not remove the pose: {exc}")
+            return {'CANCELLED'}
+        _fbp_invalidate_live_lattice_cache()
+        return {'FINISHED'} if removed else {'CANCELLED'}
 
 
 class FBP_OT_RefitLatticeHelper(Operator):
@@ -33314,6 +33518,9 @@ classes = (
     FBP_OT_ResetLatticeHelper,
     FBP_OT_EditLatticeHelper,
     FBP_OT_FinishLatticeEditing,
+    FBP_OT_AddLatticePose,
+    FBP_OT_EditLatticePose,
+    FBP_OT_RemoveLatticePose,
     FBP_OT_RefitLatticeHelper,
     FBP_OT_LoadEffectImage,
     FBP_OT_ClearEffectImage,
