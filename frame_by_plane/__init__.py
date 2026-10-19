@@ -25,7 +25,7 @@ _MODULE_NAMES = (
     "safe_tasks", "transactions", "generation_transaction", "project_schema", "fbp_dirty", "lifecycle", "effect_schema", "effect_instances", "object_masks",
     # Register Object properties before the Effects UI/handler. On unregister
     # the reverse order removes the frame handler before deleting its RNA props.
-    "camera_output", "properties", "i18n", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "timeline_backport", "grease_pencil_scrub", "grease_pencil_bridge", "gp_vertex_colors", "layer_sets", "grease_pencil_workflow", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "scene_sync", "persistence",
+    "camera_output", "properties", "i18n", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "timeline_backport", "grease_pencil_scrub", "grease_pencil_bridge", "gp_vertex_colors", "layer_sets", "grease_pencil_workflow", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "solo_overlay", "scene_sync", "persistence",
     "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural", "effect_bake",
@@ -36,7 +36,7 @@ if _IS_BACKGROUND:
     # background process. The dedicated FBP render child goes further and omits
     # authoring and import modules; operator_render registers only
     # its lightweight render-state validator in that process.
-    _BACKGROUND_SKIP_MODULES = {"feedback", "live_tutorial", "grease_pencil_scrub", "ui", "viewport_pie", "tooltips"}
+    _BACKGROUND_SKIP_MODULES = {"feedback", "live_tutorial", "solo_overlay", "grease_pencil_scrub", "ui", "viewport_pie", "tooltips"}
     if _IS_FBP_RENDER_CHILD:
         _BACKGROUND_SKIP_MODULES.update({
             "procreate_import", "layered_import", "importer",

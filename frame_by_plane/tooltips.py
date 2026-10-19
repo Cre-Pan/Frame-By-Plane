@@ -627,6 +627,9 @@ EXACT_TOOLTIPS = {
     "fbp.split_selected_images_to_new_plane": (
         "Move the checked frames from the active sequence into a newly created Frame By Plane rig at the same transform. Both resulting native sequences are rebuilt safely."
     ),
+    "fbp.split_sequence_to_planes": (
+        "Turn every frame of the selected layer into its own Frame By Plane layer at the same transform. Each new plane keeps its own copy of the materials, effects and masks; the original keeps the first frame."
+    ),
     "fbp.delete_sequence": (
         "Delete selected Frame By Plane rigs together with their owned planes and safely unused owned datablocks. Linked image files on disk are never deleted."
     ),

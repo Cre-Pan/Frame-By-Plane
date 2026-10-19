@@ -4823,6 +4823,13 @@ class FBP_MT_SequenceFrameActions(Menu):
         bottom = bottom_row.operator("fbp.list_action", text="Bring Last", icon="TRIA_DOWN_BAR")
         bottom.action = "MOVE_BOTTOM"
         layout.separator()
+        split = layout.operator(
+            "fbp.split_sequence_to_planes",
+            text="Split into Multiple Planes",
+            icon=ui_icon("sequence.split"),
+        )
+        split.rig_name = str(getattr(rig, "name", "") or "")
+        layout.separator()
         if rig is not None and not bool(getattr(rig, "fbp_is_color_plane", False)):
             refresh = layout.operator(
                 "fbp.refresh_media", text="Refresh Media", icon=ui_icon("action.refresh")
@@ -5638,6 +5645,11 @@ class FBP_MT_ObjectLayerContext(Menu):
                 "fbp.merge_selected_to_active_sequence",
                 text="Convert to Single Animated Plane",
                 icon=ui_icon("layer.duplicate"),
+            )
+            layout.operator(
+                "fbp.split_sequence_to_planes",
+                text="Split into Multiple Planes",
+                icon=ui_icon("sequence.split"),
             )
             layout.operator(
                 "fbp.delete_sequence",

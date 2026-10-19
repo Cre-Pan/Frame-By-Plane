@@ -2377,6 +2377,124 @@ class FBP_OT_SplitSelectedImagesToNewPlane(Operator):
         self.report({'INFO'}, f"Split {len(selected_entries)} frame(s) to {new_rig.name}")
         return {'FINISHED'}
 
+def _fbp_split_target_rig(context, rig_name=""):
+    rig = bpy.data.objects.get(str(rig_name or "")) if rig_name else None
+    if rig is not None and is_fbp_layer_object(rig):
+        return rig
+    obj = getattr(context, "object", None)
+    if obj and getattr(obj, "is_fbp_plane", False) and getattr(obj.parent, "is_fbp_control", False):
+        obj = obj.parent
+    if obj and is_fbp_layer_object(obj):
+        return obj
+    rigs = get_selected_rigs(context)
+    return rigs[0] if rigs else None
+
+
+def fbp_can_split_rig_into_planes(rig):
+    """Return True when every frame of ``rig`` can become its own plane."""
+    try:
+        if not rig or not getattr(rig, "fbp_plane_target", None):
+            return False
+        if fbp_layer_backend_type(rig) in {'CUTOUT', 'NATIVE_MOVIE'}:
+            return False
+        return len(rig.fbp_images) > 1
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _fbp_split_frame_label(entry, index):
+    name = str(entry.get("name", "") or "").strip()
+    stem = os.path.splitext(os.path.basename(name))[0].strip() if name else ""
+    return stem or f"{index + 1:02d}"
+
+
+class FBP_OT_SplitSequenceToPlanes(Operator):
+    bl_idname = "fbp.split_sequence_to_planes"
+    bl_label = "Split into Multiple Planes"
+    bl_description = "Turn every frame of this layer into its own plane, keeping position, materials and effects"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(
+        name="Layer",
+        description="Optional exact layer target used by context-menu actions",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return fbp_can_split_rig_into_planes(_fbp_split_target_rig(context))
+
+    def execute(self, context):
+        rig = _fbp_split_target_rig(context, self.rig_name)
+        if not fbp_can_split_rig_into_planes(rig):
+            self.report({'WARNING'}, "Select one Frame By Plane layer with at least two frames")
+            return {'CANCELLED'}
+        entries = fbp_sequence_entries_from_rig(rig)
+        base_name = str(rig.name)
+        created = []
+        # Every new plane is a full duplicate (own materials, effects, masks,
+        # transform) that keeps only its own frame. The source keeps frame 1.
+        for index in range(1, len(entries)):
+            before = {obj.name for obj in bpy.data.objects}
+            try:
+                result = bpy.ops.fbp.duplicate_selected_layers(rig_name=rig.name)
+            except RuntimeError as exc:
+                fbp_warn("Could not duplicate the layer to split it", exc)
+                result = {'CANCELLED'}
+            new_rig = next(
+                (
+                    obj for obj in bpy.data.objects
+                    if obj.name not in before and getattr(obj, "is_fbp_control", False)
+                ),
+                None,
+            ) if 'FINISHED' in result else None
+            if new_rig is None:
+                break
+            new_entries = fbp_sequence_entries_from_rig(new_rig)
+            if index >= len(new_entries):
+                delete_fbp_rigs(context, [new_rig])
+                break
+            entry = dict(new_entries[index])
+            entry["is_selected"] = True
+            fbp_set_rna_property_silent(new_rig, 'fbp_images_index', 0)
+            if not fbp_apply_sequence_entries_to_rig(new_rig, [entry]):
+                delete_fbp_rigs(context, [new_rig])
+                break
+            try:
+                from .scene_sync import fbp_rename_layer_rig
+                fbp_rename_layer_rig(new_rig, f"{base_name}_{_fbp_split_frame_label(entry, index)}", context)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                fbp_warn("Could not name a split plane", exc)
+            created.append(new_rig)
+
+        if not created:
+            sync_layer_collection(context)
+            self.report({'WARNING'}, "Split cancelled; the layer was left unchanged")
+            return {'CANCELLED'}
+        first = dict(entries[0])
+        first["is_selected"] = True
+        remaining = [first] + [entries[i] for i in range(len(created) + 1, len(entries))]
+        fbp_set_rna_property_silent(rig, 'fbp_images_index', 0)
+        if not fbp_apply_sequence_entries_to_rig(rig, remaining):
+            self.report({'WARNING'}, "New planes created, but the source layer could not keep only its first frame")
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+        except RuntimeError:
+            pass
+        for obj in [rig] + created:
+            if object_in_view_layer(obj, context):
+                obj.select_set(True)
+        if object_in_view_layer(rig, context):
+            context.view_layer.objects.active = rig
+        sync_layer_collection(context)
+        if len(remaining) > 1:
+            self.report({'WARNING'}, f"Split {len(created) + 1} of {len(entries)} frames into planes")
+        else:
+            self.report({'INFO'}, f"Split {base_name} into {len(created) + 1} planes")
+        return {'FINISHED'}
+
+
 class FBP_OT_DeleteSequence(Operator):
     bl_idname      = "fbp.delete_sequence"
     bl_label       = "Delete Sequence"

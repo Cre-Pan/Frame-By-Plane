@@ -137,6 +137,7 @@ from .operator_sequence import (
     FBP_OT_DuplicateSelectedLayers,
     FBP_OT_MergeSelectedToActiveSequence,
     FBP_OT_SplitSelectedImagesToNewPlane,
+    FBP_OT_SplitSequenceToPlanes,
     FBP_OT_DeleteSequence,
     FBP_OT_DeleteOrDefault,
 )
@@ -328,6 +329,7 @@ classes = (
     FBP_OT_DuplicateSelectedLayers,
     FBP_OT_MergeSelectedToActiveSequence,
     FBP_OT_SplitSelectedImagesToNewPlane,
+    FBP_OT_SplitSequenceToPlanes,
     FBP_OT_DeleteSequence,
     FBP_OT_DeleteOrDefault,
     FBP_OT_ToggleCollectionCollapse,
