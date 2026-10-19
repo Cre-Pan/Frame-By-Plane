@@ -8919,6 +8919,16 @@ def _remove_handler_by_name(handler_list, name):
     )
 
 
+@bpy.app.handlers.persistent
+def fbp_gp_undo_redo_post(*_args):
+    """Drop cached frame indexes: Undo/Redo reallocates GP drawings.
+
+    The indexes hold RNA structs, and a live mask poll that read one after
+    Ctrl+Z would crash Blender. Only Python dictionaries change here.
+    """
+    _clear_gp_exposure_cache()
+
+
 def _register_handlers():
     _remove_handler_by_name(bpy.app.handlers.depsgraph_update_pre, "fbp_gp_depsgraph_update_pre")
     _remove_handler_by_name(bpy.app.handlers.depsgraph_update_post, "fbp_gp_depsgraph_update")
@@ -8954,6 +8964,13 @@ def _register_handlers():
         module_suffix="grease_pencil_bridge",
     ):
         raise RuntimeError("Could not register the Grease Pencil load handler")
+    for handler_list in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if not append_handler_once(
+            handler_list,
+            fbp_gp_undo_redo_post,
+            module_suffix="grease_pencil_bridge",
+        ):
+            raise RuntimeError("Could not register the Grease Pencil history handler")
     # History repair is scheduled by handlers.fbp_deferred_post_undo_sync after
     # the shared Undo guard and Eevee image-material grace period have ended.
 

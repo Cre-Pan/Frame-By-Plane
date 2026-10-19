@@ -40,6 +40,7 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 
 - Grease Pencil Mask works on planes with Crop applied: the mask stays aligned with what was drawn.
 - Adding an effect, a Grease Pencil Mask or a Clipping Mask from the pie menu can be undone with Ctrl+Z.
+- Ctrl+Z while drawing in a Grease Pencil Mask no longer risks crashing Blender.
 - Draw Mode Stroke/Fill colors stay stable, and the first stroke drawn with Auto Keying gets its fill color instead of black.
 - The interface language follows Blender again after loading a file.
 - Holding `<` in the time editors stops at frame 0 when Allow Negative Frames is off.

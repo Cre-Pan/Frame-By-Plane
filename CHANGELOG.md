@@ -17,6 +17,7 @@ Frame By Plane 8 LTS. Includes every 7.5.x change below.
 
 - Grease Pencil Mask stayed misaligned or empty on planes with Crop applied; the mask is now rasterized over the uncropped image rectangle that the plane UVs use.
 - Ctrl+Z after drawing in a new Grease Pencil Mask removed the effect; pie menu effect and mask buttons now push their own undo step.
+- Ctrl+Z while drawing in a Grease Pencil Mask could crash Blender: cached drawing references are now dropped on Undo and Redo.
 - Editing a mask on a later frame no longer adds an empty key that hid the mask.
 - Grease Pencil Mask rasterization is many times faster with identical output.
 
