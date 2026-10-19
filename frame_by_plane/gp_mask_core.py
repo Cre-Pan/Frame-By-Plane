@@ -138,6 +138,14 @@ def _plane_for_surface(surface):
 
 
 def plane_bounds(surface) -> tuple[float, float, float, float]:
+    # UV 0..1 spans the uncropped source rectangle, so Crop must not shrink it.
+    if surface is not None and bool(getattr(surface, "is_fbp_control", False)):
+        try:
+            from .builder import fbp_plane_reference_bounds
+            source = fbp_plane_reference_bounds(surface)[0]
+            return tuple(float(value) for value in source)
+        except (ImportError, *_EXC):
+            pass
     plane = _plane_for_surface(surface)
     mesh = getattr(plane, "data", None) if plane is not None else None
     coords = []

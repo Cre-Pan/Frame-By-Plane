@@ -3062,7 +3062,7 @@ def test_preview_scope_policy(_module):
     assert all(item["used"] for item in usage), usage
     assert next(item for item in usage if item["id"] == "compositor_layers")["enabled"]
     diagnostics = feature_scope.fbp_preview_diagnostics_text(PreviewScene())
-    assert "outside the Frame By Plane 7.5 LTS stability promise" in diagnostics
+    assert "outside the Frame By Plane 8 LTS stability promise" in diagnostics
     assert "no file paths, project media or telemetry" in diagnostics
 
     project_health = importlib.import_module(f"{PACKAGE}.project_health")

@@ -3462,7 +3462,7 @@ def _fbp_draw_preview_scope_badge(layout, label):
     badge = layout.row(align=True)
     badge.alert = True
     badge.label(text=f"{label} · Preview", icon="INFO")
-    badge.label(text="Outside the 7.5 LTS stability promise")
+    badge.label(text="Outside the 8 LTS stability promise")
     badge.operator("fbp.copy_preview_diagnostics", text="Copy Diagnostics", icon="COPYDOWN")
 
 
@@ -4826,7 +4826,7 @@ class FBP_MT_SequenceFrameActions(Menu):
         split = layout.operator(
             "fbp.split_sequence_to_planes",
             text="Split into Multiple Planes",
-            icon=ui_icon("sequence.split"),
+            **ui_icon_kwargs("menu.multiplane", fallback="RENDERLAYERS"),
         )
         split.rig_name = str(getattr(rig, "name", "") or "")
         layout.separator()
@@ -5649,7 +5649,7 @@ class FBP_MT_ObjectLayerContext(Menu):
             layout.operator(
                 "fbp.split_sequence_to_planes",
                 text="Split into Multiple Planes",
-                icon=ui_icon("sequence.split"),
+                **ui_icon_kwargs("menu.multiplane", fallback="RENDERLAYERS"),
             )
             layout.operator(
                 "fbp.delete_sequence",

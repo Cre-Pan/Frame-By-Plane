@@ -217,15 +217,17 @@ def _draw_badge():
         if not bool(space.overlay.show_overlays):
             return
         count = solo_layer_count(context.scene)
+        # The Z pie's Solo uses Blender's Local View in this viewport only.
+        local_view = getattr(space, "local_view", None) is not None
     except FBP_DATA_ERRORS:
         return
-    if count <= 0:
+    if count <= 0 and not local_view:
         return
     try:
         scale = float(context.preferences.system.ui_scale) or 1.0
     except FBP_DATA_ERRORS:
         scale = 1.0
-    text = "SOLO" if count == 1 else f"SOLO  {count}"
+    text = f"SOLO  {count}" if count > 1 else "SOLO"
     font_id = 0
     blf.size(font_id, 12.0 * scale)
     text_w, _text_h = blf.dimensions(font_id, text)

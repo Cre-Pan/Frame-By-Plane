@@ -1,9 +1,14 @@
-# 🎞️ Frame By Plane — 7.5.7
+# 🎞️ Frame By Plane — 8.0.0
 
-A Grease Pencil, Scrub Bar and Add Plane update for Blender 5.2 LTS.
+Frame By Plane 8 LTS: Grease Pencil masks you can edit, Split into Multiple Planes, a SOLO badge, a new Live Tutorial, the Magnetic Scrub Bar and six languages, for Blender 5.2 LTS.
 
 ## ✨ What's new
 
+- 🎭 **Grease Pencil Mask you can edit:** an **Edit** button in the effect header brings the mask strokes back for drawing, **Done** returns to the layer, and an eye shows or hides the strokes. The mask now covers the whole shot from frame 1 wherever it is created, Ctrl+Z after drawing no longer removes the effect, and the mask is computed many times faster.
+- ✂️ **Split into Multiple Planes:** from the frame list or right-click → Frame By Plane → Layer, turn every frame of a layer into its own plane, keeping position, size and effects.
+- 💡 **SOLO badge:** a translucent badge at the top of the Viewport shows when Solo is on (layer Solo or the Z pie's Solo Selection). Hide Overlays hides it too.
+- 🎓 **New Live Tutorial:** a redesigned guide panel and a new Frame by Frame tutorial.
+- 🧪 **Apply Effects:** bake a layer's image effects into the layer itself.
 - ⏱️ **Magnetic Scrub Bar:** hold `<` to scrub, release it and the playhead snaps back to where you started with a small bounce. Exact on the bar, faster as the pointer moves away. A tap no longer pins the bar; pin it from the Viewport header.
 - 🗂️ **Scrub Bar menu:** collapsible sections, a live Length slider and an Audio Scrubbing toggle. Return to Start has its own button next to the pin, and in Draw Mode the bar shows only the active layer.
 - ↔️ **Hold `<` in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer:** move left or right to scrub from where the playhead is.
@@ -31,8 +36,13 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 - Effect presets now live in the extension's own user folder. Presets from earlier versions are copied there automatically.
 - Media that Frame By Plane generates (PSD and Procreate layers, converted animated images, image-sequence proxies, pasted clipboard images) now goes into an `assets` folder next to your saved `.blend`, so the project folder can be moved or shared as a whole. Unsaved files still write next to the source media.
 
-## 🛠️ Fixes in 7.5.7
+## 🛠️ Fixes in 8.0.0
 
+- Grease Pencil Mask works on planes with Crop applied: the mask stays aligned with what was drawn.
+- Adding an effect, a Grease Pencil Mask or a Clipping Mask from the pie menu can be undone with Ctrl+Z.
+- Draw Mode Stroke/Fill colors stay stable, and the first stroke drawn with Auto Keying gets its fill color instead of black.
+- The interface language follows Blender again after loading a file.
+- Holding `<` in the time editors stops at frame 0 when Allow Negative Frames is off.
 - A pinned Scrub Bar no longer redraws the viewport constantly while idle.
 - Swap and swatch edits are safer: stroke-only strokes keep their colors, and editing a swatch never recolors the other side.
 - Layers left locked by the old Limited Loop tool are unlocked on load.

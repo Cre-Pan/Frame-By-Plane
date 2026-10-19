@@ -3739,16 +3739,16 @@ def _create_mask_canvas(rig, context):
 def _plane_bounds(rig):
     """Return the image-bearing rectangle used by GP raster masks.
 
-    Extend enlarges only the border mesh and UV domain. Sampling GP geometry over
-    those enlarged bounds shrinks or offsets the raster while the shader still
-    reads the source-image UVs. Use the cropped source rectangle so GP masks stay
-    stable when Extend is enabled on image and procedural color planes.
+    The mask shader samples the raster with the plane UVs, and UV 0..1 always
+    spans the uncropped source rectangle: Crop moves the UVs inward and Extend
+    pushes them outward. Rasterizing over the source rectangle keeps the mask
+    aligned with the drawing whatever Crop or Extend is applied.
     """
     if rig is not None and bool(getattr(rig, "is_fbp_control", False)):
         try:
             from .builder import fbp_plane_reference_bounds
-            _source, cropped, _extended, _uv = fbp_plane_reference_bounds(rig)
-            return tuple(float(value) for value in cropped)
+            source, _cropped, _extended, _uv = fbp_plane_reference_bounds(rig)
+            return tuple(float(value) for value in source)
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
     plane = getattr(rig, "fbp_plane_target", None) if rig else None

@@ -6,9 +6,9 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
-## Prepared update: 7.5.7
+## Prepared update: 8.0.0
 
-Magnetic Scrub Bar return with a bounce, collapsible Scrub Bar menu, every selected Stroke/Fill color as its own swatch in Edit Mode, a Material selector in Edit Mode, and one Add Plane dialog for every plane type. See the [7.5.7 release notes](release-notes/7.5.7.md).
+Frame By Plane 8 LTS: an editable Grease Pencil Mask with proper Undo, Split into Multiple Planes, a Viewport SOLO badge, a redesigned Live Tutorial with a Frame by Frame guide, the Magnetic Scrub Bar, one Add Plane dialog for every plane type and six interface languages. See the [8.0.0 release notes](release-notes/8.0.0.md).
 
 ## What's new in 7.2.0
 
@@ -66,11 +66,11 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-7.5.7-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-7.5.7-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-7.5.7-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-7.5.7-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-7.5.7-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.0.0-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.0.0-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.0.0-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.0.0-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.0.0-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
