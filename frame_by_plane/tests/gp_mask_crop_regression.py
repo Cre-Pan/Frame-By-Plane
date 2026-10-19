@@ -2,6 +2,7 @@ import importlib
 import os
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -67,6 +68,52 @@ try:
         assert_uv_contract(rig, bounds, label)
     mesh_xs = [vertex.co.x for vertex in rig.fbp_plane_target.data.vertices]
     assert min(mesh_xs) > uncropped[0] + 1.0e-4, "the fixture plane was not cropped"
+
+    # Linear + CLIP sampling faded the border texels into a thin unmasked
+    # line wherever a stroke ran past the image edge.
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    assert bpy.ops.fbp.add_grease_pencil_mask() == {'FINISHED'}
+    canvas = next(obj for obj in bpy.data.objects if gpb.is_gp_mask_canvas(obj))
+    layer = canvas.data.layers.active
+    layer.current_frame().drawing.add_strokes([4])
+    bpy.ops.object.mode_set(mode="OBJECT")
+    dispatch = importlib.import_module(f"{PACKAGE_NAME}.runtime_scheduler").scheduler_dispatcher_callback()
+    end = time.monotonic() + 1.5
+    while time.monotonic() < end:
+        dispatch()
+        time.sleep(0.02)
+    gpb.refresh_gp_mask(canvas, force=True, scene=bpy.context.scene)
+    mask_image = canvas.fbp_gp_mask_image
+    assert mask_image is not None
+    nodes = [
+        node for group in bpy.data.node_groups for node in group.nodes
+        if node.get("fbp_imported_mask_image_node", False) and node.image == mask_image
+    ]
+    assert nodes, "the GP mask image is not bound to the effect"
+    assert all(node.extension == "EXTEND" for node in nodes), [node.extension for node in nodes]
+
+    # Blur and Expand apply only while their checkbox is on.
+    raster = importlib.import_module(f"{PACKAGE_NAME}.gp_mask_raster")
+    assert not canvas.fbp_gp_mask_use_blur and not canvas.fbp_gp_mask_use_expand
+    assert abs(canvas.fbp_gp_mask_feather - 0.125) < 1.0e-6 and canvas.fbp_gp_mask_expand == 0.0
+    assert raster.mask_blur(canvas) == 0.0 and raster.mask_expand(canvas) == 0.0
+    canvas.fbp_gp_mask_use_blur = True
+    assert abs(raster.mask_blur(canvas) - 0.125) < 1.0e-6
+
+    class Layout:
+        """Accept any layout call so the panel draw code runs headless."""
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: Layout()
+        def __setattr__(self, _name, _value):
+            pass
+        def __iter__(self):
+            return iter((Layout(), Layout()))
+
+    canvas.fbp_gp_mask_ui_show_settings = True
+    assert gpb.draw_gp_mask_settings_ui(Layout(), bpy.context, canvas, embedded=True, header_actions=False)
     print("GP mask crop regression passed")
 finally:
     for operator_class in reversed(temporary):

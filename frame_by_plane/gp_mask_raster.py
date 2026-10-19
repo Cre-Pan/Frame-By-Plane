@@ -30,6 +30,30 @@ _NUMPY_UNSET = object()
 _NUMPY_MODULE = _NUMPY_UNSET
 
 
+
+def _mask_toggle(canvas, toggle, value_prop):
+    try:
+        if canvas.is_property_set(toggle):
+            return bool(getattr(canvas, toggle))
+        # Masks from before the checkboxes keep whatever value they stored.
+        return bool(canvas.is_property_set(value_prop))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return bool(getattr(canvas, toggle, False))
+
+
+def mask_blur(canvas) -> float:
+    """Blur that applies: zero while the Blur checkbox is off."""
+    if not _mask_toggle(canvas, "fbp_gp_mask_use_blur", "fbp_gp_mask_feather"):
+        return 0.0
+    return max(0.0, _safe_float(getattr(canvas, "fbp_gp_mask_feather", 0.0), 0.0))
+
+
+def mask_expand(canvas) -> float:
+    """Expand that applies: zero while the Expand checkbox is off."""
+    if not _mask_toggle(canvas, "fbp_gp_mask_use_expand", "fbp_gp_mask_expand"):
+        return 0.0
+    return _safe_float(getattr(canvas, "fbp_gp_mask_expand", 0.0), 0.0)
+
 def clear_runtime_caches():
     """Release reusable mask buffers after file reload, add-on reload or repair."""
     global _RGBA_CACHE_BYTES, _GRID_CACHE_BYTES
@@ -535,8 +559,8 @@ def generate_base_alpha(mask_geometry, canvas, resolution):
     if not polygons and not polylines:
         return np.zeros((resolution, resolution), dtype=np.float32)
 
-    expand = _safe_float(getattr(canvas, "fbp_gp_mask_expand", 0.0), 0.0)
-    blur = max(0.0, _safe_float(getattr(canvas, "fbp_gp_mask_feather", 0.0), 0.0))
+    expand = mask_expand(canvas)
+    blur = mask_blur(canvas)
     threshold = _safe_float(getattr(canvas, "fbp_gp_mask_threshold", 0.5), 0.5)
     band_margin = max(abs(expand) + blur, _axis_step(bounds, resolution) * 4.0)
     if abs(expand) <= 1.0e-7 and blur <= 1.0e-7:
@@ -614,8 +638,8 @@ def generate_pixels(
         pixels.extend((0.0, 0.0, 0.0, 0.0) * (resolution * resolution))
         return pixels
 
-    expand = _safe_float(getattr(canvas, "fbp_gp_mask_expand", 0.0), 0.0)
-    blur = max(0.0, _safe_float(getattr(canvas, "fbp_gp_mask_feather", 0.0), 0.0))
+    expand = mask_expand(canvas)
+    blur = mask_blur(canvas)
     threshold = _safe_float(getattr(canvas, "fbp_gp_mask_threshold", 0.5), 0.5)
 
     # Pure-Python safety path. The output length must exactly match the Blender

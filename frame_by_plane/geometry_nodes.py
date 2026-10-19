@@ -12399,9 +12399,18 @@ def _fbp_sync_imported_mask_image(rig, node, effect_id=FBP_EFFECT_IMPORTED_MASK)
     except FBP_DATA_ERRORS:
         pass
 
+    # Linear sampling with CLIP blends the border texels with transparent
+    # black, which leaves a thin unmasked line where a Grease Pencil stroke
+    # runs past the image edge. Generated GP rasters cover the whole image, so
+    # their edge texels can be extended instead.
+    try:
+        extension = "EXTEND" if image is not None and "fbp_gp_mask_bounds" in image else "CLIP"
+    except FBP_DATA_ERRORS:
+        extension = "CLIP"
     try:
         group_key = _fbp_node_group_cache_key(node_group)
         signature = (
+            extension,
             source_type,
             path,
             fbp_obj_runtime_key(image) if image else None,
@@ -12410,7 +12419,7 @@ def _fbp_sync_imported_mask_image(rig, node, effect_id=FBP_EFFECT_IMPORTED_MASK)
         )
     except FBP_DATA_ERRORS:
         group_key = None
-        signature = (source_type, path, None, (), -1)
+        signature = (extension, source_type, path, None, (), -1)
     if group_key is not None and _FBP_IMPORTED_MASK_SYNC_CACHE.get(group_key) == signature:
         return bool(image), False
 
@@ -12423,8 +12432,8 @@ def _fbp_sync_imported_mask_image(rig, node, effect_id=FBP_EFFECT_IMPORTED_MASK)
             if image_node.interpolation != "Linear":
                 image_node.interpolation = "Linear"
                 changed = True
-            if image_node.extension != "CLIP":
-                image_node.extension = "CLIP"
+            if image_node.extension != extension:
+                image_node.extension = extension
                 changed = True
         except FBP_DATA_ERRORS:
             continue
@@ -22279,23 +22288,17 @@ def fbp_draw_effect_settings(
     if effect_id in GP_MASK_EFFECT_IDS and gp_mask_header_canvas is not None:
         try:
             from .grease_pencil_bridge import gp_mask_is_being_edited
-            editing = gp_mask_is_being_edited(context, gp_mask_header_canvas)
-            edit_gp = header_right.operator(
-                "fbp.edit_grease_pencil_mask",
-                text="Done" if editing else "Edit",
-                icon="CHECKMARK" if editing else "GREASEPENCIL",
-                depress=editing,
-            )
-            edit_gp.rig_name = getattr(rig, "name", "")
-            edit_gp.canvas_name = getattr(gp_mask_header_canvas, "name", "")
-            guide = bool(getattr(gp_mask_header_canvas, "fbp_gp_mask_show_guide", False))
-            header_right.prop(
-                gp_mask_header_canvas,
-                "fbp_gp_mask_show_guide",
-                text="",
-                icon="HIDE_OFF" if guide or editing else "HIDE_ON",
-                emboss=False,
-            )
+            # Edit lives in Grease Pencil Settings; Done stays reachable here
+            # while the mask strokes are being drawn.
+            if gp_mask_is_being_edited(context, gp_mask_header_canvas):
+                edit_gp = header_right.operator(
+                    "fbp.edit_grease_pencil_mask",
+                    text="Done",
+                    icon="CHECKMARK",
+                    depress=True,
+                )
+                edit_gp.rig_name = getattr(rig, "name", "")
+                edit_gp.canvas_name = getattr(gp_mask_header_canvas, "name", "")
             detach_gp = header_right.operator(
                 "fbp.detach_grease_pencil_mask_from_effect",
                 text="",

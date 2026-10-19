@@ -161,7 +161,8 @@ MASK_SOURCE_ITEMS = (
     ("BOTH", "Fill + Line", "Combine native Grease Pencil fill groups and visible linework"),
 )
 DEFAULT_GP_MASK_STROKE_WIDTH = 0.002
-DEFAULT_GP_MASK_EXPAND = 0.002
+DEFAULT_GP_MASK_EXPAND = 0.0
+DEFAULT_GP_MASK_BLUR = 0.125
 DEFAULT_GP_MASK_QUALITY = "1024"
 DEFAULT_GP_MASK_PREVIEW_QUALITY = "256"
 
@@ -217,6 +218,9 @@ _RNA_PROPERTIES = (
     "fbp_gp_mask_show_guide",
     "fbp_gp_mask_feather",
     "fbp_gp_mask_expand",
+    "fbp_gp_mask_use_blur",
+    "fbp_gp_mask_ui_show_settings",
+    "fbp_gp_mask_use_expand",
     "fbp_gp_mask_opacity",
     "fbp_gp_mask_threshold",
     "fbp_gp_mask_stroke_width",
@@ -3677,7 +3681,9 @@ def _initialize_canvas_defaults(canvas, rig=None, *, kind="DRAWING"):
             canvas.fbp_gp_mask_opacity = 1.0
             canvas.fbp_gp_mask_quality = DEFAULT_GP_MASK_QUALITY
             canvas.fbp_gp_mask_preview_quality = DEFAULT_GP_MASK_PREVIEW_QUALITY
-            canvas.fbp_gp_mask_feather = 0.0
+            canvas.fbp_gp_mask_use_blur = False
+            canvas.fbp_gp_mask_feather = DEFAULT_GP_MASK_BLUR
+            canvas.fbp_gp_mask_use_expand = False
             canvas.fbp_gp_mask_expand = DEFAULT_GP_MASK_EXPAND
         canvas[KEY_MASK_DIRTY] = True
         canvas[KEY_MASK_GEOMETRY_DIRTY] = True
@@ -3734,6 +3740,28 @@ def _create_mask_canvas(rig, context):
         if is_gp_mask_canvas(assigned) and _same_datablock(gp_canvas_owner(assigned), rig):
             return assigned, False
     return _new_canvas(context, rig, kind="MASK")
+
+
+def _gp_mask_raster_module():
+    from . import gp_mask_raster
+    return gp_mask_raster
+
+
+def _migrate_gp_mask_toggles(canvas):
+    """Older masks had no Blur/Expand checkboxes: turn them on where used."""
+    if gp_canvas_kind(canvas) != "MASK":
+        return
+    for toggle, value_prop in (
+        ("fbp_gp_mask_use_blur", "fbp_gp_mask_feather"),
+        ("fbp_gp_mask_use_expand", "fbp_gp_mask_expand"),
+    ):
+        try:
+            if canvas.is_property_set(toggle):
+                continue
+            used = canvas.is_property_set(value_prop) and abs(float(getattr(canvas, value_prop))) > 1.0e-7
+            fbp_set_rna_property_silent(canvas, toggle, bool(used))
+        except FBP_DATA_ERRORS:
+            continue
 
 
 def _plane_bounds(rig):
@@ -4071,8 +4099,8 @@ def _geometry_signature(canvas, rig, polygons, polylines, resolution, bounds=Non
     values = (
         "RASTER_SDF_V2",
         str(getattr(canvas, "fbp_gp_mask_source", "BOTH")),
-        f"{float(getattr(canvas, 'fbp_gp_mask_feather', 0.0)):.8f}",
-        f"{float(getattr(canvas, 'fbp_gp_mask_expand', 0.0)):.8f}",
+        f"{_gp_mask_raster_module().mask_blur(canvas):.8f}",
+        f"{_gp_mask_raster_module().mask_expand(canvas):.8f}",
         f"{float(getattr(canvas, 'fbp_gp_mask_threshold', 0.5)):.8f}",
         "1" if bool(getattr(canvas, "fbp_gp_reveal_enabled", False)) else "0",
         str(getattr(canvas, "fbp_gp_reveal_mode", "REVEAL")),
@@ -4264,8 +4292,8 @@ def _mask_pixels(canvas, polygons, polylines, bounds, resolution, *, distance_si
         )
         base_signature = "|".join((
             str(distance_signature or ""),
-            f"{float(getattr(canvas, 'fbp_gp_mask_expand', 0.0) or 0.0):.9f}",
-            f"{float(getattr(canvas, 'fbp_gp_mask_feather', 0.0) or 0.0):.9f}",
+            f"{_gp_mask_raster_module().mask_expand(canvas):.9f}",
+            f"{_gp_mask_raster_module().mask_blur(canvas):.9f}",
             f"{float(getattr(canvas, 'fbp_gp_mask_threshold', 0.5) or 0.5):.9f}",
         ))
         base_alpha = _gp_base_alpha_cache_get(canvas, resolution, base_signature)
@@ -6571,7 +6599,9 @@ class FBP_OT_AddGreasePencilMask(Operator):
             fbp_set_rna_property_silent(canvas, "fbp_gp_mask_opacity", 1.0)
             fbp_set_rna_property_silent(canvas, "fbp_gp_mask_quality", DEFAULT_GP_MASK_QUALITY)
             fbp_set_rna_property_silent(canvas, "fbp_gp_mask_preview_quality", DEFAULT_GP_MASK_PREVIEW_QUALITY)
-            fbp_set_rna_property_silent(canvas, "fbp_gp_mask_feather", 0.0)
+            fbp_set_rna_property_silent(canvas, "fbp_gp_mask_use_blur", False)
+            fbp_set_rna_property_silent(canvas, "fbp_gp_mask_feather", DEFAULT_GP_MASK_BLUR)
+            fbp_set_rna_property_silent(canvas, "fbp_gp_mask_use_expand", False)
             fbp_set_rna_property_silent(canvas, "fbp_gp_mask_expand", DEFAULT_GP_MASK_EXPAND)
             fbp_set_rna_property_silent(canvas, "fbp_gp_mask_stroke_width", DEFAULT_GP_MASK_STROKE_WIDTH)
             _apply_canvas_opacity(canvas)
@@ -7923,57 +7953,78 @@ def draw_gp_mask_settings_ui(layout, context, canvas=None, *, embedded=False, he
         actions.alignment = 'RIGHT'
         _draw_gp_mask_action_buttons(actions, context, canvas, rig, include_detach=True)
 
-    row = root.row(align=False)
-    row.prop(canvas, "fbp_gp_mask_opacity", text="Mask Opacity", slider=True)
-    row.prop(canvas, "fbp_gp_mask_invert", text="Invert", toggle=True, icon=ui_icon("action.invert"))
+    row = root.row(align=True)
+    guide = bool(getattr(canvas, "fbp_gp_mask_show_guide", False))
+    row.prop(canvas, "fbp_gp_mask_show_guide", text="", icon="HIDE_OFF" if guide else "HIDE_ON")
+    row.prop(canvas, "fbp_gp_mask_opacity", text="Opacity", slider=True)
+    row.prop(canvas, "fbp_gp_mask_invert", text="", toggle=True, icon=ui_icon("action.invert"))
 
-    row = root.row(align=False)
-    row.prop(canvas, "fbp_gp_canvas_opacity", text="Visibility", slider=True)
+    # Each checkbox enables its slider; the value is kept while it is off.
+    for toggle, value, label in (
+        ("fbp_gp_mask_use_blur", "fbp_gp_mask_feather", "Blur"),
+        ("fbp_gp_mask_use_expand", "fbp_gp_mask_expand", "Expand"),
+    ):
+        row = root.row(align=True)
+        split = row.split(factor=0.3, align=True)
+        split.prop(canvas, toggle, text=label)
+        slider = split.row(align=True)
+        slider.active = bool(getattr(canvas, toggle, False))
+        slider.prop(canvas, value, text="", slider=True)
 
-    controls = root.column(align=False)
-    row = controls.row(align=True)
-    row.prop(canvas, "fbp_gp_mask_feather", text="Blur", slider=True)
-    row.prop(canvas, "fbp_gp_mask_expand", text="Expand", slider=True)
-
-    preview_row = controls.row(align=True)
-    preview_row.prop(canvas, "fbp_gp_mask_preview_quality", text="Preview")
-
-    # Final mask quality stays fixed at 1024px. The exposed control only changes
-    # the live preview cap while drawing. Internal detected-mode/radius telemetry
-    # remains available to the runtime but is intentionally hidden from the user.
-
-    radius = controls.row(align=True)
-    radius.prop(canvas, "fbp_gp_mask_auto_radius", text="Auto", toggle=True)
-    manual = radius.row(align=True)
-    manual.enabled = not bool(getattr(canvas, "fbp_gp_mask_auto_radius", True))
-    manual.prop(canvas, "fbp_gp_mask_stroke_width", text="Radius", slider=True)
-
-    controls.prop(canvas, "fbp_gp_mask_source", text="Geometry")
-
-    # Keep extraction diagnostics at the very bottom, below all editable mask
-    # controls. This is a passive cache/source hint rather than a primary status.
-    try:
-        debug_state = _GP_MASK_DEBUG_STATE.get(_canvas_pointer(canvas), {})
-        dbg_source = str(
-            debug_state.get("source", canvas.get("fbp_gp_mask_debug_source", "")) or ""
+    expanded = bool(getattr(canvas, "fbp_gp_mask_ui_show_settings", False))
+    disclosure = root.row(align=True)
+    disclosure.prop(
+        canvas,
+        "fbp_gp_mask_ui_show_settings",
+        text="Grease Pencil Settings",
+        icon="DISCLOSURE_TRI_DOWN" if expanded else "DISCLOSURE_TRI_RIGHT",
+        emboss=False,
+    )
+    if expanded:
+        settings = root.column(align=False)
+        editing = gp_mask_is_being_edited(context, canvas)
+        edit = settings.operator(
+            "fbp.edit_grease_pencil_mask",
+            text="Done" if editing else "Edit Grease Pencil",
+            icon="CHECKMARK" if editing else "GREASEPENCIL",
+            depress=editing,
         )
-        dbg_points = int(
-            debug_state.get("points", canvas.get("fbp_gp_mask_debug_points", 0)) or 0
-        )
-        dbg_lines = int(
-            debug_state.get("polylines", canvas.get("fbp_gp_mask_debug_polylines", 0)) or 0
-        )
-        dbg_fills = int(
-            debug_state.get("fills", canvas.get("fbp_gp_mask_debug_fills", 0)) or 0
-        )
-        if dbg_source:
-            dbg = controls.row(align=True)
-            dbg.label(
-                text=f"Read {dbg_source.title()} · {dbg_points} pts · {dbg_lines} lines · {dbg_fills} fills",
-                icon="FILE_REFRESH",
+        edit.rig_name = getattr(rig, "name", "") if rig else ""
+        edit.canvas_name = getattr(canvas, "name", "")
+        settings.prop(canvas, "fbp_gp_canvas_opacity", text="Visibility", slider=True)
+        radius = settings.row(align=True)
+        radius.prop(canvas, "fbp_gp_mask_auto_radius", text="Auto", toggle=True)
+        manual = radius.row(align=True)
+        manual.enabled = not bool(getattr(canvas, "fbp_gp_mask_auto_radius", True))
+        manual.prop(canvas, "fbp_gp_mask_stroke_width", text="Radius", slider=True)
+        settings.prop(canvas, "fbp_gp_mask_source", text="Geometry")
+        # Passive cache/source hint below the editable mask controls.
+        try:
+            debug_state = _GP_MASK_DEBUG_STATE.get(_canvas_pointer(canvas), {})
+            dbg_source = str(
+                debug_state.get("source", canvas.get("fbp_gp_mask_debug_source", "")) or ""
             )
-    except FBP_DATA_ERRORS:
-        pass
+            dbg_points = int(
+                debug_state.get("points", canvas.get("fbp_gp_mask_debug_points", 0)) or 0
+            )
+            dbg_lines = int(
+                debug_state.get("polylines", canvas.get("fbp_gp_mask_debug_polylines", 0)) or 0
+            )
+            dbg_fills = int(
+                debug_state.get("fills", canvas.get("fbp_gp_mask_debug_fills", 0)) or 0
+            )
+            if dbg_source:
+                dbg = settings.row(align=True)
+                dbg.label(
+                    text=f"Read {dbg_source.title()} · {dbg_points} pts · {dbg_lines} lines · {dbg_fills} fills",
+                    icon="FILE_REFRESH",
+                )
+        except FBP_DATA_ERRORS:
+            pass
+
+    # Final mask quality stays fixed at 1024px; Preview only caps the live
+    # preview while drawing.
+    root.prop(canvas, "fbp_gp_mask_preview_quality", text="Preview")
     return True
 
 
@@ -8743,6 +8794,7 @@ def _fbp_gp_load_post_rebuild(_dummy):
             if not is_gp_canvas(canvas):
                 continue
             _restore_legacy_limited_loop_locks(canvas)
+            _migrate_gp_mask_toggles(canvas)
             rig = gp_canvas_owner(canvas)
             kind = gp_canvas_kind(canvas)
             if rig is None and kind == "MASK":
@@ -9151,9 +9203,12 @@ def _register_properties():
         default=False,
         update=_mask_guide_update,
     )
+    bpy.types.Object.fbp_gp_mask_ui_show_settings = BoolProperty(name="Grease Pencil Settings", description="Show the Grease Pencil settings of this mask", default=False)
     bpy.types.Object.fbp_gp_mask_invert = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Invert", default=False, update=_mask_output_property_update)
-    bpy.types.Object.fbp_gp_mask_feather = FloatProperty(description='Soft transition width around the edge of the mask, gradient, threshold or shadow.', name="Blur", default=0.0, min=0.0, max=1.0, soft_max=0.25, subtype="FACTOR", update=_mask_raster_property_update)
-    bpy.types.Object.fbp_gp_mask_expand = FloatProperty(description='Grease Pencil Mask Expand value used by the current Grease Pencil workflow. Changes are applied only to compatible Frame By Plane data.', name="Expand", default=DEFAULT_GP_MASK_EXPAND, min=-1.0, max=1.0, soft_min=-0.25, soft_max=0.25, update=_mask_raster_property_update)
+    bpy.types.Object.fbp_gp_mask_use_blur = BoolProperty(name="Blur", description="Soften the edge of the mask", default=False, update=_mask_raster_property_update)
+    bpy.types.Object.fbp_gp_mask_feather = FloatProperty(description='Soft transition width around the edge of the mask, gradient, threshold or shadow.', name="Blur", default=DEFAULT_GP_MASK_BLUR, min=0.0, max=1.0, soft_max=0.25, subtype="FACTOR", update=_mask_raster_property_update)
+    bpy.types.Object.fbp_gp_mask_use_expand = BoolProperty(name="Expand", description="Grow the mask past the drawn strokes, or shrink it with negative values", default=False, update=_mask_raster_property_update)
+    bpy.types.Object.fbp_gp_mask_expand = FloatProperty(description='Grow the mask past the drawn strokes, or shrink it with negative values.', name="Expand", default=DEFAULT_GP_MASK_EXPAND, min=-1.0, max=1.0, soft_min=0.0, soft_max=0.25, update=_mask_raster_property_update)
     bpy.types.Object.fbp_gp_mask_opacity = FloatProperty(description='Blend strength of this control. 0 disables its visual contribution; 1 applies the full registered effect.', name="Mask Opacity", default=1.0, min=0.0, max=1.0, subtype="FACTOR", update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_mask_threshold = FloatProperty(description='Number of frames to hold this state before the next drawing, image or procedural step is evaluated.', name="Threshold", default=0.5, min=0.0, max=1.0, subtype="FACTOR", update=_mask_raster_property_update)
     bpy.types.Object.fbp_gp_mask_stroke_width = FloatProperty(description='Size control for the generated result. Higher values increase visual coverage and may increase viewport cost.', name="Line Radius", default=DEFAULT_GP_MASK_STROKE_WIDTH, min=DEFAULT_GP_MASK_STROKE_WIDTH, max=2.0, soft_max=0.25, update=_mask_geometry_property_update)
