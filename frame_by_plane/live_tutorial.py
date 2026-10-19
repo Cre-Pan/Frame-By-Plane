@@ -1695,38 +1695,6 @@ def _draw_text_lines(lines: Iterable[str], x: float, y: float, size: int, color:
     return cursor
 
 
-def _draw_flat_button(
-    state: TutorialState,
-    hud: dict[str, Any],
-    key: str,
-    rect: tuple[float, float, float, float],
-    label: str,
-    *,
-    primary: bool = False,
-) -> None:
-    palette = hud["palette"]
-    scale = hud["scale"]
-    hovered = state.hover == key
-    if primary:
-        fill = _mix_color(palette["accent"], palette["card_text"], 0.16) if hovered else palette["accent"]
-        text_color = palette["accent_text"]
-    else:
-        fill = palette["card_hover"] if hovered else palette["card"]
-        text_color = palette["card_text"]
-    state.hitboxes[key] = rect
-    radius = min(3.0 * scale, rect[3] * 0.22)
-    _draw_round_rect(*rect, radius, fill)
-    _draw_round_outline(*rect, radius, palette["accent"] if hovered and not primary else palette["line"])
-    _draw_text(
-        _ellipsize(label, rect[2] - 12.0 * scale, hud["small_size"]),
-        rect[0] + rect[2] * 0.5,
-        rect[1] + rect[3] * 0.5 - 4.0 * scale,
-        hud["small_size"],
-        text_color,
-        align="CENTER",
-    )
-
-
 def _inside(rect: tuple[float, float, float, float], x: float, y: float) -> bool:
     rx, ry, rw, rh = rect
     return rx <= x <= rx + rw and ry <= y <= ry + rh
@@ -1957,41 +1925,6 @@ def _is_key_label(label: str) -> bool:
     return bool(tokens) and all(token in _KEY_NAMES or len(token) == 1 for token in tokens)
 
 
-def _draw_shortcut_chips(hud: dict[str, Any], text: str, x: float, y: float, max_width: float) -> None:
-    """Draw ``A  >  B`` as key caps and labels joined by chevrons."""
-    palette = hud["palette"]
-    scale = hud["scale"]
-    size = hud["small_size"]
-    parts = [part.strip() for part in str(text or "").split(_SHORTCUT_SEPARATOR) if part.strip()]
-    if not parts:
-        return
-    pad = 6.0 * scale
-    chip_h = 18.0 * scale
-    gap = 5.0 * scale
-    chevron = "›"
-    chevron_w = _text_dimensions(chevron, size)[0]
-    widths = [_text_dimensions(part, size)[0] + pad * 2.0 for part in parts]
-    total = sum(widths) + (len(parts) - 1) * (chevron_w + gap * 2.0)
-    if total > max_width:
-        _draw_text(_ellipsize(_SHORTCUT_SEPARATOR.join(parts), max_width, size), x, y + 5.0 * scale, size, palette["accent_label"])
-        return
-    cursor = x
-    for index, (part, width) in enumerate(zip(parts, widths)):
-        if index:
-            _draw_text(chevron, cursor + gap, y + 5.0 * scale, size, palette["muted"])
-            cursor += chevron_w + gap * 2.0
-        if _is_key_label(part):
-            radius = 3.0 * scale
-            _draw_round_rect(cursor, y - 1.5 * scale, width, chip_h, radius, palette["line"])
-            _draw_round_rect(cursor, y, width, chip_h, radius, palette["key_cap"])
-            _draw_round_outline(cursor, y, width, chip_h, radius, palette["line"])
-            _draw_text(part, cursor + width * 0.5, y + 5.0 * scale, size, palette["card_text"], align="CENTER")
-        else:
-            _draw_round_rect(cursor, y, width, chip_h, chip_h * 0.5, palette["accent_soft"])
-            _draw_text(part, cursor + width * 0.5, y + 5.0 * scale, size, palette["accent_label"], align="CENTER")
-        cursor += width
-
-
 def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: TutorialState) -> dict[str, Any]:
     scale = _ui_scale(context)
     region_w = max(1.0, float(region.width))
@@ -2005,8 +1938,8 @@ def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: Tu
         max(2.0, min(region_w, region_h) * 0.08),
     )
     available_w = max(1.0, region_w - margin * 2.0)
-    width = min(available_w, max(380.0, 560.0 * scale))
-    preferred_h = (232.0 if state.route is None else 262.0) * scale
+    width = min(available_w, max(380.0, 580.0 * scale))
+    preferred_h = (262.0 if state.route is None else 340.0) * scale
     x = (region_w - width) * 0.5
     # Leave the translucent Viewport tool/header strip unobstructed. The HUD is
     # still top-centred, but starts just below Blender's overlay controls.
@@ -2018,27 +1951,26 @@ def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: Tu
     )
     height = min(preferred_h, max(1.0, available_h - top_clearance))
     y = max(margin, region_h - height - margin - top_clearance)
-    header_h = min(40.0 * scale, height * 0.26)
-    content_pad = 14.0 * scale
-    action_h = min(30.0 * scale, height * 0.18)
-    footer_y = y + 12.0 * scale
-    control_h = action_h
-    control_gap = 6.0 * scale
-    back_w = 64.0 * scale
-    next_w = 64.0 * scale
-    close_size = min(22.0 * scale, header_h - 12.0 * scale)
-    help_w = 56.0 * scale
+    header_h = min(48.0 * scale, height * 0.26)
+    content_pad = 18.0 * scale
+    action_h = min(32.0 * scale, height * 0.18)
+    footer_y = y + 16.0 * scale
+    control_gap = 8.0 * scale
+    back_w = 76.0 * scale
+    next_w = 76.0 * scale
+    close_size = min(24.0 * scale, header_h - 16.0 * scale)
+    help_w = 60.0 * scale
     header_control_y = y + height - header_h + (header_h - close_size) * 0.5
     controls = {
-        "close": (x + width - 10.0 * scale - close_size, header_control_y, close_size, close_size),
+        "close": (x + width - content_pad - close_size, header_control_y, close_size, close_size),
         "help": (
-            x + width - 10.0 * scale - close_size - control_gap - help_w,
+            x + width - content_pad - close_size - control_gap - help_w,
             header_control_y,
             help_w,
             close_size,
         ),
-        "back": (x + content_pad, footer_y, back_w, control_h),
-        "next": (x + width - content_pad - next_w, footer_y, next_w, control_h),
+        "back": (x + content_pad, footer_y, back_w, action_h),
+        "next": (x + width - content_pad - next_w, footer_y, next_w, action_h),
     }
     action_rect = None
     if state.route is not None and state.active_task is not None:
@@ -2050,10 +1982,8 @@ def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: Tu
             max(1.0, action_right - action_left),
             action_h,
         )
-    palette = _theme_palette(context)
-    palette["accent_soft"] = (*palette["accent"][:3], 0.16)
-    palette["key_cap"] = _mix_color(palette["card"], palette["card_text"], 0.14, alpha=1.0)
-    data = {
+    route_key = state.route.key if state.route is not None else ""
+    hud = {
         "mode": "CHOOSER" if state.route is None else "STEP",
         "scale": scale,
         "x": x,
@@ -2064,16 +1994,220 @@ def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: Tu
         "header_h": header_h,
         "content_x": x + content_pad,
         "content_w": width - content_pad * 2.0,
-        "palette": palette,
-        "heading_size": max(14, round(16 * scale)),
-        "title_size": max(13, round(14 * scale)),
-        "body_size": max(10, round(11 * scale)),
-        "small_size": max(9, round(10 * scale)),
-        "line_h": max(14.0, 15.0 * scale),
+        "palette": _hud_palette(context, route_key),
+        "heading_size": max(14, round(17 * scale)),
+        "title_size": max(13, round(15 * scale)),
+        "body_size": max(11, round(12 * scale)),
+        "small_size": max(10, round(11 * scale)),
+        "caption_size": max(9, round(10 * scale)),
+        "line_h": max(15.0, 17.0 * scale),
         "action_rect": action_rect,
         "controls": controls,
     }
-    return data
+    if state.route is not None:
+        # Fit the card to its text: no empty band under short steps.
+        needed = _step_card_height(state, hud)
+        fixed = header_h + 6.0 * scale + 32.0 * scale + 60.0 * scale
+        fitted = min(height, max(140.0 * scale, fixed + needed))
+        if fitted < height:
+            shift = height - fitted
+            hud["y"] = y + shift
+            hud["height"] = fitted
+            for name in ("back", "next"):
+                rect = controls[name]
+                controls[name] = (rect[0], rect[1] + shift, rect[2], rect[3])
+            if action_rect is not None:
+                hud["action_rect"] = (action_rect[0], action_rect[1] + shift, action_rect[2], action_rect[3])
+    return hud
+
+
+def _step_card_height(state: TutorialState, hud: dict[str, Any]) -> float:
+    """Height the step card needs for its title, guidance, path and tip."""
+    scale = hud["scale"]
+    page = state.page
+    if page is None:
+        return 0.0
+    inner_w = hud["content_w"] - 32.0 * scale
+    task = state.active_task
+    if task is None:
+        guidance = "Every action was detected. Pick another guide or look back at earlier steps."
+        shortcut = ""
+    else:
+        guidance = _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
+        shortcut = _task_shortcut_text(bpy.context, task, page)
+    lines = len(_wrap_measured(guidance, inner_w, hud["body_size"], max_lines=2))
+    height = 16.0 * scale + hud["heading_size"] * 0.8 + 24.0 * scale + lines * hud["line_h"]
+    if shortcut:
+        label_w = _text_dimensions("HOW", hud["caption_size"])[0] + 10.0 * scale
+        height += 4.0 * scale + _draw_shortcut_chips(hud, shortcut, 0.0, 0.0, inner_w - label_w, measure=True)
+    if page.pro_tip:
+        height += _tip_height(hud, page.pro_tip) + 6.0 * scale
+    return height + 12.0 * scale
+
+
+def _tip_lines(hud: dict[str, Any], text: str) -> list[str]:
+    scale = hud["scale"]
+    label_w = _text_dimensions("TIP", hud["caption_size"])[0]
+    width = hud["content_w"] - 12.0 * scale - label_w - 30.0 * scale
+    return _wrap_measured(text, width, hud["small_size"], max_lines=2)
+
+
+def _tip_height(hud: dict[str, Any], text: str) -> float:
+    return 14.0 * hud["scale"] + len(_tip_lines(hud, text)) * hud["small_size"] * 1.45
+
+
+# Apple-style system tints, darkened slightly so white labels stay legible on
+# Blender's dark UI. Each guide keeps its own colour from chooser to last step.
+_ROUTE_TINTS = {
+    "IMAGE": (0.04, 0.46, 0.92, 1.0),
+    "DRAW": (0.88, 0.47, 0.06, 1.0),
+    "COLOR": (0.15, 0.62, 0.32, 1.0),
+    "MULTIPLANE": (0.58, 0.32, 0.84, 1.0),
+}
+
+
+def _hud_palette(context: bpy.types.Context, route_key: str = "") -> dict[str, tuple[float, float, float, float]]:
+    """Opaque colours only: translucent fills read differently per theme/GPU.
+
+    The surface follows Blender's menu background so the guide belongs to the
+    host UI, but every layer above it is mixed here in Python. Text colours are
+    then checked against the exact fill they sit on.
+    """
+    theme = _theme_palette(context)
+    surface = theme["panel"]
+    if _relative_luminance(surface) > 0.18:
+        # Light themes: keep the guide dark like Blender's popovers.
+        surface = (0.15, 0.15, 0.16, 1.0)
+    surface = (*surface[:3], 1.0)
+    white = (1.0, 1.0, 1.0, 1.0)
+    black = (0.0, 0.0, 0.0, 1.0)
+    card = _mix_color(surface, white, 0.07, alpha=1.0)
+    card_hover = _mix_color(surface, white, 0.12, alpha=1.0)
+    tint = _ROUTE_TINTS.get(route_key, theme["accent"])
+    tint = (*tint[:3], 1.0)
+    palette = {
+        "surface": surface,
+        "card": card,
+        "card_hover": card_hover,
+        "hairline": _mix_color(surface, white, 0.13, alpha=1.0),
+        "track": _mix_color(surface, white, 0.16, alpha=1.0),
+        "button": _mix_color(surface, white, 0.10, alpha=1.0),
+        "button_hover": _mix_color(surface, white, 0.17, alpha=1.0),
+        "key_cap": _mix_color(surface, white, 0.20, alpha=1.0),
+        "key_shadow": _mix_color(surface, black, 0.45, alpha=1.0),
+        "tint": tint,
+        "tint_hover": _mix_color(tint, white, 0.12, alpha=1.0),
+        "tint_soft": _mix_color(card, tint, 0.22, alpha=1.0),
+        "success": (0.20, 0.70, 0.36, 1.0),
+        "pending": _mix_color(surface, white, 0.24, alpha=1.0),
+    }
+    palette["text"] = _ensure_contrast((0.95, 0.95, 0.96, 1.0), card, 7.0)
+    palette["secondary"] = _ensure_contrast(_mix_color(palette["text"], card, 0.30, alpha=1.0), card, 4.5)
+    palette["tertiary"] = _ensure_contrast(_mix_color(palette["text"], card, 0.45, alpha=1.0), card, 3.0)
+    palette["on_tint"] = _ensure_contrast(white, tint, 3.0)
+    palette["tint_label"] = _ensure_contrast(_mix_color(tint, white, 0.35, alpha=1.0), surface, 4.5)
+    palette["tint_soft_label"] = _ensure_contrast(_mix_color(tint, white, 0.55, alpha=1.0), palette["tint_soft"], 4.5)
+    return palette
+
+
+def _draw_pill_button(
+    state: TutorialState,
+    hud: dict[str, Any],
+    key: str,
+    rect: tuple[float, float, float, float],
+    label: str,
+    *,
+    primary: bool = False,
+    quiet: bool = False,
+) -> None:
+    """Capsule button: tinted for the main action, neutral otherwise."""
+    palette = hud["palette"]
+    scale = hud["scale"]
+    hovered = state.hover == key
+    state.hitboxes[key] = rect
+    if primary:
+        fill = palette["tint_hover"] if hovered else palette["tint"]
+        text_color = palette["on_tint"]
+    elif quiet:
+        fill = palette["button_hover"] if hovered else None
+        text_color = palette["text"] if hovered else palette["secondary"]
+    else:
+        fill = palette["button_hover"] if hovered else palette["button"]
+        text_color = palette["text"]
+    if fill is not None:
+        _draw_round_rect(*rect, rect[3] * 0.5, fill)
+    size = hud["body_size"] if primary else hud["small_size"]
+    _draw_text(
+        _ellipsize(label, rect[2] - 16.0 * scale, size),
+        rect[0] + rect[2] * 0.5,
+        rect[1] + rect[3] * 0.5 - size * 0.36,
+        size,
+        text_color,
+        align="CENTER",
+    )
+
+
+def _draw_shortcut_chips(
+    hud: dict[str, Any], text: str, x: float, y: float, max_width: float, *, measure: bool = False,
+) -> float:
+    """Draw ``A  >  B`` as key caps and plain labels joined by chevrons.
+
+    Returns the height used. Long paths wrap onto a second line instead of
+    being cut, so every part of the path stays readable.
+    """
+    palette = hud["palette"]
+    scale = hud["scale"]
+    size = hud["small_size"]
+    parts = [part.strip() for part in str(text or "").split(_SHORTCUT_SEPARATOR) if part.strip()]
+    if not parts:
+        return 0.0
+    pad = 7.0 * scale
+    chip_h = 20.0 * scale
+    gap = 6.0 * scale
+    row_gap = 6.0 * scale
+    chevron = "›"
+    chevron_w = _text_dimensions(chevron, size)[0]
+    baseline = chip_h * 0.5 - size * 0.36
+    cursor = x
+    row_y = y
+    for index, part in enumerate(parts):
+        is_key = _is_key_label(part)
+        label = _ellipsize(part, max_width - (pad * 2.0 if is_key else 0.0), size)
+        width = _text_dimensions(label, size)[0] + (pad * 2.0 if is_key else 0.0)
+        lead = (chevron_w + gap * 2.0) if index else 0.0
+        if index and cursor + lead + width > x + max_width:
+            cursor = x
+            row_y -= chip_h + row_gap
+            lead = 0.0
+        elif index and not measure:
+            _draw_text(chevron, cursor + gap, row_y + baseline, size, palette["tertiary"])
+        cursor += lead
+        if measure:
+            pass
+        elif is_key:
+            radius = 5.0 * scale
+            _draw_round_rect(cursor, row_y - 1.5 * scale, width, chip_h, radius, palette["key_shadow"])
+            _draw_round_rect(cursor, row_y, width, chip_h, radius, palette["key_cap"])
+            _draw_text(label, cursor + width * 0.5, row_y + baseline, size, palette["text"], align="CENTER")
+        else:
+            _draw_text(label, cursor, row_y + baseline, size, palette["text"])
+        cursor += width
+    return y - row_y + chip_h
+
+
+def _draw_icon_tile(ui_key: str, x: float, y: float, size: float, palette: dict[str, Any], tint=None) -> None:
+    """Rounded tinted square with a white glyph, like an app icon."""
+    fill = tint or palette["tint"]
+    _draw_round_rect(x, y, size, size, size * 0.26, fill)
+    glyph = size * 0.7
+    _draw_custom_icon(
+        ui_key,
+        x + (size - glyph) * 0.5,
+        y + (size - glyph) * 0.5,
+        glyph,
+        glyph,
+        tint=_ensure_contrast((1.0, 1.0, 1.0, 1.0), fill, 3.0),
+    )
 
 
 def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
@@ -2081,19 +2215,19 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
     scale = hud["scale"]
     y, h = hud["y"], hud["height"]
     content_x, content_w = hud["content_x"], hud["content_w"]
-    top = y + h - hud["header_h"] - 20.0 * scale
-    _draw_text("What do you want to make?", content_x, top, hud["title_size"], palette["card_text"])
+    top = y + h - hud["header_h"] - 18.0 * scale
+    _draw_text("What do you want to make?", content_x, top, hud["heading_size"], palette["text"])
     _draw_text(
-        "Pick a guide. Each real action in Blender advances it.",
+        "Pick a guide. It moves on by itself as you work in Blender.",
         content_x,
-        top - 17.0 * scale,
+        top - 20.0 * scale,
         hud["small_size"],
-        palette["muted"],
+        palette["secondary"],
     )
-    gap = 8.0 * scale
-    grid_top = top - 30.0 * scale
-    grid_bottom = y + 14.0 * scale
-    card_h = max(36.0 * scale, (grid_top - grid_bottom - gap) * 0.5)
+    gap = 10.0 * scale
+    grid_top = top - 34.0 * scale
+    grid_bottom = y + 18.0 * scale
+    card_h = max(40.0 * scale, (grid_top - grid_bottom - gap) * 0.5)
     card_w = (content_w - gap) * 0.5
     for index, route_key in enumerate(_CHOOSER_ROUTES):
         column, row = index % 2, index // 2
@@ -2106,45 +2240,38 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
         )
         state.hitboxes[key] = rect
         hovered = state.hover == key
-        radius = 6.0 * scale
+        tint = (*_ROUTE_TINTS[route_key][:3], 1.0)
+        radius = 10.0 * scale
+        if hovered:
+            _draw_round_rect(rect[0] - 1.0, rect[1] - 1.0, rect[2] + 2.0, rect[3] + 2.0, radius + 1.0, tint)
         _draw_round_rect(*rect, radius, palette["card_hover"] if hovered else palette["card"])
-        _draw_round_outline(*rect, radius, palette["accent"] if hovered else palette["line"])
-        badge = min(34.0 * scale, rect[3] - 14.0 * scale)
-        badge_x = rect[0] + 10.0 * scale
-        badge_y = rect[1] + (rect[3] - badge) * 0.5
-        _draw_round_rect(badge_x, badge_y, badge, badge, 6.0 * scale, palette["accent_soft"])
-        icon = badge * 0.64
-        _draw_custom_icon(
-            _ROUTE_ICON_UI_KEYS[route_key],
-            badge_x + (badge - icon) * 0.5,
-            badge_y + (badge - icon) * 0.5,
-            icon,
-            icon,
-            tint=palette["accent_label"],
-        )
-        text_x = badge_x + badge + 10.0 * scale
-        text_w = rect[0] + rect[2] - text_x - 22.0 * scale
+        tile = min(36.0 * scale, rect[3] - 16.0 * scale)
+        tile_x = rect[0] + 12.0 * scale
+        tile_y = rect[1] + (rect[3] - tile) * 0.5
+        _draw_icon_tile(_ROUTE_ICON_UI_KEYS[route_key], tile_x, tile_y, tile, palette, tint)
+        text_x = tile_x + tile + 12.0 * scale
+        text_w = rect[0] + rect[2] - text_x - 24.0 * scale
         middle = rect[1] + rect[3] * 0.5
         _draw_text(
             _ellipsize(_ROUTE_SHORT_LABELS[route_key], text_w, hud["body_size"]),
             text_x,
-            middle + 2.0 * scale,
+            middle + 3.0 * scale,
             hud["body_size"],
-            palette["card_text"],
+            palette["text"],
         )
         _draw_text(
-            _ellipsize(_ROUTE_CARD_DETAILS[route_key], text_w, hud["small_size"]),
+            _ellipsize(_ROUTE_CARD_DETAILS[route_key], text_w, hud["caption_size"]),
             text_x,
             middle - 13.0 * scale,
-            hud["small_size"],
-            palette["muted"],
+            hud["caption_size"],
+            palette["secondary"],
         )
         _draw_text(
             "›",
-            rect[0] + rect[2] - 12.0 * scale,
-            middle - 5.0 * scale,
+            rect[0] + rect[2] - 14.0 * scale,
+            middle - 6.0 * scale,
             hud["title_size"],
-            palette["accent_label"] if hovered else palette["muted"],
+            palette["text"] if hovered else palette["tertiary"],
             align="CENTER",
         )
 
@@ -2162,13 +2289,13 @@ def _draw_page_stepper(state: TutorialState, hud: dict[str, Any], top: float) ->
     route = state.route
     content_x, content_w = hud["content_x"], hud["content_w"]
     pages = route.pages
-    gap = 4.0 * scale
+    gap = 5.0 * scale
     bar_h = max(3.0, 4.0 * scale)
     segment_w = (content_w - gap * (len(pages) - 1)) / max(1, len(pages))
     bar_y = top - bar_h
     for index, page in enumerate(pages):
         segment_x = content_x + index * (segment_w + gap)
-        _draw_round_rect(segment_x, bar_y, segment_w, bar_h, bar_h * 0.5, palette["line"])
+        _draw_round_rect(segment_x, bar_y, segment_w, bar_h, bar_h * 0.5, palette["track"])
         if index < state.page_index:
             fill = 1.0
         elif index == state.page_index:
@@ -2176,40 +2303,40 @@ def _draw_page_stepper(state: TutorialState, hud: dict[str, Any], top: float) ->
         else:
             fill = 0.0
         if fill > 0.0:
-            _draw_round_rect(segment_x, bar_y, segment_w * fill, bar_h, bar_h * 0.5, palette["accent"])
-    caption_y = bar_y - 16.0 * scale
+            _draw_round_rect(segment_x, bar_y, max(bar_h, segment_w * fill), bar_h, bar_h * 0.5, palette["tint"])
+    caption_y = bar_y - 18.0 * scale
     page = state.page
-    caption = f"Step {state.page_index + 1} of {len(pages)}  ·  {page.title}"
+    caption = f"STEP {state.page_index + 1} OF {len(pages)}  ·  {page.title.upper()}"
     current, total, _progress = _route_progress(state)
-    count = f"{min(current, total)} / {total} actions" if total else ""
-    count_w = _text_dimensions(count, hud["small_size"])[0] if count else 0.0
+    count = f"{min(current, total)} of {total}" if total else ""
+    count_w = _text_dimensions(count, hud["caption_size"])[0] if count else 0.0
     _draw_text(
-        _ellipsize(caption, content_w - count_w - 12.0 * scale, hud["small_size"]),
+        _ellipsize(caption, content_w - count_w - 12.0 * scale, hud["caption_size"]),
         content_x,
         caption_y,
-        hud["small_size"],
-        palette["accent_label"],
+        hud["caption_size"],
+        palette["tint_label"],
     )
     if count:
-        _draw_text(count, content_x + content_w, caption_y, hud["small_size"], palette["muted"], align="RIGHT")
-    return caption_y - 9.0 * scale
+        _draw_text(count, content_x + content_w, caption_y, hud["caption_size"], palette["tertiary"], align="RIGHT")
+    return caption_y - 10.0 * scale
 
 
 def _draw_task_dots(state: TutorialState, hud: dict[str, Any], page: PageSpec, right: float, cy: float) -> None:
     palette = hud["palette"]
     scale = hud["scale"]
     radius = 3.5 * scale
-    spacing = 11.0 * scale
+    spacing = 12.0 * scale
     active = state.active_task
     for index, task in enumerate(reversed(page.tasks)):
         cx = right - radius - index * spacing
         if state.task_is_done(task):
             _draw_circle(cx, cy, radius, palette["success"])
         elif active is not None and task.key == active.key:
-            _draw_circle(cx, cy, radius + 1.5 * scale, palette["accent"])
+            _draw_circle(cx, cy, radius + 1.5 * scale, palette["tint"])
             _draw_circle(cx, cy, radius - 0.5 * scale, palette["card"])
         else:
-            _draw_circle(cx, cy, radius, palette["line"])
+            _draw_circle(cx, cy, radius, palette["pending"])
 
 
 def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
@@ -2222,78 +2349,78 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
     if route is None or page is None:
         return
 
-    card_top = _draw_page_stepper(state, hud, y + h - hud["header_h"] - 12.0 * scale)
-    card_bottom = y + 54.0 * scale
+    card_top = _draw_page_stepper(state, hud, y + h - hud["header_h"] - 6.0 * scale)
+    card_bottom = y + 60.0 * scale
     card_h = max(54.0 * scale, card_top - card_bottom)
     card = (content_x, card_bottom, content_w, card_h)
-    card_radius = 6.0 * scale
+    card_radius = 12.0 * scale
     _draw_round_rect(*card, card_radius, palette["card"])
-    _draw_round_outline(*card, card_radius, palette["line"])
 
     task = state.active_task
-    inner_x = card[0] + 14.0 * scale
-    inner_w = card[2] - 28.0 * scale
-    title_y = card[1] + card[3] - 26.0 * scale
+    pad = 16.0 * scale
+    inner_x = card[0] + pad
+    inner_w = card[2] - pad * 2.0
+    title_y = card[1] + card[3] - pad - hud["heading_size"] * 0.8
+    shortcut = ""
     if task is None:
         finished = _route_is_finished(state)
-        title = "Tutorial complete" if finished else "Page complete"
+        title = "Guide complete" if finished else "Step complete"
         guidance = (
-            "Every action was detected. Pick another guide or review the earlier steps."
+            "Every action was detected. Pick another guide or look back at earlier steps."
             if finished else
-            "Everything on this page is done. Use Next to continue or Back to review it."
+            "Everything in this step is done. Press Next to continue or Back to review it."
         )
-        badge = 18.0 * scale
+        badge = 20.0 * scale
         _draw_circle(inner_x + badge * 0.5, title_y + 5.0 * scale, badge * 0.5, palette["success"])
-        _draw_text("✓", inner_x + badge * 0.5, title_y + 0.5 * scale, hud["body_size"], palette["accent_text"], align="CENTER")
-        _draw_text(title, inner_x + badge + 8.0 * scale, title_y, hud["heading_size"], palette["card_text"])
-        cursor = title_y - 22.0 * scale
+        _draw_text("✓", inner_x + badge * 0.5, title_y + 0.5 * scale, hud["body_size"], (1.0, 1.0, 1.0, 1.0), align="CENTER")
+        _draw_text(title, inner_x + badge + 10.0 * scale, title_y, hud["heading_size"], palette["text"])
         guidance_lines = _wrap_measured(guidance, inner_w, hud["body_size"], max_lines=2)
-        cursor = _draw_text_lines(guidance_lines, inner_x, cursor, hud["body_size"], palette["muted"], hud["line_h"])
-        shortcut = ""
+        cursor = _draw_text_lines(guidance_lines, inner_x, title_y - 24.0 * scale, hud["body_size"], palette["secondary"], hud["line_h"])
     else:
-        title = task.label
-        if task.optional:
-            optional_w = _text_dimensions("Optional", hud["small_size"])[0] + 12.0 * scale
-        else:
-            optional_w = 0.0
-        dots_w = len(page.tasks) * 11.0 * scale + 6.0 * scale
-        title_text = _ellipsize(title, inner_w - dots_w - optional_w - 8.0 * scale, hud["heading_size"])
-        title_w = _draw_text(title_text, inner_x, title_y, hud["heading_size"], palette["card_text"])
+        optional_w = (_text_dimensions("Optional", hud["caption_size"])[0] + 14.0 * scale) if task.optional else 0.0
+        dots_w = len(page.tasks) * 12.0 * scale + 8.0 * scale
+        title_text = _ellipsize(task.label, inner_w - dots_w - optional_w - 8.0 * scale, hud["heading_size"])
+        title_w = _draw_text(title_text, inner_x, title_y, hud["heading_size"], palette["text"])
         if optional_w:
-            pill = (inner_x + title_w + 8.0 * scale, title_y - 4.0 * scale, optional_w, 16.0 * scale)
-            _draw_round_rect(*pill, pill[3] * 0.5, palette["line"])
-            _draw_text("Optional", pill[0] + pill[2] * 0.5, title_y + 0.5 * scale, hud["small_size"], palette["muted"], align="CENTER")
-        _draw_task_dots(state, hud, page, card[0] + card[2] - 14.0 * scale, title_y + 5.0 * scale)
+            pill = (inner_x + title_w + 8.0 * scale, title_y - 3.0 * scale, optional_w, 17.0 * scale)
+            _draw_round_rect(*pill, pill[3] * 0.5, palette["key_cap"])
+            _draw_text("Optional", pill[0] + pill[2] * 0.5, pill[1] + pill[3] * 0.5 - 4.0 * scale, hud["caption_size"], palette["text"], align="CENTER")
+        _draw_task_dots(state, hud, page, card[0] + card[2] - pad, title_y + 5.0 * scale)
         guidance = _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
         guidance_lines = _wrap_measured(guidance, inner_w, hud["body_size"], max_lines=2)
-        cursor = _draw_text_lines(guidance_lines, inner_x, title_y - 22.0 * scale, hud["body_size"], palette["muted"], hud["line_h"])
+        cursor = _draw_text_lines(guidance_lines, inner_x, title_y - 24.0 * scale, hud["body_size"], palette["secondary"], hud["line_h"])
         shortcut = _task_shortcut_text(bpy.context, task, page)
 
-    tip_h = 26.0 * scale
-    has_tip = bool(page.pro_tip) and cursor - card[1] >= tip_h + (24.0 * scale if shortcut else 0.0)
+    tip_h = (_tip_height(hud, page.pro_tip) + 6.0 * scale) if page.pro_tip else 0.0
     if shortcut:
-        chips_y = cursor - 16.0 * scale
-        if chips_y > card[1] + (tip_h if has_tip else 8.0 * scale):
-            _draw_shortcut_chips(hud, shortcut, inner_x, chips_y, inner_w)
-    if has_tip:
-        tip_rect = (card[0] + 1.0, card[1] + 1.0, card[2] - 2.0, tip_h - 2.0)
-        _draw_round_rect(*tip_rect, card_radius, palette["accent_soft"])
-        label = "Tip"
-        label_w = _text_dimensions(label, hud["small_size"])[0]
-        text_y = tip_rect[1] + tip_rect[3] * 0.5 - 4.0 * scale
-        _draw_text(label, inner_x, text_y, hud["small_size"], palette["accent_label"])
-        _draw_text(
-            _ellipsize(page.pro_tip, inner_w - label_w - 10.0 * scale, hud["small_size"]),
-            inner_x + label_w + 10.0 * scale,
+        label_w = _text_dimensions("HOW", hud["caption_size"])[0]
+        how_y = cursor - 12.0 * scale
+        room = how_y - card[1] - (tip_h if page.pro_tip else 8.0 * scale) + 20.0 * scale
+        if room > 14.0 * scale:
+            _draw_text("HOW", inner_x, how_y + 6.0 * scale, hud["caption_size"], palette["tertiary"])
+            used = _draw_shortcut_chips(hud, shortcut, inner_x + label_w + 10.0 * scale, how_y, inner_w - label_w - 10.0 * scale)
+            cursor = how_y - used
+    if page.pro_tip and cursor - card[1] >= tip_h:
+        tip_rect = (card[0] + 6.0 * scale, card[1] + 6.0 * scale, card[2] - 12.0 * scale, tip_h - 6.0 * scale)
+        _draw_round_rect(*tip_rect, 8.0 * scale, palette["tint_soft"])
+        label = "TIP"
+        label_w = _text_dimensions(label, hud["caption_size"])[0]
+        line_h = hud["small_size"] * 1.45
+        text_y = tip_rect[1] + tip_rect[3] - 7.0 * scale - hud["small_size"] * 0.95
+        _draw_text(label, tip_rect[0] + 10.0 * scale, text_y, hud["caption_size"], palette["tint_soft_label"])
+        _draw_text_lines(
+            _tip_lines(hud, page.pro_tip),
+            tip_rect[0] + label_w + 20.0 * scale,
             text_y,
             hud["small_size"],
-            palette["card_text"],
+            palette["text"],
+            line_h,
         )
 
     action_rect = hud.get("action_rect")
     if task is not None and action_rect is not None:
         label = _TASK_ACTION_LABELS.get(task.key, "Do This Step")
-        _draw_flat_button(state, hud, "do_action", action_rect, label, primary=True)
+        _draw_pill_button(state, hud, "do_action", action_rect, label, primary=True)
 
 
 def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
@@ -2305,42 +2432,39 @@ def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
     state = operator._state
     hud = _compute_hud(context, region, state)
     operator._hud_layout = hud
+    _draw_hud(state, hud)
+
+
+def _draw_hud(state: TutorialState, hud: dict[str, Any]) -> None:
     x, y, w, h, scale = hud["x"], hud["y"], hud["width"], hud["height"], hud["scale"]
     palette = hud["palette"]
 
     gpu.state.blend_set("ALPHA")
     try:
-        outer_radius = 8.0 * scale
-        # Soft drop shadow so the guide reads as floating above the viewport.
-        for spread, alpha in ((6.0, 0.06), (3.0, 0.10), (1.5, 0.14)):
+        outer_radius = 14.0 * scale
+        # Soft, wide shadow so the guide floats above the viewport.
+        for spread, alpha in ((10.0, 0.05), (6.0, 0.08), (3.0, 0.12), (1.0, 0.18)):
             grow = spread * scale
-            _draw_round_rect(x - grow, y - grow * 1.4, w + grow * 2.0, h + grow * 2.0, outer_radius + grow, (0.0, 0.0, 0.0, alpha))
-        _draw_round_rect(x, y, w, h, outer_radius, palette["panel"])
+            _draw_round_rect(x - grow, y - grow * 1.3, w + grow * 2.0, h + grow * 2.0, outer_radius + grow, (0.0, 0.0, 0.0, alpha))
+        _draw_round_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, outer_radius + 1.0, palette["hairline"])
+        _draw_round_rect(x, y, w, h, outer_radius, palette["surface"])
         header_y = y + h - hud["header_h"]
-        _draw_round_rect(x, header_y, w, hud["header_h"], outer_radius, palette["header"])
-        _draw_rect(x, header_y, w, outer_radius, palette["header"])
-        _draw_rect(x, header_y, w, max(1.0, scale), palette["line"])
-        icon_key = _ROUTE_ICON_UI_KEYS.get(state.route.key, "") if state.route is not None else "menu.multiplane"
-        icon_size = 16.0 * scale
-        icon_x = x + 14.0 * scale
-        _draw_custom_icon(
-            icon_key,
-            icon_x,
-            header_y + (hud["header_h"] - icon_size) * 0.5,
-            icon_size,
-            icon_size,
-            tint=palette["accent_label"],
-        )
-        header_label = "Frame By Plane Tutorials"
+        content_x = hud["content_x"]
+        tile = 24.0 * scale
+        tile_y = header_y + (hud["header_h"] - tile) * 0.5
         if state.route is not None:
+            _draw_icon_tile(_ROUTE_ICON_UI_KEYS.get(state.route.key, "menu.multiplane"), content_x, tile_y, tile, palette)
             header_label = _ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)
-        header_room = hud["controls"]["help"][0] - icon_x - icon_size - 18.0 * scale
+        else:
+            _draw_icon_tile("menu.multiplane", content_x, tile_y, tile, palette, palette["key_cap"])
+            header_label = "Frame By Plane Tutorials"
+        header_room = hud["controls"]["help"][0] - content_x - tile - 18.0 * scale
         _draw_text(
             _ellipsize(header_label, header_room, hud["title_size"]),
-            icon_x + icon_size + 8.0 * scale,
-            header_y + hud["header_h"] * 0.5 - 5.0 * scale,
+            content_x + tile + 10.0 * scale,
+            header_y + hud["header_h"] * 0.5 - hud["title_size"] * 0.36,
             hud["title_size"],
-            palette["header_text"],
+            palette["text"],
         )
         state.hitboxes.clear()
         if state.route is None:
@@ -2348,17 +2472,22 @@ def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
         else:
             _draw_step(state, hud)
         controls = hud["controls"]
-        _draw_flat_button(state, hud, "control_close", controls["close"], "×")
+        close = controls["close"]
+        hovered = state.hover == "control_close"
+        state.hitboxes["control_close"] = close
+        _draw_circle(close[0] + close[2] * 0.5, close[1] + close[3] * 0.5, close[2] * 0.5,
+                     palette["button_hover"] if hovered else palette["button"], 32)
+        _draw_text("×", close[0] + close[2] * 0.5, close[1] + close[3] * 0.5 - hud["body_size"] * 0.38,
+                   hud["body_size"], palette["text"] if hovered else palette["secondary"], align="CENTER")
         if state.route is not None:
-            _draw_flat_button(state, hud, "control_help", controls["help"], "?  Help")
+            _draw_pill_button(state, hud, "control_help", controls["help"], "Help", quiet=True)
             task = state.active_task
-            _draw_flat_button(state, hud, "control_back", controls["back"], "‹  Back")
+            _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
             if task is not None:
-                _draw_flat_button(state, hud, "control_skip", controls["next"], "Skip")
+                _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
             else:
                 next_label = "Guides" if _route_is_finished(state) else "Next  ›"
-                _draw_flat_button(state, hud, "control_next", controls["next"], next_label, primary=True)
-        _draw_round_outline(x, y, w, h, outer_radius, palette["line"], max(1.0, scale))
+                _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
     finally:
         gpu.state.blend_set("NONE")
 

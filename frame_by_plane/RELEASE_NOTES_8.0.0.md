@@ -4,10 +4,10 @@ Frame By Plane 8 LTS: Grease Pencil masks you can edit, Split into Multiple Plan
 
 ## ✨ What's new
 
-- 🎭 **Grease Pencil Mask you can edit:** an **Edit** button in the effect header brings the mask strokes back for drawing, **Done** returns to the layer, and an eye shows or hides the strokes. The mask now covers the whole shot from frame 1 wherever it is created, Ctrl+Z after drawing no longer removes the effect, and the mask is computed many times faster.
+- 🎭 **Grease Pencil Mask you can edit:** **Edit Grease Pencil** brings the mask strokes back for drawing, **Done** returns to the layer, and an eye shows or hides the strokes. Blur and Expand each have their own checkbox. The mask now covers the whole shot from frame 1 wherever it is created, Ctrl+Z after drawing no longer removes the effect, and the mask is computed many times faster.
 - ✂️ **Split into Multiple Planes:** from the frame list or right-click → Frame By Plane → Layer, turn every frame of a layer into its own plane, keeping position, size and effects.
 - 💡 **SOLO badge:** a translucent badge at the top of the Viewport shows when Solo is on (layer Solo or the Z pie's Solo Selection). Hide Overlays hides it too.
-- 🎓 **New Live Tutorial:** a redesigned guide panel and a new Frame by Frame tutorial.
+- 🎓 **New Live Tutorial:** a redesigned guide with a color per guide, key caps and a clear HOW path for every action, plus a new Frame by Frame tutorial.
 - 🧪 **Apply Effects:** bake a layer's image effects into the layer itself.
 - ⏱️ **Magnetic Scrub Bar:** hold `<` to scrub, release it and the playhead snaps back to where you started with a small bounce. Exact on the bar, faster as the pointer moves away. A tap no longer pins the bar; pin it from the Viewport header.
 - 🗂️ **Scrub Bar menu:** collapsible sections, a live Length slider and an Audio Scrubbing toggle. Return to Start has its own button next to the pin, and in Draw Mode the bar shows only the active layer.
@@ -39,6 +39,7 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 ## 🛠️ Fixes in 8.0.0
 
 - Grease Pencil Mask works on planes with Crop applied: the mask stays aligned with what was drawn.
+- No thin unmasked line along the image edge when a mask stroke runs past it.
 - Adding an effect, a Grease Pencil Mask or a Clipping Mask from the pie menu can be undone with Ctrl+Z.
 - Ctrl+Z while drawing in a Grease Pencil Mask no longer risks crashing Blender.
 - Draw Mode Stroke/Fill colors stay stable, and the first stroke drawn with Auto Keying gets its fill color instead of black.

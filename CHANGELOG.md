@@ -11,11 +11,13 @@ Frame By Plane 8 LTS. Includes every 7.5.x change below.
 - Grease Pencil Mask: **Edit** / **Done** in the effect header to draw the mask again, and an eye to show or hide its strokes (hidden by default, stays visible once turned on). A new mask covers the shot from frame 1, wherever it is created.
 - **Split into Multiple Planes** in the frame list and in right-click → Frame By Plane → Layer: one plane per frame, keeping position and effects.
 - A translucent **SOLO** badge at the top center of the Viewport while layer Solo or the Z pie's Solo Selection is on; Hide Overlays hides it.
-- Redesigned Live Tutorial with a Frame by Frame guide.
+- Redesigned Live Tutorial with a Frame by Frame guide: each guide has its own color, readable icons and key caps, a HOW path for every action and a card that fits its text.
+- Grease Pencil Mask panel: eye, Opacity and Invert on one row; Blur and Expand each have a checkbox that turns its slider on; Edit and Visibility move into a closed Grease Pencil Settings section.
 
 ### Fixes
 
 - Grease Pencil Mask stayed misaligned or empty on planes with Crop applied; the mask is now rasterized over the uncropped image rectangle that the plane UVs use.
+- A thin unmasked line no longer shows along the image edge when a Grease Pencil Mask stroke runs past it.
 - Ctrl+Z after drawing in a new Grease Pencil Mask removed the effect; pie menu effect and mask buttons now push their own undo step.
 - Ctrl+Z while drawing in a Grease Pencil Mask could crash Blender: cached drawing references are now dropped on Undo and Redo.
 - Editing a mask on a later frame no longer adds an empty key that hid the mask.
