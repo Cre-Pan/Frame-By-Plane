@@ -22278,19 +22278,24 @@ def fbp_draw_effect_settings(
         op.message = "Heavy effect: may reduce viewport playback performance"
     if effect_id in GP_MASK_EFFECT_IDS and gp_mask_header_canvas is not None:
         try:
-            selected_canvas = bool(
-                context is not None
-                and getattr(context, "object", None) == gp_mask_header_canvas
+            from .grease_pencil_bridge import gp_mask_is_being_edited
+            editing = gp_mask_is_being_edited(context, gp_mask_header_canvas)
+            edit_gp = header_right.operator(
+                "fbp.edit_grease_pencil_mask",
+                text="Done" if editing else "Edit",
+                icon="CHECKMARK" if editing else "GREASEPENCIL",
+                depress=editing,
             )
-            select_gp = header_right.operator(
-                "fbp.select_grease_pencil_canvas",
+            edit_gp.rig_name = getattr(rig, "name", "")
+            edit_gp.canvas_name = getattr(gp_mask_header_canvas, "name", "")
+            guide = bool(getattr(gp_mask_header_canvas, "fbp_gp_mask_show_guide", False))
+            header_right.prop(
+                gp_mask_header_canvas,
+                "fbp_gp_mask_show_guide",
                 text="",
-                icon="RESTRICT_SELECT_OFF" if selected_canvas else "RESTRICT_SELECT_ON",
+                icon="HIDE_OFF" if guide or editing else "HIDE_ON",
                 emboss=False,
-                depress=selected_canvas,
             )
-            select_gp.rig_name = getattr(rig, "name", "")
-            select_gp.canvas_name = getattr(gp_mask_header_canvas, "name", "")
             detach_gp = header_right.operator(
                 "fbp.detach_grease_pencil_mask_from_effect",
                 text="",
@@ -22298,7 +22303,7 @@ def fbp_draw_effect_settings(
                 emboss=False,
             )
             detach_gp.target_effect_id = effect_id
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
 
     if definition.get("kind") in {"GEOMETRY", "SHADER"}:

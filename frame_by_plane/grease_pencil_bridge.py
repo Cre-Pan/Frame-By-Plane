@@ -214,6 +214,7 @@ _RNA_PROPERTIES = (
     "fbp_gp_reference_opacity",
     "fbp_gp_mask_source",
     "fbp_gp_mask_invert",
+    "fbp_gp_mask_show_guide",
     "fbp_gp_mask_feather",
     "fbp_gp_mask_expand",
     "fbp_gp_mask_opacity",
@@ -1944,8 +1945,11 @@ def sync_gp_mask_interaction_state(context=None, scene=None, active=None):
             if not bool(getattr(canvas, "hide_select", False)):
                 canvas.hide_select = True
                 changed = True
-            if not bool(canvas.hide_get()):
-                canvas.hide_set(True)
+            # The eye in the mask's effect header keeps the strokes visible as
+            # a guide while the mask is not being edited.
+            hidden = not bool(getattr(canvas, "fbp_gp_mask_show_guide", False))
+            if bool(canvas.hide_get()) != hidden:
+                canvas.hide_set(hidden)
                 changed = True
         except FBP_DATA_ERRORS:
             continue
@@ -3382,6 +3386,22 @@ def _ensure_gp_current_keyframe(canvas, context=None, *, frame_number=None):
         frame_number = int(frame_number)
     except (TypeError, ValueError):
         frame_number = 1
+    if is_gp_mask_canvas(canvas):
+        # A mask is edited where it is: draw on the drawing held at this frame
+        # instead of starting a blank key that hides it from here on. A new
+        # mask starts at the first scene frame so it covers the whole shot.
+        try:
+            keys = [int(getattr(frame, "frame_number", 0) or 0) for frame in tuple(getattr(layer, "frames", ()) or ())]
+        except FBP_DATA_ERRORS:
+            keys = []
+        if keys and min(keys) <= frame_number:
+            return False
+        if not keys:
+            try:
+                scene = getattr(context, "scene", None) if context is not None else getattr(bpy.context, "scene", None)
+                frame_number = min(frame_number, int(getattr(scene, "frame_start", frame_number)))
+            except FBP_DATA_ERRORS:
+                pass
     try:
         for frame in tuple(getattr(layer, "frames", ()) or ()):  # existing explicit key
             if int(getattr(frame, "frame_number", 0) or 0) == frame_number:
@@ -5323,6 +5343,15 @@ def _canvas_property_update(self, _context):
         pass
 
 
+def _mask_guide_update(self, context):
+    if _gp_property_update_blocked(self):
+        return
+    try:
+        sync_gp_mask_interaction_state(context=context, scene=getattr(context, "scene", None))
+    except FBP_DATA_ERRORS:
+        pass
+
+
 def _canvas_visibility_update(self, _context):
     if _gp_property_update_blocked(self):
         return
@@ -6361,6 +6390,53 @@ class FBP_OT_SelectGreasePencilCanvas(Operator):
         except FBP_DATA_ERRORS:
             pass
         if not _select_canvas(context, canvas):
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+def gp_mask_is_being_edited(context, canvas):
+    try:
+        return bool(
+            canvas is not None
+            and getattr(context, "object", None) == canvas
+            and str(getattr(context, "mode", "")) == "PAINT_GREASE_PENCIL"
+        )
+    except FBP_DATA_ERRORS:
+        return False
+
+
+class FBP_OT_EditGreasePencilMask(Operator):
+    bl_idname = "fbp.edit_grease_pencil_mask"
+    bl_label = "Edit Grease Pencil Mask"
+    bl_description = "Show this mask and draw on it at the current frame; click again to finish editing"
+    bl_options = {"REGISTER", "UNDO"}
+
+    rig_name: StringProperty(name="Layer", default="", options={"SKIP_SAVE"})
+    canvas_name: StringProperty(name="Mask", default="", options={"SKIP_SAVE"})
+
+    def execute(self, context):
+        canvas = bpy.data.objects.get(self.canvas_name) if self.canvas_name else None
+        rig = bpy.data.objects.get(self.rig_name) if self.rig_name else None
+        if not is_gp_mask_canvas(canvas):
+            return {"CANCELLED"}
+        if gp_mask_is_being_edited(context, canvas):
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except FBP_DATA_ERRORS:
+                pass
+            target = rig if rig is not None else gp_canvas_owner(canvas)
+            try:
+                for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+                    obj.select_set(False)
+                if target is not None:
+                    target.select_set(True)
+                    context.view_layer.objects.active = target
+            except FBP_DATA_ERRORS:
+                pass
+            sync_gp_mask_interaction_state(context=context, scene=getattr(context, "scene", None))
+            return {"FINISHED"}
+        if not _enter_gp_draw_mode(context, canvas):
+            self.report({"WARNING"}, "Could not open the Grease Pencil mask for editing")
             return {"CANCELLED"}
         return {"FINISHED"}
 
@@ -9052,6 +9128,12 @@ def _register_properties():
         update=_reference_opacity_update,
     )
     bpy.types.Object.fbp_gp_mask_source = EnumProperty(description='Choose the Grease Pencil Mask Source option for this Grease Pencil workflow. Hover each entry for the specific mode when Blender exposes enum item help.', name="Mask Source", items=MASK_SOURCE_ITEMS, default="AUTO", update=_mask_geometry_property_update)
+    bpy.types.Object.fbp_gp_mask_show_guide = BoolProperty(
+        name="Show Mask Strokes",
+        description="Keep the mask strokes visible in the viewport while the mask is not being edited",
+        default=False,
+        update=_mask_guide_update,
+    )
     bpy.types.Object.fbp_gp_mask_invert = BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Invert", default=False, update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_mask_feather = FloatProperty(description='Soft transition width around the edge of the mask, gradient, threshold or shadow.', name="Blur", default=0.0, min=0.0, max=1.0, soft_max=0.25, subtype="FACTOR", update=_mask_raster_property_update)
     bpy.types.Object.fbp_gp_mask_expand = FloatProperty(description='Grease Pencil Mask Expand value used by the current Grease Pencil workflow. Changes are applied only to compatible Frame By Plane data.', name="Expand", default=DEFAULT_GP_MASK_EXPAND, min=-1.0, max=1.0, soft_min=-0.25, soft_max=0.25, update=_mask_raster_property_update)
@@ -9189,6 +9271,7 @@ classes = (
     FBP_OT_AddGreasePencilCanvas,
     FBP_OT_LinkGreasePencilCanvas,
     FBP_OT_SelectGreasePencilCanvas,
+    FBP_OT_EditGreasePencilMask,
     FBP_OT_RefreshGreasePencilMask,
     FBP_OT_BakeGreasePencilMask,
     FBP_OT_UseGreasePencilAsMask,

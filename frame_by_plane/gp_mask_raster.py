@@ -143,6 +143,48 @@ def _coord_window(min_value, max_value, bounds_min, bounds_max, resolution, marg
         return 0, int(resolution)
 
 
+def _coord_windows_numpy(min_values, max_values, bounds_min, bounds_max, resolution, margin, np):
+    """Vectorized ``_coord_window`` for every segment of one stroke."""
+    resolution = int(resolution)
+    span = float(bounds_max) - float(bounds_min)
+    count = int(min_values.shape[0])
+    if abs(span) <= 1.0e-12:
+        return np.zeros(count, dtype=np.int64), np.full(count, resolution, dtype=np.int64)
+    scale = (resolution - 1) / span
+    lo = np.floor((min_values.astype(np.float64) - float(margin) - float(bounds_min)) * scale).astype(np.int64) - 1
+    hi = np.ceil((max_values.astype(np.float64) + float(margin) - float(bounds_min)) * scale).astype(np.int64) + 2
+    return np.clip(lo, 0, resolution), np.clip(hi, 0, resolution)
+
+
+_GROUP_MAX_ELEMENTS = 16384
+
+
+def _segment_window_groups(wx0, wx2, wy0, wy2):
+    """Group consecutive segments whose joined window stays small."""
+    xs0 = wx0.tolist(); xs2 = wx2.tolist(); ys0 = wy0.tolist(); ys2 = wy2.tolist()
+    groups = []
+    first = None
+    for index in range(len(xs0)):
+        x0, x2, y0, y2 = xs0[index], xs2[index], ys0[index], ys2[index]
+        if x2 <= x0 or y2 <= y0:
+            if first is not None:
+                groups.append((first, index, gx0, gx2, gy0, gy2))
+                first = None
+            continue
+        if first is not None:
+            nx0, nx2 = min(gx0, x0), max(gx2, x2)
+            ny0, ny2 = min(gy0, y0), max(gy2, y2)
+            if (index + 1 - first) * (nx2 - nx0) * (ny2 - ny0) <= _GROUP_MAX_ELEMENTS:
+                gx0, gx2, gy0, gy2 = nx0, nx2, ny0, ny2
+                continue
+            groups.append((first, index, gx0, gx2, gy0, gy2))
+        first = index
+        gx0, gx2, gy0, gy2 = x0, x2, y0, y2
+    if first is not None:
+        groups.append((first, len(xs0), gx0, gx2, gy0, gy2))
+    return groups
+
+
 def _segment_chunk_size(resolution):
     try:
         res = int(resolution or 0)
@@ -193,7 +235,7 @@ def _segment_arrays(points, cyclic, np):
     return start[mask, 0], start[mask, 1], dx[mask], dy[mask], length_sq[mask], mask
 
 
-def _segment_distance_numpy(points, cyclic, grid_x, grid_y, resolution, np, widths=None, fallback_width=0.0, *, bounds=None, local_band=None):
+def _segment_distance_numpy(points, cyclic, grid_x, grid_y, resolution, np, widths=None, fallback_width=0.0, *, bounds=None, local_band=None, out=None):
     arrays = _segment_arrays(points, cyclic, np)
     if arrays is None:
         distance = _distance_to_points_numpy(points, grid_x, grid_y, resolution, np)
@@ -206,7 +248,9 @@ def _segment_distance_numpy(points, cyclic, grid_x, grid_y, resolution, np, widt
     if widths is None:
         distance_sq = np.full((resolution, resolution), np.inf, dtype=np.float32)
     else:
-        signed = np.full((resolution, resolution), -1.0e6, dtype=np.float32)
+        # ``out`` lets callers accumulate many strokes into one buffer instead
+        # of allocating and merging a full-resolution field per stroke.
+        signed = out if out is not None and use_local else np.full((resolution, resolution), -1.0e6, dtype=np.float32)
         try:
             width_values = np.asarray(widths, dtype=np.float32)
         except (TypeError, ValueError):
@@ -219,27 +263,31 @@ def _segment_distance_numpy(points, cyclic, grid_x, grid_y, resolution, np, widt
     if use_local:
         min_x, max_x, min_y, max_y = bounds
         margin = max(float(local_band or 0.0), _axis_step(bounds, resolution) * 2.0)
-        for index in range(x1.shape[0]):
-            sx = float(x1[index]); sy = float(y1[index])
-            ex = sx + float(dx[index]); ey = sy + float(dy[index])
-            x0, x2 = _coord_window(min(sx, ex), max(sx, ex), min_x, max_x, resolution, margin)
-            y0, y2 = _coord_window(min(sy, ey), max(sy, ey), min_y, max_y, resolution, margin)
-            if x2 <= x0 or y2 <= y0:
-                continue
-            gx = grid_x[:, x0:x2]
-            gy = grid_y[y0:y2, :]
-            sdx = np.float32(dx[index]); sdy = np.float32(dy[index]); slen = np.float32(length_sq[index])
-            t = ((gx - np.float32(sx)) * sdx + (gy - np.float32(sy)) * sdy) / slen
-            t = np.clip(t, 0.0, 1.0)
-            cx = np.float32(sx) + t * sdx
-            cy = np.float32(sy) + t * sdy
-            dist = np.sqrt((gx - cx) ** 2 + (gy - cy) ** 2)
+        ex = x1 + dx
+        ey = y1 + dy
+        wx0, wx2 = _coord_windows_numpy(np.minimum(x1, ex), np.maximum(x1, ex), min_x, max_x, resolution, margin, np)
+        wy0, wy2 = _coord_windows_numpy(np.minimum(y1, ey), np.maximum(y1, ey), min_y, max_y, resolution, margin, np)
+        target = signed if widths is not None else distance_sq
+        for first, last, x0, x2, y0, y2 in _segment_window_groups(wx0, wx2, wy0, wy2):
+            # One vectorized pass per run of neighbouring segments over their
+            # shared window. Pixels a segment's own window would have skipped
+            # lie farther than the band, so the mask alpha does not change.
+            gx = grid_x[:, x0:x2][None, :, :]
+            gy = grid_y[y0:y2, :][None, :, :]
+            sx = x1[first:last, None, None]
+            sy = y1[first:last, None, None]
+            sdx = dx[first:last, None, None]
+            sdy = dy[first:last, None, None]
+            t = ((gx - sx) * sdx + (gy - sy) * sdy) / length_sq[first:last, None, None]
+            np.clip(t, 0.0, 1.0, out=t)
+            dist = np.sqrt((gx - (sx + t * sdx)) ** 2 + (gy - (sy + t * sdy)) ** 2)
+            window = target[y0:y2, x0:x2]
             if widths is None:
-                distance_sq[y0:y2, x0:x2] = np.minimum(distance_sq[y0:y2, x0:x2], dist * dist)
+                np.minimum(window, (dist * dist).min(axis=0), out=window)
             else:
-                sw1 = np.float32(w1_all[index]); sw2 = np.float32(w2_all[index])
-                local_width = sw1 + (sw2 - sw1) * t
-                signed[y0:y2, x0:x2] = np.maximum(signed[y0:y2, x0:x2], local_width - dist)
+                sw1 = w1_all[first:last, None, None]
+                sw2 = w2_all[first:last, None, None]
+                np.maximum(window, (sw1 + (sw2 - sw1) * t - dist).max(axis=0), out=window)
         return np.sqrt(distance_sq) if widths is None else signed
 
     chunk_size = max(1, _segment_chunk_size(resolution))
@@ -265,6 +313,36 @@ def _segment_distance_numpy(points, cyclic, grid_x, grid_y, resolution, np, widt
     return np.sqrt(distance_sq) if widths is None else signed
 
 
+def _contour_parity_window(contour_closed, grid_x, grid_y, resolution, np):
+    """Even/odd parity of one closed contour, only inside its bounding box.
+
+    Outside the box a ray to +X crosses the contour an even number of times,
+    so the parity there is always False.
+    """
+    bounds = (float(grid_x[0, 0]), float(grid_x[0, -1]), float(grid_y[0, 0]), float(grid_y[-1, 0]))
+    xs = [float(point[0]) for point in contour_closed]
+    ys = [float(point[1]) for point in contour_closed]
+    x0, x2 = _coord_window(min(xs), max(xs), bounds[0], bounds[1], resolution, 0.0)
+    y0, y2 = _coord_window(min(ys), max(ys), bounds[2], bounds[3], resolution, 0.0)
+    if x2 <= x0 or y2 <= y0:
+        return None
+    gx = grid_x[:, x0:x2]
+    gy = grid_y[y0:y2, :]
+    inside = np.zeros((y2 - y0, x2 - x0), dtype=bool)
+    previous = contour_closed[-1]
+    for current in contour_closed:
+        x1, y1 = previous
+        x2_, y2_ = current
+        previous = current
+        crossing = (y1 > gy) != (y2_ > gy)
+        denom = np.float32(y2_ - y1)
+        if abs(float(denom)) <= 1.0e-12:
+            denom = np.float32(1.0e-12)
+        intersection = (x2_ - x1) * (gy - y1) / denom + x1
+        inside ^= crossing & (gx < intersection)
+    return y0, y2, x0, x2, inside
+
+
 def _fill_mask_numpy(polygons, grid_x, grid_y, resolution, np):
     """Return even/odd fill parity without calculating an SDF boundary."""
     combined_inside = np.zeros((resolution, resolution), dtype=bool)
@@ -274,19 +352,10 @@ def _fill_mask_numpy(polygons, grid_x, grid_y, resolution, np):
             contour_closed = _closed_contour(contour)
             if len(contour_closed) < 4:
                 continue
-            contour_inside = np.zeros((resolution, resolution), dtype=bool)
-            previous = contour_closed[-1]
-            for current in contour_closed:
-                x1, y1 = previous
-                x2, y2 = current
-                crossing = (y1 > grid_y) != (y2 > grid_y)
-                denom = np.float32(y2 - y1)
-                if abs(float(denom)) <= 1.0e-12:
-                    denom = np.float32(1.0e-12)
-                intersection = (x2 - x1) * (grid_y - y1) / denom + x1
-                contour_inside ^= crossing & (grid_x < intersection)
-                previous = current
-            inside ^= contour_inside
+            window = _contour_parity_window(contour_closed, grid_x, grid_y, resolution, np)
+            if window is not None:
+                y0, y2, x0, x2, parity = window
+                inside[y0:y2, x0:x2] ^= parity
         combined_inside |= inside
     return combined_inside
 
@@ -313,14 +382,17 @@ def _line_signed_distance_numpy(polylines, bounds, resolution, stroke_width, np,
             fallback_width=stroke_width,
             bounds=bounds,
             local_band=local_band,
+            out=combined,
         )
-        combined = np.maximum(combined, signed)
+        if signed is not combined:
+            np.maximum(combined, signed, out=combined)
     return combined
 
 
 def _signed_distance_numpy(polygons, polylines, bounds, resolution, stroke_width, np, band_margin=0.0):
     grid_x, grid_y = _grid_numpy(bounds, resolution, np)
     combined = np.full((resolution, resolution), -1.0e6, dtype=np.float32)
+    boundary_band = max(float(band_margin or 0.0), _axis_step(bounds, resolution) * 3.0)
 
     def boundary_distance(points, cyclic, *, local_band=None):
         if len(points) < 1:
@@ -336,19 +408,16 @@ def _signed_distance_numpy(polygons, polylines, bounds, resolution, stroke_width
             contour_closed = _closed_contour(contour)
             if len(contour_closed) < 4:
                 continue
-            contour_inside = np.zeros((resolution, resolution), dtype=bool)
-            previous = contour_closed[-1]
-            for current in contour_closed:
-                x1, y1 = previous; x2, y2 = current
-                crossing = (y1 > grid_y) != (y2 > grid_y)
-                denom = np.float32(y2 - y1)
-                if abs(float(denom)) <= 1.0e-12:
-                    denom = np.float32(1.0e-12)
-                intersection = (x2 - x1) * (grid_y - y1) / denom + x1
-                contour_inside ^= crossing & (grid_x < intersection)
-                previous = current
-            inside ^= contour_inside
-            boundary = np.minimum(boundary, boundary_distance(contour_closed, True))
+            window = _contour_parity_window(contour_closed, grid_x, grid_y, resolution, np)
+            if window is not None:
+                y0, y2, x0, x2, parity = window
+                inside[y0:y2, x0:x2] ^= parity
+            # Only the band around the edge reaches the alpha: farther pixels
+            # are fully in or out, and an infinite distance keeps that sign.
+            boundary = np.minimum(
+                boundary,
+                boundary_distance(contour_closed, True, local_band=boundary_band),
+            )
         signed = np.where(inside, boundary, -boundary)
         combined = np.maximum(combined, signed)
 
@@ -444,10 +513,7 @@ def _rgba_numpy(alpha, np):
     else:
         _RGBA_CACHE.move_to_end(key)
     rgba = cached[0]
-    rgba[:, :, 0] = alpha
-    rgba[:, :, 1] = alpha
-    rgba[:, :, 2] = alpha
-    rgba[:, :, 3] = alpha
+    rgba[...] = alpha[:, :, None]
     return rgba.reshape(-1)
 
 

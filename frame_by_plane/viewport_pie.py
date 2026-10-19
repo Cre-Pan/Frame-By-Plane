@@ -1857,7 +1857,7 @@ class FBP_OT_PieAddEffect(Operator):
     bl_idname = "fbp.pie_add_effect"
     bl_label = "Add Favourite Effect"
     bl_description = "Add this favourite and reveal its Image, Mask or Mesh panel"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     effect_id: StringProperty(
         name="Effect ID",
@@ -1909,7 +1909,7 @@ class FBP_OT_PieAddGreasePencilMask(Operator):
     bl_idname = "fbp.pie_add_grease_pencil_mask"
     bl_label = "Grease Pencil Mask"
     bl_description = "Create an editable Grease Pencil mask and reveal the Mask panel"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -1933,7 +1933,7 @@ class FBP_OT_PieToggleClippingMask(Operator):
     bl_idname = "fbp.pie_toggle_clipping_mask"
     bl_label = "Clipping Mask"
     bl_description = "Toggle Clipping Mask consistently across selected layers and reveal Masks"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):

@@ -18,6 +18,7 @@ TESTS = (
     "gp_draw_color_stability_regression.py",
     "live_tutorial_regression.py",
     "split_sequence_planes_regression.py",
+    "gp_mask_edit_undo_regression.py",
     "compositor_opt_in_regression.py",
     "image_properties_regression.py",
     "addon_lifecycle_regression.py",
