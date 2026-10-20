@@ -1448,7 +1448,6 @@ class FBP_OT_QuickMaskLibraryPopup(Operator):
             layout,
             context,
             "MASK",
-            max_columns=2,
             quick_slot_index=self.slot_index,
             quick_kind="MASK",
         )
@@ -1628,7 +1627,9 @@ class FBP_OT_QuickEffectLibraryPopup(Operator):
     )
 
     def invoke(self, context, _event):
-        return context.window_manager.invoke_popup(self, width=680)
+        # Wide enough for every category column side by side.
+        width = 1180 if self.category == "2D" else 900
+        return context.window_manager.invoke_popup(self, width=width)
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -1637,7 +1638,6 @@ class FBP_OT_QuickEffectLibraryPopup(Operator):
             layout,
             context,
             self.category,
-            max_columns=2,
             quick_slot_index=self.slot_index,
             quick_kind="EFFECT",
         )

@@ -24786,41 +24786,60 @@ class FBP_UL_EffectStackUnified(FBP_UL_EffectStack, UIList):
     hidden_effect_ids = frozenset({FBP_EFFECT_LAYER_BLEND})
 
 
+_FBP_EFFECT_MASK_ENUM_CACHE = []
+
+
 def _fbp_effect_mask_enum_items(_self=None, context=None):
-    """Return one compact dropdown containing every attachable local mask."""
+    """Return one dropdown of attachable local masks, one column per kind.
+
+    Columns follow the Mask menu: Shape, Nodes, Advanced. The numeric values
+    stay those of the earlier flat list so stored choices keep their meaning.
+    """
     rigs = _fbp_selected_rigs(context) if context is not None else []
-    ordered = (
-        FBP_EFFECT_COLOR_MASK,
-        FBP_EFFECT_LUMINANCE_MASK,
-        FBP_EFFECT_CHANNEL_MASK,
-        FBP_EFFECT_GRADIENT_MASK,
-        FBP_EFFECT_NOISE_MASK,
-        FBP_EFFECT_VORONOI_MASK,
-        FBP_EFFECT_WAVE_MASK,
-        FBP_EFFECT_SQUARE_MASK,
-        FBP_EFFECT_CIRCLE_MASK,
-        FBP_EFFECT_TRIANGLE_MASK,
-        FBP_EFFECT_ALPHA_MATTE,
-        FBP_EFFECT_LUMA_MATTE,
-    )
-    items = []
-    for index, effect_id in enumerate(ordered):
-        definition = fbp_effect_definition(effect_id)
-        if not definition:
-            continue
-        if rigs and not any(
-            fbp_effect_supported_for_rig(rig, effect_id) for rig in rigs
-        ):
-            continue
-        label = _fbp_effect_display_label(effect_id, definition, fallback="Mask")
-        items.append((
-            effect_id,
-            label,
-            f"Create or attach {label}",
-            effect_enum_icon(effect_id, definition.get("icon", "MOD_MASK")),
-            index,
+    values = {
+        effect_id: index for index, effect_id in enumerate((
+            FBP_EFFECT_COLOR_MASK,
+            FBP_EFFECT_LUMINANCE_MASK,
+            FBP_EFFECT_CHANNEL_MASK,
+            FBP_EFFECT_GRADIENT_MASK,
+            FBP_EFFECT_NOISE_MASK,
+            FBP_EFFECT_VORONOI_MASK,
+            FBP_EFFECT_WAVE_MASK,
+            FBP_EFFECT_SQUARE_MASK,
+            FBP_EFFECT_CIRCLE_MASK,
+            FBP_EFFECT_TRIANGLE_MASK,
+            FBP_EFFECT_ALPHA_MATTE,
+            FBP_EFFECT_LUMA_MATTE,
         ))
-    return items
+    }
+    items = []
+    for section_label, _icon, tokens in FBP_MASK_EFFECT_MENU_SECTIONS:
+        section = []
+        for effect_id in tokens:
+            if effect_id not in values:
+                continue
+            definition = fbp_effect_definition(effect_id)
+            if not definition:
+                continue
+            if rigs and not any(
+                fbp_effect_supported_for_rig(rig, effect_id) for rig in rigs
+            ):
+                continue
+            label = _fbp_effect_display_label(effect_id, definition, fallback="Mask")
+            section.append((
+                effect_id,
+                label,
+                f"Create or attach {label}",
+                effect_enum_icon(effect_id, definition.get("icon", "MOD_MASK")),
+                values[effect_id],
+            ))
+        if section:
+            # An empty identifier starts a new titled column in enum menus.
+            items.append(("", section_label, ""))
+            items.extend(section)
+    # Blender keeps only weak references to dynamic enum strings.
+    _FBP_EFFECT_MASK_ENUM_CACHE[:] = items
+    return _FBP_EFFECT_MASK_ENUM_CACHE
 
 
 def fbp_draw_effect_mask_editor(layout, context, rigs, target_effect_id, target_instance_id=""):
@@ -25077,7 +25096,7 @@ def _fbp_draw_effect_add_columns(
         """Draw user effects as the final section of the fourth column."""
         custom = parent.column(align=False)
         custom.label(text="User Effects", icon="NODETREE")
-        custom.separator(factor=0.35)
+        custom.separator(type="LINE")
         custom_ids = _fbp_custom_effect_ids_for_view(view)
         if custom_ids:
             for effect_id in custom_ids:
@@ -25137,6 +25156,9 @@ def _fbp_draw_effect_add_columns(
     else:
         draw_groups = tuple(tuple(group) for group in column_groups)
 
+    # Masks are short enough to keep User Effects under Advanced; Image and
+    # Mesh effects give it a column of its own at the right.
+    user_in_last_column = requested_columns == 2 or view == "MASK"
     columns = layout.row(align=False)
     for column_index, section_indices in enumerate(draw_groups):
         column = columns.column(align=False)
@@ -25146,14 +25168,14 @@ def _fbp_draw_effect_add_columns(
             section_label, section_icon, effect_tokens = sections[int(section_index)]
             section = column.column(align=False)
             section.label(text=section_label, icon=section_icon)
-            section.separator(factor=0.35)
+            section.separator(type="LINE")
             for effect_token in effect_tokens:
                 draw_effect(section, effect_token)
-        if requested_columns == 2 and column_index == len(draw_groups) - 1:
+        if user_in_last_column and column_index == len(draw_groups) - 1:
             column.separator()
             draw_user_effects(column)
 
-    if requested_columns != 2:
+    if not user_in_last_column:
         user_column = columns.column(align=False)
         draw_user_effects(user_column)
 
@@ -26398,7 +26420,7 @@ class FBP_MT_ObjectEffects2D(Menu):
         if not _fbp_selected_rigs(context):
             self.layout.label(text="Select a Frame By Plane layer", icon="INFO")
             return
-        _fbp_draw_effect_add_columns(self.layout, context, "2D", max_columns=2)
+        _fbp_draw_effect_add_columns(self.layout, context, "2D")
 
 
 class FBP_MT_ObjectEffects3D(Menu):
@@ -26409,7 +26431,7 @@ class FBP_MT_ObjectEffects3D(Menu):
         if not _fbp_selected_rigs(context):
             self.layout.label(text="Select a Frame By Plane layer", icon="INFO")
             return
-        _fbp_draw_effect_add_columns(self.layout, context, "3D", max_columns=2)
+        _fbp_draw_effect_add_columns(self.layout, context, "3D")
 
 
 class FBP_MT_ObjectMasks(Menu):
@@ -26420,7 +26442,7 @@ class FBP_MT_ObjectMasks(Menu):
         if not _fbp_selected_rigs(context):
             self.layout.label(text="Select a Frame By Plane layer", icon="INFO")
             return
-        _fbp_draw_effect_add_columns(self.layout, context, "MASK", max_columns=2)
+        _fbp_draw_effect_add_columns(self.layout, context, "MASK")
 
 
 class FBP_MT_ObjectImageEffects(Menu):
