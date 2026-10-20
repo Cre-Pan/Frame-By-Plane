@@ -3905,6 +3905,99 @@ def test_compositor_refresh_contract(_module):
     return {"rebuilds": len(syncs)}
 
 
+def test_compositor_off_restores_render_setup(_module):
+    """Building, opting out and turning the compositor off never change F12."""
+    scene = bpy.context.scene
+    compositor = importlib.import_module(f"{PACKAGE}.compositor")
+    sets = importlib.import_module(f"{PACKAGE}.compositor_sets")
+    rigs = [_effect_stack_fixture_rig(f"FBP Off Contract {name}") for name in ("A", "B")]
+    owned = [obj for rig in rigs for obj in (rig, *rig.children_recursive)]
+    previous = {
+        "preview": bool(scene.fbp_experimental_compositor),
+        "render": bool(scene.fbp_compositor_render_enabled),
+        "tree": scene.compositing_node_group,
+        "use_compositing": bool(scene.render.use_compositing),
+        "film_transparent": bool(scene.render.film_transparent),
+    }
+    assert not scene.fbp_compositor_enabled, "fixture expects an unmanaged scene"
+    native = {layer.name: bool(layer.use) for layer in scene.view_layers}
+    layers_before = len(scene.fbp_compositor_layers)
+
+    def managed_layers():
+        return [layer for layer in scene.view_layers if layer.get(compositor.FBP_COMPOSITOR_LAYER_TAG)]
+
+    def native_use():
+        return {
+            layer.name: bool(layer.use) for layer in scene.view_layers
+            if not layer.get(compositor.FBP_COMPOSITOR_LAYER_TAG)
+        }
+
+    try:
+        scene.fbp_experimental_compositor = True
+        scene.fbp_compositor_render_enabled = False
+        compositor.fbp_auto_compositor_layers(scene)
+        compositor.fbp_sync_compositor(scene, context=bpy.context, activate_compositor=True)
+        assert managed_layers(), "sync must create managed View Layers"
+        assert not any(layer.use for layer in managed_layers()), "managed layers render only after the opt-in"
+        assert native_use() == native, "building the compositor must keep native View Layers"
+        assert not scene.render.use_compositing
+
+        scene.fbp_compositor_render_enabled = True
+        assert all(layer.use for layer in managed_layers())
+        assert scene.render.use_compositing
+        tree = scene.compositing_node_group
+        artist = tree.nodes.new("CompositorNodeRGB")
+        artist.name = "FBP Off Contract Artist Node"
+
+        assert bpy.ops.fbp.compositor_toggle() == {'FINISHED'}
+        assert not scene.fbp_experimental_compositor and not scene.fbp_compositor_enabled
+        assert scene.compositing_node_group == previous["tree"]
+        assert bool(scene.render.use_compositing) == previous["use_compositing"]
+        assert bool(scene.render.film_transparent) == previous["film_transparent"]
+        assert not managed_layers(), "Compositor Off must remove generated View Layers"
+        assert native_use() == native
+        kept = bpy.data.node_groups.get(tree.name)
+        assert kept is not None and kept.use_fake_user, "Compositor Off keeps the FBP graph"
+
+        assert bpy.ops.fbp.compositor_toggle() == {'FINISHED'}
+        assert scene.fbp_compositor_enabled and scene.compositing_node_group == kept
+        assert kept.nodes.get("FBP Off Contract Artist Node") is not None
+        assert not kept.use_fake_user
+        assert all(layer.use for layer in managed_layers())
+
+        # Up to 7.2 file load assigned an empty FBP root to every scene.
+        compositor.fbp_restore_compositor(scene, remove_generated=True)
+        empty = bpy.data.node_groups.new("FBP Off Contract Empty Root", "CompositorNodeTree")
+        empty["fbp_role"] = "compositor_root"
+        scene.compositing_node_group = empty
+        sets.fbp_compositor_sets_load_post(None)
+        assert scene.compositing_node_group is None, "load must drop the empty generated root"
+        assert bpy.data.node_groups.get("FBP Off Contract Empty Root") is None
+        sets.fbp_compositor_sets_load_post(None)
+        assert scene.compositing_node_group is None, "load must not create a compositor"
+    finally:
+        if scene.fbp_compositor_enabled:
+            compositor.fbp_restore_compositor(scene, remove_generated=True)
+        for tree in tuple(bpy.data.node_groups):
+            if tree.use_fake_user and tree.get(compositor.FBP_COMPOSITOR_TREE_TAG):
+                bpy.data.node_groups.remove(tree)
+        scene.compositing_node_group = previous["tree"]
+        scene.render.use_compositing = previous["use_compositing"]
+        scene.render.film_transparent = previous["film_transparent"]
+        scene.fbp_compositor_render_enabled = previous["render"]
+        scene.fbp_experimental_compositor = previous["preview"]
+        if compositor.FBP_COMPOSITOR_RESUME_KEY in scene:
+            del scene[compositor.FBP_COMPOSITOR_RESUME_KEY]
+        while len(scene.fbp_compositor_layers) > layers_before:
+            scene.fbp_compositor_layers.remove(len(scene.fbp_compositor_layers) - 1)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"native_layers": len(native)}
+
+
 def test_toon_boom_contract(_module):
     importer = importlib.import_module(f"{PACKAGE}.operator_import")
     caps = importer.fbp_toon_boom_exchange_capabilities()
@@ -4491,6 +4584,7 @@ def run_background():
             ("compositor_artist_graph", test_compositor),
             ("compositor_scene_copy_isolation", test_compositor_scene_copy_isolation),
             ("compositor_refresh_contract", test_compositor_refresh_contract),
+            ("compositor_off_restores_render_setup", test_compositor_off_restores_render_setup),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),

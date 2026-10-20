@@ -721,7 +721,13 @@ def _flush_node_property_updates():
     _FBP_PENDING_NODE_SCENES.clear()
     for key in keys:
         scene = _scene_from_runtime_key(key)
-        if scene is None or not hasattr(scene, "fbp_layer_sets"):
+        if (
+            scene is None
+            or not hasattr(scene, "fbp_layer_sets")
+            or getattr(scene, "compositing_node_group", None) is None
+        ):
+            # Deferred edits only update an existing graph; creating one is
+            # left to the explicit compositor operators.
             _FBP_NODE_UPDATE_RETRIES.pop(key, None)
             continue
         scene_key = _scene_runtime_key(scene)
@@ -5973,6 +5979,30 @@ class FBP_PT_LayerSetNode(Panel):
         else:
             self._draw_layer_set(layout, context, scene, node)
 
+def _detach_empty_generated_root(scene):
+    """Drop the empty compositor that earlier versions created on file load.
+
+    Up to 7.2 every load gave each scene an empty "FBP Composite" root, which
+    F12 then rendered through. An FBP root without a single node holds no
+    artist work, so it is unassigned and removed when nothing else uses it.
+    """
+    tree = getattr(scene, "compositing_node_group", None)
+    try:
+        if (
+            tree is None
+            or bool(getattr(scene, "fbp_compositor_enabled", False))
+            or str(tree.get("fbp_role", "") or "") != "compositor_root"
+            or len(tree.nodes)
+        ):
+            return False
+        scene.compositing_node_group = None
+        if tree.users == 0:
+            bpy.data.node_groups.remove(tree)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
+    return True
+
+
 @persistent
 def fbp_compositor_sets_load_post(_dummy):
     _FBP_PENDING_NODE_SCENES.clear()
@@ -5990,6 +6020,10 @@ def fbp_compositor_sets_load_post(_dummy):
     _SCENE_COPY_INDEX_COUNT = -1
     _rebuild_scene_copy_index()
     for scene in bpy.data.scenes:
+        _detach_empty_generated_root(scene)
+        # Opening a file must never give a scene a compositor it did not have.
+        if getattr(scene, "compositing_node_group", None) is None:
+            continue
         key = _scene_runtime_key(scene)
         _FBP_ACTIVE_NODE_SCENES.add(key)
         try:

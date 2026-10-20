@@ -1122,7 +1122,6 @@ def _sync_view_layers(scene, shadow_root):
             layer[FBP_COMPOSITOR_LAYER_TAG] = item.layer_id
         elif layer.name != name:
             layer.name = name
-        layer.use = _item_effective_enabled(scene, item)
         folder = _folder_item_by_id(
             scene, str(getattr(item, "parent_folder_id", "") or "")
         )
@@ -1146,7 +1145,34 @@ def _sync_view_layers(scene, shadow_root):
             if layer_collection.collection == shadow_root:
                 layer_collection.exclude = True
                 break
-        if bool(scene.fbp_compositor_disable_unmanaged_layers):
+    _apply_managed_view_layer_use(scene)
+
+
+def _apply_managed_view_layer_use(scene, *, managed=None):
+    """Render FBP View Layers only while F12 goes through the FBP compositor.
+
+    Without the render opt-in, generated layers stay off and native layers
+    keep the artist's switches, so building the compositor never changes F12.
+    """
+    if managed is None:
+        managed = bool(getattr(scene, "fbp_compositor_enabled", False))
+    rendering = bool(managed) and bool(
+        getattr(scene, "fbp_compositor_render_enabled", False)
+    )
+    items = {
+        str(getattr(item, "layer_id", "") or ""): item
+        for item in _render_layer_items(scene)
+    }
+    disable_native = rendering and bool(scene.fbp_compositor_disable_unmanaged_layers)
+    for layer in scene.view_layers:
+        layer_id = str(layer.get(FBP_COMPOSITOR_LAYER_TAG, "") or "")
+        if layer_id:
+            item = items.get(layer_id)
+            use = rendering and item is not None and _item_effective_enabled(scene, item)
+            if layer.use != use:
+                layer.use = use
+            continue
+        if disable_native:
             if not layer.get("fbp_compositor_disabled", False):
                 # Files saved before this marker already hold the original
                 # while the layer sits disabled; keep that value.
@@ -2744,6 +2770,13 @@ def _build_compact_node_tree(scene, context=None, native_group=False, activate_c
     render = getattr(scene, "render", None)
     use_compositing_before = bool(getattr(render, "use_compositing", False)) if render is not None else False
     scene.compositing_node_group = tree
+    # A graph kept by Compositor Off needed a fake user to survive saving;
+    # once attached again the scene owns it.
+    for kept in (tree, effects.node_tree):
+        if kept is not None and kept.use_fake_user:
+            kept.use_fake_user = False
+    if FBP_COMPOSITOR_RESUME_KEY in scene:
+        del scene[FBP_COMPOSITOR_RESUME_KEY]
     # Assigning a compositor root may change Blender's native render state. A
     # managed FBP graph is renderable only after the explicit scene opt-in;
     # detached graph maintenance preserves the artist's pre-sync state.
@@ -2849,8 +2882,12 @@ def fbp_sync_compositor(scene, context=None, native_group=False, activate_compos
         _FBP_COMPOSITOR_SYNCING = False
 
 
-def fbp_restore_compositor(scene, remove_generated=True):
-    """Restore the user's compositor and native View Layer render switches."""
+def fbp_restore_compositor(scene, remove_generated=True, keep_node_trees=False):
+    """Restore the user's compositor and native View Layer render switches.
+
+    ``keep_node_trees`` keeps the detached FBP graph, including nodes the
+    artist added, so the setup can be resumed later.
+    """
     if scene is None:
         return
     current = scene.compositing_node_group
@@ -2885,6 +2922,7 @@ def fbp_restore_compositor(scene, remove_generated=True):
                         bpy.data.collections.remove(child)
                 bpy.data.collections.remove(collection)
                 break
+    if remove_generated and not keep_node_trees:
         if (
             current is not None
             and bool(current.get(FBP_COMPOSITOR_TREE_TAG, False))
@@ -2915,6 +2953,55 @@ def fbp_restore_compositor(scene, remove_generated=True):
                 del scene[key]
         except FBP_DATA_ERRORS:
             pass
+
+
+FBP_COMPOSITOR_RESUME_KEY = "fbp_compositor_resume"
+
+
+def fbp_deactivate_compositor(scene):
+    """Turn the managed compositor off and put back the artist's render setup.
+
+    Generated View Layers and shadow collections are removed and the previous
+    compositor, Use Compositing, Film Transparent and View Layer switches come
+    back. The FBP graph, nodes added to it and the layer list are kept so
+    turning the compositor on again resumes the same setup.
+    """
+    if scene is None or not bool(getattr(scene, "fbp_compositor_enabled", False)):
+        return False
+    token = _scene_id(scene)
+    for tree in tuple(bpy.data.node_groups):
+        try:
+            if (
+                getattr(tree, "bl_idname", "") == "CompositorNodeTree"
+                and (
+                    bool(tree.get(FBP_COMPOSITOR_TREE_TAG, False))
+                    or bool(tree.get(FBP_COMPOSITOR_EFFECTS_TREE_TAG, False))
+                )
+                and str(tree.get("fbp_compositor_scene_id", "") or "") == token
+            ):
+                tree.use_fake_user = True
+        except FBP_DATA_ERRORS:
+            continue
+    fbp_restore_compositor(scene, remove_generated=True, keep_node_trees=True)
+    _FBP_PENDING_COMPOSITOR_SCENES.discard(_scene_runtime_key(scene))
+    scene[FBP_COMPOSITOR_RESUME_KEY] = True
+    scene.fbp_compositor_status = "Compositor off · original render setup restored"
+    return True
+
+
+def fbp_resume_compositor(scene, context=None):
+    """Rebuild a setup that Compositor Off detached; False when none waits."""
+    if (
+        scene is None
+        or bool(getattr(scene, "fbp_compositor_enabled", False))
+        or not bool(scene.get(FBP_COMPOSITOR_RESUME_KEY, False))
+        or not _render_layer_items(scene)
+    ):
+        return False
+    # The kept Layers group already went through native Ctrl+G when it was
+    # built, so resuming needs no Node Editor context.
+    fbp_sync_compositor(scene, context=context, activate_compositor=True)
+    return True
 
 
 def fbp_add_compositor_layer(scene, name=""):
@@ -3186,6 +3273,7 @@ def _apply_render_compositor_opt_in(scene, *, managed_activation=False):
             if enabled
             else bool(getattr(scene, "fbp_compositor_previous_film_transparent", False))
         )
+        _apply_managed_view_layer_use(scene, managed=True)
     except FBP_DATA_ERRORS:
         return False
     return enabled
@@ -4560,6 +4648,39 @@ class FBP_OT_CompositorSync(_FBP_CompositorPreviewPoll, Operator):
         return {'FINISHED'}
 
 
+class FBP_OT_CompositorToggle(Operator):
+    bl_idname = "fbp.compositor_toggle"
+    bl_label = "Compositor"
+    bl_description = (
+        "Turn the Frame By Plane compositor on or off. Off restores your own "
+        "compositor and render settings and keeps the FBP nodes for later"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context, "scene", None) is not None
+
+    def execute(self, context):
+        scene = context.scene
+        if bool(getattr(scene, "fbp_experimental_compositor", False)):
+            try:
+                fbp_deactivate_compositor(scene)
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn("Could not turn the FBP compositor off", exc)
+                self.report({'ERROR'}, "Compositor Off stopped safely; use Restore Native Compositor")
+                return {'CANCELLED'}
+            scene.fbp_experimental_compositor = False
+            return {'FINISHED'}
+        scene.fbp_experimental_compositor = True
+        try:
+            fbp_resume_compositor(scene, context=context)
+        except (RuntimeError, AttributeError, ReferenceError, TypeError, ValueError) as exc:
+            fbp_warn("Could not resume the FBP compositor", exc)
+            self.report({'WARNING'}, f"Compositor on; press Refresh to rebuild ({exc})")
+        return {'FINISHED'}
+
+
 class FBP_OT_CompositorRepairRebuild(_FBP_CompositorPreviewPoll, Operator):
     bl_idname = "fbp.compositor_repair_rebuild"
     bl_label = "Repair / Rebuild FBP Compositor"
@@ -4624,6 +4745,7 @@ classes = (
     FBP_OT_CompositorEffectAction,
     FBP_OT_CompositorAssignGroup,
     FBP_OT_CompositorSync,
+    FBP_OT_CompositorToggle,
     FBP_OT_CompositorRepairRebuild,
     FBP_OT_CompositorRestore,
 )
