@@ -54,6 +54,12 @@ def view3d():
     return win, area, region
 
 
+def undo_once():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        log("undo", bpy.ops.ed.undo())
+
+
 def press(key, **mods):
     win, area, region = view3d()
     x = region.x + region.width // 2
@@ -67,8 +73,10 @@ def magenta(label):
     win, area, region = view3d()
     path = SHOTS / f"{label}.png"
     with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=2)
         bpy.ops.screen.screenshot_area(filepath=str(path))
     image = bpy.data.images.load(str(path))
+    image_size = tuple(image.size)
     pixels = list(image.pixels)
     count = green = blue = 0
     total = len(pixels) // 4
@@ -80,8 +88,11 @@ def magenta(label):
             green += 1
         elif b > 0.5 and r < 0.3 and g < 0.4:
             blue += 1
+    step = max(4, (len(pixels) // 4 // 2000) * 4)
+    samples = [tuple(round(v, 2) for v in pixels[i:i + 3]) for i in range(0, len(pixels), step)]
+    common = sorted({c: samples.count(c) for c in set(samples)}.items(), key=lambda kv: -kv[1])[:6]
     bpy.data.images.remove(image)
-    return count, f"{total} green {green} blue {blue}"
+    return count, f"{total} green {green} blue {blue} size {tuple(image_size)} common {common}"
 
 
 def evaluated_frames():
@@ -150,7 +161,7 @@ def before():
 @step(4.0)
 def undo():
     report("2_after_gp")
-    press("Z", ctrl=True)
+    undo_once()
 
 
 @step(1.0)
@@ -161,7 +172,7 @@ def soon():
 @step(6.0)
 def later():
     report("4_undo_after_7s")
-    press("Z", ctrl=True)
+    undo_once()
 
 
 @step(6.0)
