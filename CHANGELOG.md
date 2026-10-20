@@ -22,6 +22,10 @@ Frame By Plane 8 LTS. Includes every 7.5.x change below.
 - Ctrl+Z while drawing in a Grease Pencil Mask could crash Blender: cached drawing references are now dropped on Undo and Redo.
 - Editing a mask on a later frame no longer adds an empty key that hid the mask.
 - Grease Pencil Mask rasterization is many times faster with identical output.
+- Dropping media in the Viewport opens the Import with Frame By Plane window again; it failed with an error after the 8.0 merge.
+- In Draw Mode with Close Gap (or Fill in Both mode), existing strokes were closed and refilled when they came into view: scrubbing onto the first keyframe, switching from an empty layer, or moving or pasting a keyframe onto the playhead. Only new strokes change now.
+- The Draw Mode color sync does about an eighth of the work per update on long animations.
+- An open tutorial card no longer redraws the Viewport twice a second while nothing changes.
 
 ## [7.5.4] - Unreleased
 
