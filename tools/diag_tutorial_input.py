@@ -101,8 +101,46 @@ def tab_probe(label):
 
 
 STEPS.append((lambda: log("ready"), 1.5))
+shift_a_probe("warmup")
 shift_a_probe("control")
 tab_probe("control")
+
+
+def click_hud(key):
+    def run():
+        win, area, region = view3d()
+        op = module.live_tutorial._ACTIVE_OPERATOR
+        rect = op._state.hitboxes.get(key) if op else None
+        if rect is None:
+            log("click", key, "missing; hitboxes=", sorted(op._state.hitboxes) if op else None)
+            return
+        x = int(region.x + rect[0] + rect[2] * 0.5)
+        y = int(region.y + rect[1] + rect[3] * 0.5)
+        win.event_simulate(type="MOUSEMOVE", value="NOTHING", x=x, y=y)
+        win.event_simulate(type="LEFTMOUSE", value="PRESS", x=x, y=y)
+        win.event_simulate(type="LEFTMOUSE", value="RELEASE", x=x, y=y)
+        log("clicked", key, "modal_ops=", [o.bl_idname for o in win.modal_operators])
+    STEPS.append((run, 1.0))
+
+
+def start_from_splash_button():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=region):
+        log("open_base_tutorial ->", bpy.ops.fbp.open_base_tutorial("INVOKE_DEFAULT"))
+
+
+STEPS.append((start_from_splash_button, 1.5))
+shift_a_probe("splash-launch")
+click_hud("route_IMAGE")
+shift_a_probe("after-route-click")
+click_hud("control_skip")
+shift_a_probe("after-skip-click")
+click_hud("do_action")
+STEPS.append((lambda: log("after do_action modal_ops", [o.bl_idname for o in view3d()[0].modal_operators]), 1.0))
+STEPS.append((lambda: press(view3d()[0], "ESC", view3d()[2].x + 50, view3d()[2].y + 50), 0.8))
+shift_a_probe("after-action-click")
+click_hud("control_close")
+shift_a_probe("after-close")
 
 
 def start_tutorial():
