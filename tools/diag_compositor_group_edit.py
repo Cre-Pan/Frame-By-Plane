@@ -30,6 +30,26 @@ if not FIX:
                     break
         return getattr(space, "edit_tree", None) is tree
     comp._show_root_tree = _old_show_root_tree
+else:
+    _real_show_root_tree = comp._show_root_tree
+
+    def _traced_show_root_tree(context, override, space, tree):
+        def name(value):
+            return getattr(value, "name", None) if value is not None else None
+        log("before", "tree", name(tree), "edit", name(getattr(space, "edit_tree", None)),
+            "node_tree", name(getattr(space, "node_tree", None)), "pin", getattr(space, "pin", None),
+            "path", [name(item.node_tree) for item in getattr(space, "path", ())],
+            "scene group", name(getattr(bpy.context.scene, "compositing_node_group", None)),
+            "area", getattr(override.get("area"), "type", None), "ui", getattr(override.get("area"), "ui_type", None))
+        try:
+            space.path.start(tree)
+            log("path.start ok", "edit", name(getattr(space, "edit_tree", None)), "node_tree", name(getattr(space, "node_tree", None)))
+        except Exception as exc:
+            log("path.start EXC", repr(exc))
+        result = _real_show_root_tree(context, override, space, tree)
+        log("after", result, "edit", name(getattr(space, "edit_tree", None)))
+        return result
+    comp._show_root_tree = _traced_show_root_tree
 
 WORK = Path(tempfile.mkdtemp(prefix="fbp_comp_"))
 
