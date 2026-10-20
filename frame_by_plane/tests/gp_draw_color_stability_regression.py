@@ -96,6 +96,18 @@ try:
     assert close_color(first.strokes[0].fill_color, BLACK)
     first.strokes[0].fill_color = (0.2, 0.3, 0.4, 1.0)
 
+    # On a slow redraw the first color sync after a frame change runs only
+    # once the stroke has already created its keyframe. The keyframe is still
+    # new, so the stroke gets the Fill color.
+    scene.frame_set(13)
+    lagged = layer.frames.new(13).drawing
+    lagged.add_strokes([3])
+    lagged.strokes[0].fill_color = BLACK
+    assert module._sync_draw_both_fill(bpy.context) == 1
+    assert close_color(lagged.strokes[0].fill_color, WHITE)
+    scene.frame_set(1)
+    module._sync_draw_both_fill(bpy.context)
+
     # Switching Draw tool (Fill, Erase, Tint...) activates another brush with
     # its own colors. The Stroke / Fill pair must stay, and the new brush
     # receives it.

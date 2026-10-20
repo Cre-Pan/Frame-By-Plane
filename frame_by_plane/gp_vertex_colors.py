@@ -81,7 +81,7 @@ _RUNTIME = {
     "draw_drawing_pointer": 0,
     "draw_curve_count": 0,
     "draw_layer_pointer": 0,
-    "draw_scene_frame": None,
+    "draw_layer_keys": frozenset(),
     "edit_undo_label": "Grease Pencil Color",
     "paint_colors": None,
 }
@@ -504,7 +504,7 @@ def _reset_draw_both_tracking():
         draw_drawing_pointer=0,
         draw_curve_count=0,
         draw_layer_pointer=0,
-        draw_scene_frame=None,
+        draw_layer_keys=frozenset(),
     )
 
 
@@ -519,6 +519,30 @@ def _active_draw_target(obj):
         return layer_pointer, int(frame.frame_number), frame.drawing
     except FBP_DATA_ERRORS:
         return 0, None, None
+
+
+def _active_layer_keys(obj):
+    """Keyframe numbers of the active layer, to spot a keyframe just created."""
+    try:
+        layer = obj.data.layers.active
+        if layer is None:
+            return frozenset()
+        return frozenset(int(frame.frame_number) for frame in layer.frames)
+    except FBP_DATA_ERRORS:
+        return frozenset()
+
+
+def _brush_stroke_running(context):
+    """Whether a Draw brush stroke is being drawn right now."""
+    try:
+        windows = tuple(getattr(context.window_manager, "windows", ()) or ())
+        return any(
+            str(getattr(operator, "bl_idname", "") or "") == "GREASE_PENCIL_OT_brush_stroke"
+            for window in windows
+            for operator in tuple(getattr(window, "modal_operators", ()) or ())
+        )
+    except FBP_DATA_ERRORS:
+        return False
 
 
 def _new_keyframe_baseline(previous_count, curve_count, additive):
@@ -575,9 +599,9 @@ def _sync_draw_both_fill(context=None):
     try:
         drawing_pointer = int(drawing.as_pointer()) if drawing is not None else 0
         curve_count = len(drawing.strokes) if drawing is not None else 0
-        scene_frame = int(context.scene.frame_current)
     except FBP_DATA_ERRORS:
         return 0
+    layer_keys = _active_layer_keys(obj)
 
     if (
         not _RUNTIME.get("draw_watch_initialized")
@@ -589,7 +613,7 @@ def _sync_draw_both_fill(context=None):
             draw_drawing_pointer=drawing_pointer,
             draw_curve_count=curve_count,
             draw_layer_pointer=layer_pointer,
-            draw_scene_frame=scene_frame,
+            draw_layer_keys=layer_keys,
         )
         return 0
 
@@ -603,20 +627,27 @@ def _sync_draw_both_fill(context=None):
     previous_count = int(_RUNTIME.get("draw_curve_count", 0) or 0)
     if drawing_pointer != previous_pointer:
         # A zero pointer becoming a real drawing means the native operator just
-        # created the first frame. A new drawing on the same layer, at the
-        # same scene frame, keyed exactly there, is the keyframe Auto Keying
-        # inserted for the stroke being drawn. Other pointer changes are
-        # ordinary frame or layer switches and must not recolor existing curves.
+        # created the first frame. A drawing on the same layer whose keyframe
+        # did not exist at the previous sync is the keyframe Auto Keying
+        # inserted for the stroke being drawn. This does not depend on the
+        # timer seeing the playhead move first: the first sync after a frame
+        # change often runs mid-stroke. Other pointer changes are ordinary
+        # frame or layer switches and must not recolor existing curves.
         created_first_drawing = previous_pointer == 0 and previous_count == 0
+        # On a slow redraw the first sync after a frame change can land in the
+        # middle of the stroke. That stroke is then the only new curve.
+        stroke_in_progress = bool(curve_count and _brush_stroke_running(context))
         created_keyframe = bool(
             drawing is not None
             and layer_pointer
             and layer_pointer == _RUNTIME.get("draw_layer_pointer")
-            and scene_frame == _RUNTIME.get("draw_scene_frame")
-            and keyframe_number == scene_frame
+            and keyframe_number is not None
+            and keyframe_number not in _RUNTIME.get("draw_layer_keys", frozenset())
         )
         if created_first_drawing:
             previous_count = 0
+        elif stroke_in_progress:
+            previous_count = curve_count - 1
         elif created_keyframe:
             previous_count = _new_keyframe_baseline(previous_count, curve_count, additive)
         else:
@@ -625,7 +656,7 @@ def _sync_draw_both_fill(context=None):
     _RUNTIME["draw_drawing_pointer"] = drawing_pointer
     _RUNTIME["draw_curve_count"] = curve_count
     _RUNTIME["draw_layer_pointer"] = layer_pointer
-    _RUNTIME["draw_scene_frame"] = scene_frame
+    _RUNTIME["draw_layer_keys"] = layer_keys
     if drawing is None or curve_count <= previous_count:
         return 0
 
@@ -3073,7 +3104,7 @@ def unregister():
         draw_drawing_pointer=0,
         draw_curve_count=0,
         draw_layer_pointer=0,
-        draw_scene_frame=None,
+        draw_layer_keys=frozenset(),
         edit_undo_label="Grease Pencil Color",
         paint_colors=None,
     )
