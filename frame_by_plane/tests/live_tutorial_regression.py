@@ -125,9 +125,15 @@ try:
     # The whole route can be walked: detectors complete the steps in order.
     state = tutorial.TutorialState()
     state.enter_route(bpy.context, "DRAW")
+    started = tutorial._progress_signature(state)
     for _tick in range(12):
         tutorial._update_progress(bpy.context, state)
     assert state.page_index >= 1, (state.page_index, state.completed)
+    # The timer redraws the card only when this signature moves.
+    settled = tutorial._progress_signature(state)
+    assert settled != started, (started, settled)
+    tutorial._update_progress(bpy.context, state)
+    assert tutorial._progress_signature(state) == settled
     print("FBPTEST live_tutorial: PASS")
 except Exception:
     traceback.print_exc()

@@ -1238,6 +1238,11 @@ def _update_progress(context: bpy.types.Context, state: TutorialState) -> None:
     _advance_completed_page(state)
 
 
+def _progress_signature(state: TutorialState) -> tuple[Any, ...]:
+    """What the timer can change on the card: route, page and finished steps."""
+    return (state.route_key, state.page_index, len(state.completed), len(state.manual_completed))
+
+
 def _advance_completed_page(state: TutorialState) -> bool:
     """Advance after every micro-step on the current page is done or skipped."""
     route = state.route
@@ -2942,8 +2947,12 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             now = time.monotonic()
             if now - self._state.last_detection >= DETECTION_INTERVAL:
                 self._state.last_detection = now
+                before = _progress_signature(self._state)
                 _update_progress(context, self._state)
-                _tag_area(self._target_area_ptr)
+                # Redraw the viewport only when a step was completed: an idle
+                # card otherwise forced a full viewport redraw twice a second.
+                if _progress_signature(self._state) != before:
+                    _tag_area(self._target_area_ptr)
             return {"PASS_THROUGH"}
 
         in_target = context.area is not None and context.area.as_pointer() == self._target_area_ptr
