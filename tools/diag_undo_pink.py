@@ -70,14 +70,18 @@ def magenta(label):
         bpy.ops.screen.screenshot_area(filepath=str(path))
     image = bpy.data.images.load(str(path))
     pixels = list(image.pixels)
-    count = 0
+    count = green = blue = 0
     total = len(pixels) // 4
     for index in range(0, len(pixels), 4):
         r, g, b = pixels[index], pixels[index + 1], pixels[index + 2]
         if r > 0.8 and b > 0.8 and g < 0.25:
             count += 1
+        elif g > 0.6 and r < 0.3 and b < 0.4:
+            green += 1
+        elif b > 0.5 and r < 0.3 and g < 0.4:
+            blue += 1
     bpy.data.images.remove(image)
-    return count, total
+    return count, f"{total} green {green} blue {blue}"
 
 
 def evaluated_frames():
@@ -95,7 +99,8 @@ def evaluated_frames():
 
 def report(label):
     count, total = magenta(label)
-    log(label, "frame", bpy.context.scene.frame_current, "magenta_px", count, "of", total, "images", evaluated_frames())
+    obj = bpy.context.object
+    log(label, "mode", obj.mode if obj else None, "objects", len(bpy.context.scene.objects), "frame", bpy.context.scene.frame_current, "magenta_px", count, "of", total, "images", evaluated_frames())
 
 
 STEPS = []
@@ -137,7 +142,7 @@ def before():
     report("1_after_multiplane")
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
-        result = bpy.ops.fbp.add_grease_pencil_canvas("EXEC_DEFAULT", enter_draw_mode=False)
+        result = bpy.ops.fbp.add_grease_pencil_canvas("EXEC_DEFAULT", enter_draw_mode=os.environ.get("FBP_DIAG_DRAW", "1") == "1")
     log("gp", result)
     bpy.ops.ed.undo_push(message="Diag GP plane")
 
@@ -156,6 +161,12 @@ def soon():
 @step(6.0)
 def later():
     report("4_undo_after_7s")
+    press("Z", ctrl=True)
+
+
+@step(6.0)
+def second_undo():
+    report("4b_second_undo_after_6s")
     bpy.context.scene.frame_set(bpy.context.scene.frame_current + 1)
 
 
