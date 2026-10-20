@@ -658,6 +658,11 @@ class TutorialState:
     baseline_transforms: dict[int, tuple[float, ...]] = field(default_factory=dict)
     anchors: dict[str, Any] = field(default_factory=dict)
     last_detection: float = 0.0
+    # Offset from the default top-centre position, in region pixels at
+    # scale 1.0, so a moved card keeps its place when the UI scale changes.
+    offset: tuple[float, float] = (0.0, 0.0)
+    collapsed: bool = False
+    drag_origin: tuple[float, float, float, float] | None = None
 
     def reset_baseline(self, context: bpy.types.Context) -> None:
         objects = tuple(context.scene.objects)
@@ -1492,13 +1497,16 @@ def _inside(rect: tuple[float, float, float, float], x: float, y: float) -> bool
 
 
 def _ui_scale(context: bpy.types.Context) -> float:
+    """Blender's UI scale factor (Resolution Scale times the display's pixel density).
+
+    ``system.dpi`` is 72 at a scale of 1.0, so this matches the factor Blender
+    applies to its own widgets and text.
+    """
     system = context.preferences.system
-    base = float(getattr(system, "ui_scale", 1.0) or 1.0)
-    dpi = float(getattr(system, "dpi", 72.0) or 72.0)
-    pixel = float(getattr(system, "pixel_size", 1.0) or 1.0)
-    dpi_factor = max(0.9, min(1.35, dpi / 72.0))
-    pixel_factor = max(1.0, min(1.25, pixel))
-    return max(0.82, min(1.65, base * dpi_factor * pixel_factor))
+    try:
+        return max(0.25, float(system.dpi) / 72.0)
+    except (AttributeError, TypeError, ValueError):
+        return max(0.25, float(getattr(system, "ui_scale", 1.0) or 1.0))
 
 
 _ROUTE_SHORT_LABELS = {
@@ -1653,68 +1661,68 @@ def _route_progress(state: TutorialState) -> tuple[int, int, float]:
     return current, total, (completed / total if total else 1.0)
 
 
-# Compact top-center tutorial HUD.  The guide deliberately exposes only the
-# current action so it can stay open while the viewport remains fully usable.
+# Compact tutorial card. It starts top-centre below the viewport header, can
+# be dragged by its title bar and collapsed to the title bar alone, so the
+# viewport stays usable while the guide is open. Every size is in Blender UI
+# units (20 px at scale 1.0) times the UI scale.
 def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: TutorialState) -> dict[str, Any]:
     scale = _ui_scale(context)
     region_w = max(1.0, float(region.width))
     region_h = max(1.0, float(region.height))
-    desired_margin = max(10.0, 16.0 * scale)
-    # Split/quad layouts can leave a very small 3D region. Never let the HUD
-    # extend outside it; older minimum clamps could produce negative x values
-    # and an unreachable Close button.
-    margin = min(
-        desired_margin,
-        max(2.0, min(region_w, region_h) * 0.08),
-    )
-    available_w = max(1.0, region_w - margin * 2.0)
-    width = min(available_w, max(360.0, 520.0 * scale))
-    preferred_h = (174.0 if state.route is None else 220.0) * scale
-    x = (region_w - width) * 0.5
-    # Leave the translucent Viewport tool/header strip unobstructed. The HUD is
-    # still top-centred, but starts just below Blender's overlay controls.
-    desired_clearance = max(36.0, 46.0 * scale)
-    available_h = max(1.0, region_h - margin * 2.0)
-    top_clearance = min(
-        desired_clearance,
-        max(0.0, available_h - max(48.0, 96.0 * scale)),
-    )
-    height = min(preferred_h, max(1.0, available_h - top_clearance))
-    y = max(margin, region_h - height - margin - top_clearance)
-    header_h = min(38.0 * scale, height * 0.28)
-    content_pad = 12.0 * scale
-    action_h = min(28.0 * scale, height * 0.18)
-    footer_y = y + 10.0 * scale
-    control_h = action_h
-    control_gap = 6.0 * scale
-    back_w = 58.0 * scale
-    next_w = 54.0 * scale
-    close_size = min(20.0 * scale, header_h - 10.0 * scale)
-    help_w = 50.0 * scale
-    header_control_y = y + height - header_h + (header_h - close_size) * 0.5
+    margin = min(8.0 * scale, max(2.0, min(region_w, region_h) * 0.05))
+    header_h = 26.0 * scale
+    if state.collapsed:
+        preferred_w, preferred_h = 300.0 * scale, header_h
+    elif state.route is None:
+        preferred_w, preferred_h = 360.0 * scale, 124.0 * scale
+    else:
+        preferred_w, preferred_h = 360.0 * scale, 156.0 * scale
+    width = min(preferred_w, max(1.0, region_w - margin * 2.0))
+    height = min(preferred_h, max(1.0, region_h - margin * 2.0))
+    header_h = min(header_h, height)
+    # Default: top-centre, just below the translucent viewport header strip.
+    top_clearance = 44.0 * scale
+    default_x = (region_w - width) * 0.5
+    default_y = region_h - height - top_clearance
+    x = default_x + state.offset[0] * scale
+    y = default_y + state.offset[1] * scale
+    x = max(margin, min(region_w - width - margin, x))
+    y = max(margin, min(region_h - height - margin, y))
+
+    pad = 8.0 * scale
+    control_h = 22.0 * scale
+    control_gap = 4.0 * scale
+    header_button = min(20.0 * scale, header_h - 6.0 * scale)
+    header_control_y = y + height - header_h + (header_h - header_button) * 0.5
+    right = x + width - 6.0 * scale
     controls = {
-        "close": (x + width - 8.0 * scale - close_size, header_control_y, close_size, close_size),
-        "help": (
-            x + width - 8.0 * scale - close_size - control_gap - help_w,
+        "close": (right - header_button, header_control_y, header_button, header_button),
+        "collapse": (
+            right - header_button * 2.0 - control_gap,
             header_control_y,
-            help_w,
-            close_size,
+            header_button,
+            header_button,
         ),
-        "back": (x + 10.0 * scale, footer_y, back_w, control_h),
-        "next": (x + width - 10.0 * scale - next_w, footer_y, next_w, control_h),
+        "help": (
+            right - header_button * 3.0 - control_gap * 2.0,
+            header_control_y,
+            header_button,
+            header_button,
+        ),
     }
+    footer_y = y + pad
+    back_w = 54.0 * scale
+    next_w = 54.0 * scale
+    controls["back"] = (x + pad, footer_y, back_w, control_h)
+    controls["next"] = (x + width - pad - next_w, footer_y, next_w, control_h)
     action_rect = None
-    if state.route is not None and state.active_task is not None:
-        action_left = controls["back"][0] + controls["back"][2] + control_gap
+    if not state.collapsed and state.route is not None and state.active_task is not None:
+        action_left = controls["back"][0] + back_w + control_gap
         action_right = controls["next"][0] - control_gap
-        action_rect = (
-            action_left,
-            footer_y,
-            max(1.0, action_right - action_left),
-            action_h,
-        )
-    palette = _theme_palette(context)
-    data = {
+        action_rect = (action_left, footer_y, max(1.0, action_right - action_left), control_h)
+    first_control = controls["help"][0] if state.route is not None else controls["collapse"][0]
+    drag_rect = (x, y + height - header_h, max(1.0, first_control - x - control_gap), header_h)
+    return {
         "mode": "CHOOSER" if state.route is None else "STEP",
         "scale": scale,
         "x": x,
@@ -1723,17 +1731,19 @@ def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: Tu
         "height": height,
         "margin": margin,
         "header_h": header_h,
-        "content_x": x + content_pad,
-        "content_w": width - content_pad * 2.0,
-        "palette": palette,
-        "title_size": max(13, round(14 * scale)),
-        "body_size": max(10, round(11 * scale)),
-        "small_size": max(9, round(10 * scale)),
-        "line_h": max(14.0, 15.0 * scale),
+        "pad": pad,
+        "content_x": x + pad,
+        "content_w": width - pad * 2.0,
+        "footer_top": footer_y + control_h,
+        "palette": _theme_palette(context),
+        "title_size": max(6, round(12 * scale)),
+        "body_size": max(6, round(11 * scale)),
+        "small_size": max(5, round(10 * scale)),
+        "line_h": 13.0 * scale,
         "action_rect": action_rect,
         "controls": controls,
+        "drag_rect": drag_rect,
     }
-    return data
 
 
 def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
@@ -1741,9 +1751,9 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
     scale = hud["scale"]
     x, y, w, h = hud["x"], hud["y"], hud["width"], hud["height"]
     content_x, content_w = hud["content_x"], hud["content_w"]
-    top = y + h - hud["header_h"] - 15.0 * scale
+    top = y + h - hud["header_h"] - 16.0 * scale
     _draw_text("Choose what you want to explore", content_x, top, hud["body_size"], palette["card_text"])
-    if w >= 460.0 * scale:
+    if w >= 520.0 * scale:
         _draw_text(
             "Each real action advances the guide",
             x + w - 12.0 * scale,
@@ -1753,8 +1763,8 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
             align="RIGHT",
         )
     gap = 6.0 * scale
-    button_y = y + 12.0 * scale
-    button_h = max(48.0 * scale, top - button_y - 23.0 * scale)
+    button_y = y + hud["pad"]
+    button_h = max(1.0, top - button_y - 8.0 * scale)
     button_w = (content_w - gap * 2.0) / 3.0
     for index, route_key in enumerate(("IMAGE", "COLOR", "MULTIPLANE")):
         key = f"route_{route_key}"
@@ -1764,11 +1774,11 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
         fill = palette["card_hover"] if hovered else palette["card"]
         _draw_round_rect(*rect, 4.0 * scale, fill)
         _draw_round_outline(*rect, 4.0 * scale, palette["accent"] if hovered else palette["line"])
-        icon_size = min(30.0 * scale, rect[3] * 0.38)
+        icon_size = min(22.0 * scale, rect[3] * 0.38)
         _draw_custom_icon(
             _ROUTE_ICON_UI_KEYS[route_key],
             rect[0] + rect[2] * 0.5 - icon_size * 0.5,
-            rect[1] + rect[3] - icon_size - 8.0 * scale,
+            rect[1] + rect[3] - icon_size - 4.0 * scale,
             icon_size,
             icon_size,
             tint=palette["accent_label"],
@@ -1777,7 +1787,7 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
         _draw_text(
             label,
             rect[0] + rect[2] * 0.5,
-            rect[1] + 25.0 * scale,
+            rect[1] + 19.0 * scale,
             hud["body_size"],
             palette["card_text"],
             align="CENTER",
@@ -1786,7 +1796,7 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
         _draw_text(
             detail,
             rect[0] + rect[2] * 0.5,
-            rect[1] + 9.0 * scale,
+            rect[1] + 6.0 * scale,
             hud["small_size"],
             palette["muted"],
             align="CENTER",
@@ -1805,8 +1815,8 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
 
     current, total, progress = _route_progress(state)
     header_bottom = y + h - hud["header_h"]
-    progress_h = max(4.0, 5.0 * scale)
-    progress_y = header_bottom - 11.0 * scale
+    progress_h = 4.0 * scale
+    progress_y = header_bottom - 9.0 * scale
     progress_rect = (content_x, progress_y, content_w, progress_h)
     _draw_round_rect(*progress_rect, progress_h * 0.5, palette["line"])
     position = current / total if total else 1.0
@@ -1829,9 +1839,9 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
             palette["accent"],
         )
 
-    card_bottom = y + 49.0 * scale
-    card_top = progress_y - 8.0 * scale
-    card_h = max(54.0 * scale, card_top - card_bottom)
+    card_bottom = hud["footer_top"] + 6.0 * scale
+    card_top = progress_y - 6.0 * scale
+    card_h = max(1.0, card_top - card_bottom)
     card = (content_x, card_bottom, content_w, card_h)
     card_radius = 4.0 * scale
     _draw_round_rect(*card, card_radius, palette["card"])
@@ -1854,17 +1864,17 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
         accent = palette["accent"]
         shortcut = _task_shortcut_text(bpy.context, task, page)
 
-    title_y = card[1] + card[3] - 27.0 * scale
+    title_y = card[1] + card[3] - 18.0 * scale
     accent_bar = (card[0] + 4.0 * scale, card[1] + 5.0 * scale, 3.0 * scale, max(1.0, card[3] - 10.0 * scale))
     _draw_round_rect(*accent_bar, accent_bar[2] * 0.5, accent)
     _draw_text(_ellipsize(title, content_w - 25.0 * scale, hud["title_size"]), card[0] + 14.0 * scale, title_y, hud["title_size"], palette["card_text"])
     guidance_lines = _wrap_measured(guidance, content_w - 26.0 * scale, hud["small_size"], max_lines=2)
-    _draw_text_lines(guidance_lines, card[0] + 14.0 * scale, title_y - 22.0 * scale, hud["small_size"], palette["muted"], hud["line_h"])
-    if shortcut and card_h >= 92.0 * scale:
+    _draw_text_lines(guidance_lines, card[0] + 14.0 * scale, title_y - 16.0 * scale, hud["small_size"], palette["muted"], hud["line_h"])
+    if shortcut and card_h >= 70.0 * scale:
         _draw_text(
             _ellipsize(shortcut, content_w - 26.0 * scale, hud["small_size"]),
             card[0] + 14.0 * scale,
-            card[1] + 11.0 * scale,
+            card[1] + 6.0 * scale,
             hud["small_size"],
             palette["accent_label"],
         )
@@ -1874,20 +1884,6 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
         label = _TASK_ACTION_LABELS.get(task.key, "Do This Step")
         _draw_flat_button(state, hud, "do_action", action_rect, label, primary=True)
 
-    if not total:
-        step_label = "Complete"
-    elif w < 430.0 * scale:
-        step_label = f"{current}/{total}"
-    else:
-        step_label = f"{current} / {total}  ·  {round(progress * 100):d}% complete"
-    _draw_text(
-        step_label,
-        hud["controls"]["help"][0] - 8.0 * scale,
-        y + h - hud["header_h"] * 0.5 - 4.0 * scale,
-        hud["small_size"],
-        palette["muted"],
-        align="RIGHT",
-    )
 
 
 def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
@@ -1904,40 +1900,53 @@ def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
 
     gpu.state.blend_set("ALPHA")
     try:
-        outer_radius = 6.0 * scale
-        _draw_round_rect(x, y, w, h, outer_radius, palette["panel"])
+        outer_radius = 5.0 * scale
+        if not state.collapsed:
+            _draw_round_rect(x, y, w, h, outer_radius, palette["panel"])
         header_y = y + h - hud["header_h"]
         _draw_round_rect(x, header_y, w, hud["header_h"], outer_radius, palette["header"])
-        _draw_rect(x, header_y, w, outer_radius, palette["header"])
-        _draw_rect(x, header_y, w, max(1.0, scale), palette["line"])
-        header_label = "Frame By Plane  Tutorial"
+        if not state.collapsed:
+            _draw_rect(x, header_y, w, outer_radius, palette["header"])
+            _draw_rect(x, header_y, w, max(1.0, scale), palette["line"])
+        controls = hud["controls"]
+        state.hitboxes.clear()
+        state.hitboxes["drag_header"] = hud["drag_rect"]
+        header_label = "Tutorial"
         if state.route is not None:
             header_label = f"{_ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)}  Tutorial"
-        if w < 430.0 * scale:
-            header_label = "FBP  Tutorial"
+            current, total, _progress = _route_progress(state)
+            if total:
+                header_label += f"  ·  {current}/{total}"
+            task = state.active_task
+            if state.collapsed and task is not None:
+                header_label += f"  ·  {task.label}"
+        text_right = controls["help"][0] if state.route is not None else controls["collapse"][0]
         _draw_text(
-            header_label,
-            x + 12.0 * scale,
-            header_y + hud["header_h"] * 0.5 - 5.0 * scale,
+            _ellipsize(header_label, text_right - x - 18.0 * scale, hud["body_size"]),
+            x + 9.0 * scale,
+            header_y + hud["header_h"] * 0.5 - 4.0 * scale,
             hud["body_size"],
             palette["header_text"],
         )
-        state.hitboxes.clear()
-        if state.route is None:
-            _draw_route_chooser(state, hud)
-        else:
-            _draw_step(state, hud)
-        controls = hud["controls"]
-        _draw_flat_button(state, hud, "control_close", controls["close"], "×")
-        if state.route is not None:
-            _draw_flat_button(state, hud, "control_help", controls["help"], "?  Help")
-            task = state.active_task
-            _draw_flat_button(state, hud, "control_back", controls["back"], "‹  Back")
-            if task is not None:
-                _draw_flat_button(state, hud, "control_skip", controls["next"], "Skip")
+        if not state.collapsed:
+            if state.route is None:
+                _draw_route_chooser(state, hud)
             else:
-                next_label = "Tutorials" if _route_is_finished(state) else "Next"
-                _draw_flat_button(state, hud, "control_next", controls["next"], next_label)
+                _draw_step(state, hud)
+        _draw_flat_button(state, hud, "control_close", controls["close"], "×")
+        _draw_flat_button(
+            state, hud, "control_collapse", controls["collapse"], "+" if state.collapsed else "–"
+        )
+        if state.route is not None:
+            _draw_flat_button(state, hud, "control_help", controls["help"], "?")
+            if not state.collapsed:
+                task = state.active_task
+                _draw_flat_button(state, hud, "control_back", controls["back"], "‹  Back")
+                if task is not None:
+                    _draw_flat_button(state, hud, "control_skip", controls["next"], "Skip")
+                else:
+                    next_label = "Tutorials" if _route_is_finished(state) else "Next"
+                    _draw_flat_button(state, hud, "control_next", controls["next"], next_label)
         _draw_round_outline(x, y, w, h, outer_radius, palette["line"], max(1.0, scale))
     finally:
         gpu.state.blend_set("NONE")
@@ -2311,6 +2320,28 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
     def cancel(self, context: bpy.types.Context) -> None:
         self._close(context)
 
+    def _clamp_offset(self, context: bpy.types.Context) -> None:
+        """Keep a dragged card reachable after a drop or a size change."""
+        area = next(
+            (
+                item for window in context.window_manager.windows
+                for item in window.screen.areas
+                if item.as_pointer() == self._target_area_ptr
+            ),
+            None,
+        )
+        region = next((item for item in getattr(area, "regions", ()) if item.type == "WINDOW"), None)
+        if region is None:
+            return
+        state = self._state
+        hud = _compute_hud(context, region, state)
+        scale = hud["scale"]
+        # _compute_hud already clamps the drawn position; store that position
+        # back so the next drag starts where the card is visible.
+        default_x = (region.width - hud["width"]) * 0.5
+        default_y = region.height - hud["height"] - 44.0 * scale
+        state.offset = ((hud["x"] - default_x) / scale, (hud["y"] - default_y) / scale)
+
     def perform_action(self, context: bpy.types.Context, action: str):
         state = self._state
         if action == "CLOSE":
@@ -2398,6 +2429,23 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             return {"PASS_THROUGH"}
 
         in_target = context.area is not None and context.area.as_pointer() == self._target_area_ptr
+        state = self._state
+        if state.drag_origin is not None:
+            # Drag the card by its title bar. Offsets are stored at scale 1.0.
+            if event.type == "MOUSEMOVE":
+                start_x, start_y, offset_x, offset_y = state.drag_origin
+                scale = _ui_scale(context)
+                state.offset = (
+                    offset_x + (event.mouse_x - start_x) / scale,
+                    offset_y + (event.mouse_y - start_y) / scale,
+                )
+                _tag_area(self._target_area_ptr)
+                return {"RUNNING_MODAL"}
+            if event.type in {"LEFTMOUSE", "ESC", "RIGHTMOUSE"} and event.value in {"RELEASE", "PRESS"}:
+                state.drag_origin = None
+                self._clamp_offset(context)
+                _tag_area(self._target_area_ptr)
+                return {"RUNNING_MODAL"}
         if in_target and event.type == "MOUSEMOVE":
             hover = ""
             for key, rect in self._state.hitboxes.items():
@@ -2410,9 +2458,20 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             return {"PASS_THROUGH"}
 
         if in_target and event.type == "LEFTMOUSE" and event.value == "PRESS":
-            for key, rect in tuple(self._state.hitboxes.items()):
+            # The title bar is a drag handle; its buttons take precedence.
+            ordered = sorted(self._state.hitboxes.items(), key=lambda item: item[0] == "drag_header")
+            for key, rect in ordered:
                 if not _inside(rect, event.mouse_region_x, event.mouse_region_y):
                     continue
+                if key == "drag_header":
+                    state.drag_origin = (event.mouse_x, event.mouse_y, *state.offset)
+                    return {"RUNNING_MODAL"}
+                if key == "control_collapse":
+                    state.collapsed = not state.collapsed
+                    state.hover = ""
+                    self._clamp_offset(context)
+                    _tag_area(self._target_area_ptr)
+                    return {"RUNNING_MODAL"}
                 control_actions = {
                     "control_close": "CLOSE",
                     "control_help": "HELP",

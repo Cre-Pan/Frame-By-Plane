@@ -25,7 +25,14 @@ from .ui_list_state import invoke_with_selection_modifiers
 from .runtime import FBP_DATA_ERRORS, fbp_warn
 from .feature_scope import fbp_feature_enabled
 from .registration import register_classes, unregister_classes, unregister_type_properties
-from .shortcut_runtime import primary_modifier_name, primary_modifier_pressed, primary_shortcut_label
+from .shortcut_runtime import (
+    addon_keymap,
+    primary_modifier_name,
+    primary_modifier_pressed,
+    primary_shortcut_label,
+    remove_matching_keymap_items,
+    unregister_keymap_items,
+)
 from .safe_tasks import cancel_scheduled_prefixes, schedule_once, scheduled_task_pending
 from .service_registry import register_service, unregister_service
 from .ui_list_state import (
@@ -4681,6 +4688,113 @@ class FBP_OT_CompositorToggle(Operator):
         return {'FINISHED'}
 
 
+def fbp_compositor_render_out_of_date(scene):
+    """True when F12 would render through a managed setup with pending edits."""
+    return bool(
+        scene is not None
+        and bool(getattr(scene, "fbp_compositor_enabled", False))
+        and bool(getattr(scene, "fbp_compositor_render_enabled", False))
+        and fbp_compositor_needs_refresh(scene)
+    )
+
+
+def _start_native_render(animation):
+    return bpy.ops.render.render(
+        'INVOKE_DEFAULT', animation=bool(animation), use_viewport=True
+    )
+
+
+class FBP_OT_RenderChecked(Operator):
+    bl_idname = "fbp.render_checked"
+    bl_label = "Render"
+    bl_description = (
+        "Render with Blender's Render Image / Render Animation. When the Frame "
+        "By Plane compositor has changes waiting for Refresh, ask first"
+    )
+    bl_options = {'REGISTER'}
+
+    animation: BoolProperty(name="Animation", default=False, options={'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        if not fbp_compositor_render_out_of_date(context.scene):
+            return _start_native_render(self.animation)
+        return context.window_manager.invoke_popup(self, width=340)
+
+    def execute(self, context):
+        return _start_native_render(self.animation)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Compositor Not Up to Date", icon='ERROR')
+        col = layout.column(align=True)
+        col.label(text="Compositor changes are waiting for Refresh.")
+        col.label(text="The render would use the previous setup.")
+        layout.separator(factor=0.5)
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        for choice, text, icon in (
+            ('UPDATE', "Update", 'FILE_REFRESH'),
+            ('IGNORE', "Ignore", 'RENDER_STILL'),
+            ('CANCEL', "Cancel", 'CANCEL'),
+        ):
+            op = row.operator("fbp.render_checked_choice", text=text, icon=icon)
+            op.choice = choice
+            op.animation = self.animation
+
+
+class FBP_OT_RenderCheckedChoice(Operator):
+    bl_idname = "fbp.render_checked_choice"
+    bl_label = "Render Choice"
+    bl_description = "Update the compositor and render, render the previous setup, or cancel"
+    bl_options = {'INTERNAL'}
+
+    choice: EnumProperty(
+        items=(
+            ('UPDATE', "Update", "Apply the waiting compositor changes, then render"),
+            ('IGNORE', "Ignore", "Render with the previous compositor setup"),
+            ('CANCEL', "Cancel", "Do not render"),
+        ),
+        default='CANCEL',
+        options={'SKIP_SAVE'},
+    )
+    animation: BoolProperty(default=False, options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        if self.choice == 'CANCEL':
+            return {'CANCELLED'}
+        if self.choice == 'UPDATE':
+            # The rebuild must finish before the render starts: rebuilding
+            # View Layers from render_init crashes Blender.
+            try:
+                fbp_sync_compositor(
+                    context.scene, context=context, native_group=True,
+                    activate_compositor=True,
+                )
+            except (RuntimeError, AttributeError, ReferenceError, TypeError, ValueError) as exc:
+                fbp_warn("Could not update the FBP compositor before rendering", exc)
+                self.report({'ERROR'}, f"Compositor update failed; render cancelled ({exc})")
+                return {'CANCELLED'}
+        return _start_native_render(self.animation)
+
+
+_FBP_RENDER_KEYMAPS = []
+
+
+def _register_render_keymaps():
+    unregister_keymap_items(_FBP_RENDER_KEYMAPS)
+    keymap = addon_keymap('Screen')
+    if keymap is None:
+        return
+    remove_matching_keymap_items(
+        keymap,
+        lambda item: str(getattr(item, "idname", "") or "") == "fbp.render_checked",
+    )
+    for kwargs in ({}, {"ctrl": True}):
+        item = keymap.keymap_items.new("fbp.render_checked", type='F12', value='PRESS', **kwargs)
+        item.properties.animation = bool(kwargs)
+        _FBP_RENDER_KEYMAPS.append((keymap, item))
+
+
 class FBP_OT_CompositorRepairRebuild(_FBP_CompositorPreviewPoll, Operator):
     bl_idname = "fbp.compositor_repair_rebuild"
     bl_label = "Repair / Rebuild FBP Compositor"
@@ -4746,6 +4860,8 @@ classes = (
     FBP_OT_CompositorAssignGroup,
     FBP_OT_CompositorSync,
     FBP_OT_CompositorToggle,
+    FBP_OT_RenderChecked,
+    FBP_OT_RenderCheckedChoice,
     FBP_OT_CompositorRepairRebuild,
     FBP_OT_CompositorRestore,
 )
@@ -4864,6 +4980,7 @@ def register():
         register_service("compositor.auto_layers", fbp_auto_compositor_layers, owner=__name__)
         register_service("compositor.sync", fbp_sync_compositor, owner=__name__)
         register_service("compositor.ensure_asset_group", _ensure_compositor_asset_group, owner=__name__)
+        _register_render_keymaps()
     except Exception:
         unregister_service("compositor.ensure_asset_group")
         unregister_service("compositor.sync")
@@ -4875,6 +4992,7 @@ def register():
 
 def unregister():
     global _FBP_COMPOSITOR_UPDATE_TIMER_RUNNING
+    unregister_keymap_items(_FBP_RENDER_KEYMAPS)
     unregister_service("compositor.ensure_asset_group")
     unregister_service("compositor.sync")
     unregister_service("compositor.auto_layers")
