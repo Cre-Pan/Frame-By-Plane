@@ -6,9 +6,15 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
-## Prepared update: 7.2.1
+## Prepared update: 8.0.0
 
-Grease Pencil Gap Off/On icons, improved color-control spacing and consistent Scrub Bar placement. See the [7.2.1 release notes](release-notes/7.2.1.md). This source update includes the final high-contrast Gap icons; the public GitHub release is still 7.2.0.
+- Animatable **Deform Plane** poses: Sway, Arch, Squash / Stretch, Taper, Shear, Bulge / Pinch, Wave, Flag and Curl, mixed as keyframeable sliders.
+- On-plane handles that match Gradient, Radial Gradient and Tilt-Shift on images of any shape.
+- A safer compositor: opening a file adds nothing, Compositor Off restores your own render setup, and F12 never changes until you opt in.
+- Faster effect stacks and many effect-stack fixes (Hide in Render, duplicates, variants, groups, masks, copy/paste and presets).
+- Includes the Grease Pencil Gap Off/On icons and color-control polish prepared as 7.2.1.
+
+See the [8.0.0 release notes](release-notes/8.0.0.md). The public release is still 7.2.0.
 
 ## What's new in 7.2.0
 
