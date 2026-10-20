@@ -3998,6 +3998,125 @@ def test_compositor_off_restores_render_setup(_module):
     return {"native_layers": len(native)}
 
 
+def test_render_checked_popup_contract(_module):
+    """F12 asks before rendering an out-of-date compositor and can update first."""
+    compositor = importlib.import_module(f"{PACKAGE}.compositor")
+    scene = bpy.context.scene
+    previous = {
+        "enabled": bool(scene.fbp_compositor_enabled),
+        "render": bool(scene.fbp_compositor_render_enabled),
+        "refresh": bool(scene.get("fbp_compositor_needs_refresh", False)),
+    }
+    renders = []
+    syncs = []
+    original_render = compositor._start_native_render
+    original_sync = compositor.fbp_sync_compositor
+    compositor._start_native_render = lambda animation: renders.append(bool(animation)) or {'FINISHED'}
+    compositor.fbp_sync_compositor = lambda *args, **kwargs: syncs.append(kwargs) or {}
+    try:
+        scene.fbp_compositor_enabled = False
+        assert not compositor.fbp_compositor_render_out_of_date(scene)
+        # Blender 5 keeps RNA properties apart from ID properties, so set the
+        # opt-in through RNA before marking the pending change (its update
+        # would otherwise queue a rebuild).
+        scene.fbp_compositor_enabled = True
+        scene["fbp_compositor_needs_refresh"] = False
+        scene.fbp_compositor_render_enabled = True
+        scene["fbp_compositor_needs_refresh"] = True
+        assert compositor.fbp_compositor_render_out_of_date(scene)
+        scene.fbp_compositor_render_enabled = False
+        assert not compositor.fbp_compositor_render_out_of_date(scene), "no prompt without the render opt-in"
+        scene["fbp_compositor_needs_refresh"] = False
+        scene.fbp_compositor_render_enabled = True
+        scene["fbp_compositor_needs_refresh"] = True
+
+        assert bpy.ops.fbp.render_checked_choice(choice='CANCEL') == {'CANCELLED'}
+        assert not renders and not syncs
+        assert bpy.ops.fbp.render_checked_choice(choice='IGNORE', animation=True) == {'FINISHED'}
+        assert renders == [True] and not syncs
+        assert bpy.ops.fbp.render_checked_choice(choice='UPDATE') == {'FINISHED'}
+        assert len(syncs) == 1 and syncs[0].get("activate_compositor") and renders == [True, False]
+        assert bpy.ops.fbp.render_checked() == {'FINISHED'} and renders[-1] is False
+        keymaps = [item for _keymap, item in compositor._FBP_RENDER_KEYMAPS]
+        if keymaps:
+            assert sorted((item.type, item.ctrl, item.properties.animation) for item in keymaps) == [
+                ('F12', False, False), ('F12', True, True),
+            ]
+    finally:
+        compositor._start_native_render = original_render
+        compositor.fbp_sync_compositor = original_sync
+        scene["fbp_compositor_needs_refresh"] = False
+        scene.fbp_compositor_render_enabled = previous["render"]
+        scene.fbp_compositor_enabled = previous["enabled"]
+        scene["fbp_compositor_needs_refresh"] = previous["refresh"]
+    return {"renders": len(renders), "keymap_items": len(compositor._FBP_RENDER_KEYMAPS)}
+
+
+def test_drop_import_camera_modes(_module):
+    """Dropped media can keep, adapt or create the camera, for both plane modes."""
+    importer = importlib.import_module(f"{PACKAGE}.operator_import")
+    registered = []
+    for cls in (importer.FBP_OT_DropMedia, importer.FBP_OT_GenerateMultiplane):
+        if not hasattr(bpy.types, cls.__name__):
+            bpy.utils.register_class(cls)
+            registered.append(cls)
+    scene = bpy.context.scene
+    source = WORKDIR / "drop_camera_modes"
+    source.mkdir(parents=True, exist_ok=True)
+    for name, size in (("drop_tall.png", (32, 64)), ("drop_wide.png", (64, 32))):
+        path = source / name
+        if not path.is_file():
+            image = bpy.data.images.new(name, *size)
+            image.filepath_raw = str(path)
+            image.file_format = "PNG"
+            image.save()
+            bpy.data.images.remove(image)
+    previous_camera = scene.camera
+    previous_resolution = (scene.render.resolution_x, scene.render.resolution_y)
+    results = {}
+    try:
+        for import_mode, files in (("SINGLE", ["drop_tall.png"]), ("MULTI", ["drop_tall.png", "drop_wide.png"])):
+            for camera_mode, new_cameras, resolution in (
+                ("KEEP", 0, (1920, 1080)),
+                ("ADAPT", 0, (960, 1920)),
+                ("NEW", 1, (960, 1920)),
+            ):
+                before = set(bpy.data.objects)
+                camera = bpy.data.objects.new("FBP Drop Camera", bpy.data.cameras.new("FBP Drop Camera"))
+                scene.collection.objects.link(camera)
+                camera.location = (0.0, -10.0, 0.0)
+                camera.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+                scene.camera = camera
+                scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
+                result = bpy.ops.fbp.drop_media(
+                    "EXEC_DEFAULT",
+                    directory=str(source),
+                    files=[{"name": name} for name in files],
+                    import_mode=import_mode,
+                    camera_mode=camera_mode,
+                )
+                created = [obj for obj in bpy.data.objects if obj not in before and obj is not camera]
+                cameras = [obj for obj in created if obj.type == 'CAMERA']
+                key = f"{import_mode}_{camera_mode}"
+                assert result == {'FINISHED'}, (key, result)
+                assert len(cameras) == new_cameras, (key, [obj.name for obj in cameras])
+                assert (scene.render.resolution_x, scene.render.resolution_y) == resolution, (
+                    key, scene.render.resolution_x, scene.render.resolution_y,
+                )
+                results[key] = len(created)
+                for obj in reversed(created + [camera]):
+                    try:
+                        bpy.data.objects.remove(obj, do_unlink=True)
+                    except (ReferenceError, RuntimeError):
+                        pass
+    finally:
+        scene.camera = previous_camera
+        scene.render.resolution_x, scene.render.resolution_y = previous_resolution
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+    return results
+
+
 def test_toon_boom_contract(_module):
     importer = importlib.import_module(f"{PACKAGE}.operator_import")
     caps = importer.fbp_toon_boom_exchange_capabilities()
@@ -4585,6 +4704,8 @@ def run_background():
             ("compositor_scene_copy_isolation", test_compositor_scene_copy_isolation),
             ("compositor_refresh_contract", test_compositor_refresh_contract),
             ("compositor_off_restores_render_setup", test_compositor_off_restores_render_setup),
+            ("drop_import_camera_modes", test_drop_import_camera_modes),
+            ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
