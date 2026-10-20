@@ -6004,7 +6004,7 @@ class FBP_OT_DropMedia(Operator):
     def _invoke_dialog(self, context):
         return context.window_manager.invoke_props_dialog(
             self,
-            width=_FBP_SHIFT_A_MEDIA_POPUP_WIDTH,
+            width=_FBP_SHIFT_A_PLANE_POPUP_WIDTH,
             title="Import with Frame By Plane",
             confirm_text="Import",
         )
@@ -6135,7 +6135,26 @@ class FBP_OT_DropMedia(Operator):
         section_gap(layout, 0.2)
         self._draw_camera_settings(layout, context)
         section_gap(layout, 0.2)
-        _fbp_draw_shift_a_plane_settings(layout, context, timing=True, crop=True)
+        self._draw_plane_settings(layout, context)
+
+    def _draw_plane_settings(self, layout, context):
+        # Same Animation and Plane and Material sections as the Shift+A dialog;
+        # the Camera section above replaces its Track/Fit row.
+        sc = context.scene
+        timing = _fbp_shift_a_box(layout, "Animation", "TIME")
+        row = adaptive_row(timing, context, align=False)
+        row.prop(sc, "fbp_pre_duration", text="Frame Hold")
+        row.prop(sc, "fbp_pre_loop_mode", text="")
+
+        section_gap(layout, 0.2)
+        material = _fbp_shift_a_box(layout, "Plane and Material", "MATERIAL")
+        row = adaptive_row(material, context, align=False)
+        row.prop(sc, "fbp_pre_orientation", text="")
+        row.prop(sc, "fbp_pre_interpolation", text="")
+        row = adaptive_row(material, context, align=False)
+        row.prop(sc, "fbp_pre_shadeless", text="Shadeless", icon=fbp_icon("LIGHT_SUN"), toggle=True)
+        row.prop(sc, "fbp_pre_track_cam", text="Track Camera", icon="CON_CAMERASOLVER", toggle=True)
+        _fbp_draw_import_alpha_crop_options(material, sc, context)
 
     def _draw_camera_settings(self, layout, context):
         scene = context.scene

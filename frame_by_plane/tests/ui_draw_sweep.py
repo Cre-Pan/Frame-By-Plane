@@ -9,6 +9,7 @@ import inspect
 import os
 import sys
 import traceback
+import types
 from pathlib import Path
 
 import bpy
@@ -37,6 +38,65 @@ class _PanelProxy:
         if owner is not None and hasattr(owner, name):
             return getattr(owner, name)
         return getattr(object.__getattribute__(self, "_cls"), name)
+
+
+class _OperatorProxy:
+    """Stand-in ``self`` for an operator dialog: properties read as their defaults."""
+
+    def __init__(self, cls):
+        object.__setattr__(self, "_cls", cls)
+        object.__setattr__(self, "layout", StubLayout())
+        values = {}
+        for name, deferred in _operator_annotations(cls).items():
+            keywords = dict(getattr(deferred, "keywords", {}) or {})
+            if "default" in keywords:
+                values[name] = keywords["default"]
+            elif getattr(deferred, "function", None) is bpy.props.CollectionProperty:
+                values[name] = []
+            elif getattr(deferred, "function", None) is bpy.props.StringProperty:
+                values[name] = ""
+            elif getattr(deferred, "function", None) in (bpy.props.IntProperty, bpy.props.FloatProperty):
+                values[name] = 0
+            elif getattr(deferred, "function", None) is bpy.props.BoolProperty:
+                values[name] = False
+        module, _dot, operator = str(getattr(cls, "bl_idname", "")).partition(".")
+        try:
+            values["bl_rna"] = getattr(getattr(bpy.ops, module), operator).get_rna_type()
+        except (AttributeError, KeyError):
+            pass
+        object.__setattr__(self, "_values", values)
+
+    def __getattr__(self, name):
+        values = object.__getattribute__(self, "_values")
+        if name in values:
+            return values[name]
+        attr = getattr(object.__getattribute__(self, "_cls"), name)
+        if isinstance(attr, types.FunctionType):
+            return types.MethodType(attr, self)
+        return attr
+
+    def __setattr__(self, name, value):
+        object.__getattribute__(self, "_values")[name] = value
+
+
+def _operator_annotations(cls):
+    annotations = {}
+    for base in reversed(cls.__mro__):
+        annotations.update(vars(base).get("__annotations__", {}) or {})
+    return annotations
+
+
+def _addon_operator_dialogs():
+    seen = set()
+    for name, module in list(sys.modules.items()):
+        if not name.startswith(addon.__name__):
+            continue
+        for _attr, cls in inspect.getmembers(module, inspect.isclass):
+            if cls in seen or cls.__module__ != module.__name__:
+                continue
+            if issubclass(cls, bpy.types.Operator) and "draw" in vars(cls):
+                seen.add(cls)
+                yield cls
 
 
 def _addon_panels():
@@ -83,12 +143,44 @@ try:
             try:
                 cls.draw(_PanelProxy(cls), bpy.context)
                 drawn += 1
+            except NameError as exc:
+                failures.append(f"{mode} {cls.__name__}: {exc}")
             except (TypeError, AttributeError) as exc:
                 if "UILayout" in str(exc) or " has no property " in str(exc):
                     failures.append(f"{mode} {cls.__name__}: {exc}")
             except Exception:
                 pass
     bpy.ops.object.mode_set(mode="OBJECT")
+
+    # Operator dialogs (invoke_props_dialog) draw only in a live window. A
+    # name lost in a merge raises NameError there and leaves an empty popup.
+    dialogs = sorted(_addon_operator_dialogs(), key=lambda cls: cls.__name__)
+    dialogs_drawn = 0
+    for cls in dialogs:
+        # Background Blender skips some Viewport-only operators; register them
+        # for the draw so their properties resolve.
+        registered_here = False
+        if not hasattr(bpy.types, cls.__name__):
+            try:
+                bpy.utils.register_class(cls)
+                registered_here = True
+            except (RuntimeError, ValueError):
+                pass
+        try:
+            cls.draw(_OperatorProxy(cls), bpy.context)
+            dialogs_drawn += 1
+        except NameError as exc:
+            failures.append(f"Operator {cls.__name__}: {exc}\n{traceback.format_exc()}")
+        except (TypeError, AttributeError) as exc:
+            if "UILayout" in str(exc) or " has no property " in str(exc):
+                failures.append(f"Operator {cls.__name__}: {exc}")
+        except Exception:
+            pass
+        finally:
+            if registered_here:
+                bpy.utils.unregister_class(cls)
+    drawn += dialogs_drawn
+    assert any(cls.__name__ == "FBP_OT_DropMedia" for cls in dialogs), "drop dialog not swept"
 
     if addon.__name__ not in bpy.context.preferences.addons:
         bpy.context.preferences.addons.new().module = addon.__name__

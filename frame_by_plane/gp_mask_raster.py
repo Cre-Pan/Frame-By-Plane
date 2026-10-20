@@ -188,6 +188,7 @@ def _segment_window_groups(wx0, wx2, wy0, wy2):
     xs0 = wx0.tolist(); xs2 = wx2.tolist(); ys0 = wy0.tolist(); ys2 = wy2.tolist()
     groups = []
     first = None
+    gx0 = gx2 = gy0 = gy2 = 0
     for index in range(len(xs0)):
         x0, x2, y0, y2 = xs0[index], xs2[index], ys0[index], ys2[index]
         if x2 <= x0 or y2 <= y0:
