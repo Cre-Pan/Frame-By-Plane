@@ -3443,9 +3443,9 @@ def _fbp_draw_compositor_setup_row(layout, scene):
     """On/off, Refresh and Live Update for the managed compositor setup."""
     row = layout.row(align=True)
     row.scale_y = 1.1
-    row.prop(
-        scene, "fbp_experimental_compositor",
-        text="Compositor", toggle=True, icon='NODE_COMPOSITING',
+    row.operator(
+        "fbp.compositor_toggle", text="Compositor", icon='NODE_COMPOSITING',
+        depress=bool(getattr(scene, "fbp_experimental_compositor", False)),
     )
     refresh = row.row(align=True)
     # Highlight Refresh while edits are waiting or nothing has been built yet.
@@ -3498,12 +3498,8 @@ class FBP_PT_OutputCompositor(Panel):
             )
             enable = content.row(align=False)
             enable.scale_y = 1.1
-            enable.prop(
-                sc,
-                "fbp_experimental_compositor",
-                text="Enable Compositor Tools",
-                toggle=True,
-                icon='NODE_COMPOSITING',
+            enable.operator(
+                "fbp.compositor_toggle", text="Enable Compositor Tools", icon='NODE_COMPOSITING',
             )
             return
 
@@ -3810,12 +3806,8 @@ class FBP_PT_CompositorNodeSidebar(Panel):
             )
             enable = layout.row(align=False)
             enable.scale_y = 1.1
-            enable.prop(
-                scene,
-                "fbp_experimental_compositor",
-                text="Enable Compositor Tools",
-                toggle=True,
-                icon='NODE_COMPOSITING',
+            enable.operator(
+                "fbp.compositor_toggle", text="Enable Compositor Tools", icon='NODE_COMPOSITING',
             )
             return
         _fbp_draw_compositor_setup_row(layout, scene)

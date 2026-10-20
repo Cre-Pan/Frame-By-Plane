@@ -770,6 +770,11 @@ class TutorialState:
     baseline_transforms: dict[int, tuple[float, ...]] = field(default_factory=dict)
     anchors: dict[str, Any] = field(default_factory=dict)
     last_detection: float = 0.0
+    # Offset from the default top-centre position, in region pixels at
+    # scale 1.0, so a moved card keeps its place when the UI scale changes.
+    offset: tuple[float, float] = (0.0, 0.0)
+    collapsed: bool = False
+    drag_origin: tuple[float, float, float, float] | None = None
 
     def reset_baseline(self, context: bpy.types.Context) -> None:
         objects = tuple(context.scene.objects)
@@ -1701,13 +1706,16 @@ def _inside(rect: tuple[float, float, float, float], x: float, y: float) -> bool
 
 
 def _ui_scale(context: bpy.types.Context) -> float:
+    """Blender's UI scale factor (Resolution Scale times the display's pixel density).
+
+    ``system.dpi`` is 72 at a scale of 1.0, so this matches the factor Blender
+    applies to its own widgets and text.
+    """
     system = context.preferences.system
-    base = float(getattr(system, "ui_scale", 1.0) or 1.0)
-    dpi = float(getattr(system, "dpi", 72.0) or 72.0)
-    pixel = float(getattr(system, "pixel_size", 1.0) or 1.0)
-    dpi_factor = max(0.9, min(1.35, dpi / 72.0))
-    pixel_factor = max(1.0, min(1.25, pixel))
-    return max(0.82, min(1.65, base * dpi_factor * pixel_factor))
+    try:
+        return max(0.25, float(system.dpi) / 72.0)
+    except (AttributeError, TypeError, ValueError):
+        return max(0.25, float(getattr(system, "ui_scale", 1.0) or 1.0))
 
 
 _ROUTE_SHORT_LABELS = {
@@ -1743,7 +1751,7 @@ _TASK_GUIDANCE = {
     "draw_scrub": "Hold < over the 3D Viewport and move the mouse; release to snap back.",
     "draw_edit_colors": "Press Tab, select strokes and change their Stroke or Fill swatch.",
     "image_open_importer": "Open the Single Plane importer. The next card will wait for the file you choose.",
-    "image_import": "Read the notes in the Add Plane dialog, press Create Plane, then choose an image.",
+    "image_import": "Press Create Plane, then choose an image. Press ? to see what every option does.",
     "image_open_crop": "Press Z and choose Crop or Expand to reveal the existing viewport edge controllers.",
     "image_crop": "Drag a Crop or Expand edge controller to frame the selected plane.",
     "image_open_masks": "Press Z to reach Grease Pencil Mask.",
@@ -1761,7 +1769,7 @@ _TASK_GUIDANCE = {
     "color_open_mesh_effects": "Open the Mesh section for the selected Color Plane.",
     "color_mesh": "Use Z for a favourite 3D effect, or add one from Effects & Masks > Mesh.",
     "multi_open_importer": "Open Multi Plane. The next card will wait for the imported layer setup.",
-    "multi_generate": "Open Multi Plane and import a folder containing at least two layers.",
+    "multi_generate": "Choose a folder with at least two layers and press OK. Press ? for the options.",
     "multi_open_camera": "Open the Frame By Plane camera setup.",
     "multi_camera": "Create or choose the active scene camera.",
     "multi_start_depth": "Select one imported layer and start a constrained move.",
@@ -1925,135 +1933,113 @@ def _is_key_label(label: str) -> bool:
     return bool(tokens) and all(token in _KEY_NAMES or len(token) == 1 for token in tokens)
 
 
+# Compact tutorial card. It starts top-centre below the viewport header, can
+# be dragged by its title bar and collapsed to the title bar alone, so the
+# viewport stays usable while the guide is open. Details live behind "?".
+_HUD_TOP_CLEARANCE = 44.0
+
+
 def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: TutorialState) -> dict[str, Any]:
     scale = _ui_scale(context)
     region_w = max(1.0, float(region.width))
     region_h = max(1.0, float(region.height))
-    desired_margin = max(10.0, 16.0 * scale)
-    # Split/quad layouts can leave a very small 3D region. Never let the HUD
-    # extend outside it; older minimum clamps could produce negative x values
-    # and an unreachable Close button.
-    margin = min(
-        desired_margin,
-        max(2.0, min(region_w, region_h) * 0.08),
-    )
-    available_w = max(1.0, region_w - margin * 2.0)
-    width = min(available_w, max(380.0, 580.0 * scale))
-    preferred_h = (262.0 if state.route is None else 340.0) * scale
-    x = (region_w - width) * 0.5
-    # Leave the translucent Viewport tool/header strip unobstructed. The HUD is
-    # still top-centred, but starts just below Blender's overlay controls.
-    desired_clearance = max(36.0, 46.0 * scale)
-    available_h = max(1.0, region_h - margin * 2.0)
-    top_clearance = min(
-        desired_clearance,
-        max(0.0, available_h - max(48.0, 96.0 * scale)),
-    )
-    height = min(preferred_h, max(1.0, available_h - top_clearance))
-    y = max(margin, region_h - height - margin - top_clearance)
-    header_h = min(48.0 * scale, height * 0.26)
-    content_pad = 18.0 * scale
-    action_h = min(32.0 * scale, height * 0.18)
-    footer_y = y + 16.0 * scale
-    control_gap = 8.0 * scale
-    back_w = 76.0 * scale
-    next_w = 76.0 * scale
-    close_size = min(24.0 * scale, header_h - 16.0 * scale)
-    help_w = 60.0 * scale
-    header_control_y = y + height - header_h + (header_h - close_size) * 0.5
-    controls = {
-        "close": (x + width - content_pad - close_size, header_control_y, close_size, close_size),
-        "help": (
-            x + width - content_pad - close_size - control_gap - help_w,
-            header_control_y,
-            help_w,
-            close_size,
-        ),
-        "back": (x + content_pad, footer_y, back_w, action_h),
-        "next": (x + width - content_pad - next_w, footer_y, next_w, action_h),
-    }
-    action_rect = None
-    if state.route is not None and state.active_task is not None:
-        action_left = controls["back"][0] + controls["back"][2] + control_gap
-        action_right = controls["next"][0] - control_gap
-        action_rect = (
-            action_left,
-            footer_y,
-            max(1.0, action_right - action_left),
-            action_h,
-        )
-    route_key = state.route.key if state.route is not None else ""
+    margin = min(8.0 * scale, max(2.0, min(region_w, region_h) * 0.05))
+    header_h = 30.0 * scale
+    pad = 10.0 * scale
+    control_h = 24.0 * scale
     hud = {
         "mode": "CHOOSER" if state.route is None else "STEP",
         "scale": scale,
+        "header_h": header_h,
+        "pad": pad,
+        "palette": _hud_palette(context, state.route.key if state.route is not None else ""),
+        "heading_size": max(7, round(13 * scale)),
+        "title_size": max(7, round(12 * scale)),
+        "body_size": max(6, round(11 * scale)),
+        "small_size": max(6, round(10 * scale)),
+        "caption_size": max(5, round(9 * scale)),
+        "line_h": 14.0 * scale,
+    }
+    if state.collapsed:
+        width, height = 280.0 * scale, header_h
+    elif state.route is None:
+        width, height = 340.0 * scale, header_h + 150.0 * scale
+    else:
+        width = 340.0 * scale
+        hud["content_w"] = width - pad * 2.0
+        height = header_h + _step_body_height(state, hud) + control_h + pad * 2.0
+    width = min(width, max(1.0, region_w - margin * 2.0))
+    height = min(height, max(1.0, region_h - margin * 2.0))
+    header_h = min(header_h, height)
+    default_x = (region_w - width) * 0.5
+    default_y = region_h - height - _HUD_TOP_CLEARANCE * scale
+    x = default_x + state.offset[0] * scale
+    y = default_y + state.offset[1] * scale
+    x = max(margin, min(region_w - width - margin, x))
+    y = max(margin, min(region_h - height - margin, y))
+
+    button = 20.0 * scale
+    gap = 4.0 * scale
+    header_control_y = y + height - header_h + (header_h - button) * 0.5
+    right = x + width - 6.0 * scale
+    controls = {
+        "close": (right - button, header_control_y, button, button),
+        "collapse": (right - button * 2.0 - gap, header_control_y, button, button),
+        "help": (right - button * 3.0 - gap * 2.0, header_control_y, button, button),
+    }
+    footer_y = y + pad
+    back_w = 58.0 * scale
+    next_w = 58.0 * scale
+    controls["back"] = (x + pad, footer_y, back_w, control_h)
+    controls["next"] = (x + width - pad - next_w, footer_y, next_w, control_h)
+    action_rect = None
+    if not state.collapsed and state.route is not None and state.active_task is not None:
+        action_left = controls["back"][0] + back_w + gap * 2.0
+        action_right = controls["next"][0] - gap * 2.0
+        action_rect = (action_left, footer_y, max(1.0, action_right - action_left), control_h)
+    first_control = controls["help"][0] if state.route is not None else controls["collapse"][0]
+    hud.update({
         "x": x,
         "y": y,
         "width": width,
         "height": height,
+        "default_x": default_x,
+        "default_y": default_y,
         "margin": margin,
         "header_h": header_h,
-        "content_x": x + content_pad,
-        "content_w": width - content_pad * 2.0,
-        "palette": _hud_palette(context, route_key),
-        "heading_size": max(14, round(17 * scale)),
-        "title_size": max(13, round(15 * scale)),
-        "body_size": max(11, round(12 * scale)),
-        "small_size": max(10, round(11 * scale)),
-        "caption_size": max(9, round(10 * scale)),
-        "line_h": max(15.0, 17.0 * scale),
+        "content_x": x + pad,
+        "content_w": width - pad * 2.0,
+        "footer_top": footer_y + control_h,
         "action_rect": action_rect,
         "controls": controls,
-    }
-    if state.route is not None:
-        # Fit the card to its text: no empty band under short steps.
-        needed = _step_card_height(state, hud)
-        fixed = header_h + 6.0 * scale + 32.0 * scale + 60.0 * scale
-        fitted = min(height, max(140.0 * scale, fixed + needed))
-        if fitted < height:
-            shift = height - fitted
-            hud["y"] = y + shift
-            hud["height"] = fitted
-            for name in ("back", "next"):
-                rect = controls[name]
-                controls[name] = (rect[0], rect[1] + shift, rect[2], rect[3])
-            if action_rect is not None:
-                hud["action_rect"] = (action_rect[0], action_rect[1] + shift, action_rect[2], action_rect[3])
+        "drag_rect": (x, y + height - header_h, max(1.0, first_control - x - gap), header_h),
+    })
     return hud
 
 
-def _step_card_height(state: TutorialState, hud: dict[str, Any]) -> float:
-    """Height the step card needs for its title, guidance, path and tip."""
+def _step_guidance(state: TutorialState) -> tuple[str, str]:
+    task = state.active_task
+    if task is not None:
+        return task.label, _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
+    if _route_is_finished(state):
+        return "Guide complete", "Every action was detected. Pick another guide or review earlier steps."
+    return "Step complete", "Press Next to continue, or Back to review this step."
+
+
+def _step_body_height(state: TutorialState, hud: dict[str, Any]) -> float:
+    """Height of the step body: progress, title, guidance and the HOW path."""
     scale = hud["scale"]
     page = state.page
     if page is None:
         return 0.0
-    inner_w = hud["content_w"] - 32.0 * scale
+    _title, guidance = _step_guidance(state)
+    lines = len(_wrap_measured(guidance, hud["content_w"], hud["small_size"], max_lines=2))
+    height = 10.0 * scale + 3.0 * scale + 14.0 * scale + hud["heading_size"] + lines * hud["line_h"]
     task = state.active_task
-    if task is None:
-        guidance = "Every action was detected. Pick another guide or look back at earlier steps."
-        shortcut = ""
-    else:
-        guidance = _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
-        shortcut = _task_shortcut_text(bpy.context, task, page)
-    lines = len(_wrap_measured(guidance, inner_w, hud["body_size"], max_lines=2))
-    height = 16.0 * scale + hud["heading_size"] * 0.8 + 24.0 * scale + lines * hud["line_h"]
+    shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
     if shortcut:
-        label_w = _text_dimensions("HOW", hud["caption_size"])[0] + 10.0 * scale
-        height += 4.0 * scale + _draw_shortcut_chips(hud, shortcut, 0.0, 0.0, inner_w - label_w, measure=True)
-    if page.pro_tip:
-        height += _tip_height(hud, page.pro_tip) + 6.0 * scale
-    return height + 12.0 * scale
-
-
-def _tip_lines(hud: dict[str, Any], text: str) -> list[str]:
-    scale = hud["scale"]
-    label_w = _text_dimensions("TIP", hud["caption_size"])[0]
-    width = hud["content_w"] - 12.0 * scale - label_w - 30.0 * scale
-    return _wrap_measured(text, width, hud["small_size"], max_lines=2)
-
-
-def _tip_height(hud: dict[str, Any], text: str) -> float:
-    return 14.0 * hud["scale"] + len(_tip_lines(hud, text)) * hud["small_size"] * 1.45
+        height += 8.0 * scale + _draw_shortcut_chips(hud, shortcut, 0.0, 0.0, hud["content_w"], measure=True)
+    return height
 
 
 # Apple-style system tints, darkened slightly so white labels stay legible on
@@ -2215,19 +2201,12 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
     scale = hud["scale"]
     y, h = hud["y"], hud["height"]
     content_x, content_w = hud["content_x"], hud["content_w"]
-    top = y + h - hud["header_h"] - 18.0 * scale
-    _draw_text("What do you want to make?", content_x, top, hud["heading_size"], palette["text"])
-    _draw_text(
-        "Pick a guide. It moves on by itself as you work in Blender.",
-        content_x,
-        top - 20.0 * scale,
-        hud["small_size"],
-        palette["secondary"],
-    )
-    gap = 10.0 * scale
-    grid_top = top - 34.0 * scale
-    grid_bottom = y + 18.0 * scale
-    card_h = max(40.0 * scale, (grid_top - grid_bottom - gap) * 0.5)
+    top = y + h - hud["header_h"] - 8.0 * scale - hud["title_size"]
+    _draw_text("What do you want to make?", content_x, top, hud["title_size"], palette["text"])
+    gap = 6.0 * scale
+    grid_top = top - 10.0 * scale
+    grid_bottom = y + hud["pad"]
+    card_h = max(24.0 * scale, (grid_top - grid_bottom - gap) * 0.5)
     card_w = (content_w - gap) * 0.5
     for index, route_key in enumerate(_CHOOSER_ROUTES):
         column, row = index % 2, index // 2
@@ -2241,85 +2220,31 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
         state.hitboxes[key] = rect
         hovered = state.hover == key
         tint = (*_ROUTE_TINTS[route_key][:3], 1.0)
-        radius = 10.0 * scale
+        radius = 8.0 * scale
         if hovered:
             _draw_round_rect(rect[0] - 1.0, rect[1] - 1.0, rect[2] + 2.0, rect[3] + 2.0, radius + 1.0, tint)
         _draw_round_rect(*rect, radius, palette["card_hover"] if hovered else palette["card"])
-        tile = min(36.0 * scale, rect[3] - 16.0 * scale)
-        tile_x = rect[0] + 12.0 * scale
+        tile = min(26.0 * scale, rect[3] - 12.0 * scale)
+        tile_x = rect[0] + 8.0 * scale
         tile_y = rect[1] + (rect[3] - tile) * 0.5
         _draw_icon_tile(_ROUTE_ICON_UI_KEYS[route_key], tile_x, tile_y, tile, palette, tint)
-        text_x = tile_x + tile + 12.0 * scale
-        text_w = rect[0] + rect[2] - text_x - 24.0 * scale
+        text_x = tile_x + tile + 8.0 * scale
+        text_w = rect[0] + rect[2] - text_x - 6.0 * scale
         middle = rect[1] + rect[3] * 0.5
         _draw_text(
             _ellipsize(_ROUTE_SHORT_LABELS[route_key], text_w, hud["body_size"]),
             text_x,
-            middle + 3.0 * scale,
+            middle + 2.0 * scale,
             hud["body_size"],
             palette["text"],
         )
         _draw_text(
             _ellipsize(_ROUTE_CARD_DETAILS[route_key], text_w, hud["caption_size"]),
             text_x,
-            middle - 13.0 * scale,
+            middle - 11.0 * scale,
             hud["caption_size"],
             palette["secondary"],
         )
-        _draw_text(
-            "›",
-            rect[0] + rect[2] - 14.0 * scale,
-            middle - 6.0 * scale,
-            hud["title_size"],
-            palette["text"] if hovered else palette["tertiary"],
-            align="CENTER",
-        )
-
-
-def _page_progress(state: TutorialState, page: PageSpec) -> float:
-    if not page.tasks:
-        return 1.0
-    return sum(1 for task in page.tasks if state.task_is_done(task)) / len(page.tasks)
-
-
-def _draw_page_stepper(state: TutorialState, hud: dict[str, Any], top: float) -> float:
-    """Draw one segment per page and the page caption; return the next free y."""
-    palette = hud["palette"]
-    scale = hud["scale"]
-    route = state.route
-    content_x, content_w = hud["content_x"], hud["content_w"]
-    pages = route.pages
-    gap = 5.0 * scale
-    bar_h = max(3.0, 4.0 * scale)
-    segment_w = (content_w - gap * (len(pages) - 1)) / max(1, len(pages))
-    bar_y = top - bar_h
-    for index, page in enumerate(pages):
-        segment_x = content_x + index * (segment_w + gap)
-        _draw_round_rect(segment_x, bar_y, segment_w, bar_h, bar_h * 0.5, palette["track"])
-        if index < state.page_index:
-            fill = 1.0
-        elif index == state.page_index:
-            fill = max(0.06, _page_progress(state, page))
-        else:
-            fill = 0.0
-        if fill > 0.0:
-            _draw_round_rect(segment_x, bar_y, max(bar_h, segment_w * fill), bar_h, bar_h * 0.5, palette["tint"])
-    caption_y = bar_y - 18.0 * scale
-    page = state.page
-    caption = f"STEP {state.page_index + 1} OF {len(pages)}  ·  {page.title.upper()}"
-    current, total, _progress = _route_progress(state)
-    count = f"{min(current, total)} of {total}" if total else ""
-    count_w = _text_dimensions(count, hud["caption_size"])[0] if count else 0.0
-    _draw_text(
-        _ellipsize(caption, content_w - count_w - 12.0 * scale, hud["caption_size"]),
-        content_x,
-        caption_y,
-        hud["caption_size"],
-        palette["tint_label"],
-    )
-    if count:
-        _draw_text(count, content_x + content_w, caption_y, hud["caption_size"], palette["tertiary"], align="RIGHT")
-    return caption_y - 10.0 * scale
 
 
 def _draw_task_dots(state: TutorialState, hud: dict[str, Any], page: PageSpec, right: float, cy: float) -> None:
@@ -2349,73 +2274,33 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
     if route is None or page is None:
         return
 
-    card_top = _draw_page_stepper(state, hud, y + h - hud["header_h"] - 6.0 * scale)
-    card_bottom = y + 60.0 * scale
-    card_h = max(54.0 * scale, card_top - card_bottom)
-    card = (content_x, card_bottom, content_w, card_h)
-    card_radius = 12.0 * scale
-    _draw_round_rect(*card, card_radius, palette["card"])
+    # Thin progress bar across the whole guide.
+    current, total, progress = _route_progress(state)
+    bar_h = 3.0 * scale
+    bar_y = y + h - hud["header_h"] - 6.0 * scale - bar_h
+    _draw_round_rect(content_x, bar_y, content_w, bar_h, bar_h * 0.5, palette["track"])
+    if progress > 0.0:
+        _draw_round_rect(content_x, bar_y, max(bar_h, content_w * progress), bar_h, bar_h * 0.5, palette["tint"])
 
     task = state.active_task
-    pad = 16.0 * scale
-    inner_x = card[0] + pad
-    inner_w = card[2] - pad * 2.0
-    title_y = card[1] + card[3] - pad - hud["heading_size"] * 0.8
-    shortcut = ""
+    title, guidance = _step_guidance(state)
+    title_y = bar_y - 12.0 * scale - hud["heading_size"] * 0.8
     if task is None:
-        finished = _route_is_finished(state)
-        title = "Guide complete" if finished else "Step complete"
-        guidance = (
-            "Every action was detected. Pick another guide or look back at earlier steps."
-            if finished else
-            "Everything in this step is done. Press Next to continue or Back to review it."
-        )
-        badge = 20.0 * scale
-        _draw_circle(inner_x + badge * 0.5, title_y + 5.0 * scale, badge * 0.5, palette["success"])
-        _draw_text("✓", inner_x + badge * 0.5, title_y + 0.5 * scale, hud["body_size"], (1.0, 1.0, 1.0, 1.0), align="CENTER")
-        _draw_text(title, inner_x + badge + 10.0 * scale, title_y, hud["heading_size"], palette["text"])
-        guidance_lines = _wrap_measured(guidance, inner_w, hud["body_size"], max_lines=2)
-        cursor = _draw_text_lines(guidance_lines, inner_x, title_y - 24.0 * scale, hud["body_size"], palette["secondary"], hud["line_h"])
+        badge = 16.0 * scale
+        _draw_circle(content_x + badge * 0.5, title_y + 4.0 * scale, badge * 0.5, palette["success"])
+        _draw_text("✓", content_x + badge * 0.5, title_y, hud["small_size"], (1.0, 1.0, 1.0, 1.0), align="CENTER")
+        _draw_text(title, content_x + badge + 8.0 * scale, title_y, hud["heading_size"], palette["text"])
     else:
-        optional_w = (_text_dimensions("Optional", hud["caption_size"])[0] + 14.0 * scale) if task.optional else 0.0
-        dots_w = len(page.tasks) * 12.0 * scale + 8.0 * scale
-        title_text = _ellipsize(task.label, inner_w - dots_w - optional_w - 8.0 * scale, hud["heading_size"])
-        title_w = _draw_text(title_text, inner_x, title_y, hud["heading_size"], palette["text"])
-        if optional_w:
-            pill = (inner_x + title_w + 8.0 * scale, title_y - 3.0 * scale, optional_w, 17.0 * scale)
-            _draw_round_rect(*pill, pill[3] * 0.5, palette["key_cap"])
-            _draw_text("Optional", pill[0] + pill[2] * 0.5, pill[1] + pill[3] * 0.5 - 4.0 * scale, hud["caption_size"], palette["text"], align="CENTER")
-        _draw_task_dots(state, hud, page, card[0] + card[2] - pad, title_y + 5.0 * scale)
-        guidance = _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
-        guidance_lines = _wrap_measured(guidance, inner_w, hud["body_size"], max_lines=2)
-        cursor = _draw_text_lines(guidance_lines, inner_x, title_y - 24.0 * scale, hud["body_size"], palette["secondary"], hud["line_h"])
-        shortcut = _task_shortcut_text(bpy.context, task, page)
-
-    tip_h = (_tip_height(hud, page.pro_tip) + 6.0 * scale) if page.pro_tip else 0.0
+        dots_w = len(page.tasks) * 12.0 * scale + 6.0 * scale
+        label = title + ("  · optional" if task.optional else "")
+        _draw_text(_ellipsize(label, content_w - dots_w, hud["heading_size"]), content_x, title_y, hud["heading_size"], palette["text"])
+        _draw_task_dots(state, hud, page, content_x + content_w, title_y + 4.0 * scale)
+    lines = _wrap_measured(guidance, content_w, hud["small_size"], max_lines=2)
+    cursor = _draw_text_lines(lines, content_x, title_y - 17.0 * scale, hud["small_size"], palette["secondary"], hud["line_h"])
+    shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
     if shortcut:
-        label_w = _text_dimensions("HOW", hud["caption_size"])[0]
-        how_y = cursor - 12.0 * scale
-        room = how_y - card[1] - (tip_h if page.pro_tip else 8.0 * scale) + 20.0 * scale
-        if room > 14.0 * scale:
-            _draw_text("HOW", inner_x, how_y + 6.0 * scale, hud["caption_size"], palette["tertiary"])
-            used = _draw_shortcut_chips(hud, shortcut, inner_x + label_w + 10.0 * scale, how_y, inner_w - label_w - 10.0 * scale)
-            cursor = how_y - used
-    if page.pro_tip and cursor - card[1] >= tip_h:
-        tip_rect = (card[0] + 6.0 * scale, card[1] + 6.0 * scale, card[2] - 12.0 * scale, tip_h - 6.0 * scale)
-        _draw_round_rect(*tip_rect, 8.0 * scale, palette["tint_soft"])
-        label = "TIP"
-        label_w = _text_dimensions(label, hud["caption_size"])[0]
-        line_h = hud["small_size"] * 1.45
-        text_y = tip_rect[1] + tip_rect[3] - 7.0 * scale - hud["small_size"] * 0.95
-        _draw_text(label, tip_rect[0] + 10.0 * scale, text_y, hud["caption_size"], palette["tint_soft_label"])
-        _draw_text_lines(
-            _tip_lines(hud, page.pro_tip),
-            tip_rect[0] + label_w + 20.0 * scale,
-            text_y,
-            hud["small_size"],
-            palette["text"],
-            line_h,
-        )
+        chip_h = 20.0 * scale
+        _draw_shortcut_chips(hud, shortcut, content_x, cursor - chip_h + 4.0 * scale, content_w)
 
     action_rect = hud.get("action_rect")
     if task is not None and action_rect is not None:
@@ -2435,59 +2320,72 @@ def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
     _draw_hud(state, hud)
 
 
+def _draw_round_control(state: TutorialState, hud: dict[str, Any], key: str, rect, label: str) -> None:
+    palette = hud["palette"]
+    hovered = state.hover == key
+    state.hitboxes[key] = rect
+    _draw_circle(rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5, rect[2] * 0.5,
+                 palette["button_hover"] if hovered else palette["button"], 32)
+    _draw_text(label, rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5 - hud["small_size"] * 0.38,
+               hud["small_size"], palette["text"] if hovered else palette["secondary"], align="CENTER")
+
+
 def _draw_hud(state: TutorialState, hud: dict[str, Any]) -> None:
     x, y, w, h, scale = hud["x"], hud["y"], hud["width"], hud["height"], hud["scale"]
     palette = hud["palette"]
 
     gpu.state.blend_set("ALPHA")
     try:
-        outer_radius = 14.0 * scale
-        # Soft, wide shadow so the guide floats above the viewport.
-        for spread, alpha in ((10.0, 0.05), (6.0, 0.08), (3.0, 0.12), (1.0, 0.18)):
+        outer_radius = 10.0 * scale
+        for spread, alpha in ((6.0, 0.06), (3.0, 0.10), (1.0, 0.16)):
             grow = spread * scale
             _draw_round_rect(x - grow, y - grow * 1.3, w + grow * 2.0, h + grow * 2.0, outer_radius + grow, (0.0, 0.0, 0.0, alpha))
         _draw_round_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, outer_radius + 1.0, palette["hairline"])
         _draw_round_rect(x, y, w, h, outer_radius, palette["surface"])
+        controls = hud["controls"]
+        state.hitboxes.clear()
+        state.hitboxes["drag_header"] = hud["drag_rect"]
         header_y = y + h - hud["header_h"]
         content_x = hud["content_x"]
-        tile = 24.0 * scale
+        tile = 18.0 * scale
         tile_y = header_y + (hud["header_h"] - tile) * 0.5
         if state.route is not None:
             _draw_icon_tile(_ROUTE_ICON_UI_KEYS.get(state.route.key, "menu.multiplane"), content_x, tile_y, tile, palette)
             header_label = _ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)
+            current, total, _progress = _route_progress(state)
+            if total:
+                header_label += f"  ·  {min(current, total)}/{total}"
+            task = state.active_task
+            if state.collapsed and task is not None:
+                header_label += f"  ·  {task.label}"
         else:
             _draw_icon_tile("menu.multiplane", content_x, tile_y, tile, palette, palette["key_cap"])
-            header_label = "Frame By Plane Tutorials"
-        header_room = hud["controls"]["help"][0] - content_x - tile - 18.0 * scale
+            header_label = "Tutorials"
+        text_right = controls["help"][0] if state.route is not None else controls["collapse"][0]
         _draw_text(
-            _ellipsize(header_label, header_room, hud["title_size"]),
-            content_x + tile + 10.0 * scale,
-            header_y + hud["header_h"] * 0.5 - hud["title_size"] * 0.36,
-            hud["title_size"],
+            _ellipsize(header_label, text_right - content_x - tile - 14.0 * scale, hud["body_size"]),
+            content_x + tile + 8.0 * scale,
+            header_y + hud["header_h"] * 0.5 - hud["body_size"] * 0.36,
+            hud["body_size"],
             palette["text"],
         )
-        state.hitboxes.clear()
-        if state.route is None:
-            _draw_route_chooser(state, hud)
-        else:
-            _draw_step(state, hud)
-        controls = hud["controls"]
-        close = controls["close"]
-        hovered = state.hover == "control_close"
-        state.hitboxes["control_close"] = close
-        _draw_circle(close[0] + close[2] * 0.5, close[1] + close[3] * 0.5, close[2] * 0.5,
-                     palette["button_hover"] if hovered else palette["button"], 32)
-        _draw_text("×", close[0] + close[2] * 0.5, close[1] + close[3] * 0.5 - hud["body_size"] * 0.38,
-                   hud["body_size"], palette["text"] if hovered else palette["secondary"], align="CENTER")
-        if state.route is not None:
-            _draw_pill_button(state, hud, "control_help", controls["help"], "Help", quiet=True)
-            task = state.active_task
-            _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
-            if task is not None:
-                _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
+        if not state.collapsed:
+            if state.route is None:
+                _draw_route_chooser(state, hud)
             else:
-                next_label = "Guides" if _route_is_finished(state) else "Next  ›"
-                _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
+                _draw_step(state, hud)
+        _draw_round_control(state, hud, "control_close", controls["close"], "×")
+        _draw_round_control(state, hud, "control_collapse", controls["collapse"], "+" if state.collapsed else "–")
+        if state.route is not None:
+            _draw_round_control(state, hud, "control_help", controls["help"], "?")
+            if not state.collapsed:
+                task = state.active_task
+                _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
+                if task is not None:
+                    _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
+                else:
+                    next_label = "Guides" if _route_is_finished(state) else "Next  ›"
+                    _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
     finally:
         gpu.state.blend_set("NONE")
 
@@ -2765,6 +2663,35 @@ def _help_labels(layout: bpy.types.UILayout, text: str, *, icon: str | None = No
             layout.label(text=line)
 
 
+# What each option of the creation dialogs does. Shown only from the "?"
+# help so the dialogs themselves stay minimal.
+_ADD_PLANE_OPTION_NOTES: tuple[tuple[str, str], ...] = (
+    ("Plane Type", "What to create. Image and Video open the file browser after Create Plane; Color, Gradient and Holdout need no file."),
+    ("Frame Hold", "Timeline frames each drawing stays on screen (2 = on twos)."),
+    ("One Shot / Loop / Ping-Pong", "Plays once, repeats (the default), or plays back and forth."),
+    ("Set Scene In/Out from Media", "Makes the scene range match a new sequence or video."),
+    ("Vertical / Horizontal", "Stands facing the camera, or lies flat on the ground."),
+    ("Pixel / Smooth", "Keeps hard pixel edges, or softens the image when it is scaled."),
+    ("Shadeless", "Ignores scene lights, so the image keeps its original colors."),
+    ("Crop Alpha / Padding", "Trims empty transparent borders; Padding keeps a margin."),
+    ("Track Camera", "Keeps the plane turned toward the camera when it moves."),
+    ("Fit Camera to New Plane", "Changes the render size to the image ratio (off by default)."),
+)
+_MULTIPLANE_OPTION_NOTES: tuple[tuple[str, str], ...] = (
+    ("Folder", "Every image, sequence folder or video inside becomes one layer, stacked in name order (01_BG, 02_Mid, 03_FG)."),
+    ("Frame Hold / playback", "Apply to every animated layer; Loop is the default."),
+    ("Shadeless / Track Camera", "Ignore scene lights; turn every layer toward the camera."),
+    ("Create Camera", "Adds a camera framed on the layers (off by default); Source Aspect uses the first image's ratio."),
+    ("Layer Spacing", "The depth gap between layers."),
+    ("Fit to Camera", "Scales every layer to fill the camera frame (off by default)."),
+)
+_DIALOG_OPTION_NOTES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "image_import": ("Add Plane dialog", _ADD_PLANE_OPTION_NOTES),
+    "multi_open_importer": ("Multi Plane dialog", _MULTIPLANE_OPTION_NOTES),
+    "multi_generate": ("Multi Plane dialog", _MULTIPLANE_OPTION_NOTES),
+}
+
+
 class FBP_OT_tutorial_help(bpy.types.Operator):
     """Show the detailed native Blender guide for the current tutorial page."""
 
@@ -2821,6 +2748,18 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
             for line_index, line in enumerate(_help_wrap(step, 88)):
                 prefix = f"{index}. " if line_index == 0 else "   "
                 guide.label(text=f"{prefix}{line}")
+
+        dialog = next(
+            (_DIALOG_OPTION_NOTES[task.key] for task in page.tasks if task.key in _DIALOG_OPTION_NOTES),
+            None,
+        )
+        if dialog is not None:
+            options = layout.box()
+            configure_layout(options)
+            section_header(options, dialog[0], icon="PREFERENCES")
+            for name, text in dialog[1]:
+                col = options.column(align=True)
+                _help_labels(col, f"{name}: {text}", icon="DOT", width=78)
 
         if page.help_notes:
             notes = layout.box()
@@ -2900,6 +2839,26 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
 
     def cancel(self, context: bpy.types.Context) -> None:
         self._close(context)
+
+    def _clamp_offset(self, context: bpy.types.Context) -> None:
+        """Keep a dragged card reachable after a drop or a size change."""
+        area = next(
+            (
+                item for window in context.window_manager.windows
+                for item in window.screen.areas
+                if item.as_pointer() == self._target_area_ptr
+            ),
+            None,
+        )
+        region = next((item for item in getattr(area, "regions", ()) if item.type == "WINDOW"), None)
+        if region is None:
+            return
+        state = self._state
+        hud = _compute_hud(context, region, state)
+        scale = hud["scale"]
+        # _compute_hud already clamps the drawn position; store that position
+        # back so the next drag starts where the card is visible.
+        state.offset = ((hud["x"] - hud["default_x"]) / scale, (hud["y"] - hud["default_y"]) / scale)
 
     def perform_action(self, context: bpy.types.Context, action: str):
         state = self._state
@@ -2988,6 +2947,23 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             return {"PASS_THROUGH"}
 
         in_target = context.area is not None and context.area.as_pointer() == self._target_area_ptr
+        state = self._state
+        if state.drag_origin is not None:
+            # Drag the card by its title bar. Offsets are stored at scale 1.0.
+            if event.type == "MOUSEMOVE":
+                start_x, start_y, offset_x, offset_y = state.drag_origin
+                scale = _ui_scale(context)
+                state.offset = (
+                    offset_x + (event.mouse_x - start_x) / scale,
+                    offset_y + (event.mouse_y - start_y) / scale,
+                )
+                _tag_area(self._target_area_ptr)
+                return {"RUNNING_MODAL"}
+            if event.type in {"LEFTMOUSE", "ESC", "RIGHTMOUSE"} and event.value in {"RELEASE", "PRESS"}:
+                state.drag_origin = None
+                self._clamp_offset(context)
+                _tag_area(self._target_area_ptr)
+                return {"RUNNING_MODAL"}
         if in_target and event.type == "MOUSEMOVE":
             hover = ""
             for key, rect in self._state.hitboxes.items():
@@ -3000,9 +2976,20 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             return {"PASS_THROUGH"}
 
         if in_target and event.type == "LEFTMOUSE" and event.value == "PRESS":
-            for key, rect in tuple(self._state.hitboxes.items()):
+            # The title bar is a drag handle; its buttons take precedence.
+            ordered = sorted(self._state.hitboxes.items(), key=lambda item: item[0] == "drag_header")
+            for key, rect in ordered:
                 if not _inside(rect, event.mouse_region_x, event.mouse_region_y):
                     continue
+                if key == "drag_header":
+                    state.drag_origin = (event.mouse_x, event.mouse_y, *state.offset)
+                    return {"RUNNING_MODAL"}
+                if key == "control_collapse":
+                    state.collapsed = not state.collapsed
+                    state.hover = ""
+                    self._clamp_offset(context)
+                    _tag_area(self._target_area_ptr)
+                    return {"RUNNING_MODAL"}
                 control_actions = {
                     "control_close": "CLOSE",
                     "control_help": "HELP",

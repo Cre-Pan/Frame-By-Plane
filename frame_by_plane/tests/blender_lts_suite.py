@@ -2052,12 +2052,13 @@ def test_felt_fuzz_canonical_contract(_module):
     return {"nodes": node_count, "canonical_upgrade_once": True}
 
 
-def _effect_stack_fixture_rig(name, alpha=1.0):
+def _effect_stack_fixture_rig(name, alpha=1.0, width=16):
     builder = importlib.import_module(f"{PACKAGE}.builder")
     suffix = "" if alpha >= 1.0 else f"_alpha{int(alpha * 100)}"
+    suffix += "" if width == 16 else f"_w{width}"
     fixture_path = WORKDIR / f"fbp_effect_stack_fixture{suffix}.png"
     if not fixture_path.is_file():
-        image = bpy.data.images.new("FBP Effect Stack Fixture", width=16, height=16, alpha=True)
+        image = bpy.data.images.new("FBP Effect Stack Fixture", width=width, height=16, alpha=True)
         try:
             image.generated_color = (0.2, 0.4, 0.8, alpha)
             image.filepath_raw = str(fixture_path)
@@ -2555,6 +2556,311 @@ def test_effect_remove_masked_uv_instance(_module):
             except (ReferenceError, RuntimeError):
                 pass
     return {"materials": len(after_remove)}
+
+
+def test_effect_controls_roundtrip(_module):
+    """Placing handles from values and reading them back changes nothing.
+
+    Runs on a 2:1 plane so aspect-dependent mappings (gradients) are covered.
+    """
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    controls_module = importlib.import_module(f"{PACKAGE}.effect_controls")
+    import random
+    rnd = random.Random(7)
+    owned = []
+    drift = {}
+
+    def value(rig, name):
+        current = getattr(rig, name)
+        return tuple(current) if hasattr(current, "__len__") else float(current)
+
+    def roundtrip(rig, effect_id):
+        names = sorted(controls_module.effect_control_driven_properties(effect_id))
+        before = {name: value(rig, name) for name in names}
+        controls_module.sync_controls_from_properties(rig, effect_id, create=True)
+        _flush_fbp_safe_tasks()
+        for control in rig.children_recursive:
+            if (
+                controls_module.is_effect_control(control)
+                and str(control.get(controls_module.KEY_EFFECT_ID, "")).upper() == effect_id
+            ):
+                control.pop(controls_module.KEY_SYNC_SIGNATURE, None)
+                controls_module.sync_properties_from_control(control)
+        _flush_fbp_safe_tasks()
+        for name in names:
+            old, new = before[name], value(rig, name)
+            delta = (
+                max(abs(a - b) for a, b in zip(old, new)) if isinstance(old, tuple) else abs(old - new)
+            )
+            if delta > 1.0e-3:
+                drift[f"{effect_id}.{name}"] = (old, new)
+
+    try:
+        for effect_id in sorted(controls_module.CONTROL_SPECS):
+            rig = _effect_stack_fixture_rig(f"FBP Controls {effect_id}", width=32)
+            owned.extend((rig, *rig.children_recursive))
+            if not geo.fbp_add_effect(rig, effect_id, select_object_mask_helper=False, inherit_active_group=False):
+                continue
+            _flush_fbp_safe_tasks()
+            for name in controls_module.effect_control_driven_properties(effect_id):
+                prop = rig.bl_rna.properties.get(name)
+                if prop is None or prop.type != "FLOAT" or getattr(prop, "array_length", 0):
+                    continue
+                if name.startswith(("fbp_crop", "fbp_extend")):
+                    low, high = 0.0, 0.3
+                elif "angle" in name or "rotation" in name:
+                    low, high = -1.2, 1.2
+                elif "offset" in name:
+                    low, high = -0.2, 0.2
+                elif "center" in name or name.endswith(("_x", "_y")):
+                    low, high = 0.25, 0.75
+                else:
+                    low = prop.soft_min + (prop.soft_max - prop.soft_min) * 0.2
+                    high = prop.soft_min + (prop.soft_max - prop.soft_min) * 0.5
+                setattr(rig, name, rnd.uniform(low, high))
+            _flush_fbp_safe_tasks()
+            roundtrip(rig, effect_id)
+            if effect_id == "GRADIENT_MASK":
+                rig.fbp_gradient_mask_type = "RADIAL"
+                rig.fbp_gradient_mask_position = 0.45
+                rig.fbp_gradient_mask_feather = 0.2
+                _flush_fbp_safe_tasks()
+                roundtrip(rig, effect_id)
+                center = controls_module.find_effect_control(rig, effect_id, "CENTER")
+                center_uv = controls_module._local_to_uv(rig, center.location.x, center.location.y)
+                assert abs(center_uv[0] - rig.fbp_gradient_mask_center_x) < 1.0e-4, center_uv
+                assert abs(center_uv[1] - rig.fbp_gradient_mask_center_y) < 1.0e-4, center_uv
+        assert not drift, drift
+        issues = controls_module.validate_effect_control_specs()
+        assert not issues, issues
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"effects": len(controls_module.CONTROL_SPECS)}
+
+
+def test_gradient_handles_cycles(_module):
+    """On a 2:1 plane the gradient follows its handles and radial is a circle."""
+    _skip_unless_cycles_render()
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    controls_module = importlib.import_module(f"{PACKAGE}.effect_controls")
+    rig = _effect_stack_fixture_rig("FBP Gradient Handles", width=32)
+    owned = [rig, *rig.children_recursive]
+    scene = bpy.context.scene
+    camera = bpy.data.objects.new("FBP Gradient Handles Camera", bpy.data.cameras.new("FBP Gradient Handles Camera"))
+    scene.collection.objects.link(camera)
+    previous = {
+        "camera": scene.camera, "engine": scene.render.engine, "x": scene.render.resolution_x,
+        "y": scene.render.resolution_y, "percentage": scene.render.resolution_percentage,
+        "filepath": scene.render.filepath, "transparent": scene.render.film_transparent,
+        "color_mode": scene.render.image_settings.color_mode,
+    }
+    hidden = [obj for obj in scene.objects if obj not in owned and obj is not camera and not obj.hide_render]
+    output = WORKDIR / "fbp_gradient_handles.png"
+    size = (256, 128)
+    try:
+        for obj in hidden:
+            obj.hide_render = True
+        assert geo.fbp_add_effect(rig, "GRADIENT_MASK", select_object_mask_helper=False, inherit_active_group=False)
+        _flush_fbp_safe_tasks()
+        controls_module.sync_controls_from_properties(rig, "GRADIENT_MASK", create=True)
+        _flush_fbp_safe_tasks()
+        plane, bounds, _uv = controls_module._plane_and_mapping(rig)
+        x0, x1, y0, y1 = bounds[:4]
+        bpy.context.view_layer.update()
+        matrix = plane.matrix_world.copy()
+        from mathutils import Vector
+        normal = (matrix.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+        camera.location = matrix @ Vector(((x0 + x1) * 0.5, (y0 + y1) * 0.5, 0.0)) + normal * 5.0
+        camera.rotation_euler = matrix.to_euler()
+        camera.data.type = "ORTHO"
+        camera.data.ortho_scale = (x1 - x0) * matrix.to_scale()[0]
+        scene.camera = camera
+        scene.render.engine = "CYCLES"
+        scene.cycles.device = "CPU"
+        scene.cycles.samples = 4
+        scene.render.resolution_x, scene.render.resolution_y = size
+        scene.render.resolution_percentage = 100
+        scene.render.film_transparent = True
+        scene.render.image_settings.color_mode = "RGBA"
+        scene.render.filepath = str(output)
+
+        def render_alpha():
+            bpy.ops.render.render(write_still=True)
+            image = bpy.data.images.load(str(output), check_existing=False)
+            try:
+                pixels = list(image.pixels)
+            finally:
+                bpy.data.images.remove(image)
+
+            from bpy_extras.object_utils import world_to_camera_view
+
+            def alpha(x, y):
+                # Project the plane-local point through the real camera.
+                view = world_to_camera_view(scene, camera, plane.matrix_world @ Vector((x, y, 0.0)))
+                i = min(size[0] - 1, max(0, round(view.x * size[0] - 0.5)))
+                j = min(size[1] - 1, max(0, round(view.y * size[1] - 0.5)))
+                return pixels[(j * size[0] + i) * 4 + 3]
+            return alpha
+
+        controls = {
+            role: controls_module.find_effect_control(rig, "GRADIENT_MASK", role)
+            for role in ("CENTER", "IN", "OUT")
+        }
+        cx, cy, h = (x0 + x1) * 0.5, (y0 + y1) * 0.5, (y1 - y0) * 0.15
+        controls["IN"].location.x, controls["IN"].location.y = cx - h, cy - h
+        controls["OUT"].location.x, controls["OUT"].location.y = cx + h, cy + h
+        for role in ("IN", "OUT"):
+            controls[role].pop(controls_module.KEY_SYNC_SIGNATURE, None)
+            controls_module.sync_properties_from_control(controls[role])
+        _flush_fbp_safe_tasks()
+        alpha = render_alpha()
+        across = [alpha(cx + t * h, cy - t * h) for t in (-1.5, -0.75, 0.75, 1.5)]
+        assert max(across) - min(across) < 0.12, (
+            f"gradient skewed against its handles: {across}; "
+            f"angle={rig.fbp_gradient_mask_angle:.3f} feather={rig.fbp_gradient_mask_feather:.3f} bounds={bounds}"
+        )
+        assert alpha(cx - 1.5 * h, cy - 1.5 * h) < 0.05 and alpha(cx + 1.5 * h, cy + 1.5 * h) > 0.95
+
+        rig.fbp_gradient_mask_type = "RADIAL"
+        rig.fbp_gradient_mask_feather = 0.3
+        _flush_fbp_safe_tasks()
+        controls_module.sync_controls_from_properties(rig, "GRADIENT_MASK")
+        _flush_fbp_safe_tasks()
+        alpha = render_alpha()
+        center = controls["CENTER"].location
+        inner = (controls["IN"].location - center).length
+        outer = (controls["OUT"].location - center).length
+        assert alpha(controls["IN"].location.x, controls["IN"].location.y) > 0.95
+        assert alpha(controls["OUT"].location.x, controls["OUT"].location.y) < 0.05
+        middle = (inner + outer) * 0.5
+        ring = [alpha(center.x + middle * math.cos(t), center.y + middle * math.sin(t)) for t in (0.0, math.pi * 0.5, math.pi, math.pi * 1.5)]
+        assert max(ring) - min(ring) < 0.12, f"radial gradient is not circular: {ring}"
+    finally:
+        scene.camera = previous["camera"]
+        scene.render.engine = previous["engine"]
+        scene.render.resolution_x, scene.render.resolution_y = previous["x"], previous["y"]
+        scene.render.resolution_percentage = previous["percentage"]
+        scene.render.filepath = previous["filepath"]
+        scene.render.film_transparent = previous["transparent"]
+        scene.render.image_settings.color_mode = previous["color_mode"]
+        for obj in hidden:
+            obj.hide_render = False
+        for obj in reversed([*owned, camera]):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"across": [round(value, 3) for value in across], "ring": [round(value, 3) for value in ring]}
+
+
+def test_lattice_poses_contract(_module):
+    """Deformation poses are exact, animatable and survive grid changes."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    poses_module = importlib.import_module(f"{PACKAGE}.lattice_poses")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Lattice Poses", width=32)
+    owned = [rig, *rig.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+    frame = scene.frame_current
+
+    def edges():
+        bpy.context.view_layer.update()
+        evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh()
+        try:
+            ys = [vertex.co.y for vertex in mesh.vertices]
+            top = [vertex.co.x for vertex in mesh.vertices if abs(vertex.co.y - max(ys)) < 1.0e-4]
+            return {
+                "top_x": sum(top) / len(top),
+                "height": max(ys) - min(ys),
+                "right": max(vertex.co.x for vertex in mesh.vertices),
+            }
+        finally:
+            evaluated.to_mesh_clear()
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            ops = bpy.ops.fbp
+            assert ops.add_effect(effect_id="LATTICE") == {"FINISHED"}
+            plane = geo._fbp_plane(rig)
+            helper = geo._fbp_lattice_object(rig)
+            width = edges()["right"] * 2.0
+            # Presets are exact on a B-spline cage: Sway moves the top edge by
+            # 0.35 of the width, Squash/Stretch scales the height by 0.75/1.25.
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="SWAY") == {"FINISHED"}
+            sway = poses_module.lattice_poses(helper)[0]
+            assert abs(edges()["top_x"] - 0.35 * width) < 1.0e-3, edges()
+            sway.value = -1.0
+            assert abs(edges()["top_x"] + 0.35 * width) < 1.0e-3, edges()
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="SQUASH") == {"FINISHED"}
+            squash = poses_module.lattice_poses(helper)[1]
+            sway.value = 0.0
+            assert abs(edges()["height"] - 0.75) < 1.0e-3, edges()
+            squash.value = -1.0
+            assert abs(edges()["height"] - 1.25) < 1.0e-3, edges()
+            squash.value = 0.0
+            # Keyframed slider, then a preset that needs a denser cage and an
+            # explicit grid change: shape and animation are kept.
+            sway.value = 0.5
+            sway.keyframe_insert("value", frame=1)
+            sway.value = 1.0
+            sway.keyframe_insert("value", frame=20)
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="WAVE") == {"FINISHED"}
+            assert helper.data.points_u >= 6, helper.data.points_u
+            poses_module.lattice_poses(helper)[2].value = 0.0
+            rig.fbp_lattice_grid_preset = "LOOPS_4"
+            _flush_fbp_safe_tasks()
+            assert [pose.name for pose in poses_module.lattice_poses(helper)] == ["Sway", "Squash / Stretch", "Wave"]
+            scene.frame_set(20)
+            assert abs(edges()["top_x"] - 0.35 * width) < 1.0e-3, edges()
+            scene.frame_set(1)
+            assert abs(edges()["top_x"] - 0.175 * width) < 1.0e-3, edges()
+            # Reset rewrites the rest cage; poses keep their deformation.
+            assert ops.reset_lattice_helper(rig_name=rig.name) == {"FINISHED"}
+            _flush_fbp_safe_tasks()
+            scene.frame_set(20)
+            assert abs(edges()["top_x"] - 0.35 * width) < 1.0e-3, edges()
+            for pose in poses_module.lattice_poses(helper):
+                pose.value = 0.0
+            helper.data.shape_keys.animation_data_clear()
+            # Custom pose: the cage edit lands in the pose, not in the rest cage.
+            rest_right = edges()["right"]
+            assert ops.add_lattice_pose(rig_name=rig.name, preset="") == {"FINISHED"}
+            assert helper.mode == "EDIT"
+            points = helper.data.points
+            bpy.ops.lattice.select_all(action="DESELECT")
+            points[len(points) - 1].select = True
+            bpy.ops.transform.translate(value=(0.3, 0.0, 0.0))
+            assert ops.finish_lattice_editing(rig_name=rig.name) == {"FINISHED"}
+            assert helper.mode == "OBJECT" and helper.active_shape_key_index == 0
+            custom = poses_module.lattice_poses(helper)[-1]
+            assert edges()["right"] > rest_right + 0.05, (rest_right, edges())
+            custom.value = 0.0
+            assert abs(edges()["right"] - rest_right) < 1.0e-4
+            for pose in list(poses_module.lattice_poses(helper)):
+                assert ops.remove_lattice_pose(rig_name=rig.name, pose_name=pose.name) == {"FINISHED"}
+            assert helper.data.shape_keys is None
+            assert abs(edges()["right"] - rest_right) < 1.0e-4
+    finally:
+        scene.frame_set(frame)
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"width": round(width, 3)}
 
 
 def _effect_stage_materials(geo, rig):
@@ -3715,6 +4021,218 @@ def test_compositor_refresh_contract(_module):
     return {"rebuilds": len(syncs)}
 
 
+def test_compositor_off_restores_render_setup(_module):
+    """Building, opting out and turning the compositor off never change F12."""
+    scene = bpy.context.scene
+    compositor = importlib.import_module(f"{PACKAGE}.compositor")
+    sets = importlib.import_module(f"{PACKAGE}.compositor_sets")
+    rigs = [_effect_stack_fixture_rig(f"FBP Off Contract {name}") for name in ("A", "B")]
+    owned = [obj for rig in rigs for obj in (rig, *rig.children_recursive)]
+    previous = {
+        "preview": bool(scene.fbp_experimental_compositor),
+        "render": bool(scene.fbp_compositor_render_enabled),
+        "tree": scene.compositing_node_group,
+        "use_compositing": bool(scene.render.use_compositing),
+        "film_transparent": bool(scene.render.film_transparent),
+    }
+    assert not scene.fbp_compositor_enabled, "fixture expects an unmanaged scene"
+    native = {layer.name: bool(layer.use) for layer in scene.view_layers}
+    layers_before = len(scene.fbp_compositor_layers)
+
+    def managed_layers():
+        return [layer for layer in scene.view_layers if layer.get(compositor.FBP_COMPOSITOR_LAYER_TAG)]
+
+    def native_use():
+        return {
+            layer.name: bool(layer.use) for layer in scene.view_layers
+            if not layer.get(compositor.FBP_COMPOSITOR_LAYER_TAG)
+        }
+
+    try:
+        scene.fbp_experimental_compositor = True
+        scene.fbp_compositor_render_enabled = False
+        compositor.fbp_auto_compositor_layers(scene)
+        compositor.fbp_sync_compositor(scene, context=bpy.context, activate_compositor=True)
+        assert managed_layers(), "sync must create managed View Layers"
+        assert not any(layer.use for layer in managed_layers()), "managed layers render only after the opt-in"
+        assert native_use() == native, "building the compositor must keep native View Layers"
+        assert not scene.render.use_compositing
+
+        scene.fbp_compositor_render_enabled = True
+        assert all(layer.use for layer in managed_layers())
+        assert scene.render.use_compositing
+        tree = scene.compositing_node_group
+        artist = tree.nodes.new("CompositorNodeRGB")
+        artist.name = "FBP Off Contract Artist Node"
+
+        assert bpy.ops.fbp.compositor_toggle() == {'FINISHED'}
+        assert not scene.fbp_experimental_compositor and not scene.fbp_compositor_enabled
+        assert scene.compositing_node_group == previous["tree"]
+        assert bool(scene.render.use_compositing) == previous["use_compositing"]
+        assert bool(scene.render.film_transparent) == previous["film_transparent"]
+        assert not managed_layers(), "Compositor Off must remove generated View Layers"
+        assert native_use() == native
+        kept = bpy.data.node_groups.get(tree.name)
+        assert kept is not None and kept.use_fake_user, "Compositor Off keeps the FBP graph"
+
+        assert bpy.ops.fbp.compositor_toggle() == {'FINISHED'}
+        assert scene.fbp_compositor_enabled and scene.compositing_node_group == kept
+        assert kept.nodes.get("FBP Off Contract Artist Node") is not None
+        assert not kept.use_fake_user
+        assert all(layer.use for layer in managed_layers())
+
+        # Up to 7.2 file load assigned an empty FBP root to every scene.
+        compositor.fbp_restore_compositor(scene, remove_generated=True)
+        empty = bpy.data.node_groups.new("FBP Off Contract Empty Root", "CompositorNodeTree")
+        empty["fbp_role"] = "compositor_root"
+        scene.compositing_node_group = empty
+        sets.fbp_compositor_sets_load_post(None)
+        assert scene.compositing_node_group is None, "load must drop the empty generated root"
+        assert bpy.data.node_groups.get("FBP Off Contract Empty Root") is None
+        sets.fbp_compositor_sets_load_post(None)
+        assert scene.compositing_node_group is None, "load must not create a compositor"
+    finally:
+        if scene.fbp_compositor_enabled:
+            compositor.fbp_restore_compositor(scene, remove_generated=True)
+        for tree in tuple(bpy.data.node_groups):
+            if tree.use_fake_user and tree.get(compositor.FBP_COMPOSITOR_TREE_TAG):
+                bpy.data.node_groups.remove(tree)
+        scene.compositing_node_group = previous["tree"]
+        scene.render.use_compositing = previous["use_compositing"]
+        scene.render.film_transparent = previous["film_transparent"]
+        scene.fbp_compositor_render_enabled = previous["render"]
+        scene.fbp_experimental_compositor = previous["preview"]
+        if compositor.FBP_COMPOSITOR_RESUME_KEY in scene:
+            del scene[compositor.FBP_COMPOSITOR_RESUME_KEY]
+        while len(scene.fbp_compositor_layers) > layers_before:
+            scene.fbp_compositor_layers.remove(len(scene.fbp_compositor_layers) - 1)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"native_layers": len(native)}
+
+
+def test_render_checked_popup_contract(_module):
+    """F12 asks before rendering an out-of-date compositor and can update first."""
+    compositor = importlib.import_module(f"{PACKAGE}.compositor")
+    scene = bpy.context.scene
+    previous = {
+        "enabled": bool(scene.fbp_compositor_enabled),
+        "render": bool(scene.fbp_compositor_render_enabled),
+        "refresh": bool(scene.get("fbp_compositor_needs_refresh", False)),
+    }
+    renders = []
+    syncs = []
+    original_render = compositor._start_native_render
+    original_sync = compositor.fbp_sync_compositor
+    compositor._start_native_render = lambda animation: renders.append(bool(animation)) or {'FINISHED'}
+    compositor.fbp_sync_compositor = lambda *args, **kwargs: syncs.append(kwargs) or {}
+    try:
+        scene.fbp_compositor_enabled = False
+        assert not compositor.fbp_compositor_render_out_of_date(scene)
+        # Blender 5 keeps RNA properties apart from ID properties, so set the
+        # opt-in through RNA before marking the pending change (its update
+        # would otherwise queue a rebuild).
+        scene.fbp_compositor_enabled = True
+        scene["fbp_compositor_needs_refresh"] = False
+        scene.fbp_compositor_render_enabled = True
+        scene["fbp_compositor_needs_refresh"] = True
+        assert compositor.fbp_compositor_render_out_of_date(scene)
+        scene.fbp_compositor_render_enabled = False
+        assert not compositor.fbp_compositor_render_out_of_date(scene), "no prompt without the render opt-in"
+        scene["fbp_compositor_needs_refresh"] = False
+        scene.fbp_compositor_render_enabled = True
+        scene["fbp_compositor_needs_refresh"] = True
+
+        assert bpy.ops.fbp.render_checked_choice(choice='CANCEL') == {'CANCELLED'}
+        assert not renders and not syncs
+        assert bpy.ops.fbp.render_checked_choice(choice='IGNORE', animation=True) == {'FINISHED'}
+        assert renders == [True] and not syncs
+        assert bpy.ops.fbp.render_checked_choice(choice='UPDATE') == {'FINISHED'}
+        assert len(syncs) == 1 and syncs[0].get("activate_compositor") and renders == [True, False]
+        assert bpy.ops.fbp.render_checked() == {'FINISHED'} and renders[-1] is False
+        keymaps = [item for _keymap, item in compositor._FBP_RENDER_KEYMAPS]
+        if keymaps:
+            assert sorted((item.type, item.ctrl, item.properties.animation) for item in keymaps) == [
+                ('F12', False, False), ('F12', True, True),
+            ]
+    finally:
+        compositor._start_native_render = original_render
+        compositor.fbp_sync_compositor = original_sync
+        scene["fbp_compositor_needs_refresh"] = False
+        scene.fbp_compositor_render_enabled = previous["render"]
+        scene.fbp_compositor_enabled = previous["enabled"]
+        scene["fbp_compositor_needs_refresh"] = previous["refresh"]
+    return {"renders": len(renders), "keymap_items": len(compositor._FBP_RENDER_KEYMAPS)}
+
+
+def test_drop_import_camera_modes(_module):
+    """Dropped media can keep, adapt or create the camera, for both plane modes."""
+    importer = importlib.import_module(f"{PACKAGE}.operator_import")
+    registered = []
+    for cls in (importer.FBP_OT_DropMedia, importer.FBP_OT_GenerateMultiplane):
+        if not hasattr(bpy.types, cls.__name__):
+            bpy.utils.register_class(cls)
+            registered.append(cls)
+    scene = bpy.context.scene
+    source = WORKDIR / "drop_camera_modes"
+    source.mkdir(parents=True, exist_ok=True)
+    for name, size in (("drop_tall.png", (32, 64)), ("drop_wide.png", (64, 32))):
+        path = source / name
+        if not path.is_file():
+            image = bpy.data.images.new(name, *size)
+            image.filepath_raw = str(path)
+            image.file_format = "PNG"
+            image.save()
+            bpy.data.images.remove(image)
+    previous_camera = scene.camera
+    previous_resolution = (scene.render.resolution_x, scene.render.resolution_y)
+    results = {}
+    try:
+        for import_mode, files in (("SINGLE", ["drop_tall.png"]), ("MULTI", ["drop_tall.png", "drop_wide.png"])):
+            for camera_mode, new_cameras, resolution in (
+                ("KEEP", 0, (1920, 1080)),
+                ("ADAPT", 0, (960, 1920)),
+                ("NEW", 1, (960, 1920)),
+            ):
+                before = set(bpy.data.objects)
+                camera = bpy.data.objects.new("FBP Drop Camera", bpy.data.cameras.new("FBP Drop Camera"))
+                scene.collection.objects.link(camera)
+                camera.location = (0.0, -10.0, 0.0)
+                camera.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+                scene.camera = camera
+                scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
+                result = bpy.ops.fbp.drop_media(
+                    "EXEC_DEFAULT",
+                    directory=str(source),
+                    files=[{"name": name} for name in files],
+                    import_mode=import_mode,
+                    camera_mode=camera_mode,
+                )
+                created = [obj for obj in bpy.data.objects if obj not in before and obj is not camera]
+                cameras = [obj for obj in created if obj.type == 'CAMERA']
+                key = f"{import_mode}_{camera_mode}"
+                assert result == {'FINISHED'}, (key, result)
+                assert len(cameras) == new_cameras, (key, [obj.name for obj in cameras])
+                assert (scene.render.resolution_x, scene.render.resolution_y) == resolution, (
+                    key, scene.render.resolution_x, scene.render.resolution_y,
+                )
+                results[key] = len(created)
+                for obj in reversed(created + [camera]):
+                    try:
+                        bpy.data.objects.remove(obj, do_unlink=True)
+                    except (ReferenceError, RuntimeError):
+                        pass
+    finally:
+        scene.camera = previous_camera
+        scene.render.resolution_x, scene.render.resolution_y = previous_resolution
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+    return results
+
+
 def test_toon_boom_contract(_module):
     importer = importlib.import_module(f"{PACKAGE}.operator_import")
     caps = importer.fbp_toon_boom_exchange_capabilities()
@@ -4280,6 +4798,9 @@ def run_background():
             ("effect_family_variant_keeps_position", test_effect_family_variant_keeps_position),
             ("effect_duplicate_placement", test_effect_duplicate_placement),
             ("effect_remove_masked_uv_instance", test_effect_remove_masked_uv_instance),
+            ("effect_controls_roundtrip", test_effect_controls_roundtrip),
+            ("gradient_handles_cycles", test_gradient_handles_cycles),
+            ("lattice_poses_contract", test_lattice_poses_contract),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
@@ -4292,6 +4813,9 @@ def run_background():
             ("compositor_artist_graph", test_compositor),
             ("compositor_scene_copy_isolation", test_compositor_scene_copy_isolation),
             ("compositor_refresh_contract", test_compositor_refresh_contract),
+            ("compositor_off_restores_render_setup", test_compositor_off_restores_render_setup),
+            ("drop_import_camera_modes", test_drop_import_camera_modes),
+            ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),

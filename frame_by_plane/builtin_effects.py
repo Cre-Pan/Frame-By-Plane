@@ -2324,6 +2324,7 @@ def _create_gradient_mask(name):
     _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "Invert", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
     _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Aspect Ratio", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.001, maximum=1000.0)
     _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
     _socket(group, "Mask Out", "OUTPUT", "NodeSocketFloat")
     inp, out = _group_io(group)
@@ -2368,7 +2369,23 @@ def _create_gradient_mask(name):
     links.new(angle_sign.outputs[0], rotate.inputs["Angle"])
     links.new(rotate.outputs["Vector"], separate.inputs[0])
     links.new(separate.outputs["X"], linear.inputs[0])
-    links.new(rotate.outputs["Vector"], radial_distance.inputs[0])
+    # Radial distance is measured in the plane's physical proportions so the
+    # gradient stays circular on non-square images. The shorter side keeps its
+    # UV scale: (max(A, 1), max(1 / A, 1)) with A = width / height.
+    aspect_x = _math(group, "MAXIMUM", "Radial Aspect X", -620, -260, value_2=1.0)
+    inverse_aspect = _math(group, "DIVIDE", "Radial Inverse Aspect", -800, -360, value_1=1.0)
+    aspect_y = _math(group, "MAXIMUM", "Radial Aspect Y", -620, -360, value_2=1.0)
+    aspect_vector = _node(group, "ShaderNodeCombineXYZ", "Radial Aspect", -420, -300)
+    aspect_vector.inputs["Z"].default_value = 1.0
+    physical = _vector_math(group, "MULTIPLY", "Radial Physical UV", -360, -80)
+    links.new(inp.outputs["Aspect Ratio"], aspect_x.inputs[0])
+    links.new(inp.outputs["Aspect Ratio"], inverse_aspect.inputs[1])
+    links.new(inverse_aspect.outputs[0], aspect_y.inputs[0])
+    links.new(aspect_x.outputs[0], aspect_vector.inputs["X"])
+    links.new(aspect_y.outputs[0], aspect_vector.inputs["Y"])
+    links.new(scaled.outputs[0], physical.inputs[0])
+    links.new(aspect_vector.outputs[0], physical.inputs[1])
+    links.new(physical.outputs[0], radial_distance.inputs[0])
     links.new(radial_distance.outputs["Value"], radial_scaled.inputs[0])
     links.new(radial_scaled.outputs[0], radial.inputs[1])
     links.new(inp.outputs["Type"], linear_weight.inputs[1])
@@ -2389,7 +2406,7 @@ def _create_gradient_mask(name):
     links.new(selected.outputs[0], ramp.inputs["Value"])
     links.new(lower.outputs[0], ramp.inputs["From Min"])
     links.new(safe_upper.outputs[0], ramp.inputs["From Max"])
-    group["fbp_generated_mask_contract_version"] = 3
+    group["fbp_generated_mask_contract_version"] = 4
     return _finish_generated_mask(group, inp, out, ramp.outputs["Result"], prefix="Gradient Mask", x=1080, y=110)
 
 
@@ -9514,7 +9531,7 @@ def _builtin_group_is_complete(group, definition):
         "frame_by_plane.shader.color_mask": 2,
         "frame_by_plane.shader.luminance_mask": 3,
         "frame_by_plane.shader.channel_mask": 3,
-        "frame_by_plane.shader.gradient_mask": 3,
+        "frame_by_plane.shader.gradient_mask": 4,
         "frame_by_plane.shader.noise_mask": 2,
         "frame_by_plane.shader.voronoi_mask": 4,
         "frame_by_plane.shader.wave_mask": 4,

@@ -2373,6 +2373,7 @@ def fbp_render_guard_pre(scene):
         # crashes Blender, so a pending setup can only be reported here.
         if (
             scene is not None
+            and bool(getattr(scene, "fbp_compositor_enabled", False))
             and bool(getattr(scene, "fbp_compositor_render_enabled", False))
             and bool(scene.get("fbp_compositor_needs_refresh", False))
         ):

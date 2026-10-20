@@ -8,7 +8,15 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 ## Prepared update: 8.0.0
 
-Frame By Plane 8 LTS: an editable Grease Pencil Mask with proper Undo, Split into Multiple Planes, a Viewport SOLO badge, a redesigned Live Tutorial with a Frame by Frame guide, the Magnetic Scrub Bar, one Add Plane dialog for every plane type and six interface languages. See the [8.0.0 release notes](release-notes/8.0.0.md).
+- An editable Grease Pencil Mask with proper Undo, Split into Multiple Planes and a Viewport SOLO badge.
+- A redesigned, compact Live Tutorial with a Frame by Frame guide, and the Magnetic Scrub Bar.
+- One Add Plane dialog for every plane type, and six interface languages.
+- Animatable **Deform Plane** poses: Sway, Arch, Squash / Stretch, Taper, Shear, Bulge / Pinch, Wave, Flag and Curl, mixed as keyframeable sliders.
+- On-plane handles that match Gradient, Radial Gradient and Tilt-Shift on images of any shape.
+- A safer compositor: opening a file adds nothing, Compositor Off restores your own render setup, and F12 never changes until you opt in.
+- Faster effect stacks and many effect-stack fixes (Hide in Render, duplicates, variants, groups, masks, copy/paste and presets).
+
+See the [8.0.0 release notes](release-notes/8.0.0.md). The public release is still 7.2.0.
 
 ## What's new in 7.2.0
 

@@ -40,6 +40,42 @@ try:
     for label in ("Frame By Plane", "Header", "Layer Settings", "Stroke / Fill swatch"):
         assert not tutorial._is_key_label(label), label
 
+    # The card stays compact and inside the viewport on every page, collapses
+    # to its title bar and keeps a drag handle that never covers its buttons.
+    class _Region:
+        def __init__(self, width, height):
+            self.width, self.height = width, height
+
+    def _inside_region(hud, region):
+        assert hud["x"] >= 0 and hud["y"] >= 0, hud
+        assert hud["x"] + hud["width"] <= region.width + 0.01, hud
+        assert hud["y"] + hud["height"] <= region.height + 0.01, hud
+
+    for region in (_Region(1600, 900), _Region(420, 260)):
+        state = tutorial.TutorialState()
+        hud = tutorial._compute_hud(bpy.context, region, state)
+        _inside_region(hud, region)
+        for route_key, route in tutorial.ROUTES.items():
+            state = tutorial.TutorialState()
+            state.enter_route(bpy.context, route_key)
+            for index in range(len(route.pages)):
+                state.page_index = index
+                hud = tutorial._compute_hud(bpy.context, region, state)
+                _inside_region(hud, region)
+                if region.width >= 1000:
+                    assert hud["width"] <= 360 * hud["scale"], hud["width"]
+                    assert hud["height"] <= 220 * hud["scale"], (route_key, index, hud["height"])
+                drag = hud["drag_rect"]
+                assert drag[0] + drag[2] <= hud["controls"]["help"][0], drag
+            state.collapsed = True
+            collapsed = tutorial._compute_hud(bpy.context, region, state)
+            assert collapsed["height"] == collapsed["header_h"], collapsed["height"]
+            state.offset = (-5000.0, 5000.0)
+            moved = tutorial._compute_hud(bpy.context, region, state)
+            _inside_region(moved, region)
+    assert "image_import" in tutorial._DIALOG_OPTION_NOTES
+    assert "multi_generate" in tutorial._DIALOG_OPTION_NOTES
+
     # Frame-by-frame guide: detectors follow the real Draw Mode settings.
     scene = bpy.context.scene
     data = bpy.data.grease_pencils.new("FBP Tutorial Drawing")

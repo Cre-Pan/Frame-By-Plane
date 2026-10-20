@@ -4339,14 +4339,35 @@ class FBP_GenerationRenameItem(PropertyGroup):
 # SECTION 02 - Scene / Collection / Object property registration #
 
 
+def _deactivate_compositor_deferred(scene_name):
+    scene = bpy.data.scenes.get(scene_name)
+    if scene is not None and not bool(getattr(scene, "fbp_experimental_compositor", False)):
+        from .compositor import fbp_deactivate_compositor
+        try:
+            fbp_deactivate_compositor(scene)
+        except FBP_DATA_ERRORS:
+            pass
+    return None
+
+
 def update_experimental_compositor_cb(self, _context):
     """Keep preview-only sections inaccessible while their gate is disabled."""
     try:
-        if (
-            not bool(getattr(self, "fbp_experimental_compositor", False))
-            and str(getattr(self, "fbp_settings_section", "PROJECT") or "PROJECT") == "COMPOSITOR"
-        ):
-            self.fbp_settings_section = 'MAINTENANCE'
+        if not bool(getattr(self, "fbp_experimental_compositor", False)):
+            if str(getattr(self, "fbp_settings_section", "PROJECT") or "PROJECT") == "COMPOSITOR":
+                self.fbp_settings_section = 'MAINTENANCE'
+            # Turning the tools off must also stop the managed compositor.
+            # Removing View Layers from an RNA update is unsafe while panels
+            # draw them, so the Compositor button does it directly and other
+            # paths defer it.
+            if bool(getattr(self, "fbp_compositor_enabled", False)):
+                from .safe_tasks import schedule_once
+                scene_name = str(self.name)
+                schedule_once(
+                    f"fbp_compositor_off:{scene_name}",
+                    lambda: _deactivate_compositor_deferred(scene_name),
+                    first_interval=0.0,
+                )
     except FBP_DATA_ERRORS:
         pass
 
@@ -5926,8 +5947,8 @@ def register_properties():
         description="Custom Blender Simple Subdivision levels applied before the Lattice. Each level doubles the mesh segments per axis",
         default=2, min=0, max=6, soft_max=4, update=update_lattice_mesh_detail_cb,
     )
-    _FBP_OBJECT_RNA.fbp_lattice_points_u = IntProperty(name="Cage Columns", description="Number of planar control-point columns along the plane local X axis. Changing it rebuilds the cage and resets current point edits.", default=4, min=2, max=64, update=update_lattice_effect_cb)
-    _FBP_OBJECT_RNA.fbp_lattice_points_v = IntProperty(name="Cage Rows", description="Number of planar control-point rows along the plane local Y axis. Changing it rebuilds the cage and resets current point edits.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    _FBP_OBJECT_RNA.fbp_lattice_points_u = IntProperty(name="Cage Columns", description="Number of planar control-point columns along the plane local X axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    _FBP_OBJECT_RNA.fbp_lattice_points_v = IntProperty(name="Cage Rows", description="Number of planar control-point rows along the plane local Y axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
     _FBP_OBJECT_RNA.fbp_lattice_interpolation = EnumProperty(name="Interpolation", description="Interpolation used between Lattice control points. This can be changed without resetting the current deformation.", items=[('LINEAR','Linear','Linear interpolation'),('CARDINAL','Cardinal','Cardinal interpolation'),('CATMULL_ROM','Catmull-Rom','Catmull-Rom interpolation'),('BSPLINE','B-Spline','Smooth B-Spline interpolation')], default='BSPLINE', update=update_lattice_interpolation_cb)
     _FBP_OBJECT_RNA.fbp_cutout_outline_viewport_resolution = IntProperty(
         name="Viewport Alpha Detail", description="Subdivision level used to trace the alpha silhouette while editing",
