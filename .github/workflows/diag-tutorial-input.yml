@@ -33,3 +33,5 @@ jobs:
           timeout 300 xvfb-run -a -s "-screen 0 1280x800x24" "$RUNNER_TEMP/blender/blender" --factory-startup --enable-event-simulate --python tools/diag_tutorial_input.py 2>&1 | tee diag.log || true
           echo "==== DIAG lines ===="
           grep "DIAG" diag.log || true
+          echo "==== Python errors ===="
+          grep -n -A12 "Traceback" diag.log || echo "no tracebacks"
