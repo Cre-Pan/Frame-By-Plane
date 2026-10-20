@@ -6192,6 +6192,22 @@ def _fbp_shift_a_box(layout, title, icon):
     return box
 
 
+def _fbp_tutorial_running():
+    try:
+        from .live_tutorial import fbp_tutorial_is_running
+        return fbp_tutorial_is_running()
+    except (ImportError, AttributeError):
+        return False
+
+
+def _fbp_tutorial_notes(layout, *lines):
+    """Explain a dialog section while the Live Tutorial is open."""
+    col = layout.column(align=True)
+    col.scale_y = 0.8
+    for index, line in enumerate(lines):
+        col.label(text=line, icon='INFO' if index == 0 else 'BLANK1')
+
+
 class _FBPPlanePopupBase:
     """Shared Shift+A dialog: pick the plane type at the top, then its settings.
 
@@ -6247,6 +6263,12 @@ class _FBPPlanePopupBase:
         type_row = layout.row(align=False)
         type_row.scale_y = 1.25
         type_row.prop(self, "plane_type", text="")
+        if _fbp_tutorial_running():
+            _fbp_tutorial_notes(
+                layout,
+                "Plane Type: what to create. Image and Video open the file browser",
+                "after Create Plane; Color, Gradient and Holdout need no file.",
+            )
         section_gap(layout, 0.3)
 
         plane_type = self.plane_type
@@ -6261,6 +6283,14 @@ class _FBPPlanePopupBase:
         row.prop(sc, "fbp_pre_duration", text="Frame Hold")
         row.prop(sc, "fbp_pre_loop_mode", text="")
         timing.prop(sc, "fbp_pre_match_scene_range", text="Set Scene In/Out from Media", icon="PREVIEW_RANGE", toggle=True)
+        tutorial = _fbp_tutorial_running()
+        if tutorial:
+            _fbp_tutorial_notes(
+                timing,
+                "Frame Hold: timeline frames each drawing stays on screen (2 = on twos).",
+                "One Shot plays once, Loop repeats, Ping-Pong plays back and forth.",
+                "Set Scene In/Out makes the scene range match a sequence or video.",
+            )
 
         section_gap(layout, 0.2)
         material = _fbp_shift_a_box(layout, "Plane and Material", "MATERIAL")
@@ -6271,6 +6301,14 @@ class _FBPPlanePopupBase:
         row.prop(sc, "fbp_pre_shadeless", text="Shadeless", icon=fbp_icon("LIGHT_SUN"), toggle=True)
         if plane_type == 'IMAGE':
             _fbp_draw_import_alpha_crop_options(material, sc, context)
+        if tutorial:
+            _fbp_tutorial_notes(
+                material,
+                "Vertical stands facing the camera; Horizontal lies flat on the ground.",
+                "Pixel keeps hard edges; Smooth softens the image when it is scaled.",
+                "Shadeless ignores scene lights, so the image keeps its original colors.",
+                "Crop Alpha trims empty transparent borders; Padding keeps a margin.",
+            )
 
         section_gap(layout, 0.2)
         camera = _fbp_shift_a_box(layout, "Camera", fbp_icon("VIEW_CAMERA"))
@@ -6279,6 +6317,12 @@ class _FBPPlanePopupBase:
         fit = row.row(align=False)
         fit.enabled = plane_type == 'IMAGE'
         fit.prop(sc, "fbp_single_fit_camera", text="Fit Camera to New Plane", icon=fbp_icon("FULLSCREEN_ENTER"), toggle=True)
+        if tutorial:
+            _fbp_tutorial_notes(
+                camera,
+                "Track Camera keeps the plane turned toward the camera when it moves.",
+                "Fit Camera to New Plane changes the render size to the image ratio.",
+            )
 
     def _draw_procedural(self, layout, context, sc, plane_type):
         if plane_type == 'COLOR':
@@ -6380,6 +6424,13 @@ class FBP_OT_PopupMultiplane(Operator):
         path = bpy.path.abspath(self.folder or "")
         if path and not os.path.isdir(path):
             hint_row(source, "Folder unavailable", icon="ERROR", alert=True, disabled=False)
+        tutorial = _fbp_tutorial_running()
+        if tutorial:
+            _fbp_tutorial_notes(
+                source,
+                "Folder: every image, sequence folder or video inside becomes one layer,",
+                "stacked in name order (01_BG, 02_Mid, 03_FG).",
+            )
 
         section_gap(layout, 0.2)
         timing = layout.box()
@@ -6396,6 +6447,12 @@ class FBP_OT_PopupMultiplane(Operator):
         row.prop(sc, "fbp_pre_shadeless", text="Shadeless", icon=fbp_icon("LIGHT_SUN"), toggle=True)
         row.prop(sc, "fbp_pre_track_cam", text="Track Camera", icon="CON_CAMERASOLVER", toggle=True)
         _fbp_draw_import_alpha_crop_options(timing, sc, context)
+        if tutorial:
+            _fbp_tutorial_notes(
+                timing,
+                "Frame Hold and the playback mode apply to every animated layer.",
+                "Shadeless ignores scene lights; Track Camera turns layers toward the camera.",
+            )
 
         section_gap(layout, 0.2)
         camera = layout.box()
@@ -6412,6 +6469,13 @@ class FBP_OT_PopupMultiplane(Operator):
         row = adaptive_row(camera, context, align=False)
         row.prop(sc, "fbp_layer_offset", text="Layer Spacing")
         row.prop(sc, "fbp_auto_scale", text="Fit to Camera", icon=fbp_icon("FULLSCREEN_ENTER"), toggle=True)
+        if tutorial:
+            _fbp_tutorial_notes(
+                camera,
+                "Create Camera adds a camera framed on the layers; Source Aspect uses",
+                "the first image's ratio. Layer Spacing is the depth gap between layers;",
+                "Fit to Camera scales every layer to fill the camera frame.",
+            )
 
     def execute(self, context):
         base = bpy.path.abspath(self.folder or "")

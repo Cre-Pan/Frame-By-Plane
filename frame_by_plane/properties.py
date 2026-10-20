@@ -1367,7 +1367,7 @@ class FBP_AddonPreferences(AddonPreferences):
         description="Frames per second assigned to new Frame By Plane scenes",
         default=24, min=1, max=240,
     )
-    default_playback: EnumProperty(description="Playback behavior assigned by default to newly imported animated planes: One Shot, Loop or Ping-Pong.", name="Default Playback", items=PLAYBACK_ITEMS, default='NONE')
+    default_playback: EnumProperty(description="Playback behavior assigned by default to newly imported animated planes: One Shot, Loop or Ping-Pong.", name="Default Playback", items=PLAYBACK_ITEMS, default='REPEAT')
     default_scene_playback_loop_mode: EnumProperty(
         name="Timeline Loop Mode",
         description="Native Blender 5.2 behavior when timeline playback reaches the final frame",
@@ -1408,7 +1408,7 @@ class FBP_AddonPreferences(AddonPreferences):
     default_fit_to_camera: BoolProperty(
         name="Fit New Layers to Camera",
         description="Automatically fit generated planes inside the active or generated camera",
-        default=True,
+        default=False,
     )
     default_camera_fit_source_aspect: BoolProperty(
         name="Camera Uses Source Aspect",
@@ -1423,7 +1423,7 @@ class FBP_AddonPreferences(AddonPreferences):
     default_generate_camera: BoolProperty(
         name="Create Camera",
         description="Create a camera by default for new Multiplane projects",
-        default=True,
+        default=False,
     )
     default_camera_projection: EnumProperty(description="Projection used by newly generated cameras: perspective with a lens value or orthographic with a view scale.",
         name="Default Camera Projection",
@@ -4747,7 +4747,7 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_pre_loop_mode = EnumProperty(description="Default playback behavior assigned to newly created animated Single Planes: play once, loop continuously or alternate forward and backward.",
         name="Playback",
         items=PLAYBACK_ITEMS,
-        default='NONE')
+        default='REPEAT')
     _FBP_SCENE_RNA.fbp_pre_interpolation = EnumProperty(description="Default texture filtering for newly generated planes. Pixel keeps hard nearest-neighbor edges; Smooth uses linear filtering for scaled artwork.",
         name="",
         items=INTERPOLATION_ITEMS,
@@ -4756,10 +4756,10 @@ def register_properties():
         name="",
         items=ORIENTATION_ITEMS,
         default='VERT')
-    _FBP_SCENE_RNA.fbp_gen_camera   = BoolProperty(name="Create Camera", description="Create or update a camera suitable for the generated multiplane setup", default=True)
+    _FBP_SCENE_RNA.fbp_gen_camera   = BoolProperty(name="Create Camera", description="Create or update a camera suitable for the generated multiplane setup", default=False)
     _FBP_SCENE_RNA.fbp_cam_pivot    = BoolProperty(name="Pivot on Camera", description="Move the 3D cursor to the camera pivot when creating a camera setup", default=True)
     _FBP_SCENE_RNA.fbp_layer_offset = FloatProperty(name="Plane Distance (m)", description="Distance between generated layers; imported top-level collections use a larger gap", default=0.2, min=0.001)
-    _FBP_SCENE_RNA.fbp_auto_scale   = BoolProperty(name="Auto-Scale (Fit to Cam)", description="Scale generated planes to the camera frame using the image aspect ratio", default=True)
+    _FBP_SCENE_RNA.fbp_auto_scale   = BoolProperty(name="Auto-Scale (Fit to Cam)", description="Scale generated planes to the camera frame using the image aspect ratio", default=False)
     _FBP_SCENE_RNA.fbp_camera_fit_source_aspect = BoolProperty(
         name="Camera Uses Source Aspect",
         description="When generating a Frame By Plane camera, match the output resolution to the first generated layer source aspect instead of a fixed preset",

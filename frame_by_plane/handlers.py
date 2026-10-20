@@ -244,6 +244,25 @@ def fbp_clear_effect_runtime_caches():
         pass
 
 
+def _fbp_refresh_animated_image_frames(scene):
+    """Recompute the visible frame of image sequences and movies after Undo/Redo.
+
+    Undo rebuilds the evaluated materials with the image frame stored in the
+    undo step, not the one for the current frame, so sequence and video planes
+    can draw as missing (pink) textures until the playhead moves. Re-setting
+    the current frame runs the same update the timeline does.
+    """
+    try:
+        animated = any(
+            image.users and image.source in {'SEQUENCE', 'MOVIE'}
+            for image in bpy.data.images
+        )
+        if animated:
+            scene.frame_set(scene.frame_current, subframe=scene.frame_subframe)
+    except FBP_DATA_ERRORS:
+        pass
+
+
 def fbp_deferred_post_undo_sync():
     # Let Blender finish replacing Main/depsgraph before touching FBP data.
     if fbp_undo_is_active() or fbp_render_is_active():
@@ -293,6 +312,7 @@ def fbp_deferred_post_undo_sync():
                 _layers.update_global_visibility(context)
             except FBP_DATA_ERRORS:
                 pass
+            _fbp_refresh_animated_image_frames(context.scene)
             # Shader/image assignment repairs are intentionally separated from
             # the first post-Undo viewport rebuild. They run only after a quiet
             # depsgraph window, preventing Eevee material workers from racing

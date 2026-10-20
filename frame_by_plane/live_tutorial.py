@@ -1711,7 +1711,7 @@ def _ui_scale(context: bpy.types.Context) -> float:
 
 
 _ROUTE_SHORT_LABELS = {
-    "IMAGE": "Image Plane",
+    "IMAGE": "Single Plane",
     "DRAW": "Frame by Frame",
     "COLOR": "Color Plane",
     "MULTIPLANE": "Multiplane",
@@ -1743,7 +1743,7 @@ _TASK_GUIDANCE = {
     "draw_scrub": "Hold < over the 3D Viewport and move the mouse; release to snap back.",
     "draw_edit_colors": "Press Tab, select strokes and change their Stroke or Fill swatch.",
     "image_open_importer": "Open the Single Plane importer. The next card will wait for the file you choose.",
-    "image_import": "Add a Single Plane and choose an image. The new layer is detected automatically.",
+    "image_import": "Read the notes in the Add Plane dialog, press Create Plane, then choose an image.",
     "image_open_crop": "Press Z and choose Crop or Expand to reveal the existing viewport edge controllers.",
     "image_crop": "Drag a Crop or Expand edge controller to frame the selected plane.",
     "image_open_masks": "Press Z to reach Grease Pencil Mask.",
@@ -1897,7 +1897,7 @@ def _route_progress(state: TutorialState) -> tuple[int, int, float]:
 
 # Compact top-center tutorial HUD.  The guide deliberately exposes only the
 # current action so it can stay open while the viewport remains fully usable.
-_CHOOSER_ROUTES = ("IMAGE", "DRAW", "COLOR", "MULTIPLANE")
+_CHOOSER_ROUTES = ("IMAGE", "MULTIPLANE", "COLOR", "DRAW")
 _SHORTCUT_SEPARATOR = "  >  "
 _KEY_NAMES = frozenset({
     "Shift", "Ctrl", "Alt", "Tab", "Esc", "Enter", "Space", "Del",
@@ -2691,6 +2691,11 @@ def fbp_notify_tutorial_action(context: bpy.types.Context, *task_keys: str) -> b
     _advance_completed_page(state)
     _tag_area(operator._target_area_ptr)
     return True
+
+def fbp_tutorial_is_running() -> bool:
+    """True while the Live Tutorial HUD is open, so dialogs can explain their options."""
+    return _ACTIVE_OPERATOR is not None
+
 
 _ACTIVE_OPERATOR: "FBP_OT_live_tutorial_modal | None" = None
 _RESUME_STATE: TutorialState | None = None

@@ -3799,7 +3799,7 @@ def _assign_layer_props(rig, scene, *, color_tag='NONE', color_variant_index=0, 
     rig["fbp_native_backend"] = True
     rig.fbp_global_duration = getattr(scene, 'fbp_pre_duration', 1)
     rig.fbp_use_emission = getattr(scene, 'fbp_pre_shadeless', True)
-    rig.fbp_loop_mode = getattr(scene, 'fbp_pre_loop_mode', 'NONE')
+    rig.fbp_loop_mode = getattr(scene, 'fbp_pre_loop_mode', 'REPEAT')
     rig.fbp_interpolation = getattr(scene, 'fbp_pre_interpolation', 'Closest')
     rig.fbp_track_cam = bool(getattr(scene, 'fbp_pre_track_cam', False))
     # Creation-time color assignment must never trigger the interactive bulk
