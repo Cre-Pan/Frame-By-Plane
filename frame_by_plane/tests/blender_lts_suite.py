@@ -3052,6 +3052,41 @@ def _cycles_center_renderer(name, owned):
                 pass
 
 
+def test_remesh_effects_keep_image_material(_module):
+    """Remeshed mesh effects must not leave faces on an empty material slot."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    results = {}
+    for effect_id in ("ACCORDION_FOLD", "KINETIC_TILES", "SCULPT_WAVES", "IMAGE_RELIEF"):
+        rig = _effect_stack_fixture_rig(f"FBP Remesh Material {effect_id}", width=32)
+        owned = [rig, *rig.children_recursive]
+        try:
+            assert geo.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            planes = [
+                obj for obj in owned
+                if getattr(obj, "type", "") == "MESH" and len(getattr(obj.data, "polygons", ()))
+            ]
+            assert planes, effect_id
+            for plane in planes:
+                mesh = plane.evaluated_get(depsgraph).data
+                assert len(mesh.polygons), f"{effect_id}: {plane.name} has no faces"
+                slots = [mesh.materials[index] if index < len(mesh.materials) else None
+                         for index in {poly.material_index for poly in mesh.polygons}]
+                assert all(slot is not None for slot in slots), (
+                    f"{effect_id}: {plane.name} faces use an empty material slot"
+                )
+            results[effect_id] = len(planes)
+        finally:
+            for obj in reversed(owned):
+                try:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                except (ReferenceError, RuntimeError):
+                    pass
+    return results
+
+
 def test_effect_render_visibility_cycles(_module):
     """Render real pixels: a render-hidden effect must not reach the image."""
     _skip_unless_cycles_render()
@@ -4792,6 +4827,7 @@ def run_background():
             ("effect_stack_evaluation_order", test_effect_stack_evaluation_order),
             ("effect_render_visibility_contract", test_effect_render_visibility_contract),
             ("effect_render_visibility_cycles", test_effect_render_visibility_cycles),
+            ("remesh_effects_keep_image_material", test_remesh_effects_keep_image_material),
             ("effect_global_mask_hide_cycles", test_effect_global_mask_hide_cycles),
             ("effect_bake_cycles", test_effect_bake_cycles),
             ("effect_bake_switch_off", test_effect_bake_switch_off),
