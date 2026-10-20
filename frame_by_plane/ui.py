@@ -3548,14 +3548,6 @@ class FBP_PT_OutputCompositor(Panel):
             if bool(getattr(layer, "selected", False))
             and str(getattr(layer, "row_type", 'LAYER') or 'LAYER') != 'FOLDER'
         ]
-        can_group = bool(selected_layers) or (
-            item is not None and str(getattr(item, "row_type", 'LAYER') or 'LAYER') != 'FOLDER'
-        )
-        can_ungroup = any(str(getattr(layer, "parent_folder_id", "") or "") for layer in selected_layers) or (
-            item is not None
-            and str(getattr(item, "row_type", 'LAYER') or 'LAYER') != 'FOLDER'
-            and bool(str(getattr(item, "parent_folder_id", "") or ""))
-        )
 
         if layer_count:
             list_box = fbp_draw_uilist_header(
@@ -6626,7 +6618,6 @@ def refresh_properties_panel_order():
     """Atomically re-register the Properties panels after a preference change."""
     if bool(getattr(bpy.app, "background", False)):
         return None
-    prefs = _fbp_ui_preferences(getattr(bpy, "context", None))
     active = tuple(
         cls for cls in _all_properties_order_classes()
         if getattr(bpy.types, cls.__name__, None) is not None
@@ -6681,7 +6672,6 @@ def register():
     try:
         register_custom_icons()
         icons_registered = True
-        prefs = _fbp_ui_preferences(getattr(bpy, "context", None))
         _set_properties_panel_orders(True)
         register_classes(ui_classes)
         register_fbp_menus()
