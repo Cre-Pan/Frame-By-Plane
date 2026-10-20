@@ -1256,6 +1256,16 @@ def fbp_deferred_load_post_rebuild():
             exc,
         )
 
+    try:
+        from .builtin_effects import fbp_upgrade_aspect_remesh_group
+        fbp_upgrade_aspect_remesh_group()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "aspect_remesh_load_upgrade",
+            "Could not update the shared mesh-effect remesh group",
+            exc,
+        )
+
     fbp_subscribe_scene_msgbus()
     fbp_reload_custom_ui_icons_after_main_replacement()
     fbp_register_timer_once(fbp_deferred_scene_sync, 0.12)

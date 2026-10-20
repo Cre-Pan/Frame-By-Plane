@@ -312,6 +312,18 @@ def _canonical_brush_colors(state, owner, mode):
     _RUNTIME["expected_secondary"] = tuple(secondary[:3])
 
 
+# Brush colors Blender gives a new or factory Grease Pencil brush: the
+# Essentials Pencil is pale green (0.2122 linear, 0.498 sRGB), others white.
+_FACTORY_BRUSH_PRIMARIES = ((0.2122, 1.0, 0.2122), (0.498, 1.0, 0.498), (1.0, 1.0, 1.0))
+_FACTORY_BRUSH_SECONDARY = (0.0, 0.0, 0.0)
+
+
+def _is_factory_brush_pair(primary, secondary):
+    return any(
+        _colors_close(primary[:3], factory, 0.01) for factory in _FACTORY_BRUSH_PRIMARIES
+    ) and _colors_close(secondary[:3], _FACTORY_BRUSH_SECONDARY, 0.01)
+
+
 def _initialize_paint_state(context, state, obj, owner, mode, brush_kind):
     saved = _RUNTIME.get("paint_colors")
     if saved:
@@ -328,6 +340,13 @@ def _initialize_paint_state(context, state, obj, owner, mode, brush_kind):
             secondary = _rgba(tuple(owner.secondary_color) + (1.0,))
         except FBP_DATA_ERRORS:
             secondary = (1.0, 1.0, 1.0, 1.0)
+        if _is_factory_brush_pair(primary, secondary):
+            # Blender's own brush colors (pale green or white over black)
+            # are not a choice the artist made: start from black ink on a
+            # white fill instead.
+            primary, secondary = (0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0, 1.0)
+            if mode == "FILL":
+                primary, secondary = secondary, primary
         if mode == "FILL":
             stroke, fill = secondary, primary
         else:

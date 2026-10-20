@@ -339,17 +339,32 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     # Generated meshes have no material table of their own. Join the source for
     # one topology step, mark only generated faces, then delete the originals.
     # Blender keeps the source material slots on the surviving remesh without a
-    # public Material socket on every effect.
+    # public Material socket on every effect. Join appends the generated mesh's
+    # empty slot after the source slots, so each generated face is pointed back
+    # at the source slot it lies on; otherwise it renders with no material.
+    material_name = "fbp_internal_remesh_material"
+    source_material = _node(group, "GeometryNodeInputMaterialIndex", f"{prefix} Source Material Index", x + 3760, y - 420)
+    sample_material = _node(group, "GeometryNodeSampleNearestSurface", f"{prefix} Sample Source Material", x + 3980, y - 420)
+    sample_material.data_type = "INT"
+    links.new(geometry_socket, sample_material.inputs["Mesh"])
+    links.new(source_material.outputs[0], _input(sample_material, "Value"))
+    store_material = _node(group, "GeometryNodeStoreNamedAttribute", f"{prefix} Store Remesh Material", x + 3980, y + 220)
+    store_material.data_type = "INT"
+    store_material.domain = "FACE"
+    store_material.inputs["Name"].default_value = material_name
+    links.new(final_socket, store_material.inputs["Geometry"])
+    links.new(_output(sample_material, "Value"), store_material.inputs["Value"])
     marker_name = "fbp_internal_remesh_generated"
     mark_generated = _node(group, "GeometryNodeStoreNamedAttribute", f"{prefix} Mark Remesh Faces", x + 3980, y)
     mark_generated.data_type = "BOOLEAN"
     mark_generated.domain = "FACE"
     mark_generated.inputs["Name"].default_value = marker_name
     mark_generated.inputs["Value"].default_value = True
-    links.new(final_socket, mark_generated.inputs["Geometry"])
+    links.new(store_material.outputs["Geometry"], mark_generated.inputs["Geometry"])
     join_materials = _node(group, "GeometryNodeJoinGeometry", f"{prefix} Preserve Remesh Materials", x + 4200, y)
-    links.new(geometry_socket, join_materials.inputs["Geometry"])
+    # The last link is joined first, so the source slots keep their indices.
     links.new(mark_generated.outputs["Geometry"], join_materials.inputs["Geometry"])
+    links.new(geometry_socket, join_materials.inputs["Geometry"])
     generated = _node(group, "GeometryNodeInputNamedAttribute", f"{prefix} Generated Remesh Faces", x + 4200, y - 220)
     generated.data_type = "BOOLEAN"
     generated.inputs["Name"].default_value = marker_name
@@ -360,9 +375,18 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     delete_original.domain = "FACE"
     links.new(join_materials.outputs["Geometry"], delete_original.inputs["Geometry"])
     links.new(original.outputs[0], delete_original.inputs["Selection"])
+    remesh_material = _node(group, "GeometryNodeInputNamedAttribute", f"{prefix} Remesh Material Attribute", x + 4420, y - 420)
+    remesh_material.data_type = "INT"
+    remesh_material.inputs["Name"].default_value = material_name
+    set_material = _node(group, "GeometryNodeSetMaterialIndex", f"{prefix} Restore Remesh Material", x + 4640, y - 220)
+    links.new(delete_original.outputs["Geometry"], set_material.inputs["Geometry"])
+    links.new(remesh_material.outputs["Attribute"], set_material.inputs["Material Index"])
+    remove_material = _node(group, "GeometryNodeRemoveAttribute", f"{prefix} Clean Remesh Material", x + 4640, y + 220)
+    remove_material.inputs["Name"].default_value = material_name
+    links.new(set_material.outputs["Geometry"], remove_material.inputs["Geometry"])
     remove_marker = _node(group, "GeometryNodeRemoveAttribute", f"{prefix} Clean Remesh Marker", x + 4640, y)
     remove_marker.inputs["Name"].default_value = marker_name
-    links.new(delete_original.outputs["Geometry"], remove_marker.inputs["Geometry"])
+    links.new(remove_material.outputs["Geometry"], remove_marker.inputs["Geometry"])
     remove_hit = _node(group, "GeometryNodeRemoveAttribute", f"{prefix} Clean Remesh Hit Attribute", x + 4860, y)
     remove_hit.inputs["Name"].default_value = hit_name
     links.new(remove_marker.outputs["Geometry"], remove_hit.inputs["Geometry"])
@@ -373,15 +397,22 @@ def _aspect_remesh_group():
     """Return the one shared aspect-remesh implementation used by all effects."""
     name = "FBP_GN_Aspect_Remesh_6222"
     existing = bpy.data.node_groups.get(name)
-    if existing is not None:
+    if existing is not None and int(existing.get("fbp_internal_aspect_remesh_version", 0) or 0) >= 3:
         return existing
-    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    if existing is not None and getattr(existing, "library", None) is None:
+        # Version 2 left remeshed faces on an empty material slot, so they
+        # rendered white. Rebuild it in place so every effect using it updates.
+        # The interface is unchanged and kept, so links into it stay intact.
+        group = existing
+        group.nodes.clear()
+    else:
+        group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+        _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+        _socket(group, "Level", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=8)
+        _socket(group, "Triangulate", "INPUT", "NodeSocketBool", default=True)
+        _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
     group.use_fake_user = True
-    group["fbp_internal_aspect_remesh_version"] = 2
-    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
-    _socket(group, "Level", "INPUT", "NodeSocketInt", default=4, minimum=0, maximum=8)
-    _socket(group, "Triangulate", "INPUT", "NodeSocketBool", default=True)
-    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    group["fbp_internal_aspect_remesh_version"] = 3
     inp, out = _group_io(group)
     quads = _build_aspect_remesh_nodes(
         group, inp.outputs["Geometry"], inp.outputs["Level"],
@@ -397,6 +428,14 @@ def _aspect_remesh_group():
     group.links.new(triangles.outputs["Mesh"], output_switch.inputs["True"])
     group.links.new(output_switch.outputs["Output"], out.inputs["Geometry"])
     return group
+
+
+def fbp_upgrade_aspect_remesh_group():
+    """Rebuild a saved older shared remesh group so its effects render the image."""
+    if bpy.data.node_groups.get("FBP_GN_Aspect_Remesh_6222") is None:
+        return False
+    _aspect_remesh_group()
+    return True
 
 
 def _aspect_remesh(group, geometry_socket, level_socket, *, prefix, x, y, triangulate=True):

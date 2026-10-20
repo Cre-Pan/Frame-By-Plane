@@ -2398,6 +2398,36 @@ def _wire_default_compositor_pipeline(tree, group, effects, export_node, output)
     return True
 
 
+def _show_root_tree(context, override, space, tree):
+    """Make the editor show ``tree`` at its root before running group operators.
+
+    Blender's node group operators only poll when the editor has an edit tree.
+    A Compositor editor that was just opened, or one turned into a Node Editor
+    for this call, can still have none, and ``group_edit`` then raises
+    "poll() failed". Leave nested groups with ``group_edit`` while it polls,
+    then point the editor straight at the root tree.
+    """
+    with context.temp_override(**override):
+        for _step in range(32):
+            if getattr(space, "edit_tree", None) is tree:
+                return True
+            if getattr(space, "edit_tree", None) is None:
+                break
+            try:
+                result = bpy.ops.node.group_edit(exit=True)
+            except RuntimeError:
+                break
+            if 'FINISHED' not in result:
+                break
+    if getattr(space, "edit_tree", None) is tree:
+        return True
+    try:
+        space.path.start(tree)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+    return getattr(space, "edit_tree", None) is tree
+
+
 def _native_ctrl_g_roundtrip(context, scene, tree, group):
     """Recreate FBP Layers through Blender's actual ungroup/group_make operators.
 
@@ -2455,14 +2485,7 @@ def _native_ctrl_g_roundtrip(context, scene, tree, group):
 
     try:
         space = override.get("space_data")
-        with context.temp_override(**override):
-            for _step in range(32):
-                if getattr(space, "edit_tree", None) is tree:
-                    break
-                result = bpy.ops.node.group_edit(exit=True)
-                if 'FINISHED' not in result:
-                    break
-        if getattr(space, "edit_tree", None) is not tree:
+        if not _show_root_tree(context, override, space, tree):
             return group, False, "Return to the root compositor and run Generate again"
 
         # The native operator creates one interface socket per external link.
