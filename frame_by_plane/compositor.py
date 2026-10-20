@@ -2398,6 +2398,9 @@ def _wire_default_compositor_pipeline(tree, group, effects, export_node, output)
     return True
 
 
+_FBP_TEMPORARILY_PINNED = []
+
+
 def _show_root_tree(context, override, space, tree):
     """Make the editor show ``tree`` at its root before running group operators.
 
@@ -2424,8 +2427,29 @@ def _show_root_tree(context, override, space, tree):
     try:
         space.path.start(tree)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    if getattr(space, "edit_tree", None) is tree:
+        return True
+    # An unpinned Compositor editor only follows the scene's compositor on its
+    # next redraw. Pin it to the tree for the duration of the operators.
+    try:
+        if not bool(getattr(space, "pin", False)):
+            space.pin = True
+            _FBP_TEMPORARILY_PINNED.append(space)
+        space.node_tree = tree
+        space.path.start(tree)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
     return getattr(space, "edit_tree", None) is tree
+
+
+def _release_temporary_pins():
+    while _FBP_TEMPORARILY_PINNED:
+        space = _FBP_TEMPORARILY_PINNED.pop()
+        try:
+            space.pin = False
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
 
 
 def _native_ctrl_g_roundtrip(context, scene, tree, group):
@@ -2582,6 +2606,7 @@ def _native_ctrl_g_roundtrip(context, scene, tree, group):
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             return None, False, str(exc)
     finally:
+        _release_temporary_pins()
         if collector is not None:
             try:
                 if collector.name in tree.nodes:
@@ -2776,10 +2801,18 @@ def _build_compact_node_tree(scene, context=None, native_group=False, activate_c
         )
     )
     if needs_native_roundtrip:
+        # The Compositor editor shows the scene's compositor. Until the FBP
+        # tree is that compositor the editor has nothing to edit, and the
+        # native group operators refuse to run.
+        previous_root = scene.compositing_node_group
+        if previous_root is not tree:
+            scene.compositing_node_group = tree
         group, native_ok, native_error = _native_ctrl_g_roundtrip(
             context, scene, tree, group
         )
         if not native_ok or group is None:
+            if previous_root is not tree:
+                scene.compositing_node_group = previous_root
             raise RuntimeError(
                 native_error or f"Could not create FBP Layers with Blender's native {primary_shortcut_label('G')} operator"
             )

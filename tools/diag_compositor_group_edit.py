@@ -41,13 +41,8 @@ else:
             "path", [name(item.node_tree) for item in getattr(space, "path", ())],
             "scene group", name(getattr(bpy.context.scene, "compositing_node_group", None)),
             "area", getattr(override.get("area"), "type", None), "ui", getattr(override.get("area"), "ui_type", None))
-        try:
-            space.path.start(tree)
-            log("path.start ok", "edit", name(getattr(space, "edit_tree", None)), "node_tree", name(getattr(space, "node_tree", None)))
-        except Exception as exc:
-            log("path.start EXC", repr(exc))
         result = _real_show_root_tree(context, override, space, tree)
-        log("after", result, "edit", name(getattr(space, "edit_tree", None)))
+        log("after", result, "edit", name(getattr(space, "edit_tree", None)), "pin", getattr(space, "pin", None))
         return result
     comp._show_root_tree = _traced_show_root_tree
 
@@ -138,6 +133,8 @@ def inspect():
         log("root nodes", sorted(node.bl_idname for node in tree.nodes))
     win = bpy.context.window_manager.windows[0]
     log("areas", [a.type for a in win.screen.areas])
+    log("pins", [a.spaces.active.pin for a in win.screen.areas if a.type == "NODE_EDITOR"])
+    log("scene group", getattr(getattr(scene, "compositing_node_group", None), "name", None))
 
 
 @step(0.5)
