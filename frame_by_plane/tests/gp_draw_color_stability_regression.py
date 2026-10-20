@@ -108,6 +108,64 @@ try:
     scene.frame_set(1)
     module._sync_draw_both_fill(bpy.context)
 
+    # Curves that only appear at the playhead keep their Fill and closure:
+    # scrubbing in from before the first keyframe, switching from an empty
+    # layer, and moving or pasting a keyframe onto the playhead.
+    state.close_strokes = True
+
+    def untouched(drawing):
+        return all(
+            not stroke.cyclic and close_color(stroke.fill_color, BLACK)
+            for stroke in drawing.strokes
+        )
+
+    for stroke in first.strokes:
+        stroke.cyclic = False
+        stroke.fill_color = BLACK
+    scene.frame_set(0)
+    module._sync_draw_both_fill(bpy.context)
+    scene.frame_set(1)
+    assert module._sync_draw_both_fill(bpy.context) == 0
+    assert untouched(first)
+
+    empty_layer = data.layers.new("Empty", set_active=True)
+    module._sync_draw_both_fill(bpy.context)
+    data.layers.active = layer
+    assert module._sync_draw_both_fill(bpy.context) == 0
+    assert untouched(first)
+
+    moved = layer.frames.new(20).drawing
+    moved.add_strokes([3, 3, 3])
+    for stroke in moved.strokes:
+        stroke.cyclic = False
+        stroke.fill_color = BLACK
+    scene.frame_set(16)
+    module._sync_draw_both_fill(bpy.context)
+    layer.frames.move(20, 16)
+    assert module._sync_draw_both_fill(bpy.context) == 0
+    assert untouched(layer.current_frame().drawing)
+
+    scene.frame_set(18)
+    module._sync_draw_both_fill(bpy.context)
+    layer.frames.copy(16, 18)
+    assert layer.current_frame().frame_number == 18
+    assert module._sync_draw_both_fill(bpy.context) == 0
+    assert untouched(layer.current_frame().drawing)
+
+    # A real stroke on a new keyframe is still closed and filled.
+    scene.frame_set(24)
+    module._sync_draw_both_fill(bpy.context)
+    stroked = layer.frames.new(24).drawing
+    stroked.add_strokes([3])
+    stroked.strokes[0].fill_color = BLACK
+    assert module._sync_draw_both_fill(bpy.context) == 1
+    assert stroked.strokes[0].cyclic is True
+    assert close_color(stroked.strokes[0].fill_color, WHITE)
+    data.layers.remove(empty_layer)
+    state.close_strokes = False
+    scene.frame_set(1)
+    module._sync_draw_both_fill(bpy.context)
+
     # Switching Draw tool (Fill, Erase, Tint...) activates another brush with
     # its own colors. The Stroke / Fill pair must stay, and the new brush
     # receives it.
