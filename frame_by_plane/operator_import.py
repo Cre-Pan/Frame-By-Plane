@@ -918,14 +918,14 @@ def _fbp_source_dimensions_from_rig(rig):
     return None
 
 
-def _fbp_apply_camera_source_aspect(scene, rigs):
+def _fbp_apply_camera_source_aspect(scene, rigs, *, force=False):
     """Match output resolution to the first generated layer aspect.
 
     This is intentionally aspect-only: it preserves the current longest render
     side so Shift+A camera creation does not accidentally switch the project to
     very large source-image dimensions.
     """
-    if not scene or not bool(getattr(scene, "fbp_camera_fit_source_aspect", False)):
+    if not scene or not (force or bool(getattr(scene, "fbp_camera_fit_source_aspect", False))):
         return False
     try:
         iterable = tuple(rigs or ())
@@ -958,6 +958,41 @@ def _fbp_apply_camera_source_aspect(scene, rigs):
         return True
     except FBP_DATA_ERRORS:
         return False
+
+
+FBP_IMPORT_CAMERA_MODE_ITEMS = (
+    ('SCENE', "Scene Settings", "Follow the Create Camera setting of the scene"),
+    ('KEEP', "Keep Camera", "Leave the camera and the output size unchanged"),
+    ('ADAPT', "Match Aspect", "Change the output aspect ratio of the existing camera to the imported media"),
+    ('NEW', "New Camera", "Create a new Frame By Plane camera for the imported media"),
+)
+
+
+def _fbp_import_creates_camera(scene, camera_mode):
+    return camera_mode == 'NEW' or (
+        camera_mode == 'SCENE' and bool(getattr(scene, "fbp_gen_camera", False))
+    )
+
+
+def _fbp_create_import_camera(context, target_collection=None):
+    """Create a Frame By Plane camera 10 units from the 3D cursor."""
+    scene = context.scene
+    apply_camera_ratio_settings(scene)
+    location = scene.cursor.location.copy()
+    if fbp_scene_orientation_is_horizontal(scene):
+        location.z += 10.0
+        rotation = (0.0, 0.0, 0.0)
+    else:
+        location.y -= 10.0
+        rotation = (math.radians(90), 0.0, 0.0)
+    data = bpy.data.cameras.new("Camera")
+    camera = bpy.data.objects.new("Camera", data)
+    camera.location = location
+    camera.rotation_euler = rotation
+    (target_collection or scene.collection).objects.link(camera)
+    scene.camera = camera
+    _fbp_configure_generated_camera(scene, camera)
+    return camera
 
 
 def _fbp_configure_generated_camera(scene, camera_object):
@@ -2012,6 +2047,12 @@ class FBP_OT_GenerateMultiplane(Operator):
         default=False,
         options={'HIDDEN', 'SKIP_SAVE'},
     )
+    camera_mode: EnumProperty(
+        name="Camera",
+        items=FBP_IMPORT_CAMERA_MODE_ITEMS,
+        default='SCENE',
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
 
     def invoke(self, context, event):
         _fbp_show_generation_start_popup(context, "Generating Frame By Plane Sequence")
@@ -2091,7 +2132,7 @@ class FBP_OT_GenerateMultiplane(Operator):
             "cancellable": True,
         }
 
-        if sc.fbp_gen_camera:
+        if _fbp_import_creates_camera(sc, self.camera_mode):
             apply_camera_ratio_settings(sc)
         cursor_loc = sc.cursor.location.copy()
         cam_dist = 10.0
@@ -2119,7 +2160,7 @@ class FBP_OT_GenerateMultiplane(Operator):
             generation_owner.record_collection(target_collection)
         set_collection_color_tag(target_collection, 'NONE')
 
-        if sc.fbp_gen_camera:
+        if _fbp_import_creates_camera(sc, self.camera_mode):
             if fbp_scene_orientation_is_horizontal(sc):
                 bpy.ops.object.camera_add(location=cam_loc, rotation=(0, 0, 0))
             else:
@@ -2418,8 +2459,10 @@ class FBP_OT_GenerateMultiplane(Operator):
             self.report({'ERROR'}, f"No layers generated; {len(generation_issues)} layer(s) failed")
             return {'CANCELLED'}
 
-        if sc.fbp_gen_camera:
+        if _fbp_import_creates_camera(sc, self.camera_mode):
             _fbp_apply_camera_source_aspect(sc, generated_rigs)
+        elif self.camera_mode == 'ADAPT' and cam:
+            _fbp_apply_camera_source_aspect(sc, generated_rigs, force=True)
 
         if sc.fbp_auto_scale and cam:
             context.view_layer.update()
@@ -3612,7 +3655,7 @@ class FBP_OT_ClearGenerationReport(Operator):
         _fbp_clear_generation_report(context)
         return {'FINISHED'}
 
-def _fbp_execute_single_plane_import(operator, context, directory, filenames):
+def _fbp_execute_single_plane_import(operator, context, directory, filenames, *, camera_mode='SCENE'):
     """Build one FBP rig from already resolved media filenames."""
     if not _fbp_require_import_scene_properties(operator, getattr(context, "scene", None)):
         return {'CANCELLED'}
@@ -3671,10 +3714,21 @@ def _fbp_execute_single_plane_import(operator, context, directory, filenames):
         operator.report({'ERROR'}, f"Single plane import failed: {exc}")
         return {'CANCELLED'}
 
-    if getattr(context.scene, "fbp_gen_camera", False) and getattr(context.scene, "camera", None):
-        _fbp_apply_camera_source_aspect(context.scene, (rig,))
-        if getattr(context.scene, "fbp_auto_scale", False):
-            apply_fit_to_camera(context, rig, context.scene.camera)
+    scene = context.scene
+    if camera_mode == 'NEW':
+        _fbp_create_import_camera(context, target_collection)
+        _fbp_apply_camera_source_aspect(scene, (rig,))
+    elif camera_mode == 'ADAPT' and getattr(scene, "camera", None):
+        _fbp_apply_camera_source_aspect(scene, (rig,), force=True)
+    elif camera_mode == 'SCENE' and getattr(scene, "fbp_gen_camera", False) and getattr(scene, "camera", None):
+        _fbp_apply_camera_source_aspect(scene, (rig,))
+    if (
+        getattr(scene, "camera", None)
+        and getattr(scene, "fbp_auto_scale", False)
+        and (camera_mode != 'SCENE' or getattr(scene, "fbp_gen_camera", False))
+    ):
+        context.view_layer.update()
+        apply_fit_to_camera(context, rig, scene.camera)
 
     bpy.ops.object.select_all(action='DESELECT')
     if object_in_view_layer(rig, context):
@@ -4574,7 +4628,8 @@ def _fbp_single_plane_source_from_paths(paths):
 
 
 def _fbp_execute_detected_folder_import(
-    operator, context, base, rows, *, import_mode='AUTO', synchronous_generation=False
+    operator, context, base, rows, *, import_mode='AUTO', synchronous_generation=False,
+    camera_mode='SCENE',
 ):
     """Import already detected folder rows through one shared safe decision path."""
     rows = [row for row in (rows or ()) if len(row) >= 4 and row[3]]
@@ -4597,7 +4652,9 @@ def _fbp_execute_detected_folder_import(
         if not filenames:
             operator.report({'WARNING'}, "Single Plane requires supported media directly inside the selected folder")
             return {'CANCELLED'}
-        result = _fbp_execute_single_plane_import(operator, context, directory, filenames)
+        result = _fbp_execute_single_plane_import(
+            operator, context, directory, filenames, camera_mode=camera_mode
+        )
         if result == {'FINISHED'}:
             operator.report(
                 {'INFO'},
@@ -4617,9 +4674,9 @@ def _fbp_execute_detected_folder_import(
         # automated validation needs a deterministic result before it counts
         # created layers, so it executes the same generator body synchronously.
         return bpy.ops.fbp.generate_multiplane(
-            "EXEC_DEFAULT", False, synchronous=True
+            "EXEC_DEFAULT", False, synchronous=True, camera_mode=camera_mode
         )
-    return bpy.ops.fbp.generate_multiplane()
+    return bpy.ops.fbp.generate_multiplane(camera_mode=camera_mode)
 
 
 def _fbp_resolve_dropped_paths(filepath, directory, files):
@@ -5913,6 +5970,13 @@ class FBP_OT_DropMedia(Operator):
         options={'SKIP_SAVE'},
         update=_fbp_reset_folder_import_confirmations,
     )
+    camera_mode: EnumProperty(
+        name="Camera",
+        description="Keep the camera, match its aspect ratio to the media, or create a new camera",
+        items=FBP_IMPORT_CAMERA_MODE_ITEMS,
+        default='SCENE',
+        options={'SKIP_SAVE'},
+    )
     confirm_large_folder: BoolProperty(
         name="Import This Very Large Folder",
         description=(
@@ -5977,59 +6041,50 @@ class FBP_OT_DropMedia(Operator):
             'files': self.detected_folder_files,
         })
 
-    def _invoke_folder_confirmation_if_required(self, context, rows):
-        self._update_folder_summary(rows)
-        _warning, confirmation = self._folder_size_flags()
-        if confirmation:
-            self.confirm_large_folder = False
-            return context.window_manager.invoke_props_dialog(self, width=480)
-        return self.execute(context)
+    def _invoke_dialog(self, context):
+        return context.window_manager.invoke_props_dialog(
+            self,
+            width=_FBP_SHIFT_A_MEDIA_POPUP_WIDTH,
+            title="Import with Frame By Plane",
+            confirm_text="Import",
+        )
 
     def invoke(self, context, event):
+        if not _fbp_require_import_scene_properties(self, context.scene):
+            return {'CANCELLED'}
         paths = self._resolved_paths()
         if not paths:
             self.report({'WARNING'}, "No supported dropped media found")
             return {'CANCELLED'}
+        scene = context.scene
+        has_camera = getattr(scene, "camera", None) is not None
+        if bool(getattr(scene, "fbp_gen_camera", False)):
+            self.camera_mode = 'ADAPT' if has_camera else 'NEW'
+        else:
+            self.camera_mode = 'KEEP'
 
         directory_paths = [path for path in paths if os.path.isdir(path)]
         if directory_paths:
             self.source_mode = 'FOLDER'
-            return self._invoke_folder_confirmation_if_required(
-                context, self._folder_rows(directory_paths[0], consume=False)
-            )
+            self._update_folder_summary(self._folder_rows(directory_paths[0], consume=False))
+            return self._invoke_dialog(context)
 
         parent = self._parent_folder(paths)
         if bool(getattr(event, "alt", False)) and parent:
             self.source_mode = 'FOLDER'
-            return self._invoke_folder_confirmation_if_required(
-                context, self._folder_rows(parent, consume=False)
-            )
+            self._update_folder_summary(self._folder_rows(parent, consume=False))
+            return self._invoke_dialog(context)
 
-        # Multiple selected files already express the intended source clearly
-        # and can be classified without interrupting the drop workflow. A single
-        # video is equally unambiguous and must never trigger a parent-folder
-        # scan unless Alt/Parent Folder was explicitly requested above.
+        # A single video is an unambiguous source: never scan its parent
+        # folder unless Alt asked for it. One dropped still offers Parent
+        # Folder only when that folder holds more media.
         dropped_files = _fbp_drop_importable_files(paths)
-        if _fbp_skip_parent_scan_for_drop(dropped_files):
-            self.source_mode = 'DROPPED'
-            self.import_mode = 'SINGLE'
-            return self.execute(context)
-        if len(dropped_files) != 1 or not parent:
-            return self.execute(context)
-
-        # For one dropped still image, offer the whole-folder workflow only when
-        # the parent contains additional importable media or nested layers.
-        folder_rows = self._folder_rows(parent)
-        summary = self._update_folder_summary(folder_rows)
-        if summary['files'] <= 1 and summary['layers'] <= 1:
-            return self.execute(context)
-
-        # Blender filters external drops by file extension before invoking a
-        # Python FileHandler. Ordinary folder paths therefore never reach this
-        # operator. Keep the exact dropped file as the safe default and expose
-        # Parent Folder explicitly in the confirmation dialog.
         self.source_mode = 'DROPPED'
-        return context.window_manager.invoke_props_dialog(self, width=480)
+        if _fbp_skip_parent_scan_for_drop(dropped_files):
+            self.import_mode = 'SINGLE'
+        elif len(dropped_files) == 1 and parent:
+            self._update_folder_summary(self._folder_rows(parent))
+        return self._invoke_dialog(context)
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -6062,7 +6117,8 @@ class FBP_OT_DropMedia(Operator):
                     summary.label(text=f"… and {remaining} more layer(s)")
 
         layout.separator()
-        layout.prop(self, "source_mode", expand=True)
+        if self.source_mode == 'FOLDER' or (parent and self.detected_folder_files > 1):
+            layout.prop(self, "source_mode", expand=True)
         layout.prop(self, "import_mode", expand=True)
 
         if self.source_mode == 'FOLDER':
@@ -6116,6 +6172,33 @@ class FBP_OT_DropMedia(Operator):
                 box.label(text="These files do not form one logical Single Plane source.", icon=fbp_icon("ERROR"))
                 box.label(text="Use Auto/Multiplane or drop one numbered sequence.")
 
+        section_gap(layout, 0.2)
+        self._draw_camera_settings(layout, context)
+        section_gap(layout, 0.2)
+        _fbp_draw_shift_a_plane_settings(layout, context, timing=True, crop=True)
+
+    def _draw_camera_settings(self, layout, context):
+        scene = context.scene
+        camera = layout.box()
+        configure_layout(camera)
+        section_header(camera, "Camera", icon=fbp_icon("VIEW_CAMERA"))
+        row = camera.row(align=True)
+        row.prop_enum(self, "camera_mode", 'KEEP')
+        if getattr(scene, "camera", None) is not None:
+            row.prop_enum(self, "camera_mode", 'ADAPT')
+        row.prop_enum(self, "camera_mode", 'NEW')
+        row = adaptive_row(camera, context, align=False)
+        row.prop(scene, "fbp_auto_scale", text="Fit to Camera", icon=fbp_icon("FULLSCREEN_ENTER"), toggle=True)
+        if self.camera_mode == 'NEW':
+            row.prop(scene, "fbp_camera_fit_source_aspect", text="Source Aspect", toggle=True, icon='IMAGE_DATA')
+            row.prop(scene, "fbp_cam_pivot", text="Camera Pivot", icon="PIVOT_CURSOR", toggle=True)
+        if self.import_mode == 'MULTI' or (
+            self.import_mode == 'AUTO'
+            and (self.source_mode == 'FOLDER' and self.detected_folder_layers > 1
+                 or len(_fbp_drop_importable_files(self._resolved_paths())) > 1)
+        ):
+            camera.prop(scene, "fbp_layer_offset", text="Layer Spacing")
+
     def cancel(self, context):
         paths = self._resolved_paths()
         parent = self._parent_folder(paths)
@@ -6123,6 +6206,8 @@ class FBP_OT_DropMedia(Operator):
             _fbp_discard_folder_scan_cache(parent)
 
     def execute(self, context):
+        if self.camera_mode == 'ADAPT' and getattr(context.scene, "camera", None) is None:
+            self.camera_mode = 'NEW'
         paths = self._resolved_paths()
         dropped_files = _fbp_drop_importable_files(paths)
         parent = self._parent_folder(paths)
@@ -6180,13 +6265,16 @@ class FBP_OT_DropMedia(Operator):
                 base,
                 rows,
                 import_mode=self.import_mode,
+                camera_mode=self.camera_mode,
             )
 
         resolved_mode = _fbp_resolved_folder_import_mode(self.import_mode, len(rows))
         if resolved_mode == 'SINGLE':
             if len(rows) == 1:
                 _name, _collection, directory, filenames, _follow = rows[0]
-                return _fbp_execute_single_plane_import(self, context, directory, filenames)
+                return _fbp_execute_single_plane_import(
+                self, context, directory, filenames, camera_mode=self.camera_mode
+            )
 
             # A forced Single Plane must still represent one real logical
             # source. Do not reinterpret unrelated dropped stills or videos as
@@ -6195,7 +6283,9 @@ class FBP_OT_DropMedia(Operator):
             if error:
                 self.report({'WARNING'}, error)
                 return {'CANCELLED'}
-            return _fbp_execute_single_plane_import(self, context, directory, filenames)
+            return _fbp_execute_single_plane_import(
+                self, context, directory, filenames, camera_mode=self.camera_mode
+            )
 
         if _fbp_prepare_pending_rows(context, base, rows) <= 0:
             self.report({'WARNING'}, "No Multiplane layers could be prepared")
@@ -6205,7 +6295,7 @@ class FBP_OT_DropMedia(Operator):
             {'INFO'},
             f"Detected {summary['layers']} layer(s) from {summary['files']} media file(s); generating Multiplane",
         )
-        return bpy.ops.fbp.generate_multiplane()
+        return bpy.ops.fbp.generate_multiplane(camera_mode=self.camera_mode)
 
 
 class FBP_FH_MediaDrop(bpy.types.FileHandler):

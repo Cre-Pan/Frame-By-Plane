@@ -16,6 +16,7 @@ Includes 7.2.1, which was not published on its own.
 
 ### Compositor
 
+- **F12 asks before rendering an out-of-date compositor.** When Use Compositor in Render is on and compositor changes are waiting for Refresh, F12 / Ctrl+F12 open a short warning with **Update** (refresh, then render), **Ignore** (render the previous setup) and **Cancel**. In every other case F12 renders exactly as before.
 - **Opening a file no longer adds a compositor.** Every load gave each scene an empty "FBP Composite" compositor, and F12 then rendered through it even if the Frame By Plane compositor was never used. Files saved that way are cleaned up on load: an empty generated compositor is removed and the native render path comes back.
 - **Compositor Off really turns it off.** The Compositor button only hid the panel, while the managed graph, its View Layers and Film Transparent stayed active and F12 still rendered through it. Off now puts back your own compositor, Use Compositing, Film Transparent and View Layer switches, removes the generated View Layers and stops live updates. The FBP nodes (including nodes you added) and the layer list are kept, and turning the compositor on again resumes the same setup.
 - **Building the compositor no longer changes F12** until **Use Compositor in Render** is on. Generated View Layers used to render, and Render Managed Layers Only switched off your own View Layers, as soon as the setup was built. They now follow the render opt-in, which also switches them back immediately when it is turned off.
@@ -29,6 +30,14 @@ Includes 7.2.1, which was not published on its own.
 - With **Render Managed Layers Only** off, turning a native View Layer's render switch on or off is no longer undone by the next compositor sync.
 - **Restore Native Compositor** asks for confirmation, because it also deletes the editable Effects & Masks group.
 - The compositor no longer re-tags its tree on every scene update while the render opt-in is active, and two layer-remap dropdowns can no longer show garbled names.
+
+### Import
+
+- **Drag and drop shows the import options.** Dropping images, a sequence or a video now always opens the Import with Frame By Plane dialog: Auto / Single Plane / Multiplane, Dropped Media or Parent Folder, the plane settings (Frame Hold, loop, orientation, Shadeless, alpha crop) and a **Camera** choice: **Keep Camera**, **Match Aspect** (change the existing camera's output aspect to the media) or **New Camera**, plus Fit to Camera and, for Multiplane, Layer Spacing. Single Plane and Multiplane now follow the same camera choice; before, Single Plane could only adapt an existing camera and Multiplane always created a new one.
+
+### Tutorial
+
+- The tutorial card is about half the size, follows Blender's Resolution Scale and display density (it ignored scales below 1.0 and was too small on high-density displays), can be **dragged by its title bar** anywhere in the viewport and **collapsed** to the title bar alone, which still shows the current step.
 
 ### On-plane controls
 
