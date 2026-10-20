@@ -4,6 +4,10 @@ All notable public changes to Frame By Plane are documented here.
 
 ## [Unreleased]
 
+## [8.0.0] — Prepared 2026-10-20
+
+Includes 7.2.1, which was not published on its own.
+
 ### Effect stack performance
 
 - Reordering an effect chain now writes the complete order once and rebuilds each material stage once, instead of rebuilding the stage for every one-step move. Adding effects to a populated stack is roughly twice as fast (16-effect stack: about 1.7 s → 0.8 s in total).
@@ -66,7 +70,7 @@ All notable public changes to Frame By Plane are documented here.
 - After a variant switch, a local mask on a duplicable effect follows the new variant's exact copy, so removing that copy returns the mask to the layer.
 - **Duplicate** places the copy directly above the original effect, and a copy of a group member joins that group. The copy was listed at the bottom of the stack, although it was evaluated above the original, and the next reorder moved it to the bottom for real.
 
-## [7.2.1] — Prepared 2026-09-07
+## [7.2.1] — Prepared 2026-09-07 (released as part of 8.0.0)
 
 - Added paired Gap Off/On icons with separate grouping and explicit, idempotent choices.
 - Replaced both Gap assets with the final high-contrast artwork supplied on September 7.
