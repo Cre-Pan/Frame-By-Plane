@@ -4280,14 +4280,35 @@ class FBP_GenerationRenameItem(PropertyGroup):
 # SECTION 02 - Scene / Collection / Object property registration #
 
 
+def _deactivate_compositor_deferred(scene_name):
+    scene = bpy.data.scenes.get(scene_name)
+    if scene is not None and not bool(getattr(scene, "fbp_experimental_compositor", False)):
+        from .compositor import fbp_deactivate_compositor
+        try:
+            fbp_deactivate_compositor(scene)
+        except FBP_DATA_ERRORS:
+            pass
+    return None
+
+
 def update_experimental_compositor_cb(self, _context):
     """Keep preview-only sections inaccessible while their gate is disabled."""
     try:
-        if (
-            not bool(getattr(self, "fbp_experimental_compositor", False))
-            and str(getattr(self, "fbp_settings_section", "PROJECT") or "PROJECT") == "COMPOSITOR"
-        ):
-            self.fbp_settings_section = 'MAINTENANCE'
+        if not bool(getattr(self, "fbp_experimental_compositor", False)):
+            if str(getattr(self, "fbp_settings_section", "PROJECT") or "PROJECT") == "COMPOSITOR":
+                self.fbp_settings_section = 'MAINTENANCE'
+            # Turning the tools off must also stop the managed compositor.
+            # Removing View Layers from an RNA update is unsafe while panels
+            # draw them, so the Compositor button does it directly and other
+            # paths defer it.
+            if bool(getattr(self, "fbp_compositor_enabled", False)):
+                from .safe_tasks import schedule_once
+                scene_name = str(self.name)
+                schedule_once(
+                    f"fbp_compositor_off:{scene_name}",
+                    lambda: _deactivate_compositor_deferred(scene_name),
+                    first_interval=0.0,
+                )
     except FBP_DATA_ERRORS:
         pass
 
