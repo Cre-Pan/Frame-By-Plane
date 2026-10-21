@@ -396,16 +396,16 @@ ROUTES: dict[str, RouteSpec] = {
                     "Recommended example: 01_BG.png, 02_Mountains.png, 03_Character/0001.png,",
                     "04_Foreground.png. Numeric prefixes make the intended order explicit.",
                 ),
-                shortcut=(("KEY", "Shift + A"), ("TEXT", "Frame By Plane"), ("FOLDER", "Multi Plane")),
+                shortcut=(("KEY", "Shift + A"), ("TEXT", "Frame By Plane"), ("FOLDER", "Multiplane")),
                 tasks=(
-                    TaskSpec("multi_open_importer", "Open Multi Plane", "MULTIPLANE", ""),
+                    TaskSpec("multi_open_importer", "Open Multiplane", "MULTIPLANE", ""),
                     TaskSpec("multi_generate", "Generate a multiplane setup", "MULTIPLANE", "multi_generate"),
                 ),
                 help_title="Multiplane Import",
                 help_steps=(
                     "Place one visual layer in each file or numbered sequence folder.",
                     "Use prefixes such as 01_BG, 02_Midground, 03_Character and 04_FG.",
-                    "Press Shift + A > Frame By Plane > Multi Plane.",
+                    "Press Shift + A > Frame By Plane > Multiplane.",
                     "Review the import report for imported and skipped files.",
                 ),
                 help_notes=(
@@ -1756,7 +1756,7 @@ _TASK_GUIDANCE = {
     "draw_scrub": "Hold < over the 3D Viewport and move the mouse; release to snap back.",
     "draw_edit_colors": "Press Tab, select strokes and change their Stroke or Fill swatch.",
     "image_open_importer": "Open the Single Plane importer. The next card will wait for the file you choose.",
-    "image_import": "Press Create Plane, then choose an image. Press ? to see what every option does.",
+    "image_import": "Choose an image or a video in the file browser; the settings are in its sidebar. Press ? to see what every option does.",
     "image_open_crop": "Press Z and choose Crop or Expand to reveal the existing viewport edge controllers.",
     "image_crop": "Drag a Crop or Expand edge controller to frame the selected plane.",
     "image_open_masks": "Press Z to reach Grease Pencil Mask.",
@@ -1773,7 +1773,7 @@ _TASK_GUIDANCE = {
     "color_add_frame": "Add a Color or Gradient row from the Frames UI List, then edit its appearance and duration.",
     "color_open_mesh_effects": "Open the Mesh section for the selected Color Plane.",
     "color_mesh": "Use Z for a favourite 3D effect, or add one from Effects & Masks > Mesh.",
-    "multi_open_importer": "Open Multi Plane. The next card will wait for the imported layer setup.",
+    "multi_open_importer": "Open Multiplane. The next card will wait for the imported layer setup.",
     "multi_generate": "Choose a folder with at least two layers and press OK. Press ? for the options.",
     "multi_open_camera": "Open the Frame By Plane camera setup.",
     "multi_camera": "Create or choose the active scene camera.",
@@ -1817,8 +1817,8 @@ _TASK_ACTION_LABELS = {
     "color_add_frame": "Add Color Frame",
     "color_open_mesh_effects": "Open Mesh Effects",
     "color_mesh": "Open Mesh Effects",
-    "multi_open_importer": "Open Multi Plane",
-    "multi_generate": "Open Multi Plane",
+    "multi_open_importer": "Open Multiplane",
+    "multi_generate": "Open Multiplane",
     "multi_open_camera": "Open Camera Setup",
     "multi_camera": "Create Camera",
     "multi_start_depth": "Move Selected Layer",
@@ -1861,7 +1861,7 @@ _TASK_SHORTCUTS = {
     "color_add_frame": "Frames  >  + Color / Gradient",
     "color_open_mesh_effects": "Z  >  Favourite 3D Effects",
     "color_mesh": "Choose a Mesh Effect  >  Adjust it",
-    "multi_open_importer": "Shift + A  >  Frame By Plane  >  Multi Plane",
+    "multi_open_importer": "Shift + A  >  Frame By Plane  >  Multiplane",
     "multi_generate": "Choose Folder  >  Review Layers  >  Generate",
     "multi_open_camera": "Frame By Plane  >  Camera",
     "multi_camera": "Choose Camera settings  >  Create",
@@ -2670,30 +2670,32 @@ def _help_labels(layout: bpy.types.UILayout, text: str, *, icon: str | None = No
 
 # What each option of the creation dialogs does. Shown only from the "?"
 # help so the dialogs themselves stay minimal.
+_CAMERA_OPTION_NOTES: tuple[tuple[str, str], ...] = (
+    ("Create Camera", "Adds a new camera framed on the planes; the Camera box is then not needed."),
+    ("Camera", "The existing scene camera used by the options below."),
+    ("Fit to Camera", "Scales the planes to fill the camera frame."),
+    ("Track to Camera", "Keeps the planes turned toward the camera when it moves."),
+    ("Fit Camera Aspect Ratio", "Changes the render size to the media ratio (off by default)."),
+)
 _ADD_PLANE_OPTION_NOTES: tuple[tuple[str, str], ...] = (
-    ("Plane Type", "What to create. Image and Video open the file browser after Create Plane; Color, Gradient and Holdout need no file."),
+    ("File browser", "Pick one image, the images of a numbered sequence, or one video. The settings are in the sidebar on the right."),
     ("Frame Hold", "Timeline frames each drawing stays on screen (2 = on twos)."),
-    ("One Shot / Loop / Ping-Pong", "Plays once, repeats (the default), or plays back and forth."),
-    ("Set Scene In/Out from Media", "Makes the scene range match a new sequence or video."),
+    ("Linear / Loop / Ping-Pong", "Plays once, repeats (the default), or plays back and forth."),
     ("Vertical / Horizontal", "Stands facing the camera, or lies flat on the ground."),
-    ("Pixel / Smooth", "Keeps hard pixel edges, or softens the image when it is scaled."),
-    ("Shadeless", "Ignores scene lights, so the image keeps its original colors."),
+    ("Emission", "Ignores scene lights, so the image keeps its original colors."),
     ("Crop Alpha / Padding", "Trims empty transparent borders; Padding keeps a margin."),
-    ("Track Camera", "Keeps the plane turned toward the camera when it moves."),
-    ("Fit Camera to New Plane", "Changes the render size to the image ratio (off by default)."),
-)
+    ("Set Scene Length from Media", "Makes the scene range match a new sequence or video."),
+) + _CAMERA_OPTION_NOTES
 _MULTIPLANE_OPTION_NOTES: tuple[tuple[str, str], ...] = (
-    ("Folder", "Every image, sequence folder or video inside becomes one layer, stacked in name order (01_BG, 02_Mid, 03_FG)."),
+    ("Folder", "Open the folder in the file browser and press Multiplane. Every image, sequence folder or video inside becomes one layer, stacked in name order (01_BG, 02_Mid, 03_FG)."),
     ("Frame Hold / playback", "Apply to every animated layer; Loop is the default."),
-    ("Shadeless / Track Camera", "Ignore scene lights; turn every layer toward the camera."),
-    ("Create Camera", "Adds a camera framed on the layers (off by default); Source Aspect uses the first image's ratio."),
-    ("Layer Spacing", "The depth gap between layers."),
-    ("Fit to Camera", "Scales every layer to fill the camera frame (off by default)."),
-)
+    ("Space Between Layers", "The depth gap between layers."),
+    ("Perspective / Orthographic", "Projection of the camera made by Create Camera."),
+) + _CAMERA_OPTION_NOTES
 _DIALOG_OPTION_NOTES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
-    "image_import": ("Add Plane dialog", _ADD_PLANE_OPTION_NOTES),
-    "multi_open_importer": ("Multi Plane dialog", _MULTIPLANE_OPTION_NOTES),
-    "multi_generate": ("Multi Plane dialog", _MULTIPLANE_OPTION_NOTES),
+    "image_import": ("Single Plane", _ADD_PLANE_OPTION_NOTES),
+    "multi_open_importer": ("Multiplane", _MULTIPLANE_OPTION_NOTES),
+    "multi_generate": ("Multiplane", _MULTIPLANE_OPTION_NOTES),
 }
 
 

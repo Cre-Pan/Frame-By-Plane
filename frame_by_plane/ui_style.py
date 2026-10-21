@@ -180,3 +180,20 @@ def selection_status(layout, selected, *, noun="layer", icon="RESTRICT_SELECT_OF
         icon=icon,
         disabled=True,
     )
+
+
+def property_split_row(layout, label, *, align=True, factor=0.4):
+    """Return the value column of a Blender-style label/value row.
+
+    Enum buttons drawn with ``prop_enum`` do not take part in
+    ``use_property_split``; this draws the same right-aligned label column so
+    they line up with the regular split properties around them.
+    """
+    split = layout.split(factor=float(factor), align=True)
+    left = split.row(align=True)
+    left.alignment = 'RIGHT'
+    left.label(text=str(label or ""))
+    row = split.row(align=bool(align))
+    # The value column must not split again inside a property-split layout.
+    row.use_property_split = False
+    return row

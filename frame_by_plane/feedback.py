@@ -151,8 +151,8 @@ FBP_PUBLIC_RELEASE_ITEMS = (
         "BRUSH_DATA",
     ),
     (
-        "One Add Plane Dialog",
-        "Image, Video, Color, Gradient and Holdout in one place.",
+        "Fewer Popups",
+        "Settings in the file browser and the Adjust panel.",
         "IMAGE_PLANE",
     ),
     (

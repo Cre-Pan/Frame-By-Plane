@@ -560,6 +560,29 @@ def register_custom_icons():
     return True
 
 
+def color_swatch_icon_value(key, rgba):
+    """Return a solid preview icon filled with *rgba* for colour preset buttons."""
+    pcoll = _fbp_custom_icon_collection()
+    if pcoll is None:
+        return 0
+    name = f"fbp_swatch_{key}"
+    try:
+        preview = pcoll.get(name)
+        if preview is None:
+            preview = pcoll.new(name)
+            size = 32
+            red, green, blue, alpha = (float(value) for value in tuple(rgba)[:4])
+            # Presets store display values; show them as they look on screen.
+            pixels = (red, green, blue, max(alpha, 0.35)) * (size * size)
+            preview.icon_size = (size, size)
+            preview.icon_pixels_float = pixels
+            preview.image_size = (size, size)
+            preview.image_pixels_float = pixels
+        return int(preview.icon_id)
+    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+        return 0
+
+
 def unregister_custom_icons():
     """Release custom preview icons during add-on unregister/reload."""
     pcoll = preview_collections.pop(_FBP_CUSTOM_ICON_COLLECTION, None)

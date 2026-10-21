@@ -176,6 +176,52 @@ def _apply_crop_extend_popup(operator, context):
     return {'FINISHED'}
 
 
+def fbp_create_color_plane(context, plane_type=""):
+    """Create one Color, Gradient or Holdout plane from the Scene settings and return its rig."""
+    sc = context.scene
+    requested = str(plane_type or "").upper()
+    kind = requested if requested in {'CUSTOM', 'GRADIENT', 'HOLDOUT'} else getattr(sc, "fbp_color_plane_type", 'CUSTOM')
+    gradient_settings = None
+    if kind == 'HOLDOUT':
+        color = (0.0, 0.0, 0.0, 1.0)
+        name = fbp_default_color_plane_name('HOLDOUT', color)
+        holdout = True
+    elif kind == 'GRADIENT':
+        color = tuple(sc.fbp_gradient_color_b)
+        name = fbp_default_color_plane_name('GRADIENT', color)
+        holdout = False
+        gradient_settings = {
+            'mode': sc.fbp_gradient_mode, 'kind': sc.fbp_gradient_kind,
+            'color_a': tuple(sc.fbp_gradient_color_a), 'color_b': tuple(sc.fbp_gradient_color_b),
+            'reverse': bool(sc.fbp_gradient_reverse),
+            'offset_x': float(getattr(sc, 'fbp_gradient_offset_x', 0.0)),
+            'offset_y': float(getattr(sc, 'fbp_gradient_offset_y', 0.0)),
+            'scale_x': float(getattr(sc, 'fbp_gradient_scale_x', 1.0)),
+            'scale_y': float(getattr(sc, 'fbp_gradient_scale_y', 1.0)),
+            'rotation': float(getattr(sc, 'fbp_gradient_rotation', 0.0)),
+        }
+    else:
+        color = tuple(sc.fbp_color_plane_color)
+        name = fbp_default_color_plane_name('SOLID', color)
+        holdout = False
+    coll = fbp_active_work_collection(context) or getattr(context, 'collection', None) or sc.collection
+    try:
+        if coll is not None:
+            coll.is_fbp_collection = True
+    except FBP_DATA_ERRORS:
+        pass
+    rig = build_fbp_color_rig(context, name, color, sc.fbp_color_plane_emission, holdout, target_collection=coll, gradient_settings=gradient_settings)
+    if gradient_settings:
+        copy_scene_preview_ramp_to_rig(sc, rig)
+    sync_layer_collection(context)
+    bpy.ops.object.select_all(action='DESELECT')
+    if object_in_view_layer(rig, context):
+        rig.select_set(True)
+        context.view_layer.objects.active = rig
+    sc.fbp_show_create_tools = False
+    return rig
+
+
 class FBP_OT_CreateColorPlane(Operator):
     bl_idname = "fbp.create_color_plane"
     bl_label = "Create Color Plane"
@@ -190,47 +236,7 @@ class FBP_OT_CreateColorPlane(Operator):
     )
 
     def execute(self, context):
-        sc = context.scene
-        requested = str(getattr(self, "plane_type", "") or "").upper()
-        kind = requested if requested in {'CUSTOM', 'GRADIENT', 'HOLDOUT'} else getattr(sc, "fbp_color_plane_type", 'CUSTOM')
-        gradient_settings = None
-        if kind == 'HOLDOUT':
-            color = (0.0, 0.0, 0.0, 1.0)
-            name = fbp_default_color_plane_name('HOLDOUT', color)
-            holdout = True
-        elif kind == 'GRADIENT':
-            color = tuple(sc.fbp_gradient_color_b)
-            name = fbp_default_color_plane_name('GRADIENT', color)
-            holdout = False
-            gradient_settings = {
-                'mode': sc.fbp_gradient_mode, 'kind': sc.fbp_gradient_kind,
-                'color_a': tuple(sc.fbp_gradient_color_a), 'color_b': tuple(sc.fbp_gradient_color_b),
-                'reverse': bool(sc.fbp_gradient_reverse),
-                'offset_x': float(getattr(sc, 'fbp_gradient_offset_x', 0.0)),
-                'offset_y': float(getattr(sc, 'fbp_gradient_offset_y', 0.0)),
-                'scale_x': float(getattr(sc, 'fbp_gradient_scale_x', 1.0)),
-                'scale_y': float(getattr(sc, 'fbp_gradient_scale_y', 1.0)),
-                'rotation': float(getattr(sc, 'fbp_gradient_rotation', 0.0)),
-            }
-        else:
-            color = tuple(sc.fbp_color_plane_color)
-            name = fbp_default_color_plane_name('SOLID', color)
-            holdout = False
-        coll = fbp_active_work_collection(context) or getattr(context, 'collection', None) or sc.collection
-        try:
-            if coll is not None:
-                coll.is_fbp_collection = True
-        except FBP_DATA_ERRORS:
-            pass
-        rig = build_fbp_color_rig(context, name, color, sc.fbp_color_plane_emission, holdout, target_collection=coll, gradient_settings=gradient_settings)
-        if gradient_settings:
-            copy_scene_preview_ramp_to_rig(sc, rig)
-        sync_layer_collection(context)
-        bpy.ops.object.select_all(action='DESELECT')
-        if object_in_view_layer(rig, context):
-            rig.select_set(True)
-            context.view_layer.objects.active = rig
-        sc.fbp_show_create_tools = False
+        rig = fbp_create_color_plane(context, str(getattr(self, "plane_type", "") or ""))
         self.report({'INFO'}, f"Created {rig.name}")
         return {'FINISHED'}
 

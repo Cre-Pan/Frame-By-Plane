@@ -12,11 +12,11 @@ Frame By Plane 8 LTS: Grease Pencil masks you can edit, Split into Multiple Plan
 - ⏱️ **Magnetic Scrub Bar:** hold `<` to scrub, release it and the playhead snaps back to where you started with a small bounce. Exact on the bar, faster as the pointer moves away. A tap no longer pins the bar; pin it from the Viewport header.
 - 🗂️ **Scrub Bar menu:** collapsible sections, a live Length slider and an Audio Scrubbing toggle. Return to Start has its own button next to the pin, and in Draw Mode the bar shows only the active layer.
 - ↔️ **Hold `<` in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer:** move left or right to scrub from where the playhead is.
-- 🎬 **Set Scene In/Out from Media:** an option (off by default) in Add Plane and Multiplane that fits the Scene range to a new Image Sequence or Video.
+- 🎬 **Set Scene Length from Media:** an option (off by default) in Single Plane and Multiplane that fits the Scene range to a new Image Sequence or Video.
 - 🎨 **Every selected color:** Edit Mode shows each distinct Stroke and Fill color as its own swatch, with dropdowns, Replace All and per-stroke Invert.
 - 🖌️ **Material in Edit Mode:** pick the material slot without leaving Edit Mode.
 - 🌍 **Six languages:** Italian, Spanish, French, German, Simplified Chinese and Japanese. Frame By Plane follows Blender's language, or pick one in Preferences → Interface → Language.
-- ➕ **Add Plane dialog:** one dialog for Image, Video, Color, Gradient and Holdout planes; Fit Camera to New Plane is optional.
+- ➕ **Fewer popups:** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar; Color, Gradient, Holdout, Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup. Every layout follows Blender's own style, with a collapsible Camera section.
 - 🧹 **Leaner Grease Pencil tools:** see *Removed in 7.5* below.
 
 ## 🌀 Deform Plane (Lattice)

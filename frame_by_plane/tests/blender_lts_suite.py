@@ -265,7 +265,7 @@ def test_feedback_update_popup_contract(_module):
         "Magnetic Scrub Bar",
         "Every Selected Color",
         "Material in Edit Mode",
-        "One Add Plane Dialog",
+        "Fewer Popups",
         "Bug Fixes",
     )
     assert all("7.1" not in item[1] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
@@ -4468,6 +4468,9 @@ def test_drop_import_camera_modes(_module):
         class _Layout:
             def __getattr__(self, _name):
                 return lambda *args, **kwargs: self
+
+            def panel(self, *_args, **_kwargs):
+                return self, self
 
             def __setattr__(self, _name, _value):
                 pass

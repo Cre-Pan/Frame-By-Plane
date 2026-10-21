@@ -43,7 +43,7 @@ def fbp_apply_preferences_to_scene(scene, *, force=False, context=None):
         "fbp_pre_loop_mode": getattr(prefs, "default_playback", 'REPEAT'),
         "fbp_pre_interpolation": getattr(prefs, "default_interpolation", 'Closest'),
         "fbp_pre_orientation": getattr(prefs, "default_orientation", 'VERT'),
-        "fbp_layer_offset": getattr(prefs, "default_layer_offset", 0.2),
+        "fbp_layer_offset": getattr(prefs, "default_layer_offset", 0.5),
         "fbp_auto_scale": getattr(prefs, "default_fit_to_camera", False),
         "fbp_camera_fit_source_aspect": getattr(prefs, "default_camera_fit_source_aspect", True),
         "fbp_pre_track_cam": getattr(prefs, "default_track_camera", False),

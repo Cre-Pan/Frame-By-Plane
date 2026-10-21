@@ -16,6 +16,8 @@ from bpy.props import (
     BoolProperty,
     CollectionProperty,
     EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     StringProperty,
 )
@@ -102,6 +104,7 @@ from .layers import (
     update_rig_visibility,
 )
 from .scene_sync import fbp_remove_plane_datablock, sync_layer_collection
+from .properties import ORIENTATION_ITEMS
 from .ui_list_state import invoke_with_selection_modifiers
 from .shortcut_runtime import alt_modifier_name, primary_modifier_name
 from .runtime import (
@@ -110,7 +113,6 @@ from .runtime import (
 )
 from .core import (
     apply_camera_ratio_settings,
-    draw_scene_fbp_color_ramp,
     fbp_native_sequence_files_from_rig,
     fbp_rebuild_sequence_backend_from_rig,
     fbp_replace_sequence_backend,
@@ -128,6 +130,7 @@ from .ui_style import (
     empty_state,
     hint_row,
     list_rows,
+    property_split_row,
     section_gap,
     section_header,
 )
@@ -243,8 +246,6 @@ _FBP_VIDEO_FILTER_GLOB = ";".join(f"*{ext}" for ext in sorted(FBP_SUPPORTED_VIDE
 _FBP_MEDIA_FILTER_GLOB = ";".join(f"*{ext}" for ext in sorted(FBP_SUPPORTED_MEDIA_EXT))
 
 _FBP_SHIFT_A_PLANE_POPUP_WIDTH = 560
-_FBP_SHIFT_A_MULTIPLANE_POPUP_WIDTH = 620
-_FBP_SHIFT_A_HEX_POPUP_WIDTH = 440
 
 
 def _fbp_media_filter_glob(media_filter):
@@ -899,7 +900,11 @@ def _fbp_apply_camera_source_aspect(scene, rigs, *, force=False):
             break
     if not dimensions:
         return False
-    width, height = dimensions
+    return _fbp_set_render_aspect(scene, *dimensions)
+
+
+def _fbp_set_render_aspect(scene, width, height):
+    """Give the output the *width*:*height* shape, keeping its longest side."""
     if width <= 0 or height <= 0:
         return False
     try:
@@ -933,6 +938,17 @@ def _fbp_import_creates_camera(scene, camera_mode):
     return camera_mode == 'NEW' or (
         camera_mode == 'SCENE' and bool(getattr(scene, "fbp_gen_camera", False))
     )
+
+
+def _fbp_scene_fits_camera_aspect(scene, camera_mode):
+    """Return True when the Camera section asks for the media aspect.
+
+    A new camera follows "Camera Uses Source Aspect"; an existing camera only
+    changes its output shape through "Fit Camera Aspect Ratio".
+    """
+    if camera_mode != 'SCENE':
+        return False
+    return bool(getattr(scene, "fbp_single_fit_camera", False))
 
 
 def _fbp_create_import_camera(context, target_collection=None):
@@ -2422,7 +2438,7 @@ class FBP_OT_GenerateMultiplane(Operator):
 
         if _fbp_import_creates_camera(sc, self.camera_mode):
             _fbp_apply_camera_source_aspect(sc, generated_rigs)
-        elif self.camera_mode == 'ADAPT' and cam:
+        elif (self.camera_mode == 'ADAPT' or _fbp_scene_fits_camera_aspect(sc, self.camera_mode)) and cam:
             _fbp_apply_camera_source_aspect(sc, generated_rigs, force=True)
 
         if sc.fbp_auto_scale and cam:
@@ -3676,25 +3692,16 @@ def _fbp_execute_single_plane_import(operator, context, directory, filenames, *,
         return {'CANCELLED'}
 
     scene = context.scene
-    if camera_mode == 'NEW':
+    if _fbp_import_creates_camera(scene, camera_mode):
         _fbp_create_import_camera(context, target_collection)
         _fbp_apply_camera_source_aspect(scene, (rig,))
     elif camera_mode == 'ADAPT' and getattr(scene, "camera", None):
         _fbp_apply_camera_source_aspect(scene, (rig,), force=True)
-    elif (
-        camera_mode == 'SCENE'
-        and getattr(scene, "fbp_gen_camera", False)
-        and getattr(scene, "camera", None)
-        and getattr(scene, "fbp_single_fit_camera", False)
-    ):
+    elif _fbp_scene_fits_camera_aspect(scene, camera_mode) and getattr(scene, "camera", None):
         # Adding one plane keeps the project framing unless the artist asks
         # the camera to adopt the new image aspect.
-        _fbp_apply_camera_source_aspect(scene, (rig,))
-    if (
-        getattr(scene, "camera", None)
-        and getattr(scene, "fbp_auto_scale", False)
-        and (camera_mode != 'SCENE' or getattr(scene, "fbp_gen_camera", False))
-    ):
+        _fbp_apply_camera_source_aspect(scene, (rig,), force=True)
+    if getattr(scene, "camera", None) and getattr(scene, "fbp_auto_scale", False):
         context.view_layer.update()
         apply_fit_to_camera(context, rig, scene.camera)
 
@@ -3709,49 +3716,6 @@ def _fbp_execute_single_plane_import(operator, context, directory, filenames, *,
     _fbp_finish_generation_ui(context, report)
     return {'FINISHED'}
 
-
-class FBP_OT_ImportSingleImage(Operator):
-    bl_idname = "fbp.import_single_image"
-    bl_label = "Single Plane"
-    bl_description = "Create one Frame By Plane layer from any supported image, or one animated plane from multiple selected images"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    filepath: StringProperty(description="Selected media file path returned by Blender's file browser.", subtype='FILE_PATH')
-    directory: StringProperty(description="Folder currently selected in Blender's file browser.", subtype='DIR_PATH')
-    files: CollectionProperty(description="Files selected in Blender's file browser for this import or replacement action.", type=bpy.types.OperatorFileListElement)
-    filter_glob: StringProperty(
-        description="Show every image format supported by Frame By Plane.",
-        default=_FBP_IMAGE_FILTER_GLOB,
-        options={'HIDDEN'},
-    )
-
-    def invoke(self, context, event):
-        if not _fbp_require_import_scene_properties(self, context.scene):
-            return {'CANCELLED'}
-        path = _fbp_scene_import_directory(context.scene)
-        if path:
-            self.directory = path
-        context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
-
-    def execute(self, context):
-        filenames = [f.name for f in self.files] if self.files else []
-        if not filenames and self.filepath:
-            if os.path.isfile(bpy.path.abspath(self.filepath)):
-                self.directory = os.path.dirname(self.filepath)
-                filenames = [os.path.basename(self.filepath)]
-            elif os.path.isdir(bpy.path.abspath(self.filepath)):
-                self.directory = self.filepath
-
-        # Single Plane is image-only. Animated image formats remain valid
-        # images, while movie files are handled by the dedicated Video Plane.
-        if not filenames and self.directory and os.path.isdir(bpy.path.abspath(self.directory)):
-            filenames = fbp_folder_direct_images(bpy.path.abspath(self.directory))
-        filenames = _fbp_filter_selected_media(filenames, 'IMAGES')
-        if not filenames:
-            self.report({'WARNING'}, "Select at least one supported image")
-            return {'CANCELLED'}
-        return _fbp_execute_single_plane_import(self, context, self.directory, filenames)
 
 class FBP_OT_ImportFolderMultiplane(Operator):
     bl_idname = "fbp.import_folder_multiplane"
@@ -6016,12 +5980,9 @@ class FBP_OT_DropMedia(Operator):
         if not paths:
             self.report({'WARNING'}, "No supported dropped media found")
             return {'CANCELLED'}
-        scene = context.scene
-        has_camera = getattr(scene, "camera", None) is not None
-        if bool(getattr(scene, "fbp_gen_camera", False)):
-            self.camera_mode = 'ADAPT' if has_camera else 'NEW'
-        else:
-            self.camera_mode = 'KEEP'
+        # The popup shows the same Camera section as Shift+A, backed by the
+        # Scene settings, so the drop follows them.
+        self.camera_mode = 'SCENE'
 
         directory_paths = [path for path in paths if os.path.isdir(path)]
         if directory_paths:
@@ -6077,9 +6038,10 @@ class FBP_OT_DropMedia(Operator):
                     summary.label(text=f"… and {remaining} more layer(s)")
 
         layout.separator()
+        split = configure_layout(layout.column(), property_split=True)
         if self.source_mode == 'FOLDER' or (parent and self.detected_folder_files > 1):
-            layout.prop(self, "source_mode", expand=True)
-        layout.prop(self, "import_mode", expand=True)
+            split.row().prop(self, "source_mode", expand=True)
+        split.row().prop(self, "import_mode", expand=True)
 
         if self.source_mode == 'FOLDER':
             resolved = _fbp_resolved_folder_import_mode(
@@ -6132,51 +6094,17 @@ class FBP_OT_DropMedia(Operator):
                 box.label(text="These files do not form one logical Single Plane source.", icon=fbp_icon("ERROR"))
                 box.label(text="Use Auto/Multiplane or drop one numbered sequence.")
 
-        section_gap(layout, 0.2)
-        self._draw_camera_settings(layout, context)
-        section_gap(layout, 0.2)
-        self._draw_plane_settings(layout, context)
+        layout.separator()
+        _fbp_draw_media_settings(
+            layout, context, multiplane=self._resolves_to_multiplane(), panel_id="FBP_PT_drop_media_camera",
+        )
 
-    def _draw_plane_settings(self, layout, context):
-        # Same Animation and Plane and Material sections as the Shift+A dialog;
-        # the Camera section above replaces its Track/Fit row.
-        sc = context.scene
-        timing = _fbp_shift_a_box(layout, "Animation", "TIME")
-        row = adaptive_row(timing, context, align=False)
-        row.prop(sc, "fbp_pre_duration", text="Frame Hold")
-        row.prop(sc, "fbp_pre_loop_mode", text="")
-
-        section_gap(layout, 0.2)
-        material = _fbp_shift_a_box(layout, "Plane and Material", "MATERIAL")
-        row = adaptive_row(material, context, align=False)
-        row.prop(sc, "fbp_pre_orientation", text="")
-        row.prop(sc, "fbp_pre_interpolation", text="")
-        row = adaptive_row(material, context, align=False)
-        row.prop(sc, "fbp_pre_shadeless", text="Shadeless", icon=fbp_icon("LIGHT_SUN"), toggle=True)
-        row.prop(sc, "fbp_pre_track_cam", text="Track Camera", icon="CON_CAMERASOLVER", toggle=True)
-        _fbp_draw_import_alpha_crop_options(material, sc, context)
-
-    def _draw_camera_settings(self, layout, context):
-        scene = context.scene
-        camera = layout.box()
-        configure_layout(camera)
-        section_header(camera, "Camera", icon=fbp_icon("VIEW_CAMERA"))
-        row = camera.row(align=True)
-        row.prop_enum(self, "camera_mode", 'KEEP')
-        if getattr(scene, "camera", None) is not None:
-            row.prop_enum(self, "camera_mode", 'ADAPT')
-        row.prop_enum(self, "camera_mode", 'NEW')
-        row = adaptive_row(camera, context, align=False)
-        row.prop(scene, "fbp_auto_scale", text="Fit to Camera", icon=fbp_icon("FULLSCREEN_ENTER"), toggle=True)
-        if self.camera_mode == 'NEW':
-            row.prop(scene, "fbp_camera_fit_source_aspect", text="Source Aspect", toggle=True, icon='IMAGE_DATA')
-            row.prop(scene, "fbp_cam_pivot", text="Camera Pivot", icon="PIVOT_CURSOR", toggle=True)
-        if self.import_mode == 'MULTI' or (
-            self.import_mode == 'AUTO'
-            and (self.source_mode == 'FOLDER' and self.detected_folder_layers > 1
-                 or len(_fbp_drop_importable_files(self._resolved_paths())) > 1)
-        ):
-            camera.prop(scene, "fbp_layer_offset", text="Layer Spacing")
+    def _resolves_to_multiplane(self):
+        if self.import_mode != 'AUTO':
+            return self.import_mode == 'MULTI'
+        if self.source_mode == 'FOLDER':
+            return self.detected_folder_layers > 1
+        return len(_fbp_drop_importable_files(self._resolved_paths())) > 1
 
     def cancel(self, context):
         paths = self._resolved_paths()
@@ -6287,250 +6215,204 @@ class FBP_FH_MediaDrop(bpy.types.FileHandler):
 
     poll_drop = classmethod(_fbp_view3d_file_drop_poll)
 
-_FBP_SHIFT_A_PLANE_TYPE_ITEMS = (
-    ('IMAGE', "Image Plane", "One still, animated image or numbered image sequence", 'IMAGE_DATA', 0),
-    ('VIDEO', "Video Plane", "One plane playing a supported movie file", 'FILE_MOVIE', 1),
-    ('COLOR', "Color Plane", "A solid color plane at the camera ratio", 'COLOR', 2),
-    ('GRADIENT', "Gradient Plane", "An editable gradient plane at the camera ratio", 'NODE_TEXTURE', 3),
-    ('HOLDOUT', "Holdout Plane", "A plane that cuts a transparent hole in the render", 'HOLDOUT_ON', 4),
-)
-_FBP_SHIFT_A_COLOR_PLANE_TYPES = {'COLOR': 'CUSTOM', 'GRADIENT': 'GRADIENT', 'HOLDOUT': 'HOLDOUT'}
+# Shift+A creation settings use Blender's own layout language: labels in a
+# right-aligned column, checkboxes in the value column, and collapsible
+# sub-panels. Media imports draw them in the file browser sidebar, procedural
+# planes in the Adjust Last Operation panel, so only drag and drop opens a popup.
+_FBP_ORIENTATION_LABELS = (('VERT', "Vertical"), ('HORIZ', "Horizontal"))
+_FBP_PROJECTION_LABELS = (('PERSP', "Perspective"), ('ORTHO', "Orthographic"))
 
 
-def _fbp_shift_a_box(layout, title, icon):
-    """Open one titled section of a Shift+A plane dialog."""
-    box = layout.box()
-    configure_layout(box)
-    section_header(box, title, icon=icon)
-    return box
+def _fbp_draw_enum_row(layout, owner, prop, label, items):
+    row = property_split_row(layout, label)
+    for key, text in items:
+        row.prop_enum(owner, prop, key, text=text)
+    return row
 
 
-class _FBPPlanePopupBase:
-    """Shared Shift+A dialog: pick the plane type at the top, then its settings.
+def _fbp_settings_panel(layout, panel_id, title, *, default_closed=False):
+    """Open a collapsible settings sub-panel; return its body or None when closed."""
+    header, body = layout.panel(panel_id, default_closed=default_closed)
+    header.label(text=title)
+    if body is not None:
+        configure_layout(body, property_split=True)
+    return body
 
-    Image, Video, Color, Gradient and Holdout planes are all single planes, so
-    one dialog serves them all. The Shift+A entries only choose which type the
-    dropdown starts on.
-    """
 
+def _fbp_camera_panel(layout, panel_id, *, default_closed=False):
+    return _fbp_settings_panel(layout, panel_id, "Camera Settings", default_closed=default_closed)
+
+
+def _fbp_draw_icon_enum_row(layout, owner, prop, label, items):
+    """Icon-only enum buttons; the item names stay in the tooltips."""
+    row = property_split_row(layout, label)
+    for key, _text in items:
+        row.prop_enum(owner, prop, key, text="")
+    return row
+
+
+def _fbp_draw_scene_camera_settings(layout, scene, panel_id, *, projection=False):
+    body = _fbp_camera_panel(layout, panel_id)
+    if body is None:
+        return
+    create = bool(getattr(scene, "fbp_gen_camera", False))
+    col = body.column()
+    col.prop(scene, "fbp_gen_camera", text="Create Camera")
+    if projection and create:
+        _fbp_draw_enum_row(col, scene, "fbp_camera_projection", "Projection", _FBP_PROJECTION_LABELS)
+    chooser = col.column()
+    chooser.enabled = not create
+    chooser.prop(scene, "camera", text="Camera")
+    col.separator(factor=0.5)
+    col.prop(scene, "fbp_auto_scale", text="Fit to Camera")
+    col.prop(scene, "fbp_pre_track_cam", text="Track to Camera")
+    # A new camera follows the source-aspect setting, an existing one only
+    # changes shape on request: the same checkbox drives whichever applies.
+    aspect_prop = "fbp_camera_fit_source_aspect" if create else "fbp_single_fit_camera"
+    col.prop(scene, aspect_prop, text="Fit Camera Aspect Ratio")
+
+
+def _fbp_draw_media_settings(layout, context, *, multiplane=False, panel_id="FBP_PT_media_camera"):
+    """Single Plane and Multiplane settings shared by the file browser and the drop popup."""
+    scene = context.scene
+    layout = configure_layout(layout, property_split=True)
+    plane_layout = _fbp_settings_panel(layout, panel_id.replace("camera", "plane"), "Plane Settings")
+    if plane_layout is not None:
+        _fbp_draw_plane_settings(plane_layout, scene, multiplane=multiplane)
+    _fbp_draw_scene_camera_settings(layout, scene, panel_id, projection=multiplane)
+
+
+def _fbp_draw_plane_settings(layout, scene, *, multiplane=False):
+    layout.prop(scene, "fbp_pre_duration", text="Frame Hold", slider=True)
+    layout.prop(scene, "fbp_pre_loop_mode", text="Playback")
+
+    layout.separator()
+    layout.prop(scene, "fbp_pre_shadeless", text="Emission")
+    _fbp_draw_icon_enum_row(layout, scene, "fbp_pre_orientation", "Orientation", _FBP_ORIENTATION_LABELS)
+
+    layout.separator()
+    col = layout.column()
+    col.prop(scene, "fbp_import_crop_alpha", text="Crop Alpha")
+    padding = col.column()
+    padding.enabled = bool(getattr(scene, "fbp_import_crop_alpha", False))
+    padding.prop(scene, "fbp_import_crop_alpha_padding", text="Padding")
+    col.prop(scene, "fbp_pre_match_scene_range", text="Set Scene Length from Media")
+
+    if multiplane:
+        layout.separator()
+        layout.prop(scene, "fbp_layer_offset", text="Space Between Layers", slider=True)
+
+
+def _fbp_notify_tutorial(context, action):
+    if not action:
+        return
+    try:
+        from .live_tutorial import fbp_notify_tutorial_action
+        fbp_notify_tutorial_action(context, action)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
+class _FBPSinglePlaneBrowser:
+    """Single Plane: any image, numbered sequence or video, picked in the file browser."""
+
+    bl_label = "Single Plane"
+    bl_description = "Create one plane from an image, a numbered image sequence or a video"
     bl_options = {'REGISTER', 'UNDO'}
-    _default_plane_type = 'IMAGE'
+    _tutorial_action = ""
 
-    plane_type: EnumProperty(
-        name="Plane Type",
-        description="Kind of plane to create",
-        items=_FBP_SHIFT_A_PLANE_TYPE_ITEMS,
-        default='IMAGE',
-        options={'SKIP_SAVE'},
+    filepath: StringProperty(description="Selected media file path returned by Blender's file browser.", subtype='FILE_PATH')
+    directory: StringProperty(description="Folder currently selected in Blender's file browser.", subtype='DIR_PATH')
+    files: CollectionProperty(description="Files selected in Blender's file browser for this import or replacement action.", type=bpy.types.OperatorFileListElement)
+    filter_glob: StringProperty(
+        description="Show every image and video format supported by Frame By Plane.",
+        default=_FBP_MEDIA_FILTER_GLOB,
+        options={'HIDDEN'},
     )
-
-    def _initial_plane_type(self, context):
-        return self._default_plane_type
 
     def invoke(self, context, event):
         if not _fbp_require_import_scene_properties(self, context.scene):
             return {'CANCELLED'}
-        self.plane_type = self._initial_plane_type(context)
-        tutorial_action = {
-            'IMAGE': "image_open_importer",
-            'COLOR': "color_open_creator",
-        }.get(self.plane_type)
-        if tutorial_action:
-            try:
-                from .live_tutorial import fbp_notify_tutorial_action
-                fbp_notify_tutorial_action(context, tutorial_action)
-            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                pass
-        # Prepare the gradient preview outside draw(): Blender may reject ID
-        # writes while the dialog is drawing, and the type can change there.
-        try:
-            get_or_create_fbp_gradient_preview_material(context.scene)
-        except Exception as exc:
-            fbp_warn("Could not prepare gradient preview ColorRamp for popup", exc)
-        return context.window_manager.invoke_props_dialog(
-            self,
-            width=_FBP_SHIFT_A_PLANE_POPUP_WIDTH,
-            title="Add Plane",
-            confirm_text="Create Plane",
-        )
+        _fbp_notify_tutorial(context, self._tutorial_action)
+        path = _fbp_scene_import_directory(context.scene)
+        if path:
+            self.directory = path
+        self.filter_glob = _FBP_MEDIA_FILTER_GLOB
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
 
     def draw(self, context):
-        sc = context.scene
-        layout = configure_layout(self.layout)
-        type_row = layout.row(align=False)
-        type_row.scale_y = 1.25
-        type_row.prop(self, "plane_type", text="")
-        section_gap(layout, 0.3)
-
-        plane_type = self.plane_type
-        if plane_type in {'IMAGE', 'VIDEO'}:
-            self._draw_media(layout, context, sc, plane_type)
-        else:
-            self._draw_procedural(layout, context, sc, plane_type)
-
-    def _draw_media(self, layout, context, sc, plane_type):
-        timing = _fbp_shift_a_box(layout, "Animation", "TIME")
-        row = adaptive_row(timing, context, align=False)
-        row.prop(sc, "fbp_pre_duration", text="Frame Hold")
-        row.prop(sc, "fbp_pre_loop_mode", text="")
-        timing.prop(sc, "fbp_pre_match_scene_range", text="Set Scene In/Out from Media", icon="PREVIEW_RANGE", toggle=True)
-
-        section_gap(layout, 0.2)
-        material = _fbp_shift_a_box(layout, "Plane and Material", "MATERIAL")
-        row = adaptive_row(material, context, align=False)
-        row.prop(sc, "fbp_pre_orientation", text="")
-        row.prop(sc, "fbp_pre_interpolation", text="")
-        row = adaptive_row(material, context, align=False)
-        row.prop(sc, "fbp_pre_shadeless", text="Shadeless", icon=fbp_icon("LIGHT_SUN"), toggle=True)
-        if plane_type == 'IMAGE':
-            _fbp_draw_import_alpha_crop_options(material, sc, context)
-
-        section_gap(layout, 0.2)
-        camera = _fbp_shift_a_box(layout, "Camera", fbp_icon("VIEW_CAMERA"))
-        row = adaptive_row(camera, context, align=False)
-        row.prop(sc, "fbp_pre_track_cam", text="Track Camera", icon="CON_CAMERASOLVER", toggle=True)
-        fit = row.row(align=False)
-        fit.enabled = plane_type == 'IMAGE'
-        fit.prop(sc, "fbp_single_fit_camera", text="Fit Camera to New Plane", icon=fbp_icon("FULLSCREEN_ENTER"), toggle=True)
-
-    def _draw_procedural(self, layout, context, sc, plane_type):
-        if plane_type == 'COLOR':
-            color = _fbp_shift_a_box(layout, "Color", "COLOR")
-            row = color.row(align=False)
-            split = row.split(factor=0.62, align=False)
-            split.prop(sc, "fbp_color_plane_color", text="")
-            split.prop(sc, "fbp_color_plane_preset", text="")
-            color.prop(sc, "fbp_color_plane_emission", text="Emission", icon=fbp_icon("LIGHT_SUN"), toggle=True)
-        elif plane_type == 'GRADIENT':
-            gradient = _fbp_shift_a_box(layout, "Gradient", "NODE_TEXTURE")
-            row = adaptive_row(gradient, context, align=False)
-            row.prop(sc, "fbp_gradient_mode", text="")
-            row.prop(sc, "fbp_gradient_kind", text="")
-            draw_scene_fbp_color_ramp(gradient, sc)
-            gradient.prop(sc, "fbp_color_plane_emission", text="Emission", icon=fbp_icon("LIGHT_SUN"), toggle=True)
-
-            section_gap(layout, 0.2)
-            transform = _fbp_shift_a_box(layout, "Gradient Transform", fbp_icon("EMPTY_ARROWS"))
-            row = adaptive_row(transform, context, align=False)
-            row.prop(sc, "fbp_gradient_offset_x", text="X")
-            row.prop(sc, "fbp_gradient_offset_y", text="Y")
-            row = adaptive_row(transform, context, align=False)
-            row.prop(sc, "fbp_gradient_scale_x", text="Scale X")
-            row.prop(sc, "fbp_gradient_scale_y", text="Scale Y")
-            transform.prop(sc, "fbp_gradient_rotation", text="Rotation")
-        else:
-            holdout = _fbp_shift_a_box(layout, "Holdout", "HOLDOUT_ON")
-            hint_row(holdout, "Cuts a transparent hole through the layers behind it.", icon="INFO")
-
-        section_gap(layout, 0.2)
-        placement = _fbp_shift_a_box(layout, "Placement", "EMPTY_ARROWS")
-        row = adaptive_row(placement, context, align=False)
-        row.prop(sc, "fbp_pre_orientation", text="")
-        row.prop(sc, "fbp_pre_track_cam", text="Track Camera", icon="CON_CAMERASOLVER", toggle=True)
+        _fbp_draw_media_settings(self.layout, context, panel_id="FBP_PT_single_plane_camera")
 
     def execute(self, context):
-        plane_type = self.plane_type
-        if plane_type == 'IMAGE':
-            return bpy.ops.fbp.import_single_image('INVOKE_DEFAULT')
-        if plane_type == 'VIDEO':
-            return bpy.ops.fbp.import_sequence('INVOKE_DEFAULT', media_filter='VIDEO')
-        context.scene.fbp_color_plane_type = _FBP_SHIFT_A_COLOR_PLANE_TYPES[plane_type]
-        return bpy.ops.fbp.create_color_plane()
+        filenames = [f.name for f in self.files if f.name] if self.files else []
+        if not filenames and self.filepath:
+            if os.path.isfile(bpy.path.abspath(self.filepath)):
+                self.directory = os.path.dirname(self.filepath)
+                filenames = [os.path.basename(self.filepath)]
+            elif os.path.isdir(bpy.path.abspath(self.filepath)):
+                self.directory = self.filepath
+        if not filenames and self.directory and os.path.isdir(bpy.path.abspath(self.directory)):
+            filenames = fbp_folder_direct_images(bpy.path.abspath(self.directory))
+        if not filenames:
+            self.report({'WARNING'}, "Select an image, a numbered image sequence or a video")
+            return {'CANCELLED'}
+        return _fbp_execute_single_plane_import(self, context, self.directory, filenames)
 
 
-class FBP_OT_PopupSinglePlane(_FBPPlanePopupBase, Operator):
+class FBP_OT_ImportSingleImage(_FBPSinglePlaneBrowser, Operator):
+    bl_idname = "fbp.import_single_image"
+
+
+class FBP_OT_PopupSinglePlane(_FBPSinglePlaneBrowser, Operator):
     bl_idname = "fbp.popup_single_plane"
-    bl_label = "Single Plane"
-    bl_description = "Create one plane: image, video, color, gradient or holdout"
-    _default_plane_type = 'IMAGE'
+    _tutorial_action = "image_open_importer"
 
 
-class FBP_OT_PopupVideoPlane(_FBPPlanePopupBase, Operator):
+class FBP_OT_PopupVideoPlane(_FBPSinglePlaneBrowser, Operator):
+    """Kept for scripts and keymaps: Single Plane now accepts videos too."""
+
     bl_idname = "fbp.popup_video_plane"
-    bl_label = "Video Plane"
-    bl_description = "Create one plane from any video format supported by Frame By Plane"
-    _default_plane_type = 'VIDEO'
 
 
 class FBP_OT_PopupMultiplane(Operator):
     bl_idname = "fbp.popup_multiplane"
     bl_label = "Multiplane"
-    bl_description = "Quick Multiplane setup for scanning a folder and generating layered planes"
+    bl_description = "Choose a folder and generate one depth-spaced plane for each layer it contains"
     bl_options = {'REGISTER', 'UNDO'}
 
-    animation: BoolProperty(description="Enable animated-media behavior for this import or Multiplane setup instead of a single static image workflow.", default=True)
-    folder: StringProperty(description="Folder selected for the compact Multiplane import workflow.", name="Folder", subtype='DIR_PATH', default="")
+    animation: BoolProperty(description="Enable animated-media behavior for this import or Multiplane setup instead of a single static image workflow.", default=True, options={'HIDDEN'})
+    folder: StringProperty(
+        description="Folder to import without opening the file browser (scripts)",
+        name="Folder", subtype='DIR_PATH', default="", options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    directory: StringProperty(description="Folder selected in Blender's file browser", subtype='DIR_PATH')
+    filter_folder: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, event):
         if not _fbp_require_import_scene_properties(self, context.scene):
             return {'CANCELLED'}
-        try:
-            from .live_tutorial import fbp_notify_tutorial_action
-            fbp_notify_tutorial_action(context, "multi_open_importer")
-        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
-        self.folder = _fbp_scene_import_directory(
+        _fbp_notify_tutorial(context, "multi_open_importer")
+        path = _fbp_scene_import_directory(
             context.scene,
             "fbp_project_path",
             "fbp_parent_import_path",
             "fbp_last_directory",
         )
-        return context.window_manager.invoke_props_dialog(
-            self,
-            width=_FBP_SHIFT_A_MULTIPLANE_POPUP_WIDTH,
-            title="Create Multiplane Project",
-            confirm_text="Create Multiplane",
-        )
+        if path:
+            self.directory = path
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
 
     def draw(self, context):
-        sc = context.scene
-        layout = configure_layout(self.layout)
-
-        source = layout.box()
-        configure_layout(source)
-        section_header(source, "Source", icon="FILE_FOLDER")
-        source.prop(self, "folder", text="")
-        path = bpy.path.abspath(self.folder or "")
-        if path and not os.path.isdir(path):
-            hint_row(source, "Folder unavailable", icon="ERROR", alert=True, disabled=False)
-
-        section_gap(layout, 0.2)
-        timing = layout.box()
-        configure_layout(timing)
-        section_header(timing, "Animation and Material", icon="TIME")
-        row = adaptive_row(timing, context, align=False)
-        row.prop(sc, "fbp_pre_duration", text="Frame Hold")
-        row.prop(sc, "fbp_pre_loop_mode", text="")
-        timing.prop(sc, "fbp_pre_match_scene_range", text="Set Scene In/Out from Media", icon="PREVIEW_RANGE", toggle=True)
-        row = adaptive_row(timing, context, align=False)
-        row.prop(sc, "fbp_pre_orientation", text="")
-        row.prop(sc, "fbp_pre_interpolation", text="")
-        row = adaptive_row(timing, context, align=False)
-        row.prop(sc, "fbp_pre_shadeless", text="Shadeless", icon=fbp_icon("LIGHT_SUN"), toggle=True)
-        row.prop(sc, "fbp_pre_track_cam", text="Track Camera", icon="CON_CAMERASOLVER", toggle=True)
-        _fbp_draw_import_alpha_crop_options(timing, sc, context)
-
-        section_gap(layout, 0.2)
-        camera = layout.box()
-        configure_layout(camera)
-        section_header(camera, "Camera and Depth", icon=fbp_icon("VIEW_CAMERA"))
-        row = adaptive_row(camera, context, align=False)
-        row.prop(sc, "fbp_gen_camera", text="Create Camera", icon=fbp_icon("VIEW_CAMERA"), toggle=True)
-        source_aspect = row.row(align=False)
-        source_aspect.enabled = bool(sc.fbp_gen_camera)
-        source_aspect.prop(sc, "fbp_camera_fit_source_aspect", text="Source Aspect", toggle=True, icon='IMAGE_DATA')
-        pivot = row.row(align=False)
-        pivot.enabled = bool(sc.fbp_gen_camera)
-        pivot.prop(sc, "fbp_cam_pivot", text="Camera Pivot", icon="PIVOT_CURSOR", toggle=True)
-        row = adaptive_row(camera, context, align=False)
-        row.prop(sc, "fbp_layer_offset", text="Layer Spacing")
-        row.prop(sc, "fbp_auto_scale", text="Fit to Camera", icon=fbp_icon("FULLSCREEN_ENTER"), toggle=True)
+        _fbp_draw_media_settings(self.layout, context, multiplane=True, panel_id="FBP_PT_multiplane_camera")
 
     def execute(self, context):
-        base = bpy.path.abspath(self.folder or "")
+        base = bpy.path.abspath(self.folder or self.directory or "")
         if not base or not os.path.isdir(base):
             self.report({'WARNING'}, "Choose a valid folder")
             return {'CANCELLED'}
+        base = os.path.abspath(os.path.normpath(base))
         sc = context.scene
         sc.fbp_creation_mode = 'MULTI'
         sc.fbp_parent_import_path = base
@@ -6563,26 +6445,298 @@ class FBP_OT_PopupMultiplane(Operator):
             return {'CANCELLED'}
         return bpy.ops.fbp.generate_multiplane()
 
-class FBP_OT_PopupColorPlane(_FBPPlanePopupBase, Operator):
+
+# Procedural planes are created at once and tuned afterwards in Blender's
+# Adjust Last Operation panel. Redo re-runs execute, so every setting lives on
+# the operator; the Scene copies keep "last used" values for the next plane.
+_FBP_PROCEDURAL_PLANE_TYPES = (
+    ('CUSTOM', "Color", "A solid color plane"),
+    ('GRADIENT', "Gradient", "An editable gradient plane"),
+    ('HOLDOUT', "Holdout", "A plane that cuts a transparent hole in the render"),
+)
+_FBP_PROCEDURAL_SCENE_MIRROR = (
+    ("color", "fbp_color_plane_color"),
+    ("emission", "fbp_color_plane_emission"),
+    ("orientation", "fbp_pre_orientation"),
+    ("gradient_mode", "fbp_gradient_mode"),
+    ("gradient_kind", "fbp_gradient_kind"),
+    ("gradient_reverse", "fbp_gradient_reverse"),
+    ("gradient_offset_x", "fbp_gradient_offset_x"),
+    ("gradient_offset_y", "fbp_gradient_offset_y"),
+    ("gradient_scale_x", "fbp_gradient_scale_x"),
+    ("gradient_scale_y", "fbp_gradient_scale_y"),
+    ("gradient_rotation", "fbp_gradient_rotation"),
+    ("camera_projection", "fbp_camera_projection"),
+    ("fit_to_camera", "fbp_auto_scale"),
+    ("track_camera", "fbp_pre_track_cam"),
+    ("fit_camera_aspect", "fbp_single_fit_camera"),
+)
+_FBP_PLANE_SIZE_PRESETS = (
+    ('SCENE', "Scene Output", "Use the current render resolution", None),
+    ('HD', "1920 × 1080  HD", "Full HD landscape", (1920, 1080)),
+    ('UHD', "3840 × 2160  4K UHD", "Ultra HD landscape", (3840, 2160)),
+    ('HD_720', "1280 × 720  HD 720", "HD Ready landscape", (1280, 720)),
+    ('DCI_2K', "2048 × 1080  2K DCI", "Digital cinema 2K", (2048, 1080)),
+    ('SCOPE', "2048 × 858  Scope", "Cinemascope 2.39:1", (2048, 858)),
+    ('VERTICAL', "1080 × 1920  Vertical", "Phone and stories", (1080, 1920)),
+    ('FOUR_FIVE', "1080 × 1350  4:5", "Portrait feed post", (1080, 1350)),
+    ('SQUARE', "1080 × 1080  Square", "Square post", (1080, 1080)),
+    ('CUSTOM', "Custom", "X and Y were typed by hand", None),
+)
+_FBP_SIZE_PRESET_ITEMS = tuple((key, label, tip) for key, label, tip, _size in _FBP_PLANE_SIZE_PRESETS)
+_FBP_CAMERA_ENUM_CACHE = []
+# Set while a preset or hex code writes the colour, so the colour update does
+# not mark the preset as Custom again.
+_FBP_APPLYING_COLOR_PRESET = [False]
+# Same guard for the size preset writing X and Y.
+_FBP_APPLYING_SIZE_PRESET = [False]
+
+
+def _fbp_color_preset_items(_self, _context):
+    from .core import FBP_COLOR_PLANE_PRESETS
+    from .ui_icons import color_swatch_icon_value
+    items = [('NONE', "Custom", "The color was chosen by hand", 'BLANK1', 0)]
+    for index, (key, (rgba, label)) in enumerate(FBP_COLOR_PLANE_PRESETS.items(), start=1):
+        if key == 'CUSTOM':
+            continue
+        items.append((key, label, f"Use {label}", color_swatch_icon_value(key, rgba), index))
+    return items
+
+
+def _fbp_color_preset_update(self, _context):
+    from .core import FBP_COLOR_PLANE_PRESETS
+    preset = FBP_COLOR_PLANE_PRESETS.get(self.color_preset)
+    if preset is None or self.color_preset == 'CUSTOM':
+        return
+    _FBP_APPLYING_COLOR_PRESET[0] = True
+    try:
+        self.color = preset[0]
+    finally:
+        _FBP_APPLYING_COLOR_PRESET[0] = False
+
+
+def _fbp_plane_color_update(self, _context):
+    if not _FBP_APPLYING_COLOR_PRESET[0] and self.color_preset != 'NONE':
+        self.color_preset = 'NONE'
+
+
+def _fbp_plane_size_preset_update(self, context):
+    if self.size_preset == 'CUSTOM':
+        return
+    size = next((size for key, _l, _t, size in _FBP_PLANE_SIZE_PRESETS if key == self.size_preset), None)
+    if size is None:
+        render = context.scene.render
+        size = (int(render.resolution_x), int(render.resolution_y))
+    _FBP_APPLYING_SIZE_PRESET[0] = True
+    try:
+        self.width, self.height = size
+    finally:
+        _FBP_APPLYING_SIZE_PRESET[0] = False
+
+
+def _fbp_plane_size_update(self, _context):
+    if not _FBP_APPLYING_SIZE_PRESET[0] and self.size_preset != 'CUSTOM':
+        self.size_preset = 'CUSTOM'
+
+
+def _fbp_camera_object_items(_self, context):
+    items = [('NONE', "None", "Do not use a camera", 'BLANK1', 0)]
+    scene = getattr(context, "scene", None)
+    objects = getattr(scene, "objects", ()) if scene is not None else ()
+    for index, obj in enumerate(sorted((o for o in objects if o.type == 'CAMERA'), key=lambda o: o.name), start=1):
+        items.append((obj.name, obj.name, "Use this camera", 'OUTLINER_OB_CAMERA', index))
+    # Blender reads the strings after the callback returns; keep them alive.
+    _FBP_CAMERA_ENUM_CACHE[:] = items
+    return items
+
+
+class _FBPProceduralPlaneCreator:
+    """Create a Color, Gradient or Holdout plane without a dialog."""
+
+    bl_options = {'REGISTER', 'UNDO'}
+    _tutorial_action = ""
+
+    plane_type: EnumProperty(name="Plane Type", items=_FBP_PROCEDURAL_PLANE_TYPES, default='CUSTOM', options={'HIDDEN'})
+    color: FloatVectorProperty(
+        name="Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 1.0, 1.0, 1.0),
+        description="Color of the new plane", update=_fbp_plane_color_update,
+    )
+    color_preset: EnumProperty(name="Preset", description="Pick a preset color", items=_fbp_color_preset_items, update=_fbp_color_preset_update)
+    emission: BoolProperty(name="Emission", description="Use an emission shader so scene lights do not change the color", default=True)
+    orientation: EnumProperty(name="Orientation", items=ORIENTATION_ITEMS, default='VERT')
+    width: IntProperty(name="X", description="Plane width in pixels; only the ratio with Y matters", default=1920, min=1, soft_min=1, soft_max=8192, subtype='PIXEL', update=_fbp_plane_size_update)
+    height: IntProperty(name="Y", description="Plane height in pixels; only the ratio with X matters", default=1080, min=1, soft_min=1, soft_max=8192, subtype='PIXEL', update=_fbp_plane_size_update)
+    size_preset: EnumProperty(name="Dimensions", description="Common plane sizes", items=_FBP_SIZE_PRESET_ITEMS, update=_fbp_plane_size_preset_update, options={'SKIP_SAVE'})
+    gradient_mode: EnumProperty(name="Shape", items=(('LINEAR', "Linear", ""), ('CENTER', "Radial", "")), default='LINEAR')
+    gradient_kind: EnumProperty(name="Type", items=(('COLOR', "Color to Color", ""), ('ALPHA', "Transparent to Visible", "")), default='COLOR')
+    gradient_reverse: BoolProperty(name="Reverse", default=True)
+    gradient_offset_x: FloatProperty(name="Offset X", default=0.0, soft_min=-2.0, soft_max=2.0)
+    gradient_offset_y: FloatProperty(name="Y", default=0.0, soft_min=-2.0, soft_max=2.0)
+    gradient_scale_x: FloatProperty(name="Scale X", default=1.0, min=0.001, soft_min=0.1, soft_max=10.0)
+    gradient_scale_y: FloatProperty(name="Y", default=1.0, min=0.001, soft_min=0.1, soft_max=10.0)
+    gradient_rotation: FloatProperty(name="Rotation", default=0.0, soft_min=-180.0, soft_max=180.0)
+    create_camera: BoolProperty(name="Create Camera", description="Create a new camera framing the plane", default=False, options={'SKIP_SAVE'})
+    camera_projection: EnumProperty(name="Projection", items=(('PERSP', "Perspective", ""), ('ORTHO', "Orthographic", "")), default='PERSP')
+    camera_name: EnumProperty(name="Camera", description="Scene camera used for fitting and tracking", items=_fbp_camera_object_items, options={'SKIP_SAVE'})
+    fit_to_camera: BoolProperty(name="Fit to Camera", description="Scale the plane to fill the camera frame", default=False)
+    track_camera: BoolProperty(name="Track to Camera", description="Keep the plane facing the camera", default=False)
+    fit_camera_aspect: BoolProperty(name="Fit Camera Aspect Ratio", description="Give the scene output the X:Y shape of the plane", default=False)
+
+    def invoke(self, context, event):
+        del event
+        sc = context.scene
+        _fbp_notify_tutorial(context, self._tutorial_action)
+        for op_name, scene_name in _FBP_PROCEDURAL_SCENE_MIRROR:
+            if hasattr(sc, scene_name):
+                setattr(self, op_name, getattr(sc, scene_name))
+        preset = str(getattr(sc, "fbp_color_plane_preset", 'CUSTOM') or 'CUSTOM')
+        self.color_preset = 'NONE' if preset == 'CUSTOM' else preset
+        _FBP_APPLYING_SIZE_PRESET[0] = True
+        try:
+            self.width = int(sc.render.resolution_x)
+            self.height = int(sc.render.resolution_y)
+        finally:
+            _FBP_APPLYING_SIZE_PRESET[0] = False
+        self.size_preset = 'SCENE'
+        camera = getattr(sc, "camera", None)
+        self.camera_name = camera.name if camera is not None else 'NONE'
+        if self.plane_type == 'GRADIENT':
+            try:
+                get_or_create_fbp_gradient_preview_material(sc)
+            except Exception as exc:
+                fbp_warn("Could not prepare gradient preview ColorRamp", exc)
+        return self.execute(context)
+
+    def _store_scene_settings(self, sc):
+        for op_name, scene_name in _FBP_PROCEDURAL_SCENE_MIRROR:
+            if self.properties.is_property_set(op_name) and hasattr(sc, scene_name):
+                setattr(sc, scene_name, getattr(self, op_name))
+        if self.properties.is_property_set("color_preset") and self.color_preset != 'NONE':
+            fbp_set_rna_property_silent(sc, "fbp_color_plane_preset", self.color_preset)
+        sc.fbp_color_plane_type = self.plane_type
+
+    def execute(self, context):
+        from .operator_procedural import fbp_create_color_plane
+        sc = context.scene
+        self._store_scene_settings(sc)
+        if self.create_camera:
+            _fbp_create_import_camera(context)
+        elif self.properties.is_property_set("camera_name"):
+            camera = sc.objects.get(self.camera_name) if self.camera_name != 'NONE' else None
+            if camera is None or camera.type == 'CAMERA':
+                sc.camera = camera
+        rig = fbp_create_color_plane(context, self.plane_type)
+        width = max(1, int(self.width))
+        height = max(1, int(self.height))
+        if self.properties.is_property_set("width") or self.properties.is_property_set("height"):
+            aspect = width / height
+            rig.scale = (aspect, 1.0, 1.0) if aspect >= 1.0 else (1.0, 1.0 / aspect, 1.0)
+            rig.fbp_base_scale_vec = rig.scale
+        if self.fit_camera_aspect:
+            _fbp_set_render_aspect(sc, width, height)
+        if self.fit_to_camera and getattr(sc, "camera", None) is not None:
+            context.view_layer.update()
+            apply_fit_to_camera(context, rig, sc.camera)
+        self.report({'INFO'}, f"Created {rig.name}")
+        return {'FINISHED'}
+
+    def draw(self, context):
+        layout = configure_layout(self.layout, property_split=True)
+        if self.plane_type == 'CUSTOM':
+            self._draw_color(layout)
+        elif self.plane_type == 'GRADIENT':
+            self._draw_gradient(layout)
+        layout.separator()
+        if self.plane_type != 'HOLDOUT':
+            layout.prop(self, "emission")
+        _fbp_draw_icon_enum_row(layout, self, "orientation", "Orientation", _FBP_ORIENTATION_LABELS)
+        layout.separator()
+        layout.prop(self, "size_preset")
+        col = layout.column(align=True)
+        col.prop(self, "width", slider=True)
+        col.prop(self, "height", slider=True)
+        layout.separator()
+        self._draw_camera(layout)
+
+    def _draw_color(self, layout):
+        layout.prop(self, "color")
+        # Picking a colour by hand switches the preset back to Custom.
+        layout.prop(self, "color_preset")
+
+    def _draw_gradient(self, layout):
+        _fbp_draw_enum_row(layout, self, "gradient_mode", "Shape", (('LINEAR', "Linear"), ('CENTER', "Radial")))
+        layout.prop(self, "gradient_kind")
+        layout.prop(self, "gradient_reverse")
+        layout.prop(self, "gradient_rotation")
+        header, body = layout.panel("FBP_PT_gradient_plane_transform", default_closed=True)
+        header.label(text="Position and Scale")
+        if body is not None:
+            configure_layout(body, property_split=True)
+            col = body.column(align=True)
+            col.prop(self, "gradient_offset_x")
+            col.prop(self, "gradient_offset_y")
+            col = body.column(align=True)
+            col.prop(self, "gradient_scale_x")
+            col.prop(self, "gradient_scale_y")
+
+    def _draw_camera(self, layout):
+        body = _fbp_camera_panel(layout, "FBP_PT_procedural_plane_camera", default_closed=True)
+        if body is None:
+            return
+        col = body.column()
+        col.prop(self, "create_camera")
+        if self.create_camera:
+            _fbp_draw_enum_row(col, self, "camera_projection", "Projection", _FBP_PROJECTION_LABELS)
+        chooser = col.column()
+        chooser.enabled = not self.create_camera
+        chooser.prop(self, "camera_name")
+        col.separator(factor=0.5)
+        col.prop(self, "fit_to_camera")
+        col.prop(self, "track_camera")
+        col.prop(self, "fit_camera_aspect")
+
+
+class FBP_OT_PopupColorPlane(_FBPProceduralPlaneCreator, Operator):
     bl_idname = "fbp.popup_color_plane"
     bl_label = "Color Plane"
-    bl_description = "Create a camera-ratio color, gradient or holdout plane"
+    bl_description = "Create a color, gradient or holdout plane and adjust it in the Adjust Last Operation panel"
 
-    preset_type: StringProperty(description="Procedural plane type requested by the compact creation popup.", default="")
+    preset_type: StringProperty(description="Procedural plane type requested by the Shift+A entry.", default="", options={'HIDDEN', 'SKIP_SAVE'})
 
-    def _initial_plane_type(self, context):
+    def invoke(self, context, event):
         preset = self.preset_type or str(getattr(context.scene, "fbp_color_plane_type", 'CUSTOM') or 'CUSTOM')
-        return {'GRADIENT': 'GRADIENT', 'HOLDOUT': 'HOLDOUT'}.get(preset, 'COLOR')
+        self.plane_type = preset if preset in {'GRADIENT', 'HOLDOUT'} else 'CUSTOM'
+        self._tutorial_action = "color_open_creator" if self.plane_type == 'CUSTOM' else ""
+        return super().invoke(context, event)
 
 
-class FBP_OT_CreateColorPlaneFromHex(Operator):
+class FBP_OT_PopupGradientPlane(_FBPProceduralPlaneCreator, Operator):
+    bl_idname = "fbp.popup_gradient_plane"
+    bl_label = "Gradient Plane"
+    bl_description = "Create a gradient plane and adjust it in the Adjust Last Operation panel"
+
+    def invoke(self, context, event):
+        self.plane_type = 'GRADIENT'
+        return super().invoke(context, event)
+
+
+class FBP_OT_PopupHoldoutPlane(_FBPProceduralPlaneCreator, Operator):
+    bl_idname = "fbp.popup_holdout_plane"
+    bl_label = "Holdout Plane"
+    bl_description = "Create a plane that cuts a transparent hole in the render and adjust it in the Adjust Last Operation panel"
+
+    def invoke(self, context, event):
+        self.plane_type = 'HOLDOUT'
+        return super().invoke(context, event)
+
+
+class FBP_OT_CreateColorPlaneFromHex(_FBPProceduralPlaneCreator, Operator):
     bl_idname = "fbp.create_color_plane_from_hex"
     bl_label = "Color Plane from Hex Color Code"
     bl_description = "Create a solid Color Plane from a hexadecimal color code copied from another app or website"
-    bl_options = {'REGISTER', 'UNDO'}
 
     hex_color: StringProperty(
-        name="Hex Color",
+        name="Hex",
         description="Hexadecimal color code, for example #FFCC00 or FFCC00FF",
         default="#FFFFFF")
 
@@ -6591,23 +6745,11 @@ class FBP_OT_CreateColorPlaneFromHex(Operator):
         clip = clip.strip().strip('"').strip("'")
         if clip.startswith('#') or (len(clip) in {6, 8} and all(c in '0123456789abcdefABCDEF' for c in clip)):
             self.hex_color = clip
-        return context.window_manager.invoke_props_dialog(
-            self,
-            width=_FBP_SHIFT_A_HEX_POPUP_WIDTH,
-            title="Create Color Plane from Hex",
-            confirm_text="Create Color Plane",
-        )
+        self.plane_type = 'CUSTOM'
+        return super().invoke(context, event)
 
-    def draw(self, context):
-        layout = configure_layout(self.layout)
-        scene = context.scene
-        color = layout.box()
-        configure_layout(color)
-        color.prop(self, "hex_color", text="")
-        row = adaptive_row(color, context, align=False)
-        row.prop(scene, "fbp_color_plane_emission", text="Emission", icon=fbp_icon("LIGHT_SUN"), toggle=True)
-        row.prop(scene, "fbp_pre_orientation", text="")
-        row.prop(scene, "fbp_pre_track_cam", text="Track Camera", icon="CON_CAMERASOLVER", toggle=True)
+    def _draw_color(self, layout):
+        layout.prop(self, "hex_color")
 
     def execute(self, context):
         value = (self.hex_color or '').strip().strip('#')
@@ -6628,10 +6770,9 @@ class FBP_OT_CreateColorPlaneFromHex(Operator):
         except (ImportError, TypeError, ValueError, OverflowError):
             self.report({'ERROR'}, "Could not convert the sRGB hex color")
             return {'CANCELLED'}
-        sc = context.scene
-        sc.fbp_color_plane_type = 'CUSTOM'
-        sc.fbp_color_plane_color = linear_rgba
-        return bpy.ops.fbp.create_color_plane()
+        self.plane_type = 'CUSTOM'
+        self.color = linear_rgba
+        return super().execute(context)
 
 def _fbp_clipboard_image_from_native_operator(context):
     """Paste an OS clipboard image with Blender's native image operator.
