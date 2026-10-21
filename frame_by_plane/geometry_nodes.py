@@ -123,6 +123,7 @@ from .effects_registry import (
     FBP_EFFECT_SCULPT_WAVES,
     FBP_EFFECT_KINETIC_TILES,
     FBP_EFFECT_LAYERED_ECHO,
+    FBP_EFFECT_FRAME_STACK,
     FBP_EFFECT_LATTICE,
     FBP_EFFECT_MOTION,
     FBP_EFFECT_CROP,
@@ -6816,6 +6817,11 @@ def _fbp_sync_geometry_alpha_frame_offset(rig, scene=None, effect_modifiers=None
             if frame_input is not None and int(getattr(frame_input, "default_value", 0) or 0) != sequence_frame:
                 frame_input.default_value = sequence_frame
                 changed = True
+            if "Source Frame" in interface_inputs:
+                # Frame Stack derives one frame per slice from the current one.
+                changed = _fbp_set_modifier_input(
+                    modifier, node_group, "Source Frame", sequence_frame, interface_inputs,
+                ) or changed
 
             if "Use Alpha Mask" in interface_inputs:
                 changed = _fbp_set_modifier_input(
@@ -7134,6 +7140,84 @@ def _fbp_ensure_attribute_color_material(
         _fbp_set_attr_if_changed(material, "use_transparency_overlap", False)
     except FBP_DATA_ERRORS as exc:
         fbp_warn(f"Could not update {role} sampled-color material", exc)
+    return material
+
+
+def _fbp_ensure_frame_stack_material(rig):
+    """Shadeless material for Frame Stack slices and outline.
+
+    Colour, alpha and Glow come from attributes written by the effect, so the
+    material never needs rebuilding. Over mixes Emission with Transparent by
+    alpha; Glow adds the emission over a transparent surface, which does not
+    depend on draw order and stays noise-free in Eevee.
+    """
+    plane = _fbp_plane(rig)
+    if not plane:
+        return None
+    owner = str(getattr(plane, "name", "") or "")
+    role = "Frame Stack"
+    material = _fbp_find_owned_effect_material(rig, FBP_EFFECT_FRAME_STACK, role)
+    if material is None:
+        try:
+            material = bpy.data.materials.new(name=f"FBP {role} • {owner}")
+            material.use_fake_user = False
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not create Frame Stack material", exc)
+            return None
+    try:
+        _fbp_set_idprop_if_changed(material, "fbp_owned", True)
+        _fbp_set_idprop_if_changed(material, "fbp_effect_material_owner", owner)
+        _fbp_set_idprop_if_changed(material, "fbp_effect_material_id", FBP_EFFECT_FRAME_STACK)
+        _fbp_set_idprop_if_changed(material, "fbp_effect_material_role", role)
+        if int(material.get("fbp_frame_stack_material_version", 0) or 0) != 1:
+            node_tree = material.node_tree
+            nodes = node_tree.nodes
+            links = node_tree.links
+            nodes.clear()
+
+            def attribute(name, label, y):
+                node = nodes.new("ShaderNodeAttribute")
+                node.name = label
+                node.label = label
+                node.attribute_type = "GEOMETRY"
+                node.attribute_name = name
+                node.location = (-700.0, y)
+                return node
+
+            color = attribute("fbp_frame_stack_color", "FBP Frame Stack Color", 200.0)
+            alpha = attribute("fbp_frame_stack_alpha", "FBP Frame Stack Alpha", 0.0)
+            glow = attribute("fbp_frame_stack_glow", "FBP Frame Stack Glow", -200.0)
+            emission = nodes.new("ShaderNodeEmission")
+            emission.location = (-420.0, 200.0)
+            glow_emission = nodes.new("ShaderNodeEmission")
+            glow_emission.location = (-420.0, -40.0)
+            transparent = nodes.new("ShaderNodeBsdfTransparent")
+            transparent.location = (-420.0, -260.0)
+            over = nodes.new("ShaderNodeMixShader")
+            over.location = (-160.0, 120.0)
+            add = nodes.new("ShaderNodeAddShader")
+            add.location = (-160.0, -120.0)
+            result = nodes.new("ShaderNodeMixShader")
+            result.location = (80.0, 0.0)
+            output = nodes.new("ShaderNodeOutputMaterial")
+            output.location = (320.0, 0.0)
+            links.new(color.outputs["Color"], emission.inputs["Color"])
+            links.new(color.outputs["Color"], glow_emission.inputs["Color"])
+            links.new(alpha.outputs["Fac"], glow_emission.inputs["Strength"])
+            links.new(alpha.outputs["Fac"], over.inputs["Fac"])
+            links.new(transparent.outputs["BSDF"], over.inputs[1])
+            links.new(emission.outputs["Emission"], over.inputs[2])
+            links.new(transparent.outputs["BSDF"], add.inputs[0])
+            links.new(glow_emission.outputs["Emission"], add.inputs[1])
+            links.new(glow.outputs["Fac"], result.inputs["Fac"])
+            links.new(over.outputs["Shader"], result.inputs[1])
+            links.new(add.outputs["Shader"], result.inputs[2])
+            links.new(result.outputs["Shader"], output.inputs["Surface"])
+            material["fbp_frame_stack_material_version"] = 1
+        _fbp_set_attr_if_changed(material, "surface_render_method", "DITHERED")
+        _fbp_set_attr_if_changed(material, "use_transparency_overlap", False)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not update Frame Stack material", exc)
     return material
 
 
@@ -8055,6 +8139,8 @@ def _fbp_geometry_material_bases(rig, effect_id):
                 ),
             ),
         ))
+    elif effect_id == FBP_EFFECT_FRAME_STACK:
+        result.append(("Stack Material", _fbp_ensure_frame_stack_material(rig)))
     elif effect_id == FBP_EFFECT_GLASS:
         result.append(("Glass Material", _fbp_ensure_glass_material(rig)))
     elif effect_id == FBP_EFFECT_CRYSTAL:
@@ -8094,7 +8180,9 @@ def _fbp_apply_geometry_material_composites(
         rig, effect_id
     ):
         material = base_material
-        if desired:
+        # Earlier slices carry their own sampled frame; the shader stack below
+        # only exists for the current frame, so their materials stay as built.
+        if desired and effect_id != FBP_EFFECT_FRAME_STACK:
             uv_attribute = ""
             uv_attribute_type = "GEOMETRY"
             composite_base = base_material
@@ -8672,6 +8760,13 @@ def fbp_update_geometry_effect(
                 attribute_material_socket,
                 material,
                 interface_inputs,
+            ) or updated
+
+    if effect_id == FBP_EFFECT_FRAME_STACK and full_update:
+        material = _fbp_ensure_frame_stack_material(rig)
+        if material:
+            updated = _fbp_set_modifier_input(
+                modifier, node_group, "Stack Material", material, interface_inputs,
             ) or updated
 
     if effect_id == FBP_EFFECT_TEXT_MATRIX:
@@ -20901,6 +20996,13 @@ _FBP_EFFECT_UI_GROUPS = {
         ("Transform", "MOD_ARRAY", ("fbp_layered_echo_offset_x", "fbp_layered_echo_offset_y", "fbp_layered_echo_spacing", "fbp_layered_echo_scale_step")),
         ("Rotation", "ORIENTATION_LOCAL", ("fbp_layered_echo_rotation_x", "fbp_layered_echo_rotation_y", "fbp_layered_echo_twist")),
         ("Animation", "ANIM", ("fbp_layered_echo_wave", "fbp_layered_echo_phase")),
+    ),
+    FBP_EFFECT_FRAME_STACK: (
+        ("Time", "TIME", ("fbp_frame_stack_slices", "fbp_frame_stack_step", "fbp_frame_stack_fixed_start", "fbp_frame_stack_start_frame", "fbp_frame_stack_show_plane")),
+        ("Stack Shape", "MOD_ARRAY", ("fbp_frame_stack_spacing", "fbp_frame_stack_offset_x", "fbp_frame_stack_offset_y", "fbp_frame_stack_scale_step", "fbp_frame_stack_rotation_x", "fbp_frame_stack_rotation_y", "fbp_frame_stack_twist")),
+        ("Opacity", "MOD_OPACITY", ("fbp_frame_stack_glow", "fbp_frame_stack_front_slices", "fbp_frame_stack_front_opacity", "fbp_frame_stack_back_opacity", "fbp_frame_stack_depth_fade", "fbp_frame_stack_luminance_opacity")),
+        ("Outline", "MESH_CUBE", ("fbp_frame_stack_outline", "fbp_frame_stack_outline_width", "fbp_frame_stack_outline_color")),
+        ("Quality", "MOD_SUBSURF", ("fbp_frame_stack_detail",)),
     ),
     FBP_EFFECT_SHADOW: (
         ("Shadow", "SHADING_RENDERED", ("fbp_shadow_mode", "fbp_shadow_blend_mode", "fbp_shadow_color", "fbp_shadow_opacity")),

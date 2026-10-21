@@ -3998,6 +3998,81 @@ def test_compositor_off_restores_render_setup(_module):
     return {"native_layers": len(native)}
 
 
+def test_frame_stack_samples_earlier_frames(_module):
+    """Every Frame Stack slice shows its own earlier source frame."""
+    builder = importlib.import_module(f"{PACKAGE}.builder")
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scene = bpy.context.scene
+    folder = WORKDIR / "frame_stack_sequence"
+    folder.mkdir(parents=True, exist_ok=True)
+    colors = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0))
+    names = []
+    for index, color in enumerate(colors, 1):
+        name = f"stack_{index:04d}.png"
+        names.append(name)
+        path = folder / name
+        if not path.is_file():
+            image = bpy.data.images.new(name, 16, 9, alpha=True)
+            image.generated_color = (*color, 1.0)
+            image.filepath_raw = str(path)
+            image.file_format = "PNG"
+            image.save()
+            bpy.data.images.remove(image)
+    previous_duration = scene.fbp_pre_duration
+    previous_frame = scene.frame_current
+    scene.fbp_pre_duration = 1
+    rig = builder.build_fbp_rig(bpy.context, "FBP Frame Stack Test", str(folder), names, (0.0, 0.0, 0.0))
+    owned = [rig, *rig.children_recursive]
+    _flush_fbp_safe_tasks()
+
+    def slices():
+        plane = geometry._fbp_plane(rig)
+        evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh()
+        try:
+            color = mesh.attributes.get("fbp_frame_stack_color")
+            alpha = mesh.attributes.get("fbp_frame_stack_alpha")
+            found = {}
+            for vertex, color_value, alpha_value in zip(mesh.vertices, color.data, alpha.data):
+                if alpha_value.value > 0.5:
+                    found[round(vertex.co.z, 3)] = tuple(round(value) for value in color_value.color[:3])
+            return found
+        finally:
+            evaluated.to_mesh_clear()
+
+    try:
+        assert geometry.fbp_add_effect(
+            rig, "FRAME_STACK", select_object_mask_helper=False, inherit_active_group=False,
+        )
+        rig.fbp_frame_stack_slices = 4
+        rig.fbp_frame_stack_step = 1
+        rig.fbp_frame_stack_detail = 1
+        rig.fbp_frame_stack_spacing = -0.1
+        _flush_fbp_safe_tasks()
+        scene.frame_set(scene.frame_start + 3)
+        _flush_fbp_safe_tasks()
+        # Frame 4 (yellow) is the plane; slices behind show frames 3, 2 and 1.
+        assert slices() == {-0.1: (0, 0, 1), -0.2: (0, 1, 0), -0.3: (1, 0, 0)}, slices()
+
+        rig.fbp_frame_stack_fixed_start = True
+        rig.fbp_frame_stack_start_frame = 2
+        rig.fbp_frame_stack_show_plane = False
+        _flush_fbp_safe_tasks()
+        # Fixed range from frame 2: slices 0 and 1 hold frames 2 and 1, the
+        # slices before the first frame stay empty.
+        assert slices() == {0.0: (0, 1, 0), -0.1: (1, 0, 0)}, slices()
+        assert geometry.fbp_remove_effect(rig, "FRAME_STACK")
+    finally:
+        scene.fbp_pre_duration = previous_duration
+        scene.frame_set(previous_frame)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"slices": 4}
+
+
 def test_render_checked_popup_contract(_module):
     """F12 asks before rendering an out-of-date compositor and can update first."""
     compositor = importlib.import_module(f"{PACKAGE}.compositor")
@@ -4706,6 +4781,7 @@ def run_background():
             ("compositor_off_restores_render_setup", test_compositor_off_restores_render_setup),
             ("drop_import_camera_modes", test_drop_import_camera_modes),
             ("render_checked_popup_contract", test_render_checked_popup_contract),
+            ("frame_stack_samples_earlier_frames", test_frame_stack_samples_earlier_frames),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),

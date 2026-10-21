@@ -1943,6 +1943,15 @@ def _fbp_cycles_transparent_surface_count(scene, rigs=None):
                 continue
             seen.add(key)
             count += 1
+            # Every Frame Stack slice is one more alpha surface on the ray.
+            for modifier in plane.modifiers:
+                if (
+                    modifier.type == 'NODES'
+                    and modifier.name.startswith("FBP • Frame Stack")
+                    and modifier.show_render
+                ):
+                    count += max(0, int(getattr(rig, "fbp_frame_stack_render_slices", 0) or 0) - 1)
+                    break
         except FBP_DATA_ERRORS:
             # Unknown visibility must be treated as potentially renderable.
             count += 1
