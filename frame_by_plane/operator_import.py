@@ -242,45 +242,6 @@ _FBP_IMAGE_FILTER_GLOB = ";".join(f"*{ext}" for ext in sorted(FBP_SUPPORTED_IMAG
 _FBP_VIDEO_FILTER_GLOB = ";".join(f"*{ext}" for ext in sorted(FBP_SUPPORTED_VIDEO_EXT))
 _FBP_MEDIA_FILTER_GLOB = ";".join(f"*{ext}" for ext in sorted(FBP_SUPPORTED_MEDIA_EXT))
 
-
-def _fbp_draw_shift_a_plane_settings(layout, context, *, timing=False, crop=True):
-    """Draw the shared compact creation settings used by Shift+A dialogs."""
-    scene = context.scene
-
-    if timing:
-        timing_box = layout.box()
-        configure_layout(timing_box)
-        section_header(timing_box, "Animation", icon="TIME")
-        row = adaptive_row(timing_box, context, align=False)
-        row.prop(scene, "fbp_pre_duration", text="Frame Hold")
-        row.prop(scene, "fbp_pre_loop_mode", text="")
-        section_gap(layout, 0.2)
-
-    appearance = layout.box()
-    configure_layout(appearance)
-    section_header(appearance, "Plane and Material", icon="TOOL_SETTINGS")
-    row = adaptive_row(appearance, context, align=False)
-    row.prop(scene, "fbp_pre_orientation", text="")
-    row.prop(scene, "fbp_pre_interpolation", text="")
-    row = adaptive_row(appearance, context, align=False)
-    row.prop(
-        scene,
-        "fbp_pre_shadeless",
-        text="Shadeless",
-        icon=fbp_icon("LIGHT_SUN"),
-        toggle=True,
-    )
-    row.prop(
-        scene,
-        "fbp_pre_track_cam",
-        text="Track Camera",
-        icon="CON_CAMERASOLVER",
-        toggle=True,
-    )
-    if crop:
-        _fbp_draw_import_alpha_crop_options(appearance, scene, context)
-
-
 _FBP_SHIFT_A_PLANE_POPUP_WIDTH = 560
 _FBP_SHIFT_A_MULTIPLANE_POPUP_WIDTH = 620
 _FBP_SHIFT_A_HEX_POPUP_WIDTH = 440
@@ -6043,7 +6004,7 @@ class FBP_OT_DropMedia(Operator):
     def _invoke_dialog(self, context):
         return context.window_manager.invoke_props_dialog(
             self,
-            width=_FBP_SHIFT_A_PLANE_POPUP_WIDTH,
+            width=_FBP_SHIFT_A_MEDIA_POPUP_WIDTH,
             title="Import with Frame By Plane",
             confirm_text="Import",
         )
