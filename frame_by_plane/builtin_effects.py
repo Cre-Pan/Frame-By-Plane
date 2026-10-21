@@ -103,6 +103,7 @@ BUILTIN_EFFECT_IDS = {
     "KINETIC_TILES",
     "LAYERED_ECHO",
     "FRAME_STACK",
+    "KNIT_CROCHET",
     "CAMERA_SCALE_LOCK",
     "MIRROR",
     "SOLARIZE",
@@ -8796,6 +8797,281 @@ def _create_frame_stack(name):
     return group
 
 
+def _random_range(node, low, high):
+    """Set the active Min/Max pair of a Random Value node for its data type."""
+    mins = [s for s in node.inputs if s.name == "Min" and s.enabled]
+    maxs = [s for s in node.inputs if s.name == "Max" and s.enabled]
+    mins[0].default_value = low
+    maxs[0].default_value = high
+
+
+def _create_knit_crochet(name):
+    """Turn the plane into knitted or crocheted yarn coloured by the image.
+
+    One stitch prototype (two V legs for knit, a head and two posts for
+    crochet) is built from closed loops whose top dips behind the next row,
+    swept with a twisted star profile so the plies show, and instanced on a
+    stitch grid that follows the plane bounds. Every stitch samples the
+    image colour and alpha at the nearest plane UV; transparent stitches are
+    dropped.
+    """
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
+    _socket(group, "Stitch Type", "INPUT", "NodeSocketInt", default=0, minimum=0, maximum=1)
+    _socket(group, "Columns", "INPUT", "NodeSocketInt", default=40, minimum=2, maximum=1000)
+    _socket(group, "Row Height", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.3, maximum=3.0)
+    _socket(group, "Loop Width", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.3, maximum=2.0)
+    _socket(group, "Thickness", "INPUT", "NodeSocketFloat", default=0.13, minimum=0.01, maximum=0.6)
+    _socket(group, "Plies", "INPUT", "NodeSocketInt", default=3, minimum=2, maximum=8)
+    _socket(group, "Twist", "INPUT", "NodeSocketFloat", default=1.5, minimum=-20.0, maximum=20.0)
+    _socket(group, "Color Variation", "INPUT", "NodeSocketFloat", default=0.12, minimum=0.0, maximum=1.0)
+    _socket(group, "Jitter", "INPUT", "NodeSocketFloat", default=0.25, minimum=0.0, maximum=1.0)
+    _socket(group, "Seed", "INPUT", "NodeSocketInt", default=0, minimum=0, maximum=2147483647)
+    _socket(group, "Alpha Threshold", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.0, maximum=1.0)
+    _socket(group, "Fuzz", "INPUT", "NodeSocketFloat", default=0.6, minimum=0.0, maximum=1.0)
+    _socket(group, "Self Light", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=4.0)
+    _socket(group, "Show Plane", "INPUT", "NodeSocketBool", default=False)
+    _socket(group, "Yarn Material", "INPUT", "NodeSocketMaterial")
+    _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    inp, out = _group_io(group)
+    L = group.links.new
+    X = -3000
+
+    # Stitch size from the plane bounds.
+    bounds = _node(group, "GeometryNodeBoundBox", "Yarn Bounds", X, 600)
+    L(inp.outputs["Geometry"], bounds.inputs["Geometry"])
+    size = _vector_math(group, "SUBTRACT", "Yarn Size", X + 220, 640)
+    L(bounds.outputs["Max"], size.inputs[0]); L(bounds.outputs["Min"], size.inputs[1])
+    center = _vector_math(group, "ADD", "Yarn Center Sum", X + 220, 480)
+    L(bounds.outputs["Max"], center.inputs[0]); L(bounds.outputs["Min"], center.inputs[1])
+    center_half = _vector_math(group, "SCALE", "Yarn Center", X + 440, 480)
+    center_half.inputs["Scale"].default_value = 0.5
+    L(center.outputs[0], center_half.inputs[0])
+    size_xyz = _node(group, "ShaderNodeSeparateXYZ", "Yarn Size XYZ", X + 440, 660)
+    L(size.outputs[0], size_xyz.inputs[0])
+    stitch_w = _math(group, "DIVIDE", "Yarn Stitch Width", X + 660, 700)
+    L(size_xyz.outputs["X"], stitch_w.inputs[0]); L(inp.outputs["Columns"], stitch_w.inputs[1])
+    # Knit rows overlap (0.62 of the stitch width), crochet rows barely do.
+    base_row = _node(group, "GeometryNodeSwitch", "Yarn Base Row", X + 660, 500)
+    base_row.input_type = "FLOAT"
+    base_row.inputs["False"].default_value = 0.62
+    base_row.inputs["True"].default_value = 0.9
+    is_crochet = _math(group, "GREATER_THAN", "Yarn Is Crochet", X + 440, 300, value_2=0.5)
+    L(inp.outputs["Stitch Type"], is_crochet.inputs[0])
+    L(is_crochet.outputs[0], base_row.inputs["Switch"])
+    row_ratio = _math(group, "MULTIPLY", "Yarn Row Ratio", X + 880, 500)
+    L(base_row.outputs["Output"], row_ratio.inputs[0]); L(inp.outputs["Row Height"], row_ratio.inputs[1])
+    row_pitch = _math(group, "MULTIPLY", "Yarn Row Pitch", X + 1100, 600)
+    L(stitch_w.outputs[0], row_pitch.inputs[0]); L(row_ratio.outputs[0], row_pitch.inputs[1])
+    rows_raw = _math(group, "DIVIDE", "Yarn Rows Raw", X + 1100, 800)
+    L(size_xyz.outputs["Y"], rows_raw.inputs[0]); L(row_pitch.outputs[0], rows_raw.inputs[1])
+    rows = _math(group, "CEIL", "Yarn Rows", X + 1320, 800)
+    L(rows_raw.outputs[0], rows.inputs[0])
+    thickness = _math(group, "MULTIPLY", "Yarn Thickness", X + 880, 300)
+    L(stitch_w.outputs[0], thickness.inputs[0]); L(inp.outputs["Thickness"], thickness.inputs[1])
+
+    # Stitch centres.
+    grid_w = _math(group, "MULTIPLY", "Yarn Grid Width", X + 1320, 1000)
+    cols_minus = _math(group, "SUBTRACT", "Yarn Columns Minus One", X + 1100, 1000, value_2=1.0)
+    L(inp.outputs["Columns"], cols_minus.inputs[0])
+    L(cols_minus.outputs[0], grid_w.inputs[0]); L(stitch_w.outputs[0], grid_w.inputs[1])
+    rows_minus = _math(group, "SUBTRACT", "Yarn Rows Minus One", X + 1540, 800, value_2=1.0)
+    L(rows.outputs[0], rows_minus.inputs[0])
+    grid_h = _math(group, "MULTIPLY", "Yarn Grid Height", X + 1760, 800)
+    L(rows_minus.outputs[0], grid_h.inputs[0]); L(row_pitch.outputs[0], grid_h.inputs[1])
+    grid = _node(group, "GeometryNodeMeshGrid", "Yarn Grid", X + 1980, 900)
+    L(grid_w.outputs[0], grid.inputs["Size X"]); L(grid_h.outputs[0], grid.inputs["Size Y"])
+    L(inp.outputs["Columns"], grid.inputs["Vertices X"]); L(rows.outputs[0], grid.inputs["Vertices Y"])
+    points = _node(group, "GeometryNodeMeshToPoints", "Yarn Stitch Points", X + 2200, 900)
+    L(grid.outputs["Mesh"], points.inputs["Mesh"])
+    # Crochet rows are offset by half a stitch, like bricks.
+    position = _node(group, "GeometryNodeInputPosition", "Yarn Point Position", X + 1980, 600)
+    pos_xyz = _node(group, "ShaderNodeSeparateXYZ", "Yarn Point XYZ", X + 2200, 600)
+    L(position.outputs[0], pos_xyz.inputs[0])
+    row_index_raw = _math(group, "DIVIDE", "Yarn Row Position", X + 2420, 600)
+    L(pos_xyz.outputs["Y"], row_index_raw.inputs[0]); L(row_pitch.outputs[0], row_index_raw.inputs[1])
+    row_index = _math(group, "ROUND", "Yarn Row Index", X + 2640, 600)
+    L(row_index_raw.outputs[0], row_index.inputs[0])
+    row_odd = _math(group, "FLOORED_MODULO", "Yarn Odd Row", X + 2860, 600, value_2=2.0)
+    L(row_index.outputs[0], row_odd.inputs[0])
+    shift_amount = _math(group, "MULTIPLY", "Yarn Brick Shift", X + 3080, 600)
+    L(row_odd.outputs[0], shift_amount.inputs[0]); L(is_crochet.outputs[0], shift_amount.inputs[1])
+    shift = _math(group, "MULTIPLY", "Yarn Brick Offset", X + 3300, 600)
+    L(shift_amount.outputs[0], shift.inputs[0])
+    half_w = _math(group, "MULTIPLY", "Yarn Half Stitch", X + 3080, 400, value_2=0.5)
+    L(stitch_w.outputs[0], half_w.inputs[0]); L(half_w.outputs[0], shift.inputs[1])
+    lift = _math(group, "MULTIPLY", "Yarn Lift", X + 3080, 250, value_2=1.6)
+    L(thickness.outputs[0], lift.inputs[0])
+    base_offset = _node(group, "ShaderNodeCombineXYZ", "Yarn Point Offset", X + 3520, 600)
+    L(shift.outputs[0], base_offset.inputs["X"]); L(lift.outputs[0], base_offset.inputs["Z"])
+    total_offset = _vector_math(group, "ADD", "Yarn Grid Placement", X + 3740, 600)
+    L(base_offset.outputs[0], total_offset.inputs[0]); L(center_half.outputs[0], total_offset.inputs[1])
+    place = _node(group, "GeometryNodeSetPosition", "Place Yarn Stitches", X + 3960, 900)
+    L(points.outputs["Points"], place.inputs["Geometry"]); L(total_offset.outputs[0], place.inputs["Offset"])
+
+    # Colour and alpha from the plane: UV of the nearest plane point.
+    uv_attr = _node(group, "GeometryNodeInputNamedAttribute", "Yarn Plane UV", X + 3960, 1200)
+    uv_attr.data_type = "FLOAT_VECTOR"; uv_attr.inputs["Name"].default_value = "UVMap"
+    sample = _node(group, "GeometryNodeSampleNearestSurface", "Yarn Sample UV", X + 4180, 1200)
+    sample.data_type = "FLOAT_VECTOR"
+    L(inp.outputs["Geometry"], sample.inputs["Mesh"]); L(uv_attr.outputs["Attribute"], sample.inputs["Value"])
+    image = _node(group, "GeometryNodeImageTexture", "Yarn Source Image", X + 4400, 1200)
+    image["fbp_alpha_image_node"] = True
+    image.extension = "EXTEND"; image.interpolation = "Linear"
+    L(sample.outputs["Value"], image.inputs["Vector"])
+    transparent = _math(group, "LESS_THAN", "Yarn Transparent Stitch", X + 4620, 1100)
+    L(image.outputs["Alpha"], transparent.inputs[0]); L(inp.outputs["Alpha Threshold"], transparent.inputs[1])
+    store_uv = _node(group, "GeometryNodeStoreNamedAttribute", "Store Yarn UV", X + 4400, 900)
+    store_uv.data_type = "FLOAT_VECTOR"; store_uv.domain = "POINT"; store_uv.inputs["Name"].default_value = "fbp_yarn_uv"
+    L(place.outputs["Geometry"], store_uv.inputs["Geometry"]); L(sample.outputs["Value"], store_uv.inputs["Value"])
+    random_color = _node(group, "FunctionNodeRandomValue", "Yarn Colour Random", X + 4620, 1400)
+    random_color.data_type = "FLOAT"
+    L(inp.outputs["Seed"], random_color.inputs["Seed"])
+    centered = _math(group, "SUBTRACT", "Yarn Colour Offset", X + 4840, 1400, value_2=0.5)
+    L(random_color.outputs[0], centered.inputs[0])
+    shade = _math(group, "MULTIPLY", "Yarn Colour Shade", X + 5060, 1400)
+    L(centered.outputs[0], shade.inputs[0]); L(inp.outputs["Color Variation"], shade.inputs[1])
+    shade_factor = _math(group, "ADD", "Yarn Colour Factor", X + 5280, 1400, value_2=1.0)
+    L(shade.outputs[0], shade_factor.inputs[0])
+    # Blender samples premultiplied colour; edge stitches would turn dark.
+    safe_alpha = _math(group, "MAXIMUM", "Yarn Safe Alpha", X + 4840, 1600, value_2=0.001)
+    L(image.outputs["Alpha"], safe_alpha.inputs[0])
+    unpremultiply = _math(group, "DIVIDE", "Yarn Straight Factor", X + 5060, 1600, value_1=1.0)
+    L(safe_alpha.outputs[0], unpremultiply.inputs[1])
+    straight_factor = _math(group, "MULTIPLY", "Yarn Colour Factor Total", X + 5280, 1600)
+    L(unpremultiply.outputs[0], straight_factor.inputs[0]); L(shade_factor.outputs[0], straight_factor.inputs[1])
+    varied = _vector_math(group, "SCALE", "Yarn Colour", X + 5500, 1300)
+    L(image.outputs["Color"], varied.inputs[0]); L(straight_factor.outputs[0], varied.inputs["Scale"])
+    store_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Yarn Colour", X + 5720, 900)
+    store_color.data_type = "FLOAT_COLOR"; store_color.domain = "POINT"; store_color.inputs["Name"].default_value = "fbp_yarn_color"
+    L(store_uv.outputs["Geometry"], store_color.inputs["Geometry"]); L(varied.outputs[0], store_color.inputs["Value"])
+    store_shading = _node(group, "GeometryNodeStoreNamedAttribute", "Store Yarn Shading", X + 5940, 900)
+    store_shading.data_type = "FLOAT_VECTOR"; store_shading.domain = "POINT"; store_shading.inputs["Name"].default_value = "fbp_yarn_shading"
+    shading = _node(group, "ShaderNodeCombineXYZ", "Yarn Shading Values", X + 5720, 700)
+    L(inp.outputs["Fuzz"], shading.inputs["X"]); L(inp.outputs["Self Light"], shading.inputs["Y"])
+    L(store_color.outputs["Geometry"], store_shading.inputs["Geometry"]); L(shading.outputs[0], store_shading.inputs["Value"])
+    drop = _node(group, "GeometryNodeDeleteGeometry", "Drop Transparent Stitches", X + 6160, 900)
+    drop.domain = "POINT"
+    L(store_shading.outputs["Geometry"], drop.inputs["Geometry"]); L(transparent.outputs[0], drop.inputs["Selection"])
+
+    # One stitch prototype, built from closed loops.
+    def loop(prefix, rx, ry, angle, ox, oy, x, y):
+        circle = _node(group, "GeometryNodeCurvePrimitiveCircle", f"{prefix} Loop", x, y)
+        circle.inputs["Resolution"].default_value = 18
+        circle.inputs["Radius"].default_value = 1.0
+        scale_v = _node(group, "ShaderNodeCombineXYZ", f"{prefix} Loop Size", x, y - 200)
+        sx = _math(group, "MULTIPLY", f"{prefix} Loop Width", x - 220, y - 160, value_2=rx)
+        L(stitch_w.outputs[0], sx.inputs[0])
+        sxw = _math(group, "MULTIPLY", f"{prefix} Loop Width Scale", x - 220, y - 300)
+        L(sx.outputs[0], sxw.inputs[0]); L(inp.outputs["Loop Width"], sxw.inputs[1])
+        sy = _math(group, "MULTIPLY", f"{prefix} Loop Height", x - 220, y - 440, value_2=ry)
+        L(row_pitch.outputs[0], sy.inputs[0])
+        L(sxw.outputs[0], scale_v.inputs["X"]); L(sy.outputs[0], scale_v.inputs["Y"])
+        scale_v.inputs["Z"].default_value = 1.0
+        offset_v = _node(group, "ShaderNodeCombineXYZ", f"{prefix} Loop Offset", x + 220, y - 200)
+        ox_s = _math(group, "MULTIPLY", f"{prefix} Loop Offset X", x, y - 400, value_2=ox)
+        L(stitch_w.outputs[0], ox_s.inputs[0])
+        oy_s = _math(group, "MULTIPLY", f"{prefix} Loop Offset Y", x, y - 540, value_2=oy)
+        L(row_pitch.outputs[0], oy_s.inputs[0])
+        L(ox_s.outputs[0], offset_v.inputs["X"]); L(oy_s.outputs[0], offset_v.inputs["Y"])
+        transform = _node(group, "GeometryNodeTransform", f"{prefix} Loop Place", x + 440, y)
+        L(circle.outputs["Curve"], transform.inputs["Geometry"])
+        L(scale_v.outputs[0], transform.inputs["Scale"])
+        rot = _node(group, "FunctionNodeEulerToRotation", f"{prefix} Loop Rotation", x + 220, y - 400)
+        rot.inputs["Euler"].default_value = (0.0, 0.0, angle)
+        L(rot.outputs[0], transform.inputs["Rotation"])
+        L(offset_v.outputs[0], transform.inputs["Translation"])
+        return transform.outputs["Geometry"]
+
+    Y = -600
+    knit_a = loop("Knit Left", 0.24, 0.95, 0.45, -0.2, 0.2, X + 600, Y)
+    knit_b = loop("Knit Right", 0.24, 0.95, -0.45, 0.2, 0.2, X + 600, Y - 700)
+    head = loop("Crochet Head", 0.5, 0.24, 0.0, 0.0, 0.32, X + 600, Y - 1400)
+    post_a = loop("Crochet Post Left", 0.17, 0.55, 0.22, -0.18, -0.18, X + 600, Y - 2100)
+    post_b = loop("Crochet Post Right", 0.17, 0.55, -0.22, 0.18, -0.18, X + 600, Y - 2800)
+    knit = _node(group, "GeometryNodeJoinGeometry", "Knit Stitch", X + 1400, Y)
+    L(knit_a, knit.inputs[0]); L(knit_b, knit.inputs[0])
+    crochet = _node(group, "GeometryNodeJoinGeometry", "Crochet Stitch", X + 1400, Y - 1400)
+    L(head, crochet.inputs[0]); L(post_a, crochet.inputs[0]); L(post_b, crochet.inputs[0])
+    stitch = _node(group, "GeometryNodeSwitch", "Stitch Type Shape", X + 1620, Y - 700)
+    stitch.input_type = "GEOMETRY"
+    L(is_crochet.outputs[0], stitch.inputs["Switch"])
+    L(knit.outputs[0], stitch.inputs["False"]); L(crochet.outputs[0], stitch.inputs["True"])
+    # Interlock: the top of every loop goes behind, the bottom comes forward.
+    spline = _node(group, "GeometryNodeSplineParameter", "Yarn Loop Parameter", X + 1620, Y - 1000)
+    angle = _math(group, "MULTIPLY", "Yarn Loop Angle", X + 1840, Y - 1000, value_2=6.283185307)
+    L(spline.outputs["Factor"], angle.inputs[0])
+    sine = _math(group, "SINE", "Yarn Loop Depth Wave", X + 2060, Y - 1000)
+    L(angle.outputs[0], sine.inputs[0])
+    depth = _math(group, "MULTIPLY", "Yarn Loop Depth", X + 2280, Y - 1000)
+    L(sine.outputs[0], depth.inputs[0])
+    depth_amount = _math(group, "MULTIPLY", "Yarn Loop Depth Amount", X + 2060, Y - 1200, value_2=-0.9)
+    L(thickness.outputs[0], depth_amount.inputs[0]); L(depth_amount.outputs[0], depth.inputs[1])
+    depth_v = _node(group, "ShaderNodeCombineXYZ", "Yarn Loop Depth Offset", X + 2500, Y - 1000)
+    L(depth.outputs[0], depth_v.inputs["Z"])
+    interlock = _node(group, "GeometryNodeSetPosition", "Interlock Loops", X + 2720, Y - 700)
+    L(stitch.outputs["Output"], interlock.inputs["Geometry"]); L(depth_v.outputs[0], interlock.inputs["Offset"])
+    # Plies: twisted star profile.
+    length = _node(group, "GeometryNodeSplineParameter", "Yarn Length", X + 2720, Y - 1300)
+    twist_turns = _math(group, "DIVIDE", "Yarn Twist Per Length", X + 2940, Y - 1300)
+    L(inp.outputs["Twist"], twist_turns.inputs[0]); L(stitch_w.outputs[0], twist_turns.inputs[1])
+    tilt = _math(group, "MULTIPLY", "Yarn Twist Tilt", X + 3160, Y - 1300)
+    L(length.outputs["Length"], tilt.inputs[0]); L(twist_turns.outputs[0], tilt.inputs[1])
+    tilt_rad = _math(group, "MULTIPLY", "Yarn Twist Radians", X + 3380, Y - 1300, value_2=6.283185307)
+    L(tilt.outputs[0], tilt_rad.inputs[0])
+    set_tilt = _node(group, "GeometryNodeSetCurveTilt", "Twist Yarn", X + 3600, Y - 700)
+    L(interlock.outputs["Geometry"], set_tilt.inputs["Curve"]); L(tilt_rad.outputs[0], set_tilt.inputs["Tilt"])
+    inner = _math(group, "MULTIPLY", "Yarn Ply Inner", X + 3600, Y - 1100, value_2=0.62)
+    L(thickness.outputs[0], inner.inputs[0])
+    star = _node(group, "GeometryNodeCurveStar", "Yarn Ply Profile", X + 3820, Y - 1000)
+    L(inp.outputs["Plies"], star.inputs["Points"]); L(thickness.outputs[0], star.inputs["Outer Radius"]); L(inner.outputs[0], star.inputs["Inner Radius"])
+    smooth_profile = _node(group, "GeometryNodeResampleCurve", "Yarn Ply Smooth", X + 4040, Y - 1000)
+    plies_count = _math(group, "MULTIPLY", "Yarn Ply Samples", X + 3820, Y - 1250, value_2=4.0)
+    L(inp.outputs["Plies"], plies_count.inputs[0]); L(plies_count.outputs[0], smooth_profile.inputs["Count"])
+    L(star.outputs["Curve"], smooth_profile.inputs["Curve"])
+    to_mesh = _node(group, "GeometryNodeCurveToMesh", "Yarn Mesh", X + 4260, Y - 700)
+    L(set_tilt.outputs["Curve"], to_mesh.inputs["Curve"]); L(smooth_profile.outputs["Curve"], to_mesh.inputs["Profile Curve"])
+    smooth = _node(group, "GeometryNodeSetShadeSmooth", "Smooth Yarn", X + 4480, Y - 700)
+    L(to_mesh.outputs["Mesh"], smooth.inputs["Geometry"])
+    material = _node(group, "GeometryNodeSetMaterial", "Yarn Material", X + 4700, Y - 700)
+    L(smooth.outputs["Geometry"], material.inputs["Geometry"]); L(inp.outputs["Yarn Material"], material.inputs["Material"])
+
+    # Instance with a little hand-made irregularity.
+    random_rot = _node(group, "FunctionNodeRandomValue", "Yarn Rotation Random", X + 5940, 400)
+    random_rot.data_type = "FLOAT"
+    _random_range(random_rot, -0.3, 0.3)
+    L(inp.outputs["Seed"], random_rot.inputs["Seed"])
+    rot_amount = _math(group, "MULTIPLY", "Yarn Rotation Jitter", X + 6160, 400)
+    L(random_rot.outputs[0], rot_amount.inputs[0]); L(inp.outputs["Jitter"], rot_amount.inputs[1])
+    rot_euler = _node(group, "ShaderNodeCombineXYZ", "Yarn Jitter Euler", X + 6380, 400)
+    L(rot_amount.outputs[0], rot_euler.inputs["Z"])
+    rot = _node(group, "FunctionNodeEulerToRotation", "Yarn Jitter Rotation", X + 6600, 400)
+    L(rot_euler.outputs[0], rot.inputs["Euler"])
+    random_scale = _node(group, "FunctionNodeRandomValue", "Yarn Scale Random", X + 5940, 200)
+    random_scale.data_type = "FLOAT"
+    _random_range(random_scale, -0.12, 0.12)
+    seed_plus = _math(group, "ADD", "Yarn Scale Seed", X + 5720, 200, value_2=17.0)
+    L(inp.outputs["Seed"], seed_plus.inputs[0]); L(seed_plus.outputs[0], random_scale.inputs["Seed"])
+    scale_amount = _math(group, "MULTIPLY", "Yarn Scale Jitter", X + 6160, 200)
+    L(random_scale.outputs[0], scale_amount.inputs[0]); L(inp.outputs["Jitter"], scale_amount.inputs[1])
+    scale_value = _math(group, "ADD", "Yarn Scale", X + 6380, 200, value_2=1.0)
+    L(scale_amount.outputs[0], scale_value.inputs[0])
+    instance = _node(group, "GeometryNodeInstanceOnPoints", "Instance Stitches", X + 6820, 900)
+    L(drop.outputs["Geometry"], instance.inputs["Points"]); L(material.outputs["Geometry"], instance.inputs["Instance"])
+    L(rot.outputs[0], instance.inputs["Rotation"]); L(scale_value.outputs[0], instance.inputs["Scale"])
+
+    plane_switch = _node(group, "GeometryNodeSwitch", "Yarn Show Plane", X + 6820, 1300)
+    plane_switch.input_type = "GEOMETRY"
+    L(inp.outputs["Show Plane"], plane_switch.inputs["Switch"]); L(inp.outputs["Geometry"], plane_switch.inputs["True"])
+    join = _node(group, "GeometryNodeJoinGeometry", "Join Yarn", X + 7040, 900)
+    join["fbp_preserve_unmasked_geometry"] = True
+    L(plane_switch.outputs["Output"], join.inputs[0]); L(instance.outputs["Instances"], join.inputs[0])
+    L(join.outputs[0], out.inputs["Geometry"])
+    out.location = (X + 7260, 900)
+    group["fbp_instancing_contract_version"] = 4
+    return group
+
+
 def _create_cutout_outline(name):
     """Generate an alpha-derived outline with a Blender-version-safe graph."""
     group = bpy.data.node_groups.new(name, "GeometryNodeTree")
@@ -10054,6 +10330,7 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
         "KINETIC_TILES": lambda: _create_kinetic_tiles(canonical_name),
         "LAYERED_ECHO": lambda: _create_layered_echo(canonical_name),
         "FRAME_STACK": lambda: _create_frame_stack(canonical_name),
+        "KNIT_CROCHET": lambda: _create_knit_crochet(canonical_name),
         "CAMERA_SCALE_LOCK": lambda: _create_camera_scale_lock(canonical_name),
         "CAMERA_BILLBOARD": lambda: _create_camera_billboard(canonical_name),
         "MIRROR": lambda: _create_mirror(canonical_name),
