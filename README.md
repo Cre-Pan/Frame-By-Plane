@@ -6,17 +6,20 @@ It works like Blender's native **Images as Planes**, but adds production control
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
 
-## Prepared update: 8.0.0
+## Prepared update: 8.0.1
 
+- Five new effects: **Frame Stack**, **Knit & Crochet**, **Riso Print**, **Oil Paint** and **Edge Distance Mask**.
+- Fewer popups: plane settings live in the file browser sidebar and in Blender's Adjust Last Operation panel.
+- A sharper Image Projector that keeps the whole image in the cone and follows sequence and layer timing.
 - An editable Grease Pencil Mask with proper Undo, Split into Multiple Planes and a Viewport SOLO badge.
 - A redesigned, compact Live Tutorial with a Frame by Frame guide, and the Magnetic Scrub Bar.
-- One Add Plane dialog for every plane type, and six interface languages.
+- Six interface languages.
 - Animatable **Deform Plane** poses: Sway, Arch, Squash / Stretch, Taper, Shear, Bulge / Pinch, Wave, Flag and Curl, mixed as keyframeable sliders.
 - On-plane handles that match Gradient, Radial Gradient and Tilt-Shift on images of any shape.
 - A safer compositor: opening a file adds nothing, Compositor Off restores your own render setup, and F12 never changes until you opt in.
 - Faster effect stacks and many effect-stack fixes (Hide in Render, duplicates, variants, groups, masks, copy/paste and presets).
 
-See the [8.0.0 release notes](release-notes/8.0.0.md). The public release is still 7.2.0.
+See the [8.0.1 release notes](release-notes/8.0.1.md). The public release is still 7.2.0.
 
 ## What's new in 7.2.0
 
@@ -74,11 +77,11 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.0.0-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.0.0-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.0.0-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.0.0-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.0.0-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.0.1-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.0.1-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.0.1-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.0.1-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.0.1-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.

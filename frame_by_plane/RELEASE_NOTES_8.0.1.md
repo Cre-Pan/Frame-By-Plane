@@ -1,8 +1,25 @@
-# 🎞️ Frame By Plane — 8.0.0
+# 🎞️ Frame By Plane — 8.0.1
 
-Frame By Plane 8 LTS: Grease Pencil masks you can edit, Split into Multiple Planes, a SOLO badge, a new Live Tutorial, the Magnetic Scrub Bar and six languages, for Blender 5.2 LTS. It also includes the Grease Pencil polish prepared as 7.2.1, which was not published on its own.
+Frame By Plane 8 LTS for Blender 5.2 LTS. 8.0.1 adds five new effects, replaces the plane creation popups with the file browser sidebar and Blender's Adjust Last Operation panel, and fixes the Image Projector. Everything from 8.0.0 is listed below.
 
-## ✨ What's new
+## 🆕 New in 8.0.1
+
+- 🧱 **Frame Stack** (Mesh, for image sequences and videos): earlier frames stacked in depth behind the plane as a solid of time, with offset, depth, rotation, twist and scale per slice, Follow Playback or a Fixed Range, Depth Fade, Luminance Key, Glow and an optional Outline. Concept inspired by "Video Frame Stack" by hipofizus.
+- 🧶 **Knit & Crochet** (Mesh): the image rebuilt as yarn, as stockinette Knit stitches or single-crochet rows. Every stitch takes its color from the image and sequences stay animated.
+- 🖨️ **Riso Print** (Image, Pixel / Print): two or three spot inks on colored paper with misregistration, halftone dots and ink grain, with presets for Pink & Blue, Three Drum and Green & Orange.
+- 🖌️ **Oil Paint** (Image, Edges): an anisotropic Kuwahara filter that turns color into brush strokes following the image's edges.
+- 🔲 **Edge Distance Mask** (Mask, Nodes): a ramp from the artwork's transparent edge inward, for glowing borders, inner strokes and grow-in reveals.
+- ➕ **Fewer popups:** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar; Color, Gradient, Holdout, Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup.
+
+### 🛠️ Fixes in 8.0.1
+
+- Image Projector: the projection is sharp by default. The image size follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone.
+- Image Projector: image sequences numbered from anything other than 1 (for example 0101) project again, with the right aspect ratio.
+- Project Selected FBP Layer follows the layer's timing (holds, loops) instead of freezing on the current frame.
+- A movie picked as Projector Media plays all of its frames; an image used by another plane is no longer renamed or turned into a sequence.
+- Projector panel in Blender's layout: labels on the left, Focus in a collapsible section, and the Cycles note only when another render engine is active.
+
+## ✨ What's new in 8.0
 
 - 🎭 **Grease Pencil Mask you can edit:** **Edit Grease Pencil** brings the mask strokes back for drawing, **Done** returns to the layer, and an eye shows or hides the strokes. Blur and Expand each have their own checkbox. The mask now covers the whole shot from frame 1 wherever it is created, Ctrl+Z after drawing no longer removes the effect, and the mask is computed many times faster.
 - ✂️ **Split into Multiple Planes:** from the frame list or right-click → Frame By Plane → Layer, turn every frame of a layer into its own plane, keeping position, size and effects.
@@ -16,7 +33,6 @@ Frame By Plane 8 LTS: Grease Pencil masks you can edit, Split into Multiple Plan
 - 🎨 **Every selected color:** Edit Mode shows each distinct Stroke and Fill color as its own swatch, with dropdowns, Replace All and per-stroke Invert.
 - 🖌️ **Material in Edit Mode:** pick the material slot without leaving Edit Mode.
 - 🌍 **Six languages:** Italian, Spanish, French, German, Simplified Chinese and Japanese. Frame By Plane follows Blender's language, or pick one in Preferences → Interface → Language.
-- ➕ **Fewer popups:** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar; Color, Gradient, Holdout, Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup. Every layout follows Blender's own style, with a collapsible Camera section.
 - 🧹 **Leaner Grease Pencil tools:** see *Removed in 7.5* below.
 
 ## 🌀 Deform Plane (Lattice)
@@ -101,11 +117,11 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.0.0-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.0.0-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.0.0-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.0.0-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.0.0-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.0.1-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.0.1-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.0.1-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.0.1-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.0.1-linux_x64.zip` |
 
 Install the ZIP through **Edit > Preferences > Get Extensions > Install from Disk**. Do not install GitHub's automatically generated Source code ZIP.
 

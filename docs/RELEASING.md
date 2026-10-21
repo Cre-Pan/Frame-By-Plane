@@ -57,7 +57,7 @@ Both scripts normalize ZIP metadata after Blender's build so identical source pr
 
 1. Commit source and documentation to a release branch.
 2. Open a pull request and let repository validation complete.
-3. Create the semantic tag `vX.Y.Z` (for example `v8.0.0`) on the tested release commit.
+3. Create the semantic tag `vX.Y.Z` (for example `v8.0.1`) on the tested release commit.
 4. Set the release title to `Frame By Plane X.Y.Z`.
 5. Paste `release-notes/X.Y.Z.md` into the GitHub Release.
 6. Attach all platform-specific ZIP files and `SHA256SUMS.txt`.
@@ -87,7 +87,7 @@ Run a validation-only pass first. The script locates the five platform-specific 
 
 ```powershell
 .\tools\publish_blender_extensions.ps1 `
-    -Version 8.0.0 `
+    -Version 8.0.1 `
     -PackageDirectory .\dist `
     -WhatIf
 ```
@@ -96,11 +96,11 @@ Perform the real upload with the same inputs:
 
 ```powershell
 .\tools\publish_blender_extensions.ps1 `
-    -Version 8.0.0 `
+    -Version 8.0.1 `
     -PackageDirectory .\dist
 ```
 
-The command always requires typing `UPLOAD 8.0.0` before it sends the first request. It uses only the official `https://extensions.blender.org/api/v1/extensions/frame_by_plane/versions/upload/` endpoint, never writes or prints the token, requires HTTP 201 plus the JSON object documented by the OpenAPI schema, validates package identity fields when the server returns them, and stops with a clear error if any platform upload is rejected. Remove the process variable afterwards:
+The command always requires typing `UPLOAD 8.0.1` before it sends the first request. It uses only the official `https://extensions.blender.org/api/v1/extensions/frame_by_plane/versions/upload/` endpoint, never writes or prints the token, requires HTTP 201 plus the JSON object documented by the OpenAPI schema, validates package identity fields when the server returns them, and stops with a clear error if any platform upload is rejected. Remove the process variable afterwards:
 
 ```powershell
 Remove-Item Env:BLENDER_EXTENSIONS_TOKEN
