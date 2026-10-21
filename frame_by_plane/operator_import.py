@@ -6230,13 +6230,33 @@ def _fbp_draw_enum_row(layout, owner, prop, label, items):
     return row
 
 
-def _fbp_camera_panel(layout, panel_id):
-    """Open the collapsible Camera sub-panel; return its body or None when closed."""
-    header, body = layout.panel(panel_id, default_closed=False)
-    header.label(text="Camera", icon=fbp_icon("VIEW_CAMERA"))
+def _fbp_settings_panel(layout, panel_id, title, *, default_closed=False):
+    """Open a collapsible settings sub-panel; return its body or None when closed."""
+    header, body = layout.panel(panel_id, default_closed=default_closed)
+    header.label(text=title)
     if body is not None:
         configure_layout(body, property_split=True)
     return body
+
+
+def _fbp_camera_panel(layout, panel_id, *, default_closed=False):
+    return _fbp_settings_panel(layout, panel_id, "Camera Settings", default_closed=default_closed)
+
+
+def _fbp_draw_compact_enum_row(layout, owner, prop, label, items, *, ui_units=(5.0, 1.6)):
+    """Icon-only buttons with the name shown on the selected one only.
+
+    Keeps long names such as Ping-Pong readable in the narrow file browser
+    sidebar, where three labelled buttons do not fit.
+    """
+    row = property_split_row(layout, label)
+    current = getattr(owner, prop)
+    wide, narrow = ui_units
+    for key, text in items:
+        cell = row.row(align=True)
+        cell.ui_units_x = wide if key == current else narrow
+        cell.prop_enum(owner, prop, key, text=text if key == current else "")
+    return row
 
 
 def _fbp_draw_scene_camera_settings(layout, scene, panel_id, *, projection=False):
@@ -6264,8 +6284,15 @@ def _fbp_draw_media_settings(layout, context, *, multiplane=False, panel_id="FBP
     """Single Plane and Multiplane settings shared by the file browser and the drop popup."""
     scene = context.scene
     layout = configure_layout(layout, property_split=True)
+    plane_layout = _fbp_settings_panel(layout, panel_id.replace("camera", "plane"), "Plane Settings")
+    if plane_layout is not None:
+        _fbp_draw_plane_settings(plane_layout, scene, multiplane=multiplane)
+    _fbp_draw_scene_camera_settings(layout, scene, panel_id, projection=multiplane)
+
+
+def _fbp_draw_plane_settings(layout, scene, *, multiplane=False):
     layout.prop(scene, "fbp_pre_duration", text="Frame Hold", slider=True)
-    _fbp_draw_enum_row(layout, scene, "fbp_pre_loop_mode", "Playback", _FBP_LOOP_MODE_LABELS)
+    _fbp_draw_compact_enum_row(layout, scene, "fbp_pre_loop_mode", "Playback", _FBP_LOOP_MODE_LABELS)
 
     layout.separator()
     _fbp_draw_enum_row(layout, scene, "fbp_pre_orientation", "Orientation", _FBP_ORIENTATION_LABELS)
@@ -6282,9 +6309,6 @@ def _fbp_draw_media_settings(layout, context, *, multiplane=False, panel_id="FBP
     if multiplane:
         layout.separator()
         layout.prop(scene, "fbp_layer_offset", text="Space Between Layers", slider=True)
-
-    layout.separator()
-    _fbp_draw_scene_camera_settings(layout, scene, panel_id, projection=multiplane)
 
 
 def _fbp_notify_tutorial(context, action):
@@ -6465,12 +6489,15 @@ _FBP_PLANE_SIZE_PRESETS = (
     ('VERTICAL', "1080 × 1920  Vertical", "Phone and stories", (1080, 1920)),
     ('FOUR_FIVE', "1080 × 1350  4:5", "Portrait feed post", (1080, 1350)),
     ('SQUARE', "1080 × 1080  Square", "Square post", (1080, 1080)),
+    ('CUSTOM', "Custom", "X and Y were typed by hand", None),
 )
 _FBP_SIZE_PRESET_ITEMS = tuple((key, label, tip) for key, label, tip, _size in _FBP_PLANE_SIZE_PRESETS)
 _FBP_CAMERA_ENUM_CACHE = []
 # Set while a preset or hex code writes the colour, so the colour update does
 # not mark the preset as Custom again.
 _FBP_APPLYING_COLOR_PRESET = [False]
+# Same guard for the size preset writing X and Y.
+_FBP_APPLYING_SIZE_PRESET = [False]
 
 
 def _fbp_color_preset_items(_self, _context):
@@ -6502,11 +6529,22 @@ def _fbp_plane_color_update(self, _context):
 
 
 def _fbp_plane_size_preset_update(self, context):
+    if self.size_preset == 'CUSTOM':
+        return
     size = next((size for key, _l, _t, size in _FBP_PLANE_SIZE_PRESETS if key == self.size_preset), None)
     if size is None:
         render = context.scene.render
         size = (int(render.resolution_x), int(render.resolution_y))
-    self.width, self.height = size
+    _FBP_APPLYING_SIZE_PRESET[0] = True
+    try:
+        self.width, self.height = size
+    finally:
+        _FBP_APPLYING_SIZE_PRESET[0] = False
+
+
+def _fbp_plane_size_update(self, _context):
+    if not _FBP_APPLYING_SIZE_PRESET[0] and self.size_preset != 'CUSTOM':
+        self.size_preset = 'CUSTOM'
 
 
 def _fbp_swap_plane_size_update(self, _context):
@@ -6540,10 +6578,10 @@ class _FBPProceduralPlaneCreator:
     color_preset: EnumProperty(name="Preset", description="Pick a preset color", items=_fbp_color_preset_items, update=_fbp_color_preset_update)
     emission: BoolProperty(name="Emission", description="Use an emission shader so scene lights do not change the color", default=True)
     orientation: EnumProperty(name="Orientation", items=(('VERT', "Vertical", ""), ('HORIZ', "Horizontal", "")), default='VERT')
-    width: IntProperty(name="X", description="Plane width in pixels; only the ratio with Y matters", default=1920, min=1, soft_max=8192)
-    height: IntProperty(name="Y", description="Plane height in pixels; only the ratio with X matters", default=1080, min=1, soft_max=8192)
+    width: IntProperty(name="X", description="Plane width in pixels; only the ratio with Y matters", default=1920, min=1, soft_min=1, soft_max=8192, subtype='PIXEL', update=_fbp_plane_size_update)
+    height: IntProperty(name="Y", description="Plane height in pixels; only the ratio with X matters", default=1080, min=1, soft_min=1, soft_max=8192, subtype='PIXEL', update=_fbp_plane_size_update)
     swap_size: BoolProperty(name="Swap", description="Swap X and Y", default=False, update=_fbp_swap_plane_size_update, options={'SKIP_SAVE'})
-    size_preset: EnumProperty(name="Size Presets", description="Common plane sizes", items=_FBP_SIZE_PRESET_ITEMS, update=_fbp_plane_size_preset_update, options={'SKIP_SAVE'})
+    size_preset: EnumProperty(name="Dimensions", description="Common plane sizes", items=_FBP_SIZE_PRESET_ITEMS, update=_fbp_plane_size_preset_update, options={'SKIP_SAVE'})
     gradient_mode: EnumProperty(name="Shape", items=(('LINEAR', "Linear", ""), ('CENTER', "Radial", "")), default='LINEAR')
     gradient_kind: EnumProperty(name="Type", items=(('COLOR', "Color to Color", ""), ('ALPHA', "Transparent to Visible", "")), default='COLOR')
     gradient_reverse: BoolProperty(name="Reverse", default=True)
@@ -6568,8 +6606,13 @@ class _FBPProceduralPlaneCreator:
                 setattr(self, op_name, getattr(sc, scene_name))
         preset = str(getattr(sc, "fbp_color_plane_preset", 'CUSTOM') or 'CUSTOM')
         self.color_preset = 'NONE' if preset == 'CUSTOM' else preset
-        self.width = int(sc.render.resolution_x)
-        self.height = int(sc.render.resolution_y)
+        _FBP_APPLYING_SIZE_PRESET[0] = True
+        try:
+            self.width = int(sc.render.resolution_x)
+            self.height = int(sc.render.resolution_y)
+        finally:
+            _FBP_APPLYING_SIZE_PRESET[0] = False
+        self.size_preset = 'SCENE'
         camera = getattr(sc, "camera", None)
         self.camera_name = camera.name if camera is not None else 'NONE'
         if self.plane_type == 'GRADIENT':
@@ -6623,25 +6666,27 @@ class _FBPProceduralPlaneCreator:
         if self.plane_type != 'HOLDOUT':
             layout.prop(self, "emission")
         layout.separator()
-        # The Adjust panel is narrow: give the numbers the room, not the label.
-        row = property_split_row(layout, "Dimensions", factor=0.32)
-        row.prop(self, "width")
-        icon = row.row(align=True)
-        icon.scale_x = 0.8
-        icon.prop(self, "swap_size", text="", icon='ARROW_LEFTRIGHT', toggle=True)
-        row.prop(self, "height")
-        icon = row.row(align=True)
-        icon.scale_x = 0.8
-        icon.prop_menu_enum(self, "size_preset", text="", icon='PRESET')
+        layout.prop(self, "size_preset")
+        col = layout.column(align=True)
+        col.prop(self, "width", slider=True)
+        col.prop(self, "height", slider=True)
+        layout.prop(self, "swap_size", icon='RENDER_SWAP_DIMENSIONS', toggle=True)
         layout.separator()
         self._draw_camera(layout)
 
     def _draw_color(self, layout):
         layout.prop(self, "color")
-        row = property_split_row(layout, "Preset", align=True)
-        # Each item carries its colour swatch as the enum icon.
-        for key, *_rest in _fbp_color_preset_items(self, None)[1:]:
-            row.prop_enum(self, "color_preset", key, text="")
+        # Two rows of swatches, like Line Art > Masks; each item carries its
+        # colour swatch as the enum icon.
+        split = layout.split(factor=0.4, align=True)
+        label = split.row(align=True)
+        label.alignment = 'RIGHT'
+        label.label(text="Preset")
+        keys = [key for key, *_rest in _fbp_color_preset_items(self, None)[1:]]
+        grid = split.grid_flow(row_major=True, columns=(len(keys) + 1) // 2, even_columns=True, even_rows=True, align=True)
+        grid.use_property_split = False
+        for key in keys:
+            grid.prop_enum(self, "color_preset", key, text="")
 
     def _draw_gradient(self, layout):
         _fbp_draw_enum_row(layout, self, "gradient_mode", "Shape", (('LINEAR', "Linear"), ('CENTER', "Radial")))
@@ -6660,7 +6705,7 @@ class _FBPProceduralPlaneCreator:
             col.prop(self, "gradient_scale_y")
 
     def _draw_camera(self, layout):
-        body = _fbp_camera_panel(layout, "FBP_PT_procedural_plane_camera")
+        body = _fbp_camera_panel(layout, "FBP_PT_procedural_plane_camera", default_closed=True)
         if body is None:
             return
         col = body.column()
