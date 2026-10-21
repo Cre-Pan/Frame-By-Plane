@@ -126,6 +126,7 @@ from .effects_registry import (
     FBP_EFFECT_KINETIC_TILES,
     FBP_EFFECT_LAYERED_ECHO,
     FBP_EFFECT_FRAME_STACK,
+    FBP_EFFECT_KNIT_CROCHET,
     FBP_EFFECT_LATTICE,
     FBP_EFFECT_MOTION,
     FBP_EFFECT_CROP,
@@ -7223,6 +7224,95 @@ def _fbp_ensure_frame_stack_material(rig):
     return material
 
 
+def _fbp_ensure_knit_crochet_material(rig):
+    """Wool material for Knit & Crochet, driven by per-stitch attributes.
+
+    ``fbp_yarn_color`` is the sampled stitch colour and ``fbp_yarn_shading``
+    carries Fuzz (sheen) and Self Light, so the material never needs a
+    rebuild. Self Light is an emission lit by a fixed key direction, which
+    keeps the twisted plies readable in unlit Frame By Plane scenes.
+    """
+    plane = _fbp_plane(rig)
+    if not plane:
+        return None
+    owner = str(getattr(plane, "name", "") or "")
+    role = "Knit & Crochet"
+    material = _fbp_find_owned_effect_material(rig, FBP_EFFECT_KNIT_CROCHET, role)
+    if material is None:
+        try:
+            material = bpy.data.materials.new(name=f"FBP {role} • {owner}")
+            material.use_fake_user = False
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not create Knit & Crochet material", exc)
+            return None
+    try:
+        _fbp_set_idprop_if_changed(material, "fbp_owned", True)
+        _fbp_set_idprop_if_changed(material, "fbp_effect_material_owner", owner)
+        _fbp_set_idprop_if_changed(material, "fbp_effect_material_id", FBP_EFFECT_KNIT_CROCHET)
+        _fbp_set_idprop_if_changed(material, "fbp_effect_material_role", role)
+        if int(material.get("fbp_yarn_material_version", 0) or 0) != 1:
+            node_tree = material.node_tree
+            nodes = node_tree.nodes
+            links = node_tree.links
+            nodes.clear()
+            color = nodes.new("ShaderNodeAttribute")
+            color.attribute_type = "INSTANCER"
+            color.attribute_name = "fbp_yarn_color"
+            color.location = (-900.0, 300.0)
+            shading = nodes.new("ShaderNodeAttribute")
+            shading.attribute_type = "INSTANCER"
+            shading.attribute_name = "fbp_yarn_shading"
+            shading.location = (-900.0, 0.0)
+            split = nodes.new("ShaderNodeSeparateXYZ")
+            split.location = (-680.0, 0.0)
+            links.new(shading.outputs["Vector"], split.inputs[0])
+            noise = nodes.new("ShaderNodeTexNoise")
+            noise.location = (-900.0, -300.0)
+            noise.inputs["Scale"].default_value = 600.0
+            noise.inputs["Detail"].default_value = 4.0
+            bump = nodes.new("ShaderNodeBump")
+            bump.location = (-680.0, -300.0)
+            bump.inputs["Strength"].default_value = 0.25
+            links.new(noise.outputs["Fac"], bump.inputs["Height"])
+            principled = nodes.new("ShaderNodeBsdfPrincipled")
+            principled.location = (-420.0, 300.0)
+            principled.inputs["Roughness"].default_value = 0.9
+            principled.inputs["Sheen Roughness"].default_value = 0.45
+            links.new(color.outputs["Color"], principled.inputs["Base Color"])
+            links.new(split.outputs["X"], principled.inputs["Sheen Weight"])
+            links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+            key = nodes.new("ShaderNodeVectorMath")
+            key.operation = "DOT_PRODUCT"
+            key.location = (-420.0, -200.0)
+            key.inputs[1].default_value = (-0.35, 0.55, 0.76)
+            links.new(bump.outputs["Normal"], key.inputs[0])
+            lit = nodes.new("ShaderNodeMapRange")
+            lit.location = (-200.0, -200.0)
+            lit.inputs["From Min"].default_value = -0.2
+            lit.inputs["To Min"].default_value = 0.25
+            links.new(key.outputs["Value"], lit.inputs["Value"])
+            lit_color = nodes.new("ShaderNodeVectorMath")
+            lit_color.operation = "SCALE"
+            lit_color.location = (20.0, -100.0)
+            links.new(color.outputs["Color"], lit_color.inputs[0])
+            links.new(lit.outputs["Result"], lit_color.inputs["Scale"])
+            emission = nodes.new("ShaderNodeEmission")
+            emission.location = (240.0, -100.0)
+            links.new(lit_color.outputs["Vector"], emission.inputs["Color"])
+            links.new(split.outputs["Y"], emission.inputs["Strength"])
+            add = nodes.new("ShaderNodeAddShader")
+            add.location = (460.0, 100.0)
+            links.new(principled.outputs["BSDF"], add.inputs[0])
+            links.new(emission.outputs["Emission"], add.inputs[1])
+            output = nodes.new("ShaderNodeOutputMaterial")
+            output.location = (680.0, 100.0)
+            links.new(add.outputs["Shader"], output.inputs["Surface"])
+            material["fbp_yarn_material_version"] = 1
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not update Knit & Crochet material", exc)
+    return material
+
+
 def _fbp_sync_volume_output(node_tree, volume_node, output_node, enabled):
     """Connect volume shading only while it can contribute to the render."""
     if node_tree is None or volume_node is None or output_node is None:
@@ -8143,6 +8233,8 @@ def _fbp_geometry_material_bases(rig, effect_id):
         ))
     elif effect_id == FBP_EFFECT_FRAME_STACK:
         result.append(("Stack Material", _fbp_ensure_frame_stack_material(rig)))
+    elif effect_id == FBP_EFFECT_KNIT_CROCHET:
+        result.append(("Yarn Material", _fbp_ensure_knit_crochet_material(rig)))
     elif effect_id == FBP_EFFECT_GLASS:
         result.append(("Glass Material", _fbp_ensure_glass_material(rig)))
     elif effect_id == FBP_EFFECT_CRYSTAL:
@@ -8184,7 +8276,7 @@ def _fbp_apply_geometry_material_composites(
         material = base_material
         # Earlier slices carry their own sampled frame; the shader stack below
         # only exists for the current frame, so their materials stay as built.
-        if desired and effect_id != FBP_EFFECT_FRAME_STACK:
+        if desired and effect_id not in {FBP_EFFECT_FRAME_STACK, FBP_EFFECT_KNIT_CROCHET}:
             uv_attribute = ""
             uv_attribute_type = "GEOMETRY"
             composite_base = base_material
@@ -8407,6 +8499,7 @@ def _fbp_cast_effect_value(prop_name, value):
         "fbp_crystal_pattern_mode": {"DIAMOND": 0, "CRYSTAL": 1, "LIQUID": 2},
         "fbp_sculpt_waves_style": {"RADIAL": 0, "MOIRE": 1, "SPIRAL": 2},
         "fbp_kinetic_tiles_pattern": {"WAVE": 0, "CHECKER": 1, "RIPPLE": 2},
+        "fbp_yarn_stitch_type": {"KNIT": 0, "CROCHET": 1},
     }
     if prop_name in enum_values:
         return enum_values[prop_name].get(str(value), 0.0)
@@ -8764,11 +8857,15 @@ def fbp_update_geometry_effect(
                 interface_inputs,
             ) or updated
 
-    if effect_id == FBP_EFFECT_FRAME_STACK and full_update:
-        material = _fbp_ensure_frame_stack_material(rig)
+    if full_update and effect_id in {FBP_EFFECT_FRAME_STACK, FBP_EFFECT_KNIT_CROCHET}:
+        socket_name, material = (
+            ("Stack Material", _fbp_ensure_frame_stack_material(rig))
+            if effect_id == FBP_EFFECT_FRAME_STACK
+            else ("Yarn Material", _fbp_ensure_knit_crochet_material(rig))
+        )
         if material:
             updated = _fbp_set_modifier_input(
-                modifier, node_group, "Stack Material", material, interface_inputs,
+                modifier, node_group, socket_name, material, interface_inputs,
             ) or updated
 
     if effect_id == FBP_EFFECT_TEXT_MATRIX:
@@ -21007,6 +21104,12 @@ _FBP_EFFECT_UI_GROUPS = {
         ("Transform", "MOD_ARRAY", ("fbp_layered_echo_offset_x", "fbp_layered_echo_offset_y", "fbp_layered_echo_spacing", "fbp_layered_echo_scale_step")),
         ("Rotation", "ORIENTATION_LOCAL", ("fbp_layered_echo_rotation_x", "fbp_layered_echo_rotation_y", "fbp_layered_echo_twist")),
         ("Animation", "ANIM", ("fbp_layered_echo_wave", "fbp_layered_echo_phase")),
+    ),
+    FBP_EFFECT_KNIT_CROCHET: (
+        ("Stitches", "OUTLINER_DATA_CURVES", ("fbp_yarn_stitch_type", "fbp_yarn_columns", "fbp_yarn_row_height", "fbp_yarn_loop_width")),
+        ("Yarn", "MOD_SCREW", ("fbp_yarn_thickness", "fbp_yarn_plies", "fbp_yarn_twist", "fbp_yarn_fuzz", "fbp_yarn_self_light")),
+        ("Hand-made", "SHADERFX", ("fbp_yarn_color_variation", "fbp_yarn_jitter", "fbp_yarn_seed")),
+        ("Image", "IMAGE_DATA", ("fbp_yarn_alpha_threshold", "fbp_yarn_show_plane")),
     ),
     FBP_EFFECT_FRAME_STACK: (
         ("Time", "TIME", ("fbp_frame_stack_slices", "fbp_frame_stack_step", "fbp_frame_stack_fixed_start", "fbp_frame_stack_start_frame", "fbp_frame_stack_show_plane")),

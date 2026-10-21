@@ -4224,6 +4224,67 @@ def test_frame_stack_samples_earlier_frames(_module):
     return {"slices": 4}
 
 
+def test_knit_crochet_stitches(_module):
+    """Knit & Crochet instances one stitch per grid cell, skipping transparency."""
+    builder = importlib.import_module(f"{PACKAGE}.builder")
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    path = WORKDIR / "knit_crochet_half_alpha.png"
+    if not path.is_file():
+        width, height = 32, 18
+        image = bpy.data.images.new(path.name, width, height, alpha=True)
+        pixels = []
+        for _y in range(height):
+            for x in range(width):
+                # Left half opaque red, right half fully transparent.
+                pixels.extend((1.0, 0.0, 0.0, 1.0) if x < width // 2 else (0.0, 0.0, 0.0, 0.0))
+        image.pixels = pixels
+        image.filepath_raw = str(path)
+        image.file_format = "PNG"
+        image.save()
+        bpy.data.images.remove(image)
+    rig = builder.build_fbp_rig(bpy.context, "FBP Knit Test", str(path.parent), [path.name], (0.0, 0.0, 0.0))
+    owned = [rig, *rig.children_recursive]
+    _flush_fbp_safe_tasks()
+
+    def stitches():
+        plane = geometry._fbp_plane(rig)
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        return sum(
+            1 for instance in depsgraph.object_instances
+            if instance.is_instance and instance.parent and instance.parent.original == plane
+        )
+
+    try:
+        assert geometry.fbp_add_effect(
+            rig, "KNIT_CROCHET", select_object_mask_helper=False, inherit_active_group=False,
+        )
+        rig.fbp_yarn_columns = 20
+        _flush_fbp_safe_tasks()
+        knit = stitches()
+        # Only the opaque half carries stitches: about 10 of 20 columns.
+        assert knit > 0, knit
+        rig.fbp_yarn_alpha_threshold = 0.0
+        _flush_fbp_safe_tasks()
+        full = stitches()
+        assert 1.6 * knit <= full <= 2.4 * knit, (knit, full)
+        rig.fbp_yarn_alpha_threshold = 0.5
+        rig.fbp_yarn_stitch_type = 'CROCHET'
+        _flush_fbp_safe_tasks()
+        crochet = stitches()
+        # Crochet rows are taller than knit rows, so there are fewer of them.
+        assert 0 < crochet < knit, (knit, crochet)
+        material = bpy.data.materials.get(f"FBP Knit & Crochet • {geometry._fbp_plane(rig).name}")
+        assert material is not None and material.get("fbp_yarn_material_version") == 1
+        assert geometry.fbp_remove_effect(rig, "KNIT_CROCHET")
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"knit": knit, "crochet": crochet}
+
+
 def test_render_checked_popup_contract(_module):
     """F12 asks before rendering an out-of-date compositor and can update first."""
     compositor = importlib.import_module(f"{PACKAGE}.compositor")
@@ -5013,6 +5074,7 @@ def run_background():
             ("drop_import_camera_modes", test_drop_import_camera_modes),
             ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("frame_stack_samples_earlier_frames", test_frame_stack_samples_earlier_frames),
+            ("knit_crochet_stitches", test_knit_crochet_stitches),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
