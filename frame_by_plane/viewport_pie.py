@@ -1448,7 +1448,6 @@ class FBP_OT_QuickMaskLibraryPopup(Operator):
             layout,
             context,
             "MASK",
-            max_columns=2,
             quick_slot_index=self.slot_index,
             quick_kind="MASK",
         )
@@ -1628,7 +1627,9 @@ class FBP_OT_QuickEffectLibraryPopup(Operator):
     )
 
     def invoke(self, context, _event):
-        return context.window_manager.invoke_popup(self, width=680)
+        # Wide enough for every category column side by side.
+        width = 1180 if self.category == "2D" else 900
+        return context.window_manager.invoke_popup(self, width=width)
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -1637,7 +1638,6 @@ class FBP_OT_QuickEffectLibraryPopup(Operator):
             layout,
             context,
             self.category,
-            max_columns=2,
             quick_slot_index=self.slot_index,
             quick_kind="EFFECT",
         )
@@ -1857,7 +1857,7 @@ class FBP_OT_PieAddEffect(Operator):
     bl_idname = "fbp.pie_add_effect"
     bl_label = "Add Favourite Effect"
     bl_description = "Add this favourite and reveal its Image, Mask or Mesh panel"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     effect_id: StringProperty(
         name="Effect ID",
@@ -1909,7 +1909,7 @@ class FBP_OT_PieAddGreasePencilMask(Operator):
     bl_idname = "fbp.pie_add_grease_pencil_mask"
     bl_label = "Grease Pencil Mask"
     bl_description = "Create an editable Grease Pencil mask and reveal the Mask panel"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -1933,7 +1933,7 @@ class FBP_OT_PieToggleClippingMask(Operator):
     bl_idname = "fbp.pie_toggle_clipping_mask"
     bl_label = "Clipping Mask"
     bl_description = "Toggle Clipping Mask consistently across selected layers and reveal Masks"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -2442,25 +2442,8 @@ class FBP_MT_ViewportPie(Menu):
             split.separator()
             return
         if gp_canvas is not None:
-            effects = split.column(align=False)
-            effects.alignment = "CENTER"
-            _pie_start_south_list(effects, "Effects", "SHADERFX")
-            gp_row = _pie_fixed_button_row(
-                effects, "Grease Pencil Effects"
-            )
-            gp_row.menu(
-                "FBP_MT_gp_native_effects",
-                text="Grease Pencil Effects",
-                icon="OUTLINER_OB_GREASEPENCIL",
-            )
-            overflow = effects.row(align=False)
-            overflow.alignment = "CENTER"
-            _pie_icon_cell(overflow).menu(
-                "FBP_MT_pie_effect_domains",
-                text="",
-                icon="COLLAPSEMENU",
-            )
-            _pie_pad_south_list(effects, 2)
+            # Grease Pencil drawings use Blender's native effect stacks.
+            split.separator()
             return
         if not plane_rigs:
             split.separator()

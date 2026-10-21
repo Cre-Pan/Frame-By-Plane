@@ -30,6 +30,10 @@ def runtime_files(source: Path) -> set[str]:
         names.update(path.relative_to(source).as_posix()
                      for path in (source / directory).rglob("*")
                      if path.is_file() and path.suffix.lower() in suffixes)
+    # Interface translation catalogs; the extraction source list stays out.
+    names.update(f"translations/{path.name}"
+                 for path in (source / "translations").glob("*.json")
+                 if path.name != "messages.json")
     return names
 
 

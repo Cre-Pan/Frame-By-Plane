@@ -37,7 +37,7 @@ from .registration import (
 )
 from .service_registry import service_descriptor
 from .layers import get_selected_fbp_roots
-from .ui_style import configure_layout, hint_row, section_gap, section_header
+from .ui_style import configure_layout, hint_row, section_header
 from .grease_pencil_bridge import (
     KEY_REFERENCE_OPACITY,
     gp_canvas_for_rig,
@@ -49,7 +49,7 @@ from .grease_pencil_bridge import (
 
 SERVICE_ID = "grease_pencil_workflow"
 SERVICE_API_VERSION = 1
-CAPABILITIES = ("INK_OVER_IMAGE", "TIMING_SYNC", "MISSING_DRAWINGS", "REFERENCE_STATES", "AUTO_SOURCE_SYNC", "FPS_CHANGE_DETECTION")
+CAPABILITIES = ("TIMING_SYNC", "MISSING_DRAWINGS", "REFERENCE_STATES", "AUTO_SOURCE_SYNC", "FPS_CHANGE_DETECTION")
 FBP_GP_WORKFLOW_SCHEMA_VERSION = 2
 
 KEY_WORKFLOW_SCHEMA = "fbp_gp_workflow_schema"
@@ -61,16 +61,10 @@ WORKFLOW_STATE_ITEMS = (
     ("INK", "Ink", "Dim the source image and draw on the linked Grease Pencil canvas", "GREASEPENCIL", 1),
     ("FINAL", "Final", "Hide the source image in the viewport and inspect the Grease Pencil result", "RESTRICT_VIEW_ON", 2),
 )
-MISSING_DRAWING_ITEMS = (
-    ("BLANK", "Blank", "Create empty Grease Pencil drawings at missing source exposures"),
-    ("DUPLICATE_PREVIOUS", "Duplicate Previous", "Copy the nearest previous explicit Grease Pencil drawing into each missing exposure"),
-)
-
 _RNA_PROPERTIES = (
     "fbp_gp_workflow_state",
     "fbp_gp_reference_visible",
     "fbp_gp_timing_offset",
-    "fbp_gp_missing_drawing_mode",
     "fbp_gp_timing_layer_name",
     "fbp_gp_last_timing_report",
     "fbp_gp_auto_sync_timing",
@@ -304,19 +298,6 @@ def timing_source_fingerprint(canvas, scene=None):
         return ""
 
 
-def _timing_layer_has_applied_loop(canvas):
-    layer_name = str(getattr(canvas, "fbp_gp_timing_layer_name", "") or "")
-    try:
-        for block in tuple(getattr(canvas, "fbp_gp_loop_blocks", ()) or ()):
-            if bool(getattr(block, "applied", False)) and (
-                not layer_name or str(getattr(block, "layer_name", "") or "") == layer_name
-            ):
-                return True
-        return False
-    except FBP_DATA_ERRORS:
-        return True
-
-
 def _run_auto_timing_sync(canvas_name):
     try:
         canvas = bpy.data.objects.get(str(canvas_name))
@@ -326,10 +307,6 @@ def _run_auto_timing_sync(canvas_name):
         return None
     fingerprint = timing_source_fingerprint(canvas)
     if not fingerprint:
-        return None
-    if _timing_layer_has_applied_loop(canvas):
-        canvas.fbp_gp_last_timing_report = "Auto Sync paused: remove or rebuild Limited Loop timing first"
-        canvas.fbp_gp_timing_fingerprint = fingerprint
         return None
     result = align_drawings_to_plane(canvas)
     canvas.fbp_gp_timing_fingerprint = fingerprint
@@ -725,25 +702,6 @@ def _auto_sync_update(self, context):
         pass
 
 
-class FBP_OT_GPSetWorkflowState(Operator):
-    bl_idname = "fbp.gp_set_workflow_state"
-    bl_label = "Set Ink Workflow State"
-    bl_description = 'Switch the linked source and drawing visibility between Reference, Ink and Final states'
-    bl_options = {"REGISTER", "UNDO"}
-
-    state: EnumProperty(description='Choose the State option for this Grease Pencil workflow. Hover each entry for the specific mode when Blender exposes enum item help.', name="State", items=WORKFLOW_STATE_ITEMS, default="INK", options={"SKIP_SAVE"})
-
-    @classmethod
-    def poll(cls, context):
-        return _active_canvas(context) is not None
-
-    def execute(self, context):
-        canvas = _active_canvas(context)
-        canvas.fbp_gp_workflow_state = self.state
-        apply_workflow_state(canvas)
-        return {"FINISHED"}
-
-
 class FBP_OT_GPMatchPlaneTiming(Operator):
     bl_idname = "fbp.gp_match_plane_timing"
     bl_label = "Match Plane Timing"
@@ -790,134 +748,6 @@ class FBP_OT_GPMatchDrawingTiming(Operator):
         return {"FINISHED"}
 
 
-class FBP_OT_GPCreateMissingDrawings(Operator):
-    bl_idname = "fbp.gp_create_missing_drawings"
-    bl_label = "Create Missing GP Drawings"
-    bl_description = "Create explicit Grease Pencil drawings for source exposures that do not yet have a keyframe"
-    bl_options = {"REGISTER", "UNDO"}
-
-    mode: EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Creation Mode", items=MISSING_DRAWING_ITEMS, default="BLANK", options={"SKIP_SAVE"})
-
-    @classmethod
-    def poll(cls, context):
-        canvas = _active_canvas(context)
-        return bool(canvas and timing_status(canvas, remember_layer=False)["missing"])
-
-    def execute(self, context):
-        canvas = _active_canvas(context)
-        mode = self.mode or str(getattr(canvas, "fbp_gp_missing_drawing_mode", "BLANK") or "BLANK")
-        result = create_missing_drawings(canvas, duplicate_previous=mode == "DUPLICATE_PREVIOUS")
-        canvas.fbp_gp_last_timing_report = (
-            f"Created {result['created']} blank · copied {result['copied']} · {len(result['missing'])} still missing"
-        )
-        if result["failed"]:
-            self.report({"WARNING"}, canvas.fbp_gp_last_timing_report)
-        else:
-            self.report({"INFO"}, canvas.fbp_gp_last_timing_report)
-        return {"FINISHED"}
-
-
-class FBP_OT_GPCreateCurrentExposure(Operator):
-    bl_idname = "fbp.gp_create_current_exposure"
-    bl_label = "Create Current GP Exposure"
-    bl_description = "Create a drawing at the source exposure active under the current timeline frame"
-    bl_options = {"REGISTER", "UNDO"}
-
-    duplicate_previous: BoolProperty(description='Toggle this option for the current Grease Pencil workflow. Disabled keeps the data available but prevents this behavior from being applied.', name="Duplicate Previous", default=True, options={"SKIP_SAVE"})
-
-    @classmethod
-    def poll(cls, context):
-        return _active_canvas(context) is not None
-
-    def execute(self, context):
-        canvas = _active_canvas(context)
-        try:
-            from .grease_pencil_limited_loop import limited_loop_guard_info
-            guard = limited_loop_guard_info(canvas, context.scene.frame_current)
-            if guard:
-                self.report(
-                    {"ERROR"},
-                    f"Generated frames from {guard['name']} are protected. "
-                    f"Draw in source frames {guard['start']}–{guard['end']}",
-                )
-                return {"CANCELLED"}
-        except (ImportError, AttributeError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
-        layer = _active_layer(canvas)
-        target = current_source_exposure(canvas)
-        if layer is None or target is None:
-            self.report({"WARNING"}, "No source exposure or active Grease Pencil layer")
-            return {"CANCELLED"}
-        existing = _find_frame(layer, target)
-        if existing is not None:
-            context.scene.frame_set(target)
-            self.report({"INFO"}, f"Drawing already exists at frame {target}")
-            return {"FINISHED"}
-        previous = max((number for number in gp_frame_numbers(layer) if number < target), default=None)
-        if self.duplicate_previous and previous is not None:
-            _frame, changed = _copy_frame(layer, previous, target)
-            action = "Duplicated previous drawing"
-        else:
-            _frame, changed = _new_frame(layer, target)
-            action = "Created blank drawing"
-        if not changed:
-            self.report({"ERROR"}, f"Could not create a drawing at frame {target}")
-            return {"CANCELLED"}
-        context.scene.frame_set(target)
-        try:
-            canvas.data.update_tag()
-            mark_gp_mask_dirty(canvas, schedule=True)
-        except FBP_DATA_ERRORS:
-            pass
-        self.report({"INFO"}, f"{action} at frame {target}")
-        return {"FINISHED"}
-
-
-class FBP_PT_GreasePencilInkWorkflow(Panel):
-    bl_label = "Ink Over Image"
-    bl_description = "Switch between reference, drawing and final visibility while inking over a linked layer"
-    bl_idname = "FBP_PT_grease_pencil_ink_workflow"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Frame By Plane"
-    bl_parent_id = "FBP_PT_grease_pencil_canvas"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
-
-    @classmethod
-    def poll(cls, context):
-        return _active_canvas(context) is not None
-
-    def draw(self, context):
-        layout = configure_layout(self.layout)
-        canvas = _active_canvas(context)
-        rig = gp_canvas_owner(canvas)
-        section_header(layout, "Workflow State", icon="GREASEPENCIL")
-
-        states = layout.row(align=True)
-        for identifier, label, _description, icon, _index in WORKFLOW_STATE_ITEMS:
-            op = states.operator(
-                "fbp.gp_set_workflow_state",
-                text=label,
-                icon=icon,
-                depress=str(getattr(canvas, "fbp_gp_workflow_state", "INK")) == identifier,
-            )
-            op.state = identifier
-
-        reference = layout.row(align=True)
-        reference.prop(canvas, "fbp_gp_reference_visible", text="Reference", toggle=True, icon="IMAGE_BACKGROUND")
-        reference.prop(canvas, "fbp_gp_reference_opacity", text="Opacity", slider=True)
-        if rig is not None:
-            reference.label(text=getattr(rig, "name", "Layer"), icon="IMAGE_DATA")
-
-        section_gap(layout, 0.2)
-        current = current_source_exposure(canvas, context.scene.frame_current)
-        current_row = layout.row(align=True)
-        current_row.label(text=f"Current source exposure: {current if current is not None else '—'}", icon="TIME")
-        op = current_row.operator("fbp.gp_create_current_exposure", text="New Drawing", icon="ADD")
-        op.duplicate_previous = str(getattr(canvas, "fbp_gp_missing_drawing_mode", "BLANK")) == "DUPLICATE_PREVIOUS"
-
-
 class FBP_PT_GreasePencilTiming(Panel):
     bl_label = "Drawing Timing"
     bl_description = "Synchronize Grease Pencil drawings with the linked Frame By Plane source timing"
@@ -945,19 +775,10 @@ class FBP_PT_GreasePencilTiming(Panel):
 
         auto = layout.row(align=True)
         auto.prop(canvas, "fbp_gp_auto_sync_timing", text="Auto Sync Source Timing", toggle=True, icon="FILE_REFRESH")
-        if bool(getattr(canvas, "fbp_gp_auto_sync_timing", False)) and _timing_layer_has_applied_loop(canvas):
-            auto.alert = True
-            auto.label(text="Paused by Limited Loop", icon="LOCKED")
 
         sync = layout.row(align=False)
         sync.operator("fbp.gp_match_plane_timing", text="Plane → GP", icon="FORWARD")
         sync.operator("fbp.gp_match_drawing_timing", text="GP → Plane", icon="BACK")
-
-        missing = layout.row(align=True)
-        missing.prop(canvas, "fbp_gp_missing_drawing_mode", text="Missing")
-        create = missing.operator("fbp.gp_create_missing_drawings", text="Create", icon="ADD")
-        create.mode = str(getattr(canvas, "fbp_gp_missing_drawing_mode", "BLANK") or "BLANK")
-        missing.enabled = bool(status["missing"])
 
         summary = layout.row(align=False)
         summary.alert = bool(status["missing"])
@@ -1034,12 +855,6 @@ def _register_properties():
         soft_max=250,
         update=_timing_offset_update,
     )
-    bpy.types.Object.fbp_gp_missing_drawing_mode = EnumProperty(
-        name="Missing Drawing",
-        description="How missing Grease Pencil exposures should be created",
-        items=MISSING_DRAWING_ITEMS,
-        default="DUPLICATE_PREVIOUS",
-    )
     bpy.types.Object.fbp_gp_timing_layer_name = StringProperty(
         name="Timing Layer",
         description="Grease Pencil layer used by Frame By Plane timing tools",
@@ -1067,11 +882,8 @@ def _unregister_properties():
 
 
 classes = (
-    FBP_OT_GPSetWorkflowState,
     FBP_OT_GPMatchPlaneTiming,
     FBP_OT_GPMatchDrawingTiming,
-    FBP_OT_GPCreateMissingDrawings,
-    FBP_OT_GPCreateCurrentExposure,
 )
 
 

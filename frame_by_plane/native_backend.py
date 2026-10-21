@@ -18,6 +18,7 @@ from .runtime import (
 )
 from .layers import set_collection_color_tag, apply_collection_color_to_rig
 from .scene_sync import sync_layer_collection
+from .user_storage import fbp_media_cache_roots, fbp_project_assets_dir, fbp_user_data_dir
 
 
 FBP_NATIVE_HOLD_MARGIN = 500
@@ -382,8 +383,13 @@ def _native_sequence_needs_rename(files):
 
 
 def _native_proxy_cache_root(source_directory):
-    """Return a persistent writable cache root for native sequence proxies."""
-    source_root = Path(str(source_directory or "")) / ".frame_by_plane_cache"
+    """Return a persistent writable cache root for native sequence proxies.
+
+    A saved project keeps proxies in its ``assets/sequences`` folder; unsaved
+    files use a ``.frame_by_plane_cache`` folder beside the source frames. The
+    extension user folder is the last resort.
+    """
+    beside_source = Path(str(source_directory or "")) / ".frame_by_plane_cache"
 
     def writable_root(root):
         try:
@@ -395,22 +401,10 @@ def _native_proxy_cache_root(source_directory):
         except (OSError, RuntimeError, TypeError, ValueError):
             return None
 
-    # Media-local cache is deterministic and normally writable. Avoid asking
-    # Blender to create its user datafiles directory unless this first choice
-    # actually fails (important for portable/restricted installations).
-    root = writable_root(source_root)
-    if root is not None:
-        return root
-    try:
-        user_root = bpy.utils.user_resource(
-            'DATAFILES',
-            path='frame_by_plane/sequence_cache',
-            create=True,
-        )
-        if user_root:
-            return writable_root(Path(user_root))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        pass
+    for candidate in fbp_media_cache_roots('sequences', beside_source):
+        root = writable_root(Path(candidate))
+        if root is not None:
+            return root
     return None
 
 
@@ -1183,25 +1177,30 @@ def fbp_proxy_cache_roots_from_materials(materials):
             source_cache = directory_path / '.frame_by_plane_cache'
             if source_cache.is_dir():
                 roots.add(str(source_cache))
-    try:
-        user_root = bpy.utils.user_resource(
-            'DATAFILES', path='frame_by_plane/sequence_cache', create=False,
-        )
-        if user_root and os.path.isdir(user_root):
-            roots.add(os.path.abspath(user_root))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        pass
+    for user_root in _proxy_user_roots():
+        if os.path.isdir(user_root):
+            roots.add(user_root)
     return sorted(roots)
 
 
-def _official_proxy_user_root():
+def _proxy_user_roots():
+    """Cache roots owned by the extension: current, project and pre-7.6."""
+    roots = []
+    for value in (
+        fbp_user_data_dir('sequences', create=False),
+        fbp_project_assets_dir('sequences'),
+    ):
+        if value:
+            roots.append(os.path.abspath(value))
     try:
-        value = bpy.utils.user_resource(
+        legacy = bpy.utils.user_resource(
             'DATAFILES', path='frame_by_plane/sequence_cache', create=False,
         )
-        return os.path.normcase(os.path.abspath(value)) if value else ""
+        if legacy:
+            roots.append(os.path.abspath(legacy))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
-        return ""
+        pass
+    return roots
 
 
 def _allowed_proxy_root(root):
@@ -1210,7 +1209,9 @@ def _allowed_proxy_root(root):
         if root.is_symlink() or not root.is_dir():
             return False
         normalized = os.path.normcase(os.path.abspath(str(root)))
-        return root.name == '.frame_by_plane_cache' or normalized == _official_proxy_user_root()
+        return root.name == '.frame_by_plane_cache' or normalized in {
+            os.path.normcase(value) for value in _proxy_user_roots()
+        }
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -2220,81 +2221,6 @@ def fbp_native_rig_render_ready(
     )
 
 
-def fbp_native_timing_self_test():
-    """Run deterministic playback-math checks without creating Blender data.
-
-    These cases protect the native ImageUser F-Curve contract against subtle
-    regressions in One Shot, Loop, Ping-Pong, variable durations and the
-    established 500-frame hold coverage. The function is intentionally free of
-    datablock mutation so it can be called by the Deep Audit and headless tests.
-    """
-    issues = []
-    checks = 0
-
-    def expect(label, actual, expected):
-        nonlocal checks
-        checks += 1
-        if actual != expected:
-            issues.append(f"{label}: expected {expected!r}, got {actual!r}")
-
-    durations = [2, 3, 1]
-    expect(
-        "One Shot source order",
-        [_source_index_at_elapsed(value, 3, durations, 'NONE') for value in (-3, -1, 0, 1, 2, 4, 5, 6, 20)],
-        [0, 0, 0, 0, 1, 1, 2, 2, 2],
-    )
-    expect(
-        "Loop source order",
-        [_source_index_at_elapsed(value, 3, durations, 'REPEAT') for value in range(12)],
-        [0, 0, 1, 1, 1, 2, 0, 0, 1, 1, 1, 2],
-    )
-    expect(
-        "Ping-Pong source order",
-        [_source_index_at_elapsed(value, 3, durations, 'PINGPONG') for value in range(12)],
-        [0, 0, 1, 1, 1, 2, 1, 1, 1, 0, 0, 1],
-    )
-    expect(
-        "Single-frame playback",
-        [_source_index_at_elapsed(value, 1, [7], 'PINGPONG') for value in (-50, 0, 50)],
-        [0, 0, 0],
-    )
-    expect(
-        "One Shot transitions",
-        list(_timing_transition_elapsed_values(3, durations, 'NONE', -20, 20)),
-        [2, 5],
-    )
-    expect(
-        "Loop transitions",
-        list(_timing_transition_elapsed_values(3, durations, 'REPEAT', 1, 12)),
-        [2, 5, 6, 8, 11, 12],
-    )
-    expect(
-        "Ping-Pong transitions",
-        list(_timing_transition_elapsed_values(3, durations, 'PINGPONG', 1, 18)),
-        [2, 5, 6, 9, 11, 14, 15, 18],
-    )
-    expect(
-        "Linear key simplification",
-        _simplified_linear_key_values({0, 1, 2, 4}, lambda frame: 10 - frame),
-        {0: 10, 4: 6},
-    )
-
-    class _TimingScene:
-        frame_start = -20
-        frame_end = 120
-
-    expect(
-        "Hold coverage",
-        _native_hold_bounds(3, durations, 'NONE', 10, margin=500, scene=_TimingScene()),
-        (-520, 620, 15),
-    )
-    return {
-        "issues": tuple(issues),
-        "checks": checks,
-        "passed": checks - len(issues),
-    }
-
-
 def fbp_native_media_cache_report(*, repair=False):
     """Inspect FBP-owned native Image IDs and lightweight runtime indexes.
 
@@ -2378,110 +2304,6 @@ def fbp_native_media_cache_report(*, repair=False):
             "native_source_health_entries": len(_FBP_NATIVE_SOURCE_HEALTH_CACHE),
         },
     }
-
-
-def fbp_probe_native_rig_timing(rig, *, scene=None, max_samples=64):
-    """Evaluate representative timeline frames against the native F-Curves.
-
-    The probe changes only ``Scene.frame_current`` and restores it before
-    returning. It never rewrites rows, materials, images or animation data.
-    """
-    issues = list(fbp_native_rig_contract_issues(rig, check_files=True))
-    result = {"issues": issues, "samples": 0, "kind": "UNKNOWN"}
-    if issues:
-        return result
-
-    mat = _native_material_from_rig(rig)
-    nodes = fbp_native_sequence_nodes(mat) if mat else []
-    if not mat or len(nodes) != 1:
-        result["issues"].append("native timing probe could not resolve one texture node")
-        return result
-    node = nodes[0]
-    if bool(mat.get("fbp_native_video", False)):
-        result["kind"] = "MOVIE"
-        return result
-    if bool(mat.get("fbp_native_static_image", False)):
-        result["kind"] = "STATIC"
-        return result
-    result["kind"] = "SEQUENCE"
-
-    try:
-        rows = list(getattr(rig, "fbp_images", ()) or ())
-        row_count = len(rows)
-        durations = _durations_from_rig(
-            rig, row_count, max(1, int(getattr(rig, "fbp_global_duration", 1) or 1))
-        )
-        loop_mode = str(getattr(rig, "fbp_loop_mode", "NONE") or "NONE")
-        frame_start = int(getattr(rig, "fbp_start_frame", 1) or 1)
-        transparent_flags = [bool(getattr(item, "is_empty", False)) for item in rows]
-        source_indices = _source_indices_from_material(mat, row_count)
-        runtime_directory, runtime_files = _runtime_sequence_from_material(mat)
-        if row_count <= 0 or len(source_indices) != row_count or not runtime_directory or not runtime_files:
-            result["issues"].append("native timing probe could not resolve logical rows to runtime sources")
-            return result
-        frame_number_base = _material_frame_number_base(mat)
-        owner_scene = scene or _scene_for_rig(rig)
-        if owner_scene is None:
-            result["issues"].append("native timing probe could not resolve the owner scene")
-            return result
-        hold_in, hold_out, animation_out = _native_hold_bounds(
-            row_count, durations, loop_mode, frame_start, scene=owner_scene
-        )
-        samples = {
-            hold_in, frame_start - 1, frame_start, animation_out,
-            animation_out + 1, hold_out,
-            int(getattr(owner_scene, "frame_start", frame_start)),
-            int(getattr(owner_scene, "frame_end", animation_out)),
-        }
-        cycle_span = _playback_span_frames(row_count, durations, loop_mode)
-        probe_end = min(hold_out, frame_start + max(cycle_span * 2, cycle_span + 2))
-        for elapsed in _timing_transition_elapsed_values(
-            row_count, durations, loop_mode,
-            max(1, hold_in - frame_start + 1),
-            probe_end - frame_start,
-        ):
-            timeline_frame = frame_start + elapsed
-            samples.add(timeline_frame - 1)
-            samples.add(timeline_frame)
-        samples = sorted(frame for frame in samples if hold_in <= frame <= hold_out)
-        max_samples = max(1, int(max_samples or 1))
-        if len(samples) > max_samples:
-            step = max(1, len(samples) // max_samples)
-            samples = samples[::step][:max_samples]
-
-        original_frame = int(getattr(owner_scene, "frame_current", frame_start))
-        image_user = node.image_user
-        visibility = mat.node_tree.nodes.get("FBP_Native_Frame_Visibility")
-        try:
-            for timeline_frame in samples:
-                owner_scene.frame_set(int(timeline_frame))
-                elapsed = int(timeline_frame) - frame_start
-                row_index = _source_index_at_elapsed(
-                    elapsed, row_count, durations, loop_mode
-                )
-                expected_source = source_indices[max(0, min(row_count - 1, row_index))]
-                actual_source = int(
-                    (int(timeline_frame) - int(getattr(image_user, "frame_start", hold_in)))
-                    + int(getattr(image_user, "frame_offset", 0) or 0)
-                    - (int(frame_number_base) - 1)
-                )
-                if actual_source != expected_source:
-                    result["issues"].append(
-                        f"frame {timeline_frame}: source index {actual_source}, expected {expected_source}"
-                    )
-                if visibility is not None and any(transparent_flags):
-                    expected_visibility = 0.0 if transparent_flags[row_index] else 1.0
-                    actual_visibility = float(visibility.outputs[0].default_value)
-                    if abs(actual_visibility - expected_visibility) > 1e-4:
-                        result["issues"].append(
-                            f"frame {timeline_frame}: visibility {actual_visibility:.3f}, expected {expected_visibility:.3f}"
-                        )
-                result["samples"] += 1
-        finally:
-            owner_scene.frame_set(original_frame)
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError, IndexError) as exc:
-        result["issues"].append(f"native timing probe failed: {exc}")
-    return result
 
 
 def _native_media_key(first_path, desired_source):
@@ -3977,7 +3799,7 @@ def _assign_layer_props(rig, scene, *, color_tag='NONE', color_variant_index=0, 
     rig["fbp_native_backend"] = True
     rig.fbp_global_duration = getattr(scene, 'fbp_pre_duration', 1)
     rig.fbp_use_emission = getattr(scene, 'fbp_pre_shadeless', True)
-    rig.fbp_loop_mode = getattr(scene, 'fbp_pre_loop_mode', 'NONE')
+    rig.fbp_loop_mode = getattr(scene, 'fbp_pre_loop_mode', 'REPEAT')
     rig.fbp_interpolation = getattr(scene, 'fbp_pre_interpolation', 'Closest')
     rig.fbp_track_cam = bool(getattr(scene, 'fbp_pre_track_cam', False))
     # Creation-time color assignment must never trigger the interactive bulk

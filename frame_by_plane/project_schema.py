@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import bpy
-
 from .constants import FBP_PUBLIC_VERSION_STRING
 from .runtime import FBP_DATA_ERRORS
 
@@ -77,17 +75,4 @@ def project_schema_status(scene):
         "unsupported_older": bool(has_data and 0 < source < FBP_PROJECT_SCHEMA_VERSION),
         "unsupported_future": bool(source > FBP_PROJECT_SCHEMA_VERSION),
     }
-
-
-def project_schema_snapshot():
-    results = []
-    try:
-        scenes = tuple(getattr(bpy.data, "scenes", ()) or ())
-    except FBP_DATA_ERRORS:
-        scenes = ()
-    for scene in scenes:
-        status = project_schema_status(scene)
-        status["scene"] = str(getattr(scene, "name", "") or "")
-        results.append(status)
-    return {"schema": FBP_PROJECT_SCHEMA_VERSION, "scenes": results}
 

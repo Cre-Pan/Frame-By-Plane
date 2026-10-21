@@ -33,6 +33,7 @@ from .render_output import (
 from .compositor import (
     FBP_COMPOSITOR_EFFECT_ITEMS,
     FBP_COMPOSITOR_TAG_LABELS,
+    fbp_compositor_needs_refresh,
 )
 from .runtime import fbp_warn, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
 from .feature_scope import fbp_feature_enabled
@@ -3438,12 +3439,30 @@ class FBP_MT_CompositorEffectListActions(Menu):
         remove.action = "REMOVE"
 
 
+def _fbp_draw_compositor_setup_row(layout, scene):
+    """On/off, Refresh and Live Update for the managed compositor setup."""
+    row = layout.row(align=True)
+    row.scale_y = 1.1
+    row.operator(
+        "fbp.compositor_toggle", text="Compositor", icon='NODE_COMPOSITING',
+        depress=bool(getattr(scene, "fbp_experimental_compositor", False)),
+    )
+    refresh = row.row(align=True)
+    # Highlight Refresh while edits are waiting or nothing has been built yet.
+    refresh.alert = bool(
+        fbp_compositor_needs_refresh(scene)
+        or not bool(getattr(scene, "fbp_compositor_enabled", False))
+    )
+    refresh.operator("fbp.compositor_sync", text="Refresh", icon='FILE_REFRESH')
+    row.prop(scene, "fbp_compositor_live_update", text="", toggle=True, icon='AUTO')
+
+
 def _fbp_draw_preview_scope_badge(layout, label):
     """Draw the shared, non-marketing Preview scope notice and diagnostics."""
     badge = layout.row(align=True)
     badge.alert = True
     badge.label(text=f"{label} · Preview", icon="INFO")
-    badge.label(text="Outside the 7.2 LTS stability promise")
+    badge.label(text="Outside the 8 LTS stability promise")
     badge.operator("fbp.copy_preview_diagnostics", text="Copy Diagnostics", icon="COPYDOWN")
 
 
@@ -3479,15 +3498,12 @@ class FBP_PT_OutputCompositor(Panel):
             )
             enable = content.row(align=False)
             enable.scale_y = 1.1
-            enable.prop(
-                sc,
-                "fbp_experimental_compositor",
-                text="Enable Compositor Tools",
-                toggle=True,
-                icon='NODE_COMPOSITING',
+            enable.operator(
+                "fbp.compositor_toggle", text="Enable Compositor Tools", icon='NODE_COMPOSITING',
             )
             return
 
+        _fbp_draw_compositor_setup_row(content, sc)
         section_header(content, "Render", icon='IMAGE_ALPHA')
         render_opt_in = content.row(align=False)
         render_opt_in.scale_y = 1.1
@@ -3532,14 +3548,6 @@ class FBP_PT_OutputCompositor(Panel):
             if bool(getattr(layer, "selected", False))
             and str(getattr(layer, "row_type", 'LAYER') or 'LAYER') != 'FOLDER'
         ]
-        can_group = bool(selected_layers) or (
-            item is not None and str(getattr(item, "row_type", 'LAYER') or 'LAYER') != 'FOLDER'
-        )
-        can_ungroup = any(str(getattr(layer, "parent_folder_id", "") or "") for layer in selected_layers) or (
-            item is not None
-            and str(getattr(item, "row_type", 'LAYER') or 'LAYER') != 'FOLDER'
-            and bool(str(getattr(item, "parent_folder_id", "") or ""))
-        )
 
         if layer_count:
             list_box = fbp_draw_uilist_header(
@@ -3790,14 +3798,11 @@ class FBP_PT_CompositorNodeSidebar(Panel):
             )
             enable = layout.row(align=False)
             enable.scale_y = 1.1
-            enable.prop(
-                scene,
-                "fbp_experimental_compositor",
-                text="Enable Compositor Tools",
-                toggle=True,
-                icon='NODE_COMPOSITING',
+            enable.operator(
+                "fbp.compositor_toggle", text="Enable Compositor Tools", icon='NODE_COMPOSITING',
             )
             return
+        _fbp_draw_compositor_setup_row(layout, scene)
         render_opt_in = layout.row(align=False)
         render_opt_in.prop(
             scene,
@@ -4802,6 +4807,13 @@ class FBP_MT_SequenceFrameActions(Menu):
         bottom = bottom_row.operator("fbp.list_action", text="Bring Last", icon="TRIA_DOWN_BAR")
         bottom.action = "MOVE_BOTTOM"
         layout.separator()
+        split = layout.operator(
+            "fbp.split_sequence_to_planes",
+            text="Split into Multiple Planes",
+            **ui_icon_kwargs("menu.multiplane", fallback="RENDERLAYERS"),
+        )
+        split.rig_name = str(getattr(rig, "name", "") or "")
+        layout.separator()
         if rig is not None and not bool(getattr(rig, "fbp_is_color_plane", False)):
             refresh = layout.operator(
                 "fbp.refresh_media", text="Refresh Media", icon=ui_icon("action.refresh")
@@ -5199,8 +5211,6 @@ def _fbp_draw_properties_modifier_effects(layout, context):
     try:
         from .grease_pencil_bridge import (
             draw_gp_mask_settings_ui,
-            draw_gp_native_effects_ui,
-            is_gp_drawing_canvas,
             is_gp_mask_canvas,
         )
         if is_gp_mask_canvas(active):
@@ -5233,9 +5243,6 @@ def _fbp_draw_properties_modifier_effects(layout, context):
                 draw_effects_ui(layout, context)
                 return
             draw_gp_mask_settings_ui(layout, context, active, embedded=False, header_actions=True)
-            return
-        if is_gp_drawing_canvas(active):
-            draw_gp_native_effects_ui(layout, context, active)
             return
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not draw Frame By Plane Grease Pencil modifiers UI", exc)
@@ -5355,9 +5362,11 @@ class FBP_PT_ModifierShortcuts(Panel):
         if active is None:
             return False
         try:
-            from .grease_pencil_bridge import is_gp_canvas
+            from .grease_pencil_bridge import is_gp_canvas, is_gp_mask_canvas
             if is_gp_canvas(active):
-                return True
+                # Drawing canvases use Blender's own Modifiers and Visual
+                # Effects panels; only GP masks have Frame By Plane settings.
+                return is_gp_mask_canvas(active)
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
         if str(getattr(active, "type", "") or "").upper() == "GREASEPENCIL":
@@ -5401,16 +5410,25 @@ class FBP_MT_FrameByPlaneMore(Menu):
         layout.operator("fbp.import_toon_boom_export", text="Import Toon Boom Export", icon=ui_icon("action.export"))
 
 
+def _fbp_shift_a_plane_selected(context):
+    """Return True when a Frame By Plane plane is selected or active."""
+    if get_selected_fbp_roots(context):
+        return True
+    try:
+        return fbp_resolve_rig_from_any_object(getattr(context, "object", None), context) is not None
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 class FBP_MT_FrameByPlaneAdd(Menu):
     bl_idname = "FBP_MT_frame_by_plane_add"
     bl_label = "Frame By Plane"
     bl_description = "Create Frame By Plane layers and multiplane projects"
 
     def draw(self, context):
-        del context
         layout = configure_layout(self.layout)
-        # Every primary entry opens a popup or file browser. Force invoke
-        # context so Shift+A never bypasses the operator's setup dialog.
+        # Media entries open the file browser and procedural ones read their
+        # last-used settings in invoke, so force the invoke context.
         layout.operator_context = 'INVOKE_DEFAULT'
 
         layout.operator(
@@ -5420,7 +5438,7 @@ class FBP_MT_FrameByPlaneAdd(Menu):
         )
         op = layout.operator(
             "fbp.popup_multiplane",
-            text="Multi Plane",
+            text="Multiplane",
             **ui_icon_kwargs("menu.multiplane"),
         )
         op.animation = True
@@ -5428,18 +5446,15 @@ class FBP_MT_FrameByPlaneAdd(Menu):
         layout.separator(factor=0.45)
         op = layout.operator("fbp.popup_color_plane", text="Color Plane", **ui_icon_kwargs("menu.color_plane"))
         op.preset_type = 'CUSTOM'
-        op = layout.operator("fbp.popup_color_plane", text="Gradient Plane", **ui_icon_kwargs("menu.gradient_plane"))
-        op.preset_type = 'GRADIENT'
-        op = layout.operator("fbp.popup_color_plane", text="Holdout Plane", **ui_icon_kwargs("menu.holdout_plane"))
-        op.preset_type = 'HOLDOUT'
+        layout.operator("fbp.popup_gradient_plane", text="Gradient Plane", **ui_icon_kwargs("menu.gradient_plane"))
+        layout.operator("fbp.popup_holdout_plane", text="Holdout Plane", **ui_icon_kwargs("menu.holdout_plane"))
 
         layout.separator(factor=0.45)
-        layout.operator(
-            "fbp.popup_video_plane",
-            text="Video Plane",
-            **ui_icon_kwargs("menu.video_plane", fallback="FILE_MOVIE"),
-        )
-        layout.operator(
+        # A Drawing Plane is placed from a selected plane, so the entry stays
+        # visible but inactive until one is selected.
+        gp_row = layout.row()
+        gp_row.enabled = _fbp_shift_a_plane_selected(context)
+        gp_row.operator(
             "fbp.add_grease_pencil_canvas",
             text="Grease Pencil Drawing",
             **ui_icon_kwargs("menu.gp_layer"),
@@ -5607,6 +5622,11 @@ class FBP_MT_ObjectLayerContext(Menu):
                 "fbp.merge_selected_to_active_sequence",
                 text="Convert to Single Animated Plane",
                 icon=ui_icon("layer.duplicate"),
+            )
+            layout.operator(
+                "fbp.split_sequence_to_planes",
+                text="Split into Multiple Planes",
+                **ui_icon_kwargs("menu.multiplane", fallback="RENDERLAYERS"),
             )
             layout.operator(
                 "fbp.delete_sequence",
@@ -6591,7 +6611,6 @@ def refresh_properties_panel_order():
     """Atomically re-register the Properties panels after a preference change."""
     if bool(getattr(bpy.app, "background", False)):
         return None
-    prefs = _fbp_ui_preferences(getattr(bpy, "context", None))
     active = tuple(
         cls for cls in _all_properties_order_classes()
         if getattr(bpy.types, cls.__name__, None) is not None
@@ -6646,7 +6665,6 @@ def register():
     try:
         register_custom_icons()
         icons_registered = True
-        prefs = _fbp_ui_preferences(getattr(bpy, "context", None))
         _set_properties_panel_orders(True)
         register_classes(ui_classes)
         register_fbp_menus()

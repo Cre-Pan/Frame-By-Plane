@@ -7,6 +7,7 @@ from bpy.props import (
     CollectionProperty, PointerProperty, EnumProperty
 )
 from bpy.types import PropertyGroup, AddonPreferences
+from .i18n import FBP_LANGUAGE_ITEMS, update_interface_language_cb
 from .constants import (
     COLLECTION_COLOR_ENUM_ITEMS, FBP_LAYER_BLEND_MODE_ITEMS,
     FBP_BLENDER_VERSION_SERIES_STRING, FBP_LTS_TARGET_VERSION,
@@ -826,6 +827,13 @@ def update_shortcut_preferences_cb(self, context):
 class FBP_AddonPreferences(AddonPreferences):
     bl_idname = __package__ if __package__ else "frame_by_plane"
 
+    interface_language: EnumProperty(
+        name="Language",
+        description="Language of the Frame By Plane interface. Automatic follows Blender's language",
+        items=FBP_LANGUAGE_ITEMS,
+        default='AUTO',
+        update=update_interface_language_cb,
+    )
     shift_a_menu_position: EnumProperty(
         name="Shift+A Position",
         description="Choose where the Frame By Plane submenu appears in Blender's Add menu",
@@ -927,7 +935,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     shortcut_gp_frame_scrub: BoolProperty(
         name="Grease Pencil Frame Scrub",
-        description="Tap < in any 3D View mode to toggle the interactive Scrub Bar, or hold it for momentary scrubbing",
+        description="Hold < in any 3D View mode for momentary scrubbing. The Scrub Bar button in the Viewport header pins the bar",
         default=True,
         update=update_shortcut_preferences_cb,
     )
@@ -966,7 +974,7 @@ class FBP_AddonPreferences(AddonPreferences):
         update=update_interface_preferences_cb,
     )
     gp_scrub_length_ratio: FloatProperty(
-        name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.2, max=1.0,
+        name="Length", description="Slider length relative to the active Viewport", subtype='FACTOR', default=0.5, min=0.1, max=1.0,
         update=update_interface_preferences_cb,
     )
     gp_scrub_edge_offset: FloatProperty(
@@ -980,8 +988,8 @@ class FBP_AddonPreferences(AddonPreferences):
         update=update_interface_preferences_cb,
     )
     gp_scrub_mouse_magnet_distance: FloatProperty(
-        name="Magnet Range",
-        description="Distance in pixels at which magnetic direct scrubbing and persistent bar attraction begin",
+        name="Precise Range",
+        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and blends into relative scrubbing up to this distance from it",
         default=96.0,
         min=24.0,
         max=240.0,
@@ -1004,6 +1012,45 @@ class FBP_AddonPreferences(AddonPreferences):
         default=0.22,
         min=0.01,
         max=1.0,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_to_start: BoolProperty(
+        name="Return to Start Frame",
+        description="After scrubbing with <, release it and the playhead glides back to the frame you started from",
+        default=True,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_duration: FloatProperty(
+        name="Return Time",
+        description="Seconds the playhead takes to glide back to the start frame, including the bounce",
+        default=0.45,
+        min=0.05,
+        max=1.5,
+        subtype='TIME_ABSOLUTE',
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_return_bounce: FloatProperty(
+        name="Bounce",
+        description="How far the playhead passes the start frame before settling, like a magnet snapping back. 0 lands without bouncing",
+        subtype='FACTOR',
+        default=0.1,
+        min=0.0,
+        max=0.5,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_tap_toggles: BoolProperty(
+        name="Tap < Pins the Bar",
+        description="A quick tap of < shows or hides the persistent Scrub Bar. Off: only the Scrub Bar button in the Viewport header pins it",
+        default=False,
+        update=update_interface_preferences_cb,
+    )
+    gp_scrub_distance_ramp: FloatProperty(
+        name="Speed Ramp Distance",
+        description="While holding <, the playhead follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away, reaching Far Speed at this distance beyond the Precise Range. 0 uses Far Speed right outside the Precise Range",
+        default=320.0,
+        min=0.0,
+        max=2000.0,
+        subtype='PIXEL',
         update=update_interface_preferences_cb,
     )
     gp_scrub_show_onion_handles: BoolProperty(
@@ -1320,7 +1367,7 @@ class FBP_AddonPreferences(AddonPreferences):
         description="Frames per second assigned to new Frame By Plane scenes",
         default=24, min=1, max=240,
     )
-    default_playback: EnumProperty(description="Playback behavior assigned by default to newly imported animated planes: One Shot, Loop or Ping-Pong.", name="Default Playback", items=PLAYBACK_ITEMS, default='NONE')
+    default_playback: EnumProperty(description="Playback behavior assigned by default to newly imported animated planes: One Shot, Loop or Ping-Pong.", name="Default Playback", items=PLAYBACK_ITEMS, default='REPEAT')
     default_scene_playback_loop_mode: EnumProperty(
         name="Timeline Loop Mode",
         description="Native Blender 5.2 behavior when timeline playback reaches the final frame",
@@ -1356,12 +1403,12 @@ class FBP_AddonPreferences(AddonPreferences):
     default_layer_offset: FloatProperty(
         name="Default Plane Distance",
         description="Default world-space distance inserted between consecutive layers generated by Multiplane Setup. Larger values create stronger parallax and require more camera depth.",
-        default=0.2, min=0.001, soft_max=10.0, unit='LENGTH',
+        default=0.5, min=0.001, soft_max=10.0, unit='LENGTH',
     )
     default_fit_to_camera: BoolProperty(
         name="Fit New Layers to Camera",
         description="Automatically fit generated planes inside the active or generated camera",
-        default=True,
+        default=False,
     )
     default_camera_fit_source_aspect: BoolProperty(
         name="Camera Uses Source Aspect",
@@ -1376,7 +1423,7 @@ class FBP_AddonPreferences(AddonPreferences):
     default_generate_camera: BoolProperty(
         name="Create Camera",
         description="Create a camera by default for new Multiplane projects",
-        default=True,
+        default=False,
     )
     default_camera_projection: EnumProperty(description="Projection used by newly generated cameras: perspective with a lens value or orthographic with a view scale.",
         name="Default Camera Projection",
@@ -1419,7 +1466,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     default_preview_compositor: BoolProperty(
         name="Compositor Layers",
-        description="Enable the Compositor Layers preview in newly initialized files; it is outside the Frame By Plane 7.2 LTS core scope",
+        description="Enable the Compositor Layers preview in newly initialized files; it is outside the Frame By Plane 8 LTS core scope",
         default=False,
     )
     default_preview_procreate_import: BoolProperty(
@@ -1684,8 +1731,14 @@ class FBP_AddonPreferences(AddonPreferences):
 
     whats_new_enabled: BoolProperty(
         name="What's New After Updates",
-        description="Show the local release-notes popup once after each new Frame By Plane release key. Fresh installs still create a silent baseline; intermediate updates can show their notes once. No telemetry or project data is collected",
+        description="Show the local release-notes splash once after every installation or update of Frame By Plane, from Blender Extensions or by drag and drop. No telemetry or project data is collected",
         default=True,
+    )
+    whats_new_install_stamp: StringProperty(
+        name="Last Shown Installation",
+        description="Identifies the installation the release splash was last shown for",
+        default="",
+        options={'HIDDEN'},
     )
     whats_new_last_seen_version: StringProperty(description='Whats New Last Seen Version value used by the current Frame By Plane tool. Changes are applied only to compatible Frame By Plane data.',
         name="Last Viewed What's New Version",
@@ -1813,7 +1866,7 @@ class FBP_AddonPreferences(AddonPreferences):
             body = _section(category, 'pref_ui_show_release', 'Onboarding', 'menu.shift_a_root', 'PRESET')
             if body:
                 row = _row(body)
-                row.prop(self, 'whats_new_enabled', text='Show After Updates', toggle=True, icon=fbp_icon('PRESET'))
+                row.prop(self, 'whats_new_enabled', text='Show After Install / Update', toggle=True, icon=fbp_icon('PRESET'))
                 splash = row.operator('fbp.whats_new_prompt', text="What's New", icon=fbp_icon('PRESET'))
                 splash.force = True
                 splash.start_tutorial = False
@@ -1910,23 +1963,27 @@ class FBP_AddonPreferences(AddonPreferences):
                 configure_layout(motion_box)
                 motion_box.label(text='Scrubbing and Layout', icon='MOUSE_MOVE')
                 row = _row(motion_box)
-                row.prop(self, 'gp_scrub_sensitivity', text='Sensitivity', slider=True)
-                row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
-                row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
+                row.prop(self, 'gp_scrub_return_to_start', text='Return to Start Frame', toggle=True, icon='LOOP_BACK')
+                duration = row.row(align=True)
+                duration.enabled = self.gp_scrub_return_to_start
+                duration.prop(self, 'gp_scrub_return_duration', text='Return Time')
+                duration.prop(self, 'gp_scrub_return_bounce', text='Bounce', slider=True)
+                row.prop(self, 'gp_scrub_tap_toggles', text='Tap < Pins the Bar', toggle=True, icon='PINNED')
                 row = _row(motion_box)
+                row.prop(self, 'gp_scrub_sensitivity', text='Far Speed', slider=True)
+                row.prop(self, 'gp_scrub_distance_ramp', text='Speed Ramp Distance')
+                row.prop(self, 'gp_scrub_shift_factor', text='Shift Slowdown', slider=True)
+                row = _row(motion_box)
+                row.prop(self, 'gp_scrub_length_ratio', text='Length', slider=True)
                 row.prop(self, 'gp_scrub_edge_offset', text='Edge Offset')
-                hint_row(motion_box, 'Hold <: relative sensitivity away from the axis, exact cursor mapping inside the magnetic zone.', icon='TIME')
+                hint_row(motion_box, 'Hold <: exact on the Scrub Bar, faster the further the pointer moves away. Release to glide back.', icon='TIME')
 
                 magnet_box = body.box()
                 configure_layout(magnet_box)
-                magnet_box.label(text='Mouse Magnet', icon='SNAP_ON')
+                magnet_box.label(text='Precise Range', icon='SNAP_ON')
                 row = _row(magnet_box)
-                row.prop(self, 'gp_scrub_mouse_magnet', text='Enabled', toggle=True)
-                controls = row.row(align=True)
-                controls.enabled = self.gp_scrub_mouse_magnet
-                controls.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
-                controls.prop(self, 'gp_scrub_mouse_magnet_strength', text='Strength', slider=True)
-                controls.prop(self, 'gp_scrub_mouse_magnet_smoothing', text='Smoothing', slider=True)
+                row.prop(self, 'gp_scrub_mouse_magnet_distance', text='Range')
+                hint_row(magnet_box, 'Hold <: exact on the Scrub Bar, blending into relative scrubbing up to this distance.', icon='INFO')
 
                 onion_box = body.box()
                 configure_layout(onion_box)
@@ -1968,7 +2025,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_cursor_color', text='Cursor Color')
                 row.prop(self, 'gp_scrub_cursor_text_color', text='Cursor Text')
-                hint_row(appearance_box, f'Tap < to toggle · hold < to scrub · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
+                hint_row(appearance_box, f'Hold < to scrub · header button pins the bar · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
 
             body = _section(category, 'pref_ui_show_procedural', 'Procedural Planes', 'menu.color_plane', 'MATERIAL')
             if body:
@@ -2001,6 +2058,8 @@ class FBP_AddonPreferences(AddonPreferences):
         if category:
             body = _section(category, 'pref_ui_show_interface', 'Interface Behavior', 'settings.display', 'PREFERENCES')
             if body:
+                row = _row(body)
+                row.prop(self, 'interface_language', text='Language')
                 row = _row(body)
                 row.prop(self, 'default_preview_mode', text='List Previews')
                 row = _row(body)
@@ -2438,6 +2497,9 @@ _FBP_VIEW_RENDER_PROPERTY_PAIRS = {
     "fbp_sculpt_waves_subdivision": "fbp_sculpt_waves_render_subdivision",
     "fbp_kinetic_tiles_subdivision": "fbp_kinetic_tiles_render_subdivision",
     "fbp_layered_echo_layers": "fbp_layered_echo_render_layers",
+    "fbp_frame_stack_slices": "fbp_frame_stack_render_slices",
+    "fbp_yarn_columns": "fbp_yarn_render_columns",
+    "fbp_frame_stack_detail": "fbp_frame_stack_render_detail",
     "fbp_thickness_viewport_pixels_x": "fbp_thickness_render_pixels_x",
     "fbp_thickness_viewport_pixels_y": "fbp_thickness_render_pixels_y",
     "fbp_text_matrix_viewport_columns": "fbp_text_matrix_render_columns",
@@ -2696,6 +2758,27 @@ update_edge_detect_threshold_cb = _make_effect_update_callback('EDGE_DETECT', 'f
 update_edge_detect_softness_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_softness')
 update_edge_detect_color_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_color')
 update_edge_detect_factor_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_factor')
+update_oil_paint_radius_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_radius')
+update_oil_paint_sharpness_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_sharpness')
+update_oil_paint_anisotropy_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_anisotropy')
+update_oil_paint_factor_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_factor')
+update_riso_ink_1_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_ink_1')
+update_riso_ink_2_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_ink_2')
+update_riso_ink_3_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_ink_3')
+update_riso_use_ink_3_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_use_ink_3')
+update_riso_paper_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_paper')
+update_riso_misregistration_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_misregistration')
+update_riso_halftone_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_halftone')
+update_riso_dot_size_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_dot_size')
+update_riso_grain_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_grain')
+update_riso_seed_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_seed')
+update_riso_factor_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_factor')
+update_edge_distance_mask_distance_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_distance')
+update_edge_distance_mask_threshold_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_threshold')
+update_edge_distance_mask_softness_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_softness')
+update_edge_distance_mask_image_border_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_image_border')
+update_edge_distance_mask_factor_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_factor')
+update_edge_distance_mask_invert_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_invert')
 update_smooth_toon_levels_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_levels')
 update_smooth_toon_softness_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_softness')
 update_smooth_toon_factor_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_factor')
@@ -3383,6 +3466,48 @@ update_layered_echo_rotation_y_cb = _make_effect_update_callback('LAYERED_ECHO',
 update_layered_echo_twist_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_twist')
 update_layered_echo_wave_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_wave')
 update_layered_echo_phase_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_phase')
+update_yarn_stitch_type_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_stitch_type')
+update_yarn_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_columns')
+update_yarn_playback_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_playback_columns')
+update_yarn_render_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_render_columns')
+update_yarn_row_height_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_row_height')
+update_yarn_loop_width_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_loop_width')
+update_yarn_thickness_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_thickness')
+update_yarn_plies_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_plies')
+update_yarn_twist_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_twist')
+update_yarn_color_variation_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_color_variation')
+update_yarn_jitter_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_jitter')
+update_yarn_seed_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_seed')
+update_yarn_alpha_threshold_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_alpha_threshold')
+update_yarn_fuzz_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_fuzz')
+update_yarn_self_light_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_self_light')
+update_yarn_show_plane_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_show_plane')
+update_frame_stack_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_slices')
+update_frame_stack_playback_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_playback_slices')
+update_frame_stack_render_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_render_slices')
+update_frame_stack_step_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_step')
+update_frame_stack_fixed_start_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_fixed_start')
+update_frame_stack_start_frame_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_start_frame')
+update_frame_stack_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_detail')
+update_frame_stack_playback_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_playback_detail')
+update_frame_stack_render_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_render_detail')
+update_frame_stack_offset_x_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_offset_x')
+update_frame_stack_offset_y_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_offset_y')
+update_frame_stack_spacing_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_spacing')
+update_frame_stack_scale_step_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_scale_step')
+update_frame_stack_rotation_x_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_rotation_x')
+update_frame_stack_rotation_y_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_rotation_y')
+update_frame_stack_twist_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_twist')
+update_frame_stack_front_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_front_slices')
+update_frame_stack_front_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_front_opacity')
+update_frame_stack_back_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_back_opacity')
+update_frame_stack_depth_fade_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_depth_fade')
+update_frame_stack_luminance_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_luminance_opacity')
+update_frame_stack_show_plane_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_show_plane')
+update_frame_stack_outline_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline')
+update_frame_stack_outline_width_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline_width')
+update_frame_stack_outline_color_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline_color')
+update_frame_stack_glow_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_glow')
 update_color_isolate_target_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_target')
 update_color_isolate_tolerance_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_tolerance')
 update_color_isolate_falloff_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_falloff')
@@ -3460,6 +3585,7 @@ _EFFECT_ANIMATION_IDS = (
     'CUTOUT_OUTLINE',
     'FELT_FUZZ',
     'FIBER_TUFTS',
+    'KNIT_CROCHET',
     'PAPER_SHARDS',
     'SPHERE_SCREEN',
     'IMAGE_RELIEF',
@@ -4280,14 +4406,35 @@ class FBP_GenerationRenameItem(PropertyGroup):
 # SECTION 02 - Scene / Collection / Object property registration #
 
 
+def _deactivate_compositor_deferred(scene_name):
+    scene = bpy.data.scenes.get(scene_name)
+    if scene is not None and not bool(getattr(scene, "fbp_experimental_compositor", False)):
+        from .compositor import fbp_deactivate_compositor
+        try:
+            fbp_deactivate_compositor(scene)
+        except FBP_DATA_ERRORS:
+            pass
+    return None
+
+
 def update_experimental_compositor_cb(self, _context):
     """Keep preview-only sections inaccessible while their gate is disabled."""
     try:
-        if (
-            not bool(getattr(self, "fbp_experimental_compositor", False))
-            and str(getattr(self, "fbp_settings_section", "PROJECT") or "PROJECT") == "COMPOSITOR"
-        ):
-            self.fbp_settings_section = 'MAINTENANCE'
+        if not bool(getattr(self, "fbp_experimental_compositor", False)):
+            if str(getattr(self, "fbp_settings_section", "PROJECT") or "PROJECT") == "COMPOSITOR":
+                self.fbp_settings_section = 'MAINTENANCE'
+            # Turning the tools off must also stop the managed compositor.
+            # Removing View Layers from an RNA update is unsafe while panels
+            # draw them, so the Compositor button does it directly and other
+            # paths defer it.
+            if bool(getattr(self, "fbp_compositor_enabled", False)):
+                from .safe_tasks import schedule_once
+                scene_name = str(self.name)
+                schedule_once(
+                    f"fbp_compositor_off:{scene_name}",
+                    lambda: _deactivate_compositor_deferred(scene_name),
+                    first_interval=0.0,
+                )
     except FBP_DATA_ERRORS:
         pass
 
@@ -4670,7 +4817,7 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_layered_report_unsupported_blends = IntProperty(name="Unsupported Blend Modes", description="Number of source blend modes preserved only as metadata because no reliable mapping was available", default=0, min=0)
     _FBP_SCENE_RNA.fbp_layered_report_warnings = StringProperty(name="Layered Import Warnings", description="Document-level compatibility notes from the current layered import", default="")
     _FBP_SCENE_RNA.fbp_pre_duration = IntProperty(
-        name="Duration (Frames)", description="Default duration assigned to each imported image frame", default=2, min=1)
+        name="Duration (Frames)", description="Default duration assigned to each imported image frame", default=2, min=1, soft_max=12)
     _FBP_SCENE_RNA.fbp_pre_shadeless = BoolProperty(name="Shadeless", description="Use lightweight emission materials so image planes are not affected by scene lighting", default=True)
     _FBP_SCENE_RNA.fbp_import_crop_alpha = BoolProperty(
         name="Crop Transparent Borders",
@@ -4688,7 +4835,7 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_pre_loop_mode = EnumProperty(description="Default playback behavior assigned to newly created animated Single Planes: play once, loop continuously or alternate forward and backward.",
         name="Playback",
         items=PLAYBACK_ITEMS,
-        default='NONE')
+        default='REPEAT')
     _FBP_SCENE_RNA.fbp_pre_interpolation = EnumProperty(description="Default texture filtering for newly generated planes. Pixel keeps hard nearest-neighbor edges; Smooth uses linear filtering for scaled artwork.",
         name="",
         items=INTERPOLATION_ITEMS,
@@ -4697,14 +4844,24 @@ def register_properties():
         name="",
         items=ORIENTATION_ITEMS,
         default='VERT')
-    _FBP_SCENE_RNA.fbp_gen_camera   = BoolProperty(name="Create Camera", description="Create or update a camera suitable for the generated multiplane setup", default=True)
+    _FBP_SCENE_RNA.fbp_gen_camera   = BoolProperty(name="Create Camera", description="Create or update a camera suitable for the generated multiplane setup", default=False)
     _FBP_SCENE_RNA.fbp_cam_pivot    = BoolProperty(name="Pivot on Camera", description="Move the 3D cursor to the camera pivot when creating a camera setup", default=True)
-    _FBP_SCENE_RNA.fbp_layer_offset = FloatProperty(name="Plane Distance (m)", description="Distance between generated layers; imported top-level collections use a larger gap", default=0.2, min=0.001)
-    _FBP_SCENE_RNA.fbp_auto_scale   = BoolProperty(name="Auto-Scale (Fit to Cam)", description="Scale generated planes to the camera frame using the image aspect ratio", default=True)
+    _FBP_SCENE_RNA.fbp_layer_offset = FloatProperty(name="Space Between Layers", description="Distance between generated layers; imported top-level collections use a larger gap", default=0.5, min=0.001, soft_max=5.0, unit='LENGTH')
+    _FBP_SCENE_RNA.fbp_auto_scale   = BoolProperty(name="Auto-Scale (Fit to Cam)", description="Scale generated planes to the camera frame using the image aspect ratio", default=False)
     _FBP_SCENE_RNA.fbp_camera_fit_source_aspect = BoolProperty(
         name="Camera Uses Source Aspect",
         description="When generating a Frame By Plane camera, match the output resolution to the first generated layer source aspect instead of a fixed preset",
         default=True,
+    )
+    _FBP_SCENE_RNA.fbp_single_fit_camera = BoolProperty(
+        name="Fit Camera Aspect Ratio",
+        description="After an import, change the output resolution to match the aspect of the new media. Off keeps the current camera framing",
+        default=False,
+    )
+    _FBP_SCENE_RNA.fbp_pre_match_scene_range = BoolProperty(
+        name="Set Scene In/Out from Media",
+        description="After creating planes from an Image Sequence or a Video, set the Scene Start and End frames to cover their animation (one cycle, including Frame Hold). Single still images never change the range",
+        default=False,
     )
     _FBP_SCENE_RNA.fbp_pre_track_cam = BoolProperty(name="Track Camera on New Layers", description="Add camera tracking to newly generated Frame By Plane layers", default=False)
     _FBP_SCENE_RNA.fbp_settings_section = EnumProperty(
@@ -4723,7 +4880,7 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_experimental_compositor = BoolProperty(
         name="Compositor Preview",
         description=(
-            "Enable the preview Compositor Layers workflow. This feature is outside the Frame By Plane 7.2 LTS core scope; "
+            "Enable the preview Compositor Layers workflow. This feature is outside the Frame By Plane 8 LTS core scope; "
             "disable it to hide and prevent selection of that section"
         ),
         default=False,
@@ -4731,12 +4888,12 @@ def register_properties():
     )
     _FBP_SCENE_RNA.fbp_preview_procreate_import = BoolProperty(
         name="Procreate Preview",
-        description="Enable the Procreate archive/tile decoder. This importer is outside the Frame By Plane 7.2 LTS core scope",
+        description="Enable the Procreate archive/tile decoder. This importer is outside the Frame By Plane 8 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_preview_generic_mesh_effects = BoolProperty(
         name="Generic Mesh Preview",
-        description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 7.2 LTS core scope",
+        description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 8 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_color_plane_type = EnumProperty(
@@ -5769,6 +5926,146 @@ def register_properties():
         name="Phase", description="Starting phase for the animated layer wave",
         default=0.0, soft_min=-100.0, soft_max=100.0, options={'ANIMATABLE'}, update=update_layered_echo_phase_cb)
 
+    _FBP_OBJECT_RNA.fbp_yarn_stitch_type = EnumProperty(
+        name="Stitch", description="Stitch structure of the yarn",
+        items=(
+            ('KNIT', "Knit", "Stockinette V stitches in columns, each row tucked under the next"),
+            ('CROCHET', "Crochet", "Single crochet: a horizontal head over two posts, rows offset like bricks"),
+        ), default='KNIT', update=update_yarn_stitch_type_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_columns = IntProperty(
+        name="Viewport", description="Stitches across the plane width while editing",
+        default=32, min=2, soft_max=200, max=1000, update=update_yarn_columns_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_playback_columns = IntProperty(
+        name="Playback", description="Maximum stitches across the width during timeline playback",
+        default=24, min=2, soft_max=200, max=1000, update=update_yarn_playback_columns_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_render_columns = IntProperty(
+        name="Render", description="Stitches across the width for final rendering",
+        default=48, min=2, soft_max=300, max=1000, update=update_yarn_render_columns_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_row_height = FloatProperty(
+        name="Row Height", description="Row spacing relative to the natural row height of the stitch",
+        default=1.0, min=0.3, max=3.0, soft_max=2.0, options={'ANIMATABLE'}, update=update_yarn_row_height_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_loop_width = FloatProperty(
+        name="Loop Width", description="Loop width relative to the stitch; larger values close the gaps",
+        default=1.0, min=0.3, max=2.0, options={'ANIMATABLE'}, update=update_yarn_loop_width_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_thickness = FloatProperty(
+        name="Thickness", description="Yarn thickness relative to the stitch width",
+        default=0.13, min=0.01, max=0.6, soft_max=0.3, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_yarn_thickness_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_plies = IntProperty(
+        name="Plies", description="Number of twisted strands in the yarn",
+        default=3, min=2, max=8, update=update_yarn_plies_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_twist = FloatProperty(
+        name="Twist", description="Ply turns per stitch width; negative values twist the other way",
+        default=1.5, min=-20.0, max=20.0, soft_min=-6.0, soft_max=6.0, options={'ANIMATABLE'},
+        update=update_yarn_twist_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_color_variation = FloatProperty(
+        name="Color Variation", description="Random brightness change between stitches, like hand-dyed yarn",
+        default=0.12, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_yarn_color_variation_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_jitter = FloatProperty(
+        name="Hand-made", description="Random rotation and size of every stitch",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_yarn_jitter_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_seed = IntProperty(
+        name="Seed", description="Random pattern of colour variation and hand-made irregularity",
+        default=0, min=0, options={'ANIMATABLE'}, update=update_yarn_seed_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_alpha_threshold = FloatProperty(
+        name="Alpha Threshold", description="Stitches where the image is more transparent than this are left out",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_yarn_alpha_threshold_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_fuzz = FloatProperty(
+        name="Fuzz", description="Soft woolly sheen on the yarn surface",
+        default=0.6, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_yarn_fuzz_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_self_light = FloatProperty(
+        name="Self Light", description="Built-in light so the yarn reads in unlit Frame By Plane scenes. Lower it when the scene has its own lights",
+        default=1.0, min=0.0, max=4.0, soft_max=2.0, options={'ANIMATABLE'}, update=update_yarn_self_light_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_show_plane = BoolProperty(
+        name="Show Plane", description="Keep the image plane visible behind the yarn, so it shows through the gaps",
+        default=False, update=update_yarn_show_plane_cb)
+
+    _FBP_OBJECT_RNA.fbp_frame_stack_slices = IntProperty(
+        name="Viewport", description="Number of frame slices shown while editing, including the plane itself",
+        default=12, min=1, soft_max=64, max=512, options={'ANIMATABLE'}, update=update_frame_stack_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_playback_slices = IntProperty(
+        name="Playback", description="Maximum number of frame slices evaluated during timeline playback",
+        default=8, min=1, soft_max=64, max=512, update=update_frame_stack_playback_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_render_slices = IntProperty(
+        name="Render", description="Number of frame slices evaluated for final rendering",
+        default=24, min=1, soft_max=128, max=512, update=update_frame_stack_render_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_detail = IntProperty(
+        name="Viewport", description="Grid detail of every earlier slice while editing. Each level doubles the grid on both sides",
+        default=5, min=0, max=8, update=update_frame_stack_detail_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_playback_detail = IntProperty(
+        name="Playback", description="Maximum slice grid detail during timeline playback",
+        default=4, min=0, max=8, update=update_frame_stack_playback_detail_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_render_detail = IntProperty(
+        name="Render", description="Slice grid detail for final rendering. The plane itself always keeps full resolution",
+        default=7, min=0, max=8, update=update_frame_stack_render_detail_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_step = IntProperty(
+        name="Frame Step", description="Source frames between two slices. Negative values stack upcoming frames instead of earlier ones",
+        default=2, min=-1000, max=1000, soft_min=-24, soft_max=24, options={'ANIMATABLE'}, update=update_frame_stack_step_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_fixed_start = BoolProperty(
+        name="Fixed Range", description="Stack a fixed range of frames starting at Start Frame instead of following playback",
+        default=False, update=update_frame_stack_fixed_start_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_start_frame = IntProperty(
+        name="Start Frame", description="Source frame shown by the front slice when Fixed Range is on. Animate it to scroll the solid through time",
+        default=1, min=-1000000, max=1000000, options={'ANIMATABLE'}, update=update_frame_stack_start_frame_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_offset_x = FloatProperty(
+        name="Offset X", description="Per-slice horizontal offset",
+        default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_offset_x_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_offset_y = FloatProperty(
+        name="Offset Y", description="Per-slice vertical offset",
+        default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_offset_y_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_spacing = FloatProperty(
+        name="Depth", description="Distance between successive slices along the plane normal. Negative values stack behind the plane",
+        default=-0.04, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_spacing_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_scale_step = FloatProperty(
+        name="Scale Step", description="Per-slice scale change; negative values taper the stack",
+        default=0.0, min=-10.0, max=10.0, soft_min=-0.25, soft_max=0.25,
+        options={'ANIMATABLE'}, update=update_frame_stack_scale_step_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_rotation_x = FloatProperty(
+        name="Rotation X", description="Per-slice rotation around local X",
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_rotation_x_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_rotation_y = FloatProperty(
+        name="Rotation Y", description="Per-slice rotation around local Y",
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_rotation_y_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_twist = FloatProperty(
+        name="Twist", description="Per-slice rotation around the plane normal",
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_twist_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_front_slices = IntProperty(
+        name="Front Slices", description="Number of slices, counted from the plane, that use Front Opacity; the rest use Back Opacity",
+        default=0, min=0, max=512, soft_max=64, options={'ANIMATABLE'}, update=update_frame_stack_front_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_front_opacity = FloatProperty(
+        name="Front Opacity", description="Opacity of the front slices",
+        default=0.15, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_front_opacity_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_back_opacity = FloatProperty(
+        name="Back Opacity", description="Opacity of the remaining slices",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_back_opacity_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_depth_fade = FloatProperty(
+        name="Depth Fade", description="Fade older slices: the last slice keeps 1 minus this value of its opacity",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_depth_fade_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_luminance_opacity = FloatProperty(
+        name="Luminance Key", description="Make dark areas transparent (positive) or bright areas transparent (negative), like a mask video built from the image itself",
+        default=0.0, min=-1.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_luminance_opacity_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_show_plane = BoolProperty(
+        name="Show Plane", description="Keep the plane as the full-resolution front slice. When off, the front slice is sampled like the others",
+        default=True, update=update_frame_stack_show_plane_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_glow = BoolProperty(
+        name="Glow", description="Add the slices together like light instead of layering them. Order-independent and noise-free in Eevee; dark areas disappear",
+        default=False, update=update_frame_stack_glow_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_outline = BoolProperty(
+        name="Outline", description="Draw the volume edges: the first and last frame and the four corner lines",
+        default=False, update=update_frame_stack_outline_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_outline_width = FloatProperty(
+        name="Width", description="Thickness of the outline lines",
+        default=0.004, min=0.00001, max=1.0, soft_max=0.05, subtype='DISTANCE', options={'ANIMATABLE'},
+        update=update_frame_stack_outline_width_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_outline_color = FloatVectorProperty(
+        name="Color", description="Outline color", subtype='COLOR', size=4,
+        default=(1.0, 1.0, 1.0, 1.0), min=0.0, max=1.0, options={'ANIMATABLE'},
+        update=update_frame_stack_outline_color_cb)
+
     _FBP_OBJECT_RNA.fbp_wind_subdivision = IntProperty(description="Viewport mesh subdivision level used by Wind. Higher values bend more smoothly but increase viewport cost.", name="Viewport", default=3, min=0, max=6, update=update_wind_subdivision_cb)
     _FBP_OBJECT_RNA.fbp_wind_playback_subdivision = IntProperty(description="Maximum Wind subdivision level used during timeline playback. Lower values keep playback responsive.", name="Playback", default=2, min=0, max=6, update=update_wind_playback_subdivision_cb)
     _FBP_OBJECT_RNA.fbp_wind_render_subdivision = IntProperty(description="Subdivision level used by Wind during final render.", name="Render", default=4, min=0, max=6, update=update_wind_render_subdivision_cb)
@@ -5857,8 +6154,8 @@ def register_properties():
         description="Custom Blender Simple Subdivision levels applied before the Lattice. Each level doubles the mesh segments per axis",
         default=2, min=0, max=6, soft_max=4, update=update_lattice_mesh_detail_cb,
     )
-    _FBP_OBJECT_RNA.fbp_lattice_points_u = IntProperty(name="Cage Columns", description="Number of planar control-point columns along the plane local X axis. Changing it rebuilds the cage and resets current point edits.", default=4, min=2, max=64, update=update_lattice_effect_cb)
-    _FBP_OBJECT_RNA.fbp_lattice_points_v = IntProperty(name="Cage Rows", description="Number of planar control-point rows along the plane local Y axis. Changing it rebuilds the cage and resets current point edits.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    _FBP_OBJECT_RNA.fbp_lattice_points_u = IntProperty(name="Cage Columns", description="Number of planar control-point columns along the plane local X axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    _FBP_OBJECT_RNA.fbp_lattice_points_v = IntProperty(name="Cage Rows", description="Number of planar control-point rows along the plane local Y axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
     _FBP_OBJECT_RNA.fbp_lattice_interpolation = EnumProperty(name="Interpolation", description="Interpolation used between Lattice control points. This can be changed without resetting the current deformation.", items=[('LINEAR','Linear','Linear interpolation'),('CARDINAL','Cardinal','Cardinal interpolation'),('CATMULL_ROM','Catmull-Rom','Catmull-Rom interpolation'),('BSPLINE','B-Spline','Smooth B-Spline interpolation')], default='BSPLINE', update=update_lattice_interpolation_cb)
     _FBP_OBJECT_RNA.fbp_cutout_outline_viewport_resolution = IntProperty(
         name="Viewport Alpha Detail", description="Subdivision level used to trace the alpha silhouette while editing",
@@ -7020,6 +7317,27 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_edge_detect_softness = FloatProperty(name="Softness", description="Smooth transition width around the edge threshold.", default=0.04, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_softness_cb)
     _FBP_OBJECT_RNA.fbp_edge_detect_color = FloatVectorProperty(name="Edge Color", description="Color applied to detected edges.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0,0.0,0.0,1.0), update=update_edge_detect_color_cb)
     _FBP_OBJECT_RNA.fbp_edge_detect_factor = FloatProperty(name="Factor", description="Blend between source and Edge Detect.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_factor_cb)
+    _FBP_OBJECT_RNA.fbp_oil_paint_radius = FloatProperty(name="Radius", description="Brush size in source-image pixels. Larger radii give broader, flatter strokes.", default=6.0, min=0.0, soft_max=24.0, max=64.0, update=update_oil_paint_radius_cb)
+    _FBP_OBJECT_RNA.fbp_oil_paint_sharpness = FloatProperty(name="Sharpness", description="How strongly the calmest stroke direction wins. Low values blend directions softly; high values keep crisp paint edges.", default=8.0, min=0.0, max=32.0, update=update_oil_paint_sharpness_cb)
+    _FBP_OBJECT_RNA.fbp_oil_paint_anisotropy = FloatProperty(name="Anisotropy", description="Stretch strokes along the image's edges. 0 is the classic round Kuwahara filter.", default=1.0, min=0.0, max=4.0, update=update_oil_paint_anisotropy_cb)
+    _FBP_OBJECT_RNA.fbp_oil_paint_factor = FloatProperty(name="Factor", description="Blend between the source and the painted result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_oil_paint_factor_cb)
+    _FBP_OBJECT_RNA.fbp_riso_ink_1 = FloatVectorProperty(name="Ink 1", description="First spot ink. Riso fluorescent pink by default.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.27, 0.55, 1.0), update=update_riso_ink_1_cb)
+    _FBP_OBJECT_RNA.fbp_riso_ink_2 = FloatVectorProperty(name="Ink 2", description="Second spot ink. Riso medium blue by default.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.47, 0.75, 1.0), update=update_riso_ink_2_cb)
+    _FBP_OBJECT_RNA.fbp_riso_ink_3 = FloatVectorProperty(name="Ink 3", description="Optional third spot ink, used when Third Ink is on.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.9, 0.0, 1.0), update=update_riso_ink_3_cb)
+    _FBP_OBJECT_RNA.fbp_riso_use_ink_3 = BoolProperty(name="Third Ink", description="Print a third ink layer on top of the first two.", default=False, update=update_riso_use_ink_3_cb)
+    _FBP_OBJECT_RNA.fbp_riso_paper = FloatVectorProperty(name="Paper", description="Paper color the inks are printed on.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.96, 0.94, 0.89, 1.0), update=update_riso_paper_cb)
+    _FBP_OBJECT_RNA.fbp_riso_misregistration = FloatProperty(name="Misregistration", description="How far each ink drum drifts from the others, in source-image pixels.", default=4.0, min=0.0, soft_max=32.0, max=256.0, update=update_riso_misregistration_cb)
+    _FBP_OBJECT_RNA.fbp_riso_halftone = FloatProperty(name="Halftone", description="Blend from flat ink density (0) to rotated halftone dots (1).", default=0.6, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_halftone_cb)
+    _FBP_OBJECT_RNA.fbp_riso_dot_size = FloatProperty(name="Dot Size", description="Halftone cell size in source-image pixels.", default=6.0, min=1.0, soft_max=48.0, max=256.0, update=update_riso_dot_size_cb)
+    _FBP_OBJECT_RNA.fbp_riso_grain = FloatProperty(name="Grain", description="Uneven ink coverage that lets the paper show through.", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_grain_cb)
+    _FBP_OBJECT_RNA.fbp_riso_seed = FloatProperty(name="Seed", description="Changes the drift directions and the grain pattern. Animate it for a boiling print.", default=0.0, min=0.0, max=1000.0, update=update_riso_seed_cb)
+    _FBP_OBJECT_RNA.fbp_riso_factor = FloatProperty(name="Factor", description="Blend between the source and the printed result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_factor_cb)
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_distance = FloatProperty(name="Distance", description="Width of the ramp from the transparent edge inward, in source-image pixels.", default=32.0, min=1.0, soft_max=256.0, max=1024.0, update=update_edge_distance_mask_distance_cb)
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_threshold = FloatProperty(name="Threshold", description="Where the mask turns on along the ramp. Animate it for a grow-in reveal from the outline.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_threshold_cb)
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_softness = FloatProperty(name="Softness", description="Transition width around Threshold. 1 keeps the whole linear ramp; 0 cuts a hard inner outline.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_softness_cb)
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_image_border = BoolProperty(name="Image Border", description="Treat the image's own border as an edge, so fully opaque pictures get a frame-shaped falloff.", default=True, update=update_edge_distance_mask_image_border_cb)
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_factor = FloatProperty(name="Factor", description="Blend between the unmasked result and Edge Distance Mask.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_factor_cb)
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_invert = BoolProperty(name="Invert", description="Keep the band along the edge instead of the interior.", default=False, update=update_edge_distance_mask_invert_cb)
     _FBP_OBJECT_RNA.fbp_smooth_toon_levels = FloatProperty(name="Levels", description="Number of tonal bands retained by Smooth Toon.", default=6.0, min=2.0, max=64.0, precision=0, update=update_smooth_toon_levels_cb)
     _FBP_OBJECT_RNA.fbp_smooth_toon_softness = FloatProperty(name="Softness", description="Blend quantized bands back toward the source for smoother transitions.", default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=update_smooth_toon_softness_cb)
     _FBP_OBJECT_RNA.fbp_smooth_toon_factor = FloatProperty(name="Factor", description="Blend between source and Smooth Toon.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_smooth_toon_factor_cb)
@@ -7276,17 +7594,6 @@ def register_properties():
 
 
 # SECTION 03 - Unregister properties #
-def fbp_registered_type_property_snapshot():
-    """Return immutable exact RNA ownership data for diagnostics."""
-    snapshot = {}
-    for raw_owner_name, registry in _FBP_REGISTERED_TYPE_PROPERTIES.items():
-        owner_name = _fbp_rna_property_name(raw_owner_name)
-        if not owner_name or not isinstance(registry, dict) or not registry:
-            continue
-        snapshot[owner_name] = tuple(registry)
-    return snapshot
-
-
 def _unregister_fbp_type_properties(owner, owner_name):
     """Remove only RNA properties assigned by this module generation."""
     owner_name = _fbp_rna_property_name(owner_name)

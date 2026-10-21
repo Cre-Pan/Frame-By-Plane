@@ -138,6 +138,14 @@ def _plane_for_surface(surface):
 
 
 def plane_bounds(surface) -> tuple[float, float, float, float]:
+    # UV 0..1 spans the uncropped source rectangle, so Crop must not shrink it.
+    if surface is not None and bool(getattr(surface, "is_fbp_control", False)):
+        try:
+            from .builder import fbp_plane_reference_bounds
+            source = fbp_plane_reference_bounds(surface)[0]
+            return tuple(float(value) for value in source)
+        except (ImportError, *_EXC):
+            pass
     plane = _plane_for_surface(surface)
     mesh = getattr(plane, "data", None) if plane is not None else None
     coords = []
@@ -324,10 +332,12 @@ def _convert_radii(canvas, surface, layer_matrix, points, transformed_points, bo
     plane_extent = max(1.0e-6, min(abs(max_x - min_x), abs(max_y - min_y)))
     scale = _radius_scale(canvas, surface, layer_matrix, points, transformed_points, scene=scene)
     raw_values = _point_radius_values(points, fallback_width)
-    result = []
-    for raw in raw_values:
-        authored = max(1.0e-6, _safe_float(raw, fallback_width) + float(layer_radius_offset or 0.0))
-        result.append(float(_radius_to_plane_units(authored, scale, plane_extent, fallback_width)))
+    # Same conversion as _radius_to_plane_units, hoisted out of the per-point
+    # loop: the radii are already finite and positive here.
+    offset = _safe_float(layer_radius_offset, 0.0)
+    factor = max(1.0e-8, _safe_float(scale, 1.0))
+    limit = max(plane_extent * 0.50, 1.0e-5)
+    result = [max(1.0e-5, min(limit, max(1.0e-6, raw + offset) * factor)) for raw in raw_values]
     while len(result) < len(transformed_points):
         result.append(float(_radius_to_plane_units(fallback_width, scale, plane_extent, fallback_width)))
     return tuple(result[:len(transformed_points)])

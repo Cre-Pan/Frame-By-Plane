@@ -108,6 +108,8 @@ from .operator_import import (
     FBP_OT_PopupVideoPlane,
     FBP_OT_PopupMultiplane,
     FBP_OT_PopupColorPlane,
+    FBP_OT_PopupGradientPlane,
+    FBP_OT_PopupHoldoutPlane,
     FBP_OT_CreateColorPlaneFromHex,
     FBP_OT_ImportSingleImageFromClipboard,
 )
@@ -137,6 +139,7 @@ from .operator_sequence import (
     FBP_OT_DuplicateSelectedLayers,
     FBP_OT_MergeSelectedToActiveSequence,
     FBP_OT_SplitSelectedImagesToNewPlane,
+    FBP_OT_SplitSequenceToPlanes,
     FBP_OT_DeleteSequence,
     FBP_OT_DeleteOrDefault,
 )
@@ -328,6 +331,7 @@ classes = (
     FBP_OT_DuplicateSelectedLayers,
     FBP_OT_MergeSelectedToActiveSequence,
     FBP_OT_SplitSelectedImagesToNewPlane,
+    FBP_OT_SplitSequenceToPlanes,
     FBP_OT_DeleteSequence,
     FBP_OT_DeleteOrDefault,
     FBP_OT_ToggleCollectionCollapse,
@@ -385,6 +389,8 @@ classes = (
     FBP_OT_PopupVideoPlane,
     FBP_OT_PopupMultiplane,
     FBP_OT_PopupColorPlane,
+    FBP_OT_PopupGradientPlane,
+    FBP_OT_PopupHoldoutPlane,
     FBP_OT_CreateColorPlaneFromHex,
     FBP_OT_ImportSingleImageFromClipboard,
 )

@@ -2,7 +2,217 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [7.2.1] — Prepared 2026-09-07
+## [8.0.1] - Unreleased
+
+### New effects
+
+- **Frame Stack** (Mesh, for image sequences and videos): turns time into a solid. Earlier frames are stacked in depth behind the plane, one slice per frame, with per-slice offset, depth, rotation, twist and scale. **Follow Playback** keeps the newest frame on the plane and the past trailing behind; **Fixed Range** stacks a chosen range and its Start Frame can be animated to scroll the solid through time. Opacity offers the front/back threshold (faint front slices), **Depth Fade**, a **Luminance Key** that hides dark or bright areas without a separate mask video, and **Glow**, an additive mode that needs no sorting. An optional **Outline** draws the volume edges. The plane keeps full resolution; earlier slices use a grid whose detail is set separately for viewport, playback and render. Cycles automatically gets enough transparent bounces for the slices. Concept inspired by "Video Frame Stack" by hipofizus.
+
+- **Knit & Crochet** (Mesh, for images, sequences and videos): rebuilds the image as yarn. **Knit** makes stockinette V stitches in columns, each row tucked under the next; **Crochet** makes single-crochet stitches (a head over two posts) in brick-offset rows. Every stitch takes its colour from the image, transparent areas stay empty, and sequences and videos stay animated. Thickness, plies and twist shape the yarn; Fuzz adds a woolly sheen; Color Variation and Hand-made add irregularity; Self Light keeps the yarn readable in unlit scenes. Stitch count is set separately for viewport, playback and render.
+
+- **Riso Print** (Image, Pixel / Print menu): reprints the image with two or three spot inks on colored paper, like a risograph. Each ink takes its share of the color, drifts slightly out of register, and can turn into rotated halftone dots with mottled ink grain. Inks, paper, misregistration, dot size, grain and seed are editable, with presets for Pink & Blue, Three Drum and Green & Orange.
+
+- **Oil Paint** (Image, Edges menu): an anisotropic Kuwahara filter. Color flattens into brush-stroke patches that follow the image's edges while contours stay sharp. Radius sets the stroke size, Anisotropy stretches strokes along edges (0 is the classic round filter) and Sharpness decides how crisp the stroke borders are. Transparent pixels never darken the paint.
+
+- **Edge Distance Mask** (Mask, Nodes menu): a mask that ramps from the artwork's transparent edge inward over a set distance, for glowing borders, inner strokes and grow-in reveals (animate Threshold). Invert keeps the band along the edge. With Image Border on, the picture's own border counts as an edge, so fully opaque images get a frame-shaped falloff.
+
+### Plane creation
+
+- **Fewer popups.** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar instead of a dialog after the file browser. Color, Gradient, Holdout, Color Plane from Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup.
+- The settings follow Blender's own layout: collapsible Plane and Camera Settings, a compact Playback row and Playback and color preset dropdowns, two-row presets with Dimensions, and an icon-only Orientation. The orientation Swap button is gone.
+- In the plane settings, **Set Scene In/Out from Media** is labeled **Set Scene Length from Media**.
+
+### Fixes
+
+- Image Projector: the projection was blurred by default because the light Radius also set the image size. The image size now follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone instead of losing its corners.
+- Image Projector: image sequences numbered from anything other than 1 (for example 0101) projected nothing, and sequences got the wrong aspect ratio.
+- Project Selected FBP Layer now follows the layer's timing (holds, loops) instead of freezing it on the current frame.
+- Picking a movie as Projector Media now plays all of its frames; an image used by another plane is no longer renamed or turned into a sequence.
+- Projector panel in Blender's layout: labels on the left, Focus in a collapsible section, and the Cycles note appears only when another render engine is active.
+
+## [8.0.0] - Unreleased
+
+Frame By Plane 8 LTS. Includes every 7.5.x change below.
+
+### New
+
+- Grease Pencil Mask: **Edit** / **Done** in the effect header to draw the mask again, and an eye to show or hide its strokes (hidden by default, stays visible once turned on). A new mask covers the shot from frame 1, wherever it is created.
+- **Split into Multiple Planes** in the frame list and in right-click → Frame By Plane → Layer: one plane per frame, keeping position and effects.
+- A translucent **SOLO** badge at the top center of the Viewport while layer Solo or the Z pie's Solo Selection is on; Hide Overlays hides it.
+- Redesigned Live Tutorial with a Frame by Frame guide: each guide has its own color, readable icons and key caps, a HOW path for every action and a card that fits its text.
+- Grease Pencil Mask panel: eye, Opacity and Invert on one row; Blur and Expand each have a checkbox that turns its slider on; Edit and Visibility move into a closed Grease Pencil Settings section.
+
+### Fixes
+
+- Grease Pencil Mask stayed misaligned or empty on planes with Crop applied; the mask is now rasterized over the uncropped image rectangle that the plane UVs use.
+- A thin unmasked line no longer shows along the image edge when a Grease Pencil Mask stroke runs past it.
+- Ctrl+Z after drawing in a new Grease Pencil Mask removed the effect; pie menu effect and mask buttons now push their own undo step.
+- Ctrl+Z while drawing in a Grease Pencil Mask could crash Blender: cached drawing references are now dropped on Undo and Redo.
+- Editing a mask on a later frame no longer adds an empty key that hid the mask.
+- Grease Pencil Mask rasterization is many times faster with identical output.
+- Dropping media in the Viewport opens the Import with Frame By Plane window again; it failed with an error after the 8.0 merge.
+- In Draw Mode with Close Gap (or Fill in Both mode), existing strokes were closed and refilled when they came into view: scrubbing onto the first keyframe, switching from an empty layer, or moving or pasting a keyframe onto the playhead. Only new strokes change now.
+- The Draw Mode color sync does about an eighth of the work per update on long animations.
+- An open tutorial card no longer redraws the Viewport twice a second while nothing changes.
+
+## [7.5.4] - Unreleased
+
+Version bumped to 7.5.x (7.5.0 was an internal test build).
+
+### New
+
+- In Draw Mode the Scrub Bar shows, snaps to and edits only the active layer's keyframes; other modes still show every visible layer.
+- The Viewport header has a **Return to Start** toggle next to the Scrub Bar pin. The Onion Skin button left the header; the Onion Skin settings stay in the Scrub Bar menu.
+- **Set Scene In/Out from Media** (off by default) in the Add Plane dialog, the Multiplane dialog and the sidebar: after creating planes from an Image Sequence or a Video, the Scene Start and End cover their animation (one cycle, including Frame Hold). Still images never change the range.
+- The Scrub Bar plays the audio under the playhead when **Audio Scrubbing** is on (Blender's own Timeline setting, now also a toggle in the Scrub Bar menu).
+- Holding `<` (or Shift+,) in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer scrubs the playhead left and right from where it is, follows Shift Slowdown, and glides back to the start on release when Return to Start is on. Esc or right-click cancels.
+
+### Fixes
+
+- Holding `<` in the Timeline and other time editors no longer moves the playhead below frame 0 when **Allow Negative Frames** is off in Blender's Preferences.
+- Strokes that never had a vertex color read as transparent black. Picking a Stroke or Fill color over one of those kept alpha 0, so nothing changed on screen; the first color picked over an unset one now gets full alpha.
+- Leaving Edit Mode no longer turns the Draw and Vertex Paint colors into the selection's colors (often transparent black on uncolored strokes, which also made new fills invisible). Paint modes get back the colors they had before Edit Mode.
+- Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
+- A click right after the return glide is hit-tested where the pointer really is, so drawing straight away is no longer taken as a Scrub Bar click.
+- The return glide lands on the start frame even when it lies outside the scene or preview range.
+- Older saved Mouse Magnet on/off and Strength values no longer shrink the Precise Range; Precise Range is also in the Scrub Bar menu under Scrub Speed.
+- Editing a swatch can no longer move the open color picker onto another color group when two colors become equal.
+- Swap in Edit Mode says why when nothing can be swapped.
+- The Scrub Bar menu aligns its labels and is a little wider.
+- The Scrub Bar no longer slides left and right toward the mouse. **Mouse Magnet** in Preferences is now **Precise Range**: the distance from the bar within which scrubbing with `<` follows the pointer exactly.
+- The Strokes and Fills dropdowns drew an empty list in Blender 5.2 (the list used a layout type Blender no longer accepts); the color list shows again.
+- A pinned Scrub Bar no longer redraws the viewport on every timer tick while the mouse rests in the 3D View; hover updates only redraw when the hovered key or bookmark changes. Timer events are no longer swallowed during a hold, and edge scrolling uses the remembered pointer position.
+- Pressing Shift or Ctrl while holding `<` before moving no longer jumps the playhead.
+- If the Viewport or object goes away during the return glide, the playhead still lands on the start frame.
+- Stroke and Fill swatches live in separate lists, so a change on one side can never make an open color picker edit the other side.
+- Swap skips strokes whose material draws only a line or only a fill, instead of painting them with an empty color, and no longer adds an empty Undo step when nothing is selected.
+- The Edit Mode header no longer rescans the selection on every redraw before the first sync.
+- Layers left locked by the removed Limited Loop guard in older files are unlocked on load.
+
+### Apply Effects
+
+- **Apply Effects** (Effects stack menu) bakes a layer's image effects with Cycles into PNG frames in `assets/baked/`, and the layer then plays them, so the result shows in Solid view too. The image effects are switched off, not removed, so the eye icons bring them back; mesh effects stay live. **Keep Original** puts the baked frames on a copy and hides the original instead.
+
+### Languages
+
+- The interface is translated into Italian, Spanish, French, German, Simplified Chinese and Japanese. **Preferences → Interface → Language** is Automatic by default (follows Blender's language); it can also be set to English or to one fixed language.
+
+### Files and storage
+
+- Effect presets are saved in the extension's user folder (`bpy.utils.extension_path_user`) instead of Blender's config folder or `~/.frame_by_plane`. Existing presets are copied over once; the old file is left in place.
+- Generated media (PSD/Procreate layers, converted animated images, native sequence proxies, clipboard images) goes into an `assets` folder next to the saved `.blend`. Unsaved files still write next to the source media; the extension user folder is the last resort.
+- Icons and the Geometry Nodes library are CC0-1.0; splash artwork is CC-BY-4.0 (see THIRD_PARTY_NOTICES.md).
+
+### Release splash
+
+- The release splash now opens after every installation of Frame By Plane: a fresh install, an update, or reinstalling the same version, from Blender Extensions or by drag and drop. Starting Blender again does not show it. **Show After Install / Update** in Preferences still turns it off.
+
+### Grease Pencil
+
+- Removed the Frame By Plane Grease Pencil effect list and its grouped effect picker (Reset, Move, Toggle, Repair Duplicates and the compatibility report). Grease Pencil drawings now use Blender's own Modifiers and Visual Effects panels; effects already added to a drawing stay on it as normal Blender effects.
+- Removed **Draw on Canvas** (the Draw, Fill and Erase buttons next to a Drawing Plane), the **Ink Over Image** panel, **Create Missing / Current GP Drawings** and **Limited Loop Blocks**. Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
+- **Grease Pencil Drawing** in Shift+A is greyed out until a Frame By Plane plane is selected.
+- In Edit Mode, selecting strokes with different colors shows every distinct Stroke and Fill color in the Tool Header (`Stroke colors ⇄ Fill colors`), up to 12 swatches; identical colors share one swatch. With more than 12, the larger side collapses into its own **Strokes** or **Fills** dropdown with a color list, **Replace All** and **Invert with Fill/Stroke**. Changing a swatch recolors only the selected strokes or fills that use that color.
+- Only colors that are drawn count: if the selected strokes' material hides fills, the Fill side and the swap button disappear (and the other way round).
+- **Swap Stroke / Fill** in Edit Mode now swaps each selected stroke's own colors, instead of painting every stroke with one color.
+- Edit Mode's Tool Header has the **Material** selector (with Assign), so the material can be changed without leaving Edit Mode.
+
+### Scrub Bar
+
+- Holding **<** now follows the pointer exactly on the Scrub Bar and speeds up as the pointer moves away from it, up to **Far Speed** (Preferences, **Speed Ramp Distance**). Moving only across the bar no longer changes the frame.
+- Fixed: after releasing **<** the playhead stayed on the scrubbed frame until the next key press. Blender events carry no timer handle, so the glide never ticked; Scrub Bar edge scrolling and the hover magnet were affected the same way.
+- Releasing **<** snaps the playhead back to the frame where you started like a magnet: it accelerates, passes the start frame by a frame or two and settles on it (**Return to Start Frame**, on by default, with **Return Time** and **Bounce**). Any key or click during the glide lands on the start frame at once.
+- The Scrub Bar menu in the Viewport header is split into collapsible sections (Scrub Bar, Return to Start, Scrub Speed, Onion Skin, Bookmarks, Preview Range). **Length** is now in the Scrub Bar section, goes down to 10% of the Viewport and updates the bar while it is shown.
+- A quick tap of **<** no longer pins the Scrub Bar. Pin it from the Scrub Bar button or its menu in the Viewport header, or turn **Tap < Pins the Bar** back on in Preferences.
+
+### Add Plane dialog
+
+- **Single Plane**, **Video Plane**, **Color Plane**, **Gradient Plane** and **Holdout Plane** open one **Add Plane** dialog with the plane type in a dropdown at the top, so you can switch type without closing it. Settings are grouped into Animation, Plane and Material, Camera, and Placement sections.
+- Adding a Single Plane no longer changes the scene resolution to the new image's aspect. Turn on **Fit Camera to New Plane** in the dialog to get the previous behavior.
+
+## [8.0.0] — Prepared 2026-10-20
+
+Includes 7.2.1, which was not published on its own.
+
+### Effect stack performance
+
+- Reordering an effect chain now writes the complete order once and rebuilds each material stage once, instead of rebuilding the stage for every one-step move. Adding effects to a populated stack is roughly twice as fast (16-effect stack: about 1.7 s → 0.8 s in total).
+- Shader-stage order lookups scan each material once instead of recomputing node tokens two or three times per node.
+- Mixed stacks (Image effects plus at least one Mesh effect) are about three times faster to edit: a 12-effect mixed stack drops from about 2.8 s to 0.95 s of total add time. The stack order is computed once per refresh, Mesh-effect modifiers are identified without re-reading node-group tags per registered effect, and composite stage materials only write socket values that actually changed (this also avoids needless material re-evaluation during playback).
+
+### Compositor
+
+- **F12 asks before rendering an out-of-date compositor.** When Use Compositor in Render is on and compositor changes are waiting for Refresh, F12 / Ctrl+F12 open a short warning with **Update** (refresh, then render), **Ignore** (render the previous setup) and **Cancel**. In every other case F12 renders exactly as before.
+- **Opening a file no longer adds a compositor.** Every load gave each scene an empty "FBP Composite" compositor, and F12 then rendered through it even if the Frame By Plane compositor was never used. Files saved that way are cleaned up on load: an empty generated compositor is removed and the native render path comes back.
+- **Compositor Off really turns it off.** The Compositor button only hid the panel, while the managed graph, its View Layers and Film Transparent stayed active and F12 still rendered through it. Off now puts back your own compositor, Use Compositing, Film Transparent and View Layer switches, removes the generated View Layers and stops live updates. The FBP nodes (including nodes you added) and the layer list are kept, and turning the compositor on again resumes the same setup.
+- **Building the compositor no longer changes F12** until **Use Compositor in Render** is on. Generated View Layers used to render, and Render Managed Layers Only switched off your own View Layers, as soon as the setup was built. They now follow the render opt-in, which also switches them back immediately when it is turned off.
+- The Compositor panel now starts with one **Compositor | Refresh | Live Update** row. Compositor turns the tools off as well as on, and Refresh rebuilds the setup; it is highlighted when changes are waiting or nothing has been built yet.
+- **Live Update** is off by default: adding layers or effects or changing an effect type no longer rebuilds the compositor after every click. Effect values (mix, thresholds, colors) still update immediately. Turning Live Update on applies any waiting change, and enabling **Use Compositor in Render** brings a waiting setup up to date before rendering.
+- The compositor **Color Grade** effect now changes the image. It used a Color Balance mode that ignores Temperature and Tint, and wrote the same value to both white points, which cancel out.
+- A copied scene (Full or Linked Copy) no longer renders the original scene's layers into every managed compositor layer.
+- With Live Update off, dragging an effect value after changing its type (or reordering) no longer writes into the old effect's node; it waits for Refresh like other structural edits.
+- Grouping, ungrouping, moving and removing compositor layers, reordering compositor effects and assigning groups now follow Live Update / Refresh, instead of always rebuilding immediately (and raising an error, for example when the last layer of a folder was removed).
+- **Share Unassigned Groups**, **Render Managed Layers Only** and View Layer names now mark the compositor for Refresh when changed.
+- With **Render Managed Layers Only** off, turning a native View Layer's render switch on or off is no longer undone by the next compositor sync.
+- **Restore Native Compositor** asks for confirmation, because it also deletes the editable Effects & Masks group.
+- The compositor no longer re-tags its tree on every scene update while the render opt-in is active, and two layer-remap dropdowns can no longer show garbled names.
+
+### Import
+
+- **Drag and drop shows the import options.** Dropping images, a sequence or a video now always opens the Import with Frame By Plane dialog: Auto / Single Plane / Multiplane, Dropped Media or Parent Folder, the plane settings (Frame Hold, loop, orientation, Shadeless, alpha crop) and a **Camera** choice: **Keep Camera**, **Match Aspect** (change the existing camera's output aspect to the media) or **New Camera**, plus Fit to Camera and, for Multiplane, Layer Spacing. Single Plane and Multiplane now follow the same camera choice; before, Single Plane could only adapt an existing camera and Multiplane always created a new one.
+
+### Tutorial
+
+- The tutorial card is about half the size, follows Blender's Resolution Scale and display density (it ignored scales below 1.0 and was too small on high-density displays), can be **dragged by its title bar** anywhere in the viewport and **collapsed** to the title bar alone, which still shows the current step.
+
+### On-plane controls
+
+- **Gradient Mask**, **Gradient Light** and **Tilt-Shift** handles now line up with the effect on non-square images. The blue and orange bars sat along the UV direction, so on a 16:9 image the visible transition ran at a different angle than the bars. Existing projects render exactly as before; only the handle positions are corrected.
+- **Radial Gradient Mask** has its own handles: the yellow handle is the circle centre (drag to move, rotate to turn the handles), blue marks the inner radius where the mask is fully opaque and orange the outer radius where it reaches zero. The radial gradient is now a true circle on non-square images instead of an ellipse stretched to the image proportions (the shorter side keeps its size).
+- Touching a **Gradient Light** handle no longer resets **Shadow Position** to zero.
+- **Wave Mask** and **Voronoi Mask** get an on-plane arrow to rotate the pattern.
+
+### Lattice (Deform Plane)
+
+- **Poses**: one-click deformations — Sway, Arch, Squash / Stretch, Taper, Shear, Bulge / Pinch, Wave, Flag and Curl — each added as a slider that can be keyframed. Sliders mix freely and go from -1 to 1, so Squash becomes Stretch and Sway bends either way. **Custom** adds an empty pose and opens the cage to shape it; the pose is shown alone until **Back to Plane**.
+- Presets land exactly on the cage surface (the B-spline cage no longer softens them depending on the grid density), and a preset that needs more control points refines the cage automatically.
+- Changing the **Cage Grid** keeps the current shape, the poses and their animation instead of resetting the cage. Reset and Camera Flatten rewrite only the rest cage; poses keep their deformation on top of it.
+- Fixed: refitting the cage after a grid change used the deformed plane's bounds, so the cage grew by the amount of the current deformation.
+
+### Cleanup
+
+- Removed about 700 lines of code that nothing used: 31 helper functions (diagnostic snapshots, legacy timing probes, layer sorting and report helpers), two dead constants and three unused imports. The static orphan audit now lists only two Scrub Bar helpers, which are left as they are.
+
+### Fixes
+
+- Holding `<` past the end of the Scrub Bar and then moving away from it no longer snaps the playhead back toward the start.
+- A click right after the return glide is hit-tested where the pointer really is, so drawing straight away is no longer taken as a Scrub Bar click.
+- The return glide lands on the start frame even when it lies outside the scene or preview range.
+- Older saved Mouse Magnet on/off and Strength values no longer shrink the Precise Range; Precise Range is also in the Scrub Bar menu under Scrub Speed.
+- Editing a swatch can no longer move the open color picker onto another color group when two colors become equal.
+- Swap in Edit Mode says why when nothing can be swapped.
+- The Scrub Bar menu aligns its labels and is a little wider.
+- Masks that sample the layer UV (Luma/Alpha Matte, Gradient, Noise, Wave, Voronoi, Channel, Color and Imported masks) no longer lose their UV input after a UV effect is moved or the stack is sorted. They previously appeared frozen until another rebuild.
+- Removing a duplicated (multi-instance) effect now also removes its per-instance viewport and render visibility data instead of leaving it on the layer.
+- **Clear Effect Stack** and **Remove Selected Effects** now update the saved effect-stack data, so removed effects (and their group membership) no longer remain as hidden records in the .blend file.
+- **Copy / Paste Effect Stack** now pastes an exact copy: duplicated effects keep every instance with its own settings, and the visible stack order and effect groups are preserved. Previously only one instance per effect was pasted, with the active instance's values, and the order could change the look of the result.
+- **Effect Stack Presets** now restore the saved stack order. Existing presets benefit too, because the order was already stored in them.
+- Copying a stack or saving a preset no longer changes the source layer: duplicated effects were silently added to the group of their first instance.
+- **Hide in Render** now works for every Image effect. The render only applied it to animated or Evolve effects, so other effects hidden for the render still appeared in F12 output. Mesh-effect render quality settings are now applied to every Mesh effect for the same reason.
+- Toggling render visibility for a duplicated effect with several layers selected now reaches every instance.
+- In stacks that mix Image and Mesh effects, hiding an effect, Solo, duplicating an instance and removing an instance are now reflected in the final result and in what Mesh effects read. Previously the change only appeared after another edit.
+- Removing an effect instance that a local mask was attached to now returns the mask to the layer cleanly; Project Health no longer reports a missing receiver.
+- Hiding a global (Layer) mask, in the viewport or for the render, no longer makes a semi-transparent layer more transparent. The hidden mask still multiplied the layer alpha once more (50 % alpha rendered at 25 %).
+- Adding an effect while an effect group (or one of its members) is selected now places the new effect inside that group. It was added to the top of the stack while joining the group, so the group also swallowed every row in between.
+- Switching an effect to another variant of its family (for example Pixelate → Hex Pixelate) keeps its place in the stack instead of moving it to the bottom. With two variants of one family on a layer (for example Swirl and Bulge Pinch), the switch now replaces the effect you clicked instead of the first one in the family. On a duplicated effect it replaces only the selected copy (the other copies and their settings stay), and a local mask attached to that copy moves to the new variant.
+- **Paste Effect Stack** and **Effect Stack Presets** keep local masks on the right duplicated effect, rebuild mask combinations in stack order, and no longer add ungrouped duplicated effects to a group. In Merge mode, masks attached to a replaced effect return to the layer instead of pointing at nothing.
+- Adding or removing an effect (including removing the last one) now updates the saved effect-stack data immediately.
+- Removing an Image effect that had a local mask no longer disconnects the UV input of the effect above it (for example Swirl above a masked Wave Warp), which made the layer render wrong until the next edit.
+- Re-adding an effect that is already on the layer no longer moves it, or its other copies, into the selected group. The same cause briefly grouped pasted copies.
+- After a variant switch, a local mask on a duplicable effect follows the new variant's exact copy, so removing that copy returns the mask to the layer.
+- **Duplicate** places the copy directly above the original effect, and a copy of a group member joins that group. The copy was listed at the bottom of the stack, although it was evaluated above the original, and the next reorder moved it to the bottom for real.
+
+## [7.2.1] — Prepared 2026-09-07 (released as part of 8.0.0)
 
 - Added paired Gap Off/On icons with separate grouping and explicit, idempotent choices.
 - Replaced both Gap assets with the final high-contrast artwork supplied on September 7.

@@ -257,7 +257,7 @@ def scrub_preferences(context=None):
     try:
         sensitivity = max(0.1, min(12.0, float(getattr(preferences, "gp_scrub_sensitivity", 2.0))))
         slow_factor = max(0.02, min(1.0, float(getattr(preferences, "gp_scrub_shift_factor", 0.2))))
-        length_ratio = max(0.2, min(1.0, float(getattr(preferences, "gp_scrub_length_ratio", 0.5))))
+        length_ratio = max(0.1, min(1.0, float(getattr(preferences, "gp_scrub_length_ratio", 0.5))))
         offset = max(8.0, min(240.0, float(getattr(preferences, "gp_scrub_edge_offset", 240.0))))
         tick_scale = max(0.25, min(3.0, float(getattr(preferences, "gp_scrub_tick_scale", 0.5))))
         line_width = max(0.5, min(6.0, float(getattr(preferences, "gp_scrub_line_width", 1.0))))
@@ -433,13 +433,24 @@ def clear_scrub_history_frame_state():
     _PENDING_SCRUB_HISTORY_FRAME = None
 
 
-def scrub_release_action(elapsed, moved, persistent_before, *, threshold=_TAP_HOLD_THRESHOLD_SECONDS):
-    """Resolve the dual tap/hold shortcut without depending on Blender events."""
+def scrub_release_action(
+    elapsed,
+    moved,
+    persistent_before,
+    *,
+    threshold=_TAP_HOLD_THRESHOLD_SECONDS,
+    tap_toggles=True,
+):
+    """Resolve the dual tap/hold shortcut without depending on Blender events.
+
+    With ``tap_toggles`` off a tap behaves like a hold that did not move: the
+    persistent bar is only pinned or unpinned from the Viewport header.
+    """
     try:
         is_tap = float(elapsed) < max(0.05, float(threshold)) and not bool(moved)
     except (TypeError, ValueError, OverflowError):
         is_tap = False
-    if is_tap:
+    if is_tap and bool(tap_toggles):
         return "DISABLE_PERSISTENT" if bool(persistent_before) else "ENABLE_PERSISTENT"
     return "KEEP_PERSISTENT" if bool(persistent_before) else "FINISH_MOMENTARY"
 
@@ -753,15 +764,37 @@ def _normalized_keyframe_type(value):
     return key_type if key_type in _KEYFRAME_TYPE_BY_ID else "KEYFRAME"
 
 
+def _scrub_shows_active_layer_only(obj):
+    """While drawing, the Scrub Bar shows and edits only the active layer."""
+    try:
+        return str(getattr(obj, "mode", "") or "") == "PAINT_GREASE_PENCIL"
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _scrub_layers(obj):
+    data = getattr(obj, "data", None)
+    layers = getattr(data, "layers", None)
+    if layers is None:
+        return ()
+    if _scrub_shows_active_layer_only(obj):
+        active = getattr(layers, "active", None)
+        return (active,) if active is not None else ()
+    return tuple(layers)
+
+
 def grease_pencil_keyframe_records(obj):
-    """Return ``(frame, type, active_layer, selected)`` records for visible layers."""
+    """Return ``(frame, type, active_layer, selected)`` records for visible layers.
+
+    In Draw Mode only the active layer counts.
+    """
     records = {}
     try:
         data = getattr(obj, "data", None)
         layers = getattr(data, "layers", None)
         active_layer = getattr(layers, "active", None)
         active_pointer = _rna_pointer(active_layer)
-        for layer in tuple(layers or ()):
+        for layer in _scrub_layers(obj):
             try:
                 if bool(getattr(layer, "hide", False)):
                     continue
@@ -784,8 +817,7 @@ def grease_pencil_editable_frames(obj, *, visible_only=True):
     """Return editable ``(layer, frame)`` pairs without collapsing layers."""
     result = []
     try:
-        data = getattr(obj, "data", None)
-        for layer in tuple(getattr(data, "layers", ()) or ()):
+        for layer in _scrub_layers(obj):
             if visible_only:
                 try:
                     if bool(getattr(layer, "hide", False)) or bool(
@@ -1189,7 +1221,7 @@ def scrub_overlay_layout(region_or_width, height=None, *, position="BOTTOM", ver
         height_value = float(height or 1.0)
     scale = max(0.5, float(ui_scale))
     margin = _OVERLAY_MARGIN_PX * scale
-    ratio = max(0.2, min(1.0, float(length_ratio)))
+    ratio = max(0.1, min(1.0, float(length_ratio)))
     offset = max(margin, float(edge_offset) * scale)
     position = str(position or "BOTTOM").upper()
     if vertical is not None:
@@ -2030,47 +2062,100 @@ def snap_frame_value(raw_frame, scene, snap_settings, keyframes=(), strips=(), p
     return max(minimum, min(maximum, int(round(raw))))
 
 
-def relative_scrub_target(
-    origin_frame,
-    pixel_delta,
-    scrub_radius,
-    half_extent,
-    *,
-    sensitivity=1.0,
-    shift=False,
-    slow_factor=0.2,
-    negative_radius=None,
-    positive_radius=None,
-):
-    """Map relative mouse motion to a frame without using cursor position.
+def scrub_distance_gain(distance_px, capture_px, ramp_px, far_speed):
+    """Return the relative scrub speed for a pointer distance from the bar.
 
-    ``negative_radius`` and ``positive_radius`` allow asymmetric visible ranges.
-    This matters near scene boundaries: with a visible range of 1-50 and the
-    playhead at frame 1, moving to the far end must reach frame 50 instead of
-    stopping at the old symmetric half-range around frame 25.
+    Inside the magnet range the speed is 1.0, which matches exact cursor
+    mapping. Beyond it the speed eases up to ``far_speed`` over ``ramp_px``,
+    so moving away from the Scrub Bar covers more frames per pixel.
     """
     try:
-        origin = float(origin_frame)
-        delta = float(pixel_delta) * float(sensitivity)
-        radius = max(1.0, float(scrub_radius))
-        backward = radius if negative_radius is None else max(0.0, float(negative_radius))
-        forward = radius if positive_radius is None else max(0.0, float(positive_radius))
-        extent = max(1.0, float(half_extent))
-        if not all(math.isfinite(value) for value in (origin, delta, radius, backward, forward, extent)):
-            raise ValueError
-        if shift:
-            factor = max(0.02, min(1.0, float(slow_factor)))
-            if not math.isfinite(factor):
-                raise ValueError
-            delta *= factor
-        normalized = max(-1.0, min(1.0, delta / extent))
-        span = forward if normalized >= 0.0 else backward
-        return origin + normalized * span, delta
+        distance = abs(float(distance_px))
+        capture = max(0.0, float(capture_px))
+        ramp = max(0.0, float(ramp_px))
+        far = max(0.1, float(far_speed))
     except (TypeError, ValueError, OverflowError):
-        try:
-            return float(origin_frame), 0.0
-        except (TypeError, ValueError, OverflowError):
-            return 0.0, 0.0
+        return 1.0
+    if not all(math.isfinite(value) for value in (distance, capture, ramp, far)):
+        return 1.0
+    beyond = distance - capture
+    if beyond <= 0.0:
+        return 1.0
+    if ramp <= 1.0e-6:
+        return far
+    factor = min(1.0, beyond / ramp)
+    factor = factor * factor * (3.0 - 2.0 * factor)
+    return 1.0 + (far - 1.0) * factor
+
+
+def scrub_return_ease(progress):
+    """Ease-in-out curve used when the playhead glides back to its start."""
+    try:
+        t = max(0.0, min(1.0, float(progress)))
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    if not math.isfinite(t):
+        return 1.0
+    if t < 0.5:
+        return 4.0 * t * t * t
+    return 1.0 - ((-2.0 * t + 2.0) ** 3) * 0.5
+
+
+_RETURN_BOUNCE_PEAK = 0.68
+
+
+def scrub_return_curve(progress, overshoot=0.0):
+    """Magnet curve: accelerate toward the target, pass it, then settle back.
+
+    ``overshoot`` is the fraction of the travel distance passed beyond the
+    target before settling. Zero gives the plain ease-in-out glide.
+    """
+    try:
+        t = max(0.0, min(1.0, float(progress)))
+        bounce = max(0.0, float(overshoot))
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    if not (math.isfinite(t) and math.isfinite(bounce)):
+        return 1.0
+    if bounce <= 1.0e-6:
+        return scrub_return_ease(t)
+    peak = _RETURN_BOUNCE_PEAK
+    if t < peak:
+        return (1.0 + bounce) * scrub_return_ease(t / peak)
+    return 1.0 + bounce * (1.0 - scrub_return_ease((t - peak) / (1.0 - peak)))
+
+
+def scrub_return_overshoot(start_frame, target_frame, bounce):
+    """Return the overshoot fraction so the bounce passes at least one frame.
+
+    The playhead lands on whole frames, so a tiny proportional overshoot would
+    round away. The bounce is kept between one and three frames past the
+    target, and disabled for one-frame trips.
+    """
+    try:
+        span = abs(float(target_frame) - float(start_frame))
+        amount = max(0.0, float(bounce))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not (math.isfinite(span) and math.isfinite(amount)) or amount <= 1.0e-6 or span < 2.0:
+        return 0.0
+    frames = max(1.0, min(3.0, span * amount))
+    return frames / span
+
+
+def scrub_return_frame(start_frame, target_frame, elapsed, duration, bounce=0.0):
+    """Return ``(frame, finished)`` for the magnetic glide back to the start frame."""
+    try:
+        start = float(start_frame)
+        target = float(target_frame)
+        span = max(1.0e-3, float(duration))
+        progress = float(elapsed) / span
+    except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+        return int(round(float(target_frame))), True
+    if not all(math.isfinite(value) for value in (start, target, progress)) or progress >= 1.0:
+        return int(round(target)), True
+    eased = scrub_return_curve(progress, scrub_return_overshoot(start, target, bounce))
+    return int(round(start + (target - start) * eased)), False
 
 
 def _is_live_grease_pencil_object(obj):
@@ -2372,11 +2457,11 @@ def keyframe_radius(key_type, ui_scale, theme_scale):
 
 
 class FBP_OT_GreasePencilFrameScrub(Operator):
-    """Tap < to toggle the slider, or hold it for a momentary scrub."""
+    """Hold < for a momentary scrub; the header button pins the slider."""
 
     bl_idname = "fbp.grease_pencil_frame_scrub"
     bl_label = "Grease Pencil Frame Scrub"
-    bl_description = "In any 3D View mode, Tap < to toggle the Scrub Bar or hold < for momentary scrubbing"
+    bl_description = "In any 3D View mode, hold < to scrub; release to glide back to the start frame"
     # The persistent listener must never own Blender's Undo transaction: GP
     # strokes pass through this modal operator and need to remain the newest
     # undo step. Key moves/duplicates push their own explicit checkpoints.
@@ -2487,6 +2572,19 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     _object_data_name = ""
     _cursor_over_axis = False
     _cursor_kind = ""
+    _return_to_start = True
+    _return_duration = 0.45
+    _return_bounce = 0.1
+    _tap_toggles = False
+    _distance_ramp = 320.0
+    _returning = False
+    _return_start_frame = 0
+    _return_target_frame = 0
+    _return_started = 0.0
+    _return_keep_persistent = False
+    _relative_frame = 0.0
+    _relative_last_along = None
+    _relative_last_overflow = 0
     _magnetic_enabled = True
     _magnetic_distance = 96.0
     _magnetic_strength = 1.0
@@ -2628,9 +2726,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     def _sync_magnetic_preferences(self, context):
         preferences = fbp_get_addon_preferences(context)
         try:
-            self._magnetic_enabled = bool(
-                getattr(preferences, "gp_scrub_mouse_magnet", True)
-            )
+            # Mouse Magnet on/off and Strength are no longer in the UI; older
+            # saved values must not shrink the Precise Range.
+            self._magnetic_enabled = True
             self._magnetic_distance = max(
                 24.0,
                 min(
@@ -2644,19 +2742,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                     ),
                 ),
             )
-            self._magnetic_strength = max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        getattr(
-                            preferences,
-                            "gp_scrub_mouse_magnet_strength",
-                            1.0,
-                        )
-                    ),
-                ),
-            )
+            self._magnetic_strength = 1.0
             self._magnetic_smoothing = max(
                 0.01,
                 min(
@@ -2675,6 +2761,24 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             self._magnetic_distance = 96.0
             self._magnetic_strength = 1.0
             self._magnetic_smoothing = 0.22
+        try:
+            self._return_to_start = bool(getattr(preferences, "gp_scrub_return_to_start", True))
+            self._return_duration = max(
+                0.05, min(1.5, float(getattr(preferences, "gp_scrub_return_duration", 0.45)))
+            )
+            self._return_bounce = max(
+                0.0, min(0.5, float(getattr(preferences, "gp_scrub_return_bounce", 0.1)))
+            )
+            self._tap_toggles = bool(getattr(preferences, "gp_scrub_tap_toggles", False))
+            self._distance_ramp = max(
+                0.0, min(2000.0, float(getattr(preferences, "gp_scrub_distance_ramp", 320.0)))
+            )
+        except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+            self._return_to_start = True
+            self._return_duration = 0.45
+            self._return_bounce = 0.1
+            self._tap_toggles = False
+            self._distance_ramp = 320.0
         if not self._magnetic_enabled:
             self._magnetic_target_offset = 0.0
 
@@ -2688,31 +2792,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         )
 
     def _update_magnetic_target(self, context, *, release=False):
-        region = self._owned_window_region()
-        if self._interaction:
-            self._magnetic_target_offset = float(self._magnetic_offset or 0.0)
-            return self._magnetic_target_offset
-        enabled = bool(
-            not release
-            and self._magnetic_enabled
-            and self._is_persistent
-            and not self._shortcut_pending
-            and region is not None
-            and str(getattr(region, "type", "") or "") == "WINDOW"
-        )
-        if not enabled:
-            self._magnetic_target_offset = 0.0
-            return 0.0
-        self._magnetic_target_offset = magnetic_scrub_axis_offset(
-            self._mouse_x,
-            self._mouse_y,
-            self._base_layout(region),
-            enabled=True,
-            capture_px=self._magnetic_distance
-            * max(0.75, float(self._ui_scale)),
-            strength=self._magnetic_strength,
-        )
-        return self._magnetic_target_offset
+        """Keep the bar where it is placed: it never slides toward the pointer.
+
+        The magnet range still sets where scrubbing with < is exact.
+        """
+        self._magnetic_target_offset = 0.0
+        return 0.0
 
     def _tick_magnetic_hover(self, context, *, release=False):
         self._update_magnetic_target(context, release=release)
@@ -2743,6 +2828,17 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         if position in {"TOP", "BOTTOM", "LEFT", "RIGHT"} and position != self._position:
             self._position = position
             self._vertical = position in {"LEFT", "RIGHT"}
+            self._magnetic_offset = 0.0
+            self._magnetic_target_offset = 0.0
+            self._cursor_label_bounds = None
+        try:
+            length_ratio = max(0.1, min(1.0, float(getattr(preferences, "gp_scrub_length_ratio", self._length_ratio))))
+            edge_offset = max(8.0, min(240.0, float(getattr(preferences, "gp_scrub_edge_offset", self._edge_offset))))
+        except (TypeError, ValueError, OverflowError, AttributeError, ReferenceError):
+            length_ratio, edge_offset = self._length_ratio, self._edge_offset
+        if length_ratio != self._length_ratio or edge_offset != self._edge_offset:
+            self._length_ratio = length_ratio
+            self._edge_offset = edge_offset
             self._magnetic_offset = 0.0
             self._magnetic_target_offset = 0.0
             self._cursor_label_bounds = None
@@ -2832,10 +2928,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         axis_inside = self._mouse_in_axis(context)
         bookmark = self._bookmark_hit()
         interactive_inside = bool(axis_inside or bookmark is not None)
+        previous = (self._hover_bookmark_uid, self._hover_frame)
         self._hover_bookmark_uid = str(bookmark.get("uid") or "") if bookmark else ""
         self._hover_frame = self._keyframe_hit(context) if axis_inside and bookmark is None else None
         self._set_hover_cursor(context, interactive_inside)
-        self._tag_redraw()
+        if (self._hover_bookmark_uid, self._hover_frame) != previous:
+            self._tag_redraw()
 
     def _set_frame_from_axis(self, context):
         left, right = self._display_range(context.scene)
@@ -3411,6 +3509,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._origin_frame = int(context.scene.frame_current)
         self._current_frame = self._origin_frame
         self._relative_anchor_frame = float(self._origin_frame)
+        self._relative_frame = float(self._origin_frame)
+        self._relative_last_along = None
+        self._relative_last_overflow = 0
         self._shortcut_direct_factor = 0.0
         self._shortcut_direct_locked = False
         self._overflow_offset = 0
@@ -3432,13 +3533,26 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             elapsed,
             self._shortcut_moved,
             self._persistent_before_shortcut,
+            tap_toggles=self._tap_toggles,
         )
+        try:
+            glide = bool(
+                self._return_to_start
+                and self._shortcut_moved
+                and action in {"FINISH_MOMENTARY", "KEEP_PERSISTENT"}
+                and int(context.scene.frame_current) != int(self._origin_frame)
+            )
+        except FBP_DATA_ERRORS:
+            glide = False
         self._shortcut_pending = False
         self._edge_direction = 0
         self._restore_onion_skin()
         if action == "DISABLE_PERSISTENT":
             return self._finish(context)
         if action == "FINISH_MOMENTARY":
+            if glide:
+                self._start_return(context, keep_persistent=False)
+                return {"RUNNING_MODAL"}
             return self._finish(context)
         self._is_persistent = True
         if action == "KEEP_PERSISTENT":
@@ -3447,8 +3561,62 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._persistent_view_before = None
         self._activation_event_type = ""
         self._set_hover_cursor(context, self._mouse_in_axis(context))
+        if glide:
+            self._start_return(context, keep_persistent=True)
         self._tag_redraw()
         return {"RUNNING_MODAL"}
+
+    def _start_return(self, context, *, keep_persistent):
+        """Glide the playhead back to the frame where < was pressed."""
+        self._returning = True
+        self._return_keep_persistent = bool(keep_persistent)
+        self._return_start_frame = int(context.scene.frame_current)
+        self._return_target_frame = int(self._origin_frame)
+        self._return_started = time.monotonic()
+        if not keep_persistent:
+            self._set_hover_cursor(context, False)
+        self._tag_redraw()
+
+    def _tick_return(self, context):
+        """Advance the glide; return the modal result once a momentary glide ends."""
+        frame, finished = scrub_return_frame(
+            self._return_start_frame,
+            self._return_target_frame,
+            time.monotonic() - float(self._return_started),
+            self._return_duration,
+            self._return_bounce,
+        )
+        self._set_frame(context.scene, frame)
+        self._tag_redraw()
+        if not finished:
+            return None
+        return self._end_return(context)
+
+    def _end_return(self, context):
+        """Land on the start frame; a momentary session then closes."""
+        self._set_frame(context.scene, self._return_target_frame, clamp=False)
+        self._returning = False
+        if self._return_keep_persistent:
+            self._tag_redraw()
+            return None
+        return self._finish(context)
+
+    def _land_return(self, context):
+        """Put the playhead on the start frame if a glide is interrupted."""
+        if not self._returning:
+            return
+        self._returning = False
+        try:
+            self._set_frame(context.scene, self._return_target_frame, clamp=False)
+        except FBP_DATA_ERRORS:
+            pass
+
+    def _hold_window_active(self):
+        """True while the momentary hold window is shown, including its glide."""
+        return bool(
+            self._shortcut_pending
+            or (self._returning and not self._return_keep_persistent)
+        )
 
     def _suspend_onion_skin(self, context):
         """Hide the View3D onion-skin overlay for this hold session only."""
@@ -3708,16 +3876,18 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             fbp_warn("Could not update Grease Pencil onion range", exc)
             return False
 
-    def _set_frame(self, scene, target):
-        minimum, maximum = scene_frame_bounds(scene)
-        target = max(minimum, min(maximum, int(target)))
+    def _set_frame(self, scene, target, *, clamp=True):
+        target = int(target)
+        if clamp:
+            minimum, maximum = scene_frame_bounds(scene)
+            target = max(minimum, min(maximum, target))
         try:
             current = int(scene.frame_current)
         except FBP_DATA_ERRORS:
             current = target - 1
         if target != current:
             try:
-                scene.frame_set(target)
+                scrub_scene_frame(scene, target)
                 self._has_frame_change = True
             except FBP_DATA_ERRORS as exc:
                 fbp_warn("Could not scrub the Grease Pencil frame", exc)
@@ -3729,32 +3899,35 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
     def _layout(self, region):
         return _scrub_layout_for_state(self, region)
 
-    def _cursor_delta(self):
+    def _cursor_along(self):
+        """Pointer coordinate along the bar, increasing toward later frames."""
         if self._vertical:
-            delta = float(self._mouse_y) - float(self._drag_anchor_y)
-            return -delta if self._invert_vertical else delta
-        return float(self._mouse_x) - float(self._drag_anchor_x)
+            along = float(self._mouse_y)
+            return -along if self._invert_vertical else along
+        return float(self._mouse_x)
+
+    def _axis_distance(self, layout):
+        """Perpendicular pointer distance from the bar's resting axis."""
+        if layout["vertical"]:
+            return abs(float(self._mouse_x) - float(layout["x"]))
+        return abs(float(self._mouse_y) - float(layout["y"]))
 
     def _window_center(self):
-        if self._shortcut_pending:
+        if self._hold_window_active():
             return int(self._origin_frame) + int(self._overflow_offset)
         return int(round(self._view_center))
 
     def _active_scrub_count(self):
         return (
             max(1, int(self._hold_radius))
-            if self._shortcut_pending
+            if self._hold_window_active()
             else max(1, int(self._view_radius))
         )
-
-    def _active_scrub_radius(self):
-        return max(1.0, (float(self._active_scrub_count()) - 1.0) * 0.5)
 
     def _target_from_mouse(self, context):
         scene = context.scene
         layout = self._layout(context.region)
         visible_count = self._active_scrub_count()
-        scrub_radius = self._active_scrub_radius()
         left, right = scrub_display_range(scene, self._window_center(), visible_count)
 
         factor = direct_scrub_mapping_factor(
@@ -3768,33 +3941,49 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         previous_factor = float(getattr(self, "_shortcut_direct_factor", 0.0) or 0.0)
         was_direct_locked = bool(getattr(self, "_shortcut_direct_locked", False))
         direct_locked = factor >= 0.999
-        if was_direct_locked and not direct_locked:
+        along = self._cursor_along()
+        if (was_direct_locked and not direct_locked) or (previous_factor > 0.0 and factor <= 0.0):
             # Leaving exact cursor mapping: the exit point becomes the new
             # relative origin immediately, avoiding a recoil toward the old
             # activation point while the magnetic blend fades out.
             self._relative_anchor_frame = float(self._current_frame)
+            self._relative_frame = float(self._current_frame)
+            self._relative_last_along = along
             self._drag_anchor_x = float(self._mouse_x)
             self._drag_anchor_y = float(self._mouse_y)
-            self._overflow_offset = 0
-        elif previous_factor > 0.0 and factor <= 0.0:
-            self._relative_anchor_frame = float(self._current_frame)
-            self._drag_anchor_x = float(self._mouse_x)
-            self._drag_anchor_y = float(self._mouse_y)
-            self._overflow_offset = 0
+            # Keep any scroll the bar already made: re-centring the window
+            # here would clamp the playhead back toward the start.
+            self._relative_last_overflow = int(self._overflow_offset)
         self._shortcut_direct_locked = direct_locked
         self._shortcut_direct_factor = factor
 
-        relative_origin = float(getattr(self, "_relative_anchor_frame", self._window_center())) + int(self._overflow_offset)
-        relative_target, relative_edge = relative_scrub_target(
-            relative_origin,
-            self._cursor_delta(),
-            scrub_radius,
-            layout["half_extent"],
-            sensitivity=self._sensitivity,
-            shift=self._shift_held,
-            slow_factor=self._slow_factor,
-            negative_radius=max(0.0, relative_origin - float(left)),
-            positive_radius=max(0.0, float(right) - relative_origin),
+        # Relative scrubbing integrates each pointer step, so the speed can
+        # follow the pointer's distance from the bar: exact on the bar, faster
+        # further away, and moving only across the bar never changes frames.
+        if self._relative_last_along is None:
+            self._relative_last_along = along
+        step_px = along - float(self._relative_last_along)
+        self._relative_last_along = along
+        frames_per_px = float(right - left) / max(1.0, float(layout["length"]))
+        gain = scrub_distance_gain(
+            self._axis_distance(layout),
+            self._magnetic_distance * max(0.75, float(self._ui_scale)),
+            self._distance_ramp * max(0.75, float(self._ui_scale)),
+            self._sensitivity,
+        )
+        if self._shift_held:
+            gain *= max(0.02, min(1.0, float(self._slow_factor)))
+        overflow = int(self._overflow_offset)
+        self._relative_frame += float(overflow - int(self._relative_last_overflow))
+        self._relative_last_overflow = overflow
+        self._relative_frame += step_px * frames_per_px * gain
+        self._relative_frame = max(float(left), min(float(right), self._relative_frame))
+        relative_target = self._relative_frame
+        relative_center = (float(left) + float(right)) * 0.5
+        relative_edge = (
+            (relative_target - relative_center)
+            / max(0.5, (float(right) - float(left)) * 0.5)
+            * float(layout["half_extent"])
         )
         absolute_target = timeline_cursor_frame(
             self._mouse_x,
@@ -3923,7 +4112,12 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             gpu.state.line_width_set(max(0.5, float(self._line_width) * max(0.75, self._ui_scale)))
             shader = gpu.shader.from_builtin("UNIFORM_COLOR")
             window_center = self._window_center()
-            if persistent and not shortcut_pending:
+            hold_window = (
+                self._hold_window_active()
+                if hasattr(self, "_hold_window_active")
+                else shortcut_pending
+            )
+            if persistent and not hold_window:
                 left, right = self._display_range(context.scene)
             else:
                 left, right = scrub_display_range(
@@ -4506,6 +4700,11 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         _ACTIVE_OPERATOR = self
         self._tag_redraw()
         _tag_all_view3d_redraw()
+        try:
+            from .live_tutorial import fbp_notify_tutorial_action
+            fbp_notify_tutorial_action(context, "draw_scrub")
+        except (ImportError, AttributeError, ReferenceError, RuntimeError):
+            pass
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
@@ -4578,6 +4777,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         except FBP_DATA_ERRORS:
             valid_session = False
         if not valid_session:
+            self._land_return(context)
             self._cleanup(context)
             return {"FINISHED"}
         try:
@@ -4606,6 +4806,42 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
         self._shift_held = bool(getattr(event, "shift", False))
         self._ctrl_held = primary_modifier_pressed(event)
         modifier_changed = previous_shift != self._shift_held or previous_ctrl != self._ctrl_held
+
+        if self._returning:
+            if event_type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+                # Keep the pointer current so a click right after the glide
+                # is hit-tested where it really happens.
+                self._cursor_in_owned_window = bool(in_window)
+                if in_window:
+                    try:
+                        self._mouse_x = float(getattr(event, "mouse_region_x"))
+                        self._mouse_y = float(getattr(event, "mouse_region_y"))
+                    except (AttributeError, TypeError, ValueError, OverflowError):
+                        pass
+            if event_type == "TIMER":
+                if self._timer is not None:
+                    result = self._tick_return(context)
+                    if result is not None:
+                        return result
+                return {"PASS_THROUGH"}
+            pressed = event_value in {"PRESS", "DOUBLE_CLICK"} or event_type == "WINDOW_DEACTIVATE"
+            if not pressed:
+                return {"PASS_THROUGH"}
+            # Any new input lands the glide on the start frame at once.
+            restart = bool(
+                in_owned_area
+                and event_value == "PRESS"
+                and event_type in {"GRLESS", "COMMA"}
+                and (event_type != "COMMA" or self._shift_held)
+            )
+            self._set_frame(context.scene, self._return_target_frame, clamp=False)
+            self._returning = False
+            if restart:
+                self._begin_shortcut(context, event)
+                return {"RUNNING_MODAL"}
+            if not self._return_keep_persistent:
+                self._cleanup(context)
+                return {"FINISHED", "PASS_THROUGH"}
 
         if scrub_undo_passthrough(
             event_type,
@@ -4718,6 +4954,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
 
         if (
             self._shortcut_pending
+            and self._shortcut_moved
             and not self._shortcut_anchor_pending
             and modifier_changed
             and in_window
@@ -4816,16 +5053,17 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             return {"PASS_THROUGH"}
 
         if event_type == "TIMER":
-            try:
-                owned_timer = getattr(event, "timer", None) is self._timer
-            except FBP_DATA_ERRORS:
-                owned_timer = False
-            if owned_timer:
-                if self._shortcut_pending and in_window:
-                    self._edge_tick(context)
+            # bpy.types.Event exposes no timer handle, so any window TIMER
+            # drives the time-based ticks while this session owns a timer.
+            # TIMER events may carry no WINDOW region, so rely on the
+            # remembered pointer state, and never swallow other timers.
+            if self._timer is not None:
+                if self._shortcut_pending:
+                    if self._cursor_in_owned_window:
+                        self._edge_tick(context)
                 elif self._is_persistent:
                     cursor_in_window = bool(self._cursor_in_owned_window)
-                    self._tick_magnetic_hover(
+                    moved = self._tick_magnetic_hover(
                         context,
                         release=scrub_magnet_should_release(
                             event_type,
@@ -4833,9 +5071,9 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                             cursor_in_owned_window=cursor_in_window,
                         ),
                     )
-                    if cursor_in_window and not self._interaction:
+                    if moved and cursor_in_window and in_window and not self._interaction:
                         self._set_idle_hover(context)
-            return {"RUNNING_MODAL"} if self._shortcut_pending else {"PASS_THROUGH"}
+            return {"PASS_THROUGH"}
 
         if self._shortcut_pending:
             return {"RUNNING_MODAL"}
@@ -5055,8 +5293,8 @@ class FBP_OT_ToggleGreasePencilScrubSlider(Operator):
     bl_idname = "fbp.toggle_grease_pencil_scrub_slider"
     bl_label = "Toggle Scrub Slider"
     bl_description = (
-        "Toggle the persistent Scrub Bar in any 3D View mode; tap < for the same "
-        "toggle or hold < for momentary scrubbing"
+        "Pin or unpin the persistent Scrub Bar in any 3D View mode; hold < "
+        "for momentary scrubbing"
     )
     bl_options = {"INTERNAL"}
 
@@ -6127,6 +6365,7 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
     bl_label = "Scrub Slider"
     bl_space_type = "VIEW_3D"
     bl_region_type = "HEADER"
+    bl_ui_units_x = 13
 
     @classmethod
     def poll(cls, context):
@@ -6134,89 +6373,161 @@ class FBP_PT_GreasePencilScrubSliderPopover(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
         preferences = fbp_get_addon_preferences(context)
 
-        if preferences is not None and hasattr(preferences, "gp_scrub_position"):
-            layout.prop(preferences, "gp_scrub_position", text="Viewport Edge")
+        pinned = is_persistent_scrub_active(context)
+        layout.operator(
+            FBP_OT_ToggleGreasePencilScrubSlider.bl_idname,
+            text="Unpin Scrub Bar" if pinned else "Pin Scrub Bar",
+            icon="PINNED" if pinned else "UNPINNED",
+            depress=pinned,
+        )
+
+        if preferences is not None:
+            body = _scrub_popover_section(layout, "fbp_scrub_bar", "Scrub Bar", "ACTION")
+            if body is not None:
+                if hasattr(preferences, "gp_scrub_length_ratio"):
+                    body.prop(preferences, "gp_scrub_length_ratio", text="Length", slider=True)
+                if hasattr(preferences, "gp_scrub_position"):
+                    body.prop(preferences, "gp_scrub_position", text="Viewport Edge")
+                if hasattr(preferences, "gp_scrub_edge_offset"):
+                    body.prop(preferences, "gp_scrub_edge_offset", text="Edge Offset")
+                if hasattr(preferences, "gp_scrub_max_range"):
+                    body.prop(preferences, "gp_scrub_max_range", text="Visible Frames")
+                scene = getattr(context, "scene", None)
+                if scene is not None and hasattr(scene, "use_audio_scrub"):
+                    body.prop(scene, "use_audio_scrub", text="Audio Scrubbing", icon="SPEAKER", toggle=True)
+
+            body = _scrub_popover_section(layout, "fbp_scrub_return", "Return to Start", "LOOP_BACK")
+            if body is not None and hasattr(preferences, "gp_scrub_return_to_start"):
+                body.prop(
+                    preferences,
+                    "gp_scrub_return_to_start",
+                    text="Return to Start Frame",
+                    toggle=True,
+                )
+                timing = body.column(align=True)
+                timing.enabled = bool(preferences.gp_scrub_return_to_start)
+                if hasattr(preferences, "gp_scrub_return_duration"):
+                    timing.prop(preferences, "gp_scrub_return_duration", text="Return Time")
+                if hasattr(preferences, "gp_scrub_return_bounce"):
+                    timing.prop(preferences, "gp_scrub_return_bounce", text="Bounce", slider=True)
+
+            body = _scrub_popover_section(
+                layout, "fbp_scrub_speed", "Scrub Speed", "MOUSE_MOVE", default_closed=True
+            )
+            if body is not None:
+                if hasattr(preferences, "gp_scrub_sensitivity"):
+                    body.prop(preferences, "gp_scrub_sensitivity", text="Far Speed", slider=True)
+                if hasattr(preferences, "gp_scrub_distance_ramp"):
+                    body.prop(preferences, "gp_scrub_distance_ramp", text="Speed Ramp Distance")
+                if hasattr(preferences, "gp_scrub_shift_factor"):
+                    body.prop(preferences, "gp_scrub_shift_factor", text="Shift Slowdown", slider=True)
+                if hasattr(preferences, "gp_scrub_mouse_magnet_distance"):
+                    body.prop(preferences, "gp_scrub_mouse_magnet_distance", text="Precise Range")
 
         obj = _scrub_target_object(context)
         gp_data = getattr(obj, "data", None) if _is_live_grease_pencil_object(obj) else None
 
-        if preferences is not None:
-            layout.separator()
-            if hasattr(preferences, "gp_scrub_show_onion_handles"):
-                layout.prop(
+        body = _scrub_popover_section(
+            layout, "fbp_scrub_onion", "Onion Skin", "ONIONSKIN_ON", default_closed=True
+        )
+        if body is not None:
+            if preferences is not None and hasattr(preferences, "gp_scrub_show_onion_handles"):
+                body.prop(
                     preferences,
                     "gp_scrub_show_onion_handles",
                     text="Onion Range Interface",
-                    icon="ONIONSKIN_ON",
                     toggle=True,
                 )
-            if hasattr(preferences, "gp_scrub_show_bookmarks"):
-                layout.prop(
-                    preferences,
-                    "gp_scrub_show_bookmarks",
-                    text="Show Bookmarks",
-                    icon="BOOKMARKS",
-                    toggle=True,
-                )
-        if gp_data is not None:
-            layout.separator()
-            layout.label(text="Onion Skin", icon="ONIONSKIN_ON")
-            overlay = getattr(getattr(context, "space_data", None), "overlay", None)
-            if overlay is not None and hasattr(overlay, "use_gpencil_onion_skin"):
-                layout.prop(overlay, "use_gpencil_onion_skin", text="Viewport Onion Skin", toggle=True)
-            if hasattr(gp_data, "onion_mode"):
-                layout.prop(gp_data, "onion_mode", text="Range Type")
-            if hasattr(gp_data, "onion_keyframe_type"):
-                layout.prop(gp_data, "onion_keyframe_type", text="Keyframe Type")
-            onion_mode = str(getattr(gp_data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
-            if onion_mode != "SELECTED":
-                ranges = layout.row(align=True)
-                range_label = "Frames" if onion_mode == "ABSOLUTE" else "Keyframes"
-                if hasattr(gp_data, "ghost_before_range"):
-                    ranges.prop(gp_data, "ghost_before_range", text=f"{range_label} Before")
-                if hasattr(gp_data, "ghost_after_range"):
-                    ranges.prop(gp_data, "ghost_after_range", text=f"{range_label} After")
-            if hasattr(gp_data, "onion_factor"):
-                layout.prop(gp_data, "onion_factor", text="Opacity", slider=True)
-            display = layout.row(align=True)
-            if hasattr(gp_data, "use_onion_fade"):
-                display.prop(gp_data, "use_onion_fade", text="Fade", toggle=True)
-            if hasattr(gp_data, "use_onion_loop"):
-                display.prop(gp_data, "use_onion_loop", text="Loop", toggle=True)
-            if hasattr(gp_data, "use_ghost_custom_colors"):
-                layout.prop(gp_data, "use_ghost_custom_colors", text="Custom Colors", toggle=True)
-                colors = layout.row(align=True)
-                colors.enabled = bool(getattr(gp_data, "use_ghost_custom_colors", False))
-                if hasattr(gp_data, "before_color"):
-                    colors.prop(gp_data, "before_color", text="Before")
-                if hasattr(gp_data, "after_color"):
-                    colors.prop(gp_data, "after_color", text="After")
+            if gp_data is None:
+                body.label(text="Select a Grease Pencil object", icon="INFO")
+            else:
+                _draw_scrub_onion_settings(body, context, gp_data)
 
         scene = getattr(context, "scene", None)
-        if scene is not None:
-            layout.separator()
-            row = layout.row()
-            row.enabled = bool(selected_scrub_bookmark_records(scene))
-            row.operator(
-                FBP_OT_RemoveScrubBookmark.bl_idname,
-                text="Delete Selected Bookmark",
-                icon="TRASH",
-            )
+        body = _scrub_popover_section(
+            layout, "fbp_scrub_bookmarks", "Bookmarks", "BOOKMARKS", default_closed=True
+        )
+        if body is not None:
+            if preferences is not None and hasattr(preferences, "gp_scrub_show_bookmarks"):
+                body.prop(preferences, "gp_scrub_show_bookmarks", text="Show Bookmarks", toggle=True)
+            if scene is not None:
+                row = body.row()
+                row.enabled = bool(selected_scrub_bookmark_records(scene))
+                row.operator(
+                    FBP_OT_RemoveScrubBookmark.bl_idname,
+                    text="Delete Selected Bookmark",
+                    icon="TRASH",
+                )
+
         if scene is not None and hasattr(scene, "use_preview_range"):
-            layout.separator()
-            layout.prop(
-                scene,
-                "use_preview_range",
-                text="Use Timeline Preview Range",
-                toggle=True,
+            body = _scrub_popover_section(
+                layout, "fbp_scrub_preview", "Preview Range", "PREVIEW_RANGE", default_closed=True
             )
-            bounds = layout.column(align=True)
-            bounds.active = bool(scene.use_preview_range)
-            row = bounds.row(align=True)
-            row.prop(scene, "frame_preview_start", text="In")
-            row.prop(scene, "frame_preview_end", text="Out")
+            if body is not None:
+                body.prop(
+                    scene,
+                    "use_preview_range",
+                    text="Use Timeline Preview Range",
+                    toggle=True,
+                )
+                bounds = body.column(align=True)
+                bounds.active = bool(scene.use_preview_range)
+                row = bounds.row(align=True)
+                row.use_property_split = False
+                row.prop(scene, "frame_preview_start", text="In")
+                row.prop(scene, "frame_preview_end", text="Out")
+
+
+def _scrub_popover_section(layout, idname, label, icon, *, default_closed=False):
+    """Draw a collapsible popover section; return its body or None when closed."""
+    try:
+        header, body = layout.panel(idname, default_closed=default_closed)
+    except (AttributeError, TypeError, RuntimeError):
+        layout.separator()
+        layout.label(text=label, icon=icon)
+        return layout.column()
+    header.label(text=label, icon=icon)
+    return body
+
+
+def _draw_scrub_onion_settings(layout, context, gp_data):
+    overlay = getattr(getattr(context, "space_data", None), "overlay", None)
+    if overlay is not None and hasattr(overlay, "use_gpencil_onion_skin"):
+        layout.prop(overlay, "use_gpencil_onion_skin", text="Viewport Onion Skin", toggle=True)
+    if hasattr(gp_data, "onion_mode"):
+        layout.prop(gp_data, "onion_mode", text="Range Type")
+    if hasattr(gp_data, "onion_keyframe_type"):
+        layout.prop(gp_data, "onion_keyframe_type", text="Keyframe Type")
+    onion_mode = str(getattr(gp_data, "onion_mode", "ABSOLUTE") or "ABSOLUTE").upper()
+    if onion_mode != "SELECTED":
+        ranges = layout.row(align=True)
+        ranges.use_property_split = False
+        range_label = "Frames" if onion_mode == "ABSOLUTE" else "Keyframes"
+        if hasattr(gp_data, "ghost_before_range"):
+            ranges.prop(gp_data, "ghost_before_range", text=f"{range_label} Before")
+        if hasattr(gp_data, "ghost_after_range"):
+            ranges.prop(gp_data, "ghost_after_range", text=f"{range_label} After")
+    if hasattr(gp_data, "onion_factor"):
+        layout.prop(gp_data, "onion_factor", text="Opacity", slider=True)
+    display = layout.row(align=True)
+    display.use_property_split = False
+    if hasattr(gp_data, "use_onion_fade"):
+        display.prop(gp_data, "use_onion_fade", text="Fade", toggle=True)
+    if hasattr(gp_data, "use_onion_loop"):
+        display.prop(gp_data, "use_onion_loop", text="Loop", toggle=True)
+    if hasattr(gp_data, "use_ghost_custom_colors"):
+        layout.prop(gp_data, "use_ghost_custom_colors", text="Custom Colors", toggle=True)
+        colors = layout.row(align=True)
+        colors.use_property_split = False
+        colors.enabled = bool(getattr(gp_data, "use_ghost_custom_colors", False))
+        if hasattr(gp_data, "before_color"):
+            colors.prop(gp_data, "before_color", text="Before")
+        if hasattr(gp_data, "after_color"):
+            colors.prop(gp_data, "after_color", text="After")
 
 
 def _draw_scrub_header_control(layout, context):
@@ -6230,18 +6541,16 @@ def _draw_scrub_header_control(layout, context):
         **floating_timeline_icon_kwargs("ACTION"),
     )
     preferences = fbp_get_addon_preferences(context)
-    onion_row = row.row(align=True)
-    onion_row.enabled = _is_live_grease_pencil_object(_scrub_target_object(context))
-    onion_row.operator(
-        FBP_OT_ToggleScrubOnionInterface.bl_idname,
-        text="",
-        icon="ONIONSKIN_ON",
-        depress=bool(
-            getattr(preferences, "gp_scrub_show_onion_handles", True)
-            if preferences is not None
-            else True
-        ),
-    )
+    if preferences is not None and hasattr(preferences, "gp_scrub_return_to_start"):
+        # Return to Start is used often enough to sit next to the pin; the
+        # Onion Skin interface stays in the menu.
+        row.prop(
+            preferences,
+            "gp_scrub_return_to_start",
+            text="",
+            icon="LOOP_BACK",
+            toggle=True,
+        )
     row.popover(
         panel=FBP_PT_GreasePencilScrubSliderPopover.bl_idname,
         text="",
@@ -6532,7 +6841,173 @@ class FBP_OT_GreasePencilScrubPreview(Operator):
         return {"FINISHED"}
 
 
+_TIMELINE_SCRUB_AREAS = frozenset({"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR", "SEQUENCE_EDITOR"})
+_TIMELINE_SCRUB_KEYMAPS = ("Dopesheet", "Graph Editor", "NLA Editor", "Sequencer")
+
+
+def negative_frames_allowed():
+    """Blender's Preferences > Animation > Timeline > Allow Negative Frames."""
+    try:
+        return bool(bpy.context.preferences.edit.use_negative_frames)
+    except (AttributeError, ReferenceError, RuntimeError):
+        return False
+
+
+def clamp_negative_frame(frame):
+    """Keep the playhead at 0 or later unless negative frames are allowed."""
+    frame = int(frame)
+    return frame if frame >= 0 or negative_frames_allowed() else 0
+
+
+def scrub_scene_frame(scene, frame):
+    """Move the playhead, playing the audio under it when Audio Scrubbing is on.
+
+    ``frame_set`` evaluates the scene at once but never seeks the sound;
+    writing ``frame_current`` is what Blender's own Timeline scrubbing does to
+    play the audio snippet.
+    """
+    frame = clamp_negative_frame(frame)
+    if bool(getattr(scene, "use_audio_scrub", False)):
+        scene.frame_current = frame
+    scene.frame_set(frame)
+
+
+class FBP_OT_TimelineHoldScrub(Operator):
+    bl_idname = "fbp.timeline_hold_scrub"
+    bl_label = "Hold to Scrub"
+    bl_description = (
+        "Hold < and move left or right to scrub the playhead from where it is. "
+        "Shift slows it down; Esc or right-click cancels"
+    )
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        area = getattr(context, "area", None)
+        region = getattr(context, "region", None)
+        return bool(
+            area is not None
+            and str(area.type) in _TIMELINE_SCRUB_AREAS
+            and region is not None
+            and str(region.type) == "WINDOW"
+            and getattr(context, "scene", None) is not None
+        )
+
+    def _view_frame(self, context, region_x):
+        try:
+            return float(context.region.view2d.region_to_view(float(region_x), 0.0)[0])
+        except FBP_DATA_ERRORS:
+            return None
+
+    def invoke(self, context, event):
+        scene = context.scene
+        self._start_frame = int(scene.frame_current)
+        self._frame = float(self._start_frame)
+        self._last_x = float(event.mouse_region_x)
+        self._activation_type = str(event.type)
+        self._timer = None
+        self._returning = False
+        preferences = fbp_get_addon_preferences(context)
+        try:
+            self._shift_factor = max(0.02, min(1.0, float(getattr(preferences, "gp_scrub_shift_factor", 0.25))))
+            self._return_to_start = bool(getattr(preferences, "gp_scrub_return_to_start", True))
+            self._return_duration = max(0.05, min(1.5, float(getattr(preferences, "gp_scrub_return_duration", 0.45))))
+            self._return_bounce = max(0.0, min(0.5, float(getattr(preferences, "gp_scrub_return_bounce", 0.1))))
+        except (TypeError, ValueError, OverflowError):
+            self._shift_factor, self._return_to_start = 0.25, True
+            self._return_duration, self._return_bounce = 0.45, 0.1
+        if self._view_frame(context, self._last_x) is None:
+            return {"PASS_THROUGH"}
+        context.window_manager.modal_handler_add(self)
+        try:
+            context.window.cursor_modal_set("SCROLL_X")
+        except FBP_DATA_ERRORS:
+            pass
+        return {"RUNNING_MODAL"}
+
+    def _set(self, context, frame):
+        try:
+            if int(frame) != int(context.scene.frame_current):
+                scrub_scene_frame(context.scene, frame)
+        except FBP_DATA_ERRORS:
+            pass
+
+    def _finish(self, context, result):
+        if self._timer is not None:
+            try:
+                context.window_manager.event_timer_remove(self._timer)
+            except FBP_DATA_ERRORS:
+                pass
+            self._timer = None
+        try:
+            context.window.cursor_modal_restore()
+        except FBP_DATA_ERRORS:
+            pass
+        return result
+
+    def _begin_return(self, context):
+        self._returning = True
+        self._return_from = int(context.scene.frame_current)
+        self._return_started = time.monotonic()
+        self._timer = context.window_manager.event_timer_add(1.0 / 60.0, window=context.window)
+        try:
+            context.window.cursor_modal_restore()
+        except FBP_DATA_ERRORS:
+            pass
+
+    def modal(self, context, event):
+        event_type = str(event.type)
+        if self._returning:
+            if event_type == "TIMER":
+                frame, finished = scrub_return_frame(
+                    self._return_from,
+                    self._start_frame,
+                    time.monotonic() - self._return_started,
+                    self._return_duration,
+                    self._return_bounce,
+                )
+                self._set(context, frame)
+                if finished:
+                    self._set(context, self._start_frame)
+                    return self._finish(context, {"FINISHED"})
+                return {"PASS_THROUGH"}
+            if event.value == "PRESS":
+                # New input lands the glide at once.
+                self._set(context, self._start_frame)
+                return self._finish(context, {"FINISHED", "PASS_THROUGH"})
+            return {"PASS_THROUGH"}
+        if event_type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            self._set(context, self._start_frame)
+            return self._finish(context, {"CANCELLED"})
+        if event_type == "WINDOW_DEACTIVATE" or scrub_activation_released(
+            event_type, event.value, self._activation_type
+        ):
+            if self._return_to_start and int(context.scene.frame_current) != self._start_frame:
+                self._begin_return(context)
+                return {"RUNNING_MODAL"}
+            return self._finish(context, {"FINISHED"})
+        if event_type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            x = float(event.mouse_region_x)
+            previous = self._view_frame(context, self._last_x)
+            current = self._view_frame(context, x)
+            self._last_x = x
+            if previous is None or current is None:
+                return {"RUNNING_MODAL"}
+            step = current - previous
+            if event.shift:
+                step *= self._shift_factor
+            self._frame += step
+            if self._frame < 0.0 and not negative_frames_allowed():
+                # Stay pinned at 0 so moving back right responds at once.
+                self._frame = 0.0
+            self._set(context, int(round(self._frame)))
+            return {"RUNNING_MODAL"}
+        return {"RUNNING_MODAL"}
+
+
+
 _classes = (
+    FBP_OT_TimelineHoldScrub,
     FBP_OT_GreasePencilFrameScrub,
     FBP_OT_ToggleGreasePencilScrubSlider,
     FBP_OT_ToggleScrubOnionInterface,
@@ -6605,6 +7080,29 @@ def _register_keymaps():
                     f"Could not register {keymap_name} scrub shortcut {event_type}",
                     exc,
                 )
+    # Animation editors get a plain hold-to-scrub on the same key.
+    for requested_name in _TIMELINE_SCRUB_KEYMAPS:
+        candidates = native_keymap_names((requested_name,))
+        keymap_name = candidates[0] if candidates else requested_name
+        keymap = addon_keymap(keymap_name, fallback_space_type="EMPTY", fallback_region_type="WINDOW")
+        if keymap is None:
+            continue
+        remove_matching_keymap_items(
+            keymap,
+            lambda item: str(getattr(item, "idname", "") or "") == FBP_OT_TimelineHoldScrub.bl_idname,
+        )
+        for event_type, shift in (("GRLESS", False), ("COMMA", True)):
+            try:
+                item = keymap.keymap_items.new(
+                    FBP_OT_TimelineHoldScrub.bl_idname,
+                    type=event_type,
+                    value="PRESS",
+                    shift=shift,
+                )
+                _GP_SCRUB_KEYMAPS.append((keymap, item))
+                registered = True
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f"Could not register {keymap_name} scrub shortcut {event_type}", exc)
     return registered
 
 

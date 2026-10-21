@@ -721,7 +721,13 @@ def _flush_node_property_updates():
     _FBP_PENDING_NODE_SCENES.clear()
     for key in keys:
         scene = _scene_from_runtime_key(key)
-        if scene is None or not hasattr(scene, "fbp_layer_sets"):
+        if (
+            scene is None
+            or not hasattr(scene, "fbp_layer_sets")
+            or getattr(scene, "compositing_node_group", None) is None
+        ):
+            # Deferred edits only update an existing graph; creating one is
+            # left to the explicit compositor operators.
             _FBP_NODE_UPDATE_RETRIES.pop(key, None)
             continue
         scene_key = _scene_runtime_key(scene)
@@ -4019,11 +4025,16 @@ class FBP_OT_FreezeDerivedLayerSet(_FBP_CompositorPreviewPoll, Operator):
         return {'FINISHED'}
 
 
+_REMAP_ENUM_ITEMS = []
+
+
 def _remap_items(self, context):
-    return [
-        (record.source_uuid, record.name, record.layer_type)
+    # Blender requires dynamic enum strings to stay referenced from Python.
+    _REMAP_ENUM_ITEMS[:] = [
+        (str(record.source_uuid), str(record.name), str(record.layer_type))
         for record in context.scene.fbp_compositor_sources if record.valid
     ] or [('NONE', "No valid source", "")]
+    return _REMAP_ENUM_ITEMS
 
 
 class FBP_OT_RemapLayerSetSource(_FBP_CompositorPreviewPoll, Operator):
@@ -4385,34 +4396,6 @@ def _remove_duplicate_state_items(collection, identity_attr):
     for index in reversed(remove):
         collection.remove(index)
     return len(remove)
-
-
-def fbp_compositor_artist_node_snapshot(scene):
-    """Return primitive identities for user-authored root compositor nodes.
-
-    The snapshot excludes all managed Frame By Plane nodes and contains no RNA
-    wrappers, so it is safe to compare across sync, repair and Undo boundaries.
-    """
-    tree = getattr(scene, "compositing_node_group", None) if scene is not None else None
-    if tree is None:
-        return ()
-    records = []
-    try:
-        nodes = tuple(getattr(tree, "nodes", ()) or ())
-    except FBP_DATA_ERRORS:
-        return ()
-    for node in nodes:
-        try:
-            if bool(node.get("fbp_owned", False)) or _node_role_without_idprops(node):
-                continue
-            records.append((
-                str(getattr(node, "name", "") or ""),
-                str(getattr(node, "bl_idname", "") or ""),
-                int(node.as_pointer()),
-            ))
-        except FBP_DATA_ERRORS:
-            continue
-    return tuple(sorted(records))
 
 
 def _fbp_snapshot_error(errors, path, reason):
@@ -5996,6 +5979,30 @@ class FBP_PT_LayerSetNode(Panel):
         else:
             self._draw_layer_set(layout, context, scene, node)
 
+def _detach_empty_generated_root(scene):
+    """Drop the empty compositor that earlier versions created on file load.
+
+    Up to 7.2 every load gave each scene an empty "FBP Composite" root, which
+    F12 then rendered through. An FBP root without a single node holds no
+    artist work, so it is unassigned and removed when nothing else uses it.
+    """
+    tree = getattr(scene, "compositing_node_group", None)
+    try:
+        if (
+            tree is None
+            or bool(getattr(scene, "fbp_compositor_enabled", False))
+            or str(tree.get("fbp_role", "") or "") != "compositor_root"
+            or len(tree.nodes)
+        ):
+            return False
+        scene.compositing_node_group = None
+        if tree.users == 0:
+            bpy.data.node_groups.remove(tree)
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
+    return True
+
+
 @persistent
 def fbp_compositor_sets_load_post(_dummy):
     _FBP_PENDING_NODE_SCENES.clear()
@@ -6013,6 +6020,10 @@ def fbp_compositor_sets_load_post(_dummy):
     _SCENE_COPY_INDEX_COUNT = -1
     _rebuild_scene_copy_index()
     for scene in bpy.data.scenes:
+        _detach_empty_generated_root(scene)
+        # Opening a file must never give a scene a compositor it did not have.
+        if getattr(scene, "compositing_node_group", None) is None:
+            continue
         key = _scene_runtime_key(scene)
         _FBP_ACTIVE_NODE_SCENES.add(key)
         try:

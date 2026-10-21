@@ -39,7 +39,7 @@ def main():
     operator_import = importlib.import_module(f"{BASE}.operator_import")
     importlib.import_module(f"{BASE}.timeline_backport")
 
-    assert constants.FBP_VERSION_STRING == "7.2.1"
+    assert constants.FBP_VERSION_STRING == "8.0.1"
     assert hasattr(bpy.ops.fbp, "import_folder_multiplane")
     assert hasattr(bpy.ops.fbp, "create_color_plane_from_hex")
 
@@ -108,60 +108,22 @@ def main():
     )
     assert felt_contract, sorted(felt_inputs)
 
-    result = bpy.ops.fbp.add_grease_pencil_canvas(
-        "EXEC_DEFAULT",
-        canvas_name="FBP Installed GP Effect Contract",
-        owner_name="__FREE__",
-        enter_draw_mode=False,
+    # The Frame By Plane GP effect stack, Ink Over Image and Limited Loop
+    # tools were removed in favor of Blender's native panels.
+    gp_removed_tools_contract = bool(
+        not hasattr(bpy.types, "FBP_UL_GPNativeEffectStack")
+        and not hasattr(bpy.types, "FBP_MT_gp_native_effects")
+        and not hasattr(bpy.types, "FBP_PT_grease_pencil_limited_loop")
+        and not hasattr(bridge, "GP_NATIVE_EFFECTS")
+        and not hasattr(bpy.types.Object, "fbp_gp_loop_blocks")
     )
-    assert "FINISHED" in result, result
-    canvas = bpy.context.object
-    glow = bridge._gp_add_native_effect(canvas, "GP_GLOW")
-    assert glow is not None
-    opacity_attr = bridge._gp_resolve_native_attr(glow, "opacity")
-    size_attr = bridge._gp_resolve_native_attr(glow, "size")
-    samples_attr = bridge._gp_resolve_native_attr(glow, "samples")
-    advanced_names = {
-        name
-        for row in bridge._GP_NATIVE_EFFECT_ADVANCED_UI_PROPS["GP_GLOW"]
-        for name, _label, _slider in row
-    }
-    gp_glow_contract = bool(
-        opacity_attr
-        and size_attr
-        and samples_attr
-        and abs(float(getattr(glow, opacity_attr)) - 0.35) < 1.0e-5
-        and tuple(round(float(value), 5) for value in getattr(glow, size_attr)) == (6.0, 6.0)
-        and int(getattr(glow, samples_attr)) == 8
-        and {
-            "mode", "blend_mode", "select_color", "rotation", "use_glow_under"
-        } <= advanced_names
-    )
-    assert gp_glow_contract
-    bridge._gp_remove_native_effect(canvas, "GP_GLOW")
-
-    gp_stack_ui_contract = bool(
-        hasattr(bpy.types, "FBP_UL_GPNativeEffectStack")
-        and hasattr(bpy.types, "FBP_MT_gp_native_effect_actions")
-        and len(bridge._GP_NATIVE_EFFECT_GROUP_MENUS) == 7
-        and all(
-            hasattr(bpy.types, menu_class.bl_idname)
-            for menu_class in bridge._GP_NATIVE_EFFECT_GROUP_MENUS
-        )
-    )
-    assert gp_stack_ui_contract
+    assert gp_removed_tools_contract
 
     blender_icons = {
         item.identifier
         for item in bpy.types.UILayout.bl_rna.functions["operator"]
         .parameters["icon"].enum_items
     }
-    compatibility_icons = {
-        icon
-        for _label, icon in bridge._GP_EFFECT_COMPATIBILITY_TIER_PRESENTATION.values()
-    }
-    gp_compatibility_icon_contract = compatibility_icons <= blender_icons
-    assert gp_compatibility_icon_contract, sorted(compatibility_icons - blender_icons)
 
     reports = []
 
@@ -266,12 +228,10 @@ def main():
         "hex_color_operator": hasattr(bpy.ops.fbp, "create_color_plane_from_hex"),
         "felt_fuzz_contract": felt_contract,
         "felt_fuzz_inputs": sorted(felt_inputs),
-        "gp_glow_contract": gp_glow_contract,
-        "gp_stack_ui_contract": gp_stack_ui_contract,
+        "gp_removed_tools_contract": gp_removed_tools_contract,
         "gp_dual_color_contract": gp_dual_color_contract,
         "compositor_opt_in_contract": compositor_opt_in_contract,
         "image_properties_contract": image_properties_contract,
-        "gp_compatibility_icon_contract": gp_compatibility_icon_contract,
         "stale_import_scene_contract": stale_import_scene_contract,
         "camera_output_contract": camera_output_contract,
         "camera_aspect_dropdown_contract": True,

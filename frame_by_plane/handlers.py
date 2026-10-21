@@ -93,11 +93,6 @@ def fbp_history_runtime_snapshot():
     }
 
 
-def fbp_history_runtime_quiescent(snapshot=None):
-    """Return True only when no history transition can strand deferred work."""
-    state = snapshot if isinstance(snapshot, dict) else fbp_history_runtime_snapshot()
-    return not bool(state.get("active")) and not bool(state.get("cleanup_pending"))
-
 def fbp_cancel_deferred_mutation_tasks():
     """Discard one-shot datablock tasks that belong to the pre-Undo state.
 
@@ -249,16 +244,23 @@ def fbp_clear_effect_runtime_caches():
         pass
 
 
-def fbp_stop_playback_for_safe_operation():
-    """Stop playback in every Blender window before Main-changing operations."""
+def _fbp_refresh_animated_image_frames(scene):
+    """Recompute the visible frame of image sequences and movies after Undo/Redo.
+
+    Undo rebuilds the evaluated materials with the image frame stored in the
+    undo step, not the one for the current frame, so sequence and video planes
+    can draw as missing (pink) textures until the playhead moves. Re-setting
+    the current frame runs the same update the timeline does.
+    """
     try:
-        return bool(
-            _scene_sync.fbp_stop_playback_for_datablock_cleanup(
-                getattr(bpy, "context", None)
-            )
+        animated = any(
+            image.users and image.source in {'SEQUENCE', 'MOVIE'}
+            for image in bpy.data.images
         )
-    except FBP_DATA_IO_ERRORS:
-        return False
+        if animated:
+            scene.frame_set(scene.frame_current, subframe=scene.frame_subframe)
+    except FBP_DATA_ERRORS:
+        pass
 
 
 def fbp_deferred_post_undo_sync():
@@ -310,6 +312,7 @@ def fbp_deferred_post_undo_sync():
                 _layers.update_global_visibility(context)
             except FBP_DATA_ERRORS:
                 pass
+            _fbp_refresh_animated_image_frames(context.scene)
             # Shader/image assignment repairs are intentionally separated from
             # the first post-Undo viewport rebuild. They run only after a quiet
             # depsgraph window, preventing Eevee material workers from racing
@@ -1250,6 +1253,16 @@ def fbp_deferred_load_post_rebuild():
         fbp_warn_once(
             "custom_effect_registry_load_refresh",
             "Could not refresh custom effects after loading the file",
+            exc,
+        )
+
+    try:
+        from .builtin_effects import fbp_upgrade_aspect_remesh_group
+        fbp_upgrade_aspect_remesh_group()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "aspect_remesh_load_upgrade",
+            "Could not update the shared mesh-effect remesh group",
             exc,
         )
 

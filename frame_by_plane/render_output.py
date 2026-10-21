@@ -408,17 +408,6 @@ def fbp_sync_all_render_outputs_from_native(*, force=False) -> int:
     return changed
 
 
-def fbp_render_output_preview(scene) -> str:
-    """Return Blender's exact current-frame output path for read-only UI display."""
-    try:
-        return str(scene.render.frame_path(frame=int(scene.frame_current)) or "")
-    except FBP_DATA_ERRORS:
-        try:
-            return str(fbp_resolve_render_output(scene)["filepath"])
-        except (AttributeError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
-            return ""
-
-
 def fbp_render_filename_preview(scene) -> str:
     """Return only the current output filename, including its extension."""
     try:

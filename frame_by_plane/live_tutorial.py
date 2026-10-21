@@ -176,6 +176,118 @@ ROUTES: dict[str, RouteSpec] = {
             ),
         ),
     ),
+    "DRAW": RouteSpec(
+        key="DRAW",
+        title="Draw frame by frame on a plane",
+        subtitle="Grease Pencil drawing with separate Stroke and Fill colors.",
+        icon="DRAW",
+        pages=(
+            PageSpec(
+                title="Add a drawing to your plane",
+                subtitle="Create a Grease Pencil Drawing in front of a selected plane.",
+                icon="DRAW",
+                description=(
+                    "The drawing follows the plane it was created from, so moving the",
+                    "plane in depth keeps your animation aligned with the artwork.",
+                ),
+                shortcut=(("KEY", "Shift + A"), ("TEXT", "Frame By Plane"), ("DRAW", "Grease Pencil Drawing")),
+                tasks=(
+                    TaskSpec("draw_add", "Add a Grease Pencil Drawing", "DRAW", "draw_add"),
+                    TaskSpec("draw_mode", "Enter Draw Mode", "DRAW", "draw_mode"),
+                ),
+                pro_tip="Select a Frame By Plane layer first: the drawing is placed and sized on that plane.",
+                help_title="Grease Pencil Drawing",
+                help_steps=(
+                    "Select an image or color plane in the 3D Viewport.",
+                    "Press Shift + A, open Frame By Plane, then choose Grease Pencil Drawing.",
+                    "With the new drawing active, press Ctrl + Tab or pick Draw Mode in the header.",
+                ),
+                help_notes=(
+                    "Grease Pencil Drawing stays inactive in the menu until a plane is selected.",
+                    "Each drawing keeps its own layers, keyframes and materials.",
+                ),
+            ),
+            PageSpec(
+                title="Stroke and Fill colors",
+                subtitle="Paint with two vertex colors: one for lines, one for fills.",
+                icon="PALETTE",
+                description=(
+                    "In Color Attribute mode the header shows a Stroke and a Fill swatch.",
+                    "Both draws the line and fills the closed shape in one stroke.",
+                ),
+                shortcut=(("DRAW", "Header"), ("PALETTE", "Color Attribute"), ("TEXT", "Both")),
+                tasks=(
+                    TaskSpec("draw_vertex_color", "Switch to Color Attribute", "PALETTE", "draw_vertex_color"),
+                    TaskSpec("draw_both", "Choose Both", "PALETTE", "draw_both"),
+                    TaskSpec("draw_colors", "Pick a Stroke or Fill color", "PALETTE", "draw_colors"),
+                    TaskSpec("draw_close_gap", "Close the gap with G", "LOOP", "draw_close_gap", optional=True),
+                ),
+                pro_tip="X swaps Stroke and Fill. Hold Shift + X and move over the canvas to sample a color into Stroke.",
+                help_title="Stroke & Fill Colors",
+                help_steps=(
+                    "In the Draw Mode header, click the Color Attribute icon next to the material.",
+                    "Choose Both in the Stroke / Fill / Both selector.",
+                    "Click the Stroke swatch for the line color and the Fill swatch for the fill color.",
+                    "Press G (Close Gap) to join the last point to the first for clean fills.",
+                ),
+                help_notes=(
+                    "X swaps the two colors; Shift + X samples the viewport into Stroke.",
+                    "In Edit Mode the same swatches show every selected color and recolor it in one click.",
+                ),
+            ),
+            PageSpec(
+                title="Animate frame by frame",
+                subtitle="Auto Keying creates a new drawing whenever you draw on an empty frame.",
+                icon="ANIMATE",
+                description=(
+                    "Move to a new frame and draw: with Auto Keying on, a keyframe is created",
+                    "for you. Hold < to scrub and check the motion without leaving Draw Mode.",
+                ),
+                shortcut=(("KEY", "Auto Keying"), ("KEY", "→ next frame"), ("DRAW", "Draw"), ("KEY", "hold <")),
+                tasks=(
+                    TaskSpec("draw_autokey", "Turn on Auto Keying", "ANIMATE", "draw_autokey"),
+                    TaskSpec("draw_new_key", "Draw on a new frame", "ANIMATE", "draw_new_key"),
+                    TaskSpec("draw_scrub", "Hold < to scrub", "LOOP", "", optional=True),
+                    TaskSpec("draw_edit_colors", "Recolor strokes in Edit Mode", "PALETTE", "draw_edit_mode", optional=True),
+                ),
+                pro_tip="Release < and the playhead snaps back to the frame you started from, ready for the next drawing.",
+                help_title="Frame by Frame",
+                help_steps=(
+                    "Turn on Auto Keying (the record button in the Timeline header).",
+                    "Press → (Right Arrow) to move a few frames forward.",
+                    "Draw: the new keyframe is created by the first stroke.",
+                    "Hold < in the 3D Viewport and move the mouse to scrub; release to snap back.",
+                    "Press Tab for Edit Mode, select strokes and change their Stroke or Fill swatch.",
+                ),
+                help_notes=(
+                    "Additive Drawing copies the previous drawing into the new keyframe.",
+                    "Allow Negative Frames in Preferences lets the scrub go below frame 0.",
+                ),
+            ),
+            PageSpec(
+                title="Frame-by-frame drawing explored",
+                subtitle="You are ready to animate on your planes.",
+                icon="CHECK",
+                description=(
+                    "You added a drawing to a plane, painted with separate Stroke and",
+                    "Fill colors and created keyframes by drawing.",
+                ),
+                tasks=(
+                    TaskSpec("draw_add", "Drawing", "DRAW", "draw_add"),
+                    TaskSpec("draw_both", "Stroke + Fill", "PALETTE", "draw_both"),
+                    TaskSpec("draw_new_key", "Keyframes", "ANIMATE", "draw_new_key"),
+                ),
+                pro_tip="Combine drawings with Multiplane depth: each plane can carry its own animated layer.",
+                help_title="Frame by Frame Recap",
+                help_steps=(
+                    "Select a plane, then Shift + A > Frame By Plane > Grease Pencil Drawing.",
+                    "Color Attribute + Both for separate Stroke and Fill colors.",
+                    "Auto Keying on, move to a new frame, draw.",
+                    "Hold < to scrub the animation.",
+                ),
+            ),
+        ),
+    ),
     "COLOR": RouteSpec(
         key="COLOR",
         title="Create an animated Color Plane",
@@ -284,16 +396,16 @@ ROUTES: dict[str, RouteSpec] = {
                     "Recommended example: 01_BG.png, 02_Mountains.png, 03_Character/0001.png,",
                     "04_Foreground.png. Numeric prefixes make the intended order explicit.",
                 ),
-                shortcut=(("KEY", "Shift + A"), ("TEXT", "Frame By Plane"), ("FOLDER", "Multiplane Project")),
+                shortcut=(("KEY", "Shift + A"), ("TEXT", "Frame By Plane"), ("FOLDER", "Multiplane")),
                 tasks=(
-                    TaskSpec("multi_open_importer", "Open Multiplane Project", "MULTIPLANE", ""),
+                    TaskSpec("multi_open_importer", "Open Multiplane", "MULTIPLANE", ""),
                     TaskSpec("multi_generate", "Generate a multiplane setup", "MULTIPLANE", "multi_generate"),
                 ),
                 help_title="Multiplane Import",
                 help_steps=(
                     "Place one visual layer in each file or numbered sequence folder.",
                     "Use prefixes such as 01_BG, 02_Midground, 03_Character and 04_FG.",
-                    "Press Shift + A > Frame By Plane > Multiplane Project.",
+                    "Press Shift + A > Frame By Plane > Multiplane.",
                     "Review the import report for imported and skipped files.",
                 ),
                 help_notes=(
@@ -658,6 +770,11 @@ class TutorialState:
     baseline_transforms: dict[int, tuple[float, ...]] = field(default_factory=dict)
     anchors: dict[str, Any] = field(default_factory=dict)
     last_detection: float = 0.0
+    # Offset from the default top-centre position, in region pixels at
+    # scale 1.0, so a moved card keeps its place when the UI scale changes.
+    offset: tuple[float, float] = (0.0, 0.0)
+    collapsed: bool = False
+    drag_origin: tuple[float, float, float, float] | None = None
 
     def reset_baseline(self, context: bpy.types.Context) -> None:
         objects = tuple(context.scene.objects)
@@ -914,7 +1031,129 @@ def _detect_multi_holdout(context: bpy.types.Context, state: TutorialState) -> b
     return False
 
 
+def _draw_paint_context(context: bpy.types.Context):
+    """Return (Grease Pencil object, color state, paint, Draw brush settings)."""
+    obj = getattr(context, "object", None)
+    try:
+        if obj is None or obj.type != "GREASEPENCIL":
+            return None, None, None, None
+    except FBP_DATA_ERRORS:
+        return None, None, None, None
+    state = getattr(obj, "fbp_gp_vertex_color_state", None)
+    try:
+        paint = context.scene.tool_settings.gpencil_paint
+        brush = paint.brush
+        settings = getattr(brush, "gpencil_settings", None) if brush is not None else None
+    except FBP_DATA_ERRORS:
+        paint = settings = None
+    return obj, state, paint, settings
+
+
+def _draw_uses_vertex_color(paint: Any, settings: Any) -> bool:
+    try:
+        if settings is not None and bool(settings.pin_draw_mode):
+            return str(settings.brush_draw_mode) == "VERTEXCOLOR"
+        return str(paint.color_mode) == "VERTEXCOLOR"
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _gp_keyframe_count(obj: Any) -> int:
+    try:
+        return sum(len(layer.frames) for layer in obj.data.layers)
+    except FBP_DATA_ERRORS:
+        return 0
+
+
+def _changed_since_anchor(state: TutorialState, key: str, value: Any) -> bool:
+    """Record ``value`` the first time; report a change on later checks."""
+    if key not in state.anchors:
+        state.anchors[key] = value
+        return False
+    return state.anchors[key] != value
+
+
+def _detect_draw_add(context: bpy.types.Context, state: TutorialState) -> bool:
+    for obj in tuple(context.scene.objects):
+        try:
+            if obj.type == "GREASEPENCIL" and obj.as_pointer() not in state.baseline_objects:
+                return True
+        except FBP_DATA_ERRORS:
+            continue
+    # An existing drawing chosen as the active object is just as good.
+    obj, _state, _paint, _settings = _draw_paint_context(context)
+    return obj is not None
+
+
+def _detect_draw_mode(context: bpy.types.Context, state: TutorialState) -> bool:
+    return str(getattr(context, "mode", "") or "") == "PAINT_GREASE_PENCIL"
+
+
+def _detect_draw_vertex_color(context: bpy.types.Context, state: TutorialState) -> bool:
+    _obj, _state, paint, settings = _draw_paint_context(context)
+    return paint is not None and _draw_uses_vertex_color(paint, settings)
+
+
+def _detect_draw_both(context: bpy.types.Context, state: TutorialState) -> bool:
+    _obj, _state, _paint, settings = _draw_paint_context(context)
+    try:
+        return settings is not None and str(settings.stroke_type) == "BOTH"
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _detect_draw_colors(context: bpy.types.Context, state: TutorialState) -> bool:
+    obj, color_state, _paint, _settings = _draw_paint_context(context)
+    if obj is None or color_state is None:
+        return False
+    try:
+        colors = (
+            tuple(round(float(value), 4) for value in color_state.stroke_color),
+            tuple(round(float(value), 4) for value in color_state.fill_color),
+        )
+    except FBP_DATA_ERRORS:
+        return False
+    return _changed_since_anchor(state, f"draw_colors:{obj.as_pointer()}", colors)
+
+
+def _detect_draw_close_gap(context: bpy.types.Context, state: TutorialState) -> bool:
+    _obj, color_state, _paint, _settings = _draw_paint_context(context)
+    return bool(getattr(color_state, "close_strokes", False))
+
+
+def _detect_draw_autokey(context: bpy.types.Context, state: TutorialState) -> bool:
+    try:
+        return bool(context.scene.tool_settings.use_keyframe_insert_auto)
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _detect_draw_new_key(context: bpy.types.Context, state: TutorialState) -> bool:
+    obj, _state, _paint, _settings = _draw_paint_context(context)
+    if obj is None:
+        return False
+    key = f"draw_keys:{obj.as_pointer()}"
+    count = _gp_keyframe_count(obj)
+    if key not in state.anchors:
+        state.anchors[key] = count
+        return False
+    return count > int(state.anchors[key])
+
+
+def _detect_draw_edit_mode(context: bpy.types.Context, state: TutorialState) -> bool:
+    return str(getattr(context, "mode", "") or "") == "EDIT_GREASE_PENCIL"
+
+
 DETECTORS: dict[str, Detector] = {
+    "draw_add": _detect_draw_add,
+    "draw_mode": _detect_draw_mode,
+    "draw_vertex_color": _detect_draw_vertex_color,
+    "draw_both": _detect_draw_both,
+    "draw_colors": _detect_draw_colors,
+    "draw_close_gap": _detect_draw_close_gap,
+    "draw_autokey": _detect_draw_autokey,
+    "draw_new_key": _detect_draw_new_key,
+    "draw_edit_mode": _detect_draw_edit_mode,
     "crop_open": _detect_crop_open,
     "layer_settings_open": _detect_layer_settings_open,
     "masks_open": _detect_masks_open,
@@ -950,7 +1189,12 @@ def _all_route_tasks(route: RouteSpec) -> tuple[TaskSpec, ...]:
 
 
 def _capture_completion_anchors(context: bpy.types.Context, state: TutorialState, task_key: str) -> None:
-    if task_key == "image_import":
+    if task_key in {"draw_both", "draw_vertex_color"}:
+        # Colors picked from now on count for "Pick a Stroke or Fill color".
+        _detect_draw_colors(context, state)
+    elif task_key == "draw_autokey":
+        _detect_draw_new_key(context, state)
+    elif task_key == "image_import":
         plane = _active_or_last(_new_tutorial_rigs(_possible_image_planes(context, state), state), context)
         if plane:
             state.anchors["image_crop"] = _rna_signature(plane, _CROP_PROPS)
@@ -994,6 +1238,11 @@ def _update_progress(context: bpy.types.Context, state: TutorialState) -> None:
     _advance_completed_page(state)
 
 
+def _progress_signature(state: TutorialState) -> tuple[Any, ...]:
+    """What the timer can change on the card: route, page and finished steps."""
+    return (state.route_key, state.page_index, len(state.completed), len(state.manual_completed))
+
+
 def _advance_completed_page(state: TutorialState) -> bool:
     """Advance after every micro-step on the current page is done or skipped."""
     route = state.route
@@ -1020,6 +1269,7 @@ _IMAGE_SHADER_SUPPORTS_TINT = False
 
 _CUSTOM_UI_KEYS = {
     "IMAGE": "menu.image_plane",
+    "DRAW": "menu.gp_layer",
     "COLOR": "menu.color_plane",
     "MULTIPLANE": "menu.multiplane",
     "MASK": "layer.clipping_on",
@@ -1039,6 +1289,7 @@ _CUSTOM_UI_KEYS = {
 
 _NATIVE_HELP_ICONS = {
     "KEY": "EVENT_SHIFT",
+    "DRAW": "GREASEPENCIL",
     "TEXT": "RENDERLAYERS",
     "CHECK": "CHECKMARK",
     "CROP": "IMAGE_BACKGROUND",
@@ -1454,74 +1705,58 @@ def _draw_text_lines(lines: Iterable[str], x: float, y: float, size: int, color:
     return cursor
 
 
-def _draw_flat_button(
-    state: TutorialState,
-    hud: dict[str, Any],
-    key: str,
-    rect: tuple[float, float, float, float],
-    label: str,
-    *,
-    primary: bool = False,
-) -> None:
-    palette = hud["palette"]
-    scale = hud["scale"]
-    hovered = state.hover == key
-    if primary:
-        fill = _mix_color(palette["accent"], palette["card_text"], 0.16) if hovered else palette["accent"]
-        text_color = palette["accent_text"]
-    else:
-        fill = palette["card_hover"] if hovered else palette["card"]
-        text_color = palette["card_text"]
-    state.hitboxes[key] = rect
-    radius = min(3.0 * scale, rect[3] * 0.22)
-    _draw_round_rect(*rect, radius, fill)
-    _draw_round_outline(*rect, radius, palette["accent"] if hovered and not primary else palette["line"])
-    _draw_text(
-        _ellipsize(label, rect[2] - 12.0 * scale, hud["small_size"]),
-        rect[0] + rect[2] * 0.5,
-        rect[1] + rect[3] * 0.5 - 4.0 * scale,
-        hud["small_size"],
-        text_color,
-        align="CENTER",
-    )
-
-
 def _inside(rect: tuple[float, float, float, float], x: float, y: float) -> bool:
     rx, ry, rw, rh = rect
     return rx <= x <= rx + rw and ry <= y <= ry + rh
 
 
 def _ui_scale(context: bpy.types.Context) -> float:
+    """Blender's UI scale factor (Resolution Scale times the display's pixel density).
+
+    ``system.dpi`` is 72 at a scale of 1.0, so this matches the factor Blender
+    applies to its own widgets and text.
+    """
     system = context.preferences.system
-    base = float(getattr(system, "ui_scale", 1.0) or 1.0)
-    dpi = float(getattr(system, "dpi", 72.0) or 72.0)
-    pixel = float(getattr(system, "pixel_size", 1.0) or 1.0)
-    dpi_factor = max(0.9, min(1.35, dpi / 72.0))
-    pixel_factor = max(1.0, min(1.25, pixel))
-    return max(0.82, min(1.65, base * dpi_factor * pixel_factor))
+    try:
+        return max(0.25, float(system.dpi) / 72.0)
+    except (AttributeError, TypeError, ValueError):
+        return max(0.25, float(getattr(system, "ui_scale", 1.0) or 1.0))
 
 
 _ROUTE_SHORT_LABELS = {
-    "IMAGE": "Image Plane",
+    "IMAGE": "Single Plane",
+    "DRAW": "Frame by Frame",
     "COLOR": "Color Plane",
     "MULTIPLANE": "Multiplane",
 }
 
 _ROUTE_ICON_UI_KEYS = {
     "IMAGE": "menu.image_plane",
+    "DRAW": "menu.gp_layer",
     "COLOR": "menu.color_plane",
     "MULTIPLANE": "menu.multiplane",
 }
 
 _ROUTE_CARD_DETAILS = {
     "IMAGE": "Import · crop · mask · 2D FX",
+    "DRAW": "Draw · Stroke + Fill · keys · scrub",
     "COLOR": "Color · gradient · animation · mesh",
     "MULTIPLANE": "Camera · depth · loop · masks",
 }
 
 _TASK_GUIDANCE = {
+    "draw_add": "Select a plane, then add a Grease Pencil Drawing on it. An existing drawing works too.",
+    "draw_mode": "Switch the drawing to Draw Mode to start painting.",
+    "draw_vertex_color": "In the header, click the Color Attribute icon so strokes use vertex colors.",
+    "draw_both": "Choose Both: every stroke gets the Stroke color on the line and the Fill color inside.",
+    "draw_colors": "Click the Stroke or Fill swatch in the header and choose a new color.",
+    "draw_close_gap": "Press G to close each stroke: the last point joins the first for clean fills.",
+    "draw_autokey": "Turn on Auto Keying so drawing on an empty frame creates a keyframe.",
+    "draw_new_key": "Move to a frame without a drawing and draw a stroke.",
+    "draw_scrub": "Hold < over the 3D Viewport and move the mouse; release to snap back.",
+    "draw_edit_colors": "Press Tab, select strokes and change their Stroke or Fill swatch.",
     "image_open_importer": "Open the Single Plane importer. The next card will wait for the file you choose.",
-    "image_import": "Add a Single Plane and choose an image. The new layer is detected automatically.",
+    "image_import": "Choose an image or a video in the file browser; the settings are in its sidebar. Press ? to see what every option does.",
     "image_open_crop": "Press Z and choose Crop or Expand to reveal the existing viewport edge controllers.",
     "image_crop": "Drag a Crop or Expand edge controller to frame the selected plane.",
     "image_open_masks": "Press Z to reach Grease Pencil Mask.",
@@ -1538,8 +1773,8 @@ _TASK_GUIDANCE = {
     "color_add_frame": "Add a Color or Gradient row from the Frames UI List, then edit its appearance and duration.",
     "color_open_mesh_effects": "Open the Mesh section for the selected Color Plane.",
     "color_mesh": "Use Z for a favourite 3D effect, or add one from Effects & Masks > Mesh.",
-    "multi_open_importer": "Open Multiplane Project. The next card will wait for the imported layer setup.",
-    "multi_generate": "Open Multiplane Project and import a folder containing at least two layers.",
+    "multi_open_importer": "Open Multiplane. The next card will wait for the imported layer setup.",
+    "multi_generate": "Choose a folder with at least two layers and press OK. Press ? for the options.",
     "multi_open_camera": "Open the Frame By Plane camera setup.",
     "multi_camera": "Create or choose the active scene camera.",
     "multi_start_depth": "Select one imported layer and start a constrained move.",
@@ -1554,6 +1789,16 @@ _TASK_GUIDANCE = {
 }
 
 _TASK_ACTION_LABELS = {
+    "draw_add": "Add Drawing",
+    "draw_mode": "Enter Draw Mode",
+    "draw_vertex_color": "Use Color Attribute",
+    "draw_both": "Choose Both",
+    "draw_colors": "Pick Stroke Color",
+    "draw_close_gap": "Close Gap",
+    "draw_autokey": "Turn On Auto Keying",
+    "draw_new_key": "Go to Next Frame",
+    "draw_scrub": "Hold < in the Viewport",
+    "draw_edit_colors": "Enter Edit Mode",
     "image_open_importer": "Open Single Plane",
     "image_import": "Add Single Plane",
     "image_open_crop": "Open Z Pie",
@@ -1572,8 +1817,8 @@ _TASK_ACTION_LABELS = {
     "color_add_frame": "Add Color Frame",
     "color_open_mesh_effects": "Open Mesh Effects",
     "color_mesh": "Open Mesh Effects",
-    "multi_open_importer": "Open Multiplane Project",
-    "multi_generate": "Open Multiplane Project",
+    "multi_open_importer": "Open Multiplane",
+    "multi_generate": "Open Multiplane",
     "multi_open_camera": "Open Camera Setup",
     "multi_camera": "Create Camera",
     "multi_start_depth": "Move Selected Layer",
@@ -1588,6 +1833,16 @@ _TASK_ACTION_LABELS = {
 }
 
 _TASK_SHORTCUTS = {
+    "draw_add": "Select a plane  >  Shift + A  >  Frame By Plane  >  Grease Pencil Drawing",
+    "draw_mode": "Ctrl + Tab  >  Draw Mode",
+    "draw_vertex_color": "Header  >  Color Attribute",
+    "draw_both": "Header  >  Both",
+    "draw_colors": "Header  >  Stroke / Fill swatch",
+    "draw_close_gap": "G",
+    "draw_autokey": "Timeline  >  Auto Keying",
+    "draw_new_key": "→  >  Draw",
+    "draw_scrub": "Hold <",
+    "draw_edit_colors": "Tab  >  Select  >  Stroke / Fill",
     "image_open_importer": "Shift + A  >  Frame By Plane  >  Single Plane",
     "image_import": "Choose Image  >  Open Image",
     "image_open_crop": "Z  >  Crop or Expand",
@@ -1606,7 +1861,7 @@ _TASK_SHORTCUTS = {
     "color_add_frame": "Frames  >  + Color / Gradient",
     "color_open_mesh_effects": "Z  >  Favourite 3D Effects",
     "color_mesh": "Choose a Mesh Effect  >  Adjust it",
-    "multi_open_importer": "Shift + A  >  Frame By Plane  >  Multiplane Project",
+    "multi_open_importer": "Shift + A  >  Frame By Plane  >  Multiplane",
     "multi_generate": "Choose Folder  >  Review Layers  >  Generate",
     "multi_open_camera": "Frame By Plane  >  Camera",
     "multi_camera": "Choose Camera settings  >  Create",
@@ -1655,239 +1910,407 @@ def _route_progress(state: TutorialState) -> tuple[int, int, float]:
 
 # Compact top-center tutorial HUD.  The guide deliberately exposes only the
 # current action so it can stay open while the viewport remains fully usable.
+_CHOOSER_ROUTES = ("IMAGE", "MULTIPLANE", "COLOR", "DRAW")
+_SHORTCUT_SEPARATOR = "  >  "
+_KEY_NAMES = frozenset({
+    "Shift", "Ctrl", "Alt", "Tab", "Esc", "Enter", "Space", "Del",
+    "Hold", "→", "←", "↑", "↓", "<", "N", "Z", "G", "S", "X", "I", "A",
+})
+
+
+def _draw_circle(cx: float, cy: float, radius: float, color, segments: int = 24) -> None:
+    if radius <= 0.0:
+        return
+    vertices = [(cx, cy)]
+    for index in range(segments + 1):
+        angle = math.tau * index / segments
+        vertices.append((cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+    shader = _color_shader()
+    batch = batch_for_shader(shader, "TRI_FAN", {"pos": vertices})
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
+def _is_key_label(label: str) -> bool:
+    """Return True for keyboard shortcuts ("Shift + A", "G", "Hold <")."""
+    tokens = [token for token in label.replace("+", " ").split() if token]
+    return bool(tokens) and all(token in _KEY_NAMES or len(token) == 1 for token in tokens)
+
+
+# Compact tutorial card. It starts top-centre below the viewport header, can
+# be dragged by its title bar and collapsed to the title bar alone, so the
+# viewport stays usable while the guide is open. Details live behind "?".
+_HUD_TOP_CLEARANCE = 44.0
+
+
 def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: TutorialState) -> dict[str, Any]:
     scale = _ui_scale(context)
     region_w = max(1.0, float(region.width))
     region_h = max(1.0, float(region.height))
-    desired_margin = max(10.0, 16.0 * scale)
-    # Split/quad layouts can leave a very small 3D region. Never let the HUD
-    # extend outside it; older minimum clamps could produce negative x values
-    # and an unreachable Close button.
-    margin = min(
-        desired_margin,
-        max(2.0, min(region_w, region_h) * 0.08),
-    )
-    available_w = max(1.0, region_w - margin * 2.0)
-    width = min(available_w, max(360.0, 520.0 * scale))
-    preferred_h = (174.0 if state.route is None else 220.0) * scale
-    x = (region_w - width) * 0.5
-    # Leave the translucent Viewport tool/header strip unobstructed. The HUD is
-    # still top-centred, but starts just below Blender's overlay controls.
-    desired_clearance = max(36.0, 46.0 * scale)
-    available_h = max(1.0, region_h - margin * 2.0)
-    top_clearance = min(
-        desired_clearance,
-        max(0.0, available_h - max(48.0, 96.0 * scale)),
-    )
-    height = min(preferred_h, max(1.0, available_h - top_clearance))
-    y = max(margin, region_h - height - margin - top_clearance)
-    header_h = min(38.0 * scale, height * 0.28)
-    content_pad = 12.0 * scale
-    action_h = min(28.0 * scale, height * 0.18)
-    footer_y = y + 10.0 * scale
-    control_h = action_h
-    control_gap = 6.0 * scale
-    back_w = 58.0 * scale
-    next_w = 54.0 * scale
-    close_size = min(20.0 * scale, header_h - 10.0 * scale)
-    help_w = 50.0 * scale
-    header_control_y = y + height - header_h + (header_h - close_size) * 0.5
-    controls = {
-        "close": (x + width - 8.0 * scale - close_size, header_control_y, close_size, close_size),
-        "help": (
-            x + width - 8.0 * scale - close_size - control_gap - help_w,
-            header_control_y,
-            help_w,
-            close_size,
-        ),
-        "back": (x + 10.0 * scale, footer_y, back_w, control_h),
-        "next": (x + width - 10.0 * scale - next_w, footer_y, next_w, control_h),
-    }
-    action_rect = None
-    if state.route is not None and state.active_task is not None:
-        action_left = controls["back"][0] + controls["back"][2] + control_gap
-        action_right = controls["next"][0] - control_gap
-        action_rect = (
-            action_left,
-            footer_y,
-            max(1.0, action_right - action_left),
-            action_h,
-        )
-    palette = _theme_palette(context)
-    data = {
+    margin = min(8.0 * scale, max(2.0, min(region_w, region_h) * 0.05))
+    header_h = 30.0 * scale
+    pad = 10.0 * scale
+    control_h = 24.0 * scale
+    hud = {
         "mode": "CHOOSER" if state.route is None else "STEP",
         "scale": scale,
+        "header_h": header_h,
+        "pad": pad,
+        "palette": _hud_palette(context, state.route.key if state.route is not None else ""),
+        "heading_size": max(7, round(13 * scale)),
+        "title_size": max(7, round(12 * scale)),
+        "body_size": max(6, round(11 * scale)),
+        "small_size": max(6, round(10 * scale)),
+        "caption_size": max(5, round(9 * scale)),
+        "line_h": 14.0 * scale,
+    }
+    if state.collapsed:
+        width, height = 280.0 * scale, header_h
+    elif state.route is None:
+        width, height = 340.0 * scale, header_h + 150.0 * scale
+    else:
+        width = 340.0 * scale
+        hud["content_w"] = width - pad * 2.0
+        height = header_h + _step_body_height(state, hud) + control_h + pad * 2.0
+    width = min(width, max(1.0, region_w - margin * 2.0))
+    height = min(height, max(1.0, region_h - margin * 2.0))
+    header_h = min(header_h, height)
+    default_x = (region_w - width) * 0.5
+    default_y = region_h - height - _HUD_TOP_CLEARANCE * scale
+    x = default_x + state.offset[0] * scale
+    y = default_y + state.offset[1] * scale
+    x = max(margin, min(region_w - width - margin, x))
+    y = max(margin, min(region_h - height - margin, y))
+
+    button = 20.0 * scale
+    gap = 4.0 * scale
+    header_control_y = y + height - header_h + (header_h - button) * 0.5
+    right = x + width - 6.0 * scale
+    controls = {
+        "close": (right - button, header_control_y, button, button),
+        "collapse": (right - button * 2.0 - gap, header_control_y, button, button),
+        "help": (right - button * 3.0 - gap * 2.0, header_control_y, button, button),
+    }
+    footer_y = y + pad
+    back_w = 58.0 * scale
+    next_w = 58.0 * scale
+    controls["back"] = (x + pad, footer_y, back_w, control_h)
+    controls["next"] = (x + width - pad - next_w, footer_y, next_w, control_h)
+    action_rect = None
+    if not state.collapsed and state.route is not None and state.active_task is not None:
+        action_left = controls["back"][0] + back_w + gap * 2.0
+        action_right = controls["next"][0] - gap * 2.0
+        action_rect = (action_left, footer_y, max(1.0, action_right - action_left), control_h)
+    first_control = controls["help"][0] if state.route is not None else controls["collapse"][0]
+    hud.update({
         "x": x,
         "y": y,
         "width": width,
         "height": height,
+        "default_x": default_x,
+        "default_y": default_y,
         "margin": margin,
         "header_h": header_h,
-        "content_x": x + content_pad,
-        "content_w": width - content_pad * 2.0,
-        "palette": palette,
-        "title_size": max(13, round(14 * scale)),
-        "body_size": max(10, round(11 * scale)),
-        "small_size": max(9, round(10 * scale)),
-        "line_h": max(14.0, 15.0 * scale),
+        "content_x": x + pad,
+        "content_w": width - pad * 2.0,
+        "footer_top": footer_y + control_h,
         "action_rect": action_rect,
         "controls": controls,
+        "drag_rect": (x, y + height - header_h, max(1.0, first_control - x - gap), header_h),
+    })
+    return hud
+
+
+def _step_guidance(state: TutorialState) -> tuple[str, str]:
+    task = state.active_task
+    if task is not None:
+        return task.label, _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
+    if _route_is_finished(state):
+        return "Guide complete", "Every action was detected. Pick another guide or review earlier steps."
+    return "Step complete", "Press Next to continue, or Back to review this step."
+
+
+def _step_body_height(state: TutorialState, hud: dict[str, Any]) -> float:
+    """Height of the step body: progress, title, guidance and the HOW path."""
+    scale = hud["scale"]
+    page = state.page
+    if page is None:
+        return 0.0
+    _title, guidance = _step_guidance(state)
+    lines = len(_wrap_measured(guidance, hud["content_w"], hud["small_size"], max_lines=2))
+    height = 10.0 * scale + 3.0 * scale + 14.0 * scale + hud["heading_size"] + lines * hud["line_h"]
+    task = state.active_task
+    shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
+    if shortcut:
+        height += 8.0 * scale + _draw_shortcut_chips(hud, shortcut, 0.0, 0.0, hud["content_w"], measure=True)
+    return height
+
+
+# Apple-style system tints, darkened slightly so white labels stay legible on
+# Blender's dark UI. Each guide keeps its own colour from chooser to last step.
+_ROUTE_TINTS = {
+    "IMAGE": (0.04, 0.46, 0.92, 1.0),
+    "DRAW": (0.88, 0.47, 0.06, 1.0),
+    "COLOR": (0.15, 0.62, 0.32, 1.0),
+    "MULTIPLANE": (0.58, 0.32, 0.84, 1.0),
+}
+
+
+def _hud_palette(context: bpy.types.Context, route_key: str = "") -> dict[str, tuple[float, float, float, float]]:
+    """Opaque colours only: translucent fills read differently per theme/GPU.
+
+    The surface follows Blender's menu background so the guide belongs to the
+    host UI, but every layer above it is mixed here in Python. Text colours are
+    then checked against the exact fill they sit on.
+    """
+    theme = _theme_palette(context)
+    surface = theme["panel"]
+    if _relative_luminance(surface) > 0.18:
+        # Light themes: keep the guide dark like Blender's popovers.
+        surface = (0.15, 0.15, 0.16, 1.0)
+    surface = (*surface[:3], 1.0)
+    white = (1.0, 1.0, 1.0, 1.0)
+    black = (0.0, 0.0, 0.0, 1.0)
+    card = _mix_color(surface, white, 0.07, alpha=1.0)
+    card_hover = _mix_color(surface, white, 0.12, alpha=1.0)
+    tint = _ROUTE_TINTS.get(route_key, theme["accent"])
+    tint = (*tint[:3], 1.0)
+    palette = {
+        "surface": surface,
+        "card": card,
+        "card_hover": card_hover,
+        "hairline": _mix_color(surface, white, 0.13, alpha=1.0),
+        "track": _mix_color(surface, white, 0.16, alpha=1.0),
+        "button": _mix_color(surface, white, 0.10, alpha=1.0),
+        "button_hover": _mix_color(surface, white, 0.17, alpha=1.0),
+        "key_cap": _mix_color(surface, white, 0.20, alpha=1.0),
+        "key_shadow": _mix_color(surface, black, 0.45, alpha=1.0),
+        "tint": tint,
+        "tint_hover": _mix_color(tint, white, 0.12, alpha=1.0),
+        "tint_soft": _mix_color(card, tint, 0.22, alpha=1.0),
+        "success": (0.20, 0.70, 0.36, 1.0),
+        "pending": _mix_color(surface, white, 0.24, alpha=1.0),
     }
-    return data
+    palette["text"] = _ensure_contrast((0.95, 0.95, 0.96, 1.0), card, 7.0)
+    palette["secondary"] = _ensure_contrast(_mix_color(palette["text"], card, 0.30, alpha=1.0), card, 4.5)
+    palette["tertiary"] = _ensure_contrast(_mix_color(palette["text"], card, 0.45, alpha=1.0), card, 3.0)
+    palette["on_tint"] = _ensure_contrast(white, tint, 3.0)
+    palette["tint_label"] = _ensure_contrast(_mix_color(tint, white, 0.35, alpha=1.0), surface, 4.5)
+    palette["tint_soft_label"] = _ensure_contrast(_mix_color(tint, white, 0.55, alpha=1.0), palette["tint_soft"], 4.5)
+    return palette
+
+
+def _draw_pill_button(
+    state: TutorialState,
+    hud: dict[str, Any],
+    key: str,
+    rect: tuple[float, float, float, float],
+    label: str,
+    *,
+    primary: bool = False,
+    quiet: bool = False,
+) -> None:
+    """Capsule button: tinted for the main action, neutral otherwise."""
+    palette = hud["palette"]
+    scale = hud["scale"]
+    hovered = state.hover == key
+    state.hitboxes[key] = rect
+    if primary:
+        fill = palette["tint_hover"] if hovered else palette["tint"]
+        text_color = palette["on_tint"]
+    elif quiet:
+        fill = palette["button_hover"] if hovered else None
+        text_color = palette["text"] if hovered else palette["secondary"]
+    else:
+        fill = palette["button_hover"] if hovered else palette["button"]
+        text_color = palette["text"]
+    if fill is not None:
+        _draw_round_rect(*rect, rect[3] * 0.5, fill)
+    size = hud["body_size"] if primary else hud["small_size"]
+    _draw_text(
+        _ellipsize(label, rect[2] - 16.0 * scale, size),
+        rect[0] + rect[2] * 0.5,
+        rect[1] + rect[3] * 0.5 - size * 0.36,
+        size,
+        text_color,
+        align="CENTER",
+    )
+
+
+def _draw_shortcut_chips(
+    hud: dict[str, Any], text: str, x: float, y: float, max_width: float, *, measure: bool = False,
+) -> float:
+    """Draw ``A  >  B`` as key caps and plain labels joined by chevrons.
+
+    Returns the height used. Long paths wrap onto a second line instead of
+    being cut, so every part of the path stays readable.
+    """
+    palette = hud["palette"]
+    scale = hud["scale"]
+    size = hud["small_size"]
+    parts = [part.strip() for part in str(text or "").split(_SHORTCUT_SEPARATOR) if part.strip()]
+    if not parts:
+        return 0.0
+    pad = 7.0 * scale
+    chip_h = 20.0 * scale
+    gap = 6.0 * scale
+    row_gap = 6.0 * scale
+    chevron = "›"
+    chevron_w = _text_dimensions(chevron, size)[0]
+    baseline = chip_h * 0.5 - size * 0.36
+    cursor = x
+    row_y = y
+    for index, part in enumerate(parts):
+        is_key = _is_key_label(part)
+        label = _ellipsize(part, max_width - (pad * 2.0 if is_key else 0.0), size)
+        width = _text_dimensions(label, size)[0] + (pad * 2.0 if is_key else 0.0)
+        lead = (chevron_w + gap * 2.0) if index else 0.0
+        if index and cursor + lead + width > x + max_width:
+            cursor = x
+            row_y -= chip_h + row_gap
+            lead = 0.0
+        elif index and not measure:
+            _draw_text(chevron, cursor + gap, row_y + baseline, size, palette["tertiary"])
+        cursor += lead
+        if measure:
+            pass
+        elif is_key:
+            radius = 5.0 * scale
+            _draw_round_rect(cursor, row_y - 1.5 * scale, width, chip_h, radius, palette["key_shadow"])
+            _draw_round_rect(cursor, row_y, width, chip_h, radius, palette["key_cap"])
+            _draw_text(label, cursor + width * 0.5, row_y + baseline, size, palette["text"], align="CENTER")
+        else:
+            _draw_text(label, cursor, row_y + baseline, size, palette["text"])
+        cursor += width
+    return y - row_y + chip_h
+
+
+def _draw_icon_tile(ui_key: str, x: float, y: float, size: float, palette: dict[str, Any], tint=None) -> None:
+    """Rounded tinted square with a white glyph, like an app icon."""
+    fill = tint or palette["tint"]
+    _draw_round_rect(x, y, size, size, size * 0.26, fill)
+    glyph = size * 0.7
+    _draw_custom_icon(
+        ui_key,
+        x + (size - glyph) * 0.5,
+        y + (size - glyph) * 0.5,
+        glyph,
+        glyph,
+        tint=_ensure_contrast((1.0, 1.0, 1.0, 1.0), fill, 3.0),
+    )
 
 
 def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
     palette = hud["palette"]
     scale = hud["scale"]
-    x, y, w, h = hud["x"], hud["y"], hud["width"], hud["height"]
+    y, h = hud["y"], hud["height"]
     content_x, content_w = hud["content_x"], hud["content_w"]
-    top = y + h - hud["header_h"] - 15.0 * scale
-    _draw_text("Choose what you want to explore", content_x, top, hud["body_size"], palette["card_text"])
-    if w >= 460.0 * scale:
-        _draw_text(
-            "Each real action advances the guide",
-            x + w - 12.0 * scale,
-            top,
-            hud["small_size"],
-            palette["muted"],
-            align="RIGHT",
-        )
+    top = y + h - hud["header_h"] - 8.0 * scale - hud["title_size"]
+    _draw_text("What do you want to make?", content_x, top, hud["title_size"], palette["text"])
     gap = 6.0 * scale
-    button_y = y + 12.0 * scale
-    button_h = max(48.0 * scale, top - button_y - 23.0 * scale)
-    button_w = (content_w - gap * 2.0) / 3.0
-    for index, route_key in enumerate(("IMAGE", "COLOR", "MULTIPLANE")):
+    grid_top = top - 10.0 * scale
+    grid_bottom = y + hud["pad"]
+    card_h = max(24.0 * scale, (grid_top - grid_bottom - gap) * 0.5)
+    card_w = (content_w - gap) * 0.5
+    for index, route_key in enumerate(_CHOOSER_ROUTES):
+        column, row = index % 2, index // 2
         key = f"route_{route_key}"
-        rect = (content_x + index * (button_w + gap), button_y, button_w, button_h)
+        rect = (
+            content_x + column * (card_w + gap),
+            grid_top - (row + 1) * card_h - row * gap,
+            card_w,
+            card_h,
+        )
         state.hitboxes[key] = rect
         hovered = state.hover == key
-        fill = palette["card_hover"] if hovered else palette["card"]
-        _draw_round_rect(*rect, 4.0 * scale, fill)
-        _draw_round_outline(*rect, 4.0 * scale, palette["accent"] if hovered else palette["line"])
-        icon_size = min(30.0 * scale, rect[3] * 0.38)
-        _draw_custom_icon(
-            _ROUTE_ICON_UI_KEYS[route_key],
-            rect[0] + rect[2] * 0.5 - icon_size * 0.5,
-            rect[1] + rect[3] - icon_size - 8.0 * scale,
-            icon_size,
-            icon_size,
-            tint=palette["accent_label"],
-        )
-        label = _ellipsize(_ROUTE_SHORT_LABELS[route_key], button_w - 16.0 * scale, hud["body_size"])
+        tint = (*_ROUTE_TINTS[route_key][:3], 1.0)
+        radius = 8.0 * scale
+        if hovered:
+            _draw_round_rect(rect[0] - 1.0, rect[1] - 1.0, rect[2] + 2.0, rect[3] + 2.0, radius + 1.0, tint)
+        _draw_round_rect(*rect, radius, palette["card_hover"] if hovered else palette["card"])
+        tile = min(26.0 * scale, rect[3] - 12.0 * scale)
+        tile_x = rect[0] + 8.0 * scale
+        tile_y = rect[1] + (rect[3] - tile) * 0.5
+        _draw_icon_tile(_ROUTE_ICON_UI_KEYS[route_key], tile_x, tile_y, tile, palette, tint)
+        text_x = tile_x + tile + 8.0 * scale
+        text_w = rect[0] + rect[2] - text_x - 6.0 * scale
+        middle = rect[1] + rect[3] * 0.5
         _draw_text(
-            label,
-            rect[0] + rect[2] * 0.5,
-            rect[1] + 25.0 * scale,
+            _ellipsize(_ROUTE_SHORT_LABELS[route_key], text_w, hud["body_size"]),
+            text_x,
+            middle + 2.0 * scale,
             hud["body_size"],
-            palette["card_text"],
-            align="CENTER",
+            palette["text"],
         )
-        detail = _ellipsize(_ROUTE_CARD_DETAILS[route_key], button_w - 14.0 * scale, hud["small_size"])
         _draw_text(
-            detail,
-            rect[0] + rect[2] * 0.5,
-            rect[1] + 9.0 * scale,
-            hud["small_size"],
-            palette["muted"],
-            align="CENTER",
+            _ellipsize(_ROUTE_CARD_DETAILS[route_key], text_w, hud["caption_size"]),
+            text_x,
+            middle - 11.0 * scale,
+            hud["caption_size"],
+            palette["secondary"],
         )
+
+
+def _draw_task_dots(state: TutorialState, hud: dict[str, Any], page: PageSpec, right: float, cy: float) -> None:
+    palette = hud["palette"]
+    scale = hud["scale"]
+    radius = 3.5 * scale
+    spacing = 12.0 * scale
+    active = state.active_task
+    for index, task in enumerate(reversed(page.tasks)):
+        cx = right - radius - index * spacing
+        if state.task_is_done(task):
+            _draw_circle(cx, cy, radius, palette["success"])
+        elif active is not None and task.key == active.key:
+            _draw_circle(cx, cy, radius + 1.5 * scale, palette["tint"])
+            _draw_circle(cx, cy, radius - 0.5 * scale, palette["card"])
+        else:
+            _draw_circle(cx, cy, radius, palette["pending"])
 
 
 def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
     palette = hud["palette"]
     scale = hud["scale"]
-    _x, y, w, h = hud["x"], hud["y"], hud["width"], hud["height"]
+    y, h = hud["y"], hud["height"]
     content_x, content_w = hud["content_x"], hud["content_w"]
     route = state.route
     page = state.page
     if route is None or page is None:
         return
 
+    # Thin progress bar across the whole guide.
     current, total, progress = _route_progress(state)
-    header_bottom = y + h - hud["header_h"]
-    progress_h = max(4.0, 5.0 * scale)
-    progress_y = header_bottom - 11.0 * scale
-    progress_rect = (content_x, progress_y, content_w, progress_h)
-    _draw_round_rect(*progress_rect, progress_h * 0.5, palette["line"])
-    position = current / total if total else 1.0
-    if position > 0.0:
-        _draw_round_rect(
-            progress_rect[0],
-            progress_rect[1],
-            progress_rect[2] * position,
-            progress_rect[3],
-            progress_h * 0.5,
-            palette["progress_active"],
-        )
+    bar_h = 3.0 * scale
+    bar_y = y + h - hud["header_h"] - 6.0 * scale - bar_h
+    _draw_round_rect(content_x, bar_y, content_w, bar_h, bar_h * 0.5, palette["track"])
     if progress > 0.0:
-        _draw_round_rect(
-            progress_rect[0],
-            progress_rect[1],
-            progress_rect[2] * progress,
-            progress_rect[3],
-            progress_h * 0.5,
-            palette["accent"],
-        )
-
-    card_bottom = y + 49.0 * scale
-    card_top = progress_y - 8.0 * scale
-    card_h = max(54.0 * scale, card_top - card_bottom)
-    card = (content_x, card_bottom, content_w, card_h)
-    card_radius = 4.0 * scale
-    _draw_round_rect(*card, card_radius, palette["card"])
-    _draw_round_outline(*card, card_radius, palette["line"])
+        _draw_round_rect(content_x, bar_y, max(bar_h, content_w * progress), bar_h, bar_h * 0.5, palette["tint"])
 
     task = state.active_task
+    title, guidance = _step_guidance(state)
+    title_y = bar_y - 12.0 * scale - hud["heading_size"] * 0.8
     if task is None:
-        finished = _route_is_finished(state)
-        title = "Tutorial complete" if finished else "Page complete"
-        guidance = (
-            "All tutorial actions were detected. Return to the library or review earlier pages."
-            if finished else
-            "This page is complete. Use Back to review it or Next to continue."
-        )
-        accent = palette["success"]
-        shortcut = ""
+        badge = 16.0 * scale
+        _draw_circle(content_x + badge * 0.5, title_y + 4.0 * scale, badge * 0.5, palette["success"])
+        _draw_text("✓", content_x + badge * 0.5, title_y, hud["small_size"], (1.0, 1.0, 1.0, 1.0), align="CENTER")
+        _draw_text(title, content_x + badge + 8.0 * scale, title_y, hud["heading_size"], palette["text"])
     else:
-        title = task.label + ("  ·  Optional" if task.optional else "")
-        guidance = _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
-        accent = palette["accent"]
-        shortcut = _task_shortcut_text(bpy.context, task, page)
-
-    title_y = card[1] + card[3] - 27.0 * scale
-    accent_bar = (card[0] + 4.0 * scale, card[1] + 5.0 * scale, 3.0 * scale, max(1.0, card[3] - 10.0 * scale))
-    _draw_round_rect(*accent_bar, accent_bar[2] * 0.5, accent)
-    _draw_text(_ellipsize(title, content_w - 25.0 * scale, hud["title_size"]), card[0] + 14.0 * scale, title_y, hud["title_size"], palette["card_text"])
-    guidance_lines = _wrap_measured(guidance, content_w - 26.0 * scale, hud["small_size"], max_lines=2)
-    _draw_text_lines(guidance_lines, card[0] + 14.0 * scale, title_y - 22.0 * scale, hud["small_size"], palette["muted"], hud["line_h"])
-    if shortcut and card_h >= 92.0 * scale:
-        _draw_text(
-            _ellipsize(shortcut, content_w - 26.0 * scale, hud["small_size"]),
-            card[0] + 14.0 * scale,
-            card[1] + 11.0 * scale,
-            hud["small_size"],
-            palette["accent_label"],
-        )
+        dots_w = len(page.tasks) * 12.0 * scale + 6.0 * scale
+        label = title + ("  · optional" if task.optional else "")
+        _draw_text(_ellipsize(label, content_w - dots_w, hud["heading_size"]), content_x, title_y, hud["heading_size"], palette["text"])
+        _draw_task_dots(state, hud, page, content_x + content_w, title_y + 4.0 * scale)
+    lines = _wrap_measured(guidance, content_w, hud["small_size"], max_lines=2)
+    cursor = _draw_text_lines(lines, content_x, title_y - 17.0 * scale, hud["small_size"], palette["secondary"], hud["line_h"])
+    shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
+    if shortcut:
+        chip_h = 20.0 * scale
+        _draw_shortcut_chips(hud, shortcut, content_x, cursor - chip_h + 4.0 * scale, content_w)
 
     action_rect = hud.get("action_rect")
     if task is not None and action_rect is not None:
         label = _TASK_ACTION_LABELS.get(task.key, "Do This Step")
-        _draw_flat_button(state, hud, "do_action", action_rect, label, primary=True)
-
-    if not total:
-        step_label = "Complete"
-    elif w < 430.0 * scale:
-        step_label = f"{current}/{total}"
-    else:
-        step_label = f"{current} / {total}  ·  {round(progress * 100):d}% complete"
-    _draw_text(
-        step_label,
-        hud["controls"]["help"][0] - 8.0 * scale,
-        y + h - hud["header_h"] * 0.5 - 4.0 * scale,
-        hud["small_size"],
-        palette["muted"],
-        align="RIGHT",
-    )
+        _draw_pill_button(state, hud, "do_action", action_rect, label, primary=True)
 
 
 def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
@@ -1899,46 +2322,75 @@ def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
     state = operator._state
     hud = _compute_hud(context, region, state)
     operator._hud_layout = hud
+    _draw_hud(state, hud)
+
+
+def _draw_round_control(state: TutorialState, hud: dict[str, Any], key: str, rect, label: str) -> None:
+    palette = hud["palette"]
+    hovered = state.hover == key
+    state.hitboxes[key] = rect
+    _draw_circle(rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5, rect[2] * 0.5,
+                 palette["button_hover"] if hovered else palette["button"], 32)
+    _draw_text(label, rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5 - hud["small_size"] * 0.38,
+               hud["small_size"], palette["text"] if hovered else palette["secondary"], align="CENTER")
+
+
+def _draw_hud(state: TutorialState, hud: dict[str, Any]) -> None:
     x, y, w, h, scale = hud["x"], hud["y"], hud["width"], hud["height"], hud["scale"]
     palette = hud["palette"]
 
     gpu.state.blend_set("ALPHA")
     try:
-        outer_radius = 6.0 * scale
-        _draw_round_rect(x, y, w, h, outer_radius, palette["panel"])
-        header_y = y + h - hud["header_h"]
-        _draw_round_rect(x, header_y, w, hud["header_h"], outer_radius, palette["header"])
-        _draw_rect(x, header_y, w, outer_radius, palette["header"])
-        _draw_rect(x, header_y, w, max(1.0, scale), palette["line"])
-        header_label = "Frame By Plane  Tutorial"
-        if state.route is not None:
-            header_label = f"{_ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)}  Tutorial"
-        if w < 430.0 * scale:
-            header_label = "FBP  Tutorial"
-        _draw_text(
-            header_label,
-            x + 12.0 * scale,
-            header_y + hud["header_h"] * 0.5 - 5.0 * scale,
-            hud["body_size"],
-            palette["header_text"],
-        )
-        state.hitboxes.clear()
-        if state.route is None:
-            _draw_route_chooser(state, hud)
-        else:
-            _draw_step(state, hud)
+        outer_radius = 10.0 * scale
+        for spread, alpha in ((6.0, 0.06), (3.0, 0.10), (1.0, 0.16)):
+            grow = spread * scale
+            _draw_round_rect(x - grow, y - grow * 1.3, w + grow * 2.0, h + grow * 2.0, outer_radius + grow, (0.0, 0.0, 0.0, alpha))
+        _draw_round_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, outer_radius + 1.0, palette["hairline"])
+        _draw_round_rect(x, y, w, h, outer_radius, palette["surface"])
         controls = hud["controls"]
-        _draw_flat_button(state, hud, "control_close", controls["close"], "×")
+        state.hitboxes.clear()
+        state.hitboxes["drag_header"] = hud["drag_rect"]
+        header_y = y + h - hud["header_h"]
+        content_x = hud["content_x"]
+        tile = 18.0 * scale
+        tile_y = header_y + (hud["header_h"] - tile) * 0.5
         if state.route is not None:
-            _draw_flat_button(state, hud, "control_help", controls["help"], "?  Help")
+            _draw_icon_tile(_ROUTE_ICON_UI_KEYS.get(state.route.key, "menu.multiplane"), content_x, tile_y, tile, palette)
+            header_label = _ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)
+            current, total, _progress = _route_progress(state)
+            if total:
+                header_label += f"  ·  {min(current, total)}/{total}"
             task = state.active_task
-            _draw_flat_button(state, hud, "control_back", controls["back"], "‹  Back")
-            if task is not None:
-                _draw_flat_button(state, hud, "control_skip", controls["next"], "Skip")
+            if state.collapsed and task is not None:
+                header_label += f"  ·  {task.label}"
+        else:
+            _draw_icon_tile("menu.multiplane", content_x, tile_y, tile, palette, palette["key_cap"])
+            header_label = "Tutorials"
+        text_right = controls["help"][0] if state.route is not None else controls["collapse"][0]
+        _draw_text(
+            _ellipsize(header_label, text_right - content_x - tile - 14.0 * scale, hud["body_size"]),
+            content_x + tile + 8.0 * scale,
+            header_y + hud["header_h"] * 0.5 - hud["body_size"] * 0.36,
+            hud["body_size"],
+            palette["text"],
+        )
+        if not state.collapsed:
+            if state.route is None:
+                _draw_route_chooser(state, hud)
             else:
-                next_label = "Tutorials" if _route_is_finished(state) else "Next"
-                _draw_flat_button(state, hud, "control_next", controls["next"], next_label)
-        _draw_round_outline(x, y, w, h, outer_radius, palette["line"], max(1.0, scale))
+                _draw_step(state, hud)
+        _draw_round_control(state, hud, "control_close", controls["close"], "×")
+        _draw_round_control(state, hud, "control_collapse", controls["collapse"], "+" if state.collapsed else "–")
+        if state.route is not None:
+            _draw_round_control(state, hud, "control_help", controls["help"], "?")
+            if not state.collapsed:
+                task = state.active_task
+                _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
+                if task is not None:
+                    _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
+                else:
+                    next_label = "Guides" if _route_is_finished(state) else "Next  ›"
+                    _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
     finally:
         gpu.state.blend_set("NONE")
 
@@ -2034,6 +2486,8 @@ def _run_tutorial_task_action(context: bpy.types.Context, state: TutorialState) 
         return False
     key = task.key
     try:
+        if key.startswith("draw_"):
+            return _run_draw_task_action(context, key)
         if key in {"image_open_importer", "image_import"}:
             return _operator_started(bpy.ops.fbp.popup_single_plane("INVOKE_DEFAULT"))
         if key in {"image_open_crop", "image_crop"}:
@@ -2084,6 +2538,40 @@ def _run_tutorial_task_action(context: bpy.types.Context, state: TutorialState) 
     return False
 
 
+def _run_draw_task_action(context: bpy.types.Context, key: str) -> bool:
+    obj, _state, paint, settings = _draw_paint_context(context)
+    if key == "draw_add":
+        return _operator_started(bpy.ops.fbp.add_grease_pencil_canvas("INVOKE_DEFAULT"))
+    if key == "draw_mode":
+        return obj is not None and _operator_started(bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL"))
+    if key == "draw_edit_colors":
+        return obj is not None and _operator_started(bpy.ops.object.mode_set(mode="EDIT_GREASE_PENCIL"))
+    if key == "draw_autokey":
+        context.scene.tool_settings.use_keyframe_insert_auto = True
+        return True
+    if key == "draw_new_key":
+        context.scene.frame_set(int(context.scene.frame_current) + 1)
+        return True
+    if str(getattr(context, "mode", "") or "") != "PAINT_GREASE_PENCIL" or paint is None:
+        return False
+    if key == "draw_vertex_color":
+        if settings is not None and bool(settings.pin_draw_mode):
+            settings.brush_draw_mode = "VERTEXCOLOR"
+        else:
+            paint.color_mode = "VERTEXCOLOR"
+        return True
+    if key == "draw_both":
+        if settings is None:
+            return False
+        settings.stroke_type = "BOTH"
+        return True
+    if key == "draw_colors":
+        return _operator_started(bpy.ops.wm.call_panel(name="FBP_PT_gp_stroke_color_popover", keep_open=True))
+    if key == "draw_close_gap":
+        return _operator_started(bpy.ops.fbp.toggle_gp_close_gap(action="ON"))
+    return False
+
+
 _MANUAL_ACTION_TASKS = frozenset({
     "image_open_importer", "image_open_crop", "image_open_masks", "image_open_effects",
     "color_open_creator", "color_open_settings", "color_open_mesh_effects",
@@ -2106,6 +2594,11 @@ def fbp_notify_tutorial_action(context: bpy.types.Context, *task_keys: str) -> b
     _advance_completed_page(state)
     _tag_area(operator._target_area_ptr)
     return True
+
+def fbp_tutorial_is_running() -> bool:
+    """True while the Live Tutorial HUD is open, so dialogs can explain their options."""
+    return _ACTIVE_OPERATOR is not None
+
 
 _ACTIVE_OPERATOR: "FBP_OT_live_tutorial_modal | None" = None
 _RESUME_STATE: TutorialState | None = None
@@ -2175,6 +2668,37 @@ def _help_labels(layout: bpy.types.UILayout, text: str, *, icon: str | None = No
             layout.label(text=line)
 
 
+# What each option of the creation dialogs does. Shown only from the "?"
+# help so the dialogs themselves stay minimal.
+_CAMERA_OPTION_NOTES: tuple[tuple[str, str], ...] = (
+    ("Create Camera", "Adds a new camera framed on the planes; the Camera box is then not needed."),
+    ("Camera", "The existing scene camera used by the options below."),
+    ("Fit to Camera", "Scales the planes to fill the camera frame."),
+    ("Track to Camera", "Keeps the planes turned toward the camera when it moves."),
+    ("Fit Camera Aspect Ratio", "Changes the render size to the media ratio (off by default)."),
+)
+_ADD_PLANE_OPTION_NOTES: tuple[tuple[str, str], ...] = (
+    ("File browser", "Pick one image, the images of a numbered sequence, or one video. The settings are in the sidebar on the right."),
+    ("Frame Hold", "Timeline frames each drawing stays on screen (2 = on twos)."),
+    ("Linear / Loop / Ping-Pong", "Plays once, repeats (the default), or plays back and forth."),
+    ("Vertical / Horizontal", "Stands facing the camera, or lies flat on the ground."),
+    ("Emission", "Ignores scene lights, so the image keeps its original colors."),
+    ("Crop Alpha / Padding", "Trims empty transparent borders; Padding keeps a margin."),
+    ("Set Scene Length from Media", "Makes the scene range match a new sequence or video."),
+) + _CAMERA_OPTION_NOTES
+_MULTIPLANE_OPTION_NOTES: tuple[tuple[str, str], ...] = (
+    ("Folder", "Open the folder in the file browser and press Multiplane. Every image, sequence folder or video inside becomes one layer, stacked in name order (01_BG, 02_Mid, 03_FG)."),
+    ("Frame Hold / playback", "Apply to every animated layer; Loop is the default."),
+    ("Space Between Layers", "The depth gap between layers."),
+    ("Perspective / Orthographic", "Projection of the camera made by Create Camera."),
+) + _CAMERA_OPTION_NOTES
+_DIALOG_OPTION_NOTES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "image_import": ("Single Plane", _ADD_PLANE_OPTION_NOTES),
+    "multi_open_importer": ("Multiplane", _MULTIPLANE_OPTION_NOTES),
+    "multi_generate": ("Multiplane", _MULTIPLANE_OPTION_NOTES),
+}
+
+
 class FBP_OT_tutorial_help(bpy.types.Operator):
     """Show the detailed native Blender guide for the current tutorial page."""
 
@@ -2231,6 +2755,18 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
             for line_index, line in enumerate(_help_wrap(step, 88)):
                 prefix = f"{index}. " if line_index == 0 else "   "
                 guide.label(text=f"{prefix}{line}")
+
+        dialog = next(
+            (_DIALOG_OPTION_NOTES[task.key] for task in page.tasks if task.key in _DIALOG_OPTION_NOTES),
+            None,
+        )
+        if dialog is not None:
+            options = layout.box()
+            configure_layout(options)
+            section_header(options, dialog[0], icon="PREFERENCES")
+            for name, text in dialog[1]:
+                col = options.column(align=True)
+                _help_labels(col, f"{name}: {text}", icon="DOT", width=78)
 
         if page.help_notes:
             notes = layout.box()
@@ -2310,6 +2846,26 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
 
     def cancel(self, context: bpy.types.Context) -> None:
         self._close(context)
+
+    def _clamp_offset(self, context: bpy.types.Context) -> None:
+        """Keep a dragged card reachable after a drop or a size change."""
+        area = next(
+            (
+                item for window in context.window_manager.windows
+                for item in window.screen.areas
+                if item.as_pointer() == self._target_area_ptr
+            ),
+            None,
+        )
+        region = next((item for item in getattr(area, "regions", ()) if item.type == "WINDOW"), None)
+        if region is None:
+            return
+        state = self._state
+        hud = _compute_hud(context, region, state)
+        scale = hud["scale"]
+        # _compute_hud already clamps the drawn position; store that position
+        # back so the next drag starts where the card is visible.
+        state.offset = ((hud["x"] - hud["default_x"]) / scale, (hud["y"] - hud["default_y"]) / scale)
 
     def perform_action(self, context: bpy.types.Context, action: str):
         state = self._state
@@ -2393,11 +2949,32 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             now = time.monotonic()
             if now - self._state.last_detection >= DETECTION_INTERVAL:
                 self._state.last_detection = now
+                before = _progress_signature(self._state)
                 _update_progress(context, self._state)
-                _tag_area(self._target_area_ptr)
+                # Redraw the viewport only when a step was completed: an idle
+                # card otherwise forced a full viewport redraw twice a second.
+                if _progress_signature(self._state) != before:
+                    _tag_area(self._target_area_ptr)
             return {"PASS_THROUGH"}
 
         in_target = context.area is not None and context.area.as_pointer() == self._target_area_ptr
+        state = self._state
+        if state.drag_origin is not None:
+            # Drag the card by its title bar. Offsets are stored at scale 1.0.
+            if event.type == "MOUSEMOVE":
+                start_x, start_y, offset_x, offset_y = state.drag_origin
+                scale = _ui_scale(context)
+                state.offset = (
+                    offset_x + (event.mouse_x - start_x) / scale,
+                    offset_y + (event.mouse_y - start_y) / scale,
+                )
+                _tag_area(self._target_area_ptr)
+                return {"RUNNING_MODAL"}
+            if event.type in {"LEFTMOUSE", "ESC", "RIGHTMOUSE"} and event.value in {"RELEASE", "PRESS"}:
+                state.drag_origin = None
+                self._clamp_offset(context)
+                _tag_area(self._target_area_ptr)
+                return {"RUNNING_MODAL"}
         if in_target and event.type == "MOUSEMOVE":
             hover = ""
             for key, rect in self._state.hitboxes.items():
@@ -2410,9 +2987,20 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             return {"PASS_THROUGH"}
 
         if in_target and event.type == "LEFTMOUSE" and event.value == "PRESS":
-            for key, rect in tuple(self._state.hitboxes.items()):
+            # The title bar is a drag handle; its buttons take precedence.
+            ordered = sorted(self._state.hitboxes.items(), key=lambda item: item[0] == "drag_header")
+            for key, rect in ordered:
                 if not _inside(rect, event.mouse_region_x, event.mouse_region_y):
                     continue
+                if key == "drag_header":
+                    state.drag_origin = (event.mouse_x, event.mouse_y, *state.offset)
+                    return {"RUNNING_MODAL"}
+                if key == "control_collapse":
+                    state.collapsed = not state.collapsed
+                    state.hover = ""
+                    self._clamp_offset(context)
+                    _tag_area(self._target_area_ptr)
+                    return {"RUNNING_MODAL"}
                 control_actions = {
                     "control_close": "CLOSE",
                     "control_help": "HELP",

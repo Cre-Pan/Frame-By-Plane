@@ -1082,36 +1082,6 @@ def collection_has_fbp_content(collection, recursive=True):
     return False
 
 
-def get_direct_fbp_rigs_in_collection(context, collection):
-    """Return each direct layer once, using its canonical FBP collection.
-
-    Old or manually linked objects may belong to multiple Blender collections.
-    The Layers UI must still show one stable row, so membership follows the same
-    primary-collection resolver used by reorder and Clipping Mask operations.
-    """
-    if not collection:
-        return []
-    rigs = []
-    seen = set()
-    for item in getattr(context.scene, "fbp_layers", ()):
-        try:
-            rig = getattr(item, "obj", None)
-            if (
-                not rig
-                or not is_fbp_layer_object(rig)
-                or not object_in_scene(rig, context.scene)
-            ):
-                continue
-            key = int(rig.as_pointer())
-            if key in seen or get_primary_fbp_collection(rig) != collection:
-                continue
-            seen.add(key)
-            rigs.append(rig)
-        except FBP_DATA_ERRORS:
-            continue
-    return sort_rigs_by_depth_for_layer_view(context, rigs)
-
-
 def fbp_clipping_source_map(context, rigs=None, *, collections=None):
     """Return the Procreate-style clipping source for each layer.
 
@@ -2737,33 +2707,6 @@ def fbp_layer_depth_value_from_cache(rig, depth_cache=None):
     except (AttributeError, TypeError, RuntimeError, ValueError) as exc:
         fbp_warn("Could not compute layer depth", exc)
         return 0.0
-
-
-def sort_rigs_for_layer_view(context, rigs):
-    # Materialize once: some callers may provide generators. Building a depth
-    # cache and then sorting the same generator would otherwise consume it twice
-    # and return an empty layer list.
-    rigs = tuple(rigs or ())
-    if not context:
-        return list(rigs)
-    if getattr(context.scene, 'fbp_sort_layers_alpha', False):
-        return sorted(rigs, key=lambda rig: natural_sort_key(rig.name))
-    # Layer view order is Photoshop/Procreate-like: closest to camera first
-    # at the top of the list, farthest layers last at the bottom.  Sort only by
-    # physical depth; the input order remains the stable tie-breaker.
-    depth_ctx = fbp_make_depth_context_cache(context)
-    depth_cache = {
-        rig: fbp_layer_depth_value_from_cache(rig, depth_ctx)
-        for rig in rigs if rig
-    }
-    return sorted(
-        rigs,
-        key=lambda rig: depth_cache.get(rig, 0.0),
-    )
-
-
-def sort_rigs_by_depth_for_layer_view(context, rigs):
-    return sort_rigs_for_layer_view(context, rigs)
 
 
 # ── LAYER UI BOOLEAN HELPERS ─────────────────────────────────────────────────

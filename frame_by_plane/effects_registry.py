@@ -42,6 +42,8 @@ FBP_EFFECT_ACCORDION_FOLD = "ACCORDION_FOLD"
 FBP_EFFECT_SCULPT_WAVES = "SCULPT_WAVES"
 FBP_EFFECT_KINETIC_TILES = "KINETIC_TILES"
 FBP_EFFECT_LAYERED_ECHO = "LAYERED_ECHO"
+FBP_EFFECT_FRAME_STACK = "FRAME_STACK"
+FBP_EFFECT_KNIT_CROCHET = "KNIT_CROCHET"
 FBP_EFFECT_LATTICE = "LATTICE"
 FBP_EFFECT_MOTION = "MOTION"
 
@@ -92,6 +94,7 @@ FBP_EFFECT_GRADIENT_MASK = "GRADIENT_MASK"
 FBP_EFFECT_NOISE_MASK = "NOISE_MASK"
 FBP_EFFECT_VORONOI_MASK = "VORONOI_MASK"
 FBP_EFFECT_WAVE_MASK = "WAVE_MASK"
+FBP_EFFECT_EDGE_DISTANCE_MASK = "EDGE_DISTANCE_MASK"
 FBP_EFFECT_SOLID_MASK = "SOLID_MASK"
 FBP_EFFECT_HUE_SATURATION = "HUE_SATURATION"
 FBP_EFFECT_WHITE_BALANCE = "WHITE_BALANCE"
@@ -125,6 +128,8 @@ FBP_EFFECT_EMISSION = "EMISSION"
 FBP_EFFECT_DIGITAL_NOISE = "DIGITAL_NOISE"
 FBP_EFFECT_CHROMA_KEY = "CHROMA_KEY"
 FBP_EFFECT_HALFTONE = "HALFTONE"
+FBP_EFFECT_RISO_PRINT = "RISO_PRINT"
+FBP_EFFECT_OIL_PAINT = "OIL_PAINT"
 FBP_EFFECT_DOT_MATRIX = "DOT_MATRIX"
 FBP_EFFECT_ASCII_MATRIX = "ASCII_MATRIX"
 FBP_EFFECT_ASCII = "ASCII"
@@ -903,6 +908,121 @@ FBP_EFFECT_REGISTRY = {
         "evolve_active_property": "fbp_layered_echo_wave", "supports_seed": True,
         "description": "Create a memory-efficient animated stack of textured plane instances with depth, scale, twist and wave controls.",
     },
+    FBP_EFFECT_KNIT_CROCHET: {
+        "label": "Knit & Crochet", "icon": "OUTLINER_DATA_CURVES", "kind": "GEOMETRY",
+        "source_names": (), "canonical_name": "FBP_GN_Knit_Crochet_800",
+        "modifier_name": "FBP • Knit & Crochet", "asset_id": "frame_by_plane.knit_crochet.800",
+        "enabled_key": "fbp_effect_knit_crochet", "builtin": True,
+        # Stitches sample the plane image directly (colour and alpha) through
+        # the shared image-aware node, so sequences and videos stay animated.
+        "image_aware": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Geometry", "Stitch Type", "Columns", "Row Height", "Loop Width", "Thickness",
+            "Plies", "Twist", "Color Variation", "Jitter", "Seed", "Alpha Threshold",
+            "Fuzz", "Self Light", "Show Plane", "Yarn Material",
+        ),
+        "property_map": {
+            "fbp_yarn_stitch_type": "Stitch Type",
+            "fbp_yarn_columns": "Columns",
+            "fbp_yarn_row_height": "Row Height",
+            "fbp_yarn_loop_width": "Loop Width",
+            "fbp_yarn_thickness": "Thickness",
+            "fbp_yarn_plies": "Plies",
+            "fbp_yarn_twist": "Twist",
+            "fbp_yarn_color_variation": "Color Variation",
+            "fbp_yarn_jitter": "Jitter",
+            "fbp_yarn_seed": "Seed",
+            "fbp_yarn_alpha_threshold": "Alpha Threshold",
+            "fbp_yarn_fuzz": "Fuzz",
+            "fbp_yarn_self_light": "Self Light",
+            "fbp_yarn_show_plane": "Show Plane",
+        },
+        "extra_properties": (
+            "fbp_yarn_playback_columns",
+            "fbp_yarn_render_columns",
+        ),
+        "quality_contracts": ({
+            "socket": "Columns",
+            "viewport_property": "fbp_yarn_columns",
+            "playback_property": "fbp_yarn_playback_columns",
+            "render_property": "fbp_yarn_render_columns",
+            "minimum": 2,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_yarn_seed", "evolve_amount": 1.0,
+        "evolve_mode": "SEED_STEP", "supports_seed": True,
+        "description": (
+            "Rebuild the image as knitted or crocheted yarn: twisted plies, interlocking loops "
+            "and one image colour per stitch. Transparent areas stay empty."
+        ),
+    },
+    FBP_EFFECT_FRAME_STACK: {
+        "label": "Frame Stack", "icon": "SEQ_STRIP_DUPLICATE", "kind": "GEOMETRY",
+        "source_names": (), "canonical_name": "FBP_GN_Frame_Stack_800",
+        "modifier_name": "FBP • Frame Stack", "asset_id": "frame_by_plane.frame_stack.800",
+        "enabled_key": "fbp_effect_frame_stack", "builtin": True,
+        # The tagged Image Texture receives the plane's sequence or movie and
+        # "Source Frame" follows playback, like the other image-aware effects.
+        "image_aware": True,
+        "supports": ("SEQUENCE", "VIDEO"),
+        "required_input_sockets": (
+            "Geometry", "Slices", "Frame Step", "Source Frame", "Fixed Start", "Start Frame",
+            "Detail", "Offset X", "Offset Y", "Spacing", "Scale Step", "Rotation X",
+            "Rotation Y", "Twist", "Front Slices", "Front Opacity", "Back Opacity",
+            "Depth Fade", "Luminance Opacity", "Show Plane", "Outline", "Outline Width",
+            "Outline Color", "Glow", "Stack Material",
+        ),
+        "property_map": {
+            "fbp_frame_stack_slices": "Slices",
+            "fbp_frame_stack_step": "Frame Step",
+            "fbp_frame_stack_fixed_start": "Fixed Start",
+            "fbp_frame_stack_start_frame": "Start Frame",
+            "fbp_frame_stack_detail": "Detail",
+            "fbp_frame_stack_offset_x": "Offset X",
+            "fbp_frame_stack_offset_y": "Offset Y",
+            "fbp_frame_stack_spacing": "Spacing",
+            "fbp_frame_stack_scale_step": "Scale Step",
+            "fbp_frame_stack_rotation_x": "Rotation X",
+            "fbp_frame_stack_rotation_y": "Rotation Y",
+            "fbp_frame_stack_twist": "Twist",
+            "fbp_frame_stack_front_slices": "Front Slices",
+            "fbp_frame_stack_front_opacity": "Front Opacity",
+            "fbp_frame_stack_back_opacity": "Back Opacity",
+            "fbp_frame_stack_depth_fade": "Depth Fade",
+            "fbp_frame_stack_luminance_opacity": "Luminance Opacity",
+            "fbp_frame_stack_show_plane": "Show Plane",
+            "fbp_frame_stack_outline": "Outline",
+            "fbp_frame_stack_outline_width": "Outline Width",
+            "fbp_frame_stack_glow": "Glow",
+            "fbp_frame_stack_outline_color": "Outline Color",
+        },
+        "extra_properties": (
+            "fbp_frame_stack_playback_slices",
+            "fbp_frame_stack_render_slices",
+            "fbp_frame_stack_playback_detail",
+            "fbp_frame_stack_render_detail",
+        ),
+        "quality_contracts": ({
+            "socket": "Slices",
+            "viewport_property": "fbp_frame_stack_slices",
+            "playback_property": "fbp_frame_stack_playback_slices",
+            "render_property": "fbp_frame_stack_render_slices",
+            "minimum": 1,
+            "playback_mode": "LIMIT",
+        }, {
+            "socket": "Detail",
+            "viewport_property": "fbp_frame_stack_detail",
+            "playback_property": "fbp_frame_stack_playback_detail",
+            "render_property": "fbp_frame_stack_render_detail",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "description": (
+            "Stack earlier frames of the sequence or video in depth, one slice per frame, "
+            "turning time into a solid. Concept inspired by Video Frame Stack by hipofizus."
+        ),
+    },
     FBP_EFFECT_LATTICE: {
         "label": "Lattice", "icon": "MOD_LATTICE", "kind": "BASE",
         "category": "3D", "enabled_key": "fbp_effect_lattice",
@@ -1195,6 +1315,31 @@ FBP_EFFECT_REGISTRY = {
             "fbp_edge_detect_width": "Width", "fbp_edge_detect_strength": "Strength",
             "fbp_edge_detect_threshold": "Threshold", "fbp_edge_detect_softness": "Softness",
             "fbp_edge_detect_color": "Edge Color", "fbp_edge_detect_factor": "Factor",
+        },
+    },
+    FBP_EFFECT_OIL_PAINT: {
+        "label": "Oil Paint", "icon": "BRUSHES_ALL", "kind": "SHADER", "stage": "COLOR",
+        "canonical_name": "FBP_SH_Oil_Paint_800", "asset_id": "frame_by_plane.shader.oil_paint.800",
+        "enabled_key": "fbp_effect_oil_paint", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
+        "required_input_sockets": ("Radius", "Sharpness", "Anisotropy", "Factor", "Texel X", "Texel Y"),
+        "property_map": {
+            "fbp_oil_paint_radius": "Radius", "fbp_oil_paint_sharpness": "Sharpness",
+            "fbp_oil_paint_anisotropy": "Anisotropy", "fbp_oil_paint_factor": "Factor",
+        },
+    },
+    FBP_EFFECT_RISO_PRINT: {
+        "label": "Riso Print", "icon": "OUTLINER_OB_IMAGE", "kind": "SHADER", "stage": "COLOR",
+        "canonical_name": "FBP_SH_Riso_Print_800", "asset_id": "frame_by_plane.shader.riso_print.800",
+        "enabled_key": "fbp_effect_riso_print", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
+        "required_input_sockets": ("Texel X", "Texel Y"),
+        "property_map": {
+            "fbp_riso_ink_1": "Ink 1", "fbp_riso_ink_2": "Ink 2", "fbp_riso_ink_3": "Ink 3",
+            "fbp_riso_use_ink_3": "Use Ink 3", "fbp_riso_paper": "Paper",
+            "fbp_riso_misregistration": "Misregistration", "fbp_riso_halftone": "Halftone",
+            "fbp_riso_dot_size": "Dot Size", "fbp_riso_grain": "Grain", "fbp_riso_seed": "Seed",
+            "fbp_riso_factor": "Factor",
         },
     },
     FBP_EFFECT_SMOOTH_TOON: {
@@ -1684,6 +1829,27 @@ FBP_EFFECT_REGISTRY = {
         "description": "Create an animatable stripe or ripple mask from a Wave texture in layer UV space.",
         "category": "MASK", "performance": "LIGHT",
         "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
+    },
+    FBP_EFFECT_EDGE_DISTANCE_MASK: {
+        "label": "Edge Distance Mask", "icon": "MOD_OFFSET", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_Edge_Distance_Mask_800",
+        "asset_id": "frame_by_plane.shader.edge_distance_mask.800", "enabled_key": "fbp_effect_edge_distance_mask",
+        "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
+        "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
+        "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
+        "required_input_sockets": ("Texel X", "Texel Y"),
+        "property_map": {
+            "fbp_edge_distance_mask_distance": "Distance",
+            "fbp_edge_distance_mask_threshold": "Threshold",
+            "fbp_edge_distance_mask_softness": "Softness",
+            "fbp_edge_distance_mask_image_border": "Image Border",
+            "fbp_edge_distance_mask_factor": "Factor",
+            "fbp_edge_distance_mask_invert": "Invert",
+        },
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True,
+        "description": "Mask by distance from the artwork's transparent edge: a ramp from the outline inward, for glowing borders, inner strokes and grow-in reveals.",
+        "category": "MASK", "performance": "HEAVY",
+        "supports": ("IMAGE", "SEQUENCE"),
     },
     FBP_EFFECT_SOLID_MASK: {
         "label": "Tint", "icon": "IMAGE", "kind": "SHADER", "stage": "COLOR",
@@ -2267,11 +2433,14 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_GRADIENT_MASK: ("MASK", "LIGHT", "Create a linear or radial procedural mask with editable center, angle, scale and feather."),
     FBP_EFFECT_NOISE_MASK: ("MASK", "LIGHT", "Create an animatable procedural noise mask with threshold and softness controls."),
     FBP_EFFECT_VORONOI_MASK: ("MASK", "LIGHT", "Create a cellular procedural mask with scale, randomness, threshold and softness controls."),
+    FBP_EFFECT_EDGE_DISTANCE_MASK: ("MASK", "HEAVY", "Mask by distance from the artwork's transparent edge, measured inward; the image border can count as an edge."),
     FBP_EFFECT_WAVE_MASK: ("MASK", "LIGHT", "Create an animatable stripe or ripple mask with distortion, phase, threshold and softness controls."),
     FBP_EFFECT_ALPHA_MATTE: ("MASK", "LIGHT", "Multiply the layer alpha by another Frame By Plane image or sequence alpha, using normalized UVs or the live source-plane transform."),
     FBP_EFFECT_LUMA_MATTE: ("MASK", "LIGHT", "Convert another Frame By Plane image or sequence to luminance and use it as a normalized or spatially transformed track matte."),
     FBP_EFFECT_GRAIN: ("2D", "LIGHT", "Add soft monochromatic film-like grain. Use Digital Noise for colored high-ISO sensor noise."),
     FBP_EFFECT_DIGITAL_NOISE: ("2D", "MEDIUM", "Simulate high-ISO digital sensor noise with separate luminance and chromatic components. Strong animated chroma noise may be expensive."),
+    FBP_EFFECT_RISO_PRINT: ("2D", "HEAVY", "Reprint the image with two or three spot inks, slightly out of register, with rotated halftone dots and ink grain on colored paper."),
+    FBP_EFFECT_OIL_PAINT: ("2D", "HEAVY", "Anisotropic Kuwahara filter: flattens color into brush-stroke patches that follow the image's edges. Large radii cost more samples per pixel."),
     FBP_EFFECT_HALFTONE: ("2D", "MEDIUM", "Convert luminance into a printed-dot pattern. Small cells can increase shader cost and cause viewport aliasing."),
     FBP_EFFECT_DOT_MATRIX: ("2D", "MEDIUM", "Rebuild the source image as cell-centered dots whose radius and brightness follow image luminance. Brightness Response reshapes the luminance-to-size curve; optional randomness only modulates the image-driven result."),
     FBP_EFFECT_ASCII_MATRIX: ("2D", "HEAVY", "Replace the animated FBP image or sequence with density-sorted atlas glyphs. Partial alpha is read as lighter luminance, total transparency is removed, and source-pixel color is preserved by default."),
@@ -2308,6 +2477,8 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_ACCORDION_FOLD: ("3D", "MEDIUM", "Fold an aspect-balanced triangular grid with an animatable profile. Playback and render use independent remesh quality."),
     FBP_EFFECT_SCULPT_WAVES: ("3D", "MEDIUM", "Sculpt an aspect-balanced triangular grid with radial, moiré or spiral fields. Remesh level controls most of the cost."),
     FBP_EFFECT_KINETIC_TILES: ("3D", "MEDIUM", "Split an aspect-balanced grid into near-square individually extruded tiles. Remesh level controls tile count and evaluation cost."),
+    FBP_EFFECT_KNIT_CROCHET: ("3D", "MEDIUM", "Instance one shared stitch mesh per column and row. Columns sets the stitch count; render columns can be raised independently."),
+    FBP_EFFECT_FRAME_STACK: ("3D", "MEDIUM", "Sample one earlier source frame per slice into an aspect-balanced grid. Slices times Detail sets the cost; every slice decodes its own frame."),
     FBP_EFFECT_LAYERED_ECHO: ("3D", "LIGHT", "Array the textured plane with per-axis offset, rotation, scale, twist and animated wave controls. Layer count is the main cost."),
     FBP_EFFECT_LATTICE: ("3D", "LIGHT", "Deform the linked plane through a planar control grid with one selectable point per intersection, or bake its 3D perspective into a camera-parallel surface while preserving the same camera appearance."),
 }
@@ -2552,13 +2723,13 @@ FBP_SHADER_STAGE_ORDER = {
     "UV": (FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_PIXELATE, FBP_EFFECT_SWIRL, FBP_EFFECT_BULGE_PINCH, FBP_EFFECT_LENS_WARP, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_RIPPLE_DISTORTION, FBP_EFFECT_KALEIDOSCOPE, FBP_EFFECT_HEX_PIXELATE, FBP_EFFECT_MOSAIC_JITTER, FBP_EFFECT_SLICE_SHIFT),
     "MASK": (
         FBP_EFFECT_CLIPPING_MASK, FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
-        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK, FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK, FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK, FBP_EFFECT_EDGE_DISTANCE_MASK,
         FBP_EFFECT_SQUARE_MASK, FBP_EFFECT_CIRCLE_MASK, FBP_EFFECT_TRIANGLE_MASK,
     ),
     "COLOR": (
-        FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
+        FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_OIL_PAINT, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
         FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_CURVES, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD,
-        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE,
+        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE, FBP_EFFECT_RISO_PRINT,
         FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
         FBP_EFFECT_DIGITAL_NOISE,
         FBP_EFFECT_PAPER_FIBERS, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW, FBP_EFFECT_GOBO_SHADOWS,
@@ -2581,10 +2752,11 @@ FBP_3D_EFFECT_MENU_ORDER = (
     FBP_EFFECT_LATTICE, FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE,
     FBP_EFFECT_WIND_BENDER, FBP_EFFECT_INFINITE_ROTATION, FBP_EFFECT_CUTOUT_OUTLINE,
     FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_FIBER_TUFTS,
+    FBP_EFFECT_KNIT_CROCHET,
     FBP_EFFECT_PAPER_SHARDS, FBP_EFFECT_SPHERE_SCREEN, FBP_EFFECT_IMAGE_RELIEF, FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
     FBP_EFFECT_SURFACE_CONFORM, FBP_EFFECT_ACCORDION_FOLD,
     FBP_EFFECT_SCULPT_WAVES, FBP_EFFECT_KINETIC_TILES,
-    FBP_EFFECT_LAYERED_ECHO, FBP_EFFECT_TEXT_MATRIX,
+    FBP_EFFECT_LAYERED_ECHO, FBP_EFFECT_FRAME_STACK, FBP_EFFECT_TEXT_MATRIX,
 )
 
 # Related effects keep their stable internal IDs but appear as one user-facing
@@ -2710,7 +2882,7 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
     )),
     ("Pixel / Print", "MESH_GRID", (
         "FAMILY:PIXELATE_MOSAIC", FBP_EFFECT_DITHER, FBP_EFFECT_HALFTONE,
-        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_CROSSHATCH,
+        FBP_EFFECT_RISO_PRINT, FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_CROSSHATCH,
     )),
     ("Deform", "OUTLINER_OB_SURFACE", (
         FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_SWIRL,
@@ -2718,7 +2890,7 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
         FBP_EFFECT_SLICE_SHIFT, FBP_EFFECT_KALEIDOSCOPE,
     )),
     ("Edges", "MOD_LINEART", (
-        "FAMILY:EDGE", "FAMILY:STYLIZE", FBP_EFFECT_EMBOSS,
+        "FAMILY:EDGE", "FAMILY:STYLIZE", FBP_EFFECT_EMBOSS, FBP_EFFECT_OIL_PAINT,
     )),
     ("Digital", "IMAGE_BACKGROUND", (
         FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_DIGITAL_NOISE,
@@ -2746,17 +2918,19 @@ FBP_MASK_EFFECT_MENU_SECTIONS = (
     ("Nodes", "NODE_INSERT_ON", (
         FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK,
         FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_EDGE_DISTANCE_MASK,
     )),
     ("Advanced", "SEQ_STRIP_MODIFIER", (
         "GREASE_PENCIL_MASK_CONTROL", FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
     )),
 )
-FBP_MASK_EFFECT_MENU_COLUMNS = ((0, 2), (1,))
+FBP_MASK_EFFECT_MENU_COLUMNS = ((0, 1), (2,))
 
 FBP_MESH_EFFECT_MENU_SECTIONS = (
     ("CAMERA & LAYOUT", "CAMERA_DATA", (
         FBP_EFFECT_CAMERA_SCALE_LOCK, FBP_EFFECT_CAMERA_BILLBOARD, FBP_EFFECT_MIRROR,
         FBP_EFFECT_MOTION, FBP_EFFECT_INFINITE_ROTATION, FBP_EFFECT_LAYERED_ECHO,
+        FBP_EFFECT_FRAME_STACK,
     )),
     ("DEFORM", "MOD_SIMPLEDEFORM", (
         FBP_EFFECT_LATTICE, FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE,
@@ -2765,7 +2939,8 @@ FBP_MESH_EFFECT_MENU_SECTIONS = (
     )),
     ("SURFACE & VOLUME", "MOD_SOLIDIFY", (
         FBP_EFFECT_CUTOUT_OUTLINE, FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ,
-        FBP_EFFECT_FIBER_TUFTS, FBP_EFFECT_PAPER_SHARDS, FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
+        FBP_EFFECT_FIBER_TUFTS, FBP_EFFECT_KNIT_CROCHET, FBP_EFFECT_PAPER_SHARDS,
+        FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
     )),
     ("ARTISTIC", "SHADERFX", (
         FBP_EFFECT_SCULPT_WAVES, FBP_EFFECT_KINETIC_TILES,
@@ -2774,7 +2949,7 @@ FBP_MESH_EFFECT_MENU_SECTIONS = (
         FBP_EFFECT_SPHERE_SCREEN, FBP_EFFECT_TEXT_MATRIX,
     )),
 )
-FBP_MESH_EFFECT_MENU_COLUMNS = ((0,), (1,), (2,), (3, 4))
+FBP_MESH_EFFECT_MENU_COLUMNS = ((0,), (1,), (3, 4), (2,))
 
 
 def fbp_normalize_effect_id(effect_id):
@@ -3248,6 +3423,8 @@ __all__ = (
     "FBP_EFFECT_SCULPT_WAVES",
     "FBP_EFFECT_KINETIC_TILES",
     "FBP_EFFECT_LAYERED_ECHO",
+    "FBP_EFFECT_FRAME_STACK",
+    "FBP_EFFECT_KNIT_CROCHET",
     "FBP_EFFECT_LATTICE",
     "FBP_EFFECT_MOTION",
     "FBP_EFFECT_UV_DISTORTION",
@@ -3293,6 +3470,7 @@ __all__ = (
     "FBP_EFFECT_NOISE_MASK",
     "FBP_EFFECT_VORONOI_MASK",
     "FBP_EFFECT_WAVE_MASK",
+    "FBP_EFFECT_EDGE_DISTANCE_MASK",
     "FBP_EFFECT_SOLID_MASK",
     "FBP_EFFECT_HUE_SATURATION",
     "FBP_EFFECT_WHITE_BALANCE",
@@ -3325,6 +3503,8 @@ __all__ = (
     "FBP_EFFECT_DIGITAL_NOISE",
     "FBP_EFFECT_CHROMA_KEY",
     "FBP_EFFECT_HALFTONE",
+    "FBP_EFFECT_RISO_PRINT",
+    "FBP_EFFECT_OIL_PAINT",
     "FBP_EFFECT_DOT_MATRIX",
     "FBP_EFFECT_ASCII_MATRIX",
     "FBP_EFFECT_ASCII",
