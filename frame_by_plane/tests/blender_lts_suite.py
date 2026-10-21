@@ -4463,6 +4463,41 @@ def test_drop_import_camera_modes(_module):
                         bpy.data.objects.remove(obj, do_unlink=True)
                     except (ReferenceError, RuntimeError):
                         pass
+        # Background Blender cannot open the drop dialog, so open and draw it
+        # through stand-ins: both used names the 8.0 merge had removed.
+        class _Layout:
+            def __getattr__(self, _name):
+                return lambda *args, **kwargs: self
+
+            def __setattr__(self, _name, _value):
+                pass
+
+        class _Dialog:
+            def __init__(self, properties):
+                object.__setattr__(self, "_properties", properties)
+                object.__setattr__(self, "layout", _Layout())
+
+            def __getattr__(self, name):
+                properties = object.__getattribute__(self, "_properties")
+                if hasattr(properties, name):
+                    return getattr(properties, name)
+                value = getattr(importer.FBP_OT_DropMedia, name)
+                return value.__get__(self) if callable(value) and not isinstance(value, type) else value
+
+        class _WindowManager:
+            def invoke_props_dialog(self, operator, **kwargs):
+                self.kwargs = kwargs
+                return {'RUNNING_MODAL'}
+
+        class _Context:
+            window_manager = _WindowManager()
+
+        properties = bpy.context.window_manager.operator_properties_last("fbp.drop_media")
+        dialog = _Dialog(properties)
+        assert importer.FBP_OT_DropMedia._invoke_dialog(dialog, _Context()) == {'RUNNING_MODAL'}
+        assert _Context.window_manager.kwargs["width"] > 0
+        importer.FBP_OT_DropMedia.draw(dialog, bpy.context)
+        results["dialog_width"] = _Context.window_manager.kwargs["width"]
     finally:
         scene.camera = previous_camera
         scene.render.resolution_x, scene.render.resolution_y = previous_resolution
