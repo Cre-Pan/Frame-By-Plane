@@ -5446,7 +5446,7 @@
 "Projection Radius": "投影半径",
 "Projection Ratio": "投影比率",
 "Projection Scale": "投影缩放",
-"Projection and focus blur use the light shader (Cycles).": "投影和对焦模糊使用灯光着色器（Cycles）。",
+"The projection renders only in Cycles": "投影仅在 Cycles 中渲染",
 "Projection used by newly generated Frame By Plane cameras": "新生成的 Frame By Plane 摄像机使用的投影",
 "Projection used by newly generated cameras: perspective with a lens value or orthographic with a view scale.": "新生成摄像机使用的投影：带镜头值的透视，或带视图缩放的正交。",
 "Projector Image": "投影仪图像",

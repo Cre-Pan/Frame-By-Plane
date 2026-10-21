@@ -26,6 +26,11 @@ Frame By Plane 8 LTS. Includes every 7.5.x change below.
 - In Draw Mode with Close Gap (or Fill in Both mode), existing strokes were closed and refilled when they came into view: scrubbing onto the first keyframe, switching from an empty layer, or moving or pasting a keyframe onto the playhead. Only new strokes change now.
 - The Draw Mode color sync does about an eighth of the work per update on long animations.
 - An open tutorial card no longer redraws the Viewport twice a second while nothing changes.
+- Image Projector: the projection was blurred by default because the light Radius also set the image size. The image size now follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone instead of losing its corners.
+- Image Projector: image sequences numbered from anything other than 1 (for example 0101) projected nothing, and sequences got the wrong aspect ratio.
+- Project Selected FBP Layer now follows the layer's timing (holds, loops) instead of freezing it on the current frame.
+- Picking a movie as Projector Media now plays all of its frames; an image used by another plane is no longer renamed or turned into a sequence.
+- Projector panel in Blender's layout: labels on the left, Focus in a collapsible section, and the Cycles note appears only when another render engine is active.
 
 ## [7.5.4] - Unreleased
 

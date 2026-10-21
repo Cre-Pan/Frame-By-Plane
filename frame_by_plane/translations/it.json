@@ -5345,7 +5345,7 @@
 "Projection Radius": "Raggio proiezione",
 "Projection Ratio": "Rapporto proiezione",
 "Projection Scale": "Scala proiezione",
-"Projection and focus blur use the light shader (Cycles).": "Proiezione e sfocatura di fuoco usano lo shader della luce (Cycles).",
+"The projection renders only in Cycles": "La proiezione si vede solo in Cycles",
 "Projection used by newly generated Frame By Plane cameras": "Proiezione usata dalle nuove camere Frame By Plane generate",
 "Projection used by newly generated cameras: perspective with a lens value or orthographic with a view scale.": "Proiezione usata dalle nuove camere generate: prospettica con un valore di obiettivo o ortografica con una scala di vista.",
 "Projector Image": "Immagine proiettore",

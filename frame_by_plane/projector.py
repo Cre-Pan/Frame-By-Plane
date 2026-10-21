@@ -19,6 +19,7 @@ from mathutils import Vector
 
 from .layers import fbp_resolve_rig_from_any_object
 from .geometry_nodes import _fbp_material_image_node
+from .native_backend import _cache_loaded_image_dimensions, _image_source_dimensions
 from .ownership import tag_managed
 from .runtime import FBP_DATA_ERRORS, fbp_warn
 from .ui_style import configure_layout
@@ -32,7 +33,8 @@ PROJECTOR_ASPECT_NODE = "FBP Projector Aspect"
 PROJECTOR_FOCUS_NODE = "FBP Projector Focus Distance"
 PROJECTOR_BLUR_NODE = "FBP Projector Focus Blur"
 PROJECTOR_BLUR_MAX_NODE = "FBP Projector Maximum Blur"
-PROJECTOR_SCHEMA = 2
+PROJECTOR_FIT_NODE = "FBP Projector Cone Fit"
+PROJECTOR_SCHEMA = 3
 _IMAGE_EXTENSIONS = {
     ".bmp", ".cin", ".dpx", ".exr", ".hdr", ".jpeg", ".jpg", ".png",
     ".psd", ".sgi", ".tga", ".tif", ".tiff", ".webp",
@@ -81,11 +83,20 @@ def _value_node(tree, name, x, y, value):
 
 
 def _projector_image_aspect(image):
-    try:
-        width, height = image.size
-        return max(0.001, float(width) / max(1.0, float(height)))
-    except FBP_DATA_ERRORS:
+    width, height = _image_source_dimensions(image)
+    if width <= 0 or height <= 0:
         return 1.0
+    return max(0.001, float(width) / float(height))
+
+
+def _projector_cone_fit(aspect):
+    """Return the half-width factor that keeps the whole image inside the cone.
+
+    The spot cone is circular, so the image corners, not its sides, have to
+    touch the cone edge: half diagonal = half width * sqrt(1 + 1 / aspect^2).
+    """
+    aspect = max(0.001, float(aspect))
+    return 1.0 / (1.0 + 1.0 / (aspect * aspect)) ** 0.5
 
 
 def _copy_image_user(source_node, target_node, *, frame_duration=1):
@@ -134,6 +145,52 @@ def _add_driver(node, light, expression, variables):
         pass
 
 
+def _link_layer_timing(light, material, source_node):
+    """Drive the projector frame offset from the source layer's ImageUser.
+
+    Frame By Plane keys the layer's ``frame_offset`` to play holds, reversed
+    and looped timing, so a copied value would freeze on the current frame.
+    Start and duration are not animatable and were copied when the nodes
+    were built.
+    """
+    try:
+        source_path = f'node_tree.nodes["{bpy.utils.escape_identifier(source_node.name)}"].image_user.frame_offset'
+    except FBP_DATA_ERRORS:
+        return False
+    for node in _projector_texture_nodes(light):
+        try:
+            driver = node.image_user.driver_add("frame_offset").driver
+            driver.type = "SCRIPTED"
+            driver.expression = "layer + user"
+            for name, id_type, target, data_path in (
+                ("layer", "MATERIAL", material, source_path),
+                ("user", "LIGHT", light, "fbp_projector_frame_offset"),
+            ):
+                variable = driver.variables.new()
+                variable.name = name
+                variable.type = "SINGLE_PROP"
+                variable.targets[0].id_type = id_type
+                variable.targets[0].id = target
+                variable.targets[0].data_path = data_path
+        except FBP_DATA_ERRORS as exc:
+            _unlink_layer_timing(light)
+            fbp_warn("Could not link the Projector to the layer timing", exc)
+            return False
+    return True
+
+
+def _unlink_layer_timing(light):
+    for node in _projector_texture_nodes(light):
+        try:
+            node.image_user.driver_remove("frame_offset")
+        except FBP_DATA_ERRORS:
+            pass
+    try:
+        del light["fbp_projector_layer_timing"]
+    except (KeyError, *FBP_DATA_ERRORS):
+        pass
+
+
 def _build_projector_nodes(light, image=None, *, frame_duration=1, source_node=None):
     light.use_nodes = True
     tree = light.node_tree
@@ -170,16 +227,23 @@ def _build_projector_nodes(light, image=None, *, frame_duration=1, source_node=N
     links.new(negative_z.outputs[0], absolute_z.inputs[0])
     links.new(absolute_z.outputs[0], safe_z.inputs[0])
 
-    scale = _value_node(tree, PROJECTOR_SCALE_NODE, -620, -220, 1.0)
-    scale.label = "Cone x Radius x Image Zoom"
+    # The light Radius only softens the projection; the image size follows
+    # the cone and Image Zoom, so a sharp (zero radius) light still projects.
+    cone_scale = _value_node(tree, PROJECTOR_SCALE_NODE, -840, -220, 1.0)
+    cone_scale.label = "Cone x Image Zoom"
     _add_driver(
-        scale,
+        cone_scale,
         light,
-        "max(0.001, tan(cone * 0.5) * max(0.001, radius) * max(0.01, zoom))",
-        (("cone", "spot_size"), ("radius", "shadow_soft_size"), ("zoom", "fbp_projector_scale")),
+        "max(0.001, tan(cone * 0.5) * max(0.01, zoom))",
+        (("cone", "spot_size"), ("zoom", "fbp_projector_scale")),
     )
+    image_aspect = _projector_image_aspect(image)
+    fit = _value_node(tree, PROJECTOR_FIT_NODE, -840, -320, _projector_cone_fit(image_aspect))
+    scale = _math_node(tree, "MULTIPLY", "FBP Projector Fitted Scale", -620, -220)
+    links.new(cone_scale.outputs[0], scale.inputs[0])
+    links.new(fit.outputs[0], scale.inputs[1])
 
-    aspect = _value_node(tree, PROJECTOR_ASPECT_NODE, -180, -220, _projector_image_aspect(image))
+    aspect = _value_node(tree, PROJECTOR_ASPECT_NODE, -180, -220, image_aspect)
 
     uv_outputs = []
     for axis, y in (("X", 400), ("Y", 220)):
@@ -386,12 +450,26 @@ def _update_projector_image(light, _context=None):
         texture = _build_projector_nodes(light, getattr(light, "fbp_projector_image", None))
     try:
         image = light.fbp_projector_image
+        movie_duration = 0
+        if image is not None and str(getattr(image, "source", "") or "") == "MOVIE":
+            movie_duration = max(1, int(getattr(image, "frame_duration", 1) or 1))
         for node in _projector_texture_nodes(light):
             node.image = image
+            if movie_duration:
+                node.image_user.frame_duration = movie_duration
             node.image_user.use_auto_refresh = True
+        if bool(light.get("fbp_projector_layer_timing", False)):
+            # New media no longer follows the layer it was projected from.
+            _unlink_layer_timing(light)
+        light["fbp_projector_frame_base"] = _sequence_frame_base(image)
+        _update_projector_frame_offset(light)
+        image_aspect = _projector_image_aspect(image)
         aspect = light.node_tree.nodes.get(PROJECTOR_ASPECT_NODE)
         if aspect is not None:
-            aspect.outputs[0].default_value = _projector_image_aspect(image)
+            aspect.outputs[0].default_value = image_aspect
+        fit = light.node_tree.nodes.get(PROJECTOR_FIT_NODE)
+        if fit is not None:
+            fit.outputs[0].default_value = _projector_cone_fit(image_aspect)
     except FBP_DATA_ERRORS:
         pass
 
@@ -426,10 +504,26 @@ def _update_projector_alpha(light, _context=None):
         pass
 
 
+def _sequence_frame_base(image):
+    """Return the ImageUser offset that shows the first file of a sequence.
+
+    Blender puts ``frame + offset`` into the file name, so a sequence that
+    starts at 0101 needs an offset of 100 to show its first file on frame 1.
+    """
+    try:
+        if str(getattr(image, "source", "") or "") != "SEQUENCE":
+            return 0
+        digits = re.findall(r"\d+", os.path.basename(bpy.path.abspath(image.filepath)))
+        return int(digits[-1]) - 1 if digits else 0
+    except FBP_DATA_ERRORS:
+        return 0
+
+
 def _update_projector_frame_offset(light, _context=None):
     try:
+        offset = int(light.get("fbp_projector_frame_base", 0) or 0) + int(light.fbp_projector_frame_offset)
         for texture in _projector_texture_nodes(light):
-            texture.image_user.frame_offset = int(light.fbp_projector_frame_offset)
+            texture.image_user.frame_offset = offset
             texture.image_user.use_auto_refresh = True
     except FBP_DATA_ERRORS:
         pass
@@ -457,27 +551,36 @@ def _load_projector_media(paths):
         raise ValueError("Choose one movie at a time")
 
     source_path = movie_paths[0] if movie_paths else image_paths[0]
-    image = bpy.data.images.load(source_path, check_existing=True)
     if movie_paths:
+        source, label = "MOVIE", "Movie"
+    elif len(image_paths) > 1:
+        source, label = "SEQUENCE", "Sequence"
+    else:
+        source, label = "FILE", ""
+    image = bpy.data.images.load(source_path, check_existing=True)
+    in_use = int(getattr(image, "users", 0) or 0) > 0
+    if in_use and str(getattr(image, "source", "") or "") != source:
+        # Never turn an image another plane or material shows into a
+        # sequence or movie: load a separate datablock instead.
+        image = bpy.data.images.load(source_path, check_existing=False)
+        in_use = False
+    # Blender reports an empty size once a FILE image becomes a sequence, so
+    # cache the dimensions the aspect ratio needs while they are readable.
+    _cache_loaded_image_dimensions(image)
+    if source != "FILE":
         try:
-            image.source = "MOVIE"
-            image.name = f"FBP Projector Movie • {os.path.basename(source_path)}"
+            image.source = source
+            if not in_use:
+                image.name = f"FBP Projector {label} • {os.path.basename(source_path)}"
         except FBP_DATA_ERRORS:
             pass
+    if movie_paths:
         try:
             duration = max(1, int(getattr(image, "frame_duration", 1) or 1))
         except FBP_DATA_ERRORS:
             duration = 1
         return image, duration
-
-    duration = len(image_paths)
-    if duration > 1:
-        try:
-            image.source = "SEQUENCE"
-            image.name = f"FBP Projector Sequence • {os.path.basename(source_path)}"
-        except FBP_DATA_ERRORS:
-            pass
-    return image, max(1, duration)
+    return image, max(1, len(image_paths))
 
 
 def _projector_transform(context, distance):
@@ -524,7 +627,7 @@ class FBP_OT_AddProjector(Operator):
     )
     energy: FloatProperty(name="Power", default=1000.0, min=0.0, soft_max=5000.0)
     spot_size: FloatProperty(name="Cone", default=0.785398, min=0.017453, max=3.124139, subtype="ANGLE")
-    spot_blend: FloatProperty(name="Blend", default=0.05, min=0.0, max=1.0, subtype="FACTOR")
+    spot_blend: FloatProperty(name="Blend", default=0.0, min=0.0, max=1.0, subtype="FACTOR")
     projection_scale: FloatProperty(name="Projection Scale", default=1.0, min=0.01, soft_max=4.0)
     distance: FloatProperty(name="Distance from Plane", default=2.0, min=0.01, soft_max=20.0, subtype="DISTANCE")
     use_alpha: BoolProperty(name="Use Alpha", default=True)
@@ -543,10 +646,11 @@ class FBP_OT_AddProjector(Operator):
 
     def execute(self, context):
         source_rig = None
+        source_material = None
         source_node = None
         if self.use_selected_layer:
             source_rig = fbp_resolve_rig_from_any_object(getattr(context, "object", None), context)
-            _source_material, source_node = _fbp_material_image_node(source_rig)
+            source_material, source_node = _fbp_material_image_node(source_rig)
             image = getattr(source_node, "image", None) if source_node is not None else None
             try:
                 duration = int(getattr(source_node.image_user, "frame_duration", 1) or 1)
@@ -577,9 +681,15 @@ class FBP_OT_AddProjector(Operator):
             light.fbp_projector_scale = self.projection_scale
             light.fbp_projector_use_alpha = self.use_alpha
             light.fbp_projector_focus_distance = self.distance
-            light.shadow_soft_size = 1.0
+            light.shadow_soft_size = 0.0
             _build_projector_nodes(light, image, frame_duration=duration, source_node=source_node)
             light.fbp_projector_image = image
+            if source_node is not None:
+                # The layer's own offset, not the file name, maps its frames.
+                light["fbp_projector_frame_base"] = int(getattr(source_node.image_user, "frame_offset", 0) or 0)
+                _update_projector_frame_offset(light)
+                if _link_layer_timing(light, source_material, source_node):
+                    light["fbp_projector_layer_timing"] = True
             light.energy = self.energy
             light.spot_size = self.spot_size
             light.spot_blend = self.spot_blend
@@ -620,10 +730,12 @@ class FBP_OT_AddProjector(Operator):
         )
         # Operator reports are Blender's small temporary notifications, so the
         # warning remains visible for a few seconds without blocking the user.
-        self.report(
-            {"WARNING"},
-            f"{cycles_notice} Created from {media_label} ({duration} frame{'s' if duration != 1 else ''}).",
-        )
+        if source_node is not None:
+            # A layer's ImageUser covers its whole hold range, not its files.
+            created = f"Created from the selected layer's {media_label}."
+        else:
+            created = f"Created from {media_label} ({duration} frame{'s' if duration != 1 else ''})."
+        self.report({"WARNING"}, f"{cycles_notice} {created}")
         return {"FINISHED"}
 
 
@@ -641,26 +753,30 @@ class FBP_PT_ProjectorLight(Panel):
         return is_fbp_projector(getattr(context, "object", None))
 
     def draw(self, context):
-        layout = configure_layout(self.layout)
+        layout = configure_layout(self.layout, property_split=True)
         light = context.object.data
         layout.prop(light, "fbp_projector_image", text="Media")
-        row = layout.row(align=False)
-        row.prop(light, "fbp_projector_scale", text="Image Zoom")
-        row.prop(light, "fbp_projector_use_alpha", text="Alpha")
         layout.prop(light, "fbp_projector_frame_offset", text="Frame Offset")
+        layout.prop(light, "fbp_projector_scale", text="Image Zoom")
+        layout.prop(light, "fbp_projector_use_alpha", text="Use Alpha")
         layout.separator(factor=0.4)
-        layout.prop(light, "energy", text="Power")
-        layout.prop(light, "spot_size", text="Cone Angle")
-        layout.prop(light, "shadow_soft_size", text="Projection Radius")
-        layout.prop(light, "spot_blend", text="Blend")
-        layout.separator(factor=0.4)
-        focus = layout.box()
-        focus.label(text="Focus", icon="CAMERA_DATA")
-        focus.prop(light, "fbp_projector_focus_distance", text="Focus Distance")
-        focus.prop(light, "fbp_projector_blur_strength", text="Defocus")
-        focus.prop(light, "fbp_projector_blur_max", text="Maximum Blur")
-        note = layout.box()
-        note.label(text="Projection and focus blur use the light shader (Cycles).", icon="INFO")
+        col = layout.column(align=True)
+        col.prop(light, "energy", text="Power")
+        col.prop(light, "spot_size", text="Cone Angle")
+        col.prop(light, "spot_blend", text="Blend")
+        layout.prop(light, "shadow_soft_size", text="Softness")
+        header, body = layout.panel("fbp_projector_focus", default_closed=True)
+        header.label(text="Focus")
+        if body is not None:
+            col = body.column(align=True)
+            col.prop(light, "fbp_projector_focus_distance", text="Distance")
+            col.prop(light, "fbp_projector_blur_strength", text="Defocus")
+            col.prop(light, "fbp_projector_blur_max", text="Maximum Blur")
+        engine = str(getattr(getattr(context.scene, "render", None), "engine", "") or "")
+        if engine != "CYCLES":
+            row = layout.row()
+            row.alert = True
+            row.label(text="The projection renders only in Cycles", icon="ERROR")
 
 
 _FBP_PREVIOUS_LIGHT_ADD_CALLBACK = globals().get("_FBP_LIGHT_ADD_CALLBACK")

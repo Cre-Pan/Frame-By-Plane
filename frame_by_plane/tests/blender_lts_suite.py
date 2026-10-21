@@ -4279,9 +4279,94 @@ def test_toon_boom_contract(_module):
 
 def test_projector_contract(_module):
     projector = importlib.import_module(f"{PACKAGE}.projector")
+    builder = importlib.import_module(f"{PACKAGE}.builder")
     assert ".mp4" in projector._MEDIA_EXTENSIONS
     assert ".png" in projector._MEDIA_EXTENSIONS
     assert not (projector._VIDEO_EXTENSIONS & projector._IMAGE_EXTENSIONS)
+    # The whole image fits inside the circular cone: corners touch its edge.
+    assert abs(projector._projector_cone_fit(1.0) - math.sqrt(0.5)) < 1e-6
+    assert abs(projector._projector_cone_fit(2.0) - 2.0 / math.sqrt(5.0)) < 1e-6
+
+    # A 2:1 sequence numbered from 0101.
+    directory = WORKDIR / "projector-sequence"
+    directory.mkdir(parents=True, exist_ok=True)
+    names = [f"proj_{number:04d}.png" for number in (101, 102, 103)]
+    for name in names:
+        image = bpy.data.images.new("FBP Projector Fixture", width=32, height=16)
+        try:
+            image.filepath_raw = str(directory / name)
+            image.file_format = 'PNG'
+            image.save()
+        finally:
+            bpy.data.images.remove(image)
+
+    operator_class = projector.FBP_OT_AddProjector
+    temporary_registration = getattr(bpy.types, operator_class.__name__, None) is None
+    if temporary_registration:
+        bpy.utils.register_class(operator_class)
+    created = []
+    previous_engine = bpy.context.scene.render.engine
+    try:
+        before = set(bpy.data.lights)
+        result = bpy.ops.fbp.add_projector(
+            'EXEC_DEFAULT', directory=str(directory), files=[{"name": name} for name in names],
+        )
+        assert result == {'FINISHED'}, result
+        light = next(item for item in bpy.data.lights if item not in before)
+        created.append(light)
+        texture = light.node_tree.nodes[projector.PROJECTOR_TEXTURE_NODE]
+        nodes = light.node_tree.nodes
+        assert texture.image.source == 'SEQUENCE'
+        assert texture.image_user.frame_duration == 3
+        # Blender writes frame + offset into the file name: frame 1 -> 0101.
+        assert texture.image_user.frame_offset == 100, texture.image_user.frame_offset
+        light.fbp_projector_frame_offset = 2
+        assert all(
+            node.image_user.frame_offset == 102 for node in projector._projector_texture_nodes(light)
+        )
+        # The size follows the cone, not the light radius, and the aspect is
+        # read before Blender empties the size of a SEQUENCE image.
+        assert abs(nodes[projector.PROJECTOR_ASPECT_NODE].outputs[0].default_value - 2.0) < 1e-6
+        assert light.shadow_soft_size == 0.0
+        scale_driver = light.node_tree.animation_data.drivers.find(
+            f'nodes["{projector.PROJECTOR_SCALE_NODE}"].outputs[0].default_value'
+        ).driver
+        assert "radius" not in scale_driver.expression
+        assert scale_driver.is_simple_expression
+
+        # A layer keys its frame_offset for holds; the projector follows it.
+        rig = builder.build_fbp_rig(
+            bpy.context, "FBP Projector Layer", str(directory), names, (0.0, 0.0, 0.0),
+            target_collection=bpy.context.scene.collection, item_durations=[2, 2, 2],
+        )
+        created.extend([rig, *rig.children_recursive])
+        bpy.context.view_layer.objects.active = rig.fbp_plane_target
+        before = set(bpy.data.lights)
+        assert bpy.ops.fbp.add_projector('EXEC_DEFAULT', use_selected_layer=True) == {'FINISHED'}
+        layer_light = next(item for item in bpy.data.lights if item not in before)
+        created.append(layer_light)
+        assert bool(layer_light.get("fbp_projector_layer_timing", False))
+        path = f'nodes["{projector.PROJECTOR_TEXTURE_NODE}"].image_user.frame_offset'
+        offset_driver = layer_light.node_tree.animation_data.drivers.find(path).driver
+        assert offset_driver.expression == "layer + user" and offset_driver.is_simple_expression
+        # Picking other media drops the link to the layer.
+        layer_light.fbp_projector_image = light.fbp_projector_image
+        assert not bool(layer_light.get("fbp_projector_layer_timing", False))
+        assert layer_light.node_tree.animation_data.drivers.find(path) is None
+    finally:
+        for light in [item for item in created if isinstance(item, bpy.types.Light)]:
+            for obj in [obj for obj in bpy.data.objects if obj.data == light]:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            if light.users == 0:
+                bpy.data.lights.remove(light)
+        for obj in [item for item in created if isinstance(item, bpy.types.Object)]:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except ReferenceError:
+                pass
+        bpy.context.scene.render.engine = previous_engine
+        if temporary_registration:
+            bpy.utils.unregister_class(operator_class)
     return sorted(projector._VIDEO_EXTENSIONS)
 
 
