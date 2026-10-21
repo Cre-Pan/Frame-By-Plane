@@ -2438,6 +2438,9 @@ _FBP_VIEW_RENDER_PROPERTY_PAIRS = {
     "fbp_sculpt_waves_subdivision": "fbp_sculpt_waves_render_subdivision",
     "fbp_kinetic_tiles_subdivision": "fbp_kinetic_tiles_render_subdivision",
     "fbp_layered_echo_layers": "fbp_layered_echo_render_layers",
+    "fbp_frame_stack_slices": "fbp_frame_stack_render_slices",
+    "fbp_yarn_columns": "fbp_yarn_render_columns",
+    "fbp_frame_stack_detail": "fbp_frame_stack_render_detail",
     "fbp_thickness_viewport_pixels_x": "fbp_thickness_render_pixels_x",
     "fbp_thickness_viewport_pixels_y": "fbp_thickness_render_pixels_y",
     "fbp_text_matrix_viewport_columns": "fbp_text_matrix_render_columns",
@@ -3383,6 +3386,48 @@ update_layered_echo_rotation_y_cb = _make_effect_update_callback('LAYERED_ECHO',
 update_layered_echo_twist_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_twist')
 update_layered_echo_wave_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_wave')
 update_layered_echo_phase_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_phase')
+update_yarn_stitch_type_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_stitch_type')
+update_yarn_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_columns')
+update_yarn_playback_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_playback_columns')
+update_yarn_render_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_render_columns')
+update_yarn_row_height_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_row_height')
+update_yarn_loop_width_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_loop_width')
+update_yarn_thickness_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_thickness')
+update_yarn_plies_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_plies')
+update_yarn_twist_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_twist')
+update_yarn_color_variation_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_color_variation')
+update_yarn_jitter_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_jitter')
+update_yarn_seed_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_seed')
+update_yarn_alpha_threshold_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_alpha_threshold')
+update_yarn_fuzz_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_fuzz')
+update_yarn_self_light_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_self_light')
+update_yarn_show_plane_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_show_plane')
+update_frame_stack_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_slices')
+update_frame_stack_playback_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_playback_slices')
+update_frame_stack_render_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_render_slices')
+update_frame_stack_step_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_step')
+update_frame_stack_fixed_start_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_fixed_start')
+update_frame_stack_start_frame_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_start_frame')
+update_frame_stack_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_detail')
+update_frame_stack_playback_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_playback_detail')
+update_frame_stack_render_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_render_detail')
+update_frame_stack_offset_x_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_offset_x')
+update_frame_stack_offset_y_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_offset_y')
+update_frame_stack_spacing_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_spacing')
+update_frame_stack_scale_step_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_scale_step')
+update_frame_stack_rotation_x_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_rotation_x')
+update_frame_stack_rotation_y_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_rotation_y')
+update_frame_stack_twist_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_twist')
+update_frame_stack_front_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_front_slices')
+update_frame_stack_front_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_front_opacity')
+update_frame_stack_back_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_back_opacity')
+update_frame_stack_depth_fade_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_depth_fade')
+update_frame_stack_luminance_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_luminance_opacity')
+update_frame_stack_show_plane_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_show_plane')
+update_frame_stack_outline_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline')
+update_frame_stack_outline_width_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline_width')
+update_frame_stack_outline_color_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline_color')
+update_frame_stack_glow_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_glow')
 update_color_isolate_target_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_target')
 update_color_isolate_tolerance_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_tolerance')
 update_color_isolate_falloff_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_falloff')
@@ -3460,6 +3505,7 @@ _EFFECT_ANIMATION_IDS = (
     'CUTOUT_OUTLINE',
     'FELT_FUZZ',
     'FIBER_TUFTS',
+    'KNIT_CROCHET',
     'PAPER_SHARDS',
     'SPHERE_SCREEN',
     'IMAGE_RELIEF',
@@ -5789,6 +5835,146 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_layered_echo_phase = FloatProperty(
         name="Phase", description="Starting phase for the animated layer wave",
         default=0.0, soft_min=-100.0, soft_max=100.0, options={'ANIMATABLE'}, update=update_layered_echo_phase_cb)
+
+    _FBP_OBJECT_RNA.fbp_yarn_stitch_type = EnumProperty(
+        name="Stitch", description="Stitch structure of the yarn",
+        items=(
+            ('KNIT', "Knit", "Stockinette V stitches in columns, each row tucked under the next"),
+            ('CROCHET', "Crochet", "Single crochet: a horizontal head over two posts, rows offset like bricks"),
+        ), default='KNIT', update=update_yarn_stitch_type_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_columns = IntProperty(
+        name="Viewport", description="Stitches across the plane width while editing",
+        default=32, min=2, soft_max=200, max=1000, update=update_yarn_columns_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_playback_columns = IntProperty(
+        name="Playback", description="Maximum stitches across the width during timeline playback",
+        default=24, min=2, soft_max=200, max=1000, update=update_yarn_playback_columns_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_render_columns = IntProperty(
+        name="Render", description="Stitches across the width for final rendering",
+        default=48, min=2, soft_max=300, max=1000, update=update_yarn_render_columns_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_row_height = FloatProperty(
+        name="Row Height", description="Row spacing relative to the natural row height of the stitch",
+        default=1.0, min=0.3, max=3.0, soft_max=2.0, options={'ANIMATABLE'}, update=update_yarn_row_height_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_loop_width = FloatProperty(
+        name="Loop Width", description="Loop width relative to the stitch; larger values close the gaps",
+        default=1.0, min=0.3, max=2.0, options={'ANIMATABLE'}, update=update_yarn_loop_width_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_thickness = FloatProperty(
+        name="Thickness", description="Yarn thickness relative to the stitch width",
+        default=0.13, min=0.01, max=0.6, soft_max=0.3, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_yarn_thickness_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_plies = IntProperty(
+        name="Plies", description="Number of twisted strands in the yarn",
+        default=3, min=2, max=8, update=update_yarn_plies_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_twist = FloatProperty(
+        name="Twist", description="Ply turns per stitch width; negative values twist the other way",
+        default=1.5, min=-20.0, max=20.0, soft_min=-6.0, soft_max=6.0, options={'ANIMATABLE'},
+        update=update_yarn_twist_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_color_variation = FloatProperty(
+        name="Color Variation", description="Random brightness change between stitches, like hand-dyed yarn",
+        default=0.12, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
+        update=update_yarn_color_variation_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_jitter = FloatProperty(
+        name="Hand-made", description="Random rotation and size of every stitch",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_yarn_jitter_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_seed = IntProperty(
+        name="Seed", description="Random pattern of colour variation and hand-made irregularity",
+        default=0, min=0, options={'ANIMATABLE'}, update=update_yarn_seed_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_alpha_threshold = FloatProperty(
+        name="Alpha Threshold", description="Stitches where the image is more transparent than this are left out",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_yarn_alpha_threshold_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_fuzz = FloatProperty(
+        name="Fuzz", description="Soft woolly sheen on the yarn surface",
+        default=0.6, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_yarn_fuzz_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_self_light = FloatProperty(
+        name="Self Light", description="Built-in light so the yarn reads in unlit Frame By Plane scenes. Lower it when the scene has its own lights",
+        default=1.0, min=0.0, max=4.0, soft_max=2.0, options={'ANIMATABLE'}, update=update_yarn_self_light_cb)
+    _FBP_OBJECT_RNA.fbp_yarn_show_plane = BoolProperty(
+        name="Show Plane", description="Keep the image plane visible behind the yarn, so it shows through the gaps",
+        default=False, update=update_yarn_show_plane_cb)
+
+    _FBP_OBJECT_RNA.fbp_frame_stack_slices = IntProperty(
+        name="Viewport", description="Number of frame slices shown while editing, including the plane itself",
+        default=12, min=1, soft_max=64, max=512, options={'ANIMATABLE'}, update=update_frame_stack_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_playback_slices = IntProperty(
+        name="Playback", description="Maximum number of frame slices evaluated during timeline playback",
+        default=8, min=1, soft_max=64, max=512, update=update_frame_stack_playback_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_render_slices = IntProperty(
+        name="Render", description="Number of frame slices evaluated for final rendering",
+        default=24, min=1, soft_max=128, max=512, update=update_frame_stack_render_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_detail = IntProperty(
+        name="Viewport", description="Grid detail of every earlier slice while editing. Each level doubles the grid on both sides",
+        default=5, min=0, max=8, update=update_frame_stack_detail_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_playback_detail = IntProperty(
+        name="Playback", description="Maximum slice grid detail during timeline playback",
+        default=4, min=0, max=8, update=update_frame_stack_playback_detail_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_render_detail = IntProperty(
+        name="Render", description="Slice grid detail for final rendering. The plane itself always keeps full resolution",
+        default=7, min=0, max=8, update=update_frame_stack_render_detail_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_step = IntProperty(
+        name="Frame Step", description="Source frames between two slices. Negative values stack upcoming frames instead of earlier ones",
+        default=2, min=-1000, max=1000, soft_min=-24, soft_max=24, options={'ANIMATABLE'}, update=update_frame_stack_step_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_fixed_start = BoolProperty(
+        name="Fixed Range", description="Stack a fixed range of frames starting at Start Frame instead of following playback",
+        default=False, update=update_frame_stack_fixed_start_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_start_frame = IntProperty(
+        name="Start Frame", description="Source frame shown by the front slice when Fixed Range is on. Animate it to scroll the solid through time",
+        default=1, min=-1000000, max=1000000, options={'ANIMATABLE'}, update=update_frame_stack_start_frame_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_offset_x = FloatProperty(
+        name="Offset X", description="Per-slice horizontal offset",
+        default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_offset_x_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_offset_y = FloatProperty(
+        name="Offset Y", description="Per-slice vertical offset",
+        default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_offset_y_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_spacing = FloatProperty(
+        name="Depth", description="Distance between successive slices along the plane normal. Negative values stack behind the plane",
+        default=-0.04, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_spacing_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_scale_step = FloatProperty(
+        name="Scale Step", description="Per-slice scale change; negative values taper the stack",
+        default=0.0, min=-10.0, max=10.0, soft_min=-0.25, soft_max=0.25,
+        options={'ANIMATABLE'}, update=update_frame_stack_scale_step_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_rotation_x = FloatProperty(
+        name="Rotation X", description="Per-slice rotation around local X",
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_rotation_x_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_rotation_y = FloatProperty(
+        name="Rotation Y", description="Per-slice rotation around local Y",
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_rotation_y_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_twist = FloatProperty(
+        name="Twist", description="Per-slice rotation around the plane normal",
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_twist_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_front_slices = IntProperty(
+        name="Front Slices", description="Number of slices, counted from the plane, that use Front Opacity; the rest use Back Opacity",
+        default=0, min=0, max=512, soft_max=64, options={'ANIMATABLE'}, update=update_frame_stack_front_slices_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_front_opacity = FloatProperty(
+        name="Front Opacity", description="Opacity of the front slices",
+        default=0.15, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_front_opacity_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_back_opacity = FloatProperty(
+        name="Back Opacity", description="Opacity of the remaining slices",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_back_opacity_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_depth_fade = FloatProperty(
+        name="Depth Fade", description="Fade older slices: the last slice keeps 1 minus this value of its opacity",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_depth_fade_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_luminance_opacity = FloatProperty(
+        name="Luminance Key", description="Make dark areas transparent (positive) or bright areas transparent (negative), like a mask video built from the image itself",
+        default=0.0, min=-1.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_luminance_opacity_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_show_plane = BoolProperty(
+        name="Show Plane", description="Keep the plane as the full-resolution front slice. When off, the front slice is sampled like the others",
+        default=True, update=update_frame_stack_show_plane_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_glow = BoolProperty(
+        name="Glow", description="Add the slices together like light instead of layering them. Order-independent and noise-free in Eevee; dark areas disappear",
+        default=False, update=update_frame_stack_glow_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_outline = BoolProperty(
+        name="Outline", description="Draw the volume edges: the first and last frame and the four corner lines",
+        default=False, update=update_frame_stack_outline_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_outline_width = FloatProperty(
+        name="Width", description="Thickness of the outline lines",
+        default=0.004, min=0.00001, max=1.0, soft_max=0.05, subtype='DISTANCE', options={'ANIMATABLE'},
+        update=update_frame_stack_outline_width_cb)
+    _FBP_OBJECT_RNA.fbp_frame_stack_outline_color = FloatVectorProperty(
+        name="Color", description="Outline color", subtype='COLOR', size=4,
+        default=(1.0, 1.0, 1.0, 1.0), min=0.0, max=1.0, options={'ANIMATABLE'},
+        update=update_frame_stack_outline_color_cb)
 
     _FBP_OBJECT_RNA.fbp_wind_subdivision = IntProperty(description="Viewport mesh subdivision level used by Wind. Higher values bend more smoothly but increase viewport cost.", name="Viewport", default=3, min=0, max=6, update=update_wind_subdivision_cb)
     _FBP_OBJECT_RNA.fbp_wind_playback_subdivision = IntProperty(description="Maximum Wind subdivision level used during timeline playback. Lower values keep playback responsive.", name="Playback", default=2, min=0, max=6, update=update_wind_playback_subdivision_cb)

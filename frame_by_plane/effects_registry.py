@@ -42,6 +42,8 @@ FBP_EFFECT_ACCORDION_FOLD = "ACCORDION_FOLD"
 FBP_EFFECT_SCULPT_WAVES = "SCULPT_WAVES"
 FBP_EFFECT_KINETIC_TILES = "KINETIC_TILES"
 FBP_EFFECT_LAYERED_ECHO = "LAYERED_ECHO"
+FBP_EFFECT_FRAME_STACK = "FRAME_STACK"
+FBP_EFFECT_KNIT_CROCHET = "KNIT_CROCHET"
 FBP_EFFECT_LATTICE = "LATTICE"
 FBP_EFFECT_MOTION = "MOTION"
 
@@ -902,6 +904,121 @@ FBP_EFFECT_REGISTRY = {
         "evolve_property": "fbp_layered_echo_phase", "evolve_amount": 0.2,
         "evolve_active_property": "fbp_layered_echo_wave", "supports_seed": True,
         "description": "Create a memory-efficient animated stack of textured plane instances with depth, scale, twist and wave controls.",
+    },
+    FBP_EFFECT_KNIT_CROCHET: {
+        "label": "Knit & Crochet", "icon": "OUTLINER_DATA_CURVES", "kind": "GEOMETRY",
+        "source_names": (), "canonical_name": "FBP_GN_Knit_Crochet_800",
+        "modifier_name": "FBP • Knit & Crochet", "asset_id": "frame_by_plane.knit_crochet.800",
+        "enabled_key": "fbp_effect_knit_crochet", "builtin": True,
+        # Stitches sample the plane image directly (colour and alpha) through
+        # the shared image-aware node, so sequences and videos stay animated.
+        "image_aware": True,
+        "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
+        "required_input_sockets": (
+            "Geometry", "Stitch Type", "Columns", "Row Height", "Loop Width", "Thickness",
+            "Plies", "Twist", "Color Variation", "Jitter", "Seed", "Alpha Threshold",
+            "Fuzz", "Self Light", "Show Plane", "Yarn Material",
+        ),
+        "property_map": {
+            "fbp_yarn_stitch_type": "Stitch Type",
+            "fbp_yarn_columns": "Columns",
+            "fbp_yarn_row_height": "Row Height",
+            "fbp_yarn_loop_width": "Loop Width",
+            "fbp_yarn_thickness": "Thickness",
+            "fbp_yarn_plies": "Plies",
+            "fbp_yarn_twist": "Twist",
+            "fbp_yarn_color_variation": "Color Variation",
+            "fbp_yarn_jitter": "Jitter",
+            "fbp_yarn_seed": "Seed",
+            "fbp_yarn_alpha_threshold": "Alpha Threshold",
+            "fbp_yarn_fuzz": "Fuzz",
+            "fbp_yarn_self_light": "Self Light",
+            "fbp_yarn_show_plane": "Show Plane",
+        },
+        "extra_properties": (
+            "fbp_yarn_playback_columns",
+            "fbp_yarn_render_columns",
+        ),
+        "quality_contracts": ({
+            "socket": "Columns",
+            "viewport_property": "fbp_yarn_columns",
+            "playback_property": "fbp_yarn_playback_columns",
+            "render_property": "fbp_yarn_render_columns",
+            "minimum": 2,
+            "playback_mode": "LIMIT",
+        },),
+        "evolve_property": "fbp_yarn_seed", "evolve_amount": 1.0,
+        "evolve_mode": "SEED_STEP", "supports_seed": True,
+        "description": (
+            "Rebuild the image as knitted or crocheted yarn: twisted plies, interlocking loops "
+            "and one image colour per stitch. Transparent areas stay empty."
+        ),
+    },
+    FBP_EFFECT_FRAME_STACK: {
+        "label": "Frame Stack", "icon": "SEQ_STRIP_DUPLICATE", "kind": "GEOMETRY",
+        "source_names": (), "canonical_name": "FBP_GN_Frame_Stack_800",
+        "modifier_name": "FBP • Frame Stack", "asset_id": "frame_by_plane.frame_stack.800",
+        "enabled_key": "fbp_effect_frame_stack", "builtin": True,
+        # The tagged Image Texture receives the plane's sequence or movie and
+        # "Source Frame" follows playback, like the other image-aware effects.
+        "image_aware": True,
+        "supports": ("SEQUENCE", "VIDEO"),
+        "required_input_sockets": (
+            "Geometry", "Slices", "Frame Step", "Source Frame", "Fixed Start", "Start Frame",
+            "Detail", "Offset X", "Offset Y", "Spacing", "Scale Step", "Rotation X",
+            "Rotation Y", "Twist", "Front Slices", "Front Opacity", "Back Opacity",
+            "Depth Fade", "Luminance Opacity", "Show Plane", "Outline", "Outline Width",
+            "Outline Color", "Glow", "Stack Material",
+        ),
+        "property_map": {
+            "fbp_frame_stack_slices": "Slices",
+            "fbp_frame_stack_step": "Frame Step",
+            "fbp_frame_stack_fixed_start": "Fixed Start",
+            "fbp_frame_stack_start_frame": "Start Frame",
+            "fbp_frame_stack_detail": "Detail",
+            "fbp_frame_stack_offset_x": "Offset X",
+            "fbp_frame_stack_offset_y": "Offset Y",
+            "fbp_frame_stack_spacing": "Spacing",
+            "fbp_frame_stack_scale_step": "Scale Step",
+            "fbp_frame_stack_rotation_x": "Rotation X",
+            "fbp_frame_stack_rotation_y": "Rotation Y",
+            "fbp_frame_stack_twist": "Twist",
+            "fbp_frame_stack_front_slices": "Front Slices",
+            "fbp_frame_stack_front_opacity": "Front Opacity",
+            "fbp_frame_stack_back_opacity": "Back Opacity",
+            "fbp_frame_stack_depth_fade": "Depth Fade",
+            "fbp_frame_stack_luminance_opacity": "Luminance Opacity",
+            "fbp_frame_stack_show_plane": "Show Plane",
+            "fbp_frame_stack_outline": "Outline",
+            "fbp_frame_stack_outline_width": "Outline Width",
+            "fbp_frame_stack_glow": "Glow",
+            "fbp_frame_stack_outline_color": "Outline Color",
+        },
+        "extra_properties": (
+            "fbp_frame_stack_playback_slices",
+            "fbp_frame_stack_render_slices",
+            "fbp_frame_stack_playback_detail",
+            "fbp_frame_stack_render_detail",
+        ),
+        "quality_contracts": ({
+            "socket": "Slices",
+            "viewport_property": "fbp_frame_stack_slices",
+            "playback_property": "fbp_frame_stack_playback_slices",
+            "render_property": "fbp_frame_stack_render_slices",
+            "minimum": 1,
+            "playback_mode": "LIMIT",
+        }, {
+            "socket": "Detail",
+            "viewport_property": "fbp_frame_stack_detail",
+            "playback_property": "fbp_frame_stack_playback_detail",
+            "render_property": "fbp_frame_stack_render_detail",
+            "minimum": 0,
+            "playback_mode": "LIMIT",
+        },),
+        "description": (
+            "Stack earlier frames of the sequence or video in depth, one slice per frame, "
+            "turning time into a solid. Concept inspired by Video Frame Stack by hipofizus."
+        ),
     },
     FBP_EFFECT_LATTICE: {
         "label": "Lattice", "icon": "MOD_LATTICE", "kind": "BASE",
@@ -2308,6 +2425,8 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_ACCORDION_FOLD: ("3D", "MEDIUM", "Fold an aspect-balanced triangular grid with an animatable profile. Playback and render use independent remesh quality."),
     FBP_EFFECT_SCULPT_WAVES: ("3D", "MEDIUM", "Sculpt an aspect-balanced triangular grid with radial, moiré or spiral fields. Remesh level controls most of the cost."),
     FBP_EFFECT_KINETIC_TILES: ("3D", "MEDIUM", "Split an aspect-balanced grid into near-square individually extruded tiles. Remesh level controls tile count and evaluation cost."),
+    FBP_EFFECT_KNIT_CROCHET: ("3D", "MEDIUM", "Instance one shared stitch mesh per column and row. Columns sets the stitch count; render columns can be raised independently."),
+    FBP_EFFECT_FRAME_STACK: ("3D", "MEDIUM", "Sample one earlier source frame per slice into an aspect-balanced grid. Slices times Detail sets the cost; every slice decodes its own frame."),
     FBP_EFFECT_LAYERED_ECHO: ("3D", "LIGHT", "Array the textured plane with per-axis offset, rotation, scale, twist and animated wave controls. Layer count is the main cost."),
     FBP_EFFECT_LATTICE: ("3D", "LIGHT", "Deform the linked plane through a planar control grid with one selectable point per intersection, or bake its 3D perspective into a camera-parallel surface while preserving the same camera appearance."),
 }
@@ -2581,10 +2700,11 @@ FBP_3D_EFFECT_MENU_ORDER = (
     FBP_EFFECT_LATTICE, FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE,
     FBP_EFFECT_WIND_BENDER, FBP_EFFECT_INFINITE_ROTATION, FBP_EFFECT_CUTOUT_OUTLINE,
     FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ, FBP_EFFECT_FIBER_TUFTS,
+    FBP_EFFECT_KNIT_CROCHET,
     FBP_EFFECT_PAPER_SHARDS, FBP_EFFECT_SPHERE_SCREEN, FBP_EFFECT_IMAGE_RELIEF, FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
     FBP_EFFECT_SURFACE_CONFORM, FBP_EFFECT_ACCORDION_FOLD,
     FBP_EFFECT_SCULPT_WAVES, FBP_EFFECT_KINETIC_TILES,
-    FBP_EFFECT_LAYERED_ECHO, FBP_EFFECT_TEXT_MATRIX,
+    FBP_EFFECT_LAYERED_ECHO, FBP_EFFECT_FRAME_STACK, FBP_EFFECT_TEXT_MATRIX,
 )
 
 # Related effects keep their stable internal IDs but appear as one user-facing
@@ -2757,6 +2877,7 @@ FBP_MESH_EFFECT_MENU_SECTIONS = (
     ("CAMERA & LAYOUT", "CAMERA_DATA", (
         FBP_EFFECT_CAMERA_SCALE_LOCK, FBP_EFFECT_CAMERA_BILLBOARD, FBP_EFFECT_MIRROR,
         FBP_EFFECT_MOTION, FBP_EFFECT_INFINITE_ROTATION, FBP_EFFECT_LAYERED_ECHO,
+        FBP_EFFECT_FRAME_STACK,
     )),
     ("DEFORM", "MOD_SIMPLEDEFORM", (
         FBP_EFFECT_LATTICE, FBP_EFFECT_MESH_WIGGLE, FBP_EFFECT_STOP_MOTION_CRUMPLE,
@@ -2765,7 +2886,8 @@ FBP_MESH_EFFECT_MENU_SECTIONS = (
     )),
     ("SURFACE & VOLUME", "MOD_SOLIDIFY", (
         FBP_EFFECT_CUTOUT_OUTLINE, FBP_EFFECT_THICKNESS, FBP_EFFECT_FELT_FUZZ,
-        FBP_EFFECT_FIBER_TUFTS, FBP_EFFECT_PAPER_SHARDS, FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
+        FBP_EFFECT_FIBER_TUFTS, FBP_EFFECT_KNIT_CROCHET, FBP_EFFECT_PAPER_SHARDS,
+        FBP_EFFECT_GLASS, FBP_EFFECT_CRYSTAL,
     )),
     ("ARTISTIC", "SHADERFX", (
         FBP_EFFECT_SCULPT_WAVES, FBP_EFFECT_KINETIC_TILES,
@@ -3248,6 +3370,8 @@ __all__ = (
     "FBP_EFFECT_SCULPT_WAVES",
     "FBP_EFFECT_KINETIC_TILES",
     "FBP_EFFECT_LAYERED_ECHO",
+    "FBP_EFFECT_FRAME_STACK",
+    "FBP_EFFECT_KNIT_CROCHET",
     "FBP_EFFECT_LATTICE",
     "FBP_EFFECT_MOTION",
     "FBP_EFFECT_UV_DISTORTION",

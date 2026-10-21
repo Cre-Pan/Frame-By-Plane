@@ -31,6 +31,12 @@ Includes 7.2.1, which was not published on its own.
 - **Restore Native Compositor** asks for confirmation, because it also deletes the editable Effects & Masks group.
 - The compositor no longer re-tags its tree on every scene update while the render opt-in is active, and two layer-remap dropdowns can no longer show garbled names.
 
+### New effects
+
+- **Frame Stack** (Mesh, for image sequences and videos): turns time into a solid. Earlier frames are stacked in depth behind the plane, one slice per frame, with per-slice offset, depth, rotation, twist and scale. **Follow Playback** keeps the newest frame on the plane and the past trailing behind; **Fixed Range** stacks a chosen range and its Start Frame can be animated to scroll the solid through time. Opacity offers the front/back threshold (faint front slices), **Depth Fade**, a **Luminance Key** that hides dark or bright areas without a separate mask video, and **Glow**, an additive mode that needs no sorting. An optional **Outline** draws the volume edges. The plane keeps full resolution; earlier slices use a grid whose detail is set separately for viewport, playback and render. Cycles automatically gets enough transparent bounces for the slices. Concept inspired by "Video Frame Stack" by hipofizus.
+
+- **Knit & Crochet** (Mesh, for images, sequences and videos): rebuilds the image as yarn. **Knit** makes stockinette V stitches in columns, each row tucked under the next; **Crochet** makes single-crochet stitches (a head over two posts) in brick-offset rows. Every stitch takes its colour from the image, transparent areas stay empty, and sequences and videos stay animated. Thickness, plies and twist shape the yarn; Fuzz adds a woolly sheen; Color Variation and Hand-made add irregularity; Self Light keeps the yarn readable in unlit scenes. Stitch count is set separately for viewport, playback and render.
+
 ### Import
 
 - **Drag and drop shows the import options.** Dropping images, a sequence or a video now always opens the Import with Frame By Plane dialog: Auto / Single Plane / Multiplane, Dropped Media or Parent Folder, the plane settings (Frame Hold, loop, orientation, Shadeless, alpha crop) and a **Camera** choice: **Keep Camera**, **Match Aspect** (change the existing camera's output aspect to the media) or **New Camera**, plus Fit to Camera and, for Multiplane, Layer Spacing. Single Plane and Multiplane now follow the same camera choice; before, Single Plane could only adapt an existing camera and Multiplane always created a new one.
