@@ -392,25 +392,31 @@ EXACT_TOOLTIPS = {
         "Clear the stored generation report and its problem list from the current scene. This does not remove generated objects, relink files or alter source media."
     ),
     "fbp.import_single_image": (
-        "Create one Frame By Plane rig from any supported image, or one animated plane from multiple selected images. Animated GIF, WebP and APNG retain their frames and timing; AVIF is converted to a managed PNG cache."
+        "Create one Frame By Plane rig from any supported image or video, or one animated plane from multiple selected images. Animated GIF, WebP and APNG retain their frames and timing; AVIF is converted to a managed PNG cache. Settings are in the file browser sidebar."
     ),
     "fbp.import_folder_multiplane": (
         "Choose a folder, reuse the last import folder or read a copied folder path. Frame By Plane scans supported images, numbered image sequences, videos and subfolders, then opens a confirmation preview with counts and the first detected layer names. Auto Detect creates one Single Plane for one logical layer or a Multiplane for several layers. Forced Single Plane is accepted only for one real root-level still, video or numbered sequence. When additional layers would be ignored, a separate root-only confirmation is required. The reviewed folder snapshot fingerprints both the detected structure and lightweight source-file metadata, so generation stops if files are renamed, removed, replaced or edited before import. Dialog-only choices reuse the current preview instead of rechecking every source file, while confirmation always performs the final validation. Very large imports require explicit confirmation. Blender 5.2 does not pass ordinary dropped folders to extension File Handlers, so use this action or drop any supported media file from the target folder."
     ),
     "fbp.popup_single_plane": (
-        "Open the Add Plane dialog on Image Plane. The dropdown at the top switches to Video, Color, Gradient or Holdout without leaving the dialog. For images, multiple selected files become one image sequence; Fit Camera to New Plane is off by default so the current framing is kept."
+        "Open the file browser and pick one image, several images of a numbered sequence, or one video. Frame Hold, playback, orientation, emission, alpha crop, scene length and the Camera section are in the file browser sidebar."
     ),
     "fbp.popup_video_plane": (
-        "Open the Add Plane dialog on Video Plane, then choose one supported movie file. The dropdown at the top switches to the other single-plane types."
+        "Same as Single Plane, which now accepts videos too: open the file browser and pick one supported movie file. The plane settings and the Camera section are in the file browser sidebar."
     ),
     "fbp.popup_multiplane": (
-        "Open the expanded Multiplane setup for scanning a layered folder and generating its camera-depth arrangement. Source aspect, camera pivot, layer spacing, fit, timing, material, orientation and alpha-crop controls are available before generation."
+        "Open the file browser on folders and accept the layered folder to import. The sidebar holds timing, orientation, emission, alpha crop, Space Between Layers and the Camera section."
     ),
     "fbp.popup_color_plane": (
-        "Open the Add Plane dialog on a solid Color, editable Gradient or Holdout plane at the active camera ratio. The dropdown at the top switches to the other single-plane types."
+        "Create a solid Color, editable Gradient or Holdout plane at once. Color, preset, orientation, emission, dimensions and the Camera section stay editable in the Adjust Last Operation panel at the bottom left of the 3D View."
+    ),
+    "fbp.popup_gradient_plane": (
+        "Create an editable Gradient plane at once. Shape, type, rotation, position, orientation, emission, dimensions and the Camera section stay editable in the Adjust Last Operation panel; edit the gradient colors in the layer settings."
+    ),
+    "fbp.popup_holdout_plane": (
+        "Create a Holdout plane at once; it cuts a transparent hole through the layers behind it. Orientation, dimensions and the Camera section stay editable in the Adjust Last Operation panel."
     ),
     "fbp.create_color_plane_from_hex": (
-        "Read a hexadecimal color code from the clipboard and create a solid Frame By Plane Color Plane using that value. Invalid or unsupported clipboard text is rejected without changing the scene."
+        "Read a hexadecimal color code from the clipboard and create a solid Color Plane at once. The code and the other settings stay editable in the Adjust Last Operation panel; invalid codes are rejected without changing the scene."
     ),
     "fbp.import_single_image_from_clipboard": (
         "Create a Single Plane from a copied bitmap or copied media-file path. Temporary clipboard images are written to Frame By Plane's managed clipboard folder and imported as static images."

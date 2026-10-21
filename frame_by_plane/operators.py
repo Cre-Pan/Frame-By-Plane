@@ -108,6 +108,8 @@ from .operator_import import (
     FBP_OT_PopupVideoPlane,
     FBP_OT_PopupMultiplane,
     FBP_OT_PopupColorPlane,
+    FBP_OT_PopupGradientPlane,
+    FBP_OT_PopupHoldoutPlane,
     FBP_OT_CreateColorPlaneFromHex,
     FBP_OT_ImportSingleImageFromClipboard,
 )
@@ -387,6 +389,8 @@ classes = (
     FBP_OT_PopupVideoPlane,
     FBP_OT_PopupMultiplane,
     FBP_OT_PopupColorPlane,
+    FBP_OT_PopupGradientPlane,
+    FBP_OT_PopupHoldoutPlane,
     FBP_OT_CreateColorPlaneFromHex,
     FBP_OT_ImportSingleImageFromClipboard,
 )

@@ -5435,8 +5435,8 @@ class FBP_MT_FrameByPlaneAdd(Menu):
 
     def draw(self, context):
         layout = configure_layout(self.layout)
-        # Every primary entry opens a popup or file browser. Force invoke
-        # context so Shift+A never bypasses the operator's setup dialog.
+        # Media entries open the file browser and procedural ones read their
+        # last-used settings in invoke, so force the invoke context.
         layout.operator_context = 'INVOKE_DEFAULT'
 
         layout.operator(
@@ -5446,7 +5446,7 @@ class FBP_MT_FrameByPlaneAdd(Menu):
         )
         op = layout.operator(
             "fbp.popup_multiplane",
-            text="Multi Plane",
+            text="Multiplane",
             **ui_icon_kwargs("menu.multiplane"),
         )
         op.animation = True
@@ -5454,17 +5454,10 @@ class FBP_MT_FrameByPlaneAdd(Menu):
         layout.separator(factor=0.45)
         op = layout.operator("fbp.popup_color_plane", text="Color Plane", **ui_icon_kwargs("menu.color_plane"))
         op.preset_type = 'CUSTOM'
-        op = layout.operator("fbp.popup_color_plane", text="Gradient Plane", **ui_icon_kwargs("menu.gradient_plane"))
-        op.preset_type = 'GRADIENT'
-        op = layout.operator("fbp.popup_color_plane", text="Holdout Plane", **ui_icon_kwargs("menu.holdout_plane"))
-        op.preset_type = 'HOLDOUT'
+        layout.operator("fbp.popup_gradient_plane", text="Gradient Plane", **ui_icon_kwargs("menu.gradient_plane"))
+        layout.operator("fbp.popup_holdout_plane", text="Holdout Plane", **ui_icon_kwargs("menu.holdout_plane"))
 
         layout.separator(factor=0.45)
-        layout.operator(
-            "fbp.popup_video_plane",
-            text="Video Plane",
-            **ui_icon_kwargs("menu.video_plane", fallback="FILE_MOVIE"),
-        )
         # A Drawing Plane is placed from a selected plane, so the entry stays
         # visible but inactive until one is selected.
         gp_row = layout.row()

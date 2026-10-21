@@ -92,7 +92,6 @@ from .node_sockets import node_input, socket_is_available
 
 from .ui_icons import ui_icon, ui_icon_kwargs, ui_label_icon_kwargs
 from .ui_style import (
-    adaptive_row,
     configure_layout,
     empty_state,
     hint_row,
@@ -6196,50 +6195,33 @@ class FBP_OT_AddGreasePencilCanvas(Operator):
             self.canvas_name = _gp_drawing_name_for_layer(reference)
         else:
             self.canvas_name = "GP - Layer"
-        return context.window_manager.invoke_props_dialog(
-            self,
-            width=580,
-            title="Create Grease Pencil Drawing",
-            confirm_text="Create Drawing",
-        )
+        # Created at once; the settings stay editable in Adjust Last Operation.
+        return self.execute(context)
 
     def draw(self, context):
-        layout = configure_layout(self.layout)
+        layout = configure_layout(self.layout, property_split=True)
+        layout.prop(self, "canvas_name", text="Name")
+        layout.prop(self, "owner_name", text="Link to Plane")
 
-        source = layout.box()
-        configure_layout(source)
-        section_header(source, "Layer", icon="GREASEPENCIL")
-        row = adaptive_row(source, context, align=False)
-        row.prop(self, "canvas_name", text="Name")
-        row.prop(self, "owner_name", text="")
-
-        section_gap(layout, 0.2)
         linked = self.owner_name != "__FREE__"
-        transform = layout.box()
-        configure_layout(transform)
-        section_header(
-            transform,
-            "Plane Alignment" if linked else "World Placement",
-            icon="LINKED" if linked else "UNLINKED",
-        )
-        distance = transform.row(align=False)
+        layout.separator()
+        col = layout.column(align=True)
+        distance = col.column(align=True)
         distance.enabled = linked
         distance.prop(self, "distance", text="Distance")
-        offsets = adaptive_row(transform, context, align=False)
+        offsets = col.column(align=True)
         offsets.enabled = linked
-        offsets.prop(self, "offset_x", text="X")
+        offsets.prop(self, "offset_x", text="Offset X")
         offsets.prop(self, "offset_y", text="Y")
-        transform.prop(self, "canvas_scale", text="Scale")
+        layout.prop(self, "canvas_scale", text="Scale")
 
-        section_gap(layout, 0.2)
-        timing_box = layout.box()
-        configure_layout(timing_box)
-        section_header(timing_box, "Timing and Start", icon="TIME")
-        timing = adaptive_row(timing_box, context, align=False)
-        timing.enabled = linked
-        timing.prop(self, "match_keyframes", text="Match Keys", icon="KEYFRAME_HLT", toggle=True)
-        timing.prop(self, "auto_sync_timing", text="Sync Timing", icon="FILE_REFRESH", toggle=True)
-        timing.prop(self, "enter_draw_mode", text="Start Drawing", icon="GREASEPENCIL", toggle=True)
+        layout.separator()
+        col = layout.column(heading="Timing")
+        sub = col.column()
+        sub.enabled = linked
+        sub.prop(self, "match_keyframes", text="Match Plane Keys")
+        sub.prop(self, "auto_sync_timing", text="Sync Timing")
+        layout.prop(self, "enter_draw_mode", text="Start Drawing")
 
     def execute(self, context):
         rig = None if self.owner_name == "__FREE__" else bpy.data.objects.get(self.owner_name)
