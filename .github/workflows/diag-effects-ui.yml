@@ -35,3 +35,5 @@ jobs:
           grep "DIAG" diag.log || true
           echo "==== Python errors ===="
           grep -n -A12 "Traceback" diag.log || echo "no tracebacks"
+          echo "==== UI warnings ===="
+          grep -n "property not found\|not found:\|Error" diag.log | sort -u | head -60 || echo "no UI warnings"
