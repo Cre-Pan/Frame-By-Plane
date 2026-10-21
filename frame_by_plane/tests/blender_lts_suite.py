@@ -4285,6 +4285,73 @@ def test_knit_crochet_stitches(_module):
     return {"knit": knit, "crochet": crochet}
 
 
+def test_print_paint_and_edge_distance_cycles(_module):
+    """Riso Print, Oil Paint and Edge Distance Mask render their contracts."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    for effect_id in ("RISO_PRINT", "OIL_PAINT", "EDGE_DISTANCE_MASK"):
+        rig = _effect_stack_fixture_rig(f"FBP Build {effect_id}")
+        owned = [rig, *rig.children_recursive]
+        try:
+            assert geo.fbp_add_effect(rig, effect_id, select_object_mask_helper=False, inherit_active_group=False), effect_id
+            _flush_fbp_safe_tasks()
+            nodes = geo._fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+            assert nodes and all(node.node_tree is not None for node in nodes), effect_id
+            # Image-aware: each group samples the layer's own image at its texel size.
+            for node in nodes:
+                assert any(getattr(inner, "image", None) is not None for inner in node.node_tree.nodes if inner.type == "TEX_IMAGE"), effect_id
+                assert abs(node.inputs["Texel X"].default_value - 1.0 / 16.0) < 1e-6, effect_id
+            assert geo.fbp_remove_effect(rig, effect_id)
+        finally:
+            for obj in reversed(owned):
+                try:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                except (ReferenceError, RuntimeError):
+                    pass
+    _skip_unless_cycles_render()
+    rig = _effect_stack_fixture_rig("FBP Print Paint Pixels")
+    results = {}
+    with _cycles_center_renderer("FBP Print Paint Camera", [rig, *rig.children_recursive]) as render_center:
+        plain = render_center()
+        # Flat color stays flat under Oil Paint.
+        assert geo.fbp_add_effect(rig, "OIL_PAINT", select_object_mask_helper=False, inherit_active_group=False)
+        _flush_fbp_safe_tasks()
+        painted = render_center()
+        assert max(abs(a - b) for a, b in zip(plain, painted)) < 0.03, (plain, painted)
+        assert geo.fbp_remove_effect(rig, "OIL_PAINT")
+        # Cyan, magenta and yellow inks with no screen, grain or drift reprint
+        # the source exactly: the three-ink separation is an exact solve.
+        assert geo.fbp_add_effect(rig, "RISO_PRINT", select_object_mask_helper=False, inherit_active_group=False)
+        rig.fbp_riso_ink_1 = (0.0, 1.0, 1.0, 1.0)
+        rig.fbp_riso_ink_2 = (1.0, 0.0, 1.0, 1.0)
+        rig.fbp_riso_ink_3 = (1.0, 1.0, 0.0, 1.0)
+        rig.fbp_riso_use_ink_3 = True
+        rig.fbp_riso_paper = (1.0, 1.0, 1.0, 1.0)
+        rig.fbp_riso_misregistration = 0.0
+        rig.fbp_riso_halftone = 0.0
+        rig.fbp_riso_grain = 0.0
+        _flush_fbp_safe_tasks()
+        printed = render_center()
+        assert max(abs(a - b) for a, b in zip(plain, printed)) < 0.03, (plain, printed)
+        rig.fbp_riso_use_ink_3 = False
+        _flush_fbp_safe_tasks()
+        two_inks = render_center()
+        # Without yellow nothing prints the fixture's blue absorbance, so it shifts.
+        assert max(abs(a - b) for a, b in zip(plain, two_inks)) > 0.03, (plain, two_inks)
+        assert geo.fbp_remove_effect(rig, "RISO_PRINT")
+        # The 16 px fixture is opaque, so only the image border is an edge:
+        # the center is 8 px in, a quarter of the default 32 px ramp.
+        assert geo.fbp_add_effect(rig, "EDGE_DISTANCE_MASK", select_object_mask_helper=False, inherit_active_group=False)
+        _flush_fbp_safe_tasks()
+        near_border = render_center()[3]
+        rig.fbp_edge_distance_mask_image_border = False
+        _flush_fbp_safe_tasks()
+        no_edge = render_center()[3]
+        assert abs(near_border - 0.1035) < 0.05, near_border
+        assert no_edge > 0.95, no_edge
+        results = {"oil": painted[:3], "riso": printed[:3], "border": near_border, "inside": no_edge}
+    return {key: [round(v, 3) for v in value] if isinstance(value, tuple) else round(value, 3) for key, value in results.items()}
+
+
 def test_render_checked_popup_contract(_module):
     """F12 asks before rendering an out-of-date compositor and can update first."""
     compositor = importlib.import_module(f"{PACKAGE}.compositor")
@@ -5075,6 +5142,7 @@ def run_background():
             ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("frame_stack_samples_earlier_frames", test_frame_stack_samples_earlier_frames),
             ("knit_crochet_stitches", test_knit_crochet_stitches),
+            ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),

@@ -94,6 +94,7 @@ FBP_EFFECT_GRADIENT_MASK = "GRADIENT_MASK"
 FBP_EFFECT_NOISE_MASK = "NOISE_MASK"
 FBP_EFFECT_VORONOI_MASK = "VORONOI_MASK"
 FBP_EFFECT_WAVE_MASK = "WAVE_MASK"
+FBP_EFFECT_EDGE_DISTANCE_MASK = "EDGE_DISTANCE_MASK"
 FBP_EFFECT_SOLID_MASK = "SOLID_MASK"
 FBP_EFFECT_HUE_SATURATION = "HUE_SATURATION"
 FBP_EFFECT_WHITE_BALANCE = "WHITE_BALANCE"
@@ -127,6 +128,8 @@ FBP_EFFECT_EMISSION = "EMISSION"
 FBP_EFFECT_DIGITAL_NOISE = "DIGITAL_NOISE"
 FBP_EFFECT_CHROMA_KEY = "CHROMA_KEY"
 FBP_EFFECT_HALFTONE = "HALFTONE"
+FBP_EFFECT_RISO_PRINT = "RISO_PRINT"
+FBP_EFFECT_OIL_PAINT = "OIL_PAINT"
 FBP_EFFECT_DOT_MATRIX = "DOT_MATRIX"
 FBP_EFFECT_ASCII_MATRIX = "ASCII_MATRIX"
 FBP_EFFECT_ASCII = "ASCII"
@@ -1314,6 +1317,31 @@ FBP_EFFECT_REGISTRY = {
             "fbp_edge_detect_color": "Edge Color", "fbp_edge_detect_factor": "Factor",
         },
     },
+    FBP_EFFECT_OIL_PAINT: {
+        "label": "Oil Paint", "icon": "BRUSHES_ALL", "kind": "SHADER", "stage": "COLOR",
+        "canonical_name": "FBP_SH_Oil_Paint_800", "asset_id": "frame_by_plane.shader.oil_paint.800",
+        "enabled_key": "fbp_effect_oil_paint", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
+        "required_input_sockets": ("Radius", "Sharpness", "Anisotropy", "Factor", "Texel X", "Texel Y"),
+        "property_map": {
+            "fbp_oil_paint_radius": "Radius", "fbp_oil_paint_sharpness": "Sharpness",
+            "fbp_oil_paint_anisotropy": "Anisotropy", "fbp_oil_paint_factor": "Factor",
+        },
+    },
+    FBP_EFFECT_RISO_PRINT: {
+        "label": "Riso Print", "icon": "OUTLINER_OB_IMAGE", "kind": "SHADER", "stage": "COLOR",
+        "canonical_name": "FBP_SH_Riso_Print_800", "asset_id": "frame_by_plane.shader.riso_print.800",
+        "enabled_key": "fbp_effect_riso_print", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
+        "required_input_sockets": ("Texel X", "Texel Y"),
+        "property_map": {
+            "fbp_riso_ink_1": "Ink 1", "fbp_riso_ink_2": "Ink 2", "fbp_riso_ink_3": "Ink 3",
+            "fbp_riso_use_ink_3": "Use Ink 3", "fbp_riso_paper": "Paper",
+            "fbp_riso_misregistration": "Misregistration", "fbp_riso_halftone": "Halftone",
+            "fbp_riso_dot_size": "Dot Size", "fbp_riso_grain": "Grain", "fbp_riso_seed": "Seed",
+            "fbp_riso_factor": "Factor",
+        },
+    },
     FBP_EFFECT_SMOOTH_TOON: {
         "label": "Smooth Toon", "icon": "SHADING_RENDERED", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Smooth_Toon_6013", "asset_id": "frame_by_plane.shader.smooth_toon.6013",
@@ -1801,6 +1829,27 @@ FBP_EFFECT_REGISTRY = {
         "description": "Create an animatable stripe or ripple mask from a Wave texture in layer UV space.",
         "category": "MASK", "performance": "LIGHT",
         "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
+    },
+    FBP_EFFECT_EDGE_DISTANCE_MASK: {
+        "label": "Edge Distance Mask", "icon": "MOD_OFFSET", "kind": "SHADER", "stage": "MASK",
+        "source_names": (), "canonical_name": "FBP_SH_Edge_Distance_Mask_800",
+        "asset_id": "frame_by_plane.shader.edge_distance_mask.800", "enabled_key": "fbp_effect_edge_distance_mask",
+        "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
+        "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
+        "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
+        "required_input_sockets": ("Texel X", "Texel Y"),
+        "property_map": {
+            "fbp_edge_distance_mask_distance": "Distance",
+            "fbp_edge_distance_mask_threshold": "Threshold",
+            "fbp_edge_distance_mask_softness": "Softness",
+            "fbp_edge_distance_mask_image_border": "Image Border",
+            "fbp_edge_distance_mask_factor": "Factor",
+            "fbp_edge_distance_mask_invert": "Invert",
+        },
+        "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True,
+        "description": "Mask by distance from the artwork's transparent edge: a ramp from the outline inward, for glowing borders, inner strokes and grow-in reveals.",
+        "category": "MASK", "performance": "HEAVY",
+        "supports": ("IMAGE", "SEQUENCE"),
     },
     FBP_EFFECT_SOLID_MASK: {
         "label": "Tint", "icon": "IMAGE", "kind": "SHADER", "stage": "COLOR",
@@ -2384,11 +2433,14 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_GRADIENT_MASK: ("MASK", "LIGHT", "Create a linear or radial procedural mask with editable center, angle, scale and feather."),
     FBP_EFFECT_NOISE_MASK: ("MASK", "LIGHT", "Create an animatable procedural noise mask with threshold and softness controls."),
     FBP_EFFECT_VORONOI_MASK: ("MASK", "LIGHT", "Create a cellular procedural mask with scale, randomness, threshold and softness controls."),
+    FBP_EFFECT_EDGE_DISTANCE_MASK: ("MASK", "HEAVY", "Mask by distance from the artwork's transparent edge, measured inward; the image border can count as an edge."),
     FBP_EFFECT_WAVE_MASK: ("MASK", "LIGHT", "Create an animatable stripe or ripple mask with distortion, phase, threshold and softness controls."),
     FBP_EFFECT_ALPHA_MATTE: ("MASK", "LIGHT", "Multiply the layer alpha by another Frame By Plane image or sequence alpha, using normalized UVs or the live source-plane transform."),
     FBP_EFFECT_LUMA_MATTE: ("MASK", "LIGHT", "Convert another Frame By Plane image or sequence to luminance and use it as a normalized or spatially transformed track matte."),
     FBP_EFFECT_GRAIN: ("2D", "LIGHT", "Add soft monochromatic film-like grain. Use Digital Noise for colored high-ISO sensor noise."),
     FBP_EFFECT_DIGITAL_NOISE: ("2D", "MEDIUM", "Simulate high-ISO digital sensor noise with separate luminance and chromatic components. Strong animated chroma noise may be expensive."),
+    FBP_EFFECT_RISO_PRINT: ("2D", "HEAVY", "Reprint the image with two or three spot inks, slightly out of register, with rotated halftone dots and ink grain on colored paper."),
+    FBP_EFFECT_OIL_PAINT: ("2D", "HEAVY", "Anisotropic Kuwahara filter: flattens color into brush-stroke patches that follow the image's edges. Large radii cost more samples per pixel."),
     FBP_EFFECT_HALFTONE: ("2D", "MEDIUM", "Convert luminance into a printed-dot pattern. Small cells can increase shader cost and cause viewport aliasing."),
     FBP_EFFECT_DOT_MATRIX: ("2D", "MEDIUM", "Rebuild the source image as cell-centered dots whose radius and brightness follow image luminance. Brightness Response reshapes the luminance-to-size curve; optional randomness only modulates the image-driven result."),
     FBP_EFFECT_ASCII_MATRIX: ("2D", "HEAVY", "Replace the animated FBP image or sequence with density-sorted atlas glyphs. Partial alpha is read as lighter luminance, total transparency is removed, and source-pixel color is preserved by default."),
@@ -2671,13 +2723,13 @@ FBP_SHADER_STAGE_ORDER = {
     "UV": (FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_PIXELATE, FBP_EFFECT_SWIRL, FBP_EFFECT_BULGE_PINCH, FBP_EFFECT_LENS_WARP, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_RIPPLE_DISTORTION, FBP_EFFECT_KALEIDOSCOPE, FBP_EFFECT_HEX_PIXELATE, FBP_EFFECT_MOSAIC_JITTER, FBP_EFFECT_SLICE_SHIFT),
     "MASK": (
         FBP_EFFECT_CLIPPING_MASK, FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
-        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK, FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK, FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK, FBP_EFFECT_EDGE_DISTANCE_MASK,
         FBP_EFFECT_SQUARE_MASK, FBP_EFFECT_CIRCLE_MASK, FBP_EFFECT_TRIANGLE_MASK,
     ),
     "COLOR": (
-        FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
+        FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_OIL_PAINT, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
         FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_CURVES, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD,
-        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE,
+        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE, FBP_EFFECT_RISO_PRINT,
         FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
         FBP_EFFECT_DIGITAL_NOISE,
         FBP_EFFECT_PAPER_FIBERS, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW, FBP_EFFECT_GOBO_SHADOWS,
@@ -2830,7 +2882,7 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
     )),
     ("Pixel / Print", "MESH_GRID", (
         "FAMILY:PIXELATE_MOSAIC", FBP_EFFECT_DITHER, FBP_EFFECT_HALFTONE,
-        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_CROSSHATCH,
+        FBP_EFFECT_RISO_PRINT, FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_CROSSHATCH,
     )),
     ("Deform", "OUTLINER_OB_SURFACE", (
         FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_SWIRL,
@@ -2838,7 +2890,7 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
         FBP_EFFECT_SLICE_SHIFT, FBP_EFFECT_KALEIDOSCOPE,
     )),
     ("Edges", "MOD_LINEART", (
-        "FAMILY:EDGE", "FAMILY:STYLIZE", FBP_EFFECT_EMBOSS,
+        "FAMILY:EDGE", "FAMILY:STYLIZE", FBP_EFFECT_EMBOSS, FBP_EFFECT_OIL_PAINT,
     )),
     ("Digital", "IMAGE_BACKGROUND", (
         FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_DIGITAL_NOISE,
@@ -2866,6 +2918,7 @@ FBP_MASK_EFFECT_MENU_SECTIONS = (
     ("Nodes", "NODE_INSERT_ON", (
         FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK,
         FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,
+        FBP_EFFECT_EDGE_DISTANCE_MASK,
     )),
     ("Advanced", "SEQ_STRIP_MODIFIER", (
         "GREASE_PENCIL_MASK_CONTROL", FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
@@ -3417,6 +3470,7 @@ __all__ = (
     "FBP_EFFECT_NOISE_MASK",
     "FBP_EFFECT_VORONOI_MASK",
     "FBP_EFFECT_WAVE_MASK",
+    "FBP_EFFECT_EDGE_DISTANCE_MASK",
     "FBP_EFFECT_SOLID_MASK",
     "FBP_EFFECT_HUE_SATURATION",
     "FBP_EFFECT_WHITE_BALANCE",
@@ -3449,6 +3503,8 @@ __all__ = (
     "FBP_EFFECT_DIGITAL_NOISE",
     "FBP_EFFECT_CHROMA_KEY",
     "FBP_EFFECT_HALFTONE",
+    "FBP_EFFECT_RISO_PRINT",
+    "FBP_EFFECT_OIL_PAINT",
     "FBP_EFFECT_DOT_MATRIX",
     "FBP_EFFECT_ASCII_MATRIX",
     "FBP_EFFECT_ASCII",

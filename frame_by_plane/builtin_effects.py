@@ -4,6 +4,7 @@ These groups are generated from the current Python contracts instead of being
 reused from node groups embedded by previous add-on releases.
 """
 
+import math
 from pathlib import Path
 
 import bpy
@@ -109,6 +110,9 @@ BUILTIN_EFFECT_IDS = {
     "SOLARIZE",
     "TRITONE",
     "FILM_FADE",
+    "OIL_PAINT",
+    "RISO_PRINT",
+    "EDGE_DISTANCE_MASK",
 }
 
 
@@ -10050,6 +10054,386 @@ def _create_camera_scale_lock(name):
     group["fbp_camera_contract_version"] = 2
     return group
 
+
+class _Graph:
+    """Small node-graph writer for the long sample-and-reduce effects below.
+
+    Each call adds one node in a grid column and links any socket arguments;
+    plain numbers become the input's default value.
+    """
+
+    def __init__(self, group, prefix, x=-1800, y=900, rows=24):
+        self.group = group
+        self.prefix = prefix
+        self.x = x
+        self.y = y
+        self.rows = rows
+        self.count = 0
+
+    def _place(self):
+        column, row = divmod(self.count, self.rows)
+        self.count += 1
+        return self.x + column * 190, self.y - row * 75
+
+    def _feed(self, socket, value):
+        if value is None:
+            return
+        if isinstance(value, (int, float)):
+            socket.default_value = float(value)
+        elif isinstance(value, tuple):
+            socket.default_value = value
+        else:
+            self.group.links.new(value, socket)
+
+    def math(self, operation, a, b=None, c=None, label=""):
+        x, y = self._place()
+        node = _math(self.group, operation, f"{self.prefix} {label or operation.title()} {self.count}", x, y)
+        for index, value in enumerate((a, b, c)):
+            self._feed(node.inputs[index], value)
+        return node.outputs[0]
+
+    def vector(self, operation, a, b=None, scale=None, label=""):
+        x, y = self._place()
+        node = _vector_math(self.group, operation, f"{self.prefix} {label or operation.title()} {self.count}", x, y)
+        self._feed(node.inputs[0], a)
+        self._feed(node.inputs[1], b)
+        if scale is not None:
+            self._feed(node.inputs["Scale"], scale)
+        if operation in {"DOT_PRODUCT", "LENGTH", "DISTANCE"}:
+            return node.outputs["Value"]
+        return node.outputs["Vector"]
+
+    def combine(self, x_value, y_value, z_value=0.0, label="Combine"):
+        x, y = self._place()
+        node = _node(self.group, "ShaderNodeCombineXYZ", f"{self.prefix} {label} {self.count}", x, y)
+        for name, value in (("X", x_value), ("Y", y_value), ("Z", z_value)):
+            self._feed(node.inputs[name], value)
+        return node.outputs[0]
+
+    def separate(self, vector, label="Separate"):
+        x, y = self._place()
+        node = _node(self.group, "ShaderNodeSeparateXYZ", f"{self.prefix} {label} {self.count}", x, y)
+        self._feed(node.inputs[0], vector)
+        return node.outputs["X"], node.outputs["Y"]
+
+    def luma(self, color, label="Luminance"):
+        x, y = self._place()
+        node = _node(self.group, "ShaderNodeRGBToBW", f"{self.prefix} {label} {self.count}", x, y)
+        self._feed(node.inputs[0], color)
+        return node.outputs[0]
+
+    def sample(self, uv, label="Sample"):
+        x, y = self._place()
+        node = _source_image_node(self.group, f"{self.prefix} {label} {self.count}", x, y)
+        self._feed(node.inputs["Vector"], uv)
+        return node.outputs["Color"], node.outputs["Alpha"]
+
+    def clamp01(self, value, label="Clamp"):
+        x, y = self._place()
+        node = _math(self.group, "ADD", f"{self.prefix} {label} {self.count}", x, y, value_2=0.0)
+        node.use_clamp = True
+        self._feed(node.inputs[0], value)
+        return node.outputs[0]
+
+    def total(self, sockets, operation="ADD", vector=False):
+        current = sockets[0]
+        for socket in sockets[1:]:
+            current = self.vector(operation, current, socket) if vector else self.math(operation, current, socket)
+        return current
+
+    def texel_offset(self, inp, pixel_vector, label="Texel Offset"):
+        """Turn a source-pixel offset into a UV offset."""
+        texel = self.combine(inp.outputs["Texel X"], inp.outputs["Texel Y"], 0.0, label="Texel")
+        return self.vector("MULTIPLY", pixel_vector, texel, label=label)
+
+
+def _sobel_gradient(group, inp, radius_socket, prefix, x, y):
+    """Return the 3×3 Sobel luminance gradient (Gx, Gy) of the source image."""
+    samples = {}
+    positions = ((-1, 1), (0, 1), (1, 1), (-1, 0), (1, 0), (-1, -1), (0, -1), (1, -1))
+    for index, (ox, oy) in enumerate(positions):
+        samples[(ox, oy)] = _sample_source_luma(
+            group, inp, radius_socket, ox, oy,
+            f"{prefix} Sample {index}", x, y - index * 155,
+        )
+    gx = _weighted_scalar_sum(group, (
+        (samples[(-1, 1)], -1), (samples[(-1, 0)], -2), (samples[(-1, -1)], -1),
+        (samples[(1, 1)], 1), (samples[(1, 0)], 2), (samples[(1, -1)], 1),
+    ), f"{prefix} Gx", x + 1120, y + 220)
+    gy = _weighted_scalar_sum(group, (
+        (samples[(-1, -1)], -1), (samples[(0, -1)], -2), (samples[(1, -1)], -1),
+        (samples[(-1, 1)], 1), (samples[(0, 1)], 2), (samples[(1, 1)], 1),
+    ), f"{prefix} Gy", x + 1120, y - 220)
+    return gx, gy
+
+
+def _create_oil_paint(name):
+    """Anisotropic Kuwahara: four elongated sectors, the calmest one wins.
+
+    The kernel turns along the local edge (Sobel gradient) and stretches with
+    edge strength, so strokes follow contours. Sector means are alpha-weighted
+    so transparent pixels never darken the paint, and the sector blend uses
+    exp(-Sharpness·(σ − σmin)) to stay smooth instead of a hard argmin.
+    """
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (
+        ("Color In", "NodeSocketColor", (.5, .5, .5, 1), None, None),
+        ("UV Vector", "NodeSocketVector", None, None, None),
+        ("Radius", "NodeSocketFloat", 6, 0, 64),
+        ("Sharpness", "NodeSocketFloat", 8, 0, 32),
+        ("Anisotropy", "NodeSocketFloat", 1, 0, 4),
+        ("Factor", "NodeSocketFloat", 1, 0, 1),
+        ("Texel X", "NodeSocketFloat", .001, 0, 1),
+        ("Texel Y", "NodeSocketFloat", .001, 0, 1),
+    ):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+    g = _Graph(group, "Oil Paint", x=1300, y=1600, rows=30)
+    radius = inp.outputs["Radius"]
+    uv = inp.outputs["UV Vector"]
+
+    # Edge direction and strength measured at half the brush radius.
+    sobel_radius = g.math("MAXIMUM", g.math("MULTIPLY", radius, 0.5), 1.0, label="Sobel Radius")
+    gx, gy = _sobel_gradient(group, inp, sobel_radius, "Oil Paint Edge", -1500, 1600)
+    tangent = g.vector("NORMALIZE", g.combine(g.math("SUBTRACT", 0.00001, gy), gx), label="Edge Tangent")
+    tx, ty = g.separate(tangent, label="Tangent")
+    normal = g.combine(g.math("MULTIPLY", ty, -1.0), tx, label="Edge Normal")
+    magnitude = g.math("SQRT", g.math("ADD", g.math("MULTIPLY", gx, gx), g.math("MULTIPLY", gy, gy)), label="Edge Magnitude")
+    strength = g.clamp01(g.math("MULTIPLY", magnitude, 4.0), label="Edge Strength")
+    stretch = g.math("ADD", g.math("MULTIPLY", strength, inp.outputs["Anisotropy"]), 1.0, label="Stretch")
+    root = g.math("SQRT", stretch, label="Stretch Root")
+    along = g.math("MULTIPLY", radius, root, label="Along Radius")
+    across = g.math("DIVIDE", radius, root, label="Across Radius")
+    axis_u = g.texel_offset(inp, g.vector("SCALE", tangent, scale=along), label="Axis Along")
+    axis_v = g.texel_offset(inp, g.vector("SCALE", normal, scale=across), label="Axis Across")
+    steps = (1.0 / 3.0, 2.0 / 3.0, 1.0)
+    scaled_u = {sign * f: g.vector("SCALE", axis_u, scale=sign * f) for f in steps for sign in (-1, 1)}
+    scaled_v = {sign * f: g.vector("SCALE", axis_v, scale=sign * f) for f in steps for sign in (-1, 1)}
+
+    center_color, center_alpha = g.sample(uv, label="Center")
+
+    def weighted(color, alpha):
+        premultiplied = g.vector("SCALE", color, scale=alpha, label="Premultiplied")
+        luma = g.luma(premultiplied)
+        return premultiplied, alpha, luma, g.math("MULTIPLY", luma, luma, label="Luma Squared")
+
+    center = weighted(center_color, center_alpha)
+    sectors = []
+    for su, sv in ((1, 1), (-1, 1), (-1, -1), (1, -1)):
+        terms = [center]
+        for pu, pv in ((pu, pv) for pu in steps for pv in steps):
+            offset = g.vector("ADD", scaled_u[su * pu], scaled_v[sv * pv], label="Sector Offset")
+            color, alpha = g.sample(g.vector("ADD", uv, offset, label="Sector UV"), label="Sector")
+            terms.append(weighted(color, alpha))
+        color_sum = g.total([term[0] for term in terms], vector=True)
+        alpha_sum = g.math("ADD", g.total([term[1] for term in terms]), 0.0001, label="Alpha Sum")
+        mean = g.vector("SCALE", color_sum, scale=g.math("DIVIDE", 1.0, alpha_sum), label="Sector Mean")
+        luma_mean = g.math("MULTIPLY", g.total([term[2] for term in terms]), 1.0 / len(terms), label="Luma Mean")
+        luma2_mean = g.math("MULTIPLY", g.total([term[3] for term in terms]), 1.0 / len(terms), label="Luma2 Mean")
+        variance = g.math("MAXIMUM", g.math("SUBTRACT", luma2_mean, g.math("MULTIPLY", luma_mean, luma_mean)), 0.0, label="Variance")
+        sectors.append((mean, g.math("SQRT", variance, label="Deviation")))
+
+    lowest = g.total([sector[1] for sector in sectors], operation="MINIMUM")
+    weight_scale = g.math("MULTIPLY", inp.outputs["Sharpness"], -16.0, label="Weight Scale")
+    weights = [
+        g.math("EXPONENT", g.math("MULTIPLY", g.math("SUBTRACT", deviation, lowest), weight_scale), label="Sector Weight")
+        for _mean, deviation in sectors
+    ]
+    blended = g.total([g.vector("SCALE", mean, scale=weight) for (mean, _d), weight in zip(sectors, weights)], vector=True)
+    painted = g.vector("SCALE", blended, scale=g.math("DIVIDE", 1.0, g.total(weights)), label="Painted")
+
+    mix = _mix_rgb(group, "MIX", "Oil Paint Factor", g.x + 190 * (g.count // g.rows + 2), 300)
+    links.new(inp.outputs["Factor"], mix.inputs[0])
+    links.new(inp.outputs["Color In"], mix.inputs[1])
+    links.new(painted, mix.inputs[2])
+    links.new(mix.outputs[0], out.inputs["Color Out"])
+    out.location = (mix.location[0] + 240, 300)
+    return group
+
+
+def _create_riso_print(name):
+    """Riso print: up to three spot inks, misregistered, screened and grainy.
+
+    Each ink samples the source at its own pixel offset, takes its share of the
+    color's absorbance (1 − color) from a least-squares split over the ink
+    absorbances (1 − ink), optionally turns it into rotated halftone dots, and
+    overprints on the paper by multiplying.
+    """
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    for n, t, d, mi, ma in (
+        ("Color In", "NodeSocketColor", (.5, .5, .5, 1), None, None),
+        ("UV Vector", "NodeSocketVector", None, None, None),
+        ("Ink 1", "NodeSocketColor", (1.0, 0.27, 0.55, 1.0), None, None),
+        ("Ink 2", "NodeSocketColor", (0.0, 0.47, 0.75, 1.0), None, None),
+        ("Ink 3", "NodeSocketColor", (1.0, 0.9, 0.0, 1.0), None, None),
+        ("Use Ink 3", "NodeSocketFloat", 0, 0, 1),
+        ("Paper", "NodeSocketColor", (0.96, 0.94, 0.89, 1.0), None, None),
+        ("Misregistration", "NodeSocketFloat", 4, 0, 256),
+        ("Halftone", "NodeSocketFloat", .6, 0, 1),
+        ("Dot Size", "NodeSocketFloat", 6, 1, 256),
+        ("Grain", "NodeSocketFloat", .35, 0, 1),
+        ("Seed", "NodeSocketFloat", 0, 0, 1000),
+        ("Factor", "NodeSocketFloat", 1, 0, 1),
+        ("Texel X", "NodeSocketFloat", .001, 0, 1),
+        ("Texel Y", "NodeSocketFloat", .001, 0, 1),
+    ):
+        _socket(group, n, "INPUT", t, default=d, minimum=mi, maximum=ma)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+    g = _Graph(group, "Riso", x=-700, y=1400, rows=28)
+    uv = inp.outputs["UV Vector"]
+    u, v = g.separate(uv, label="UV")
+    pixel_x = g.math("DIVIDE", u, g.math("MAXIMUM", inp.outputs["Texel X"], 0.0000001), label="Pixel X")
+    pixel_y = g.math("DIVIDE", v, g.math("MAXIMUM", inp.outputs["Texel Y"], 0.0000001), label="Pixel Y")
+    seed_angle = g.math("MULTIPLY", inp.outputs["Seed"], 1.7, label="Seed Angle")
+
+    # Ink absorbances and the pieces of the least-squares separation: two inks
+    # solve the 2×2 normal equations, three inks solve the 3×3 system exactly
+    # (Cramer's rule). Use Ink 3 blends between the two answers.
+    white = (1.0, 1.0, 1.0)
+    absorb = [g.vector("SUBTRACT", white, inp.outputs[f"Ink {k}"], label=f"Ink {k} Absorbance") for k in (1, 2, 3)]
+    g11 = g.vector("DOT_PRODUCT", absorb[0], absorb[0])
+    g22 = g.vector("DOT_PRODUCT", absorb[1], absorb[1])
+    g12 = g.vector("DOT_PRODUCT", absorb[0], absorb[1])
+    det2 = g.math("ADD", g.math("SUBTRACT", g.math("MULTIPLY", g11, g22), g.math("MULTIPLY", g12, g12)), 0.0001, label="Two Ink Determinant")
+    cross23 = g.vector("CROSS_PRODUCT", absorb[1], absorb[2])
+    cross31 = g.vector("CROSS_PRODUCT", absorb[2], absorb[0])
+    cross12 = g.vector("CROSS_PRODUCT", absorb[0], absorb[1])
+    det3 = g.vector("DOT_PRODUCT", absorb[0], cross23)
+    det3 = g.math("ADD", det3, g.math("MULTIPLY", g.math("SIGN", det3), 0.001), label="Three Ink Determinant")
+
+    def separate_inks(need, index):
+        b1 = g.vector("DOT_PRODUCT", need, absorb[0])
+        b2 = g.vector("DOT_PRODUCT", need, absorb[1])
+        if index == 0:
+            two = g.math("DIVIDE", g.math("SUBTRACT", g.math("MULTIPLY", g22, b1), g.math("MULTIPLY", g12, b2)), det2)
+            three = g.math("DIVIDE", g.vector("DOT_PRODUCT", need, cross23), det3)
+        elif index == 1:
+            two = g.math("DIVIDE", g.math("SUBTRACT", g.math("MULTIPLY", g11, b2), g.math("MULTIPLY", g12, b1)), det2)
+            three = g.math("DIVIDE", g.vector("DOT_PRODUCT", need, cross31), det3)
+        else:
+            two = 0.0
+            three = g.math("DIVIDE", g.vector("DOT_PRODUCT", need, cross12), det3)
+        blended = g.math("ADD", g.math("MULTIPLY", g.math("SUBTRACT", three, two), inp.outputs["Use Ink 3"]), two, label=f"Ink {index + 1} Separation")
+        return g.clamp01(blended, label=f"Ink {index + 1} Density")
+
+    layers = []
+    for index, (ink_name, drift, screen) in enumerate((
+        ("Ink 1", 0.3, 15.0), ("Ink 2", 2.4, 75.0), ("Ink 3", 4.4, 45.0),
+    )):
+        angle = g.math("ADD", seed_angle, drift, label=f"{ink_name} Drift")
+        direction = g.combine(g.math("COSINE", angle), g.math("SINE", angle), label=f"{ink_name} Direction")
+        shift = g.texel_offset(inp, g.vector("SCALE", direction, scale=inp.outputs["Misregistration"]), label=f"{ink_name} Shift")
+        color, alpha = g.sample(g.vector("ADD", uv, shift), label=f"{ink_name} Source")
+        need = g.vector("SUBTRACT", white, color, label=f"{ink_name} Need")
+        density = g.math("MULTIPLY", separate_inks(need, index), alpha, label=f"{ink_name} Visible")
+
+        # Rotated screen in source pixels; dot area follows density.
+        cos_s, sin_s = math.cos(math.radians(screen)), math.sin(math.radians(screen))
+        rx = g.math("SUBTRACT", g.math("MULTIPLY", pixel_x, cos_s), g.math("MULTIPLY", pixel_y, sin_s), label=f"{ink_name} Screen X")
+        ry = g.math("ADD", g.math("MULTIPLY", pixel_x, sin_s), g.math("MULTIPLY", pixel_y, cos_s), label=f"{ink_name} Screen Y")
+        cell = g.vector("DIVIDE", g.combine(rx, ry), g.combine(inp.outputs["Dot Size"], inp.outputs["Dot Size"], 1.0), label=f"{ink_name} Cell")
+        local = g.vector("SUBTRACT", g.vector("FRACTION", cell), (0.5, 0.5, 0.0), label=f"{ink_name} Local")
+        distance = g.vector("LENGTH", local, label=f"{ink_name} Dot Distance")
+        dot_radius = g.math("MULTIPLY", g.math("SQRT", density), 0.7071, label=f"{ink_name} Dot Radius")
+        dot = g.clamp01(g.math("ADD", g.math("MULTIPLY", g.math("SUBTRACT", dot_radius, distance), 12.0), 0.5), label=f"{ink_name} Dot")
+        dot = g.math("MULTIPLY", dot, g.clamp01(g.math("MULTIPLY", density, 20.0)), label=f"{ink_name} Dot Gate")
+        screened = g.math("ADD", density, g.math("MULTIPLY", g.math("SUBTRACT", dot, density), inp.outputs["Halftone"]), label=f"{ink_name} Screened")
+
+        # Mottled ink: clumps a few pixels wide where the drum left less ink.
+        x, y = g._place()
+        noise = _node(group, "ShaderNodeTexNoise", f"Riso {ink_name} Grain", x, y)
+        noise.noise_dimensions = "4D"
+        links.new(g.combine(pixel_x, pixel_y), noise.inputs["Vector"])
+        links.new(g.math("ADD", inp.outputs["Seed"], 17.0 * index), noise.inputs["W"])
+        noise.inputs["Scale"].default_value = 0.18
+        noise.inputs["Detail"].default_value = 3.0
+        speckle = g.clamp01(g.math("MULTIPLY", g.math("SUBTRACT", noise.outputs["Fac"], 0.45), 4.0), label=f"{ink_name} Speckle")
+        keep = g.math("SUBTRACT", 1.0, g.math("MULTIPLY", speckle, inp.outputs["Grain"]), label=f"{ink_name} Keep")
+        coverage = g.math("MULTIPLY", screened, keep, label=f"{ink_name} Coverage")
+        if index == 2:
+            coverage = g.math("MULTIPLY", coverage, inp.outputs["Use Ink 3"], label="Ink 3 Enabled")
+        layers.append(g.vector("SUBTRACT", white, g.vector("SCALE", absorb[index], scale=coverage), label=f"{ink_name} Layer"))
+
+    printed = g.total([inp.outputs["Paper"], *layers], operation="MULTIPLY", vector=True)
+    mix = _mix_rgb(group, "MIX", "Riso Factor", g.x + 190 * (g.count // g.rows + 2), 300)
+    links.new(inp.outputs["Factor"], mix.inputs[0])
+    links.new(inp.outputs["Color In"], mix.inputs[1])
+    links.new(printed, mix.inputs[2])
+    links.new(mix.outputs[0], out.inputs["Color Out"])
+    out.location = (mix.location[0] + 240, 300)
+    return group
+
+
+def _create_edge_distance_mask(name):
+    """Mask by distance from the artwork's alpha edge, measured inward.
+
+    Six rings of eight alpha samples (odd rings turned 22.5°, radii jittered
+    per render sample) estimate how far the nearest transparent pixel is. The image border can count as an edge,
+    so fully opaque pictures still get a frame-shaped falloff.
+    """
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Distance", "INPUT", "NodeSocketFloat", default=32.0, minimum=1.0, maximum=1024.0)
+    _socket(group, "Threshold", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.0, maximum=1.0)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Image Border", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Invert", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Texel X", "INPUT", "NodeSocketFloat", default=0.001, minimum=0.0, maximum=1.0)
+    _socket(group, "Texel Y", "INPUT", "NodeSocketFloat", default=0.001, minimum=0.0, maximum=1.0)
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    _socket(group, "Mask Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Edge Distance", x=-2400, y=1600, rows=40)
+    uv = inp.outputs["UV Vector"]
+    distance = inp.outputs["Distance"]
+    rings = 6
+
+    center_color, center_alpha = g.sample(uv, label="Center")
+    # A per-sample random ring offset turns the six radius steps into fine
+    # noise that render anti-aliasing averages away instead of visible terraces.
+    x, y = g._place()
+    jitter = _node(group, "ShaderNodeTexWhiteNoise", "Edge Distance Ring Jitter", x, y)
+    jitter.noise_dimensions = "3D"
+    group.links.new(g.vector("SCALE", uv, scale=4096.0, label="Jitter Coordinate"), jitter.inputs["Vector"])
+    inside_rings = []
+    for ring in range(1, rings + 1):
+        step = g.math("SUBTRACT", float(ring), jitter.outputs["Value"], label=f"Ring {ring} Step")
+        radius = g.math("MULTIPLY", distance, g.math("MULTIPLY", step, 1.0 / rings), label=f"Ring {ring} Radius")
+        outside = []
+        for step in range(8):
+            angle = math.radians(step * 45.0 + (22.5 if ring % 2 else 0.0))
+            pixel = g.vector("SCALE", g.combine(math.cos(angle), math.sin(angle)), scale=radius, label=f"Ring {ring} Reach")
+            _color, alpha = g.sample(g.vector("ADD", uv, g.texel_offset(inp, pixel)), label=f"Ring {ring} Sample")
+            outside.append(g.math("SUBTRACT", 1.0, alpha, label=f"Ring {ring} Outside"))
+        # About a third of the ring outside counts as fully crossing the edge;
+        # partial counts keep the falloff smooth between rings.
+        crossing = g.clamp01(g.math("MULTIPLY", g.total(outside), 0.4), label=f"Ring {ring} Crossing")
+        inside_rings.append(g.math("SUBTRACT", 1.0, crossing, label=f"Ring {ring} Inside"))
+    alpha_depth = g.math("MULTIPLY", g.math("MULTIPLY", g.total(inside_rings), 1.0 / rings), center_alpha, label="Alpha Depth")
+
+    u, v = g.separate(uv, label="UV")
+    border_x = g.math("DIVIDE", g.math("MINIMUM", u, g.math("SUBTRACT", 1.0, u)), g.math("MAXIMUM", inp.outputs["Texel X"], 0.0000001), label="Border X Pixels")
+    border_y = g.math("DIVIDE", g.math("MINIMUM", v, g.math("SUBTRACT", 1.0, v)), g.math("MAXIMUM", inp.outputs["Texel Y"], 0.0000001), label="Border Y Pixels")
+    border_depth = g.clamp01(g.math("DIVIDE", g.math("MINIMUM", border_x, border_y), distance), label="Border Depth")
+    border_limit = g.math("ADD", border_depth, g.math("SUBTRACT", 1.0, inp.outputs["Image Border"]), label="Border Limit")
+    depth = g.math("MINIMUM", alpha_depth, border_limit, label="Edge Depth")
+
+    raw_mask = _smooth_threshold(group, depth, inp.outputs["Threshold"], inp.outputs["Softness"], "Edge Distance", g.x + 190 * (g.count // g.rows + 1), 200)
+    group["fbp_generated_mask_contract_version"] = 1
+    return _finish_generated_mask(
+        group, inp, out, raw_mask, prefix="Edge Distance Mask",
+        x=g.x + 190 * (g.count // g.rows + 6), y=160, availability=inp.outputs["Use Image Sample"],
+    )
+
+
 def _interface_socket_names(group, in_out):
     """Return interface socket names without depending on one Blender API layout."""
     names = set()
@@ -10203,6 +10587,7 @@ def _builtin_group_is_complete(group, definition):
         "frame_by_plane.shader.noise_mask": 2,
         "frame_by_plane.shader.voronoi_mask": 4,
         "frame_by_plane.shader.wave_mask": 4,
+        "frame_by_plane.shader.edge_distance_mask": 1,
     }
     definition_asset_id = str(definition.get("asset_id", "") or "")
     required_mask_contract = next(
@@ -10342,6 +10727,9 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
         "TRIANGLE_MASK": lambda: _create_object_shape_mask(canonical_name, shape="TRIANGLE"),
         "COLOR_MASK": lambda: _create_color_mask(canonical_name),
         "LUMINANCE_MASK": lambda: _create_luminance_mask(canonical_name),
+        "EDGE_DISTANCE_MASK": lambda: _create_edge_distance_mask(canonical_name),
+        "OIL_PAINT": lambda: _create_oil_paint(canonical_name),
+        "RISO_PRINT": lambda: _create_riso_print(canonical_name),
         "CHANNEL_MASK": lambda: _create_channel_mask(canonical_name),
         "GRADIENT_MASK": lambda: _create_gradient_mask(canonical_name),
         "NOISE_MASK": lambda: _create_noise_mask(canonical_name),

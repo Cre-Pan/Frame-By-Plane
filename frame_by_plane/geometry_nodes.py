@@ -169,6 +169,7 @@ from .effects_registry import (
     FBP_EFFECT_NOISE_MASK,
     FBP_EFFECT_VORONOI_MASK,
     FBP_EFFECT_WAVE_MASK,
+    FBP_EFFECT_EDGE_DISTANCE_MASK,
     FBP_EFFECT_CRT_SCANLINES,
     FBP_EFFECT_DITHER,
     FBP_EFFECT_BLOOM,
@@ -180,6 +181,8 @@ from .effects_registry import (
     FBP_EFFECT_DIGITAL_NOISE,
     FBP_EFFECT_CHROMA_KEY,
     FBP_EFFECT_HALFTONE,
+    FBP_EFFECT_RISO_PRINT,
+    FBP_EFFECT_OIL_PAINT,
     FBP_EFFECT_DOT_MATRIX,
     FBP_EFFECT_ASCII_MATRIX,
     FBP_EFFECT_ASCII,
@@ -21189,6 +21192,15 @@ _FBP_EFFECT_UI_GROUPS = {
         ("Lines", "MOD_LINEART", ("fbp_edge_detect_width", "fbp_edge_detect_strength", "fbp_edge_detect_threshold", "fbp_edge_detect_softness")),
         ("Color & Mix", "COLOR", ("fbp_edge_detect_color", "fbp_edge_detect_factor")),
     ),
+    FBP_EFFECT_OIL_PAINT: (
+        ("Brush", "BRUSHES_ALL", ("fbp_oil_paint_radius", "fbp_oil_paint_sharpness", "fbp_oil_paint_anisotropy")),
+        ("Mix", "MODIFIER", ("fbp_oil_paint_factor",)),
+    ),
+    FBP_EFFECT_RISO_PRINT: (
+        ("Inks", "COLOR", ("fbp_riso_ink_1", "fbp_riso_ink_2", "fbp_riso_use_ink_3", "fbp_riso_ink_3", "fbp_riso_paper")),
+        ("Print", "OUTLINER_OB_IMAGE", ("fbp_riso_misregistration", "fbp_riso_halftone", "fbp_riso_dot_size", "fbp_riso_grain", "fbp_riso_seed")),
+        ("Mix", "MODIFIER", ("fbp_riso_factor",)),
+    ),
     FBP_EFFECT_SMOOTH_TOON: (
         ("Stylization", "SHADING_RENDERED", ("fbp_smooth_toon_levels", "fbp_smooth_toon_softness", "fbp_smooth_toon_factor")),
     ),
@@ -25015,6 +25027,7 @@ def _fbp_effect_mask_enum_items(_self=None, context=None):
             FBP_EFFECT_TRIANGLE_MASK,
             FBP_EFFECT_ALPHA_MATTE,
             FBP_EFFECT_LUMA_MATTE,
+            FBP_EFFECT_EDGE_DISTANCE_MASK,
         ))
     }
     items = []
@@ -27687,6 +27700,15 @@ FBP_BUILTIN_EFFECT_PRESETS = {
     FBP_EFFECT_EDGE_DETECT: {
         "Ink Lines": {"fbp_edge_detect_width": 1.0, "fbp_edge_detect_strength": 2.4, "fbp_edge_detect_threshold": 0.05, "fbp_edge_detect_softness": 0.035, "fbp_edge_detect_color": (0.0,0.0,0.0,1.0), "fbp_edge_detect_factor": 1.0},
         "White Technical": {"fbp_edge_detect_width": 1.5, "fbp_edge_detect_strength": 3.0, "fbp_edge_detect_threshold": 0.09, "fbp_edge_detect_softness": 0.025, "fbp_edge_detect_color": (1.0,1.0,1.0,1.0), "fbp_edge_detect_factor": 1.0},
+    },
+    FBP_EFFECT_OIL_PAINT: {
+        "Impasto": {"fbp_oil_paint_radius": 8.0, "fbp_oil_paint_sharpness": 10.0, "fbp_oil_paint_anisotropy": 2.0, "fbp_oil_paint_factor": 1.0},
+        "Soft Gouache": {"fbp_oil_paint_radius": 4.0, "fbp_oil_paint_sharpness": 4.0, "fbp_oil_paint_anisotropy": 0.5, "fbp_oil_paint_factor": 1.0},
+    },
+    FBP_EFFECT_RISO_PRINT: {
+        "Pink & Blue": {"fbp_riso_ink_1": (1.0, 0.27, 0.55, 1.0), "fbp_riso_ink_2": (0.0, 0.47, 0.75, 1.0), "fbp_riso_use_ink_3": False, "fbp_riso_misregistration": 4.0, "fbp_riso_halftone": 0.6, "fbp_riso_dot_size": 6.0, "fbp_riso_grain": 0.35},
+        "Three Drum": {"fbp_riso_ink_1": (1.0, 0.27, 0.55, 1.0), "fbp_riso_ink_2": (0.0, 0.47, 0.75, 1.0), "fbp_riso_ink_3": (1.0, 0.9, 0.0, 1.0), "fbp_riso_use_ink_3": True, "fbp_riso_misregistration": 3.0, "fbp_riso_halftone": 0.75, "fbp_riso_dot_size": 5.0, "fbp_riso_grain": 0.3},
+        "Green & Orange": {"fbp_riso_ink_1": (1.0, 0.42, 0.13, 1.0), "fbp_riso_ink_2": (0.0, 0.66, 0.36, 1.0), "fbp_riso_use_ink_3": False, "fbp_riso_misregistration": 6.0, "fbp_riso_halftone": 0.4, "fbp_riso_dot_size": 8.0, "fbp_riso_grain": 0.5},
     },
     FBP_EFFECT_SMOOTH_TOON: {
         "Soft Cel": {"fbp_smooth_toon_levels": 6.0, "fbp_smooth_toon_softness": 0.18, "fbp_smooth_toon_factor": 1.0},

@@ -140,6 +140,12 @@ Includes 7.2.1, which was not published on its own.
 
 - **Knit & Crochet** (Mesh, for images, sequences and videos): rebuilds the image as yarn. **Knit** makes stockinette V stitches in columns, each row tucked under the next; **Crochet** makes single-crochet stitches (a head over two posts) in brick-offset rows. Every stitch takes its colour from the image, transparent areas stay empty, and sequences and videos stay animated. Thickness, plies and twist shape the yarn; Fuzz adds a woolly sheen; Color Variation and Hand-made add irregularity; Self Light keeps the yarn readable in unlit scenes. Stitch count is set separately for viewport, playback and render.
 
+- **Riso Print** (Image, Pixel / Print menu): reprints the image with two or three spot inks on colored paper, like a risograph. Each ink takes its share of the color, drifts slightly out of register, and can turn into rotated halftone dots with mottled ink grain. Inks, paper, misregistration, dot size, grain and seed are editable, with presets for Pink & Blue, Three Drum and Green & Orange.
+
+- **Oil Paint** (Image, Edges menu): an anisotropic Kuwahara filter. Color flattens into brush-stroke patches that follow the image's edges while contours stay sharp. Radius sets the stroke size, Anisotropy stretches strokes along edges (0 is the classic round filter) and Sharpness decides how crisp the stroke borders are. Transparent pixels never darken the paint.
+
+- **Edge Distance Mask** (Mask, Nodes menu): a mask that ramps from the artwork's transparent edge inward over a set distance, for glowing borders, inner strokes and grow-in reveals (animate Threshold). Invert keeps the band along the edge. With Image Border on, the picture's own border counts as an edge, so fully opaque images get a frame-shaped falloff.
+
 ### Import
 
 - **Drag and drop shows the import options.** Dropping images, a sequence or a video now always opens the Import with Frame By Plane dialog: Auto / Single Plane / Multiplane, Dropped Media or Parent Folder, the plane settings (Frame Hold, loop, orientation, Shadeless, alpha crop) and a **Camera** choice: **Keep Camera**, **Match Aspect** (change the existing camera's output aspect to the media) or **New Camera**, plus Fit to Camera and, for Multiplane, Layer Spacing. Single Plane and Multiplane now follow the same camera choice; before, Single Plane could only adapt an existing camera and Multiplane always created a new one.
