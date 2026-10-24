@@ -168,7 +168,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_EMISSION: {
-        "label": "Emission", "icon": "LIGHT_SUN", "kind": "BASE",
+        "label": "Emission", "icon": "LIGHT_POINT", "kind": "BASE",
         "enabled_key": "fbp_effect_emission",
         "category": "2D", "performance": "LIGHT",
         "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT", "COLOR", "GRADIENT"),
@@ -220,7 +220,7 @@ FBP_EFFECT_REGISTRY = {
         "procedural_frame_sync": True,
     },
     FBP_EFFECT_STOP_MOTION_CRUMPLE: {
-        "label": "Crumple", "icon": "MOD_DISPLACE", "kind": "GEOMETRY",
+        "label": "Crumple", "icon": "MOD_CLOTH", "kind": "GEOMETRY",
         "source_names": ("FBP_StopMotion_Crumple",), "canonical_name": "FBP_GN_StopMotion_Crumple_450",
         "modifier_name": "FBP • Crumple", "asset_id": "frame_by_plane.stop_motion_crumple.450",
         "enabled_key": "fbp_effect_stop_motion_crumple", "alpha_aware": False,
@@ -300,7 +300,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_CUTOUT_OUTLINE: {
-        "label": "Cutout Outline", "icon": "MOD_SKIN", "kind": "GEOMETRY",
+        "label": "Cutout Outline", "icon": "MOD_OUTLINE", "kind": "GEOMETRY",
         "source_names": ("FBP_GN_Cutout_Outline_6027",), "canonical_name": "FBP_GN_Cutout_Outline_6130",
         "modifier_name": "FBP • Cutout Outline", "asset_id": "frame_by_plane.cutout_outline.6130",
         "enabled_key": "fbp_effect_cutout_outline", "alpha_aware": True,
@@ -464,7 +464,7 @@ FBP_EFFECT_REGISTRY = {
         "source_material_socket": "Fuzz Material",
     },
     FBP_EFFECT_FIBER_TUFTS: {
-        "label": "Fiber Tufts", "icon": "CURVES_DATA", "kind": "GEOMETRY",
+        "label": "Fiber Tufts", "icon": "STRANDS", "kind": "GEOMETRY",
         "source_names": ("FBP_GN_Fiber_Tufts_660",), "canonical_name": "FBP_GN_Fiber_Tufts_6130",
         "modifier_name": "FBP • Fiber Tufts", "asset_id": "frame_by_plane.fiber_tufts.6130",
         "enabled_key": "fbp_effect_fiber_tufts", "alpha_aware": True, "builtin": True,
@@ -535,7 +535,7 @@ FBP_EFFECT_REGISTRY = {
         "description": "Scatter lightweight instanced paper chips across an aspect-balanced opaque silhouette with controllable lift, tilt, thickness and scale variation.",
     },
     FBP_EFFECT_SPHERE_SCREEN: {
-        "label": "Image Solids", "icon": "MESH_ICOSPHERE", "kind": "GEOMETRY",
+        "label": "Image Solids", "icon": "MESH_CUBE", "kind": "GEOMETRY",
         "source_names": ("FBP_GN_Image_Solids_680",), "canonical_name": "FBP_GN_Image_Solids_6140",
         "modifier_name": "FBP • Image Solids", "asset_id": "frame_by_plane.image_solids.6140",
         "enabled_key": "fbp_effect_sphere_screen", "image_aware": True,
@@ -617,7 +617,7 @@ FBP_EFFECT_REGISTRY = {
         "description": "Turn the textured plane into a UV-preserving, aspect-balanced triangular relief driven by highlights, shadows, saturation or a custom depth image.",
     },
     FBP_EFFECT_GLASS: {
-        "label": "Broken Glass", "icon": "MOD_EXPLODE", "kind": "GEOMETRY",
+        "label": "Broken Glass", "icon": "MOD_TRIANGULATE", "kind": "GEOMETRY",
         "source_names": ("FBP_GN_Glass_690", "FBP_GN_Broken_Glass_6110", "FBP_GN_Broken_Glass_6120", "FBP_GN_Broken_Glass_6130", "FBP_GN_Broken_Glass_6140", "FBP_GN_Broken_Glass_6160", "FBP_GN_Broken_Glass_7000"), "canonical_name": "FBP_GN_Broken_Glass_6170",
         "modifier_name": "FBP • Broken Glass", "asset_id": "frame_by_plane.broken_glass.6170",
         "enabled_key": "fbp_effect_glass", "image_aware": True,
@@ -675,7 +675,7 @@ FBP_EFFECT_REGISTRY = {
         "description": "Fracture an aspect-balanced alpha grid into separated Voronoi shards with automatic texture-aspect correction, independent X/Y scale, Blender 5.2 Mesh Bevel, damage-map control and a closed refractive volume.",
     },
     FBP_EFFECT_CRYSTAL: {
-        "label": "Crystal", "icon": "LIGHTPROBE_SPHERE", "kind": "GEOMETRY",
+        "label": "Crystal", "icon": "MESH_ICOSPHERE", "kind": "GEOMETRY",
         "source_names": ("FBP_GN_Crystal_6110", "FBP_GN_Crystal_6120", "FBP_GN_Crystal_6130", "FBP_GN_Crystal_6140", "FBP_GN_Crystal_6160", "FBP_GN_Crystal_6170", "FBP_GN_Crystal_6180", "FBP_GN_Crystal_6190", "FBP_GN_Crystal_7000"), "canonical_name": "FBP_GN_Crystal_6222",
         "modifier_name": "FBP • Crystal", "asset_id": "frame_by_plane.crystal.6222",
         "enabled_key": "fbp_effect_crystal", "image_aware": True,
@@ -909,7 +909,7 @@ FBP_EFFECT_REGISTRY = {
         "description": "Create a memory-efficient animated stack of textured plane instances with depth, scale, twist and wave controls.",
     },
     FBP_EFFECT_KNIT_CROCHET: {
-        "label": "Knit & Crochet", "icon": "OUTLINER_DATA_CURVES", "kind": "GEOMETRY",
+        "label": "Knit & Crochet", "icon": "MOD_SCREW", "kind": "GEOMETRY",
         "source_names": (), "canonical_name": "FBP_GN_Knit_Crochet_800",
         "modifier_name": "FBP • Knit & Crochet", "asset_id": "frame_by_plane.knit_crochet.800",
         "enabled_key": "fbp_effect_knit_crochet", "builtin": True,
@@ -1094,7 +1094,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_BULGE_PINCH: {
-        "label": "Inflate & Pinch", "icon": "MOD_WARP", "kind": "SHADER", "stage": "UV",
+        "label": "Inflate & Pinch", "icon": "MOD_CAST", "kind": "SHADER", "stage": "UV",
         "canonical_name": "FBP_SH_Bulge_Pinch_6014", "asset_id": "frame_by_plane.shader.bulge_pinch.6014",
         "enabled_key": "fbp_effect_bulge_pinch", "input_socket": "Vector", "output_socket": "Vector Out",
         "required_input_sockets": ("Center X", "Center Y", "Radius", "Strength", "Factor"),
@@ -1142,7 +1142,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_RIPPLE_DISTORTION: {
-        "label": "Ripple Distortion", "icon": "FORCE_HARMONIC", "kind": "SHADER", "stage": "UV",
+        "label": "Ripple Distortion", "icon": "PROP_ON", "kind": "SHADER", "stage": "UV",
         "canonical_name": "FBP_SH_Ripple_Distortion_6019", "asset_id": "frame_by_plane.shader.ripple_distortion.6019",
         "enabled_key": "fbp_effect_ripple_distortion", "input_socket": "Vector", "output_socket": "Vector Out",
         "required_input_sockets": ("Center X", "Center Y", "Amplitude", "Frequency", "Phase", "Speed", "Radius", "Falloff", "Factor"),
@@ -1172,7 +1172,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_HEX_PIXELATE: {
-        "label": "Hexagonal", "icon": "ALIASED", "kind": "SHADER", "stage": "UV",
+        "label": "Hexagonal", "icon": "SEQ_CHROMA_SCOPE", "kind": "SHADER", "stage": "UV",
         "canonical_name": "FBP_SH_Hex_Pixelate_6014", "asset_id": "frame_by_plane.shader.hex_pixelate.6014",
         "enabled_key": "fbp_effect_hex_pixelate", "input_socket": "Vector", "output_socket": "Vector Out",
         "required_input_sockets": ("Cells X", "Cells Y", "Rotation", "Factor"),
@@ -1183,7 +1183,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_MOSAIC_JITTER: {
-        "label": "Mosaic Jitter", "icon": "ALIASED", "kind": "SHADER", "stage": "UV",
+        "label": "Mosaic Jitter", "icon": "MOD_UVPROJECT", "kind": "SHADER", "stage": "UV",
         "canonical_name": "FBP_SH_Mosaic_Jitter_6026", "asset_id": "frame_by_plane.shader.mosaic_jitter.6026",
         "enabled_key": "fbp_effect_mosaic_jitter", "input_socket": "Vector", "output_socket": "Vector Out",
         "required_input_sockets": ("Cells X", "Cells Y", "Rotation", "Jitter", "Offset X", "Offset Y", "Seed", "Factor"),
@@ -1201,7 +1201,7 @@ FBP_EFFECT_REGISTRY = {
         "evolve_mode": "SEED_STEP", "supports_seed": True, "builtin": True,
     },
     FBP_EFFECT_SLICE_SHIFT: {
-        "label": "Slice Shift", "icon": "MOD_DISPLACE", "kind": "SHADER", "stage": "UV",
+        "label": "Slice Shift", "icon": "MOD_EDGESPLIT", "kind": "SHADER", "stage": "UV",
         "canonical_name": "FBP_SH_Slice_Shift_627", "asset_id": "frame_by_plane.shader.slice_shift.627",
         "enabled_key": "fbp_effect_slice_shift", "input_socket": "Vector", "output_socket": "Vector Out",
         "required_input_sockets": ("Angle", "Bands", "Shift", "Random", "Seed", "Factor"),
@@ -1219,7 +1219,7 @@ FBP_EFFECT_REGISTRY = {
         "evolve_mode": "SEED_STEP", "supports_seed": True, "builtin": True,
     },
     FBP_EFFECT_DEPTH_BLUR: {
-        "label": "Depth Blur", "icon": "CON_CAMERASOLVER", "kind": "SHADER", "stage": "COLOR",
+        "label": "Depth Blur", "icon": "IMAGE_ZDEPTH", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Depth_Blur_5319",
         "asset_id": "frame_by_plane.shader.depth_blur.5319", "enabled_key": "fbp_effect_depth_blur",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -1280,7 +1280,7 @@ FBP_EFFECT_REGISTRY = {
         ),
     },
     FBP_EFFECT_TRIANGLE_BLUR: {
-        "label": "Triangle Blur", "icon": "ANTIALIASED", "kind": "SHADER", "stage": "COLOR",
+        "label": "Triangle Blur", "icon": "MARKER", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Triangle_Blur_6012", "asset_id": "frame_by_plane.shader.triangle_blur.6012",
         "enabled_key": "fbp_effect_triangle_blur", "input_socket": "Color In", "output_socket": "Color Out",
         "uv_input_socket": "UV Vector", "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
@@ -1289,7 +1289,7 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_triangle_blur_radius": "Radius", "fbp_triangle_blur_samples": "Samples", "fbp_triangle_blur_factor": "Factor"},
     },
     FBP_EFFECT_TILT_SHIFT: {
-        "label": "Tilt Shift", "icon": "PROP_PROJECTED", "kind": "SHADER", "stage": "COLOR",
+        "label": "Tilt Shift", "icon": "SPLIT_HORIZONTAL", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Tilt_Shift_6037", "asset_id": "frame_by_plane.shader.tilt_shift.6037",
         "enabled_key": "fbp_effect_tilt_shift", "input_socket": "Color In", "output_socket": "Color Out",
         "uv_input_socket": "UV Vector", "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
@@ -1329,7 +1329,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_RISO_PRINT: {
-        "label": "Riso Print", "icon": "OUTLINER_OB_IMAGE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Riso Print", "icon": "OUTPUT", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Riso_Print_800", "asset_id": "frame_by_plane.shader.riso_print.800",
         "enabled_key": "fbp_effect_riso_print", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -1343,14 +1343,14 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_SMOOTH_TOON: {
-        "label": "Smooth Toon", "icon": "SHADING_RENDERED", "kind": "SHADER", "stage": "COLOR",
+        "label": "Smooth Toon", "icon": "MATSHADERBALL", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Smooth_Toon_6013", "asset_id": "frame_by_plane.shader.smooth_toon.6013",
         "enabled_key": "fbp_effect_smooth_toon", "input_socket": "Color In", "output_socket": "Color Out", "builtin": True,
         "required_input_sockets": ("Levels", "Softness", "Factor"),
         "property_map": {"fbp_smooth_toon_levels": "Levels", "fbp_smooth_toon_softness": "Softness", "fbp_smooth_toon_factor": "Factor"},
     },
     FBP_EFFECT_ADAPTIVE_THRESHOLD: {
-        "label": "Adaptive Threshold", "icon": "MOD_DASH", "kind": "SHADER", "stage": "COLOR",
+        "label": "Adaptive Threshold", "icon": "SNAP_EDGE", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Adaptive_Threshold_6013", "asset_id": "frame_by_plane.shader.adaptive_threshold.6013",
         "enabled_key": "fbp_effect_adaptive_threshold", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -1362,7 +1362,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_INK: {
-        "label": "Ink", "icon": "GREASEPENCIL", "kind": "SHADER", "stage": "COLOR",
+        "label": "Ink", "icon": "LINE_DATA", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Ink_6013", "asset_id": "frame_by_plane.shader.ink.6013",
         "enabled_key": "fbp_effect_ink", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -1374,7 +1374,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_EDGE_WORK: {
-        "label": "Work", "icon": "MOD_DASH", "kind": "SHADER", "stage": "COLOR",
+        "label": "Work", "icon": "MOD_LINEART", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Edge_Work_6013", "asset_id": "frame_by_plane.shader.edge_work.6013",
         "enabled_key": "fbp_effect_edge_work", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -1398,7 +1398,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_POSTER_EDGES: {
-        "label": "Poster", "icon": "MOD_DASH", "kind": "SHADER", "stage": "COLOR",
+        "label": "Poster", "icon": "MOD_EDGESPLIT", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Poster_Edges_6013", "asset_id": "frame_by_plane.shader.poster_edges.6013",
         "enabled_key": "fbp_effect_poster_edges", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -1411,7 +1411,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_CROSSHATCH: {
-        "label": "Crosshatch", "icon": "MOD_LINEART", "kind": "SHADER", "stage": "COLOR",
+        "label": "Crosshatch", "icon": "GRID", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Crosshatch_6013", "asset_id": "frame_by_plane.shader.crosshatch.6013",
         "enabled_key": "fbp_effect_crosshatch", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE", "COLOR", "GRADIENT"),
@@ -1423,7 +1423,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_EMBOSS: {
-        "label": "Emboss", "icon": "MOD_DISPLACE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Emboss", "icon": "MOD_BEVEL", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Emboss_6013", "asset_id": "frame_by_plane.shader.emboss.6013",
         "enabled_key": "fbp_effect_emboss", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -1434,13 +1434,13 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_FALSE_COLOR: {
-        "label": "False Color", "icon": "COLOR", "kind": "SHADER", "stage": "COLOR",
+        "label": "False Color", "icon": "MOD_COLOR_BALANCE", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_False_Color_6012", "asset_id": "frame_by_plane.shader.false_color.6012",
         "enabled_key": "fbp_effect_false_color", "input_socket": "Color In", "output_socket": "Color Out", "builtin": True,
         "property_map": {"fbp_false_color_dark": "Dark Color", "fbp_false_color_light": "Light Color", "fbp_false_color_factor": "Factor"},
     },
     FBP_EFFECT_CHROMATIC_ABERRATION: {
-        "label": "Chromatic Aberration", "icon": "SEQ_CHROMA_SCOPE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Chromatic Aberration", "icon": "IMAGE_RGB", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Chromatic_Aberration_6012", "asset_id": "frame_by_plane.shader.chromatic_aberration.6012",
         "enabled_key": "fbp_effect_chromatic_aberration", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
@@ -1852,7 +1852,7 @@ FBP_EFFECT_REGISTRY = {
         "supports": ("IMAGE", "SEQUENCE"),
     },
     FBP_EFFECT_SOLID_MASK: {
-        "label": "Tint", "icon": "IMAGE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Tint", "icon": "MOD_TINT", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Tint",), "canonical_name": "FBP_SH_Tint_450",
         "asset_id": "frame_by_plane.shader.tint.450", "enabled_key": "fbp_effect_solid_mask",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1862,7 +1862,7 @@ FBP_EFFECT_REGISTRY = {
         "supports_seed": True,
     },
     FBP_EFFECT_HUE_SATURATION: {
-        "label": "Hue & Saturation", "icon": "IMAGE_RGB", "kind": "SHADER", "stage": "COLOR",
+        "label": "Hue & Saturation", "icon": "MOD_HUE_SATURATION", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Hue_Saturation",), "canonical_name": "FBP_SH_Hue_Saturation_450",
         "asset_id": "frame_by_plane.shader.hue_saturation.450", "enabled_key": "fbp_effect_hue_saturation",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1885,7 +1885,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_CURVES: {
-        "label": "Curves", "icon": "FORCE_HARMONIC", "kind": "SHADER", "stage": "COLOR",
+        "label": "Curves", "icon": "FCURVE", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Curves_6019",
         "asset_id": "frame_by_plane.shader.curves.6019", "enabled_key": "fbp_effect_curves",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1895,7 +1895,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_BRIGHTNESS_CONTRAST: {
-        "label": "Brightness & Contrast", "icon": "IMAGE_RGB_ALPHA", "kind": "SHADER", "stage": "COLOR",
+        "label": "Brightness & Contrast", "icon": "MOD_BRIGHTNESS_CONTRAST", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Brightness_Contrast",), "canonical_name": "FBP_SH_Brightness_Contrast_450",
         "asset_id": "frame_by_plane.shader.brightness_contrast.450", "enabled_key": "fbp_effect_brightness_contrast",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1909,7 +1909,7 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_invert_factor": "Factor"},
     },
     FBP_EFFECT_THRESHOLD: {
-        "label": "Threshold", "icon": "NODE_TEXTURE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Threshold", "icon": "SEQ_HISTOGRAM", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Threshold",), "canonical_name": "FBP_SH_Threshold_450",
         "asset_id": "frame_by_plane.shader.threshold.450", "enabled_key": "fbp_effect_threshold",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1930,14 +1930,14 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_DUOTONE: {
-        "label": "Duotone", "icon": "MOD_TINT", "kind": "SHADER", "stage": "COLOR",
+        "label": "Duotone", "icon": "IMAGE_RGB_ALPHA", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Duotone",), "canonical_name": "FBP_SH_Duotone_445",
         "asset_id": "frame_by_plane.shader.duotone.445", "enabled_key": "fbp_effect_duotone",
         "input_socket": "Color In", "output_socket": "Color Out",
         "property_map": {"fbp_duotone_shadows": "Shadows Tone", "fbp_duotone_highlights": "Highlights Tone"},
     },
     FBP_EFFECT_RECOLOR: {
-        "label": "Recolor", "icon": "COLOR", "kind": "SHADER", "stage": "COLOR",
+        "label": "Recolor", "icon": "NODE_TEXTURE", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Recolor_570",
         "asset_id": "frame_by_plane.shader.recolor.570", "enabled_key": "fbp_effect_recolor",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1947,7 +1947,7 @@ FBP_EFFECT_REGISTRY = {
         "color_ramp_role": "RECOLOR",
     },
     FBP_EFFECT_GRADIENT_MAP: {
-        "label": "Gradient Map", "icon": "COLOR", "kind": "SHADER", "stage": "COLOR",
+        "label": "Gradient Map", "icon": "SEQ_LUMA_WAVEFORM", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Gradient_Map_625",
         "asset_id": "frame_by_plane.shader.gradient_map.625", "enabled_key": "fbp_effect_gradient_map",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1958,7 +1958,7 @@ FBP_EFFECT_REGISTRY = {
         "description": "Figma-inspired Gradient Map that remaps source luminance through an editable Color Ramp while preserving alpha.",
     },
     FBP_EFFECT_CHANNEL_MIXER: {
-        "label": "Channel Mixer", "icon": "SEQ_SPLITVIEW", "kind": "SHADER", "stage": "COLOR",
+        "label": "Channel Mixer", "icon": "OPTIONS", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Channel_Mixer_625",
         "asset_id": "frame_by_plane.shader.channel_mixer.625", "enabled_key": "fbp_effect_channel_mixer",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -1973,7 +1973,7 @@ FBP_EFFECT_REGISTRY = {
         "description": "Figma-inspired RGB channel gain mixer for false-color, grading and stylized image treatment.",
     },
     FBP_EFFECT_DITHER: {
-        "label": "Dither", "icon": "ALIASED", "kind": "SHADER", "stage": "COLOR",
+        "label": "Dither", "icon": "TPAINT_HLT", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Dither_641",
         "asset_id": "frame_by_plane.shader.dither.641", "enabled_key": "fbp_effect_dither",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -2025,7 +2025,7 @@ FBP_EFFECT_REGISTRY = {
         "description": "Figma-inspired quick filter stack for sepia, warm, cool and noir looks with one final intensity control.",
     },
     FBP_EFFECT_GRAIN: {
-        "label": "Grain", "icon": "RNDCURVE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Grain", "icon": "MOD_NOISE", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Film_Grain",), "canonical_name": "FBP_SH_Film_Grain_450",
         "asset_id": "frame_by_plane.shader.film_grain.450", "enabled_key": "fbp_effect_grain",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -2042,7 +2042,7 @@ FBP_EFFECT_REGISTRY = {
         "evolve_property": "fbp_paper_fiber_phase", "evolve_amount": 0.2, "supports_seed": True,
     },
     FBP_EFFECT_GRADIENT_LIGHT: {
-        "label": "Gradient", "icon": "NODE_TEXTURE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Gradient", "icon": "LIGHT_AREA", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_2D_Gradient_Light", "FBP_SH_Gradient_Light_570"), "canonical_name": "FBP_SH_Gradient_Light_6025",
         "asset_id": "frame_by_plane.shader.gradient_light.6025", "enabled_key": "fbp_effect_gradient_light",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -2087,7 +2087,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_SHADOW: {
-        "label": "Shadow", "icon": "SHADING_RENDERED", "kind": "SHADER", "stage": "COLOR",
+        "label": "Shadow", "icon": "MOD_OPACITY", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_SH_Shadow_6046",), "canonical_name": "FBP_SH_Shadow_6047",
         "asset_id": "frame_by_plane.shader.shadow.6047", "enabled_key": "fbp_effect_shadow",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -2122,7 +2122,7 @@ FBP_EFFECT_REGISTRY = {
         "property_map": {"fbp_crt_line_count": "Line Count", "fbp_crt_opacity": "Opacity"},
     },
     FBP_EFFECT_VIGNETTE: {
-        "label": "Vignette", "icon": "IMAGE_ALPHA", "kind": "SHADER", "stage": "COLOR",
+        "label": "Vignette", "icon": "CLIPUV_DEHLT", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Vignette",), "canonical_name": "FBP_SH_Vignette_450",
         "asset_id": "frame_by_plane.shader.vignette.450", "enabled_key": "fbp_effect_vignette",
         "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
@@ -2138,7 +2138,7 @@ FBP_EFFECT_REGISTRY = {
         "supports_seed": True,
     },
     FBP_EFFECT_SOLARIZE: {
-        "label": "Solarize", "icon": "LIGHT_SUN", "kind": "SHADER", "stage": "COLOR",
+        "label": "Solarize", "icon": "MOD_TONEMAP", "kind": "SHADER", "stage": "COLOR",
         "source_names": (), "canonical_name": "FBP_SH_Solarize_611",
         "asset_id": "frame_by_plane.shader.solarize.611", "enabled_key": "fbp_effect_solarize",
         "input_socket": "Color In", "output_socket": "Color Out", "builtin": True,
@@ -2190,7 +2190,7 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_CHROMA_KEY: {
-        "label": "Chroma Key", "icon": "FORCE_TEXTURE", "kind": "SHADER", "stage": "COLOR",
+        "label": "Chroma Key", "icon": "EYEDROPPER", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Chroma_Key_480",
         "asset_id": "frame_by_plane.shader.chroma_key.480", "enabled_key": "fbp_effect_chroma_key",
         "input_socket": "Color In", "output_socket": "Color Out",
