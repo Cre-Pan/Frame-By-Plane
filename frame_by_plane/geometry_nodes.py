@@ -25278,7 +25278,10 @@ def _fbp_draw_effect_add_columns(
             op = row.operator(
                 "fbp.add_effect_family",
                 text=str(family.get("label", family_id.title()) or family_id.title()),
-                icon=str(family.get("icon", "MODIFIER") or "MODIFIER"),
+                **effect_icon_kwargs(
+                    f"FAMILY_{family_id}",
+                    str(family.get("icon", "MODIFIER") or "MODIFIER"),
+                ),
             )
             op.family_id = family_id
             return
