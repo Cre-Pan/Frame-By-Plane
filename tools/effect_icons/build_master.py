@@ -78,15 +78,14 @@ def main():
             label = f"{families[fid]['label']} · {variant}"
         return token, label
 
-    variant_tokens = tuple(eid for fam in families.values() for eid, _ in fam["variants"])
     panels = [
         ("Image Effects", image_sections, 2),
         ("Mesh Effects", mesh_sections, 2),
-        ("Varianti e altri (stack effetti)", (
-            ("Varianti delle famiglie", "", variant_tokens),
-            ("Altri", "", ("FAMILY:WAVE", "FAMILY:POSTERIZE", "EMISSION", "GOBO_SHADOWS",
-                       "LAYER_BLEND", "EDGE_DISTANCE_MASK")),
-        ), 2),
+        ("Altri", (
+            ("Mask", "", ("CHROMA_KEY", "EDGE_DISTANCE_MASK")),
+            ("Famiglie e stack effetti", "", ("FAMILY:WAVE", "FAMILY:POSTERIZE", "EMISSION",
+                                              "GOBO_SHADOWS", "LAYER_BLEND")),
+        ), 1),
     ]
 
     parts, placed = [], set()
