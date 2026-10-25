@@ -116,6 +116,15 @@ BUILTIN_EFFECT_IDS = {
 }
 
 
+# Effects whose older saved groups computed a wrong result: effect id ->
+# (asset id prefix, contract). Stale groups fail _builtin_group_is_complete and
+# fbp_upgrade_stale_effect_groups swaps them when a file is opened.
+_BUILTIN_EFFECT_CONTRACTS = {
+    "HALFTONE": ("frame_by_plane.shader.halftone", 2),
+    "SLICE_SHIFT": ("frame_by_plane.shader.slice_shift", 2),
+}
+
+
 def _socket(group, name, in_out, socket_type, *, default=None, minimum=None, maximum=None):
     socket = group.interface.new_socket(name=name, in_out=in_out, socket_type=socket_type)
     if default is not None:
@@ -442,6 +451,53 @@ def fbp_upgrade_aspect_remesh_group():
         return False
     _aspect_remesh_group()
     return True
+
+
+def fbp_upgrade_stale_effect_groups(definitions, asset_dir):
+    """Swap saved shared groups whose effect contract is out of date.
+
+    Materials keep pointing at the group saved in the file, so a fixed builder
+    alone would only reach layers where the effect is added again. Groups the
+    artist opened for editing and per-layer private copies are left alone.
+    """
+    upgraded = 0
+    for effect_id, (asset_prefix, _contract) in _BUILTIN_EFFECT_CONTRACTS.items():
+        definition = definitions.get(effect_id)
+        if not definition:
+            continue
+        stale = []
+        for group in tuple(bpy.data.node_groups):
+            try:
+                if (
+                    getattr(group, "library", None) is None
+                    and str(group.get("fbp_effect_asset_id", "") or "").startswith(asset_prefix)
+                    and not bool(group.get("fbp_user_editable_effect_group", False))
+                    and not bool(group.get("fbp_private_effect_group", False))
+                    and not _builtin_group_is_complete(group, definition)
+                ):
+                    stale.append(group)
+            except FBP_DATA_ERRORS:
+                continue
+        if not stale:
+            continue
+        fresh = create_builtin_effect_group(effect_id, definition, asset_dir)
+        if fresh is None or not _builtin_group_is_complete(fresh, definition):
+            continue
+        canonical_name = str(definition.get("canonical_name", "") or "")
+        for group in stale:
+            try:
+                group.user_remap(fresh)
+                bpy.data.node_groups.remove(group)
+                upgraded += 1
+            except FBP_DATA_ERRORS:
+                continue
+        try:
+            fresh.use_fake_user = False
+            if canonical_name and fresh.name != canonical_name and bpy.data.node_groups.get(canonical_name) is None:
+                fresh.name = canonical_name
+        except FBP_DATA_ERRORS:
+            pass
+    return upgraded
 
 
 def _aspect_remesh(group, geometry_socket, level_socket, *, prefix, x, y, triangulate=True):
@@ -873,7 +929,19 @@ def _create_slice_shift(name):
     links.new(noise.outputs["Value"], random_center.inputs[0])
     links.new(random_center.outputs[0], random_amount.inputs[0])
     links.new(inp.outputs["Random"], random_amount.inputs[1])
-    links.new(inp.outputs["Shift"], shift_total.inputs[0])
+    # Neighbouring bands move in opposite directions, so Bands cuts the image
+    # into visible slices even with Random at zero. Before contract 2 every
+    # band moved by the same Shift, which only slid the whole image sideways.
+    band_parity = _math(group, "FLOORED_MODULO", "Slice Band Parity", -360, 40, value_2=2.0)
+    band_sign = _math(group, "MULTIPLY_ADD", "Slice Band Direction", -160, 40)
+    band_sign.inputs[1].default_value = -2.0
+    band_sign.inputs[2].default_value = 1.0
+    signed_shift = _math(group, "MULTIPLY", "Signed Slice Shift", 60, 60)
+    links.new(band_index.outputs[0], band_parity.inputs[0])
+    links.new(band_parity.outputs[0], band_sign.inputs[0])
+    links.new(inp.outputs["Shift"], signed_shift.inputs[0])
+    links.new(band_sign.outputs[0], signed_shift.inputs[1])
+    links.new(signed_shift.outputs[0], shift_total.inputs[0])
     links.new(random_amount.outputs[0], shift_total.inputs[1])
     links.new(sep.outputs["X"], shifted_x.inputs[0])
     links.new(shift_total.outputs[0], shifted_x.inputs[1])
@@ -885,6 +953,7 @@ def _create_slice_shift(name):
     links.new(inv_angle.outputs[0], unrotate.inputs["Angle"])
     result = _uv_mix(group, inp.outputs["Vector"], unrotate.outputs["Vector"], inp.outputs["Factor"], prefix="Slice Shift", x=1260, y=120)
     links.new(result, out.inputs["Vector Out"])
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -5122,9 +5191,18 @@ def _create_halftone(name):
     bw_paper.inputs[1].default_value = (1.0, 1.0, 1.0, 1.0)
     bw_paper.inputs[2].default_value = (0.0, 0.0, 0.0, 1.0)
     links.new(bw_dark_mode.outputs[0], bw_paper.inputs[0])
+    # Color Mode picks source-color inks (CMYK/RGB) or fixed BW inks, and Use
+    # Source Color swaps the source for the custom Ink Color. Both inputs were
+    # left unlinked before contract 2, so every mode looked the same.
+    links.new(inp.outputs["Color Mode"], color_source_mode.inputs[0])
+    links.new(inp.outputs["Color Mode"], bw_dark_mode.inputs[0])
+    source_ink = _mix_rgb(group, "MIX", "Halftone Source or Custom Ink", 1190, 720)
+    links.new(inp.outputs["Use Source Color"], source_ink.inputs[0])
+    links.new(inp.outputs["Foreground"], source_ink.inputs[1])
+    links.new(inp.outputs["Color In"], source_ink.inputs[2])
     links.new(color_source_mode.outputs[0], ink.inputs[0])
     links.new(bw_ink.outputs[0], ink.inputs[1])
-    links.new(inp.outputs["Color In"], ink.inputs[2])
+    links.new(source_ink.outputs[0], ink.inputs[2])
     links.new(color_source_mode.outputs[0], paper.inputs[0])
     links.new(bw_paper.outputs[0], paper.inputs[1])
     links.new(inp.outputs["Background"], paper.inputs[2])
@@ -5155,6 +5233,7 @@ def _create_halftone(name):
     links.new(final_alpha.outputs[0], debug_alpha.inputs[1])
     debug_alpha.inputs[2].default_value = (1.0, 1.0, 1.0, 1.0)
     links.new(debug_alpha.outputs[0], out.inputs["Alpha Out"])
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -10167,6 +10246,88 @@ def _sobel_gradient(group, inp, radius_socket, prefix, x, y):
     return gx, gy
 
 
+_OIL_PAINT_STEPS = (1.0 / 3.0, 2.0 / 3.0, 1.0)
+
+
+def _internal_helper_group(name, build):
+    """Return a shared, image-free helper group used inside a large effect.
+
+    Blender revalidates the whole node tree after every node, link or default
+    value written from Python, so one 500-node graph took about two seconds to
+    build on first use. Repeated math moved into a small helper is built once
+    and instanced, which keeps first use fast; shaders inline groups, so the
+    compiled result is unchanged. Helpers carry no image nodes and no fake user:
+    they are shared by every layer and leave with the last effect that uses them.
+    """
+    existing = bpy.data.node_groups.get(name)
+    if existing is not None:
+        try:
+            if getattr(existing, "library", None) is None and bool(existing.get("fbp_internal_helper_complete", False)):
+                return existing
+            if existing.users == 0:
+                bpy.data.node_groups.remove(existing)
+        except FBP_DATA_ERRORS:
+            pass
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    try:
+        build(group)
+    except Exception:
+        try:
+            bpy.data.node_groups.remove(group)
+        except FBP_DATA_ERRORS:
+            pass
+        raise
+    group["fbp_internal_helper_complete"] = True
+    return group
+
+
+def _build_oil_paint_sector_uvs(group):
+    """Nine sample positions of one Kuwahara sector from its two signed axes."""
+    _socket(group, "UV", "INPUT", "NodeSocketVector")
+    _socket(group, "Along", "INPUT", "NodeSocketVector")
+    _socket(group, "Across", "INPUT", "NodeSocketVector")
+    for term in range(1, 10):
+        _socket(group, f"UV {term}", "OUTPUT", "NodeSocketVector")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Sector", x=-600, y=600, rows=12)
+    scaled_u = [g.vector("SCALE", inp.outputs["Along"], scale=f) for f in _OIL_PAINT_STEPS]
+    scaled_v = [g.vector("SCALE", inp.outputs["Across"], scale=f) for f in _OIL_PAINT_STEPS]
+    term = 1
+    for pu in range(3):
+        for pv in range(3):
+            offset = g.vector("ADD", scaled_u[pu], scaled_v[pv], label="Sector Offset")
+            group.links.new(g.vector("ADD", inp.outputs["UV"], offset, label="Sector UV"), out.inputs[f"UV {term}"])
+            term += 1
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
+
+
+def _build_oil_paint_sector_stats(group):
+    """Alpha-weighted mean color and luminance deviation of ten samples."""
+    for term in range(10):
+        _socket(group, f"Color {term}", "INPUT", "NodeSocketColor", default=(0.0, 0.0, 0.0, 1.0))
+    for term in range(10):
+        _socket(group, f"Alpha {term}", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Mean", "OUTPUT", "NodeSocketVector")
+    _socket(group, "Deviation", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Sector", x=-600, y=900, rows=24)
+    terms = []
+    for term in range(10):
+        alpha = inp.outputs[f"Alpha {term}"]
+        premultiplied = g.vector("SCALE", inp.outputs[f"Color {term}"], scale=alpha, label="Premultiplied")
+        luma = g.luma(premultiplied)
+        terms.append((premultiplied, alpha, luma, g.math("MULTIPLY", luma, luma, label="Luma Squared")))
+    color_sum = g.total([term[0] for term in terms], vector=True)
+    alpha_sum = g.math("ADD", g.total([term[1] for term in terms]), 0.0001, label="Alpha Sum")
+    mean = g.vector("SCALE", color_sum, scale=g.math("DIVIDE", 1.0, alpha_sum), label="Sector Mean")
+    luma_mean = g.math("MULTIPLY", g.total([term[2] for term in terms]), 1.0 / len(terms), label="Luma Mean")
+    luma2_mean = g.math("MULTIPLY", g.total([term[3] for term in terms]), 1.0 / len(terms), label="Luma2 Mean")
+    variance = g.math("MAXIMUM", g.math("SUBTRACT", luma2_mean, g.math("MULTIPLY", luma_mean, luma_mean)), 0.0, label="Variance")
+    group.links.new(mean, out.inputs["Mean"])
+    group.links.new(g.math("SQRT", variance, label="Deviation"), out.inputs["Deviation"])
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
+
+
 def _create_oil_paint(name):
     """Anisotropic Kuwahara: four elongated sectors, the calmest one wins.
 
@@ -10208,32 +10369,32 @@ def _create_oil_paint(name):
     across = g.math("DIVIDE", radius, root, label="Across Radius")
     axis_u = g.texel_offset(inp, g.vector("SCALE", tangent, scale=along), label="Axis Along")
     axis_v = g.texel_offset(inp, g.vector("SCALE", normal, scale=across), label="Axis Across")
-    steps = (1.0 / 3.0, 2.0 / 3.0, 1.0)
-    scaled_u = {sign * f: g.vector("SCALE", axis_u, scale=sign * f) for f in steps for sign in (-1, 1)}
-    scaled_v = {sign * f: g.vector("SCALE", axis_v, scale=sign * f) for f in steps for sign in (-1, 1)}
-
+    # The repeated per-sector math lives in two small shared helper groups.
+    # Only the image samples stay in this graph (the runtime points them at the
+    # layer image), which keeps first use fast; see _internal_helper_group.
+    sector_uvs = _internal_helper_group("FBP_SH_Oil_Paint_Sector_UVs_810", _build_oil_paint_sector_uvs)
+    sector_stats = _internal_helper_group("FBP_SH_Oil_Paint_Sector_Stats_810", _build_oil_paint_sector_stats)
+    axes_u = {1: axis_u, -1: g.vector("SCALE", axis_u, scale=-1.0, label="Axis Along Reversed")}
+    axes_v = {1: axis_v, -1: g.vector("SCALE", axis_v, scale=-1.0, label="Axis Across Reversed")}
     center_color, center_alpha = g.sample(uv, label="Center")
-
-    def weighted(color, alpha):
-        premultiplied = g.vector("SCALE", color, scale=alpha, label="Premultiplied")
-        luma = g.luma(premultiplied)
-        return premultiplied, alpha, luma, g.math("MULTIPLY", luma, luma, label="Luma Squared")
-
-    center = weighted(center_color, center_alpha)
     sectors = []
-    for su, sv in ((1, 1), (-1, 1), (-1, -1), (1, -1)):
-        terms = [center]
-        for pu, pv in ((pu, pv) for pu in steps for pv in steps):
-            offset = g.vector("ADD", scaled_u[su * pu], scaled_v[sv * pv], label="Sector Offset")
-            color, alpha = g.sample(g.vector("ADD", uv, offset, label="Sector UV"), label="Sector")
-            terms.append(weighted(color, alpha))
-        color_sum = g.total([term[0] for term in terms], vector=True)
-        alpha_sum = g.math("ADD", g.total([term[1] for term in terms]), 0.0001, label="Alpha Sum")
-        mean = g.vector("SCALE", color_sum, scale=g.math("DIVIDE", 1.0, alpha_sum), label="Sector Mean")
-        luma_mean = g.math("MULTIPLY", g.total([term[2] for term in terms]), 1.0 / len(terms), label="Luma Mean")
-        luma2_mean = g.math("MULTIPLY", g.total([term[3] for term in terms]), 1.0 / len(terms), label="Luma2 Mean")
-        variance = g.math("MAXIMUM", g.math("SUBTRACT", luma2_mean, g.math("MULTIPLY", luma_mean, luma_mean)), 0.0, label="Variance")
-        sectors.append((mean, g.math("SQRT", variance, label="Deviation")))
+    for index, (su, sv) in enumerate(((1, 1), (-1, 1), (-1, -1), (1, -1))):
+        x, y = g._place()
+        uvs = _node(group, "ShaderNodeGroup", f"Oil Paint Sector {index} UVs", x, y)
+        uvs.node_tree = sector_uvs
+        links.new(uv, uvs.inputs["UV"])
+        links.new(axes_u[su], uvs.inputs["Along"])
+        links.new(axes_v[sv], uvs.inputs["Across"])
+        x, y = g._place()
+        stats = _node(group, "ShaderNodeGroup", f"Oil Paint Sector {index} Stats", x, y)
+        stats.node_tree = sector_stats
+        links.new(center_color, stats.inputs["Color 0"])
+        links.new(center_alpha, stats.inputs["Alpha 0"])
+        for term in range(1, 10):
+            color, alpha = g.sample(uvs.outputs[f"UV {term}"], label="Sector")
+            links.new(color, stats.inputs[f"Color {term}"])
+            links.new(alpha, stats.inputs[f"Alpha {term}"])
+        sectors.append((stats.outputs["Mean"], stats.outputs["Deviation"]))
 
     lowest = g.total([sector[1] for sector in sectors], operation="MINIMUM")
     weight_scale = g.math("MULTIPLY", inp.outputs["Sharpness"], -16.0, label="Weight Scale")
@@ -10368,6 +10529,40 @@ def _create_riso_print(name):
     return group
 
 
+def _build_edge_distance_ring_uvs(group, turned):
+    """Eight sample positions on one ring, every 45° (odd rings turned 22.5°)."""
+    _socket(group, "UV", "INPUT", "NodeSocketVector")
+    _socket(group, "Radius", "INPUT", "NodeSocketFloat", default=1.0)
+    _socket(group, "Texel X", "INPUT", "NodeSocketFloat", default=0.001)
+    _socket(group, "Texel Y", "INPUT", "NodeSocketFloat", default=0.001)
+    for sample in range(8):
+        _socket(group, f"UV {sample}", "OUTPUT", "NodeSocketVector")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Ring", x=-600, y=700, rows=16)
+    texel = g.combine(inp.outputs["Texel X"], inp.outputs["Texel Y"], 0.0, label="Texel")
+    for sample in range(8):
+        angle = math.radians(sample * 45.0 + (22.5 if turned else 0.0))
+        pixel = g.vector("SCALE", g.combine(math.cos(angle), math.sin(angle)), scale=inp.outputs["Radius"], label="Reach")
+        offset = g.vector("MULTIPLY", pixel, texel, label="Texel Offset")
+        group.links.new(g.vector("ADD", inp.outputs["UV"], offset, label="Sample UV"), out.inputs[f"UV {sample}"])
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
+
+
+def _build_edge_distance_ring_inside(group):
+    """How much of one ring lies inside the artwork, from its eight alphas."""
+    for sample in range(8):
+        _socket(group, f"Alpha {sample}", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Inside", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Ring", x=-600, y=700, rows=16)
+    outside = [g.math("SUBTRACT", 1.0, inp.outputs[f"Alpha {sample}"], label="Outside") for sample in range(8)]
+    # About a third of the ring outside counts as fully crossing the edge;
+    # partial counts keep the falloff smooth between rings.
+    crossing = g.clamp01(g.math("MULTIPLY", g.total(outside), 0.4), label="Crossing")
+    group.links.new(g.math("SUBTRACT", 1.0, crossing, label="Inside"), out.inputs["Inside"])
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
+
+
 def _create_edge_distance_mask(name):
     """Mask by distance from the artwork's alpha edge, measured inward.
 
@@ -10403,20 +10598,32 @@ def _create_edge_distance_mask(name):
     jitter = _node(group, "ShaderNodeTexWhiteNoise", "Edge Distance Ring Jitter", x, y)
     jitter.noise_dimensions = "3D"
     group.links.new(g.vector("SCALE", uv, scale=4096.0, label="Jitter Coordinate"), jitter.inputs["Vector"])
+    ring_uvs = {
+        turned: _internal_helper_group(
+            f"FBP_SH_Edge_Distance_Ring_UVs_{'Turned_' if turned else ''}810",
+            lambda helper, turned=turned: _build_edge_distance_ring_uvs(helper, turned),
+        )
+        for turned in (False, True)
+    }
+    ring_inside = _internal_helper_group("FBP_SH_Edge_Distance_Ring_Inside_810", _build_edge_distance_ring_inside)
     inside_rings = []
     for ring in range(1, rings + 1):
         step = g.math("SUBTRACT", float(ring), jitter.outputs["Value"], label=f"Ring {ring} Step")
         radius = g.math("MULTIPLY", distance, g.math("MULTIPLY", step, 1.0 / rings), label=f"Ring {ring} Radius")
-        outside = []
-        for step in range(8):
-            angle = math.radians(step * 45.0 + (22.5 if ring % 2 else 0.0))
-            pixel = g.vector("SCALE", g.combine(math.cos(angle), math.sin(angle)), scale=radius, label=f"Ring {ring} Reach")
-            _color, alpha = g.sample(g.vector("ADD", uv, g.texel_offset(inp, pixel)), label=f"Ring {ring} Sample")
-            outside.append(g.math("SUBTRACT", 1.0, alpha, label=f"Ring {ring} Outside"))
-        # About a third of the ring outside counts as fully crossing the edge;
-        # partial counts keep the falloff smooth between rings.
-        crossing = g.clamp01(g.math("MULTIPLY", g.total(outside), 0.4), label=f"Ring {ring} Crossing")
-        inside_rings.append(g.math("SUBTRACT", 1.0, crossing, label=f"Ring {ring} Inside"))
+        x, y = g._place()
+        uvs = _node(group, "ShaderNodeGroup", f"Edge Distance Ring {ring} UVs", x, y)
+        uvs.node_tree = ring_uvs[bool(ring % 2)]
+        group.links.new(uv, uvs.inputs["UV"])
+        group.links.new(radius, uvs.inputs["Radius"])
+        group.links.new(inp.outputs["Texel X"], uvs.inputs["Texel X"])
+        group.links.new(inp.outputs["Texel Y"], uvs.inputs["Texel Y"])
+        x, y = g._place()
+        inside = _node(group, "ShaderNodeGroup", f"Edge Distance Ring {ring} Inside", x, y)
+        inside.node_tree = ring_inside
+        for sample in range(8):
+            _color, alpha = g.sample(uvs.outputs[f"UV {sample}"], label=f"Ring {ring} Sample")
+            group.links.new(alpha, inside.inputs[f"Alpha {sample}"])
+        inside_rings.append(inside.outputs["Inside"])
     alpha_depth = g.math("MULTIPLY", g.math("MULTIPLY", g.total(inside_rings), 1.0 / rings), center_alpha, label="Alpha Depth")
 
     u, v = g.separate(uv, label="UV")
@@ -10597,6 +10804,19 @@ def _builtin_group_is_complete(group, definition):
     if required_mask_contract:
         try:
             if int(group.get("fbp_generated_mask_contract_version", 0) or 0) < required_mask_contract:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+    required_effect_contract = next(
+        (
+            version for prefix, version in _BUILTIN_EFFECT_CONTRACTS.values()
+            if definition_asset_id.startswith(prefix)
+        ),
+        0,
+    )
+    if required_effect_contract:
+        try:
+            if int(group.get("fbp_effect_contract_version", 0) or 0) < required_effect_contract:
                 return False
         except FBP_DATA_ERRORS:
             return False

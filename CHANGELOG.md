@@ -24,6 +24,12 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- Halftone: Color Mode and Use Source Color had no effect, so BW Light, BW Dark and a custom Ink Color all rendered the source colors. They now work, and files saved with the old Halftone are updated when opened.
+- Slice Shift: every band moved by the same Shift, which only slid the whole image sideways and left Bands with no visible effect. Neighbouring bands now move in opposite directions; files saved with the old Slice Shift are updated when opened.
+- Grain no longer writes negative colors in dark areas.
+- Oil Paint and Edge Distance Mask build about five times faster the first time they are added to a file (2 s and 1.5 s before), with an identical result.
+- Felt Fuzz: the Render Density slider ends at 400,000 strands instead of 3,000,000. Rendering needs about 1 GB per 100,000 strands, so the old slider end could exhaust memory; higher values can still be typed.
+
 - Image Projector: the projection was blurred by default because the light Radius also set the image size. The image size now follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone instead of losing its corners.
 - Image Projector: image sequences numbered from anything other than 1 (for example 0101) projected nothing, and sequences got the wrong aspect ratio.
 - Project Selected FBP Layer now follows the layer's timing (holds, loops) instead of freezing it on the current frame.

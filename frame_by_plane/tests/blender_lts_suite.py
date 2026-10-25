@@ -4285,6 +4285,62 @@ def test_knit_crochet_stitches(_module):
     return {"knit": knit, "crochet": crochet}
 
 
+def test_effect_audit_fixes_contract(_module):
+    """Effect fixes from the 8.0 audit: live controls, clamped Grain, fast builds."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    builtin = importlib.import_module(f"{PACKAGE}.builtin_effects")
+    registry = importlib.import_module(f"{PACKAGE}.effects_registry")
+    rig = _effect_stack_fixture_rig("FBP Effect Audit Fixes")
+    owned = [rig, *rig.children_recursive]
+    results = {}
+    try:
+        for effect_id in ("HALFTONE", "SLICE_SHIFT", "GRAIN", "OIL_PAINT", "EDGE_DISTANCE_MASK"):
+            assert geo.fbp_add_effect(rig, effect_id, select_object_mask_helper=False, inherit_active_group=False), effect_id
+        _flush_fbp_safe_tasks()
+
+        def group_for(effect_id):
+            nodes = geo._fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+            assert nodes and nodes[0].node_tree is not None, effect_id
+            return nodes[0].node_tree
+
+        # Color Mode and Use Source Color must reach the Halftone graph.
+        halftone = group_for("HALFTONE")
+        assert halftone.nodes["Halftone Source Color Mode"].inputs[0].is_linked
+        assert halftone.nodes["Halftone BW Dark Mode"].inputs[0].is_linked
+        assert halftone.nodes["Halftone Source or Custom Ink"].inputs[0].is_linked
+        # Neighbouring Slice Shift bands move in opposite directions.
+        assert group_for("SLICE_SHIFT").nodes.get("Slice Band Parity") is not None
+        grain = group_for("GRAIN").nodes.get("Add Grain")
+        assert grain is not None and grain.clamp_result
+        # Large print effects instance shared helpers instead of 500-node graphs.
+        for effect_id, limit in (("OIL_PAINT", 260), ("EDGE_DISTANCE_MASK", 200)):
+            group = group_for(effect_id)
+            helpers = {node.node_tree.name for node in group.nodes if node.type == "GROUP" and node.node_tree}
+            assert helpers and len(group.nodes) <= limit, (effect_id, len(group.nodes), helpers)
+            results[effect_id] = len(group.nodes)
+
+        # A saved group from an older contract is swapped in place on load.
+        definition = registry.FBP_EFFECT_REGISTRY["HALFTONE"]
+        halftone["fbp_effect_contract_version"] = 1
+        assert not builtin._builtin_group_is_complete(halftone, definition)
+        assert builtin.fbp_upgrade_stale_effect_groups(registry.FBP_EFFECT_REGISTRY, SOURCE / "assets") >= 1
+        upgraded = group_for("HALFTONE")
+        assert builtin._builtin_group_is_complete(upgraded, definition)
+        assert upgraded.name == definition["canonical_name"], upgraded.name
+
+        density = bpy.types.Object.bl_rna.properties["fbp_felt_render_density"]
+        assert density.soft_max <= 400000, density.soft_max
+        for effect_id in ("HALFTONE", "SLICE_SHIFT", "GRAIN", "OIL_PAINT", "EDGE_DISTANCE_MASK"):
+            assert geo.fbp_remove_effect(rig, effect_id), effect_id
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return results
+
+
 def test_print_paint_and_edge_distance_cycles(_module):
     """Riso Print, Oil Paint and Edge Distance Mask render their contracts."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -5180,6 +5236,7 @@ def run_background():
             ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("frame_stack_samples_earlier_frames", test_frame_stack_samples_earlier_frames),
             ("knit_crochet_stitches", test_knit_crochet_stitches),
+            ("effect_audit_fixes_contract", test_effect_audit_fixes_contract),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
