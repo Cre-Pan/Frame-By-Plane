@@ -29,6 +29,10 @@ All notable public changes to Frame By Plane are documented here.
 - Grain no longer writes negative colors in dark areas.
 - Oil Paint and Edge Distance Mask build about five times faster the first time they are added to a file (2 s and 1.5 s before), with an identical result.
 - Felt Fuzz: the Render Density slider ends at 400,000 strands instead of 3,000,000. Rendering needs about 1 GB per 100,000 strands, so the old slider end could exhaust memory; higher values can still be typed.
+- Extrude: in Array mode, transparent areas rendered black in Cycles once the copies used up the transparent-bounce limit. The automatic limit raised at render time now counts every Array copy.
+- Paper Shards: chips darker than about 40% luminance sank below the plane and disappeared. Luminance Lift now raises chips from the plane (light ones for positive values, dark ones for negative values) and never pushes them under it. Files saved with the old Paper Shards are updated when opened.
+- Paper Shards and Fiber Tufts: near the edge of a cutout, chips and fibers landed on transparent pixels (and rendered black) while opaque pixels next to them stayed empty. Each chip and fiber is now tested against the exact image alpha, and files saved with the old versions are updated when opened.
+- Crosshatch: line edges are smoothed over one source pixel, which removes the jagged edges and moiré, and diagonal hatches now use the same spacing and width as the straight ones. Files saved with the old Crosshatch are updated when opened.
 
 - Image Projector: the projection was blurred by default because the light Radius also set the image size. The image size now follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone instead of losing its corners.
 - Image Projector: image sequences numbered from anything other than 1 (for example 0101) projected nothing, and sequences got the wrong aspect ratio.
