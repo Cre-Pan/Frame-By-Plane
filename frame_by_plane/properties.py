@@ -121,6 +121,7 @@ class _FBPTrackedRNAOwner:
 _FBP_SCENE_RNA = _FBPTrackedRNAOwner(bpy.types.Scene, "Scene")
 _FBP_COLLECTION_RNA = _FBPTrackedRNAOwner(bpy.types.Collection, "Collection")
 _FBP_OBJECT_RNA = _FBPTrackedRNAOwner(bpy.types.Object, "Object")
+_FBP_POSE_BONE_RNA = _FBPTrackedRNAOwner(bpy.types.PoseBone, "PoseBone")
 
 
 CAMERA_RATIO_ITEMS = [
@@ -3241,6 +3242,14 @@ def update_lattice_visibility_cb(self, context):
     return _call_geometry_nodes('update_lattice_visibility_cb', self, context)
 
 
+def update_lattice_pins_cb(self, context):
+    return _call_geometry_nodes('update_lattice_pins_cb', self, context)
+
+
+def update_lattice_pin_stiffness_cb(self, context):
+    return _call_geometry_nodes('update_lattice_pin_stiffness_cb', self, context)
+
+
 def update_lattice_interpolation_cb(self, context):
     try:
         from .fbp_dirty import mark_geometry_callback
@@ -6083,6 +6092,7 @@ def register_properties():
         items=[
             ('FREEFORM', 'Freeform', 'Edit the native Lattice control points in Edit Mode; select all points to move, rotate or scale the full cage'),
             ('CAMERA_FLATTEN', 'Camera Flatten', 'Bake the plane perspective into the Lattice so the deformed surface becomes parallel to the active camera'),
+            ('CORNER_PIN', 'Corner Pin', 'Four corner handles map the layer onto any quad with a true perspective, like After Effects Corner Pin'),
         ],
         default='FREEFORM',
         update=update_lattice_camera_settings_cb,
@@ -6156,6 +6166,43 @@ def register_properties():
     )
     _FBP_OBJECT_RNA.fbp_lattice_points_u = IntProperty(name="Cage Columns", description="Number of planar control-point columns along the plane local X axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
     _FBP_OBJECT_RNA.fbp_lattice_points_v = IntProperty(name="Cage Rows", description="Number of planar control-point rows along the plane local Y axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    _FBP_OBJECT_RNA.fbp_lattice_rig_type = EnumProperty(
+        name="Lattice Type",
+        description="How the layer is deformed. The types stack: a Corner Pin layer can still have bones and pins",
+        items=[
+            ('GRID', 'Grid', 'A cage of 4, 6, 8 or more points with deformation poses and animatable point handles', 'MOD_LATTICE', 0),
+            ('CORNER_PIN', 'Corner Pin', 'Four corner handles with true perspective, for fake perspective and screen replacements', 'VIEW_PERSPECTIVE', 1),
+            ('BONES', 'Bones', 'A chain of bones such as shoulder, elbow and hand, with IK, like Moho bones', 'BONE_DATA', 2),
+            ('PINS', 'Pins', 'Puppet pins for free, organic deformation, like After Effects Puppet', 'PINNED', 3),
+            ('CAMERA', 'Camera', 'Camera Flatten: keep a 3D layer looking the same from the camera while it moves', 'CAMERA_DATA', 4),
+        ],
+        default='GRID',
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_pin_kind = EnumProperty(
+        name="New Pin",
+        description="Kind of pin placed by Add Pins",
+        items=[
+            ('PIN', 'Pin', 'Move, rotate and scale its area', 'PINNED', 0),
+            ('BEND', 'Bend', 'Stays in place and only rotates or scales its area, like an After Effects bend pin', 'FORCE_VORTEX', 1),
+        ],
+        default='PIN',
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_bones_ik = BoolProperty(
+        name="IK Handles",
+        description="Give every new chain of two or more bones an IK handle at its end: drag the hand and the arm follows",
+        default=True,
+    )
+    _FBP_POSE_BONE_RNA.fbp_lattice_pin_stiffness = FloatProperty(
+        name="Stiff Area",
+        description="Size of the area around this pin that moves rigidly instead of bending, like an After Effects starch pin. 0 bends right up to the pin",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_lattice_pin_stiffness_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_pins_follow_drawing = BoolProperty(
+        name="Follow Drawing",
+        description="Spread each puppet pin's influence through the opaque parts of the layer image, so a pin does not drag a separate part of the drawing across a transparent gap. Disable it for an even falloff across the whole cage",
+        default=True, update=update_lattice_pins_cb,
+    )
     _FBP_OBJECT_RNA.fbp_lattice_interpolation = EnumProperty(name="Interpolation", description="Interpolation used between Lattice control points. This can be changed without resetting the current deformation.", items=[('LINEAR','Linear','Linear interpolation'),('CARDINAL','Cardinal','Cardinal interpolation'),('CATMULL_ROM','Catmull-Rom','Catmull-Rom interpolation'),('BSPLINE','B-Spline','Smooth B-Spline interpolation')], default='BSPLINE', update=update_lattice_interpolation_cb)
     _FBP_OBJECT_RNA.fbp_cutout_outline_viewport_resolution = IntProperty(
         name="Viewport Alpha Detail", description="Subdivision level used to trace the alpha silhouette while editing",
@@ -7613,6 +7660,7 @@ def unregister_properties():
         (bpy.types.Scene, "Scene"),
         (bpy.types.Collection, "Collection"),
         (bpy.types.Object, "Object"),
+        (bpy.types.PoseBone, "PoseBone"),
     ):
         removed += _unregister_fbp_type_properties(owner, owner_name)
     return removed

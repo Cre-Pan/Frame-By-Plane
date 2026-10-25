@@ -1881,11 +1881,7 @@ def fbp_scene_requires_effect_frame_sync(scene, rigs=None):
             active_effect_ids = set(_fbp_runtime_effect_ids(rig))
             if not active_effect_ids:
                 continue
-            if (
-                FBP_EFFECT_LATTICE in active_effect_ids
-                and _fbp_lattice_mode(rig) == "CAMERA_FLATTEN"
-                and bool(getattr(rig, "fbp_lattice_live_update", True))
-            ):
+            if FBP_EFFECT_LATTICE in active_effect_ids and _fbp_lattice_live_enabled(rig):
                 return True
             if (
                 active_effect_ids.intersection(geometry_sync_ids)
@@ -2609,13 +2605,12 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 )
                 lattice_live = bool(
                     FBP_EFFECT_LATTICE in active_effect_ids
-                    and _fbp_lattice_mode(rig) == "CAMERA_FLATTEN"
-                    and bool(getattr(rig, "fbp_lattice_live_update", True))
+                    and _fbp_lattice_live_enabled(rig)
                 )
                 if lattice_live:
                     if profile_enabled:
                         _fbp_effect_stat_add("lattice_updates")
-                    _fbp_apply_lattice_camera_flatten(rig, scene=scene, force=False)
+                    _fbp_apply_lattice_live(rig, scene=scene, force=False)
                 evolve_pairs = runtime_profile.get("evolve_pairs", ()) or ()
                 active_evolve_pairs = tuple(
                     (effect_id, property_key)
@@ -3310,6 +3305,15 @@ def _fbp_cleanup_incomplete_lattice_setup(rig, *, force=False):
         _fbp_store_modifier_reference(plane, _FBP_LATTICE_MODIFIER_REF_KEY, None)
         _fbp_store_modifier_reference(plane, _FBP_LATTICE_DETAIL_REF_KEY, None)
 
+    try:
+        # One armature holds every handle and bone: drop it, then its Hooks.
+        from .lattice_bones import remove_armature
+        changed = bool(remove_armature(rig, helper)) or changed
+        from .lattice_pins import remove_all_pins
+        changed = bool(remove_all_pins(rig, helper)) or changed
+    except (ImportError,) + FBP_DATA_ERRORS:
+        pass
+
     owner_name = str(getattr(rig, "name", "") or "")
     helpers = []
     if helper is not None:
@@ -3835,6 +3839,88 @@ def _fbp_lattice_camera_flatten_enabled(rig):
         return False
 
 
+def _fbp_lattice_live_enabled(rig):
+    """True for cages Python rewrites on motion and frame change."""
+    try:
+        if not _fbp_is_enabled(rig, FBP_EFFECT_LATTICE):
+            return False
+        mode = _fbp_lattice_mode(rig)
+        if mode == "CORNER_PIN":
+            return True
+        return mode == "CAMERA_FLATTEN" and bool(getattr(rig, "fbp_lattice_live_update", True))
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _fbp_apply_lattice_corner_pin(rig, *, force=False):
+    """Map the cage onto the four corner handles with a true perspective."""
+    if rig is None or _fbp_lattice_mode(rig) != "CORNER_PIN":
+        return False
+    helper = _fbp_lattice_object(rig)
+    plane = _fbp_plane(rig, repair=False)
+    if helper is None or plane is None:
+        return False
+    try:
+        # Handles are only created by Set Up (it needs Edit Mode); a live
+        # update with no handles leaves the cage as it is.
+        from .lattice_corner_pin import apply
+        return bool(apply(rig, helper, force=force))
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not update the Corner Pin", exc)
+        return False
+
+
+def _fbp_apply_lattice_live(rig, *, scene=None, force=False):
+    if _fbp_lattice_mode(rig) == "CORNER_PIN":
+        return _fbp_apply_lattice_corner_pin(rig, force=force)
+    return _fbp_apply_lattice_camera_flatten(rig, scene=scene, force=force)
+
+
+def schedule_lattice_corner_pin_update(rig):
+    """Rewrite a Corner Pin cage right after its handles moved (no debounce)."""
+    rig_name = str(getattr(rig, "name", "") or "")
+    if not rig_name:
+        return False
+
+    def _run():
+        current = bpy.data.objects.get(rig_name)
+        if current is not None:
+            _fbp_apply_lattice_corner_pin(current, force=False)
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        return bool(schedule_once(f"lattice.corner_pin.{rig_name}", _run, first_interval=0.0))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def schedule_lattice_bones_rebind(rig):
+    """Rebuild bone weights once the rest bones changed (after Edit Mode)."""
+    rig_name = str(getattr(rig, "name", "") or "")
+    if not rig_name:
+        return False
+
+    def _run():
+        current = bpy.data.objects.get(rig_name)
+        if current is None:
+            return None
+        helper = _fbp_lattice_object(current)
+        plane = _fbp_plane(current, repair=False)
+        try:
+            from .lattice_bones import bind
+            bind(current, helper, plane, force=False)
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        return bool(schedule_once(f"lattice.bones.rebind.{rig_name}", _run, first_interval=0.05))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _fbp_update_lattice_data(rig, helper):
     """Synchronize cage topology and interpolation.
 
@@ -3862,7 +3948,7 @@ def _fbp_update_lattice_data(rig, helper):
         topology_changed = False
     interpolation = (
         "KEY_LINEAR"
-        if _fbp_lattice_mode(rig) == "CAMERA_FLATTEN"
+        if _fbp_lattice_mode(rig) in {"CAMERA_FLATTEN", "CORNER_PIN"}
         else {
             "LINEAR": "KEY_LINEAR",
             "CARDINAL": "KEY_CARDINAL",
@@ -4254,8 +4340,20 @@ def _fbp_apply_lattice_effect(rig, *, select=False):
                 scene=getattr(getattr(bpy, "context", None), "scene", None),
                 force=bool(created_helper or created_modifier or resolution_changed),
             )
+        elif _fbp_lattice_mode(rig) == "CORNER_PIN":
+            _fbp_stabilize_lattice_helper(helper)
+            _fbp_apply_lattice_corner_pin(
+                rig, force=bool(created_helper or created_modifier or resolution_changed)
+            )
         else:
             _fbp_stabilize_lattice_helper(helper)
+
+        try:
+            # The cage may have moved or changed resolution: keep pins bound.
+            from .lattice_pins import sync_after_cage_change
+            sync_after_cage_change(rig, helper, plane)
+        except (ImportError,) + FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not rebind the Lattice pins", exc)
 
         if select:
             _fbp_select_lattice_helper(rig, helper, context=getattr(bpy, "context", None))
@@ -4584,11 +4682,7 @@ def _fbp_live_lattice_rigs(scene):
         try:
             if not bool(getattr(rig, "is_fbp_control", False)):
                 continue
-            if not _fbp_is_enabled(rig, FBP_EFFECT_LATTICE):
-                continue
-            if _fbp_lattice_mode(rig) != "CAMERA_FLATTEN":
-                continue
-            if not bool(getattr(rig, "fbp_lattice_live_update", True)):
+            if not _fbp_lattice_live_enabled(rig):
                 continue
             result.append(rig)
         except FBP_DATA_ERRORS:
@@ -4616,17 +4710,14 @@ def fbp_update_live_lattices(scene=None, *, force=False):
     updated = 0
     for rig in _fbp_live_lattice_rigs(scene):
         try:
-            if not (
-                _fbp_lattice_camera_flatten_enabled(rig)
-                and bool(getattr(rig, "fbp_lattice_live_update", True))
-            ):
+            if not _fbp_lattice_live_enabled(rig):
                 continue
             helper = _fbp_lattice_object(rig)
             if helper is None:
                 if not _fbp_apply_lattice_effect(rig, select=False):
                     continue
                 helper = _fbp_lattice_object(rig)
-            updated += int(_fbp_apply_lattice_camera_flatten(rig, scene=scene, force=force))
+            updated += int(_fbp_apply_lattice_live(rig, scene=scene, force=force))
         except FBP_DATA_ERRORS:
             continue
     return updated
@@ -4851,10 +4942,20 @@ def update_lattice_camera_settings_cb(rig, context=None):
             helper[_FBP_LATTICE_MODE_KEY] = mode
         except FBP_DATA_ERRORS:
             pass
+        if mode != "CORNER_PIN":
+            # Leaving Corner Pin keeps the current shape and drops its handles.
+            try:
+                from .lattice_corner_pin import remove_handles
+                remove_handles(active_rig, helper)
+            except (ImportError,) + FBP_DATA_ERRORS:
+                pass
         if mode == "CAMERA_FLATTEN":
             scenes = getattr(bpy.data, "scenes", None)
             scene = scenes.get(scene_name) if scene_name and scenes is not None else getattr(bpy.context, "scene", None)
             _fbp_apply_lattice_camera_flatten(active_rig, scene=scene, force=True)
+        elif mode == "CORNER_PIN":
+            _fbp_update_lattice_data(active_rig, helper)
+            _fbp_apply_lattice_corner_pin(active_rig, force=True)
         else:
             cache_key = _fbp_lattice_runtime_key(active_rig)
             if cache_key is not None:
@@ -4890,6 +4991,34 @@ def update_lattice_visibility_cb(rig, context=None):
             _fbp_lattice_detail_modifier(plane),
             context=context,
         )
+    return None
+
+
+def update_lattice_pins_cb(rig, context=None):
+    """Rebuild puppet pin weights after a pin setting changed."""
+    if fbp_is_silent_property_update(rig) or not rig:
+        return None
+    helper = _fbp_lattice_object(rig)
+    plane = _fbp_plane(rig, repair=False)
+    if helper is None or plane is None:
+        return None
+    try:
+        from .lattice_pins import bind
+        bind(rig, helper, plane, force=True)
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not rebind the Lattice pins", exc)
+    return None
+
+
+def update_lattice_pin_stiffness_cb(pin, context=None):
+    """Rebuild the weights of a pin's layer after its Stiff Area changed."""
+    try:
+        from .lattice_pins import pin_owner
+        rig = pin_owner(pin)
+    except (ImportError,) + FBP_DATA_ERRORS:
+        rig = None
+    if rig is not None:
+        update_lattice_pins_cb(rig, context)
     return None
 
 
@@ -23049,7 +23178,13 @@ def fbp_draw_effect_settings(
                     icon="BLANK1",
                 )
     elif effect_id == FBP_EFFECT_LATTICE:
-        _fbp_draw_effect_property(box, rig, definition, "fbp_lattice_mode", labels)
+        from .lattice_bones import bones_object, deform_bones
+        from .lattice_corner_pin import corner_handles
+        from .lattice_pins import KIND_BEND, KIND_POINT, pin_kind, puppet_pins, rig_pins
+        try:
+            rig_type = str(getattr(rig, "fbp_lattice_rig_type", "GRID") or "GRID")
+        except FBP_DATA_ERRORS:
+            rig_type = "GRID"
         helper = _fbp_lattice_object(rig)
         lattice_mode = _fbp_lattice_mode(rig)
         rig_name = str(getattr(rig, "name", "") or "")
@@ -23063,160 +23198,130 @@ def fbp_draw_effect_settings(
         )
         ui_context = getattr(bpy, "context", None)
         active_object = getattr(ui_context, "object", None) if ui_context is not None else None
-        cage_selected = bool(helper is not None and active_object is helper)
         cage_editing = bool(
-            cage_selected and str(getattr(ui_context, "mode", "") or "").startswith("EDIT")
+            helper is not None and active_object is helper
+            and str(getattr(ui_context, "mode", "") or "").startswith("EDIT")
         )
         camera = _fbp_lattice_scene_camera(getattr(bpy.context, "scene", None))
         camera_valid = bool(
             camera is not None
             and str(getattr(getattr(camera, "data", None), "type", "") or "") in {"PERSP", "ORTHO"}
         )
+        armature = bones_object(rig)
+        bone_count = len(deform_bones(armature)) if armature is not None else 0
+        corners = corner_handles(rig)
+        pins = puppet_pins(rig)
+        point_handles = rig_pins(rig, kinds=(KIND_POINT,))
+        active_bone = getattr(ui_context, "active_pose_bone", None) if ui_context is not None else None
 
-        status_row = box.row(align=False)
-        status_row.alert = bool(not lattice_ready and not repairing)
-        status_row.label(
-            text=(
-                "Editing cage"
-                if cage_editing
-                else ("Cage ready" if lattice_ready else ("Repairing cage…" if repairing else "Cage missing or incomplete"))
-            ),
-            icon=(
-                "EDITMODE_HLT"
-                if cage_editing
-                else ("CHECKMARK" if lattice_ready else ("FILE_REFRESH" if repairing else "ERROR"))
-            ),
-        )
-        if not lattice_ready and not repairing:
-            status_row.label(text="Use Reset in the effect header to rebuild it", icon="BLANK1")
-        last_error = _fbp_last_lattice_error(rig)
-        if last_error and not lattice_ready and not repairing:
-            error_row = box.row(align=False)
-            error_row.alert = True
-            ui_error = last_error if len(last_error) <= 110 else last_error[:109].rstrip() + "…"
-            error_row.label(text=ui_error, icon="BLANK1")
+        def _ops_row(target, operator_id, actions, *, enabled=True, scale=1.0):
+            """One aligned row of action buttons; empty labels draw icons only."""
+            row = target.row(align=True)
+            row.enabled = enabled
+            row.scale_y = scale
+            for action, label, icon in actions:
+                operator = row.operator(operator_id, text=label, icon=icon)
+                operator.rig_name = rig_name
+                operator.action = action
+            return row
 
-        cage_row = box.row(align=False)
-        _fbp_draw_effect_property(cage_row, rig, definition, "fbp_lattice_show_cage", labels)
-        select_part = cage_row.row(align=False)
-        select_part.enabled = lattice_ready
-        select_cage = select_part.operator(
-            "fbp.select_lattice_helper", text="Select Cage", icon="RESTRICT_SELECT_OFF"
+        def _hint(target, text):
+            row = target.row(align=False)
+            row.enabled = False
+            row.label(text=text, icon="INFO")
+
+        def _section(target, identifier, title, icon, *, closed=True):
+            """A collapsible sub-panel (Blender layout panels), or a plain box."""
+            try:
+                header, body = target.panel(f"FBP_lattice_{identifier}", default_closed=closed)
+                header.label(text=title, icon=icon)
+                return body
+            except (AttributeError, TypeError):
+                body = target.box()
+                body.label(text=title, icon=icon)
+                return body
+
+        # Type picker and the cage visibility on one line.
+        top = box.row(align=True)
+        top.scale_y = 1.2
+        top.prop(rig, "fbp_lattice_rig_type", text="")
+        top.prop(
+            rig, "fbp_lattice_show_cage", text="", toggle=True,
+            icon="HIDE_OFF" if bool(getattr(rig, "fbp_lattice_show_cage", True)) else "HIDE_ON",
         )
+        select_cage = top.operator("fbp.select_lattice_helper", text="", icon="RESTRICT_SELECT_OFF")
         select_cage.rig_name = rig_name
 
-        workflow_row = box.row(align=False)
-        flatten_slot = workflow_row.row(align=False)
-        flatten_slot.enabled = camera_valid
-        if lattice_mode == "CAMERA_FLATTEN":
-            flatten_slot.label(text="Camera Flatten active", icon="CAMERA_DATA")
-        else:
-            setup = flatten_slot.operator(
-                "fbp.setup_lattice_camera_flatten",
-                text="Set Up Camera Flatten",
-                icon="CAMERA_DATA",
-            )
-            setup.rig_name = rig_name
-        edit_slot = workflow_row.row(align=False)
-        edit_slot.enabled = lattice_ready
-        if cage_editing:
-            done = edit_slot.operator(
-                "fbp.finish_lattice_editing", text="Back to Plane", icon="CHECKMARK"
-            )
-            done.rig_name = rig_name
-        else:
-            edit = edit_slot.operator(
-                "fbp.edit_lattice_helper", text="Edit Cage", icon="EDITMODE_HLT"
-            )
-            edit.rig_name = rig_name
-        if not camera_valid and lattice_mode != "CAMERA_FLATTEN":
-            no_camera = box.row(align=False)
-            no_camera.enabled = False
-            no_camera.label(
-                text="Camera Flatten is unavailable until the Scene has an active camera",
-                icon="CAMERA_DATA",
-            )
+        stacked = []
+        if lattice_mode == "CAMERA_FLATTEN" and rig_type != "CAMERA":
+            stacked.append(("Camera", "CAMERA_DATA"))
+        if (lattice_mode == "CORNER_PIN" or corners) and rig_type != "CORNER_PIN":
+            stacked.append(("Corner Pin", "VIEW_PERSPECTIVE"))
+        if bone_count and rig_type != "BONES":
+            stacked.append((f"{bone_count} Bones", "BONE_DATA"))
+        if pins and rig_type != "PINS":
+            stacked.append((f"{len(pins)} Pins", "PINNED"))
+        if point_handles and rig_type != "GRID":
+            stacked.append(("Points", "MESH_GRID"))
+        if stacked:
+            stack_row = box.row(align=True)
+            stack_row.enabled = False
+            stack_row.label(text="Also:")
+            for label, icon in stacked:
+                stack_row.label(text=label, icon=icon)
 
-        def _draw_lattice_grid_controls(target, *, title="Planar Cage"):
-            loops_u, loops_v = _fbp_lattice_grid_loops(rig)
-            grid_box = target.box()
-            title_row = grid_box.row(align=False)
-            title_row.label(text=title, icon="MOD_LATTICE")
-            if loops_u == 0 and loops_v == 0:
-                title_row.label(text="Corners only", icon="MESH_GRID")
-            else:
-                title_row.label(
-                    text=f"{loops_u} × {loops_v} internal loops",
-                    icon="MESH_GRID",
-                )
-            _fbp_draw_effect_property(
-                grid_box, rig, definition, "fbp_lattice_grid_preset", labels
+        if not lattice_ready:
+            status_row = box.row(align=False)
+            status_row.alert = not repairing
+            status_row.label(
+                text="Repairing cage…" if repairing else "Cage missing: use Reset in the effect header",
+                icon="FILE_REFRESH" if repairing else "ERROR",
             )
+            last_error = _fbp_last_lattice_error(rig)
+            if last_error and not repairing:
+                error_row = box.row(align=False)
+                error_row.alert = True
+                error_row.label(text=last_error if len(last_error) <= 110 else last_error[:109].rstrip() + "…", icon="BLANK1")
+        baked = bool(helper and helper.get(_FBP_LATTICE_BAKED_KEY, False))
+        if baked and lattice_mode != "CAMERA_FLATTEN":
+            box.label(text="Perspective baked into the cage", icon="CHECKMARK")
+
+        def _draw_grid_settings(target, *, title="Cage & Mesh"):
+            body = _section(target, "cage_settings", title, "MOD_LATTICE")
+            if body is None:
+                return
+            _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_grid_preset", labels)
             try:
-                grid_preset = str(
-                    getattr(rig, "fbp_lattice_grid_preset", "LOOPS_2") or "LOOPS_2"
-                ).upper()
+                grid_preset = str(getattr(rig, "fbp_lattice_grid_preset", "LOOPS_2") or "LOOPS_2").upper()
             except FBP_DATA_ERRORS:
                 grid_preset = "LOOPS_2"
             if grid_preset == "CUSTOM":
-                custom = grid_box.row(align=True)
+                custom = body.row(align=True)
                 custom.prop(rig, "fbp_lattice_custom_loops_u", text="X")
                 linked = bool(getattr(rig, "fbp_lattice_link_loops", True))
-                custom.prop(
-                    rig,
-                    "fbp_lattice_link_loops",
-                    text="",
-                    icon="LINKED" if linked else "UNLINKED",
-                    toggle=True,
-                )
+                custom.prop(rig, "fbp_lattice_link_loops", text="", icon="LINKED" if linked else "UNLINKED", toggle=True)
                 custom.prop(rig, "fbp_lattice_custom_loops_v", text="Y")
-                hint = grid_box.row(align=False)
-                hint.enabled = False
-                hint.label(
-                    text="Values count internal loops; the four corner points are added automatically",
-                    icon="BLANK1",
-                )
-            _fbp_draw_effect_property(
-                grid_box, rig, definition, "fbp_lattice_interpolation", labels
-            )
-
-            mesh_box = grid_box.box()
-            mesh_box.label(text="Deformed Mesh", icon="MOD_SUBSURF")
-            _fbp_draw_effect_property(
-                mesh_box, rig, definition, "fbp_lattice_mesh_detail_mode", labels
-            )
+            if helper is not None:
+                size_row = body.row(align=False)
+                size_row.enabled = False
+                size_row.label(text=f"{int(helper.data.points_u)} × {int(helper.data.points_v)} points", icon="MESH_GRID")
+            _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_interpolation", labels)
+            _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_mesh_detail_mode", labels)
             if _fbp_lattice_mesh_detail_mode(rig) == "AUTO":
-                _fbp_draw_effect_property(
-                    mesh_box, rig, definition, "fbp_lattice_mesh_density", labels
-                )
-                segments = _fbp_lattice_mesh_segment_count(rig)
-                estimate = mesh_box.row(align=False)
-                estimate.enabled = False
-                estimate.label(
-                    text=f"Approx. {segments} × {segments} deformable faces",
-                    icon="MESH_GRID",
-                )
+                _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_mesh_density", labels)
             else:
-                _fbp_draw_effect_property(
-                    mesh_box, rig, definition, "fbp_lattice_mesh_subdivisions", labels
-                )
-            reset_warning = grid_box.row(align=False)
-            reset_warning.enabled = False
-            reset_warning.label(
-                text="Changing the Cage Grid keeps the current shape and poses",
-                icon="BLANK1",
-            )
+                _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_mesh_subdivisions", labels)
 
-        def _draw_lattice_poses(target):
+        def _draw_poses(target):
             from .lattice_poses import PRESETS, lattice_poses
-            poses_box = target.box()
-            title = poses_box.row(align=False)
-            title.label(text="Poses", icon="SHAPEKEY_DATA")
             poses = lattice_poses(helper) if helper is not None else ()
-            body = poses_box.column(align=True)
-            body.enabled = lattice_ready
+            body = _section(target, "poses", f"Poses · {len(poses)}" if poses else "Poses", "SHAPEKEY_DATA", closed=not poses)
+            if body is None:
+                return
+            sliders = body.column(align=True)
+            sliders.enabled = lattice_ready
             for pose in poses:
-                row = body.row(align=True)
+                row = sliders.row(align=True)
                 # A plain slider: hover and press I to keyframe the deformation.
                 row.prop(pose, "value", text=pose.name, slider=True)
                 edit_pose = row.operator("fbp.edit_lattice_pose", text="", icon="EDITMODE_HLT")
@@ -23225,11 +23330,7 @@ def fbp_draw_effect_settings(
                 remove_pose = row.operator("fbp.remove_lattice_pose", text="", icon="X")
                 remove_pose.rig_name = rig_name
                 remove_pose.pose_name = pose.name
-            if not poses:
-                hint = poses_box.row(align=False)
-                hint.enabled = False
-                hint.label(text="Add a pose, then keyframe its slider to animate the deformation", icon="KEYFRAME_HLT")
-            add_grid = poses_box.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
+            add_grid = body.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
             add_grid.enabled = lattice_ready
             for preset_id, (label, icon, _description, _function, _minimum) in PRESETS.items():
                 add = add_grid.operator("fbp.add_lattice_pose", text=label, icon=icon)
@@ -23239,54 +23340,155 @@ def fbp_draw_effect_settings(
             custom.rig_name = rig_name
             custom.preset = ""
 
-        if lattice_mode == "CAMERA_FLATTEN":
-            camera_box = box.box()
-            camera_title = camera_box.row(align=False)
-            camera_title.label(text="Camera Flatten", icon="CAMERA_DATA")
-            camera_box.label(text="Pose or animate the layer in 3D, then preserve its camera appearance.", icon="KEYFRAME_HLT")
-            controls = camera_box.column(align=False)
-            controls.enabled = camera_valid
-            _fbp_draw_effect_property(
-                controls, rig, definition, "fbp_lattice_flatten_influence", labels
-            )
-            _fbp_draw_effect_property(
-                controls, rig, definition, "fbp_lattice_live_update", labels
-            )
-            status = camera_box.row(align=False)
-            if camera is None:
-                status.alert = True
-                status.label(text="Set an active Scene Camera", icon="ERROR")
-            elif not camera_valid:
-                status.alert = True
-                status.label(text="Perspective and Orthographic cameras are supported", icon="ERROR")
+        def _draw_grid(target):
+            row = target.row(align=True)
+            row.enabled = lattice_ready
+            row.scale_y = 1.2
+            if cage_editing:
+                done = row.operator("fbp.finish_lattice_editing", text="Back to Plane", icon="CHECKMARK")
             else:
-                status.label(text=f"Camera: {camera.name}", icon="CAMERA_DATA")
+                done = row.operator("fbp.edit_lattice_helper", text="Edit Cage", icon="EDITMODE_HLT")
+            done.rig_name = rig_name
+            if not point_handles:
+                add = row.operator("fbp.lattice_point_handles", text="Point Handles", icon="MESH_GRID")
+                add.rig_name = rig_name
+                add.action = 'ADD'
+            else:
+                handles_row = target.row(align=True)
+                handles_row.label(text=f"{len(point_handles)} point handles", icon="MESH_GRID")
+                _ops_row(handles_row, "fbp.lattice_point_handles", (
+                    ("SELECT", "", "RESTRICT_SELECT_OFF"),
+                    ("KEY", "", "KEYFRAME_HLT"),
+                    ("REST", "", "LOOP_BACK"),
+                    ("REMOVE", "", "TRASH"),
+                ), enabled=lattice_ready)
+            _draw_poses(target)
 
-            action_row = camera_box.row(align=False)
-            action_row.enabled = camera_valid and lattice_ready
-            update = action_row.operator(
-                "fbp.update_lattice_flatten", text="Update", icon="FILE_REFRESH"
-            )
-            update.rig_name = rig_name
-            bake = action_row.operator(
-                "fbp.bake_lattice_flatten", text="Bake & Animate", icon="CHECKMARK"
-            )
-            bake.rig_name = rig_name
-            freeze = action_row.operator(
-                "fbp.freeze_lattice_flatten", text="Freeze & Edit", icon="EDITMODE_HLT"
-            )
-            freeze.rig_name = rig_name
-            _draw_lattice_grid_controls(camera_box, title="Perspective Grid")
-        else:
-            baked = bool(helper and helper.get(_FBP_LATTICE_BAKED_KEY, False))
-            if baked:
-                baked_row = box.row(align=False)
-                baked_row.label(
-                    text="Perspective baked: the correction now follows local layer animation",
-                    icon="CHECKMARK",
+        def _draw_corner_pin(target):
+            if lattice_mode == "CORNER_PIN" and corners:
+                _ops_row(target, "fbp.lattice_corner_pin", (
+                    ("SELECT", "Corners", "RESTRICT_SELECT_OFF"),
+                    ("KEY", "Key", "KEYFRAME_HLT"),
+                    ("RESET", "Reset", "LOOP_BACK"),
+                    ("REMOVE", "", "TRASH"),
+                ), enabled=lattice_ready, scale=1.2)
+                _hint(target, "Drag the corners (G) for a true perspective")
+            else:
+                _ops_row(target, "fbp.lattice_corner_pin", (
+                    ("SETUP", "Set Up Corner Pin", "VIEW_PERSPECTIVE"),
+                ), enabled=lattice_ready, scale=1.2)
+                if lattice_mode == "CAMERA_FLATTEN":
+                    _hint(target, "Replaces Camera Flatten on this layer")
+
+        def _draw_bones(target):
+            row = target.row(align=True)
+            row.enabled = lattice_ready
+            row.scale_y = 1.2
+            add = row.operator("fbp.add_lattice_bones", text="Add Bones", icon="BONE_DATA")
+            add.rig_name = rig_name
+            row.prop(rig, "fbp_lattice_bones_ik", text="IK", toggle=True)
+            if not bone_count:
+                _hint(target, "Click shoulder, elbow, hand · Right Click: new chain")
+                return
+            editing_bones = bool(armature is not None and str(getattr(armature, "mode", "OBJECT")) == 'EDIT')
+            actions = target.row(align=True)
+            actions.label(text=f"{bone_count} bones", icon="BONE_DATA")
+            _ops_row(actions, "fbp.lattice_bones_action", (
+                ("DONE", "", "CHECKMARK") if editing_bones else ("POSE", "", "POSE_HLT"),
+                ("EDIT", "", "EDITMODE_HLT"),
+                ("KEY", "", "KEYFRAME_HLT"),
+                ("REST", "", "LOOP_BACK"),
+                ("REMOVE", "", "TRASH"),
+            ), enabled=lattice_ready)
+            target.prop(rig, "fbp_lattice_pins_follow_drawing")
+
+        def _draw_pins(target):
+            row = target.row(align=True)
+            row.enabled = lattice_ready
+            row.scale_y = 1.2
+            row.prop(rig, "fbp_lattice_pin_kind", text="")
+            add = row.operator("fbp.add_lattice_pins", text="Add Pins", icon="PINNED")
+            add.rig_name = rig_name
+            if not pins:
+                _hint(target, "Click on the layer to place pins")
+                return
+            listing = target.column(align=True)
+            for pin in pins:
+                item = listing.row(align=True)
+                selected = bool(getattr(pin, "select", False))
+                pick = item.operator(
+                    "fbp.select_lattice_pin", text=pin.name,
+                    icon="FORCE_VORTEX" if pin_kind(pin) == KIND_BEND else "PINNED",
+                    depress=selected,
                 )
-            _draw_lattice_poses(box)
-            _draw_lattice_grid_controls(box, title="Planar Cage")
+                pick.rig_name = rig_name
+                pick.pin_name = pin.name
+                if float(getattr(pin, "fbp_lattice_pin_stiffness", 0.0) or 0.0) > 0.0:
+                    item.label(text="", icon="FREEZE")
+                remove = item.operator("fbp.remove_lattice_pin", text="", icon="X")
+                remove.rig_name = rig_name
+                remove.pin_name = pin.name
+            if active_bone is not None and active_bone in pins:
+                target.prop(active_bone, "fbp_lattice_pin_stiffness", slider=True)
+            actions = target.row(align=True)
+            actions.enabled = lattice_ready
+            for action, label, icon in (
+                ("KEY", "Key", "KEYFRAME_HLT"),
+                ("REST", "Rest", "LOOP_BACK"),
+                ("SET_REST", "Set Rest", "PIVOT_CURSOR"),
+            ):
+                operator = actions.operator("fbp.lattice_pins_action", text=label, icon=icon)
+                operator.rig_name = rig_name
+                operator.action = action
+            remove_all = actions.operator("fbp.remove_lattice_pin", text="", icon="TRASH")
+            remove_all.rig_name = rig_name
+            remove_all.pin_name = ""
+            target.prop(rig, "fbp_lattice_pins_follow_drawing")
+
+        def _draw_camera(target):
+            if lattice_mode != "CAMERA_FLATTEN":
+                row = target.row(align=False)
+                row.enabled = camera_valid
+                row.scale_y = 1.2
+                setup = row.operator("fbp.setup_lattice_camera_flatten", text="Set Up Camera Flatten", icon="CAMERA_DATA")
+                setup.rig_name = rig_name
+                if not camera_valid:
+                    warn = target.row(align=False)
+                    warn.alert = True
+                    warn.label(text="Set an active Perspective or Orthographic camera", icon="ERROR")
+                else:
+                    _hint(target, "Keeps a 3D layer looking flat to the camera")
+                return
+            controls = target.column(align=False)
+            controls.enabled = camera_valid
+            _fbp_draw_effect_property(controls, rig, definition, "fbp_lattice_flatten_influence", labels)
+            _fbp_draw_effect_property(controls, rig, definition, "fbp_lattice_live_update", labels)
+            if not camera_valid:
+                warn = target.row(align=False)
+                warn.alert = True
+                warn.label(text="Set an active Perspective or Orthographic camera", icon="ERROR")
+            action_row = target.row(align=True)
+            action_row.enabled = camera_valid and lattice_ready
+            for operator_id, label, icon in (
+                ("fbp.update_lattice_flatten", "Update", "FILE_REFRESH"),
+                ("fbp.bake_lattice_flatten", "Bake", "CHECKMARK"),
+                ("fbp.freeze_lattice_flatten", "Freeze", "EDITMODE_HLT"),
+            ):
+                operator = action_row.operator(operator_id, text=label, icon=icon)
+                operator.rig_name = rig_name
+
+        content = box.column(align=False)
+        if rig_type == "CAMERA":
+            _draw_camera(content)
+        elif rig_type == "CORNER_PIN":
+            _draw_corner_pin(content)
+        elif rig_type == "BONES":
+            _draw_bones(content)
+        elif rig_type == "PINS":
+            _draw_pins(content)
+        else:
+            _draw_grid(content)
+        _draw_grid_settings(box, title="Perspective Grid" if lattice_mode == "CAMERA_FLATTEN" else "Cage & Mesh")
     elif effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
         _fbp_draw_effect_property(
             box, rig, definition, "fbp_camera_billboard_mode", labels
@@ -33180,6 +33382,11 @@ class FBP_OT_SetupLatticeCameraFlatten(Operator):
         if camera_type not in {"PERSP", "ORTHO"}:
             self.report({'ERROR'}, "Camera Flatten supports Perspective and Orthographic cameras")
             return {'CANCELLED'}
+        try:
+            from .lattice_corner_pin import remove_handles
+            remove_handles(rig, _fbp_lattice_object(rig))
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
         for name, value in (
             ("fbp_lattice_mode", "CAMERA_FLATTEN"),
             ("fbp_lattice_live_update", True),
@@ -33368,6 +33575,18 @@ class FBP_OT_ResetLatticeHelper(Operator):
         if not _fbp_reset_lattice_points(helper):
             return {'CANCELLED'}
         _fbp_stabilize_lattice_helper(helper)
+        try:
+            from .lattice_pins import bind, reset_pins, rig_pins
+            reset_pins(rig_pins(rig))
+            bind(rig, helper, plane, force=False)
+            from .lattice_bones import bones_object, reset_pose
+            armature = bones_object(rig)
+            if armature is not None:
+                reset_pose(armature)
+            from .lattice_corner_pin import remove_handles
+            remove_handles(rig, helper)
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
         cache_key = _fbp_lattice_runtime_key(rig)
         if cache_key is not None:
             _FBP_LATTICE_FLATTEN_CACHE.pop(cache_key, None)
@@ -33389,6 +33608,18 @@ class FBP_OT_EditLatticeHelper(Operator):
         if rig is None or not _fbp_apply_lattice_effect(rig, select=False):
             self.report({'ERROR'}, _fbp_last_lattice_error(rig) or "Could not create the Lattice cage")
             return {'CANCELLED'}
+        if _fbp_lattice_mode(rig) == "CORNER_PIN":
+            # Editing the cage freezes the perspective as a Freeform shape.
+            _fbp_apply_lattice_corner_pin(rig, force=True)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_mode", "FREEFORM")
+            try:
+                from .lattice_corner_pin import remove_handles
+                helper = _fbp_lattice_object(rig)
+                remove_handles(rig, helper)
+                if helper is not None:
+                    helper[_FBP_LATTICE_MODE_KEY] = "FREEFORM"
+            except (ImportError,) + FBP_DATA_ERRORS:
+                pass
         if _fbp_lattice_mode(rig) == "CAMERA_FLATTEN":
             _fbp_apply_lattice_camera_flatten(rig, scene=context.scene, force=True)
             fbp_set_rna_property_silent(rig, "fbp_lattice_live_update", False)
@@ -33604,6 +33835,709 @@ class FBP_OT_RemoveLatticePose(Operator):
         return {'FINISHED'} if removed else {'CANCELLED'}
 
 
+def _fbp_lattice_pins_target(operator, *, report=True):
+    """Resolve (rig, helper, plane) for a pin operator on a Freeform cage."""
+    rig = bpy.data.objects.get(str(operator.rig_name or ""))
+    if rig is None or not _fbp_apply_lattice_effect(rig, select=False):
+        if report:
+            operator.report({'ERROR'}, _fbp_last_lattice_error(rig) or "Could not create the Lattice cage")
+        return None, None, None
+    if _fbp_lattice_mode(rig) == "CAMERA_FLATTEN":
+        if report:
+            operator.report({'WARNING'}, "Pins work on a Freeform cage: Bake or Freeze Camera Flatten first")
+        return None, None, None
+    helper = _fbp_lattice_object(rig)
+    plane = _fbp_plane(rig)
+    if helper is None or plane is None:
+        if report:
+            operator.report({'ERROR'}, "The Lattice cage is missing")
+        return None, None, None
+    return rig, helper, plane
+
+
+def _fbp_refine_lattice_cage(operator, rig, plane, points_u, points_v):
+    """Raise the cage to at least points_u × points_v (shape and poses are kept)."""
+    current_u = int(getattr(rig, "fbp_lattice_points_u", 4) or 4)
+    current_v = int(getattr(rig, "fbp_lattice_points_v", 4) or 4)
+    points_u, points_v = max(points_u, current_u), max(points_v, current_v)
+    if (points_u, points_v) == (current_u, current_v):
+        return True
+    loops_u, loops_v = points_u - 2, points_v - 2
+    fbp_set_rna_property_silent(rig, "fbp_lattice_grid_preset", "CUSTOM")
+    fbp_set_rna_property_silent(rig, "fbp_lattice_link_loops", loops_u == loops_v)
+    fbp_set_rna_property_silent(rig, "fbp_lattice_custom_loops_u", loops_u)
+    fbp_set_rna_property_silent(rig, "fbp_lattice_custom_loops_v", loops_v)
+    _fbp_apply_lattice_grid_settings(rig)
+    if not _fbp_apply_lattice_effect(rig, select=False):
+        return False
+    operator.report({'INFO'}, f"Cage refined to {points_u} × {points_v} points")
+    return True
+
+
+def _fbp_click_rest_point(context, plane, region, region_3d, coord):
+    """World point on the flat layer under a click (follows a bent layer)."""
+    from bpy_extras import view3d_utils
+    from .lattice_pins import deformed_hit, ray_plane_point
+    origin = view3d_utils.region_2d_to_origin_3d(region, region_3d, coord)
+    direction = view3d_utils.region_2d_to_vector_3d(region, region_3d, coord)
+    hit = deformed_hit(plane, context.evaluated_depsgraph_get(), origin, direction)
+    rest = hit[1] if hit is not None else None
+    if rest is None:
+        rest = ray_plane_point(plane, origin, direction)
+    return rest
+
+
+def _fbp_view3d_under_mouse(context, event):
+    """Return (area, region, region_3d) of the 3D View under the mouse, or Nones."""
+    screen = getattr(getattr(context, "window", None), "screen", None)
+    if screen is None:
+        return None, None, None
+    x, y = int(event.mouse_x), int(event.mouse_y)
+    for area in screen.areas:
+        if area.type != 'VIEW_3D':
+            continue
+        if not (area.x <= x < area.x + area.width and area.y <= y < area.y + area.height):
+            continue
+        for region in area.regions:
+            if region.type == 'WINDOW' and region.x <= x < region.x + region.width and region.y <= y < region.y + region.height:
+                space = area.spaces.active
+                return area, region, getattr(space, "region_3d", None)
+        return None, None, None
+    return None, None, None
+
+
+class FBP_OT_AddLatticePins(Operator):
+    bl_idname = "fbp.add_lattice_pins"
+    bl_label = "Add Puppet Pins"
+    bl_description = "Click on the layer in the 3D View to place puppet pins; Ctrl+Click removes the nearest pin. Enter, Esc or Right Click finishes in Pose Mode. Move (G) or rotate (R) a pin to bend the drawing around it, and keyframe it like any bone"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+
+    _NAVIGATION = {
+        'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM',
+        'NDOF_MOTION', 'MOUSEROTATE', 'MOUSESMARTZOOM',
+        'NUMPAD_0', 'NUMPAD_1', 'NUMPAD_2', 'NUMPAD_3', 'NUMPAD_4', 'NUMPAD_5',
+        'NUMPAD_6', 'NUMPAD_7', 'NUMPAD_8', 'NUMPAD_9', 'NUMPAD_PERIOD', 'NUMPAD_PLUS', 'NUMPAD_MINUS',
+        'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'TIMER', 'TIMER_REPORT', 'TIMERREGION',
+    }
+
+    def _status(self, context):
+        from .lattice_pins import rig_pins
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        count = len(rig_pins(rig)) if rig is not None else 0
+        try:
+            context.workspace.status_text_set(
+                f"Puppet Pins ({count}): Click on the layer to add a pin  ·  Ctrl+Click removes the nearest pin  ·  Enter / Esc / Right Click: done"
+            )
+        except FBP_DATA_ERRORS:
+            pass
+
+    def invoke(self, context, event):
+        del event
+        from .lattice_pins import needs_denser_cage, puppet_grid_points, rig_pins
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
+            return {'CANCELLED'}
+        rig, helper, plane = _fbp_lattice_pins_target(self)
+        if helper is None:
+            return {'CANCELLED'}
+        screen = getattr(getattr(context, "window", None), "screen", None)
+        if screen is None or not any(area.type == 'VIEW_3D' for area in screen.areas):
+            self.report({'ERROR'}, "Open a 3D View to place pins")
+            return {'CANCELLED'}
+        if not rig_pins(rig) and needs_denser_cage(helper):
+            # Pins bend the drawing through the cage: give them enough points.
+            points_u, points_v = puppet_grid_points(plane)
+            loops_u, loops_v = points_u - 2, points_v - 2
+            fbp_set_rna_property_silent(rig, "fbp_lattice_grid_preset", "CUSTOM")
+            fbp_set_rna_property_silent(rig, "fbp_lattice_link_loops", loops_u == loops_v)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_custom_loops_u", loops_u)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_custom_loops_v", loops_v)
+            _fbp_apply_lattice_grid_settings(rig)
+            if not _fbp_apply_lattice_effect(rig, select=False):
+                return {'CANCELLED'}
+            self.report({'INFO'}, f"Cage refined to {points_u} × {points_v} points for puppet pins")
+        fbp_set_rna_property_silent(rig, "fbp_lattice_show_cage", False)
+        self._status(context)
+        try:
+            context.window.cursor_modal_set('CROSSHAIR')
+        except FBP_DATA_ERRORS:
+            pass
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _finish(self, context):
+        try:
+            context.workspace.status_text_set(None)
+        except FBP_DATA_ERRORS:
+            pass
+        restore_modal_cursor(context)
+        for area in getattr(getattr(context, "screen", None), "areas", ()) or ():
+            area.tag_redraw()
+        return {'FINISHED'}
+
+    def _add(self, context, region, region_3d, coord):
+        from bpy_extras import view3d_utils
+        from .lattice_bones import armature_world
+        from .lattice_pins import add_pin, blended_location, deformed_hit, ray_plane_point, rig_pins, select_pins
+        rig, helper, plane = _fbp_lattice_pins_target(self)
+        if helper is None:
+            return False
+        origin = view3d_utils.region_2d_to_origin_3d(region, region_3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, region_3d, coord)
+        hit = deformed_hit(plane, context.evaluated_depsgraph_get(), origin, direction)
+        rest = hit[1] if hit is not None else None
+        if rest is None:
+            rest = ray_plane_point(plane, origin, direction)
+        if rest is None:
+            return False
+        existing = rig_pins(rig)
+        current = blended_location(rig, helper, existing, rest)
+        kind = str(getattr(rig, "fbp_lattice_pin_kind", "PIN") or "PIN")
+        pin = add_pin(rig, helper, plane, rest, kind=kind)
+        # On a bent layer the new pin starts where the drawing is now.
+        local = armature_world(rig, pin.id_data).inverted_safe() @ current - pin.bone.head_local
+        if kind != "BEND":
+            pin.location = (local.x, local.y, 0.0)
+        select_pins(context, rig, [pin])
+        _fbp_invalidate_live_lattice_cache()
+        return True
+
+    def _remove_nearest(self, context, region, region_3d, coord):
+        from bpy_extras import view3d_utils
+        from .lattice_pins import pin_world, puppet_pins, remove_pin
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        helper = _fbp_lattice_object(rig) if rig is not None else None
+        best = None
+        limit = 24.0 * float(getattr(context.preferences.system, "ui_scale", 1.0) or 1.0)
+        for pin in puppet_pins(rig):
+            # A pin added by the previous click may not be evaluated yet.
+            world = pin_world(rig, pin).translation
+            point = view3d_utils.location_3d_to_region_2d(region, region_3d, world)
+            if point is None:
+                continue
+            distance = (point - Vector(coord)).length
+            if distance <= limit and (best is None or distance < best[0]):
+                best = (distance, pin)
+        if best is None:
+            return False
+        return remove_pin(rig, helper, best[1])
+
+    def modal(self, context, event):
+        if event.type in {'RET', 'NUMPAD_ENTER', 'ESC'} and event.value == 'PRESS':
+            return self._finish(context)
+        area, region, region_3d = _fbp_view3d_under_mouse(context, event)
+        if event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
+            if area is not None:
+                return self._finish(context)
+            return {'PASS_THROUGH'}
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and region is not None and region_3d is not None:
+            coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+            try:
+                if event.ctrl:
+                    self._remove_nearest(context, region, region_3d, coord)
+                else:
+                    self._add(context, region, region_3d, coord)
+            except FBP_DATA_ERRORS as exc:
+                self.report({'ERROR'}, f"Could not place the pin: {exc}")
+            self._status(context)
+            area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        return {'PASS_THROUGH'}
+
+
+class FBP_OT_RemoveLatticePin(Operator):
+    bl_idname = "fbp.remove_lattice_pin"
+    bl_label = "Remove Pin"
+    bl_description = "Remove this puppet pin and its animation; the other pins take over its area"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    pin_name: StringProperty(name="Pin", default="", description="Pin to remove; empty removes every pin", options={'HIDDEN'})
+
+    def execute(self, context):
+        del context
+        from .lattice_pins import remove_all_pins, remove_pin, rig_pins
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        helper = _fbp_lattice_object(rig) if rig is not None else None
+        if rig is None:
+            return {'CANCELLED'}
+        if not self.pin_name:
+            removed = remove_all_pins(rig, helper, kinds=("PIN", "BEND"))
+        else:
+            pin = next((item for item in rig_pins(rig) if item.name == self.pin_name), None)
+            removed = bool(pin is not None and remove_pin(rig, helper, pin))
+        _fbp_invalidate_live_lattice_cache()
+        return {'FINISHED'} if removed else {'CANCELLED'}
+
+
+class FBP_OT_SelectLatticePin(Operator):
+    bl_idname = "fbp.select_lattice_pin"
+    bl_label = "Select Pin"
+    bl_description = "Select this pin in Pose Mode (Shift adds it to the selection). Then G moves it, R rotates it and I keyframes it"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    pin_name: StringProperty(name="Pin", default="", description="Pin to select; empty selects every pin", options={'HIDDEN'})
+    extend: BoolProperty(name="Extend", default=False, options={'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        self.extend = bool(event.shift)
+        return self.execute(context)
+
+    def execute(self, context):
+        from .lattice_pins import puppet_pins
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        pins = puppet_pins(rig)
+        chosen = [pin for pin in pins if not self.pin_name or pin.name == self.pin_name]
+        if not chosen:
+            return {'CANCELLED'}
+        from .lattice_pins import select_pins
+        if self.extend:
+            chosen = [pin for pin in pins if pin in chosen or bool(getattr(pin, "select", False))]
+        if not select_pins(context, rig, chosen):
+            self.report({'ERROR'}, "Could not select the pin")
+            return {'CANCELLED'}
+        fbp_focus_lattice_ui(context, rig)
+        return {'FINISHED'}
+
+
+def _fbp_select_only(context, obj, mode=None):
+    """Make obj the only selected, active object, optionally entering a mode."""
+    try:
+        current = context.view_layer.objects.active
+        for item in (current, obj):
+            if item is not None and str(getattr(item, "mode", "OBJECT")) != "OBJECT":
+                with context.temp_override(active_object=item, object=item, selected_objects=[item], selected_editable_objects=[item]):
+                    bpy.ops.object.mode_set(mode="OBJECT")
+        for item in tuple(context.view_layer.objects.selected):
+            item.select_set(False)
+        obj.hide_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        if mode and mode != "OBJECT":
+            with context.temp_override(active_object=obj, object=obj, selected_objects=[obj], selected_editable_objects=[obj]):
+                bpy.ops.object.mode_set(mode=mode)
+        return str(getattr(obj, "mode", "OBJECT")) == str(mode or "OBJECT")
+    except FBP_DATA_ERRORS:
+        return False
+
+
+class FBP_OT_AddLatticeBones(Operator):
+    bl_idname = "fbp.add_lattice_bones"
+    bl_label = "Add Bones"
+    bl_description = "Click joints on the layer to draw a chain of bones: shoulder, elbow, hand. Right Click ends the chain (start the next one on a joint to branch from it), Ctrl+Click removes the last bone, Enter finishes in Pose Mode. Chains get an IK handle at their end"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+
+    def _status(self, context):
+        text = (
+            "Bones: Click the next joint  ·  Right Click ends this chain  ·  Ctrl+Click removes the last bone  ·  Enter: done"
+            if self._joint is not None
+            else "Bones: Click the first joint (on a joint to branch from it)  ·  Enter / Esc / Right Click: done"
+        )
+        try:
+            context.workspace.status_text_set(text)
+        except FBP_DATA_ERRORS:
+            pass
+
+    def invoke(self, context, event):
+        del event
+        from .lattice_bones import bones_object, ensure_armature
+        from .lattice_pins import needs_denser_cage, puppet_grid_points
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
+            return {'CANCELLED'}
+        rig, helper, plane = _fbp_lattice_pins_target(self)
+        if helper is None:
+            return {'CANCELLED'}
+        screen = getattr(getattr(context, "window", None), "screen", None)
+        if screen is None or not any(area.type == 'VIEW_3D' for area in screen.areas):
+            self.report({'ERROR'}, "Open a 3D View to draw bones")
+            return {'CANCELLED'}
+        if bones_object(rig) is None and needs_denser_cage(helper):
+            if not _fbp_refine_lattice_cage(self, rig, plane, *puppet_grid_points(plane)):
+                return {'CANCELLED'}
+            helper = _fbp_lattice_object(rig)
+        armature = ensure_armature(rig, helper, plane)
+        # The bones are the handles now; the dense cage would only add clutter.
+        fbp_set_rna_property_silent(rig, "fbp_lattice_show_cage", False)
+        if not _fbp_select_only(context, armature, "EDIT"):
+            self.report({'ERROR'}, "Could not edit the bones")
+            return {'CANCELLED'}
+        self._armature_name = armature.name
+        self._joint = None
+        self._parent = ""
+        self._chain = []
+        self._chains = []
+        self._status(context)
+        try:
+            context.window.cursor_modal_set('CROSSHAIR')
+        except FBP_DATA_ERRORS:
+            pass
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _armature(self):
+        return bpy.data.objects.get(self._armature_name)
+
+    def _end_chain(self):
+        if self._chain:
+            self._chains.append(list(self._chain))
+        self._chain = []
+        self._joint = None
+        self._parent = ""
+
+    def _click(self, context, region, region_3d, coord, ctrl):
+        from bpy_extras import view3d_utils
+        from .lattice_bones import add_bone, armature_world, local_point, nearest_joint, remove_bone
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        armature = self._armature()
+        plane = _fbp_plane(rig) if rig is not None else None
+        if rig is None or armature is None or plane is None:
+            return
+        if str(armature.mode) != 'EDIT':
+            _fbp_select_only(context, armature, "EDIT")
+        if ctrl:
+            if self._chain:
+                name = self._chain.pop()
+                bone = armature.data.edit_bones.get(name)
+                self._joint = bone.head.copy() if bone is not None else None
+                self._parent = bone.parent.name if bone is not None and bone.parent else ""
+                remove_bone(armature, name)
+            else:
+                self._joint = None
+                self._parent = ""
+            return
+        rest = _fbp_click_rest_point(context, plane, region, region_3d, coord)
+        if rest is None:
+            return
+        world = armature_world(rig, armature)
+        if self._joint is None:
+            limit = 16.0 * float(getattr(context.preferences.system, "ui_scale", 1.0) or 1.0)
+            joint, parent = nearest_joint(
+                armature, world,
+                lambda point: view3d_utils.location_3d_to_region_2d(region, region_3d, point),
+                coord, limit,
+            )
+            if joint is None:
+                joint, parent = local_point(rig, armature, rest), ""
+            self._joint = joint
+            self._parent = parent
+            try:
+                context.scene.cursor.location = world @ joint
+            except FBP_DATA_ERRORS:
+                pass
+            return
+        local = local_point(rig, armature, rest)
+        if (local - self._joint).length < 1.0e-4:
+            return
+        name = add_bone(armature, self._joint, local, self._parent)
+        self._chain.append(name)
+        self._joint = local
+        self._parent = name
+
+    def _finish(self, context):
+        from .lattice_bones import add_ik_target, bind, bones_object, deform_bones, handle_size, remove_bones, setup_pose_constraints
+        self._end_chain()
+        try:
+            context.workspace.status_text_set(None)
+        except FBP_DATA_ERRORS:
+            pass
+        restore_modal_cursor(context)
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        armature = self._armature()
+        helper = _fbp_lattice_object(rig) if rig is not None else None
+        plane = _fbp_plane(rig) if rig is not None else None
+        if armature is None or helper is None or plane is None:
+            return {'CANCELLED'}
+        chains = []
+        use_ik = bool(getattr(rig, "fbp_lattice_bones_ik", True))
+        if str(armature.mode) != 'EDIT':
+            _fbp_select_only(context, armature, "EDIT")
+        for chain in self._chains:
+            target = add_ik_target(armature, chain) if use_ik and len(chain) >= 2 else ""
+            chains.append((chain, target))
+        _fbp_select_only(context, armature, "OBJECT")
+        if not deform_bones(armature):
+            remove_bones(rig, helper)
+            if bones_object(rig) is None:
+                _fbp_select_only(context, rig)
+            return {'CANCELLED'}
+        _fbp_select_only(context, armature, "POSE")
+        setup_pose_constraints(armature, chains, size=handle_size(plane))
+        bind(rig, helper, plane, force=True)
+        _fbp_invalidate_live_lattice_cache()
+        self.report({'INFO'}, "Bones ready: R rotates a bone, G moves an IK handle, I keys the pose")
+        for area in getattr(getattr(context, "screen", None), "areas", ()) or ():
+            area.tag_redraw()
+        return {'FINISHED'}
+
+    def modal(self, context, event):
+        if event.type in {'RET', 'NUMPAD_ENTER', 'ESC'} and event.value == 'PRESS':
+            return self._finish(context)
+        area, region, region_3d = _fbp_view3d_under_mouse(context, event)
+        if event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
+            if area is None:
+                return {'PASS_THROUGH'}
+            if self._joint is None:
+                return self._finish(context)
+            self._end_chain()
+            self._status(context)
+            area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and region is not None and region_3d is not None:
+            coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+            try:
+                self._click(context, region, region_3d, coord, bool(event.ctrl))
+            except FBP_DATA_ERRORS as exc:
+                self.report({'ERROR'}, f"Could not add the bone: {exc}")
+            self._status(context)
+            area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        return {'PASS_THROUGH'}
+
+
+_FBP_LATTICE_BONE_ACTIONS = (
+    ('POSE', "Pose", "Select the bones in Pose Mode: R rotates a bone, G moves an IK handle"),
+    ('EDIT', "Edit Bones", "Move joints in Edit Mode; the weights follow when you press Done"),
+    ('DONE', "Done", "Leave the bones and rebuild their weights on the layer"),
+    ('REST', "Rest Pose", "Clear the pose of every bone at the current frame"),
+    ('KEY', "Key Pose", "Keyframe every bone at the current frame"),
+    ('REMOVE', "Remove Bones", "Remove the bones, their weights and their animation"),
+)
+
+
+class FBP_OT_LatticeBonesAction(Operator):
+    bl_idname = "fbp.lattice_bones_action"
+    bl_label = "Lattice Bones"
+    bl_description = "Pose, edit, key or remove the bones of this layer"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    action: EnumProperty(name="Action", items=_FBP_LATTICE_BONE_ACTIONS, default='POSE', options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, properties):
+        del context
+        for identifier, _label, text in _FBP_LATTICE_BONE_ACTIONS:
+            if identifier == properties.action:
+                return text
+        return cls.bl_description
+
+    def execute(self, context):
+        from .lattice_bones import bind, bones_object, deform_bones, key_pose, remove_bones, reset_pose
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        helper = _fbp_lattice_object(rig) if rig is not None else None
+        plane = _fbp_plane(rig) if rig is not None else None
+        armature = bones_object(rig)
+        if armature is None or helper is None or plane is None or not deform_bones(armature):
+            self.report({'WARNING'}, "This layer has no bones")
+            return {'CANCELLED'}
+        if self.action == 'POSE':
+            if not _fbp_select_only(context, armature, "POSE"):
+                return {'CANCELLED'}
+        elif self.action == 'EDIT':
+            if not _fbp_select_only(context, armature, "EDIT"):
+                return {'CANCELLED'}
+        elif self.action == 'DONE':
+            _fbp_select_only(context, armature, "OBJECT")
+            bind(rig, helper, plane, force=False)
+            _fbp_select_only(context, armature, "POSE")
+        elif self.action == 'REST':
+            reset_pose(armature)
+        elif self.action == 'KEY':
+            count = key_pose(armature, frame=context.scene.frame_current)
+            self.report({'INFO'}, f"Keyed {len(deform_bones(armature))} bones" if count else "Nothing to key")
+        else:
+            if str(armature.mode) == 'EDIT':
+                _fbp_select_only(context, armature, "OBJECT")
+            remove_bones(rig, helper)
+            if bones_object(rig) is None:
+                _fbp_select_only(context, rig)
+        fbp_focus_lattice_ui(context, rig)
+        _fbp_invalidate_live_lattice_cache()
+        return {'FINISHED'}
+
+
+_FBP_LATTICE_CORNER_ACTIONS = (
+    ('SETUP', "Set Up Corner Pin", "Put four handles on the corners. Move them to place the layer in perspective"),
+    ('RESET', "Reset Corners", "Return the handles to the layer's corners"),
+    ('KEY', "Key Corners", "Keyframe the four handles at the current frame"),
+    ('SELECT', "Select Corners", "Select the four handles"),
+    ('REMOVE', "Remove Corner Pin", "Remove the handles and return to a flat Freeform cage"),
+)
+
+
+class FBP_OT_LatticeCornerPin(Operator):
+    bl_idname = "fbp.lattice_corner_pin"
+    bl_label = "Corner Pin"
+    bl_description = "Set up, reset, key or remove the Corner Pin of this layer"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    action: EnumProperty(name="Action", items=_FBP_LATTICE_CORNER_ACTIONS, default='SETUP', options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, properties):
+        del context
+        for identifier, _label, text in _FBP_LATTICE_CORNER_ACTIONS:
+            if identifier == properties.action:
+                return text
+        return cls.bl_description
+
+    def execute(self, context):
+        from .lattice_corner_pin import MIN_POINTS, corner_handles, ensure_handles, remove_handles, reset_handles
+        from .lattice_pins import select_pins
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        if rig is None or not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig)):
+            return {'CANCELLED'}
+        if rig is None or not _fbp_apply_lattice_effect(rig, select=False):
+            self.report({'ERROR'}, _fbp_last_lattice_error(rig) or "Could not create the Lattice cage")
+            return {'CANCELLED'}
+        helper = _fbp_lattice_object(rig)
+        plane = _fbp_plane(rig)
+        if self.action == 'SETUP':
+            if not _fbp_refine_lattice_cage(self, rig, plane, MIN_POINTS, MIN_POINTS):
+                return {'CANCELLED'}
+            helper = _fbp_lattice_object(rig)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_mode", "CORNER_PIN")
+            helper[_FBP_LATTICE_MODE_KEY] = "CORNER_PIN"
+            _fbp_update_lattice_data(rig, helper)
+            ensure_handles(rig, helper, plane)
+            _fbp_apply_lattice_corner_pin(rig, force=True)
+            _fbp_invalidate_live_lattice_cache()
+            select_pins(context, rig, list(corner_handles(rig).values()))
+            self.report({'INFO'}, "Corner Pin ready: move the corner handles (G)")
+        elif self.action == 'RESET':
+            reset_handles(rig, helper)
+            _fbp_apply_lattice_corner_pin(rig, force=True)
+        elif self.action == 'KEY':
+            for handle in corner_handles(rig).values():
+                handle.keyframe_insert("location", frame=context.scene.frame_current)
+        elif self.action == 'SELECT':
+            handles = list(corner_handles(rig).values())
+            if not handles or not select_pins(context, rig, handles):
+                return {'CANCELLED'}
+        else:
+            remove_handles(rig, helper)
+            fbp_set_rna_property_silent(rig, "fbp_lattice_mode", "FREEFORM")
+            helper[_FBP_LATTICE_MODE_KEY] = "FREEFORM"
+            _fbp_update_lattice_data(rig, helper)
+            _fbp_reset_lattice_points(helper)
+            _fbp_invalidate_live_lattice_cache()
+        fbp_focus_lattice_ui(context, rig)
+        return {'FINISHED'}
+
+
+_FBP_LATTICE_HANDLE_ACTIONS = (
+    ('ADD', "Add Point Handles", "Give every cage point a handle you can move and keyframe in Pose Mode, without editing the cage"),
+    ('KEY', "Key Points", "Keyframe every point handle at the current frame"),
+    ('REST', "Rest", "Return every point handle to its cage point"),
+    ('SELECT', "Select Points", "Select every point handle"),
+    ('REMOVE', "Remove Point Handles", "Remove the point handles and their animation"),
+)
+
+
+class FBP_OT_LatticePointHandles(Operator):
+    bl_idname = "fbp.lattice_point_handles"
+    bl_label = "Point Handles"
+    bl_description = "Add, key, reset or remove the point handles of the Grid cage"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    action: EnumProperty(name="Action", items=_FBP_LATTICE_HANDLE_ACTIONS, default='ADD', options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, properties):
+        del context
+        for identifier, _label, text in _FBP_LATTICE_HANDLE_ACTIONS:
+            if identifier == properties.action:
+                return text
+        return cls.bl_description
+
+    def execute(self, context):
+        from .lattice_pins import KIND_POINT, MAX_POINT_HANDLES, add_point_handles, key_pins, remove_all_pins, reset_pins, rig_pins, select_pins
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        if rig is None or not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig)):
+            return {'CANCELLED'}
+        rig, helper, plane = _fbp_lattice_pins_target(self)
+        if helper is None:
+            return {'CANCELLED'}
+        handles = rig_pins(rig, kinds=(KIND_POINT,))
+        if self.action == 'ADD':
+            if not add_point_handles(rig, helper, plane):
+                self.report({'WARNING'}, f"Point handles need a cage of at most {MAX_POINT_HANDLES} points (for example 8 × 8)")
+                return {'CANCELLED'}
+            fbp_set_rna_property_silent(rig, "fbp_lattice_show_cage", True)
+            select_pins(context, rig, [])
+        elif not handles:
+            self.report({'WARNING'}, "This layer has no point handles")
+            return {'CANCELLED'}
+        elif self.action == 'KEY':
+            key_pins(handles, frame=context.scene.frame_current)
+        elif self.action == 'REST':
+            reset_pins(handles)
+        elif self.action == 'SELECT':
+            select_pins(context, rig, handles)
+        else:
+            remove_all_pins(rig, helper, kinds=(KIND_POINT,))
+        fbp_focus_lattice_ui(context, rig)
+        _fbp_invalidate_live_lattice_cache()
+        return {'FINISHED'}
+
+
+_FBP_LATTICE_PIN_ACTIONS = (
+    ('KEY', "Key Pins", "Keyframe the location, rotation and scale of every pin at the current frame"),
+    ('REST', "Rest Pose", "Return every pin to its rest placement so the layer is no longer bent by the pins"),
+    ('SET_REST', "Set as Rest", "Keep the pins where they are and make that their rest placement: the drawing under them goes back to its undeformed shape. Use it to move a pin to a better spot"),
+)
+
+
+class FBP_OT_LatticePinsAction(Operator):
+    bl_idname = "fbp.lattice_pins_action"
+    bl_label = "Puppet Pins"
+    bl_description = "Keyframe, reset or rebind the puppet pins of this layer"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
+    action: EnumProperty(
+        name="Action",
+        items=_FBP_LATTICE_PIN_ACTIONS,
+        default='KEY',
+        options={'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def description(cls, context, properties):
+        del context
+        for identifier, _label, text in _FBP_LATTICE_PIN_ACTIONS:
+            if identifier == properties.action:
+                return text
+        return cls.bl_description
+
+    def execute(self, context):
+        from .lattice_pins import key_pins, puppet_pins, reset_pins, set_rest_from_current
+        rig, helper, plane = _fbp_lattice_pins_target(self)
+        if helper is None:
+            return {'CANCELLED'}
+        pins = puppet_pins(rig)
+        if not pins:
+            self.report({'WARNING'}, "This layer has no puppet pins")
+            return {'CANCELLED'}
+        if self.action == 'KEY':
+            key_pins(pins, frame=context.scene.frame_current)
+            self.report({'INFO'}, f"Keyed {len(pins)} pin{'s' if len(pins) != 1 else ''}")
+        elif self.action == 'REST':
+            reset_pins(pins)
+        else:
+            set_rest_from_current(rig, helper, plane, pins)
+        _fbp_invalidate_live_lattice_cache()
+        return {'FINISHED'}
+
+
 class FBP_OT_RefitLatticeHelper(Operator):
     bl_idname = "fbp.refit_lattice_helper"
     bl_label = "Refit Lattice"
@@ -33782,6 +34716,14 @@ classes = (
     FBP_OT_AddLatticePose,
     FBP_OT_EditLatticePose,
     FBP_OT_RemoveLatticePose,
+    FBP_OT_AddLatticePins,
+    FBP_OT_RemoveLatticePin,
+    FBP_OT_SelectLatticePin,
+    FBP_OT_LatticePinsAction,
+    FBP_OT_AddLatticeBones,
+    FBP_OT_LatticeBonesAction,
+    FBP_OT_LatticeCornerPin,
+    FBP_OT_LatticePointHandles,
     FBP_OT_RefitLatticeHelper,
     FBP_OT_LoadEffectImage,
     FBP_OT_ClearEffectImage,
