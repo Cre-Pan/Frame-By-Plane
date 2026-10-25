@@ -9129,7 +9129,7 @@ def _register_properties():
         default="DRAWING",
         update=_canvas_kind_update,
     )
-    bpy.types.Object.fbp_gp_attachment_mode = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.',
+    bpy.types.Object.fbp_gp_attachment_mode = EnumProperty(description='How the drawing is attached',
         name="Canvas Attachment",
         items=ATTACHMENT_ITEMS,
         default="PLANE",
@@ -9203,10 +9203,10 @@ def _register_properties():
         default=False,
         update=_mask_output_property_update,
     )
-    bpy.types.Object.fbp_gp_reveal_mode = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Reveal Mode", items=REVEAL_MODE_ITEMS, default="REVEAL", update=_mask_output_property_update)
+    bpy.types.Object.fbp_gp_reveal_mode = EnumProperty(description='How the mask reveals the layer', name="Reveal Mode", items=REVEAL_MODE_ITEMS, default="REVEAL", update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_start = IntProperty(name="Start", description="Timeline frame where the reveal begins", default=1, update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_end = IntProperty(name="End", description="Timeline frame where the reveal reaches its final state", default=24, update=_mask_output_property_update)
-    bpy.types.Object.fbp_gp_reveal_direction = EnumProperty(description='Direction used by the action. Example: UP/DOWN for stack movement, or positive/negative for directional controls.', name="Direction", items=REVEAL_DIRECTION_ITEMS, default="LEFT_RIGHT", update=_mask_output_property_update)
+    bpy.types.Object.fbp_gp_reveal_direction = EnumProperty(description='Reveal direction', name="Direction", items=REVEAL_DIRECTION_ITEMS, default="LEFT_RIGHT", update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_invert = BoolProperty(name="Invert Direction", description="Invert the generated reveal matte", default=False, update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_feather = FloatProperty(name="Reveal Feather", description="Soften the moving reveal edge", default=0.05, min=0.0, max=1.0, soft_max=0.25, subtype="FACTOR", update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_hold = BoolProperty(name="Hold Result", description="Keep the completed reveal or erase after the End frame", default=True, update=_mask_output_property_update)
@@ -9217,7 +9217,7 @@ def _register_properties():
         type=bpy.types.Image,
         update=_imported_mask_pointer_update,
     )
-    bpy.types.Object.fbp_imported_mask_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.',
+    bpy.types.Object.fbp_imported_mask_source_type = EnumProperty(description='Mask source',
         name="Mask Source Type",
         items=(("FILE", "Image File", "Imported mask path"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil mask image")),
         default="FILE",
@@ -9230,13 +9230,13 @@ def _register_properties():
     )
     bpy.types.Object.fbp_gp_mask_slot_2_canvas = PointerProperty(name="Grease Pencil Mask Slot 2 Canvas", description="Grease Pencil canvas assigned to independent mask slot 2", type=bpy.types.Object, update=_gp_mask_slot_2_canvas_pointer_update)
     bpy.types.Object.fbp_gp_mask_slot_2_image = PointerProperty(name="Grease Pencil Mask Slot 2 Image", type=bpy.types.Image, update=_gp_mask_slot_2_pointer_update)
-    bpy.types.Object.fbp_gp_mask_slot_2_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Grease Pencil Mask Slot 2 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
+    bpy.types.Object.fbp_gp_mask_slot_2_source_type = EnumProperty(description='Mask source', name="Grease Pencil Mask Slot 2 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
     bpy.types.Object.fbp_gp_mask_slot_3_canvas = PointerProperty(name="Grease Pencil Mask Slot 3 Canvas", description="Grease Pencil canvas assigned to independent mask slot 3", type=bpy.types.Object, update=_gp_mask_slot_3_canvas_pointer_update)
     bpy.types.Object.fbp_gp_mask_slot_3_image = PointerProperty(name="Grease Pencil Mask Slot 3 Image", type=bpy.types.Image, update=_gp_mask_slot_3_pointer_update)
-    bpy.types.Object.fbp_gp_mask_slot_3_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Grease Pencil Mask Slot 3 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
+    bpy.types.Object.fbp_gp_mask_slot_3_source_type = EnumProperty(description='Mask source', name="Grease Pencil Mask Slot 3 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
     bpy.types.Object.fbp_gp_mask_slot_4_canvas = PointerProperty(name="Grease Pencil Mask Slot 4 Canvas", description="Grease Pencil canvas assigned to independent mask slot 4", type=bpy.types.Object, update=_gp_mask_slot_4_canvas_pointer_update)
     bpy.types.Object.fbp_gp_mask_slot_4_image = PointerProperty(name="Grease Pencil Mask Slot 4 Image", type=bpy.types.Image, update=_gp_mask_slot_4_pointer_update)
-    bpy.types.Object.fbp_gp_mask_slot_4_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Grease Pencil Mask Slot 4 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
+    bpy.types.Object.fbp_gp_mask_slot_4_source_type = EnumProperty(description='Mask source', name="Grease Pencil Mask Slot 4 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
 
 
 def _unregister_properties():

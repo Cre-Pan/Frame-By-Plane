@@ -3355,12 +3355,13 @@ def test_audited_operator_tooltips(_module):
     assert len(audited) == 40 and len(set(audited)) == 40, audited
     missing = [item for item in audited if not tooltips.EXACT_TOOLTIPS.get(item)]
     assert not missing, missing
-    generic = [
-        item for item in audited
-        if len(tooltips.EXACT_TOOLTIPS[item]) < 120
-        or "current Frame By Plane context" in tooltips.EXACT_TOOLTIPS[item]
+    # Tooltips stay short: one or two plain sentences on a single line.
+    verbose = [
+        item for item, text in tooltips.EXACT_TOOLTIPS.items()
+        if len(text) > 100 or "\n" in text
+        or any(token in text for token in ("Use when:", "Example:", "Note:"))
     ]
-    assert not generic, generic
+    assert not verbose, verbose
     compositor = [item for item in audited if "compositor" in item or item in {
         "fbp.stack_row_action", "fbp.layer_set_row_action", "fbp.layer_set_batch",
         "fbp.remap_layer_set_source", "fbp.layer_set_preview",
