@@ -16,6 +16,12 @@ Pins live in a frame aligned with the plane (local Z is the plane normal) so G
 moves them across the drawing and R rotates them in its plane. A pin stores
 its rest location; the Hook's inverse matrix is rebuilt from it whenever the
 cage moves or changes resolution, and the weights are rebuilt with it.
+
+Kinds (After Effects style): a **Pin** moves, rotates and scales; a **Bend**
+pin stays where it is and only rotates or scales its area; any pin can have a
+**Stiff Area**, a disc that moves rigidly with it instead of bending. **Point
+handles** are one Hook per cage point with the whole weight on that point, so
+the Grid cage can be posed and keyframed in Object Mode.
 """
 
 from __future__ import annotations
@@ -31,7 +37,15 @@ from .runtime import FBP_DATA_ERRORS
 PIN_OWNER_KEY = "fbp_lattice_pin_owner"
 PIN_ID_KEY = "fbp_lattice_pin_id"
 PIN_REST_KEY = "fbp_lattice_pin_rest"
+PIN_KIND_KEY = "fbp_lattice_pin_kind"
+PIN_POINT_KEY = "fbp_lattice_pin_point"
+PIN_GRID_KEY = "fbp_lattice_pin_grid"
 BIND_SIGNATURE_KEY = "fbp_lattice_pins_bind"
+KIND_PIN = "PIN"
+KIND_BEND = "BEND"
+KIND_POINT = "POINT"
+# Largest cage that gets one handle per point.
+MAX_POINT_HANDLES = 100
 GROUP_PREFIX = "FBP Pin "
 HOOK_PREFIX = "FBP Pin • "
 
@@ -65,14 +79,54 @@ def pin_owner(obj):
     return owner if owner is not None and bool(getattr(owner, "is_fbp_control", False)) else None
 
 
-def rig_pins(rig):
-    """Return the pins of a layer, in creation order."""
+def is_lattice_controller(obj):
+    """True for any object that drives a Lattice cage: pins, point handles,
+    corner handles and the bones armature."""
+    if is_pin(obj):
+        return True
+    try:
+        from .lattice_bones import is_bones_object
+        from .lattice_corner_pin import is_corner_handle
+    except ImportError:
+        return False
+    return bool(is_corner_handle(obj) or is_bones_object(obj))
+
+
+def lattice_controller_owner(obj):
+    """Return the layer rig of any Lattice controller, or None."""
+    if is_pin(obj):
+        return pin_owner(obj)
+    try:
+        from .lattice_bones import bones_owner, is_bones_object
+        from .lattice_corner_pin import corner_owner, is_corner_handle
+    except ImportError:
+        return None
+    if is_corner_handle(obj):
+        return corner_owner(obj)
+    if is_bones_object(obj):
+        return bones_owner(obj)
+    return None
+
+
+def pin_kind(pin):
+    try:
+        kind = str(pin.get(PIN_KIND_KEY, KIND_PIN) or KIND_PIN)
+    except FBP_DATA_ERRORS:
+        return KIND_PIN
+    return kind if kind in {KIND_PIN, KIND_BEND, KIND_POINT} else KIND_PIN
+
+
+def rig_pins(rig, kinds=None):
+    """Return the pins of a layer, in creation order.
+
+    ``kinds`` filters by kind; None returns every pin, point handles included.
+    """
     if rig is None:
         return []
     found = []
     try:
         for obj in tuple(getattr(rig, "children", ()) or ()):
-            if is_pin(obj):
+            if is_pin(obj) and (kinds is None or pin_kind(obj) in kinds):
                 found.append(obj)
     except FBP_DATA_ERRORS:
         return []
@@ -83,6 +137,11 @@ def rig_pins(rig):
         except (TypeError, ValueError):
             return 0
     return sorted(found, key=order)
+
+
+def puppet_pins(rig):
+    """Pins that take part in the smooth weight solve (not point handles)."""
+    return rig_pins(rig, kinds=(KIND_PIN, KIND_BEND))
 
 
 def _pin_id(pin):
@@ -148,33 +207,35 @@ def _pin_display_size(plane):
     return max(0.005, size * 0.03)
 
 
-def add_pin(rig, helper, plane, world_location):
-    """Create a pin at a world location on the layer and bind it. Return the pin."""
-    pin_id = _next_pin_id(rig)
+def new_controller(rig, helper, plane, name, world_location, *, display='SPHERE', size=1.0):
+    """Create an Empty controller in the plane frame, parented to the layer rig.
+
+    Local Z is the plane normal: G moves it across the drawing and R rotates it
+    in the drawing's plane. Return (controller, local rest location).
+    """
     frame = plane_frame(plane, helper)
-    pin = bpy.data.objects.new(f"Pin {pin_id} • {rig.name}", None)
-    pin[PIN_OWNER_KEY] = str(rig.name)
-    pin[PIN_ID_KEY] = pin_id
+    controller = bpy.data.objects.new(name, None)
     collections = tuple(getattr(helper, "users_collection", ()) or ()) or (bpy.context.scene.collection,)
     for collection in collections:
-        collection.objects.link(pin)
-    pin.parent = rig
-    pin.matrix_parent_inverse = rig.matrix_world.inverted_safe() @ frame
+        collection.objects.link(controller)
+    controller.parent = rig
+    controller.matrix_parent_inverse = rig.matrix_world.inverted_safe() @ frame
     local = frame.inverted_safe() @ Vector(world_location)
     local.z = 0.0
-    pin.location = local
-    pin.rotation_mode = 'XYZ'
-    pin[PIN_REST_KEY] = tuple(local)
-    pin.empty_display_type = 'SPHERE'
-    pin.empty_display_size = _pin_display_size(plane)
-    pin.show_in_front = True
-    pin.show_name = False
-    pin.hide_render = True
-    # Pins move across the drawing and rotate in its plane.
-    pin.lock_location = (False, False, True)
-    pin.lock_rotation = (True, True, False)
-    pin.lock_scale = (False, False, True)
+    controller.location = local
+    controller.rotation_mode = 'XYZ'
+    controller.empty_display_type = display
+    controller.empty_display_size = _pin_display_size(plane) * size
+    controller.show_in_front = True
+    controller.show_name = False
+    controller.hide_render = True
+    controller.lock_location = (False, False, True)
+    controller.lock_rotation = (True, True, False)
+    controller.lock_scale = (False, False, True)
+    return controller, local
 
+
+def _attach_hook(helper, pin, pin_id):
     helper.vertex_groups.new(name=_group_name(pin_id))
     hook = helper.modifiers.new(_hook_name(pin_id), 'HOOK')
     hook.object = pin
@@ -183,8 +244,61 @@ def add_pin(rig, helper, plane, world_location):
     hook.strength = 1.0
     hook.show_in_editmode = True
     hook.show_on_cage = True
-    bind(rig, helper, plane, force=True)
+    return hook
+
+
+def add_pin(rig, helper, plane, world_location, kind=KIND_PIN, *, bind_now=True):
+    """Create a pin at a world location on the layer and bind it. Return the pin."""
+    pin_id = _next_pin_id(rig)
+    label = "Bend" if kind == KIND_BEND else "Pin"
+    pin, local = new_controller(
+        rig, helper, plane, f"{label} {pin_id} • {rig.name}", world_location,
+        display='PLAIN_AXES' if kind == KIND_BEND else 'SPHERE',
+        size=1.6 if kind == KIND_BEND else 1.0,
+    )
+    pin[PIN_OWNER_KEY] = str(rig.name)
+    pin[PIN_ID_KEY] = pin_id
+    pin[PIN_KIND_KEY] = kind
+    pin[PIN_REST_KEY] = tuple(local)
+    if kind == KIND_BEND:
+        # A bend pin turns or scales its area without moving it.
+        pin.lock_location = (True, True, True)
+    _attach_hook(helper, pin, pin_id)
+    if bind_now:
+        bind(rig, helper, plane, force=True)
     return pin
+
+
+def add_point_handles(rig, helper, plane):
+    """Give every cage point its own animatable handle. Return the handle count."""
+    data = helper.data
+    points_u, points_v = int(data.points_u), int(data.points_v)
+    if points_u * points_v > MAX_POINT_HANDLES or int(data.points_w) != 1:
+        return 0
+    remove_all_pins(rig, helper, kinds=(KIND_POINT,))
+    keys = getattr(data, "shape_keys", None)
+    if keys is not None and len(keys.key_blocks):
+        source = keys.key_blocks[0].data
+        coordinates = [Vector(item.co) for item in source]
+    else:
+        coordinates = [Vector(point.co_deform) for point in data.points]
+    helper_world = helper.matrix_world
+    for index, local in enumerate(coordinates[: points_u * points_v]):
+        pin_id = _next_pin_id(rig)
+        u_index, v_index = index % points_u, index // points_u
+        handle, rest = new_controller(
+            rig, helper, plane, f"Point {u_index + 1}·{v_index + 1} • {rig.name}",
+            helper_world @ local, display='CUBE', size=0.45,
+        )
+        handle[PIN_OWNER_KEY] = str(rig.name)
+        handle[PIN_ID_KEY] = pin_id
+        handle[PIN_KIND_KEY] = KIND_POINT
+        handle[PIN_POINT_KEY] = index
+        handle[PIN_GRID_KEY] = f"{points_u}x{points_v}"
+        handle[PIN_REST_KEY] = tuple(rest)
+        _attach_hook(helper, handle, pin_id)
+    bind(rig, helper, plane, force=True)
+    return points_u * points_v
 
 
 def remove_pin(rig, helper, pin):
@@ -210,11 +324,11 @@ def remove_pin(rig, helper, pin):
     return True
 
 
-def remove_all_pins(rig, helper=None):
-    """Remove every pin of a layer and its Hook and vertex group."""
+def remove_all_pins(rig, helper=None, kinds=None):
+    """Remove the pins of a layer (optionally only some kinds) with their Hooks."""
     changed = False
-    pins = rig_pins(rig)
-    if rig is not None:
+    pins = rig_pins(rig, kinds=kinds)
+    if rig is not None and kinds is None:
         # Pins whose parenting was lost still carry the owner name.
         owner_name = str(getattr(rig, "name", "") or "")
         try:
@@ -243,6 +357,10 @@ def remove_all_pins(rig, helper=None):
     if helper is not None:
         try:
             helper.pop(BIND_SIGNATURE_KEY, None)
+            if kinds is not None and rig_pins(rig):
+                plane = getattr(rig, "fbp_plane_target", None)
+                if plane is not None:
+                    bind(rig, helper, plane, force=True)
         except FBP_DATA_ERRORS:
             pass
     return changed
@@ -294,6 +412,22 @@ def set_rest_from_current(rig, helper, plane, pins):
 # --- Binding -----------------------------------------------------------------
 
 
+def pin_stiffness(pin):
+    try:
+        return max(0.0, min(1.0, float(getattr(pin, "fbp_lattice_pin_stiffness", 0.0) or 0.0)))
+    except FBP_DATA_ERRORS:
+        return 0.0
+
+
+def stiff_radius(plane, factor):
+    """World radius of a Stiff Area: the full slider covers a quarter of the layer."""
+    try:
+        size = max(float(plane.dimensions.x), float(plane.dimensions.y))
+    except FBP_DATA_ERRORS:
+        size = 1.0
+    return float(factor) * 0.25 * size
+
+
 def _signature(rig, helper, pins):
     data = helper.data
     parts = [
@@ -302,11 +436,32 @@ def _signature(rig, helper, pins):
     ]
     parts.extend(f"{value:.6f}" for row in helper.matrix_world for value in row)
     for pin in pins:
-        parts.append(_pin_id(pin))
+        parts.extend((_pin_id(pin), pin_kind(pin), f"{pin_stiffness(pin):.4f}", str(pin.get(PIN_POINT_KEY, ""))))
         parts.extend(f"{value:.6f}" for value in _rest_location(pin))
         parts.extend(f"{value:.6f}" for row in pin.matrix_parent_inverse for value in row)
         parts.append(str(getattr(pin_hook(helper, pin), "name", "")))
     return "|".join(parts)
+
+
+def write_groups(helper, names, weights):
+    """Write one weight column per vertex group name on the cage."""
+    count = len(helper.data.points)
+    indices = list(range(count))
+    for name, column in zip(names, weights):
+        group = helper.vertex_groups.get(name) or helper.vertex_groups.new(name=name)
+        group.remove(indices)
+        by_value = {}
+        for index, value in enumerate(column):
+            if value > 1.0e-5:
+                by_value.setdefault(round(float(value), 5), []).append(index)
+        for value, members in by_value.items():
+            group.add(members, min(1.0, value), 'REPLACE')
+
+
+def _point_handles_match_grid(helper, handles):
+    data = helper.data
+    grid = f"{int(data.points_u)}x{int(data.points_v)}"
+    return all(str(handle.get(PIN_GRID_KEY, "")) == grid for handle in handles)
 
 
 def bind(rig, helper, plane, *, force=False):
@@ -316,6 +471,11 @@ def bind(rig, helper, plane, *, force=False):
     """
     if rig is None or helper is None or plane is None:
         return False
+    handles = [pin for pin in rig_pins(rig, kinds=(KIND_POINT,)) if pin_hook(helper, pin) is not None]
+    if handles and not _point_handles_match_grid(helper, handles):
+        # The cage changed resolution: rebuild the handles on the new points.
+        add_point_handles(rig, helper, plane)
+        return True
     pins = [pin for pin in rig_pins(rig) if pin_hook(helper, pin) is not None]
     try:
         signature = _signature(rig, helper, pins)
@@ -328,7 +488,9 @@ def bind(rig, helper, plane, *, force=False):
         return False
     helper_world = helper.matrix_world.copy()
     helper_inverse = helper_world.inverted_safe()
-    rest_points = []
+    controls = []
+    smooth = []
+    total = len(helper.data.points)
     for pin in pins:
         hook = pin_hook(helper, pin)
         rest_world = _rest_world(rig, pin)
@@ -337,20 +499,24 @@ def bind(rig, helper, plane, *, force=False):
         hook.matrix_inverse = rest_world.inverted_safe() @ helper_world
         hook.center = (0.0, 0.0, 0.0)
         hook.vertex_group = _group_name(_pin_id(pin))
-        rest_points.append(helper_inverse @ rest_world.translation)
-    weights = compute_weights(rig, helper, plane, rest_points)
-    count = len(helper.data.points)
-    indices = list(range(count))
-    for pin, column in zip(pins, weights):
-        name = _group_name(_pin_id(pin))
-        group = helper.vertex_groups.get(name) or helper.vertex_groups.new(name=name)
-        group.remove(indices)
-        by_value = {}
-        for index, value in enumerate(column):
-            if value > 1.0e-5:
-                by_value.setdefault(round(float(value), 5), []).append(index)
-        for value, members in by_value.items():
-            group.add(members, min(1.0, value), 'REPLACE')
+        if pin_kind(pin) == KIND_POINT:
+            continue
+        smooth.append(pin)
+        controls.append({
+            "points": [helper_inverse @ rest_world.translation],
+            "radius": stiff_radius(plane, pin_stiffness(pin)),
+        })
+    if smooth:
+        write_groups(helper, [_group_name(_pin_id(pin)) for pin in smooth], solve_partition(rig, helper, plane, controls))
+    for handle in rig_pins(rig, kinds=(KIND_POINT,)):
+        column = [0.0] * total
+        try:
+            index = int(handle.get(PIN_POINT_KEY, -1))
+        except (TypeError, ValueError):
+            index = -1
+        if 0 <= index < total:
+            column[index] = 1.0
+        write_groups(helper, [_group_name(_pin_id(handle))], [column])
     helper[BIND_SIGNATURE_KEY] = signature
     helper.data.update_tag()
     helper.update_tag(refresh={'DATA'})
@@ -358,13 +524,20 @@ def bind(rig, helper, plane, *, force=False):
 
 
 def sync_after_cage_change(rig, helper, plane):
-    """Cheap entry point for the Lattice setup: rebind only if needed."""
+    """Cheap entry point for the Lattice setup: rebind pins and bones if needed."""
+    changed = False
     try:
         if rig_pins(rig):
-            return bind(rig, helper, plane, force=False)
+            changed = bind(rig, helper, plane, force=False)
     except FBP_DATA_ERRORS:
-        return False
-    return False
+        pass
+    try:
+        from .lattice_bones import bind as bind_bones, bones_object
+        if bones_object(rig) is not None:
+            changed = bind_bones(rig, helper, plane, force=False) or changed
+    except (ImportError,) + FBP_DATA_ERRORS:
+        pass
+    return changed
 
 
 # --- Weights -----------------------------------------------------------------
@@ -508,11 +681,37 @@ def _solve_dirichlet(fixed_mask, fixed_values, horizontal, vertical, diagonal):
 
 
 def compute_weights(rig, helper, plane, rest_points):
-    """Return one weight list per pin (cage point order) summing to one."""
+    """Return one weight list per rest point (cage point order) summing to one."""
+    return solve_partition(rig, helper, plane, [{"points": [point], "radius": 0.0} for point in rest_points])
+
+
+def _segment_distance(xs, ys, a, b, scale):
+    """Distance (world units) from every cage point to segment a-b (cage coords)."""
+    import numpy as np
+    ax, ay = float(a.x) * scale[0], float(a.y) * scale[1]
+    bx, by = float(b.x) * scale[0], float(b.y) * scale[1]
+    px, py = xs * scale[0], ys * scale[1]
+    dx, dy = bx - ax, by - ay
+    length = dx * dx + dy * dy
+    if length < 1.0e-18:
+        return np.sqrt((px - ax) ** 2 + (py - ay) ** 2)
+    t = np.clip(((px - ax) * dx + (py - ay) * dy) / length, 0.0, 1.0)
+    return np.sqrt((px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2)
+
+
+def solve_partition(rig, helper, plane, controls):
+    """Harmonic weights for a set of controls; one list per control, summing to one.
+
+    Each control is ``{"points": [...], "radius": r}`` in cage coordinates:
+    one point for a pin, a polyline (head, tail) for a bone. The cage points a
+    control covers are held at weight one for it; the rest is solved.
+    """
     import numpy as np
     points_u, points_v, xs, ys = _grid_rest(helper)
-    count = len(rest_points)
+    count = len(controls)
     total = len(helper.data.points)
+    if count == 0:
+        return []
     if count == 1:
         return [[1.0] * total]
     follow = bool(getattr(rig, "fbp_lattice_pins_follow_drawing", True))
@@ -523,25 +722,65 @@ def compute_weights(rig, helper, plane, rest_points):
     diagonal[:-1, :] += vertical
     diagonal[1:, :] += vertical
     diagonal = np.maximum(diagonal, 1.0e-12)
+    try:
+        matrix = helper.matrix_world
+        scale = (float(matrix.col[0].to_3d().length), float(matrix.col[1].to_3d().length))
+    except FBP_DATA_ERRORS:
+        scale = (1.0, 1.0)
+    cell = max(scale[0] / max(1, points_u - 1), scale[1] / max(1, points_v - 1))
 
-    # Each pin holds the nearest free cage point and, where free, its four
-    # neighbours: a B-spline cage averages a point with its neighbours, so a
-    # single held point would let the drawing under the pin lag behind it.
-    centres = []
     taken = {}
-    for index, point in enumerate(rest_points):
-        distance = (xs - float(point.x)) ** 2 + (ys - float(point.y)) ** 2
-        for flat in np.argsort(distance, axis=None):
-            flat = int(flat)
-            if flat not in taken:
-                taken[flat] = index
-                centres.append(divmod(flat, points_u))
-                break
-    for index, (row, column) in enumerate(centres):
-        for d_row, d_column in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-            r, c = row + d_row, column + d_column
-            if 0 <= r < points_v and 0 <= c < points_u:
-                taken.setdefault(r * points_u + c, index)
+    centres = []
+    # 1. Every control first claims the cage point nearest to each of its points.
+    for index, control in enumerate(controls):
+        points = list(control["points"])
+        if len(points) == 2:
+            # Bones: sample the inner part of the segment so joints between
+            # bones stay free and bend smoothly.
+            # A chain's free ends (root head, tip tail) are owned outright.
+            a, b = points
+            start = float(control.get("start", 0.2))
+            end = float(control.get("end", 0.8))
+            length = math.hypot((b.x - a.x) * scale[0], (b.y - a.y) * scale[1])
+            steps = max(1, int(length / (0.5 * cell)))
+            samples = [a.lerp(b, 0.5)] if length < 2.5 * cell else [
+                a.lerp(b, start + (end - start) * step / float(steps)) for step in range(steps + 1)
+            ]
+        else:
+            samples = points
+        own = []
+        for point in samples:
+            distance = ((xs - float(point.x)) * scale[0]) ** 2 + ((ys - float(point.y)) * scale[1]) ** 2
+            for flat in np.argsort(distance, axis=None)[:8]:
+                flat = int(flat)
+                if flat not in taken:
+                    taken[flat] = index
+                    own.append(divmod(flat, points_u))
+                    break
+        centres.append((own, len(points) == 2))
+    # 2. Stiff areas and bone thickness.
+    for index, control in enumerate(controls):
+        radius = float(control.get("radius", 0.0) or 0.0)
+        if radius <= 0.0:
+            continue
+        points = list(control["points"])
+        if len(points) == 2:
+            distance = _segment_distance(xs, ys, points[0], points[1], scale)
+        else:
+            distance = _segment_distance(xs, ys, points[0], points[0], scale)
+        for flat in np.flatnonzero(distance.reshape(-1) <= radius):
+            taken.setdefault(int(flat), index)
+    # 3. Pins also hold their four neighbours: a B-spline cage averages a
+    # point with its neighbours, so a single held point would let the drawing
+    # under the pin lag behind it.
+    for index, (own, is_segment) in enumerate(centres):
+        if is_segment:
+            continue
+        for row, column in own:
+            for d_row, d_column in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                r, c = row + d_row, column + d_column
+                if 0 <= r < points_v and 0 <= c < points_u:
+                    taken.setdefault(r * points_u + c, index)
     fixed_mask = np.zeros((points_v, points_u), dtype=bool)
     owner = np.full((points_v, points_u), -1)
     for flat, index in taken.items():
@@ -658,6 +897,7 @@ def _polygon_weights(corners, point):
 
 def blended_location(rig, helper, pins, rest_world_point):
     """Where the current pins carry a rest point (used to place a new pin)."""
+    pins = [pin for pin in pins if pin_kind(pin) != KIND_POINT]
     if not pins:
         return Vector(rest_world_point)
     try:

@@ -28,6 +28,14 @@ All notable public changes to Frame By Plane are documented here.
 - Pins use native Hook modifiers on the cage with automatic smooth weights, so they work with Poses and the cage, animate, save and render without anything running at playback time. **Follow Drawing** spreads each pin's influence through the opaque parts of the image, so a pin on a hand does not drag a separate nearby part across a transparent gap.
 - The first pin refines the cage to about 24 points on the long side so the bend stays smooth.
 
+### Lattice types
+
+- The Lattice panel now opens on a **Type** row: **Grid**, **Corner Pin**, **Bones**, **Pins** and **Camera**. The types stack on the same cage, and the panel lists the other types that are active on the layer.
+- **Bones**, in the spirit of Moho: **Add Bones** lets you click joints on the layer (shoulder, elbow, hand). Right Click ends a chain, and a chain that starts on an existing joint branches from it. Ctrl+Click removes the last bone, and Enter finishes in Pose Mode. A chain of two or more bones gets an IK handle at its end. The bones are a native Armature that deforms the cage with smooth weights that follow the drawing, so it can be keyframed, saved and rendered like any rig. **Edit Bones**, **Key Pose**, **Rest Pose**, **Rebind** and **Remove** are in the panel.
+- **Corner Pin**, like After Effects: four corner handles map the layer onto any quad with a true perspective, so the drawing foreshortens instead of only shearing. The handles keyframe, and the cage follows them live and on every frame. **Edit Cage** freezes the perspective into a Freeform cage.
+- **Grid** gains **Point Handles**: one handle per cage point that you can move and keyframe in Object Mode without entering Edit Mode (cages of up to 100 points).
+- **Pins** gain **Bend** pins, which stay in place and only rotate or scale their area, and a per-pin **Stiff Area** that keeps the area around a pin rigid.
+
 ### Fixes
 
 - Image Projector: the projection was blurred by default because the light Radius also set the image size. The image size now follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone instead of losing its corners.

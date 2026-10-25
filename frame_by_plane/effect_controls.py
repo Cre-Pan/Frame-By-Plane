@@ -2780,7 +2780,7 @@ def _sync_lattice_controller_visibility(context=None):
         _fbp_is_enabled = None
         _fbp_stored_effect_visibility = None
     try:
-        from .lattice_pins import is_pin, pin_owner
+        from .lattice_pins import is_lattice_controller as is_pin, lattice_controller_owner as pin_owner
     except (ImportError, AttributeError):
         is_pin = None
         pin_owner = None
@@ -3100,6 +3100,7 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
     mesh_rna = bpy.types.Mesh
     lattice_rna = bpy.types.Lattice
     camera_rna = bpy.types.Camera
+    armature_rna = bpy.types.Armature
     needs_control_refresh = False
     needs_lattice_refresh = False
     for update in updates:
@@ -3178,6 +3179,16 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
                     pass
             elif object_type == "LATTICE":
                 continue
+            elif datablock.get("fbp_lattice_corner") is not None:
+                if bool(getattr(update, "is_updated_transform", False)):
+                    try:
+                        from .geometry_nodes import schedule_lattice_corner_pin_update
+                        from .lattice_corner_pin import corner_owner
+                        owner = corner_owner(datablock)
+                        if owner is not None:
+                            schedule_lattice_corner_pin_update(owner)
+                    except (ImportError,) + FBP_DATA_ERRORS:
+                        pass
             elif is_fbp_plane:
                 if bool(getattr(update, "is_updated_transform", False)) or bool(
                     getattr(update, "is_updated_geometry", False)
@@ -3211,6 +3222,20 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
                 pass
         elif isinstance(datablock, lattice_rna):
             continue
+        elif isinstance(datablock, armature_rna):
+            # Rest bones changed (Edit Mode left): rebuild their cage weights.
+            try:
+                from .geometry_nodes import schedule_lattice_bones_rebind
+                from .lattice_bones import bones_owner, is_bones_object
+                for user in tuple(bpy.data.objects):
+                    if getattr(user, "data", None) is datablock and is_bones_object(user):
+                        if str(getattr(user, "mode", "OBJECT")) != "EDIT":
+                            owner = bones_owner(user)
+                            if owner is not None:
+                                schedule_lattice_bones_rebind(owner)
+                        break
+            except (ImportError,) + FBP_DATA_ERRORS:
+                pass
         elif isinstance(datablock, camera_rna):
             needs_lattice_refresh = True
 
@@ -3284,7 +3309,7 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
                         )
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
-        from .lattice_pins import is_pin
+        from .lattice_pins import is_lattice_controller as is_pin
         if active_object is not None and (
             str(getattr(active_object, "type", "") or "") == "LATTICE" or is_pin(active_object)
         ):

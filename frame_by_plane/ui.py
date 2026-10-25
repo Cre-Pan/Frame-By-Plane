@@ -4395,7 +4395,7 @@ def draw_effects_ui(layout, context, *, force_view=None):
     active_object = getattr(context, "object", None)
     force_lattice_mesh_view = False
     try:
-        from .lattice_pins import is_pin
+        from .lattice_pins import is_lattice_controller as is_pin
         if active_object is not None and (
             str(getattr(active_object, "type", "") or "") == "LATTICE" or is_pin(active_object)
         ):
