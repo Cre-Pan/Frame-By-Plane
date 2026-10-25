@@ -590,6 +590,31 @@ NATIVE_ONLY = (
 for _effect_id in NATIVE_ONLY:
     ICONS.pop(_effect_id, None)
 
+# Family variants that only appear behind their family entry use the family
+# artwork (effects_registry.py aliases them), so they need no file of their own.
+FAMILY_VARIANTS = (
+    "SOLID_MASK",
+    "DUOTONE",
+    "FALSE_COLOR",
+    "TRITONE",
+    "RECOLOR",
+    "GRADIENT_MAP",
+    "DIRECTIONAL_BLUR",
+    "TILT_SHIFT",
+    "HEX_PIXELATE",
+    "MOSAIC_JITTER",
+    "POSTERIZE",
+    "SMOOTH_TOON",
+    "EDGE_DETECT",
+    "EDGE_WORK",
+    "POSTER_EDGES",
+    "ADAPTIVE_THRESHOLD",
+    "INK",
+    "PENCIL_SKETCH",
+)
+for _effect_id in FAMILY_VARIANTS:
+    ICONS.pop(_effect_id, None)
+
 # Effect icons are frameless (Ale's call); the mask icons keep their own frame.
 FRAME = ""
 

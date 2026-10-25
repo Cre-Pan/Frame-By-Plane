@@ -10,6 +10,7 @@ import time
 import bpy
 
 from .runtime import FBP_DATA_ERRORS
+from .ui_icons import alias_effect_icon
 from .custom_effects import (
     is_custom_effect_id,
     refresh_custom_effect_registry,
@@ -2900,7 +2901,7 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
         FBP_EFFECT_SOLARIZE, FBP_EFFECT_FILM_FADE, FBP_EFFECT_GRAIN, FBP_EFFECT_PAPER_FIBERS,
     )),
     ("Magic", "SHADERFX", (
-        FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_INVERT, FBP_EFFECT_UNSHARP_MASK,
+        FBP_EFFECT_INVERT, FBP_EFFECT_UNSHARP_MASK,
         FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE,
     )),
 )
@@ -2916,7 +2917,7 @@ FBP_IMAGE_EFFECT_MENU_COLUMNS = (
 FBP_MASK_EFFECT_MENU_SECTIONS = (
     ("Shape", "SURFACE_NCURVE", (FBP_EFFECT_SQUARE_MASK, FBP_EFFECT_CIRCLE_MASK, FBP_EFFECT_TRIANGLE_MASK)),
     ("Nodes", "NODE_INSERT_ON", (
-        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK,
+        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK,
         FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,
         FBP_EFFECT_EDGE_DISTANCE_MASK,
     )),
@@ -2950,6 +2951,23 @@ FBP_MESH_EFFECT_MENU_SECTIONS = (
     )),
 )
 FBP_MESH_EFFECT_MENU_COLUMNS = ((0,), (1,), (3, 4), (2,))
+
+# Variants reachable only through their family entry carry no icon of their
+# own: they show the family icon everywhere (effect stack, quick slots).
+_FBP_MENU_EFFECT_TOKENS = {
+    str(token)
+    for sections in (
+        FBP_IMAGE_EFFECT_MENU_SECTIONS, FBP_MESH_EFFECT_MENU_SECTIONS, FBP_MASK_EFFECT_MENU_SECTIONS,
+    )
+    for _label, _icon, tokens in sections
+    for token in tokens
+}
+for _family_id, _family in FBP_EFFECT_FAMILIES.items():
+    for _effect_id, _variant_label in _family["variants"]:
+        if _effect_id in _FBP_MENU_EFFECT_TOKENS or _effect_id not in FBP_EFFECT_REGISTRY:
+            continue
+        FBP_EFFECT_REGISTRY[_effect_id]["icon"] = _family["icon"]
+        alias_effect_icon(_effect_id, f"FAMILY_{_family_id}")
 
 
 def fbp_normalize_effect_id(effect_id):

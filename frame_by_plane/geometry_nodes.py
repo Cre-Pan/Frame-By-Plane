@@ -25316,7 +25316,7 @@ def _fbp_draw_effect_add_columns(
     def draw_user_effects(parent):
         """Draw user effects as the final section of the fourth column."""
         custom = parent.column(align=False)
-        custom.label(text="User Effects", icon="NODETREE")
+        custom.label(text="User Effects")
         custom.separator(type="LINE")
         custom_ids = _fbp_custom_effect_ids_for_view(view)
         if custom_ids:
@@ -25386,9 +25386,9 @@ def _fbp_draw_effect_add_columns(
         for local_index, section_index in enumerate(section_indices):
             if local_index:
                 column.separator()
-            section_label, section_icon, effect_tokens = sections[int(section_index)]
+            section_label, _section_icon, effect_tokens = sections[int(section_index)]
             section = column.column(align=False)
-            section.label(text=section_label, icon=section_icon)
+            section.label(text=section_label)
             section.separator(type="LINE")
             for effect_token in effect_tokens:
                 draw_effect(section, effect_token)
