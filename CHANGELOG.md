@@ -22,6 +22,12 @@ All notable public changes to Frame By Plane are documented here.
 - The settings follow Blender's own layout: collapsible Plane and Camera Settings, a compact Playback row and Playback and color preset dropdowns, two-row presets with Dimensions, and an icon-only Orientation. The orientation Swap button is gone.
 - In the plane settings, **Set Scene In/Out from Media** is labeled **Set Scene Length from Media**.
 
+### Lattice puppet pins
+
+- **Puppet Pins** for the Lattice effect, in the spirit of Puppet Warp. **Add Pins** lets you click on the layer to place pins (Ctrl+Click removes one, Enter finishes). Move a pin with G or rotate it with R and the drawing bends around it while the other pins hold their areas still; keyframe pins like any object (**Key Pins**). **Rest Pose** returns them to the undeformed layer and **Set as Rest** moves a pin to a better spot without bending the drawing.
+- Pins use native Hook modifiers on the cage with automatic smooth weights, so they work with Poses and the cage, animate, save and render without anything running at playback time. **Follow Drawing** spreads each pin's influence through the opaque parts of the image, so a pin on a hand does not drag a separate nearby part across a transparent gap.
+- The first pin refines the cage to about 24 points on the long side so the bend stays smooth.
+
 ### Fixes
 
 - Image Projector: the projection was blurred by default because the light Radius also set the image size. The image size now follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone instead of losing its corners.

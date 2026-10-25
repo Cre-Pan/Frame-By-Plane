@@ -4395,7 +4395,10 @@ def draw_effects_ui(layout, context, *, force_view=None):
     active_object = getattr(context, "object", None)
     force_lattice_mesh_view = False
     try:
-        if active_object is not None and str(getattr(active_object, "type", "") or "") == "LATTICE":
+        from .lattice_pins import is_pin
+        if active_object is not None and (
+            str(getattr(active_object, "type", "") or "") == "LATTICE" or is_pin(active_object)
+        ):
             owner = fbp_resolve_rig_from_any_object(active_object, context)
             if owner is not None and owner in selected_rigs:
                 rig = owner
@@ -4409,11 +4412,7 @@ def draw_effects_ui(layout, context, *, force_view=None):
 
                 def _focus_lattice_from_panel():
                     current = getattr(bpy.context, "active_object", None)
-                    if (
-                        current is None
-                        or str(getattr(current, "type", "") or "") != "LATTICE"
-                        or str(getattr(current, "name", "") or "") != helper_name
-                    ):
+                    if current is None or str(getattr(current, "name", "") or "") != helper_name:
                         return None
                     current_owner = bpy.data.objects.get(owner_name)
                     if current_owner is not None:

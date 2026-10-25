@@ -151,6 +151,7 @@ def _resolve_cache_key(obj, context=None):
             bool(getattr(grandparent, "is_fbp_control", False)) if grandparent is not None else False,
             _idprop_string(obj, "fbp_parent_rig_name"),
             _idprop_string(obj, "fbp_lattice_owner"),
+            _idprop_string(obj, "fbp_lattice_pin_owner"),
             _idprop_string(obj, "fbp_effect_control_owner"),
             bool(obj.get("fbp_gradient_controller", False)) if obj is not None else False,
             _idprop_string(obj, "fbp_gradient_controller_owner"),
@@ -2158,6 +2159,15 @@ def _fbp_resolve_rig_from_any_object_uncached(obj, context=None):
                         return owner
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
+        if str(obj.get("fbp_lattice_pin_id", "") or ""):
+            # Lattice puppet pins are parented to their layer rig.
+            owner = getattr(obj, "parent", None)
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
+            owner_name = str(obj.get("fbp_lattice_pin_owner", "") or "")
+            owner = bpy.data.objects.get(owner_name) if owner_name else None
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
         if str(getattr(obj, "type", "") or "") == "LATTICE":
             # Parenting is the native ownership contract and survives rig
             # renames. The readable name tag is only a repair fallback. Older

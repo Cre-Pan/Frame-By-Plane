@@ -2766,7 +2766,11 @@ def _sync_object_mask_controller_visibility(context=None):
 
 
 def _sync_lattice_controller_visibility(context=None):
-    """Hide Lattice cages unless the owning plane/rig or cage is selected."""
+    """Hide Lattice cages and puppet pins unless their layer is selected.
+
+    Selecting the rig, its plane, the cage or any of its pins counts as
+    selecting the layer, so a pin stays visible while it is being moved.
+    """
     context = context or getattr(bpy, "context", None)
     changed = False
     try:
@@ -2775,28 +2779,71 @@ def _sync_lattice_controller_visibility(context=None):
         FBP_EFFECT_LATTICE = "LATTICE"
         _fbp_is_enabled = None
         _fbp_stored_effect_visibility = None
+    try:
+        from .lattice_pins import is_pin, pin_owner
+    except (ImportError, AttributeError):
+        is_pin = None
+        pin_owner = None
+
+    def set_hidden(obj, hidden):
+        result = False
+        try:
+            if bool(obj.hide_get()) != hidden:
+                obj.hide_set(hidden)
+                result = True
+        except FBP_DATA_ERRORS:
+            pass
+        if not bool(getattr(obj, "hide_render", False)):
+            obj.hide_render = True
+            result = True
+        return result
+
+    cages = []
+    pins_by_owner = {}
+    for obj in _context_scene_objects(context):
+        try:
+            if str(getattr(obj, "type", "") or "") == "LATTICE":
+                cages.append(obj)
+            elif is_pin is not None and is_pin(obj):
+                owner = pin_owner(obj)
+                if owner is not None:
+                    pins_by_owner.setdefault(owner.as_pointer(), []).append(obj)
+        except FBP_DATA_ERRORS:
+            continue
     selected_pointers = _selected_pointer_set(context)
     if not selected_pointers:
-        for obj in _context_scene_objects(context):
+        for obj in cages:
             try:
-                if str(getattr(obj, "type", "") or "") != "LATTICE":
-                    continue
                 owner = getattr(obj, "parent", None)
                 if not (owner and bool(getattr(owner, "is_fbp_control", False))) and not str(obj.get("fbp_lattice_owner", "") or ""):
                     continue
-                if not bool(obj.hide_get()):
-                    obj.hide_set(True)
-                    changed = True
-                if not bool(getattr(obj, "hide_render", False)):
-                    obj.hide_render = True
-                    changed = True
+                changed = set_hidden(obj, True) or changed
             except FBP_DATA_ERRORS:
                 continue
+        for pins in pins_by_owner.values():
+            for pin in pins:
+                changed = set_hidden(pin, True) or changed
         return changed
-    for obj in _context_scene_objects(context):
+
+    def layer_state(owner, helper):
+        effect_enabled = True
+        viewport_enabled = True
         try:
-            if str(getattr(obj, "type", "") or "") != "LATTICE":
-                continue
+            if _fbp_is_enabled is not None:
+                effect_enabled = bool(_fbp_is_enabled(owner, FBP_EFFECT_LATTICE))
+            if _fbp_stored_effect_visibility is not None:
+                viewport_enabled = bool(_fbp_stored_effect_visibility(owner, FBP_EFFECT_LATTICE, True))
+        except FBP_DATA_ERRORS:
+            pass
+        selected = _rig_or_controller_is_selected(owner, helper, context) or any(
+            _object_is_selected_or_active(pin, context)
+            for pin in pins_by_owner.get(owner.as_pointer(), ())
+        )
+        return bool(effect_enabled and viewport_enabled), bool(selected)
+
+    handled_owners = set()
+    for obj in cages:
+        try:
             owner = getattr(obj, "parent", None)
             if not (owner and bool(getattr(owner, "is_fbp_control", False))):
                 owner_name = str(obj.get("fbp_lattice_owner", "") or "")
@@ -2804,29 +2851,18 @@ def _sync_lattice_controller_visibility(context=None):
             if not (owner and bool(getattr(owner, "is_fbp_control", False))):
                 continue
             show_cage_pref = bool(getattr(owner, "fbp_lattice_show_cage", True))
-            effect_enabled = True
-            viewport_enabled = True
-            try:
-                if _fbp_is_enabled is not None:
-                    effect_enabled = bool(_fbp_is_enabled(owner, FBP_EFFECT_LATTICE))
-                if _fbp_stored_effect_visibility is not None:
-                    viewport_enabled = bool(_fbp_stored_effect_visibility(owner, FBP_EFFECT_LATTICE, True))
-            except FBP_DATA_ERRORS:
-                pass
-            visible = bool(effect_enabled and viewport_enabled and show_cage_pref and _rig_or_controller_is_selected(owner, obj, context))
-            hidden = not visible
-            try:
-                hidden_now = bool(obj.hide_get())
-            except FBP_DATA_ERRORS:
-                hidden_now = hidden
-            if hidden_now != hidden:
-                obj.hide_set(hidden)
-                changed = True
-            if not bool(getattr(obj, "hide_render", False)):
-                obj.hide_render = True
-                changed = True
+            active, selected = layer_state(owner, obj)
+            changed = set_hidden(obj, not (active and show_cage_pref and selected)) or changed
+            # Pins ignore the Cage toggle: they are the puppet's handles.
+            handled_owners.add(owner.as_pointer())
+            for pin in pins_by_owner.get(owner.as_pointer(), ()):
+                changed = set_hidden(pin, not (active and selected)) or changed
         except FBP_DATA_ERRORS:
             continue
+    for pointer, pins in pins_by_owner.items():
+        if pointer not in handled_owners:
+            for pin in pins:
+                changed = set_hidden(pin, True) or changed
     return changed
 
 
@@ -3248,7 +3284,10 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
                         )
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
-        if active_object is not None and str(getattr(active_object, "type", "") or "") == "LATTICE":
+        from .lattice_pins import is_pin
+        if active_object is not None and (
+            str(getattr(active_object, "type", "") or "") == "LATTICE" or is_pin(active_object)
+        ):
             try:
                 from .layers import fbp_resolve_rig_from_any_object
                 owner = fbp_resolve_rig_from_any_object(active_object, bpy.context)
@@ -3258,11 +3297,7 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
 
                     def _focus_selected_lattice():
                         current = getattr(bpy.context, "active_object", None)
-                        if (
-                            current is None
-                            or str(getattr(current, "name", "") or "") != helper_name
-                            or str(getattr(current, "type", "") or "") != "LATTICE"
-                        ):
+                        if current is None or str(getattr(current, "name", "") or "") != helper_name:
                             return None
                         current_owner = bpy.data.objects.get(owner_name)
                         if current_owner is None:
