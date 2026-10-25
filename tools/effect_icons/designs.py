@@ -1,8 +1,7 @@
 """Vector sources for the Frame By Plane effect icons.
 
-Each entry is the inner SVG of a 39x39 icon drawn in the same style as the
-hand-made mask icons in ``frame_by_plane/assets/icons``: a faint rounded frame,
-a light grey glyph (``p``) and a half-strength secondary tone (``s``).
+Each entry is the inner SVG of a frameless 39x39 icon: a light grey glyph
+(``p``) and a half-strength secondary tone (``s``).
 Run ``render_icons.py`` to rasterize them into ``icon_<ID>_effect.png``.
 """
 
@@ -591,8 +590,8 @@ NATIVE_ONLY = (
 for _effect_id in NATIVE_ONLY:
     ICONS.pop(_effect_id, None)
 
-FRAME = ('<rect x="1" y="1" width="37" height="37" rx="4.5" fill="none" '
-         'stroke="#ffffff" stroke-opacity="0.2" stroke-width="2"/>')
+# Effect icons are frameless (Ale's call); the mask icons keep their own frame.
+FRAME = ""
 
 
 def svg(effect_id, scale=1):

@@ -5,8 +5,8 @@ Usage (needs Node + Playwright with Chromium, and Pillow):
 
 Works on the sheet written by ``build_master.py`` and on a copy re-exported
 from Figma/Inkscape, as long as each icon keeps its layer name/id. Each icon
-is cropped to a 39x39 square centred on its group, rendered at 8x and
-downsampled like ``render_icons.py``.
+is cropped to a 39x39 square centred on its group, rendered at 8x, then
+re-centred, enlarged and downsampled like ``render_icons.py``.
 """
 
 import io
@@ -17,6 +17,9 @@ import sys
 import tempfile
 
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from render_icons import fit_glyph  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -78,7 +81,7 @@ def main():
         for icon_id in ids:
             with open(os.path.join(tmp, icon_id + ".png"), "rb") as handle:
                 big = Image.open(io.BytesIO(handle.read())).convert("RGBA")
-            big.resize((39, 39), Image.LANCZOS).save(os.path.join(out_dir, icon_id + ".png"), optimize=True)
+            fit_glyph(big).resize((39, 39), Image.LANCZOS).save(os.path.join(out_dir, icon_id + ".png"), optimize=True)
     print(f"Exported {len(ids)} icons into {out_dir}")
 
 
