@@ -691,7 +691,11 @@ def _curated_quick_effect_rows(category):
         normalized_category = "2D" if actual_category == "BASE" else actual_category
         if effect_id in seen or normalized_category != category:
             continue
-        if bool(definition.get("custom_invalid", False)) or bool(definition.get("custom_hidden", False)):
+        if (
+            bool(definition.get("custom_invalid", False))
+            or bool(definition.get("custom_hidden", False))
+            or bool(definition.get("hidden", False))
+        ):
             continue
         tail.append((str(definition.get("label", effect_id) or effect_id).casefold(), effect_id))
     for _sort_label, effect_id in sorted(tail):

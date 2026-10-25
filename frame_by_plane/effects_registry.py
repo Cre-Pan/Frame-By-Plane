@@ -1678,21 +1678,24 @@ FBP_EFFECT_REGISTRY = {
         "supports": ("IMAGE", "SEQUENCE"),
     },
     FBP_EFFECT_COLOR_MASK: {
-        "label": "Color Mask", "icon": "RESTRICT_COLOR_OFF", "kind": "SHADER", "stage": "MASK",
+        "label": "Color Key", "icon": "RESTRICT_COLOR_OFF", "kind": "SHADER", "stage": "MASK",
         "source_names": (), "canonical_name": "FBP_SH_Color_Mask_5514",
         "asset_id": "frame_by_plane.shader.color_mask.5514", "enabled_key": "fbp_effect_color_mask",
         "input_socket": "Alpha In", "output_socket": "Alpha Out", "mask_output_socket": "Mask Out",
+        # A Layer-targeted key also filters the final layer color (Despill).
+        "color_input_socket": "Color In", "color_output_socket": "Color Out",
         "uv_input_socket": "UV Vector", "debug_socket": "Debug Preview",
-        "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte")),
+        "debug_modes": (("FINAL", "Final"), ("MATTE", "Matte"), ("DISTANCE", "Distance")),
         "property_map": {
             "fbp_color_mask_color": "Target Color",
             "fbp_color_mask_tolerance": "Tolerance",
             "fbp_color_mask_softness": "Softness",
             "fbp_color_mask_factor": "Factor",
             "fbp_color_mask_invert": "Invert",
+            "fbp_color_mask_despill": "Despill",
         },
         "private_group": True, "image_aware": True, "builtin": True,
-        "description": "Build a mask from pixels close to a selected source color.",
+        "description": "Keep or remove the pixels close to a color, with despill for green and blue screens.",
         "category": "MASK", "performance": "LIGHT",
         "supports": ("IMAGE", "SEQUENCE"),
     },
@@ -2191,7 +2194,11 @@ FBP_EFFECT_REGISTRY = {
         "builtin": True,
     },
     FBP_EFFECT_CHROMA_KEY: {
+        # Legacy: merged into Color Key (COLOR_MASK). Kept only so files saved
+        # before the merge still load; fbp_migrate_chroma_key_to_color_key()
+        # converts them on load.
         "label": "Chroma Key", "icon": "EYEDROPPER", "kind": "SHADER", "stage": "COLOR",
+        "hidden": True, "replaced_by": FBP_EFFECT_COLOR_MASK,
         "canonical_name": "FBP_SH_Chroma_Key_480",
         "asset_id": "frame_by_plane.shader.chroma_key.480", "enabled_key": "fbp_effect_chroma_key",
         "input_socket": "Color In", "output_socket": "Color Out",
@@ -2428,7 +2435,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_IMPORTED_MASK: ("MASK", "LIGHT", "Apply an imported raster layer mask while keeping factor and inversion editable."),
     FBP_EFFECT_EMISSION: ("2D", "LIGHT", "Switch the owned layer material to a real Emission shader with directly editable high-dynamic-range strength."),
     FBP_EFFECT_LAYER_BLEND: ("2D", "LIGHT", "Blend the current layer against the image layer directly below it using a principal PSD or Procreate blend mode."),
-    FBP_EFFECT_COLOR_MASK: ("MASK", "LIGHT", "Select pixels close to a chosen color and use the result as a layer or per-effect mask."),
+    FBP_EFFECT_COLOR_MASK: ("MASK", "LIGHT", "Select pixels close to a chosen color and use the result as a layer or per-effect mask. Invert keys the color out like a green screen; Despill greys the leftover key color along the edges."),
     FBP_EFFECT_LUMINANCE_MASK: ("MASK", "LIGHT", "Select a luminance interval from the current image or sequence and use it as a layer or per-effect mask."),
     FBP_EFFECT_CHANNEL_MASK: ("MASK", "LIGHT", "Select a value interval from the red, green, blue, alpha or luminance channel of the current image or sequence."),
     FBP_EFFECT_GRADIENT_MASK: ("MASK", "LIGHT", "Create a linear or radial procedural mask with editable center, angle, scale and feather."),
@@ -2744,7 +2751,7 @@ FBP_BASE_EFFECT_MENU_ORDER = (
     FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_CURVES,
     FBP_EFFECT_SOLID_MASK, FBP_EFFECT_DUOTONE, FBP_EFFECT_TRITONE, FBP_EFFECT_RECOLOR,
     FBP_EFFECT_VIGNETTE, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW,
-    FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_INVERT, FBP_EFFECT_UNSHARP_MASK,
+    FBP_EFFECT_INVERT, FBP_EFFECT_UNSHARP_MASK,
     FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE,
 )
 FBP_3D_EFFECT_MENU_ORDER = (
@@ -2917,8 +2924,8 @@ FBP_IMAGE_EFFECT_MENU_COLUMNS = (
 
 FBP_MASK_EFFECT_MENU_SECTIONS = (
     ("Shape", "SURFACE_NCURVE", (FBP_EFFECT_SQUARE_MASK, FBP_EFFECT_CIRCLE_MASK, FBP_EFFECT_TRIANGLE_MASK)),
-    ("Color Key", "EYEDROPPER", (
-        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK,
+    ("Color & Luma", "EYEDROPPER", (
+        FBP_EFFECT_COLOR_MASK, FBP_EFFECT_LUMINANCE_MASK, FBP_EFFECT_CHANNEL_MASK,
     )),
     ("Procedural", "NODE_INSERT_ON", (
         FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_NOISE_MASK, FBP_EFFECT_VORONOI_MASK, FBP_EFFECT_WAVE_MASK,

@@ -82,7 +82,7 @@ def main():
         ("Image Effects", image_sections, 2),
         ("Mesh Effects", mesh_sections, 2),
         ("Altri", (
-            ("Mask", "", ("CHROMA_KEY", "EDGE_DISTANCE_MASK")),
+            ("Mask", "", ("EDGE_DISTANCE_MASK",)),
             ("Famiglie e stack effetti", "", ("FAMILY:WAVE", "FAMILY:POSTERIZE", "EMISSION",
                                               "GOBO_SHADOWS", "LAYER_BLEND")),
         ), 1),

@@ -9831,6 +9831,7 @@ def _fbp_stage_external_target(material, _source_node, stage, effect_nodes):
     if stage != "COLOR" or not material or not material.node_tree:
         return None
     effect_set = set(effect_nodes)
+    color_pass_nodes = set(_fbp_mask_color_pass_nodes(material))
     source = _fbp_material_color_source(material, create=True)
     candidate_sources = [source]
     candidate_sources.extend(
@@ -9858,6 +9859,10 @@ def _fbp_stage_external_target(material, _source_node, stage, effect_nodes):
             )
             if target_socket is None or getattr(target_socket, "node", None) in effect_set:
                 continue
+            if getattr(target_socket, "node", None) in color_pass_nodes:
+                # Color Key passes always sit after the stage and are rewired
+                # by the rebuild; the stage itself ends at the shader input.
+                break
             return target_socket
     return _fbp_material_color_target(material)
 
@@ -10251,6 +10256,57 @@ def _fbp_color_stage_evaluation_nodes(material, rig=None):
     return regular_nodes + final_nodes
 
 
+def _fbp_mask_color_pass_nodes(material, mask_nodes=None):
+    """Return mask nodes that also filter color (Color Key despill)."""
+    if mask_nodes is None:
+        mask_nodes = _fbp_stage_effect_nodes(material, "MASK")
+    result = []
+    for node in tuple(mask_nodes or ()):
+        definition = fbp_effect_definition(_fbp_shader_effect_id(node))
+        if (
+            _fbp_node_socket(node.inputs, str(definition.get("color_input_socket", "") or "")) is not None
+            and _fbp_node_socket(node.outputs, str(definition.get("color_output_socket", "") or "")) is not None
+        ):
+            result.append(node)
+    return result
+
+
+def _fbp_apply_mask_color_passes(material, rig, mask_nodes, current):
+    """Route the final layer color through every Layer-targeted color pass.
+
+    Masks normally only shape alpha. Color Key also greys the leftover key
+    color (Despill), so when it targets the whole layer the completed color
+    chain flows through its ``Color In``/``Color Out`` pair. Locally targeted
+    keys leave the color untouched: their matte already blends one effect.
+    """
+    if not material or not material.node_tree or current is None:
+        return current
+    tree = material.node_tree
+    local_target_by_mask = _fbp_local_target_by_mask(rig)
+    for node in _fbp_mask_color_pass_nodes(material, mask_nodes):
+        effect_id = _fbp_shader_effect_id(node)
+        definition = fbp_effect_definition(effect_id)
+        color_in = _fbp_node_socket(node.inputs, str(definition.get("color_input_socket", "") or ""))
+        color_out = _fbp_node_socket(node.outputs, str(definition.get("color_output_socket", "") or ""))
+        try:
+            for link in list(color_in.links):
+                tree.links.remove(link)
+        except FBP_DATA_ERRORS:
+            continue
+        if local_target_by_mask.get(effect_id, "LAYER") != "LAYER":
+            continue
+        try:
+            tree.links.new(current, color_in)
+            current = color_out
+        except FBP_DATA_ERRORS:
+            continue
+    try:
+        material["fbp_mask_color_pass"] = bool(_fbp_mask_color_pass_nodes(material, mask_nodes))
+    except FBP_DATA_ERRORS:
+        pass
+    return current
+
+
 def _fbp_rebuild_local_mask_receivers(material):
     """Rebuild every shader stage that can receive a local mask."""
     changed = _fbp_rebuild_shader_stage(material, "UV")
@@ -10352,9 +10408,17 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
             rig = bpy.data.objects.get(owner_name) if owner_name else None
         except FBP_DATA_ERRORS:
             rig = None
+        # A color-pass mask (Color Key) sits at the end of the color chain, so
+        # adding, removing or retargeting it rewires the color stage too.
+        color_pass = bool(_fbp_mask_color_pass_nodes(material, effect_nodes))
+        try:
+            color_pass = color_pass or bool(material.get("fbp_mask_color_pass", False))
+        except FBP_DATA_ERRORS:
+            pass
         if (
             (rig and bool(_fbp_mask_target_map(rig)))
             or bool(_fbp_local_mask_helper_nodes(material))
+            or color_pass
         ):
             return _fbp_rebuild_local_mask_receivers(material)
         _fbp_remove_stage_links(material, image_node, stage, effect_nodes)
@@ -10448,6 +10512,12 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
                 current = effect_output
         else:
             current = effect_output
+    current = _fbp_apply_mask_color_passes(
+        material,
+        rig,
+        _fbp_stage_effect_nodes(material, "MASK"),
+        current,
+    )
     current = _fbp_apply_local_mask_preview(
         material,
         rig,
@@ -11908,32 +11978,49 @@ def _fbp_sync_clipping_source_effect_inputs(rig, source_rig, node):
                 value = float(fallback)
             changed = _fbp_set_group_input_value(node, socket_name, value) or changed
 
-    chroma_enabled = bool(fbp_effect_is_active(source_rig, FBP_EFFECT_CHROMA_KEY))
-    changed = _fbp_set_group_input_value(node, "Use Source Chroma Key", 1.0 if chroma_enabled else 0.0) or changed
-    if chroma_enabled:
-        try:
-            color = tuple(float(v) for v in getattr(source_rig, "fbp_chroma_key_color", (0.0, 1.0, 0.0, 1.0)))
-            if len(color) == 3:
-                color = (*color, 1.0)
-            color = color[:4]
-        except FBP_DATA_ERRORS:
-            color = (0.0, 1.0, 0.0, 1.0)
-        except Exception:
-            color = (0.0, 1.0, 0.0, 1.0)
-        changed = _fbp_set_group_input_value(node, "Source Key Color", color) or changed
-        for attr, socket_name, fallback in (
-            ("fbp_chroma_key_tolerance", "Source Key Tolerance", 0.20),
-            ("fbp_chroma_key_softness", "Source Key Softness", 0.08),
-            ("fbp_chroma_key_invert", "Source Key Invert", 0.0),
+    key = _fbp_source_color_key_state(source_rig)
+    changed = _fbp_set_group_input_value(node, "Use Source Chroma Key", 1.0 if key else 0.0) or changed
+    if key:
+        for socket_name, value in zip(
+            ("Source Key Color", "Source Key Tolerance", "Source Key Softness", "Source Key Invert"),
+            key,
         ):
-            try:
-                value = float(getattr(source_rig, attr, fallback))
-            except FBP_DATA_ERRORS:
-                value = float(fallback)
-            except Exception:
-                value = float(fallback)
             changed = _fbp_set_group_input_value(node, socket_name, value) or changed
     return changed
+
+
+def _fbp_source_color_key_state(source_rig):
+    """Return the source layer's Color Key as clipping-source key inputs.
+
+    The clipping group keys the source with Chroma Key semantics: it removes
+    pixels within ``tolerance +/- softness`` of the color unless inverted.
+    Color Key ramps from ``tolerance`` to ``tolerance + softness`` and keeps
+    the matched pixels unless inverted, so both are converted here. Returns
+    ``None`` when no Layer-targeted Color Key is active.
+    """
+    if (
+        source_rig is None
+        or not fbp_effect_is_active(source_rig, FBP_EFFECT_COLOR_MASK)
+        or fbp_effect_mask_raw_target_ref(source_rig, FBP_EFFECT_COLOR_MASK) not in {"", "LAYER"}
+    ):
+        return None
+    try:
+        color = tuple(float(v) for v in getattr(source_rig, "fbp_color_mask_color", (0.0, 1.0, 0.0, 1.0)))
+        if len(color) == 3:
+            color = (*color, 1.0)
+        color = tuple(round(v, 6) for v in color[:4])
+        tolerance = float(getattr(source_rig, "fbp_color_mask_tolerance", 0.12))
+        softness = max(0.0, float(getattr(source_rig, "fbp_color_mask_softness", 0.08)))
+        invert = bool(getattr(source_rig, "fbp_color_mask_invert", False))
+    except FBP_DATA_ERRORS:
+        return None
+    half = softness * 0.5
+    return (
+        color,
+        round(tolerance + half, 6),
+        round(half, 6),
+        0.0 if invert else 1.0,
+    )
 
 
 def _fbp_layer_blend_procedural_rgba(source_rig, scene=None):
@@ -12364,13 +12451,7 @@ def _fbp_sync_mask_source(rig, effect_id, node):
                     "fbp_pixelate_offset_x", "fbp_pixelate_offset_y",
                 )
             )
-            effect_values.append((FBP_EFFECT_CHROMA_KEY, bool(fbp_effect_is_active(source_rig, FBP_EFFECT_CHROMA_KEY))))
-            color = tuple(round(float(v), 6) for v in tuple(getattr(source_rig, "fbp_chroma_key_color", (0.0, 1.0, 0.0, 1.0)))[:4])
-            effect_values.append(("fbp_chroma_key_color", color))
-            effect_values.extend(
-                (attr, round(float(getattr(source_rig, attr, 0.0)), 6))
-                for attr in ("fbp_chroma_key_tolerance", "fbp_chroma_key_softness", "fbp_chroma_key_invert")
-            )
+            effect_values.append((FBP_EFFECT_COLOR_MASK, _fbp_source_color_key_state(source_rig)))
         except FBP_DATA_ERRORS:
             effect_values = []
         except Exception:
@@ -18554,6 +18635,67 @@ def _fbp_remove_effect_viewport_controls(rig, effect_id):
         return False
 
 
+def fbp_migrate_chroma_key_to_color_key(rig):
+    """Convert a pre-merge Chroma Key on ``rig`` into the Color Key mask.
+
+    Chroma Key removed pixels within ``tolerance +/- softness`` of the key;
+    Color Key ramps from ``tolerance`` to ``tolerance + softness`` and keeps
+    the matched pixels unless inverted, so the values are translated and
+    Invert is flipped. A layer that already uses Color Key keeps both: the
+    legacy effect still renders and can be removed by hand.
+    """
+    if not rig or not fbp_effect_is_active(rig, FBP_EFFECT_CHROMA_KEY):
+        return False
+    if fbp_effect_is_active(rig, FBP_EFFECT_COLOR_MASK):
+        return False
+    try:
+        color = tuple(getattr(rig, "fbp_chroma_key_color", (0.0, 1.0, 0.0, 1.0)))
+        tolerance = float(getattr(rig, "fbp_chroma_key_tolerance", 0.20))
+        softness = max(0.0, float(getattr(rig, "fbp_chroma_key_softness", 0.08)))
+        despill = float(getattr(rig, "fbp_chroma_key_despill", 0.5))
+        invert = bool(getattr(rig, "fbp_chroma_key_invert", False))
+        visible = fbp_effect_visible_state(rig, FBP_EFFECT_CHROMA_KEY, "")
+    except FBP_DATA_ERRORS:
+        return False
+    if not fbp_add_effect(rig, FBP_EFFECT_COLOR_MASK, inherit_active_group=False):
+        return False
+    for prop_name, value in (
+        ("fbp_color_mask_color", color),
+        ("fbp_color_mask_tolerance", max(0.0, tolerance - softness)),
+        ("fbp_color_mask_softness", min(1.0, softness * 2.0)),
+        ("fbp_color_mask_factor", 1.0),
+        ("fbp_color_mask_invert", not invert),
+        ("fbp_color_mask_despill", despill),
+    ):
+        try:
+            setattr(rig, prop_name, value)
+        except FBP_DATA_ERRORS:
+            pass
+    fbp_remove_effect(rig, FBP_EFFECT_CHROMA_KEY)
+    if not visible:
+        try:
+            fbp_set_effect_visible(rig, FBP_EFFECT_COLOR_MASK, False)
+        except FBP_DATA_ERRORS:
+            pass
+    fbp_update_shader_effect(rig, FBP_EFFECT_COLOR_MASK)
+    return True
+
+
+def fbp_migrate_chroma_key_scene_rigs():
+    """Run the Chroma Key to Color Key migration on every loaded layer."""
+    migrated = 0
+    key = str(fbp_effect_definition(FBP_EFFECT_CHROMA_KEY).get("enabled_key", "") or "")
+    for obj in tuple(getattr(bpy.data, "objects", ()) or ()):
+        try:
+            if not key or not obj.get(key, False):
+                continue
+        except FBP_DATA_ERRORS:
+            continue
+        if fbp_migrate_chroma_key_to_color_key(obj):
+            migrated += 1
+    return migrated
+
+
 def fbp_remove_effect(rig, effect_id, *, sync_items=True):
     effect_id = fbp_normalize_effect_id(effect_id)
     removed_gp_canvas = None
@@ -23425,6 +23567,7 @@ def fbp_draw_effect_settings(
                 "fbp_color_mask_softness",
                 "fbp_color_mask_factor",
                 "fbp_color_mask_invert",
+                "fbp_color_mask_despill",
             ),
             labels,
         )
@@ -23432,6 +23575,13 @@ def fbp_draw_effect_settings(
             text="Samples the original image or animated sequence color",
             icon="IMAGE_DATA",
         )
+        if (
+            float(getattr(rig, "fbp_color_mask_despill", 0.0) or 0.0) > 0.0
+            and fbp_effect_mask_raw_target_ref(rig, FBP_EFFECT_COLOR_MASK) not in {"", "LAYER"}
+        ):
+            hint = box.row()
+            hint.enabled = False
+            hint.label(text="Despill applies only when the key targets the Layer", icon="INFO")
     elif effect_id == FBP_EFFECT_LUMINANCE_MASK:
         _fbp_draw_compact_effect_properties(
             box, rig, definition,
@@ -27619,9 +27769,10 @@ FBP_BUILTIN_EFFECT_PRESETS = {
         "Banded Quartz": {"fbp_crystal_texture_type": "WAVE", "fbp_crystal_depth": 0.14, "fbp_crystal_roundness": 0.9, "fbp_crystal_pattern_scale": 5.0, "fbp_crystal_pattern_detail": 4.0, "fbp_crystal_pattern_strength": 0.045, "fbp_crystal_distortion": 0.9, "fbp_crystal_roughness": 0.1, "fbp_crystal_tint": (0.86, 0.72, 1.0, 1.0)},
         "Prism Blocks": {"fbp_crystal_texture_type": "BRICK", "fbp_crystal_depth": 0.2, "fbp_crystal_roundness": 0.72, "fbp_crystal_pattern_scale": 10.0, "fbp_crystal_pattern_detail": 2.0, "fbp_crystal_pattern_strength": 0.07, "fbp_crystal_distortion": 0.75, "fbp_crystal_roughness": 0.06, "fbp_crystal_tint": (0.4, 0.8, 1.0, 1.0)},
     },
-    FBP_EFFECT_CHROMA_KEY: {
-        "Green Screen": {"fbp_chroma_key_color": (0.0, 1.0, 0.0, 1.0), "fbp_chroma_key_tolerance": 0.20, "fbp_chroma_key_softness": 0.08, "fbp_chroma_key_despill": 0.65},
-        "Blue Screen": {"fbp_chroma_key_color": (0.0, 0.18, 1.0, 1.0), "fbp_chroma_key_tolerance": 0.20, "fbp_chroma_key_softness": 0.08, "fbp_chroma_key_despill": 0.55},
+    FBP_EFFECT_COLOR_MASK: {
+        "Green Screen": {"fbp_color_mask_color": (0.0, 1.0, 0.0, 1.0), "fbp_color_mask_tolerance": 0.20, "fbp_color_mask_softness": 0.08, "fbp_color_mask_factor": 1.0, "fbp_color_mask_invert": True, "fbp_color_mask_despill": 0.65},
+        "Blue Screen": {"fbp_color_mask_color": (0.0, 0.18, 1.0, 1.0), "fbp_color_mask_tolerance": 0.20, "fbp_color_mask_softness": 0.08, "fbp_color_mask_factor": 1.0, "fbp_color_mask_invert": True, "fbp_color_mask_despill": 0.55},
+        "Keep Color": {"fbp_color_mask_tolerance": 0.12, "fbp_color_mask_softness": 0.08, "fbp_color_mask_factor": 1.0, "fbp_color_mask_invert": False, "fbp_color_mask_despill": 0.0},
     },
     FBP_EFFECT_SOLARIZE: {
         "Classic Solarize": {"fbp_solarize_threshold": 0.5, "fbp_solarize_softness": 0.04, "fbp_solarize_factor": 1.0},

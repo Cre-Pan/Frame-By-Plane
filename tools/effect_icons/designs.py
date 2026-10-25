@@ -485,8 +485,6 @@ ICONS = {
     "GRAIN": _grain(5),
     "PAPER_FIBERS": rect(7, 7, 25, 25, 0.5, 3, True, 1.4) + _fibers(9),
     # ---------------------------------------------------------------- Magic
-    "CHROMA_KEY": (rect(7, 7, 25, 25, 0.35, 3) + circ(19.5, 15, 4.5, 1.0)
-                   + fill("M10.5 32 C10.5 25 14 21.5 19.5 21.5 C25 21.5 28.5 25 28.5 32 Z")),
     "INVERT": ('<defs><mask id="m"><rect x="0" y="0" width="39" height="39" fill="#fff"/>'
                '<circle cx="19.5" cy="19.5" r="7" fill="#000"/></mask></defs>'
                + rect(7, 7, 12.5, 25, 1.0, 0, extra='mask="url(#m)"')

@@ -4285,6 +4285,52 @@ def test_knit_crochet_stitches(_module):
     return {"knit": knit, "crochet": crochet}
 
 
+def test_color_key_merges_chroma_key(_module):
+    """Color Key filters the layer color, and old Chroma Key files convert to it."""
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Color Key Test")
+    owned = [rig, *rig.children_recursive]
+
+    def color_feed():
+        material = geometry._fbp_plane_materials(rig)[0]
+        target = geometry._fbp_material_color_target(material)
+        return [(link.from_node.name, link.from_socket.name) for link in target.links]
+
+    try:
+        assert geometry.fbp_add_effect(rig, "INVERT", inherit_active_group=False)
+        assert geometry.fbp_add_effect(rig, "CHROMA_KEY", inherit_active_group=False)
+        rig.fbp_chroma_key_tolerance = 0.25
+        rig.fbp_chroma_key_softness = 0.10
+        rig.fbp_chroma_key_despill = 0.40
+        assert geometry.fbp_migrate_chroma_key_scene_rigs() == 1
+        assert not geometry.fbp_effect_is_active(rig, "CHROMA_KEY")
+        assert geometry.fbp_effect_is_active(rig, "COLOR_MASK")
+        assert rig.fbp_color_mask_invert
+        assert abs(rig.fbp_color_mask_tolerance - 0.15) < 1e-5
+        assert abs(rig.fbp_color_mask_softness - 0.20) < 1e-5
+        assert abs(rig.fbp_color_mask_despill - 0.40) < 1e-5
+        # The layer color ends in the key's despill pass, fed by Invert.
+        assert color_feed() == [("FBP Effect • Color Key", "Color Out")], color_feed()
+        material = geometry._fbp_plane_materials(rig)[0]
+        key_node = next(node for node in material.node_tree.nodes if node.name == "FBP Effect • Color Key")
+        assert [link.from_node.name for link in key_node.inputs["Color In"].links] == ["FBP Effect • Invert"]
+        # Targeting one effect leaves the layer color alone.
+        geometry.fbp_set_effect_mask_target(rig, "COLOR_MASK", "INVERT")
+        assert color_feed() == [("FBP Effect • Invert", "Color Out")], color_feed()
+        geometry.fbp_set_effect_mask_target(rig, "COLOR_MASK", "LAYER")
+        assert color_feed() == [("FBP Effect • Color Key", "Color Out")], color_feed()
+        # Removing the key restores the plain color chain.
+        assert geometry.fbp_remove_effect(rig, "COLOR_MASK")
+        assert color_feed() == [("FBP Effect • Invert", "Color Out")], color_feed()
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"migrated": 1}
+
+
 def test_print_paint_and_edge_distance_cycles(_module):
     """Riso Print, Oil Paint and Edge Distance Mask render their contracts."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -5180,6 +5226,7 @@ def run_background():
             ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("frame_stack_samples_earlier_frames", test_frame_stack_samples_earlier_frames),
             ("knit_crochet_stitches", test_knit_crochet_stitches),
+            ("color_key_merges_chroma_key", test_color_key_merges_chroma_key),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
