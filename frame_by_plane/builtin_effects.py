@@ -2082,8 +2082,15 @@ def _finish_generated_mask(group, inp, out, raw_mask, *, prefix, x=780, y=160, a
 
 
 def _create_color_mask(name):
-    """Create an image-sampled color-range mask for stills and sequences."""
+    """Create the Color Key mask: an image-sampled color-range matte.
+
+    Besides the matte it carries a color pass-through. When the key targets the
+    whole layer, the color stage routes its final color through ``Color In``;
+    Despill greys the pixels close to the key color (the old Chroma Key
+    behavior) so green or blue fringes do not survive along soft edges.
+    """
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
     _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
     _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
@@ -2092,7 +2099,9 @@ def _create_color_mask(name):
     _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.08, minimum=0.0, maximum=1.0)
     _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "Invert", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Despill", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
     _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
     _socket(group, "Mask Out", "OUTPUT", "NodeSocketFloat")
     inp, out = _group_io(group)
@@ -2131,11 +2140,44 @@ def _create_color_mask(name):
     source_alpha = _math(group, "MULTIPLY", "Color Mask Source Alpha", 150, -170)
     links.new(ramp.outputs["Result"], source_alpha.inputs[0])
     links.new(image.outputs["Alpha"], source_alpha.inputs[1])
-    group["fbp_generated_mask_contract_version"] = 2
-    return _finish_generated_mask(
+    group["fbp_generated_mask_contract_version"] = 3
+    _finish_generated_mask(
         group, inp, out, source_alpha.outputs[0], prefix="Color Mask",
         x=330, y=130, availability=inp.outputs["Use Image Sample"],
     )
+
+    # Despill: grey the incoming color where the source is close to the key.
+    # The amount follows the un-inverted key, so Invert never moves the spill.
+    spill = _math(group, "MULTIPLY", "Color Key Spill Zone", 150, 520)
+    spill_factor = _math(group, "MULTIPLY", "Color Key Spill Factor", 330, 520)
+    spill_amount = _math(group, "MULTIPLY", "Color Key Despill Amount", 510, 520)
+    grey = _node(group, "ShaderNodeRGBToBW", "Color Key Despill Grey", 510, 700)
+    despill = _mix_rgb(group, "MIX", "Color Key Despill", 720, 620)
+    links.new(source_alpha.outputs[0], spill.inputs[0])
+    links.new(inp.outputs["Use Image Sample"], spill.inputs[1])
+    links.new(spill.outputs[0], spill_factor.inputs[0])
+    links.new(inp.outputs["Factor"], spill_factor.inputs[1])
+    links.new(spill_factor.outputs[0], spill_amount.inputs[0])
+    links.new(inp.outputs["Despill"], spill_amount.inputs[1])
+    links.new(inp.outputs["Color In"], grey.inputs[0])
+    links.new(spill_amount.outputs[0], despill.inputs[0])
+    links.new(inp.outputs["Color In"], despill.inputs[1])
+    links.new(grey.outputs[0], despill.inputs[2])
+    links.new(despill.outputs[0], out.inputs["Color Out"])
+
+    # Debug Preview 2 (Distance) shows the normalized color distance as alpha;
+    # 0 and 1 keep the Final/Matte behavior shared by every generated mask.
+    final_alpha = out.inputs["Alpha Out"].links[0].from_socket
+    show_distance = _math(group, "GREATER_THAN", "Color Key Distance Preview Active", 1500, 340, value_2=1.5)
+    distance_norm = _math(group, "MULTIPLY", "Color Key Normalized Distance", 1500, 480, value_2=0.577350269)
+    distance_preview = _mix_rgb(group, "MIX", "Color Key Distance Preview", 1700, 380)
+    links.new(inp.outputs["Debug Preview"], show_distance.inputs[0])
+    links.new(distance.outputs["Value"], distance_norm.inputs[0])
+    links.new(show_distance.outputs[0], distance_preview.inputs[0])
+    links.new(final_alpha, distance_preview.inputs[1])
+    links.new(distance_norm.outputs[0], distance_preview.inputs[2])
+    links.new(distance_preview.outputs[0], out.inputs["Alpha Out"])
+    return group
 
 
 def _create_luminance_mask(name):
@@ -10580,7 +10622,7 @@ def _builtin_group_is_complete(group, definition):
     if required_uv_store and group.nodes.get(required_uv_store) is None:
         return False
     generated_mask_contracts = {
-        "frame_by_plane.shader.color_mask": 2,
+        "frame_by_plane.shader.color_mask": 3,
         "frame_by_plane.shader.luminance_mask": 3,
         "frame_by_plane.shader.channel_mask": 3,
         "frame_by_plane.shader.gradient_mask": 4,

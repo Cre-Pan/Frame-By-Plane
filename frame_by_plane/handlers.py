@@ -1266,6 +1266,16 @@ def fbp_deferred_load_post_rebuild():
             exc,
         )
 
+    try:
+        from .geometry_nodes import fbp_migrate_chroma_key_scene_rigs
+        fbp_migrate_chroma_key_scene_rigs()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "chroma_key_color_key_migration",
+            "Could not convert Chroma Key to Color Key",
+            exc,
+        )
+
     fbp_subscribe_scene_msgbus()
     fbp_reload_custom_ui_icons_after_main_replacement()
     fbp_register_timer_once(fbp_deferred_scene_sync, 0.12)

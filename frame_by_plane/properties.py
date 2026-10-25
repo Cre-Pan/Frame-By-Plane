@@ -2903,6 +2903,7 @@ update_color_mask_tolerance_cb = _make_effect_update_callback('COLOR_MASK', 'fbp
 update_color_mask_softness_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_softness')
 update_color_mask_factor_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_factor')
 update_color_mask_invert_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_invert')
+update_color_mask_despill_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_despill')
 update_luminance_mask_minimum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_minimum')
 update_luminance_mask_maximum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_maximum')
 update_luminance_mask_softness_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_softness')
@@ -6576,7 +6577,7 @@ def register_properties():
         name="Rotation", description="Rotate the matte around the center of its sampled UV space",
         default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_luma_matte_uv_rotation_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_color = FloatVectorProperty(
-        name="Target Color", description="Source color selected by Color Mask",
+        name="Target Color", description="Source color selected by Color Key",
         subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 1.0, 0.0, 1.0),
         update=update_color_mask_color_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_tolerance = FloatProperty(
@@ -6584,16 +6585,20 @@ def register_properties():
         default=0.12, min=0.0, max=1.732, soft_max=1.0, subtype='FACTOR',
         update=update_color_mask_tolerance_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_softness = FloatProperty(
-        name="Softness", description="Smooth transition outside the Color Mask tolerance",
+        name="Softness", description="Smooth transition outside the Color Key tolerance",
         default=0.08, min=0.0, max=1.0, subtype='FACTOR',
         update=update_color_mask_softness_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_factor = FloatProperty(
-        name="Factor", description="Blend between the unmasked result and Color Mask",
+        name="Factor", description="Blend between the unmasked result and Color Key",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
         update=update_color_mask_factor_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_invert = BoolProperty(
-        name="Invert", description="Use colors outside the selected range",
+        name="Invert", description="Use colors outside the selected range. Enable it to key the color out, like a green or blue screen",
         default=False, update=update_color_mask_invert_cb)
+    _FBP_OBJECT_RNA.fbp_color_mask_despill = FloatProperty(
+        name="Despill", description="Grey the leftover key color along soft edges. Applies when the key targets the whole Layer",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_color_mask_despill_cb)
     _FBP_OBJECT_RNA.fbp_luminance_mask_minimum = FloatProperty(
         name="Minimum", description="Lowest source luminance included by Luminance Mask. Minimum and Maximum are automatically ordered if their values cross",
         default=0.2, min=0.0, max=1.0, subtype='FACTOR',

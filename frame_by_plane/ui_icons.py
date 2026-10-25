@@ -220,11 +220,43 @@ _FBP_EFFECT_CUSTOM_ICON_FILES = {
     "GREASE_PENCIL_MASK": "icon_GREASEPENCIL_mask.png",
     "SHAPE_MASK": "icon_SQUARE_mask.png",
 }
+# Effect artwork drawn in the same style as the mask icons. Sources live in
+# tools/effect_icons/designs.py; files are named icon_<ID>_effect.png.
+# FAMILY_<ID> keys are the grouped entries of the Add Effect menus.
+_FBP_EFFECT_ARTWORK_IDS = (
+    "ACCORDION_FOLD", "ASCII", "ASCII_MATRIX", "BLOOM", "BULGE_PINCH",
+    "CAMERA_BILLBOARD", "CAMERA_SCALE_LOCK", "CHANNEL_MIXER", "CHROMATIC_ABERRATION",
+    "COLOR_ISOLATE", "CROSSHATCH", "CRT_SCANLINES", "CUTOUT_OUTLINE",
+    "DEPTH_BLUR", "DIGITAL_NOISE", "DITHER", "DOT_MATRIX", "EDGE_DISTANCE_MASK",
+    "EMBOSS", "EMISSION", "FAMILY_COLORIZE", "FAMILY_DIRECTIONAL_BLUR", "FAMILY_EDGE",
+    "FAMILY_PIXELATE_MOSAIC", "FAMILY_POSTERIZE", "FAMILY_WAVE", "FILM_FADE",
+    "FILTER_PRESETS", "FRAME_STACK", "GAUSSIAN_BLUR", "GLASS", "GOBO_SHADOWS",
+    "GRADIENT_LIGHT", "GRAIN", "HALFTONE", "HUE_SATURATION", "IMAGE_RELIEF", "INVERT",
+    "KINETIC_TILES", "KNIT_CROCHET", "LAYER_BLEND", "LENS_WARP", "MOTION",
+    "PAPER_FIBERS", "PAPER_SHARDS", "RIM", "RIPPLE_DISTORTION", "RISO_PRINT",
+    "SCULPT_WAVES", "SHADOW", "SLICE_SHIFT", "SOLARIZE", "SPHERE_SCREEN",
+    "STOP_MOTION_CRUMPLE", "SURFACE_CONFORM", "THICKNESS", "THRESHOLD",
+    "TRIANGLE_BLUR", "UV_DISTORTION", "VIGNETTE", "WAVE_WARP",
+)
+for _effect_id in _FBP_EFFECT_ARTWORK_IDS:
+    _FBP_EFFECT_CUSTOM_ICON_FILES.setdefault(_effect_id, f"icon_{_effect_id}_effect.png")
 for _effect_id, _filename in _FBP_EFFECT_CUSTOM_ICON_FILES.items():
     _FBP_CUSTOM_ICON_FILES[f"effect:{_effect_id}"] = _filename
 _FBP_CUSTOM_ICON_FILES["floating_timeline"] = "icon_FLOATINGTIMELINE_paste.png"
 _FBP_CUSTOM_ICON_FILES["gp_gap_on"] = "icon_GreasePencil_Gap_ON.png"
 _FBP_CUSTOM_ICON_FILES["gp_gap_off"] = "icon_GreasePencil_Gap_OFF.png"
+
+def alias_effect_icon(effect_id, source_id):
+    """Draw *effect_id* with the artwork of *source_id* (or its native icon)."""
+    effect_id = str(effect_id or "").upper()
+    filename = _FBP_EFFECT_CUSTOM_ICON_FILES.get(str(source_id or "").upper())
+    if filename:
+        _FBP_EFFECT_CUSTOM_ICON_FILES[effect_id] = filename
+        _FBP_CUSTOM_ICON_FILES[f"effect:{effect_id}"] = filename
+    else:
+        _FBP_EFFECT_CUSTOM_ICON_FILES.pop(effect_id, None)
+        _FBP_CUSTOM_ICON_FILES.pop(f"effect:{effect_id}", None)
+
 
 _FBP_CUSTOM_ICON_UI_KEYS = {
     "settings.scrub_slider": "floating_timeline",
