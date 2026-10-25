@@ -1943,15 +1943,18 @@ def _fbp_cycles_transparent_surface_count(scene, rigs=None):
                 continue
             seen.add(key)
             count += 1
-            # Every Frame Stack slice is one more alpha surface on the ray.
+            # Every Frame Stack slice and Extrude Array copy is one more alpha
+            # surface on the ray. Past the limit, transparent pixels render black.
             for modifier in plane.modifiers:
-                if (
-                    modifier.type == 'NODES'
-                    and modifier.name.startswith("FBP • Frame Stack")
-                    and modifier.show_render
-                ):
+                if modifier.type != 'NODES' or not modifier.show_render:
+                    continue
+                if modifier.name.startswith("FBP • Frame Stack"):
                     count += max(0, int(getattr(rig, "fbp_frame_stack_render_slices", 0) or 0) - 1)
-                    break
+                elif (
+                    modifier.name.startswith("FBP • Extrude")
+                    and str(getattr(rig, "fbp_thickness_mode", "") or "") == "ARRAY"
+                ):
+                    count += max(0, int(getattr(rig, "fbp_thickness_array_count", 0) or 0) - 1)
         except FBP_DATA_ERRORS:
             # Unknown visibility must be treated as potentially renderable.
             count += 1
