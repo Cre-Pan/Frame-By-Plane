@@ -2771,6 +2771,8 @@ update_riso_misregistration_cb = _make_effect_update_callback('RISO_PRINT', 'fbp
 update_riso_halftone_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_halftone')
 update_riso_dot_size_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_dot_size')
 update_riso_grain_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_grain')
+update_riso_drift_angle_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_drift_angle')
+update_riso_print_rotation_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_print_rotation')
 update_riso_seed_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_seed')
 update_riso_factor_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_factor')
 update_edge_distance_mask_distance_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_distance')
@@ -3608,6 +3610,7 @@ _EFFECT_ANIMATION_IDS = (
     'HUE_SATURATION',
     'GRAIN',
     'PAPER_FIBERS',
+    'RISO_PRINT',
     'POSTERIZE',
     'DIGITAL_NOISE',
     'DOT_MATRIX',
@@ -7330,7 +7333,9 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_riso_halftone = FloatProperty(name="Halftone", description="Blend from flat ink density (0) to rotated halftone dots (1).", default=0.6, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_halftone_cb)
     _FBP_OBJECT_RNA.fbp_riso_dot_size = FloatProperty(name="Dot Size", description="Halftone cell size in source-image pixels.", default=6.0, min=1.0, soft_max=48.0, max=256.0, update=update_riso_dot_size_cb)
     _FBP_OBJECT_RNA.fbp_riso_grain = FloatProperty(name="Grain", description="Uneven ink coverage that lets the paper show through.", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_grain_cb)
-    _FBP_OBJECT_RNA.fbp_riso_seed = FloatProperty(name="Seed", description="Changes the drift directions and the grain pattern. Animate it for a boiling print.", default=0.0, min=0.0, max=1000.0, update=update_riso_seed_cb)
+    _FBP_OBJECT_RNA.fbp_riso_drift_angle = FloatProperty(name="Drift Angle", description="Direction the ink drums slip out of register.", subtype='ANGLE', default=0.0, update=update_riso_drift_angle_cb)
+    _FBP_OBJECT_RNA.fbp_riso_print_rotation = FloatProperty(name="Print Rotation", description="Rotate the halftone screen and the grain.", subtype='ANGLE', default=0.0, update=update_riso_print_rotation_cb)
+    _FBP_OBJECT_RNA.fbp_riso_seed = FloatProperty(name="Seed", description="Reshuffle the grain and the halftone dots. Use Animate to change it over time.", default=0.0, min=0.0, max=1000.0, update=update_riso_seed_cb)
     _FBP_OBJECT_RNA.fbp_riso_factor = FloatProperty(name="Factor", description="Blend between the source and the printed result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_factor_cb)
     _FBP_OBJECT_RNA.fbp_edge_distance_mask_distance = FloatProperty(name="Distance", description="Width of the ramp from the transparent edge inward, in source-image pixels.", default=32.0, min=1.0, soft_max=256.0, max=1024.0, update=update_edge_distance_mask_distance_cb)
     _FBP_OBJECT_RNA.fbp_edge_distance_mask_threshold = FloatProperty(name="Threshold", description="Where the mask turns on along the ramp. Animate it for a grow-in reveal from the outline.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_threshold_cb)

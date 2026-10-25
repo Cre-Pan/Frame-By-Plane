@@ -2,6 +2,12 @@
 
 All notable public changes to Frame By Plane are documented here.
 
+## [Unreleased]
+
+### Effects
+
+- **Riso Print**: the old Seed only turned the misregistration, so it is now **Drift Angle**. New **Print Rotation** turns the halftone screen and the grain, and a real **Seed** reshuffles the grain and the dots (each ink's screen phase and the dot size jitter). Riso Print now has the Animation section of the other effects: **Animate** with **Speed** and **Stepped** boils the grain and dots over time.
+
 ## [8.0.1] - Unreleased
 
 ### New effects
