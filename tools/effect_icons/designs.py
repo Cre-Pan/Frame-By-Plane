@@ -564,6 +564,33 @@ ICONS = {
     "TEXT_MATRIX": _text_matrix(),
 }
 
+# Effects Ale chose to keep on their native Blender icon (effects_registry.py).
+NATIVE_ONLY = (
+    "CROP",
+    "EXTEND",
+    "WHITE_BALANCE",
+    "BRIGHTNESS_CONTRAST",
+    "CURVES",
+    "PIXELATE",
+    "SWIRL",
+    "KALEIDOSCOPE",
+    "FAMILY_STYLIZE",
+    "UNSHARP_MASK",
+    "OIL_PAINT",
+    "MIRROR",
+    "INFINITE_ROTATION",
+    "LAYERED_ECHO",
+    "LATTICE",
+    "MESH_WIGGLE",
+    "WIND_BENDER",
+    "FELT_FUZZ",
+    "FIBER_TUFTS",
+    "CRYSTAL",
+    "TEXT_MATRIX",
+)
+for _effect_id in NATIVE_ONLY:
+    ICONS.pop(_effect_id, None)
+
 FRAME = ('<rect x="1" y="1" width="37" height="37" rx="4.5" fill="none" '
          'stroke="#ffffff" stroke-opacity="0.2" stroke-width="2"/>')
 

@@ -1318,7 +1318,7 @@ FBP_EFFECT_REGISTRY = {
         },
     },
     FBP_EFFECT_OIL_PAINT: {
-        "label": "Oil Paint", "icon": "BRUSHES_ALL", "kind": "SHADER", "stage": "COLOR",
+        "label": "Oil Paint", "icon": "BRUSH_DATA", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Oil_Paint_800", "asset_id": "frame_by_plane.shader.oil_paint.800",
         "enabled_key": "fbp_effect_oil_paint", "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
         "private_group": True, "image_aware": True, "uses_source_texel": True, "builtin": True, "supports": ("IMAGE", "SEQUENCE"),
