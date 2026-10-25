@@ -1,10 +1,104 @@
-# Frame By Plane — Blender 5.2 Image Sequence & Grease Pencil Add-on
-
-**Frame By Plane is a Blender 5.2 LTS add-on for image-sequence animation, Grease Pencil, layered PSD and Procreate artwork, 2.5D multiplane scenes, compositing and non-destructive effects.**
-
-It works like Blender's native **Images as Planes**, but adds production controls for timing, layers, masks, camera depth, rendering and frame-by-frame animation workflows.
+# 🎞️ Frame By Plane
 
 [Download from Blender Extensions](https://extensions.blender.org/add-ons/frame-by-plane/) · [Download the latest GitHub release](../../releases/latest) · [Read the GitHub Wiki](../../wiki)
+
+**Like Blender's "Image as Plane", but built for animation, image sequences, layered scenes and 2.5D.**
+
+Frame By Plane imports images, sequences, videos, PSD files and whole folders as rigged planes you can animate, mask, deform and stylize one layer at a time, all non-destructively. It is made for 2D and 2.5D animation, multiplane camera work, parallax, cut-out, motion graphics and background art, and works just as well on a single still image.
+
+![What is Frame by Plane?](docs/images/description/00-cover-storia.jpg)
+
+Its roots are in the layered tradition of animation: Lotte Reiniger's silhouettes, the Disney multiplane camera, Fleischer's tabletop setups, anime backgrounds and European cut-out. **Separate layers, independent timing, real camera depth.**
+
+---
+
+## ✨ Highlights
+
+* Import still images, numbered sequences, videos, folders, layered PSD / PSB, Procreate files and Toon Boom exports
+* Rigged planes with selectable controllers, auto-fit to the active camera
+* Frame List to reorder, duplicate, reverse, split and merge frames
+* Loop, Ping-Pong and One Shot playback with custom FPS, offset and first/last frame holds
+* 60+ image effects, 15+ masks and 25+ Geometry Nodes mesh effects
+* Grease Pencil Drawing Planes, Grease Pencil masks and a Magnetic Scrub Bar
+* Multiplane setups with generated camera, depth distribution and parallax
+* Blender-native compositor layers, Project Doctor and Performance Dashboard
+* `Z` Pie Menu, Live Tutorial and an interface in six languages
+
+---
+
+## 📁 Import
+
+Pick files or folders: still images, videos or sequences. Prefix a file with `_` to skip it.
+
+![Multiplane import](docs/images/description/15-multiplane.jpg)
+
+![PSD and Procreate import](docs/images/description/14-import-psd.jpg)
+
+![Shift+A menu](docs/images/description/3-shift-a.jpg)
+
+**Plane types:** Single Plane · Image Sequence · Video Plane · Cutout Plane · Multi Plane · Color Plane · Gradient Plane · Holdout Plane · Grease Pencil Drawing
+
+---
+
+## ⏱️ Layers and timing
+
+Every layer is one or more frames, every frame is an image, every image can have its own timing.
+
+![Layers and Frame List](docs/images/description/16-livelli-frame.jpg)
+
+Reorder, reverse and duplicate frames · transparent frames · split and merge · custom FPS and offset · Loop / Ping-Pong / One Shot · first and last frame holds · Layer Sets and Snapshots.
+
+---
+
+## 🖼️ Image effects
+
+![Image effects menu](docs/images/description/1-image-effects.jpg)
+
+![Image effects examples](docs/images/description/10-effetti-immagine.jpg)
+
+---
+
+## 🎭 Masks and 🧊 mesh effects
+
+![Masks and mesh effects menus](docs/images/description/2-masks-mesh.jpg)
+
+![Mask examples](docs/images/description/11-maschere.jpg)
+
+![Mesh effect examples](docs/images/description/12-effetti-mesh.jpg)
+
+Your own Shader or Geometry Nodes groups can be registered as **custom effects**, with name, category, icon and exposed controls.
+
+---
+
+## ✏️ Grease Pencil
+
+![Grease Pencil](docs/images/description/4-grease-pencil.jpg)
+
+---
+
+## 🥧 Z Pie Menu and custom icons
+
+![Custom icons and Z Pie Menu](docs/images/description/13-icone-pie.jpg)
+
+---
+
+## 🎥 Camera and compositing
+
+* Distribute layers in depth, generate a perspective or orthographic camera
+* Parallax through camera or layer motion, camera-facing planes that keep their scale
+* Image Projector, camera aspect and resolution presets, black Passepartout
+
+![Compositor](docs/images/description/5-compositor.jpg)
+
+---
+
+## 🧰 Project health
+
+![Project Doctor and Performance Dashboard](docs/images/description/6-project-health.jpg)
+
+Built on Blender's own image, sequence and movie datablocks, so scenes render with standard Blender materials and animation. Heavy effects have separate viewport, playback and render quality.
+
+---
 
 ## Prepared update: 8.0.1
 
@@ -34,33 +128,6 @@ See the [8.0.1 release notes](release-notes/8.0.1.md). The public release is sti
 The update splash uses the final 7.2 artwork and waits until you leave or close Preferences after updating.
 
 See the complete [7.2.0 release notes](release-notes/7.2.0.md).
-
-## Core features
-
-### Image sequences and frame-by-frame animation
-
-- Import still images, numbered image sequences, folders and video as controllable planes.
-- Use Loop, Ping-Pong and One Shot playback with timeline and frame-offset controls.
-- Scrub and edit Grease Pencil timing from the Viewport with bookmarks, preview range and onion-skin controls.
-
-### Layered artwork and 2.5D multiplane scenes
-
-- Import layered PSD and Procreate projects while preserving transparency and layer structure.
-- Arrange artwork in camera depth for parallax, multiplane animation and motion-comic workflows.
-- Manage layer visibility, folders, blend modes, clipping, holdouts and alpha-aware cutouts.
-
-### Grease Pencil, masks and effects
-
-- Create Drawing Planes linked to image layers or use independent Grease Pencil canvases.
-- Use Blender's own Grease Pencil Modifiers and Visual Effects panels on Drawing Planes.
-- Build shape, color, luminance, channel, gradient, noise, imported and Grease Pencil masks.
-- Use non-destructive distortion, blur, color, light, stylization and compositing effects.
-
-### Compositing, camera and rendering
-
-- Build Blender-native compositor layer packages while preserving artist-created nodes and links.
-- Use Safe Repair, diagnostics and rollback-aware project health tools.
-- Control camera-facing planes, projectors, render output and image-sequence delivery inside Blender.
 
 ## Requirements
 
