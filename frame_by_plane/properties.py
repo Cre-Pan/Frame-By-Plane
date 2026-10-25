@@ -878,7 +878,7 @@ class FBP_AddonPreferences(AddonPreferences):
             (
                 'CURSOR_PIVOT',
                 "Cursor + Pivot",
-                "Show Cursor On Camera when available and the compact pivot controls",
+                "Show Cursor on Camera and the pivot controls",
                 'PIVOT_CURSOR',
                 0,
             ),
@@ -908,7 +908,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     pie_show_south_actions: BoolProperty(
         name="South Actions",
-        description="Show Hide, Solo, Lock, Selectability and Holdout in the south sector",
+        description="Show Hide, Solo, Holdout, Overlays and the layer Lock buttons in the south sector",
         default=True,
     )
     pie_show_masks: BoolProperty(

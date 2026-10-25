@@ -404,7 +404,7 @@ class FBP_OT_SetLayerBlendMode(Operator):
     bl_description = "Apply this blend mode to the chosen Frame By Plane layer, or to all selected Frame By Plane layers"
     bl_options = {'REGISTER', 'UNDO'}
 
-    mode: EnumProperty(description='Operation mode for this Layer List action. Example: choose whether the command adds, removes, previews, repairs or applies settings.',
+    mode: EnumProperty(description='Apply to one layer or to the selection',
         name="Blend Mode",
         items=FBP_LAYER_BLEND_MENU_ITEMS,
         default="NORMAL",
@@ -866,7 +866,7 @@ class FBP_OT_ToggleClippingMask(Operator):
     def description(cls, context, properties):
         rig = bpy.data.objects.get(str(getattr(properties, "rig_name", "") or ""))
         if not rig:
-            return "Clip this layer to the alpha of the physically lower layer in the same collection"
+            return "Clip this layer to the alpha of the layer below"
         try:
             definition = fbp_effect_definition(FBP_EFFECT_CLIPPING_MASK)
             enabled_key = str(definition.get("enabled_key", "fbp_effect_clipping_mask") or "fbp_effect_clipping_mask")
@@ -875,11 +875,11 @@ class FBP_OT_ToggleClippingMask(Operator):
             if enabled:
                 source_name = str(getattr(source, "name", "") or "")
                 if source_name:
-                    return f"Disable Clipping Mask currently using {source_name} as its alpha source"
-                return "Disable this Clipping Mask; its previous source is no longer available"
+                    return f"Turn off Clipping Mask (clipped to {source_name})"
+                return "Turn off Clipping Mask (its source is missing)"
         except FBP_DATA_IO_ERRORS:
             pass
-        return "Clip this layer to the alpha of the physically lower layer in the same collection; alphabetical sorting does not change the source"
+        return "Clip this layer to the alpha of the layer below"
 
     def execute(self, context):
         rig = bpy.data.objects.get(self.rig_name)

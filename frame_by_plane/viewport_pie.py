@@ -356,6 +356,23 @@ def _active_gp_drawing_canvas(context):
         return None
 
 
+_GP_OBJECT_MODES = frozenset({
+    "PAINT_GREASE_PENCIL",
+    "EDIT_GREASE_PENCIL",
+    "SCULPT_GREASE_PENCIL",
+    "WEIGHT_GREASE_PENCIL",
+    "VERTEX_GREASE_PENCIL",
+})
+
+
+def _gp_object_mode_active(context):
+    """Return True while editing inside a Grease Pencil object."""
+    obj = getattr(context, "active_object", None)
+    if str(getattr(obj, "type", "") or "").upper() != "GREASEPENCIL":
+        return False
+    return str(getattr(context, "mode", "") or "") in _GP_OBJECT_MODES
+
+
 def _resolve_fbp_rig(obj, context=None):
     try:
         from .layers import fbp_resolve_rig_from_any_object
@@ -601,6 +618,7 @@ def _pie_selection_state(context):
         "hide_enabled": bool(hide_targets),
         "hide_active": bool(hide_states) and all(hide_states),
         "lock_rigs": lock_rigs,
+        "lock_memory_active": any(rig not in rigs for rig in lock_rigs),
         "lock_enabled": bool(lock_rigs or generic),
         "lock_active": bool(lock_states) and all(lock_states),
         "planes": planes,
@@ -819,9 +837,9 @@ def _store_quick_mask_preference(context, index, mask_id):
 class FBP_OT_SetViewportShading(Operator):
     bl_idname = "fbp.set_viewport_shading"
     bl_label = "Set Viewport Shading"
-    bl_description = "Change the active 3D View shading mode"
+    bl_description = "Change the viewport shading"
 
-    mode: EnumProperty(description='Operation mode for this viewport quick tool. Example: choose whether the command adds, removes, previews, repairs or applies settings.', 
+    mode: EnumProperty(description='Viewport shading mode', 
         name="Shading",
         items=(
             ('WIREFRAME', "Wireframe", "Display scene geometry as wireframes"),
@@ -856,7 +874,7 @@ class FBP_OT_SetViewportShading(Operator):
 class FBP_OT_ToggleRandomViewportColor(Operator):
     bl_idname = "fbp.toggle_random_viewport_color"
     bl_label = "Toggle Random Colors"
-    bl_description = "Switch Solid shading between random object colors and material colors"
+    bl_description = "Switch Solid view between random and material colors"
 
     @classmethod
     def poll(cls, context):
@@ -879,7 +897,7 @@ class FBP_OT_ToggleRandomViewportColor(Operator):
 class FBP_OT_ToggleTextureViewportShading(Operator):
     bl_idname = "fbp.set_texture_viewport_shading"
     bl_label = "Texture Viewport Shading"
-    bl_description = "Toggle image textures in Solid viewport shading"
+    bl_description = "Show image textures in Solid view"
 
     @classmethod
     def poll(cls, context):
@@ -903,7 +921,7 @@ class FBP_OT_ToggleTextureViewportShading(Operator):
 class FBP_OT_ToggleFlatViewportLighting(Operator):
     bl_idname = "fbp.toggle_flat_viewport_lighting"
     bl_label = "Toggle Flat Viewport Lighting"
-    bl_description = "Toggle Flat lighting in Solid viewport shading"
+    bl_description = "Use flat lighting in Solid view"
 
     @classmethod
     def poll(cls, context):
@@ -926,7 +944,7 @@ class FBP_OT_ToggleFlatViewportLighting(Operator):
 class FBP_OT_ToggleViewportCompositor(Operator):
     bl_idname = "fbp.toggle_viewport_compositor"
     bl_label = "Toggle Viewport Compositor"
-    bl_description = "Toggle the scene compositor in the viewport using Always mode"
+    bl_description = "Show the compositor result in the viewport"
 
     @classmethod
     def poll(cls, context):
@@ -952,7 +970,7 @@ class FBP_OT_ToggleViewportCompositor(Operator):
 class FBP_OT_ToggleRenderTransparency(Operator):
     bl_idname = "fbp.toggle_render_transparency"
     bl_label = "Toggle Render Transparency"
-    bl_description = "Toggle a transparent render background for Eevee and Cycles"
+    bl_description = "Render with a transparent background"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -980,8 +998,8 @@ class FBP_OT_ToggleRenderTransparency(Operator):
 
 class FBP_OT_ToggleSelectedVisibility(Operator):
     bl_idname = "fbp.toggle_selected_visibility"
-    bl_label = "Hide Selected"
-    bl_description = "Hide selected Frame By Plane layers or Blender objects, or show the last hidden selection"
+    bl_label = "Toggle Hide"
+    bl_description = "Hide the selected objects, or show the last hidden ones"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1044,8 +1062,8 @@ class FBP_OT_ToggleSelectedVisibility(Operator):
 
 class FBP_OT_ToggleLocalViewWithLights(Operator):
     bl_idname = "fbp.toggle_local_view_with_lights"
-    bl_label = "Solo Selection"
-    bl_description = "Show only selected Frame By Plane layers or Blender objects while keeping lights available"
+    bl_label = "Toggle Solo"
+    bl_description = "Show only the selected objects. Lights stay visible"
 
     @classmethod
     def poll(cls, context):
@@ -1140,8 +1158,8 @@ class FBP_OT_ToggleLocalViewWithLights(Operator):
 
 class FBP_OT_ToggleSelectedLock(Operator):
     bl_idname = "fbp.toggle_selected_lock"
-    bl_label = "Lock Selected"
-    bl_description = "Lock Frame By Plane layer controls or all transforms of selected Blender objects"
+    bl_label = "Toggle Lock"
+    bl_description = "Lock or unlock the selected layers"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1186,7 +1204,7 @@ class FBP_OT_ToggleSelectedLock(Operator):
 class FBP_OT_ToggleSelectedSelectability(Operator):
     bl_idname = "fbp.toggle_selected_selectability"
     bl_label = "Toggle Selectability"
-    bl_description = "Switch Frame By Plane selection between rig and plane, or allow/prevent direct selection of ordinary Blender objects"
+    bl_description = "Switch selection between the layer rig and its plane"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1252,8 +1270,8 @@ class FBP_OT_ToggleSelectedSelectability(Operator):
 
 class FBP_OT_ToggleSelectedHoldout(Operator):
     bl_idname = "fbp.toggle_selected_holdout"
-    bl_label = "Toggle Selected Holdout"
-    bl_description = "Toggle holdout on selected Frame By Plane layers or compatible Blender objects"
+    bl_label = "Toggle Holdout"
+    bl_description = "Make the selected objects holdouts, or restore them"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1297,8 +1315,8 @@ class FBP_OT_ToggleSelectedHoldout(Operator):
 
 class FBP_OT_ToggleCursorOnCamera(Operator):
     bl_idname = "fbp.toggle_cursor_on_camera"
-    bl_label = "Cursor On Camera"
-    bl_description = "Attach the 3D cursor to the active camera until the cursor is moved manually"
+    bl_label = "Cursor on Camera"
+    bl_description = "Keep the 3D cursor on the active camera. Moving the cursor turns it off"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -2070,7 +2088,7 @@ class FBP_OT_CallViewportPie(Operator):
 
     bl_idname = "fbp.call_viewport_pie"
     bl_label = "Viewport Pie"
-    bl_description = "Open the native Frame By Plane viewport Pie Menu"
+    bl_description = "Open the Frame By Plane viewport Pie Menu"
     bl_options = {"INTERNAL"}
 
     @classmethod
@@ -2165,7 +2183,8 @@ class FBP_MT_ViewportPie(Menu):
         )
         op.mode = "MATERIAL"
 
-        # SOUTH — Hide, Solo, Lock / Selectability, Holdout
+        # SOUTH — Hide, Solo, Holdout; Overlays / Onion Skin; Lock and
+        # Selectability only while a Frame By Plane layer is the target.
         split = pie.split()
         solo_active = space.local_view is not None
         solo_enabled = bool(
@@ -2195,45 +2214,66 @@ class FBP_MT_ViewportPie(Menu):
                 icon="OUTLINER_OB_LIGHT" if solo_active else "LIGHT",
                 depress=solo_active,
             )
-            lock_active = state["lock_active"]
-            cell = _pie_icon_cell(first, enabled=state["lock_enabled"])
-            cell.operator(
-                FBP_OT_ToggleSelectedLock.bl_idname,
-                text="",
-                icon=(
-                    "DECORATE_LOCKED"
-                    if lock_active
-                    else "DECORATE_UNLOCKED"
-                ),
-                depress=lock_active,
-            )
-
-            second = actions.row(align=True)
-            second.alignment = "CENTER"
-            second.emboss = "NORMAL"
-            selectability_active = state["selectability_active"]
-            cell = _pie_icon_cell(
-                second,
-                enabled=state["selectability_enabled"],
-            )
-            cell.operator(
-                FBP_OT_ToggleSelectedSelectability.bl_idname,
-                text="",
-                icon=(
-                    "RESTRICT_SELECT_OFF"
-                    if selectability_active
-                    else "RESTRICT_SELECT_ON"
-                ),
-                depress=selectability_active,
-            )
             holdout_active = state["holdout_active"]
-            cell = _pie_icon_cell(second, enabled=state["holdout_enabled"])
+            cell = _pie_icon_cell(first, enabled=state["holdout_enabled"])
             cell.operator(
                 FBP_OT_ToggleSelectedHoldout.bl_idname,
                 text="",
                 depress=holdout_active,
                 **ui_icon_kwargs("menu.holdout_plane", fallback="CLIPUV_HLT"),
             )
+
+            overlay = getattr(space, "overlay", None)
+            if overlay is not None:
+                display = actions.row(align=True)
+                display.alignment = "CENTER"
+                display.emboss = "NORMAL"
+                cell = _pie_icon_cell(display)
+                cell.prop(overlay, "show_overlays", text="", icon="OVERLAY")
+                if (
+                    _gp_object_mode_active(context)
+                    and hasattr(overlay, "use_gpencil_onion_skin")
+                ):
+                    onion_active = bool(overlay.use_gpencil_onion_skin)
+                    cell = _pie_icon_cell(display)
+                    cell.prop(
+                        overlay,
+                        "use_gpencil_onion_skin",
+                        text="",
+                        icon="ONIONSKIN_ON" if onion_active else "ONIONSKIN_OFF",
+                    )
+
+            if plane_rigs or state["lock_memory_active"]:
+                layer = actions.row(align=True)
+                layer.alignment = "CENTER"
+                layer.emboss = "NORMAL"
+                lock_active = state["lock_active"]
+                cell = _pie_icon_cell(layer, enabled=state["lock_enabled"])
+                cell.operator(
+                    FBP_OT_ToggleSelectedLock.bl_idname,
+                    text="",
+                    icon=(
+                        "DECORATE_LOCKED"
+                        if lock_active
+                        else "DECORATE_UNLOCKED"
+                    ),
+                    depress=lock_active,
+                )
+                selectability_active = state["selectability_active"]
+                cell = _pie_icon_cell(
+                    layer,
+                    enabled=state["selectability_enabled"],
+                )
+                cell.operator(
+                    FBP_OT_ToggleSelectedSelectability.bl_idname,
+                    text="",
+                    icon=(
+                        "RESTRICT_SELECT_OFF"
+                        if selectability_active
+                        else "RESTRICT_SELECT_ON"
+                    ),
+                    depress=selectability_active,
+                )
 
         # NORTH — configurable Cursor, Pivot or Orientation controls
         split = pie.split()
@@ -2246,16 +2286,14 @@ class FBP_MT_ViewportPie(Menu):
                 north_content == "CURSOR_PIVOT"
                 and getattr(context.scene, "camera", None) is not None
             ):
-                cursor = north.row(align=False)
+                cursor = north.row(align=True)
                 cursor.alignment = "CENTER"
-                button = cursor.row(align=False)
-                button.emboss = "NORMAL"
-                button.scale_y = _PIE_BUTTON_SCALE_Y
-                button.ui_units_x = _pie_text_width("Cursor On Camera")
-                button.operator(
+                cursor.emboss = "NORMAL"
+                cell = _pie_icon_cell(cursor)
+                cell.operator(
                     FBP_OT_ToggleCursorOnCamera.bl_idname,
-                    text="Cursor On Camera",
-                    icon="PIVOT_CURSOR",
+                    text="",
+                    icon="CAMERA_DATA",
                     depress=_cursor_on_camera_is_enabled(context.scene),
                 )
             if north_content in {"CURSOR_PIVOT", "PIVOT"}:
@@ -2526,7 +2564,7 @@ class FBP_OT_ToggleLayerEditMode(Operator):
 
     bl_idname = "fbp.toggle_layer_edit_mode"
     bl_label = "Edit Frame By Plane"
-    bl_description = "Edit the mesh card owned by the selected Frame By Plane rig"
+    bl_description = "Edit the mesh of the selected layer"
     bl_options = {"INTERNAL"}
 
     @classmethod

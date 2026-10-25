@@ -3476,7 +3476,7 @@ class FBP_OT_ResetEffectControl(Operator):
     bl_description = "Reset only the position, rotation and range represented by this viewport control"
     bl_options = {"REGISTER", "UNDO"}
 
-    effect_id: StringProperty(description='Internal stable effect identifier used by this button. Example: PIXELATE, SHADOW or GRADIENT_MASK.', default="", options={"SKIP_SAVE"})
+    effect_id: StringProperty(description='Effect identifier', default="", options={"SKIP_SAVE"})
 
     @classmethod
     def poll(cls, context):
@@ -3560,7 +3560,7 @@ class FBP_OT_SelectEffectControl(Operator):
     bl_description = "Reveal the controls and keep the handle currently selected in the viewport"
     bl_options = {"REGISTER", "UNDO"}
 
-    effect_id: StringProperty(description='Internal stable effect identifier used by this button. Example: PIXELATE, SHADOW or GRADIENT_MASK.', default="", options={"SKIP_SAVE"})
+    effect_id: StringProperty(description='Effect identifier', default="", options={"SKIP_SAVE"})
 
     @classmethod
     def poll(cls, context):
