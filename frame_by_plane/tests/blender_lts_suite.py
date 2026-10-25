@@ -2958,28 +2958,31 @@ def test_lattice_pins_contract(_module):
             scene.frame_set(10)
             assert (surface()[right_index] - rest[right_index]).length > 0.19
             # Rest Pose and Set as Rest.
-            for pin in pins_module.rig_pins(rig):
-                pin.animation_data_clear()
+            left.id_data.animation_data_clear()
             assert ops.lattice_pins_action(rig_name=rig.name, action="REST") == {"FINISHED"}
             assert max((a - b).length for a, b in zip(rest, surface())) < 1.0e-4
             left.location.x += 0.1
             assert ops.lattice_pins_action(rig_name=rig.name, action="SET_REST") == {"FINISHED"}
             assert max((a - b).length for a, b in zip(rest, surface())) < 1.0e-4
-            # Pins are renderless controllers that resolve to their layer.
+            # Pins are bones of one renderless controls armature that resolves to its layer.
             layers = importlib.import_module(f"{PACKAGE}.layers")
-            assert all(pin.hide_render for pin in pins_module.rig_pins(rig))
-            assert layers.fbp_resolve_rig_from_any_object(left, bpy.context) == rig
+            controls = left.id_data
+            assert all(pin.id_data == controls for pin in pins_module.rig_pins(rig))
+            assert controls.hide_render and controls.data.display_type == "STICK"
+            assert all(pin.custom_shape is not None for pin in pins_module.rig_pins(rig))
+            assert [obj for obj in rig.children if obj.type == "ARMATURE"] == [controls]
+            assert layers.fbp_resolve_rig_from_any_object(controls, bpy.context) == rig
             # Remove one pin, then the effect removes the rest.
             assert ops.remove_lattice_pin(rig_name=rig.name, pin_name=left.name) == {"FINISHED"}
             assert len(pins_module.rig_pins(rig)) == 2
             assert len([m for m in helper.modifiers if m.type == "HOOK"]) == 2
             geo._fbp_remove_lattice_effect(rig)
-            assert not [obj for obj in bpy.data.objects if pins_module.is_pin(obj)]
+            assert not [obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]
     finally:
         scene.frame_set(frame)
         for cls in reversed(registered):
             bpy.utils.unregister_class(cls)
-        for obj in reversed([*owned, *[obj for obj in bpy.data.objects if pins_module.is_pin(obj)]]):
+        for obj in reversed([*owned, *[obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]]):
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
             except (ReferenceError, RuntimeError):
@@ -3085,6 +3088,8 @@ def test_lattice_types_contract(_module):
             assert (posed[shoulder_index] - rest[shoulder_index]).length < 0.02
             assert ops.lattice_bones_action(rig_name=rig.name, action="KEY") == {"FINISHED"}
             assert armature.animation_data and armature.animation_data.action
+            # The keyed pose would come back on the next evaluation: drop it.
+            armature.animation_data_clear()
             assert ops.lattice_bones_action(rig_name=rig.name, action="REST") == {"FINISHED"}
             assert drift(rest, surface()) < 1.0e-4
             assert armature.hide_render
@@ -3124,20 +3129,22 @@ def test_lattice_types_contract(_module):
             assert drift(rest, tilted) > 0.05
             # A projective map keeps straight lines straight: the diagonal stays a line.
             matrix = corner_module.homography(
-                [r for _role, _label, r in corner_module.ROLES],
+                [r for _role, _label, r, _turn in corner_module.ROLES],
                 corner_module.corner_targets(rig, helper),
             )
             assert abs(float(matrix[2][0])) + abs(float(matrix[2][1])) > 1.0e-4
             scene.frame_set(1)
             geo.fbp_update_live_lattices(scene, force=True)
             assert drift(rest, surface()) < 1.0e-3
-            assert layers.fbp_resolve_rig_from_any_object(corners["TR"], bpy.context) == rig
+            assert corners["TR"].id_data == armature
+            assert layers.fbp_resolve_rig_from_any_object(corners["TR"].id_data, bpy.context) == rig
             assert ops.lattice_corner_pin(rig_name=rig.name, action="REMOVE") == {"FINISHED"}
             assert rig.fbp_lattice_mode == "FREEFORM" and not corner_module.corner_handles(rig)
 
             # Removing the effect leaves no controller behind.
             geo._fbp_remove_lattice_effect(rig)
             assert not [obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]
+            assert not [obj for obj in bpy.data.objects if obj.name.startswith("FBP Handle")]
     finally:
         scene.frame_set(frame)
         for cls in reversed(registered):

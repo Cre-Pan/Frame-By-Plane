@@ -3179,16 +3179,18 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
                     pass
             elif object_type == "LATTICE":
                 continue
-            elif datablock.get("fbp_lattice_corner") is not None:
-                if bool(getattr(update, "is_updated_transform", False)):
-                    try:
-                        from .geometry_nodes import schedule_lattice_corner_pin_update
-                        from .lattice_corner_pin import corner_owner
-                        owner = corner_owner(datablock)
-                        if owner is not None:
-                            schedule_lattice_corner_pin_update(owner)
-                    except (ImportError,) + FBP_DATA_ERRORS:
-                        pass
+            elif object_type == "ARMATURE" and datablock.get("fbp_lattice_bones_owner") is not None:
+                # A Lattice controls armature: a posed corner handle rewrites
+                # the Corner Pin cage (the signature skips other pose changes).
+                try:
+                    from .geometry_nodes import schedule_lattice_corner_pin_update
+                    from .lattice_bones import bones_owner
+                    from .lattice_corner_pin import corner_handles
+                    owner = bones_owner(datablock)
+                    if owner is not None and corner_handles(owner):
+                        schedule_lattice_corner_pin_update(owner)
+                except (ImportError,) + FBP_DATA_ERRORS:
+                    pass
             elif is_fbp_plane:
                 if bool(getattr(update, "is_updated_transform", False)) or bool(
                     getattr(update, "is_updated_geometry", False)

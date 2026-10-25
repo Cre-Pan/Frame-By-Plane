@@ -1,10 +1,12 @@
 """Puppet pins for the Lattice (Deform Plane) effect.
 
-A pin is a small Empty parented to the layer rig. Each pin drives the cage
-through a native Hook modifier on the Lattice object, restricted to a vertex
-group whose weights say how much of the cage follows that pin. Moving,
-rotating or scaling a pin therefore bends the layer like a puppet, the pins
-keyframe like any other object, and nothing runs in Python at render time.
+A pin is a handle bone of the layer's controls armature (see
+``lattice_bones``), so every handle of a layer lives in one object and the
+viewport shows no relationship line per pin. Each pin drives the cage through
+a native Hook modifier that targets its bone, restricted to a vertex group
+whose weights say how much of the cage follows that pin. Moving, rotating or
+scaling a pin in Pose Mode therefore bends the layer like a puppet, pins
+keyframe like any bone, and nothing runs in Python at render time.
 
 Weights are harmonic: every cage point blends the pins smoothly and the
 weights of all pins sum to one, so a pin that is left alone anchors its area
@@ -12,16 +14,17 @@ while its neighbours move. With Follow Drawing the solve uses the layer's
 alpha as conductance, so a pin on a hand does not drag a separate, nearby part
 of the drawing across a transparent gap.
 
-Pins live in a frame aligned with the plane (local Z is the plane normal) so G
-moves them across the drawing and R rotates them in its plane. A pin stores
-its rest location; the Hook's inverse matrix is rebuilt from it whenever the
-cage moves or changes resolution, and the weights are rebuilt with it.
+Handle bones point along the plane frame's +Y with roll 0, so their pose
+location moves them across the drawing and their Z rotation turns them in its
+plane. A pin stores its rest pose location; the Hook's inverse matrix is
+rebuilt from it whenever the cage moves or changes resolution, and the
+weights are rebuilt with it.
 
 Kinds (After Effects style): a **Pin** moves, rotates and scales; a **Bend**
 pin stays where it is and only rotates or scales its area; any pin can have a
 **Stiff Area**, a disc that moves rigidly with it instead of bending. **Point
 handles** are one Hook per cage point with the whole weight on that point, so
-the Grid cage can be posed and keyframed in Object Mode.
+the Grid cage can be posed and keyframed without entering the cage's Edit Mode.
 """
 
 from __future__ import annotations
@@ -31,19 +34,32 @@ import math
 import bpy
 from mathutils import Matrix, Vector
 
+from .lattice_bones import (
+    HANDLE_KEY,
+    add_handle_bones,
+    armature_world,
+    bones_object,
+    bones_owner,
+    ensure_armature,
+    handle_size,
+    is_bones_object,
+    pose_matrix,
+    remove_bone_names,
+    remove_unused_armature,
+    style_bone,
+)
 from .runtime import FBP_DATA_ERRORS
 
 
-PIN_OWNER_KEY = "fbp_lattice_pin_owner"
 PIN_ID_KEY = "fbp_lattice_pin_id"
 PIN_REST_KEY = "fbp_lattice_pin_rest"
-PIN_KIND_KEY = "fbp_lattice_pin_kind"
 PIN_POINT_KEY = "fbp_lattice_pin_point"
 PIN_GRID_KEY = "fbp_lattice_pin_grid"
 BIND_SIGNATURE_KEY = "fbp_lattice_pins_bind"
 KIND_PIN = "PIN"
 KIND_BEND = "BEND"
 KIND_POINT = "POINT"
+PIN_KINDS = (KIND_PIN, KIND_BEND, KIND_POINT)
 # Largest cage that gets one handle per point.
 MAX_POINT_HANDLES = 100
 GROUP_PREFIX = "FBP Pin "
@@ -58,76 +74,56 @@ _EDGE_SAMPLES = 9
 _MAX_ALPHA_PIXELS = 4096 * 4096
 
 
-def is_pin(obj):
+def is_pin(item):
+    """True for a pin pose bone (puppet pin, bend pin or point handle)."""
     try:
-        return bool(obj is not None and str(obj.get(PIN_ID_KEY, "") or ""))
+        return bool(
+            isinstance(item, bpy.types.PoseBone)
+            and str(item.get(HANDLE_KEY, "") or "") in PIN_KINDS
+            and str(item.get(PIN_ID_KEY, "") or "")
+        )
     except FBP_DATA_ERRORS:
         return False
 
 
-def pin_owner(obj):
+def pin_owner(pin):
     """Return the layer rig of a pin, or None."""
-    if not is_pin(obj):
+    if not is_pin(pin):
         return None
-    parent = getattr(obj, "parent", None)
-    if parent is not None and bool(getattr(parent, "is_fbp_control", False)):
-        return parent
-    try:
-        owner = bpy.data.objects.get(str(obj.get(PIN_OWNER_KEY, "") or ""))
-    except FBP_DATA_ERRORS:
-        return None
-    return owner if owner is not None and bool(getattr(owner, "is_fbp_control", False)) else None
+    return bones_owner(pin.id_data)
 
 
 def is_lattice_controller(obj):
-    """True for any object that drives a Lattice cage: pins, point handles,
-    corner handles and the bones armature."""
-    if is_pin(obj):
-        return True
-    try:
-        from .lattice_bones import is_bones_object
-        from .lattice_corner_pin import is_corner_handle
-    except ImportError:
-        return False
-    return bool(is_corner_handle(obj) or is_bones_object(obj))
+    """True for the object that holds a Lattice cage's handles and bones."""
+    return is_bones_object(obj)
 
 
 def lattice_controller_owner(obj):
-    """Return the layer rig of any Lattice controller, or None."""
-    if is_pin(obj):
-        return pin_owner(obj)
-    try:
-        from .lattice_bones import bones_owner, is_bones_object
-        from .lattice_corner_pin import corner_owner, is_corner_handle
-    except ImportError:
-        return None
-    if is_corner_handle(obj):
-        return corner_owner(obj)
-    if is_bones_object(obj):
-        return bones_owner(obj)
-    return None
+    """Return the layer rig of a Lattice controls armature, or None."""
+    return bones_owner(obj) if is_bones_object(obj) else None
 
 
 def pin_kind(pin):
     try:
-        kind = str(pin.get(PIN_KIND_KEY, KIND_PIN) or KIND_PIN)
+        kind = str(pin.get(HANDLE_KEY, KIND_PIN) or KIND_PIN)
     except FBP_DATA_ERRORS:
         return KIND_PIN
-    return kind if kind in {KIND_PIN, KIND_BEND, KIND_POINT} else KIND_PIN
+    return kind if kind in PIN_KINDS else KIND_PIN
 
 
 def rig_pins(rig, kinds=None):
-    """Return the pins of a layer, in creation order.
+    """Return the pin pose bones of a layer, in creation order.
 
     ``kinds`` filters by kind; None returns every pin, point handles included.
     """
-    if rig is None:
+    armature = bones_object(rig)
+    if armature is None:
         return []
-    found = []
     try:
-        for obj in tuple(getattr(rig, "children", ()) or ()):
-            if is_pin(obj) and (kinds is None or pin_kind(obj) in kinds):
-                found.append(obj)
+        found = [
+            bone for bone in armature.pose.bones
+            if is_pin(bone) and (kinds is None or pin_kind(bone) in kinds)
+        ]
     except FBP_DATA_ERRORS:
         return []
 
@@ -171,19 +167,25 @@ def _rest_location(pin):
     except (TypeError,) + FBP_DATA_ERRORS:
         values = ()
     if len(values) != 3:
-        return Vector(tuple(pin.location))
+        return Vector((0.0, 0.0, 0.0))
     return Vector(values)
 
 
 def plane_frame(plane, helper):
-    """Return the pin frame: the cage centre with the plane's rotation, unit scale."""
+    """Return the handle frame: the cage centre with the plane's rotation, unit scale."""
     rotation = plane.matrix_world.to_quaternion().to_matrix().to_4x4()
     return Matrix.Translation(helper.matrix_world.translation) @ rotation
 
 
 def _rest_world(rig, pin):
     """World matrix of a pin at rest, computed without a depsgraph update."""
-    return rig.matrix_world @ pin.matrix_parent_inverse @ Matrix.Translation(_rest_location(pin))
+    armature = pin.id_data
+    return armature_world(rig, armature) @ pin.bone.matrix_local @ Matrix.Translation(_rest_location(pin))
+
+
+def pin_world(rig, pin):
+    """Current world matrix of a pin, computed without a depsgraph update."""
+    return armature_world(rig, pin.id_data) @ pose_matrix(pin)
 
 
 def _next_pin_id(rig):
@@ -199,46 +201,20 @@ def _next_pin_id(rig):
     return str(index)
 
 
-def _pin_display_size(plane):
-    try:
-        size = max(float(plane.dimensions.x), float(plane.dimensions.y))
-    except FBP_DATA_ERRORS:
-        size = 1.0
-    return max(0.005, size * 0.03)
+def _setup_handle(pin, kind, size, *, rotation=0.0):
+    """Planar transform locks and the handle look."""
+    pin.rotation_mode = 'XYZ'
+    pin.lock_location = (kind == KIND_BEND, kind == KIND_BEND, True)
+    pin.lock_rotation = (True, True, kind == KIND_POINT)
+    pin.lock_scale = (kind == KIND_POINT, kind == KIND_POINT, True)
+    style_bone(pin, kind, size, rotation=rotation)
 
 
-def new_controller(rig, helper, plane, name, world_location, *, display='SPHERE', size=1.0):
-    """Create an Empty controller in the plane frame, parented to the layer rig.
-
-    Local Z is the plane normal: G moves it across the drawing and R rotates it
-    in the drawing's plane. Return (controller, local rest location).
-    """
-    frame = plane_frame(plane, helper)
-    controller = bpy.data.objects.new(name, None)
-    collections = tuple(getattr(helper, "users_collection", ()) or ()) or (bpy.context.scene.collection,)
-    for collection in collections:
-        collection.objects.link(controller)
-    controller.parent = rig
-    controller.matrix_parent_inverse = rig.matrix_world.inverted_safe() @ frame
-    local = frame.inverted_safe() @ Vector(world_location)
-    local.z = 0.0
-    controller.location = local
-    controller.rotation_mode = 'XYZ'
-    controller.empty_display_type = display
-    controller.empty_display_size = _pin_display_size(plane) * size
-    controller.show_in_front = True
-    controller.show_name = False
-    controller.hide_render = True
-    controller.lock_location = (False, False, True)
-    controller.lock_rotation = (True, True, False)
-    controller.lock_scale = (False, False, True)
-    return controller, local
-
-
-def _attach_hook(helper, pin, pin_id):
+def _attach_hook(helper, armature, pin, pin_id):
     helper.vertex_groups.new(name=_group_name(pin_id))
     hook = helper.modifiers.new(_hook_name(pin_id), 'HOOK')
-    hook.object = pin
+    hook.object = armature
+    hook.subtarget = pin.name
     hook.vertex_group = _group_name(pin_id)
     hook.falloff_type = 'NONE'
     hook.strength = 1.0
@@ -247,26 +223,44 @@ def _attach_hook(helper, pin, pin_id):
     return hook
 
 
-def add_pin(rig, helper, plane, world_location, kind=KIND_PIN, *, bind_now=True):
-    """Create a pin at a world location on the layer and bind it. Return the pin."""
-    pin_id = _next_pin_id(rig)
+def add_pins(rig, helper, plane, world_locations, kind=KIND_PIN, *, bind_now=True):
+    """Create pins at world locations on the layer and bind them. Return the pins."""
+    armature = ensure_armature(rig, helper, plane)
     label = "Bend" if kind == KIND_BEND else "Pin"
-    pin, local = new_controller(
-        rig, helper, plane, f"{label} {pin_id} • {rig.name}", world_location,
-        display='PLAIN_AXES' if kind == KIND_BEND else 'SPHERE',
-        size=1.6 if kind == KIND_BEND else 1.0,
-    )
-    pin[PIN_OWNER_KEY] = str(rig.name)
-    pin[PIN_ID_KEY] = pin_id
-    pin[PIN_KIND_KEY] = kind
-    pin[PIN_REST_KEY] = tuple(local)
-    if kind == KIND_BEND:
-        # A bend pin turns or scales its area without moving it.
-        pin.lock_location = (True, True, True)
-    _attach_hook(helper, pin, pin_id)
+    specs, ids = [], []
+    used = {_pin_id(pin) for pin in rig_pins(rig)}
+    index = 1
+    for world in world_locations:
+        while str(index) in used:
+            index += 1
+        used.add(str(index))
+        ids.append(str(index))
+        specs.append((f"{label} {index}", _local_head(rig, armature, world)))
+    names = add_handle_bones(armature, specs)
+    size = handle_size(plane) * (1.4 if kind == KIND_BEND else 1.0)
+    pins = []
+    for name, pin_id in zip(names, ids):
+        pin = armature.pose.bones[name]
+        pin[HANDLE_KEY] = kind
+        pin[PIN_ID_KEY] = pin_id
+        pin[PIN_REST_KEY] = (0.0, 0.0, 0.0)
+        _setup_handle(pin, kind, size)
+        _attach_hook(helper, armature, pin, pin_id)
+        pins.append(pin)
     if bind_now:
         bind(rig, helper, plane, force=True)
-    return pin
+    return pins
+
+
+def add_pin(rig, helper, plane, world_location, kind=KIND_PIN, *, bind_now=True):
+    """Create one pin at a world location on the layer and bind it. Return the pin."""
+    return add_pins(rig, helper, plane, [world_location], kind, bind_now=bind_now)[0]
+
+
+def _local_head(rig, armature, world_location):
+    local = armature_world(rig, armature).inverted_safe() @ Vector(world_location)
+    local.z = 0.0
+    return local
 
 
 def add_point_handles(rig, helper, plane):
@@ -276,6 +270,7 @@ def add_point_handles(rig, helper, plane):
     if points_u * points_v > MAX_POINT_HANDLES or int(data.points_w) != 1:
         return 0
     remove_all_pins(rig, helper, kinds=(KIND_POINT,))
+    armature = ensure_armature(rig, helper, plane)
     keys = getattr(data, "shape_keys", None)
     if keys is not None and len(keys.key_blocks):
         source = keys.key_blocks[0].data
@@ -283,87 +278,98 @@ def add_point_handles(rig, helper, plane):
     else:
         coordinates = [Vector(point.co_deform) for point in data.points]
     helper_world = helper.matrix_world
+    used = {_pin_id(pin) for pin in rig_pins(rig)}
+    specs, ids = [], []
+    next_id = 1
     for index, local in enumerate(coordinates[: points_u * points_v]):
-        pin_id = _next_pin_id(rig)
+        while str(next_id) in used:
+            next_id += 1
+        used.add(str(next_id))
+        ids.append(str(next_id))
         u_index, v_index = index % points_u, index // points_u
-        handle, rest = new_controller(
-            rig, helper, plane, f"Point {u_index + 1}·{v_index + 1} • {rig.name}",
-            helper_world @ local, display='CUBE', size=0.45,
-        )
-        handle[PIN_OWNER_KEY] = str(rig.name)
+        specs.append((f"Point {u_index + 1}·{v_index + 1}", _local_head(rig, armature, helper_world @ local)))
+    names = add_handle_bones(armature, specs)
+    size = handle_size(plane) * 0.45
+    for index, (name, pin_id) in enumerate(zip(names, ids)):
+        handle = armature.pose.bones[name]
+        handle[HANDLE_KEY] = KIND_POINT
         handle[PIN_ID_KEY] = pin_id
-        handle[PIN_KIND_KEY] = KIND_POINT
         handle[PIN_POINT_KEY] = index
         handle[PIN_GRID_KEY] = f"{points_u}x{points_v}"
-        handle[PIN_REST_KEY] = tuple(rest)
-        _attach_hook(helper, handle, pin_id)
+        handle[PIN_REST_KEY] = (0.0, 0.0, 0.0)
+        _setup_handle(handle, KIND_POINT, size)
+        _attach_hook(helper, armature, handle, pin_id)
     bind(rig, helper, plane, force=True)
     return points_u * points_v
 
 
-def remove_pin(rig, helper, pin):
-    pin_id = _pin_id(pin)
-    if helper is not None:
-        try:
-            hook = helper.modifiers.get(_hook_name(pin_id))
-            if hook is not None:
-                helper.modifiers.remove(hook)
-            group = helper.vertex_groups.get(_group_name(pin_id))
-            if group is not None:
-                helper.vertex_groups.remove(group)
-        except FBP_DATA_ERRORS:
-            pass
+def _drop_pin_data(helper, pin_id):
+    if helper is None:
+        return
     try:
-        bpy.data.objects.remove(pin, do_unlink=True)
+        hook = helper.modifiers.get(_hook_name(pin_id))
+        if hook is not None:
+            helper.modifiers.remove(hook)
+        group = helper.vertex_groups.get(_group_name(pin_id))
+        if group is not None:
+            helper.vertex_groups.remove(group)
     except FBP_DATA_ERRORS:
+        pass
+
+
+def _clear_pin_animation(armature, names):
+    from .runtime import fbp_action_fcurves
+    curves = fbp_action_fcurves(armature)
+    if curves is None:
+        return
+    prefixes = tuple(f'pose.bones["{name}"]' for name in names)
+    for curve in list(curves):
+        try:
+            if str(curve.data_path).startswith(prefixes):
+                curves.remove(curve)
+        except FBP_DATA_ERRORS:
+            continue
+
+
+def remove_pins(rig, helper, pins):
+    """Remove pins with their Hooks, groups and animation, then rebind the rest."""
+    if not pins:
         return False
-    if helper is not None and rig is not None:
+    armature = pins[0].id_data
+    names = [pin.name for pin in pins]
+    for pin in pins:
+        _drop_pin_data(helper, _pin_id(pin))
+    _clear_pin_animation(armature, names)
+    remove_bone_names(armature, names)
+    if helper is not None:
+        helper.pop(BIND_SIGNATURE_KEY, None)
         plane = getattr(rig, "fbp_plane_target", None)
-        if plane is not None:
+        if rig_pins(rig) and plane is not None:
             bind(rig, helper, plane, force=True)
+    remove_unused_armature(rig, helper)
     return True
+
+
+def remove_pin(rig, helper, pin):
+    return remove_pins(rig, helper, [pin])
 
 
 def remove_all_pins(rig, helper=None, kinds=None):
     """Remove the pins of a layer (optionally only some kinds) with their Hooks."""
-    changed = False
     pins = rig_pins(rig, kinds=kinds)
-    if rig is not None and kinds is None:
-        # Pins whose parenting was lost still carry the owner name.
-        owner_name = str(getattr(rig, "name", "") or "")
-        try:
-            for obj in tuple(bpy.data.objects):
-                if obj not in pins and is_pin(obj) and str(obj.get(PIN_OWNER_KEY, "") or "") == owner_name:
-                    pins.append(obj)
-        except FBP_DATA_ERRORS:
-            pass
-    for pin in pins:
-        pin_id = _pin_id(pin)
-        if helper is not None:
-            try:
-                hook = helper.modifiers.get(_hook_name(pin_id))
-                if hook is not None:
-                    helper.modifiers.remove(hook)
-                group = helper.vertex_groups.get(_group_name(pin_id))
-                if group is not None:
-                    helper.vertex_groups.remove(group)
-            except FBP_DATA_ERRORS:
-                pass
-        try:
-            bpy.data.objects.remove(pin, do_unlink=True)
-            changed = True
-        except FBP_DATA_ERRORS:
-            continue
     if helper is not None:
+        # Hooks whose bone is gone still carry the pin prefix.
         try:
-            helper.pop(BIND_SIGNATURE_KEY, None)
-            if kinds is not None and rig_pins(rig):
-                plane = getattr(rig, "fbp_plane_target", None)
-                if plane is not None:
-                    bind(rig, helper, plane, force=True)
+            live = {_hook_name(_pin_id(pin)) for pin in rig_pins(rig)}
+            for modifier in list(helper.modifiers):
+                if kinds is None and modifier.type == 'HOOK' and modifier.name.startswith(HOOK_PREFIX) and modifier.name not in live:
+                    pin_id = modifier.name[len(HOOK_PREFIX):]
+                    _drop_pin_data(helper, pin_id)
         except FBP_DATA_ERRORS:
             pass
-    return changed
+    if not pins:
+        return False
+    return remove_pins(rig, helper, pins)
 
 
 def reset_pins(pins):
@@ -409,6 +415,35 @@ def set_rest_from_current(rig, helper, plane, pins):
     bind(rig, helper, plane, force=True)
 
 
+def select_pins(context, rig, pins):
+    """Show the controls in Pose Mode with exactly these pins selected."""
+    armature = bones_object(rig)
+    if armature is None:
+        return False
+    try:
+        view_layer = context.view_layer
+        current = view_layer.objects.active
+        if current is not None and current is not armature and str(getattr(current, "mode", "OBJECT")) != 'OBJECT':
+            with context.temp_override(active_object=current, object=current):
+                bpy.ops.object.mode_set(mode='OBJECT')
+        for item in tuple(view_layer.objects.selected):
+            item.select_set(False)
+        armature.hide_set(False)
+        armature.select_set(True)
+        view_layer.objects.active = armature
+        if str(armature.mode) != 'POSE':
+            with context.temp_override(active_object=armature, object=armature, selected_objects=[armature]):
+                bpy.ops.object.mode_set(mode='POSE')
+        wanted = {pin.name for pin in pins}
+        for bone in armature.pose.bones:
+            bone.select = bone.name in wanted
+        if pins:
+            armature.data.bones.active = pins[0].bone
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
 # --- Binding -----------------------------------------------------------------
 
 
@@ -435,10 +470,12 @@ def _signature(rig, helper, pins):
         "1" if bool(getattr(rig, "fbp_lattice_pins_follow_drawing", True)) else "0",
     ]
     parts.extend(f"{value:.6f}" for row in helper.matrix_world for value in row)
+    if pins:
+        parts.extend(f"{value:.6f}" for row in pins[0].id_data.matrix_parent_inverse for value in row)
     for pin in pins:
-        parts.extend((_pin_id(pin), pin_kind(pin), f"{pin_stiffness(pin):.4f}", str(pin.get(PIN_POINT_KEY, ""))))
+        parts.extend((_pin_id(pin), pin_kind(pin), f"{pin_stiffness(pin):.4f}", str(pin.get(PIN_POINT_KEY, "")), pin.name))
         parts.extend(f"{value:.6f}" for value in _rest_location(pin))
-        parts.extend(f"{value:.6f}" for row in pin.matrix_parent_inverse for value in row)
+        parts.extend(f"{value:.6f}" for value in pin.bone.head_local)
         parts.append(str(getattr(pin_hook(helper, pin), "name", "")))
     return "|".join(parts)
 
@@ -471,6 +508,9 @@ def bind(rig, helper, plane, *, force=False):
     """
     if rig is None or helper is None or plane is None:
         return False
+    armature = bones_object(rig)
+    if armature is not None and str(getattr(armature, "mode", "OBJECT")) == 'EDIT':
+        return False
     handles = [pin for pin in rig_pins(rig, kinds=(KIND_POINT,)) if pin_hook(helper, pin) is not None]
     if handles and not _point_handles_match_grid(helper, handles):
         # The cage changed resolution: rebuild the handles on the new points.
@@ -494,8 +534,10 @@ def bind(rig, helper, plane, *, force=False):
     for pin in pins:
         hook = pin_hook(helper, pin)
         rest_world = _rest_world(rig, pin)
-        # Blender evaluates the hook as cage⁻¹ · pin · matrix_inverse, which is
+        # Blender evaluates the hook as cage⁻¹ · bone · matrix_inverse, which is
         # the identity while the pin sits at rest.
+        hook.object = pin.id_data
+        hook.subtarget = pin.name
         hook.matrix_inverse = rest_world.inverted_safe() @ helper_world
         hook.center = (0.0, 0.0, 0.0)
         hook.vertex_group = _group_name(_pin_id(pin))
@@ -532,9 +574,12 @@ def sync_after_cage_change(rig, helper, plane):
     except FBP_DATA_ERRORS:
         pass
     try:
-        from .lattice_bones import bind as bind_bones, bones_object
-        if bones_object(rig) is not None:
-            changed = bind_bones(rig, helper, plane, force=False) or changed
+        from .lattice_bones import bind as bind_bones, deform_bones
+        armature = bones_object(rig)
+        if armature is not None:
+            ensure_armature(rig, helper, plane)
+            if deform_bones(armature):
+                changed = bind_bones(rig, helper, plane, force=False) or changed
     except (ImportError,) + FBP_DATA_ERRORS:
         pass
     return changed
@@ -913,7 +958,7 @@ def blended_location(rig, helper, pins, rest_world_point):
         total = 0.0
         for pin, column in zip(pins, weights):
             weight = float(column[nearest])
-            hook = helper_inverse @ pin.matrix_world @ _rest_world(rig, pin).inverted_safe() @ helper_world
+            hook = helper_inverse @ pin_world(rig, pin) @ _rest_world(rig, pin).inverted_safe() @ helper_world
             result += weight * (helper_world @ (hook @ local))
             total += weight
         return result / total if total > 1.0e-9 else Vector(rest_world_point)

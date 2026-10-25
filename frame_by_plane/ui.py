@@ -5382,6 +5382,45 @@ class FBP_PT_ModifierShortcuts(Panel):
         _fbp_draw_properties_modifier_effects(layout, context)
 
 
+class _FBPLatticeControlsPanel:
+    """Lattice settings next to the layer's controls armature (Pose Mode has no Modifiers tab)."""
+
+    bl_label = "Frame By Plane Lattice"
+    bl_description = "Edit the Lattice effect of the layer these handles and bones belong to"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_order = 0
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            from .lattice_pins import lattice_controller_owner
+            return lattice_controller_owner(getattr(context, "object", None)) is not None
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def draw_header(self, _context):
+        self.layout.label(text="", icon="MOD_LATTICE")
+
+    def draw(self, context):
+        from .lattice_pins import lattice_controller_owner
+        rig = lattice_controller_owner(getattr(context, "object", None))
+        if rig is None:
+            return
+        layout = configure_layout(self.layout)
+        fbp_draw_effect_settings(layout, rig, "LATTICE", context=context)
+
+
+class FBP_PT_LatticeControls(_FBPLatticeControlsPanel, Panel):
+    bl_idname = "FBP_PT_lattice_controls"
+    bl_context = 'data'
+
+
+class FBP_PT_LatticeControlsBone(_FBPLatticeControlsPanel, Panel):
+    bl_idname = "FBP_PT_lattice_controls_bone"
+    bl_context = 'bone'
+
+
 # SECTION 10 - Menu: Shift+A > Frame By Plane #
 # ###ICON Menu Shift+A, Functions: Color Plane, Gradient, Holdout, Image Plane, Multiplane, Clipboard.
 class FBP_MT_FrameByPlaneMore(Menu):
@@ -6550,6 +6589,8 @@ ui_classes = (
     FBP_PT_ToolSequence,
     FBP_PT_ImagePlaneData,
     FBP_PT_ModifierShortcuts,
+    FBP_PT_LatticeControls,
+    FBP_PT_LatticeControlsBone,
     FBP_MT_FrameByPlaneAdd,
     FBP_MT_ObjectMaskContext,
     FBP_MT_ObjectLayerContext,

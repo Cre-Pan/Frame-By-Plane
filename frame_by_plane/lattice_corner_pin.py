@@ -7,138 +7,147 @@ written into the rest cage, like Camera Flatten: poses, pins and bones still
 work on top. The cage is linear and dense enough that its piecewise-linear
 surface follows the projective map closely.
 
-Handles live in the plane frame and keyframe like any object. The cage is
-rewritten when a handle moves and on every frame change, so animated corners
-also render (the add-on must be enabled).
+The handles are bones of the layer's controls armature (see ``lattice_bones``)
+and keyframe like any bone. The cage is rewritten when a handle moves and on
+every frame change, so animated corners also render (the add-on must be
+enabled).
 """
 
 from __future__ import annotations
 
-import bpy
+import math
+
 from mathutils import Vector
 
-from .lattice_pins import new_controller
+from .lattice_bones import (
+    HANDLE_KEY,
+    add_handle_bones,
+    bones_object,
+    bones_owner,
+    ensure_armature,
+    handle_size,
+    remove_bone_names,
+    remove_unused_armature,
+    style_bone,
+)
 from .runtime import FBP_DATA_ERRORS
 
 
-CORNER_OWNER_KEY = "fbp_lattice_corner_owner"
 CORNER_ROLE_KEY = "fbp_lattice_corner"
 SIGNATURE_KEY = "fbp_lattice_corner_signature"
-# Cage corner order: counter-clockwise from the bottom left.
+KIND_CORNER = "CORNER"
+# Cage corner order: counter-clockwise from the bottom left. The last value
+# turns the bracket shape so it opens towards the layer.
 ROLES = (
-    ("BL", "Bottom Left", (-0.5, -0.5)),
-    ("BR", "Bottom Right", (0.5, -0.5)),
-    ("TR", "Top Right", (0.5, 0.5)),
-    ("TL", "Top Left", (-0.5, 0.5)),
+    ("BL", "Bottom Left", (-0.5, -0.5), 0.0),
+    ("BR", "Bottom Right", (0.5, -0.5), 90.0),
+    ("TR", "Top Right", (0.5, 0.5), 180.0),
+    ("TL", "Top Left", (-0.5, 0.5), 270.0),
 )
 # Minimum cage points per axis for a smooth perspective.
 MIN_POINTS = 12
 
 
-def is_corner_handle(obj):
+def is_corner_handle(pose_bone):
     try:
-        return bool(obj is not None and str(obj.get(CORNER_ROLE_KEY, "") or ""))
+        return bool(pose_bone is not None and str(pose_bone.get(CORNER_ROLE_KEY, "") or ""))
     except FBP_DATA_ERRORS:
         return False
 
 
-def corner_owner(obj):
-    if not is_corner_handle(obj):
+def corner_owner(pose_bone):
+    if not is_corner_handle(pose_bone):
         return None
-    parent = getattr(obj, "parent", None)
-    if parent is not None and bool(getattr(parent, "is_fbp_control", False)):
-        return parent
-    owner = bpy.data.objects.get(str(obj.get(CORNER_OWNER_KEY, "") or ""))
-    return owner if owner is not None and bool(getattr(owner, "is_fbp_control", False)) else None
+    return bones_owner(pose_bone.id_data)
 
 
 def corner_handles(rig):
-    """Return {role: handle} for a layer."""
+    """Return {role: handle pose bone} for a layer."""
     result = {}
-    if rig is None:
+    armature = bones_object(rig)
+    if armature is None:
         return result
     try:
-        for obj in tuple(getattr(rig, "children", ()) or ()):
-            if is_corner_handle(obj):
-                result[str(obj.get(CORNER_ROLE_KEY))] = obj
+        for bone in armature.pose.bones:
+            if is_corner_handle(bone):
+                result[str(bone.get(CORNER_ROLE_KEY))] = bone
     except FBP_DATA_ERRORS:
         return {}
     return result
 
 
+def _cage_to_armature(helper, armature):
+    """Matrix from cage coordinates to armature (plane frame) space.
+
+    Both are children of the layer rig, so the rig's own world matrix cancels:
+    this stays exact while the rig animates, even before a depsgraph update.
+    """
+    cage_in_rig = helper.matrix_parent_inverse @ helper.matrix_basis
+    frame_in_rig = armature.matrix_parent_inverse @ armature.matrix_basis
+    return frame_in_rig.inverted_safe() @ cage_in_rig
+
+
 def ensure_handles(rig, helper, plane):
     """Create missing corner handles on the cage corners. Return {role: handle}."""
     handles = corner_handles(rig)
-    for role, label, (x, y) in ROLES:
-        if role in handles:
-            continue
-        world = helper.matrix_world @ Vector((x, y, 0.0))
-        handle, _local = new_controller(
-            rig, helper, plane, f"Corner {label} • {rig.name}", world, display='CUBE', size=0.7,
-        )
-        handle[CORNER_OWNER_KEY] = str(rig.name)
+    missing = [role for role in ROLES if role[0] not in handles]
+    if not missing:
+        return handles
+    armature = ensure_armature(rig, helper, plane)
+    to_armature = _cage_to_armature(helper, armature)
+    specs = [
+        (f"Corner {label}", to_armature @ Vector((x, y, 0.0)))
+        for _role, label, (x, y), _turn in missing
+    ]
+    names = add_handle_bones(armature, specs)
+    size = handle_size(plane) * 0.7
+    for (role, _label, _rest, turn), name in zip(missing, names):
+        handle = armature.pose.bones[name]
+        handle[HANDLE_KEY] = KIND_CORNER
         handle[CORNER_ROLE_KEY] = role
+        handle.rotation_mode = 'XYZ'
         # Corners only move; perspective comes from where they are.
+        handle.lock_location = (False, False, True)
         handle.lock_rotation = (True, True, True)
         handle.lock_scale = (True, True, True)
+        style_bone(handle, KIND_CORNER, size, rotation=math.radians(turn))
         handles[role] = handle
     return handles
 
 
 def reset_handles(rig, helper):
     handles = corner_handles(rig)
-    to_handle_space = {}
-    for role, _label, (x, y) in ROLES:
+    for role, _label, (x, y), _turn in ROLES:
         handle = handles.get(role)
         if handle is None:
             continue
-        cage_to_frame = _cage_to_frame(helper, handle)
-        point = cage_to_frame @ Vector((x, y, 0.0))
-        handle.location = (point.x, point.y, 0.0)
-        to_handle_space[role] = point
-    return to_handle_space
+        point = _cage_to_armature(helper, handle.id_data) @ Vector((x, y, 0.0))
+        offset = point - handle.bone.head_local
+        handle.location = (offset.x, offset.y, 0.0)
 
 
-def remove_handles(rig):
-    changed = False
-    owner_name = str(getattr(rig, "name", "") or "")
-    targets = list(corner_handles(rig).values())
-    try:
-        for obj in tuple(bpy.data.objects):
-            if obj not in targets and is_corner_handle(obj) and str(obj.get(CORNER_OWNER_KEY, "") or "") == owner_name:
-                targets.append(obj)
-    except FBP_DATA_ERRORS:
-        pass
-    for obj in targets:
-        try:
-            bpy.data.objects.remove(obj, do_unlink=True)
-            changed = True
-        except FBP_DATA_ERRORS:
-            continue
-    return changed
-
-
-def _cage_to_frame(helper, handle):
-    """Matrix from cage coordinates to a handle's parent (frame) space.
-
-    Both are children of the layer rig, so the rig's own world matrix cancels:
-    this stays exact while the rig animates, even before a depsgraph update.
-    """
-    cage_in_rig = helper.matrix_parent_inverse @ helper.matrix_basis
-    frame_in_rig = handle.matrix_parent_inverse
-    return frame_in_rig.inverted_safe() @ cage_in_rig
+def remove_handles(rig, helper=None):
+    handles = list(corner_handles(rig).values())
+    if not handles:
+        return False
+    armature = handles[0].id_data
+    remove_bone_names(armature, [handle.name for handle in handles])
+    if helper is not None:
+        helper.pop(SIGNATURE_KEY, None)
+    remove_unused_armature(rig, helper)
+    return True
 
 
 def corner_targets(rig, helper):
     """Return the four handle positions in cage coordinates, in ROLES order."""
     handles = corner_handles(rig)
     result = []
-    for role, _label, _rest in ROLES:
+    for role, _label, _rest, _turn in ROLES:
         handle = handles.get(role)
         if handle is None:
             return None
-        frame_to_cage = _cage_to_frame(helper, handle).inverted_safe()
-        point = frame_to_cage @ Vector(tuple(handle.location))
+        to_cage = _cage_to_armature(helper, handle.id_data).inverted_safe()
+        point = to_cage @ (handle.bone.head_local + Vector(tuple(handle.location)))
         result.append((float(point.x), float(point.y)))
     return result
 
@@ -159,7 +168,7 @@ def homography(source, target):
 def cage_coordinates(points_u, points_v, targets):
     """Rest cage coordinates (flat xyz) that map the regular cage onto ``targets``."""
     import numpy as np
-    matrix = homography([rest for _role, _label, rest in ROLES], targets)
+    matrix = homography([rest for _role, _label, rest, _turn in ROLES], targets)
     xs, ys = np.meshgrid(
         np.linspace(-0.5, 0.5, points_u), np.linspace(-0.5, 0.5, points_v)
     )

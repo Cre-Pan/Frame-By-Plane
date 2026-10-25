@@ -121,6 +121,7 @@ class _FBPTrackedRNAOwner:
 _FBP_SCENE_RNA = _FBPTrackedRNAOwner(bpy.types.Scene, "Scene")
 _FBP_COLLECTION_RNA = _FBPTrackedRNAOwner(bpy.types.Collection, "Collection")
 _FBP_OBJECT_RNA = _FBPTrackedRNAOwner(bpy.types.Object, "Object")
+_FBP_POSE_BONE_RNA = _FBPTrackedRNAOwner(bpy.types.PoseBone, "PoseBone")
 
 
 CAMERA_RATIO_ITEMS = [
@@ -6191,7 +6192,7 @@ def register_properties():
         description="Give every new chain of two or more bones an IK handle at its end: drag the hand and the arm follows",
         default=True,
     )
-    _FBP_OBJECT_RNA.fbp_lattice_pin_stiffness = FloatProperty(
+    _FBP_POSE_BONE_RNA.fbp_lattice_pin_stiffness = FloatProperty(
         name="Stiff Area",
         description="Size of the area around this pin that moves rigidly instead of bending, like an After Effects starch pin. 0 bends right up to the pin",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR',
@@ -7659,6 +7660,7 @@ def unregister_properties():
         (bpy.types.Scene, "Scene"),
         (bpy.types.Collection, "Collection"),
         (bpy.types.Object, "Object"),
+        (bpy.types.PoseBone, "PoseBone"),
     ):
         removed += _unregister_fbp_type_properties(owner, owner_name)
     return removed
