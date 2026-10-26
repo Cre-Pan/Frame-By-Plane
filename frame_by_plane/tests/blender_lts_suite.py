@@ -2864,6 +2864,300 @@ def test_lattice_poses_contract(_module):
     return {"width": round(width, 3)}
 
 
+def test_lattice_pins_contract(_module):
+    """Puppet pins bend the layer natively, keyframe, survive grid changes and clean up."""
+    from mathutils import Vector
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    pins_module = importlib.import_module(f"{PACKAGE}.lattice_pins")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Lattice Pins", width=32)
+    owned = [rig, *rig.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+    frame = scene.frame_current
+
+    def surface():
+        bpy.context.view_layer.update()
+        evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh()
+        try:
+            return [plane.matrix_world @ vertex.co for vertex in mesh.vertices]
+        finally:
+            evaluated.to_mesh_clear()
+
+    def local_point(x, y):
+        xs = [vertex.co.x for vertex in plane.data.vertices]
+        ys = [vertex.co.y for vertex in plane.data.vertices]
+        return plane.matrix_world @ Vector((
+            min(xs) + x * (max(xs) - min(xs)), min(ys) + y * (max(ys) - min(ys)), 0.0,
+        ))
+
+    def nearest(points, target):
+        return min(range(len(points)), key=lambda index: (points[index] - target).length)
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            ops = bpy.ops.fbp
+            assert ops.add_effect(effect_id="LATTICE") == {"FINISHED"}
+            plane = geo._fbp_plane(rig)
+            helper = geo._fbp_lattice_object(rig)
+            points_u, points_v = pins_module.puppet_grid_points(plane)
+            rig.fbp_lattice_grid_preset = "CUSTOM"
+            rig.fbp_lattice_link_loops = False
+            rig.fbp_lattice_custom_loops_u = points_u - 2
+            rig.fbp_lattice_custom_loops_v = points_v - 2
+            _flush_fbp_safe_tasks()
+            assert (helper.data.points_u, helper.data.points_v) == (points_u, points_v)
+            rest = surface()
+            left_spot, right_spot = local_point(0.2, 0.5), local_point(0.8, 0.5)
+            left = pins_module.add_pin(rig, helper, plane, left_spot)
+            right = pins_module.add_pin(rig, helper, plane, right_spot)
+            pins_module.add_pin(rig, helper, plane, local_point(0.5, 0.9))
+            assert len(pins_module.rig_pins(rig)) == 3
+            assert max((a - b).length for a, b in zip(rest, surface())) < 1.0e-5
+            # Weights form a partition of unity on every cage point.
+            groups = [helper.vertex_groups[f"FBP Pin {index}"] for index in (1, 2, 3)]
+            for index in range(len(helper.data.points)):
+                total = 0.0
+                for group in groups:
+                    try:
+                        total += group.weight(index)
+                    except RuntimeError:
+                        pass
+                assert abs(total - 1.0) < 1.0e-3, (index, total)
+            # A moved pin carries the drawing under it; the other pin anchors.
+            left_index, right_index = nearest(rest, left_spot), nearest(rest, right_spot)
+            right.location.y += 0.2
+            moved = surface()
+            assert (moved[right_index] - rest[right_index]).length > 0.19, moved[right_index] - rest[right_index]
+            assert (moved[left_index] - rest[left_index]).length < 0.01
+            # Rotation pivots on the pin.
+            right.location.y -= 0.2
+            right.rotation_euler.z = 0.4
+            turned = surface()
+            assert (turned[right_index] - rest[right_index]).length < 0.01
+            assert max((a - b).length for a, b in zip(rest, turned)) > 0.02
+            right.rotation_euler.z = 0.0
+            # Keyframes animate the puppet natively.
+            assert ops.lattice_pins_action(rig_name=rig.name, action="KEY") == {"FINISHED"}
+            scene.frame_set(10)
+            right.location.y += 0.2
+            assert ops.lattice_pins_action(rig_name=rig.name, action="KEY") == {"FINISHED"}
+            scene.frame_set(1)
+            assert (surface()[right_index] - rest[right_index]).length < 1.0e-3
+            scene.frame_set(10)
+            assert (surface()[right_index] - rest[right_index]).length > 0.19
+            # A grid change rebinds the pins to the new cage.
+            rig.fbp_lattice_custom_loops_u = points_u
+            _flush_fbp_safe_tasks()
+            assert helper.data.points_u == points_u + 2
+            scene.frame_set(10)
+            assert (surface()[right_index] - rest[right_index]).length > 0.19
+            # Rest Pose and Set as Rest.
+            left.id_data.animation_data_clear()
+            assert ops.lattice_pins_action(rig_name=rig.name, action="REST") == {"FINISHED"}
+            assert max((a - b).length for a, b in zip(rest, surface())) < 1.0e-4
+            left.location.x += 0.1
+            assert ops.lattice_pins_action(rig_name=rig.name, action="SET_REST") == {"FINISHED"}
+            assert max((a - b).length for a, b in zip(rest, surface())) < 1.0e-4
+            # Pins are bones of one renderless controls armature that resolves to its layer.
+            layers = importlib.import_module(f"{PACKAGE}.layers")
+            controls = left.id_data
+            assert all(pin.id_data == controls for pin in pins_module.rig_pins(rig))
+            assert controls.hide_render and controls.data.display_type == "STICK"
+            assert all(pin.custom_shape is not None for pin in pins_module.rig_pins(rig))
+            assert [obj for obj in rig.children if obj.type == "ARMATURE"] == [controls]
+            assert layers.fbp_resolve_rig_from_any_object(controls, bpy.context) == rig
+            # Remove one pin, then the effect removes the rest.
+            assert ops.remove_lattice_pin(rig_name=rig.name, pin_name=left.name) == {"FINISHED"}
+            assert len(pins_module.rig_pins(rig)) == 2
+            assert len([m for m in helper.modifiers if m.type == "HOOK"]) == 2
+            geo._fbp_remove_lattice_effect(rig)
+            assert not [obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]
+    finally:
+        scene.frame_set(frame)
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed([*owned, *[obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]]):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"grid": [points_u, points_v]}
+
+
+def test_lattice_types_contract(_module):
+    """Bones, Corner Pin, Grid point handles and Bend/Stiff pins stack on one cage."""
+    import math
+    from mathutils import Vector
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    pins_module = importlib.import_module(f"{PACKAGE}.lattice_pins")
+    bones_module = importlib.import_module(f"{PACKAGE}.lattice_bones")
+    corner_module = importlib.import_module(f"{PACKAGE}.lattice_corner_pin")
+    layers = importlib.import_module(f"{PACKAGE}.layers")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Lattice Types", width=32)
+    owned = [rig, *rig.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+    frame = scene.frame_current
+
+    def surface():
+        bpy.context.view_layer.update()
+        evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh()
+        try:
+            return [plane.matrix_world @ vertex.co for vertex in mesh.vertices]
+        finally:
+            evaluated.to_mesh_clear()
+
+    def local_point(x, y):
+        xs = [vertex.co.x for vertex in plane.data.vertices]
+        ys = [vertex.co.y for vertex in plane.data.vertices]
+        return plane.matrix_world @ Vector((
+            min(xs) + x * (max(xs) - min(xs)), min(ys) + y * (max(ys) - min(ys)), 0.0,
+        ))
+
+    def nearest(points, target):
+        return min(range(len(points)), key=lambda index: (points[index] - target).length)
+
+    def drift(a, b):
+        return max((p - q).length for p, q in zip(a, b))
+
+    class _Reporter:
+        def report(self, *_args):
+            pass
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            ops = bpy.ops.fbp
+            assert ops.add_effect(effect_id="LATTICE") == {"FINISHED"}
+            plane = geo._fbp_plane(rig)
+            helper = geo._fbp_lattice_object(rig)
+            rest = surface()
+
+            # Grid: one handle per cage point, keyable in Object Mode.
+            assert ops.lattice_point_handles(rig_name=rig.name, action="ADD") == {"FINISHED"}
+            handles = pins_module.rig_pins(rig, kinds=(pins_module.KIND_POINT,))
+            assert len(handles) == len(helper.data.points)
+            corner_index = len(helper.data.points) - 1
+            moved_handle = [h for h in handles if int(h[pins_module.PIN_POINT_KEY]) == corner_index][0]
+            moved_handle.location.x += 0.2
+            assert drift(rest, surface()) > 0.05
+            assert ops.lattice_point_handles(rig_name=rig.name, action="REST") == {"FINISHED"}
+            assert drift(rest, surface()) < 1.0e-5
+            assert ops.lattice_point_handles(rig_name=rig.name, action="REMOVE") == {"FINISHED"}
+            assert not pins_module.rig_pins(rig)
+            assert not helper.vertex_groups and not helper.modifiers
+
+            # Bones: a shoulder-elbow-hand chain with IK, weights on the cage.
+            assert geo._fbp_refine_lattice_cage(_Reporter(), rig, plane, *pins_module.puppet_grid_points(plane))
+            helper = geo._fbp_lattice_object(rig)
+            rest = surface()
+            armature = bones_module.ensure_armature(rig, helper, plane)
+            assert geo._fbp_select_only(bpy.context, armature, "EDIT")
+            to_local = lambda x, y: bones_module.local_point(rig, armature, local_point(x, y))
+            upper = bones_module.add_bone(armature, to_local(0.5, 0.9), to_local(0.5, 0.6))
+            lower = bones_module.add_bone(armature, to_local(0.5, 0.6), to_local(0.5, 0.3), upper)
+            assert armature.data.edit_bones[lower].use_connect
+            target = bones_module.add_ik_target(armature, [upper, lower])
+            assert geo._fbp_select_only(bpy.context, armature, "POSE")
+            bones_module.setup_pose_constraints(armature, [([upper, lower], target)])
+            assert bones_module.bind(rig, helper, plane, force=True)
+            assert helper.modifiers[0].name == bones_module.MODIFIER_NAME
+            assert set(helper.vertex_groups.keys()) == {upper, lower}
+            assert drift(rest, surface()) < 1.0e-4
+            hand_index = nearest(rest, local_point(0.5, 0.3))
+            shoulder_index = nearest(rest, local_point(0.5, 0.9))
+            pose_target = armature.pose.bones[target]
+            offset = Vector((0.15, 0.0, 0.0))
+            pose_target.location = armature.data.bones[target].matrix_local.inverted().to_3x3() @ (
+                armature.matrix_world.inverted().to_3x3() @ (plane.matrix_world.to_3x3() @ offset)
+            )
+            posed = surface()
+            assert (posed[hand_index] - rest[hand_index]).length > 0.05
+            assert (posed[shoulder_index] - rest[shoulder_index]).length < 0.02
+            assert ops.lattice_bones_action(rig_name=rig.name, action="KEY") == {"FINISHED"}
+            assert armature.animation_data and armature.animation_data.action
+            # The keyed pose would come back on the next evaluation: drop it.
+            armature.animation_data_clear()
+            assert ops.lattice_bones_action(rig_name=rig.name, action="REST") == {"FINISHED"}
+            assert drift(rest, surface()) < 1.0e-4
+            assert armature.hide_render
+            assert layers.fbp_resolve_rig_from_any_object(armature, bpy.context) == rig
+            assert geo._fbp_select_only(bpy.context, rig)
+
+            # Pins stack on the bones: Bend pins only turn, Stiff Area rebinds.
+            bend = pins_module.add_pin(rig, helper, plane, local_point(0.2, 0.2), kind=pins_module.KIND_BEND)
+            assert pins_module.pin_kind(bend) == pins_module.KIND_BEND and all(bend.lock_location)
+            other = pins_module.add_pin(rig, helper, plane, local_point(0.8, 0.8))
+            assert drift(rest, surface()) < 1.0e-4
+            bend.rotation_euler.z = 0.5
+            assert drift(rest, surface()) > 0.01
+            bend.rotation_euler.z = 0.0
+            before = str(helper.get(pins_module.BIND_SIGNATURE_KEY, ""))
+            other.fbp_lattice_pin_stiffness = 0.6
+            _flush_fbp_safe_tasks()
+            assert str(helper.get(pins_module.BIND_SIGNATURE_KEY, "")) != before
+            assert drift(rest, surface()) < 1.0e-4
+
+            # Corner Pin: true perspective, live while the corners animate.
+            assert ops.lattice_corner_pin(rig_name=rig.name, action="SETUP") == {"FINISHED"}
+            helper = geo._fbp_lattice_object(rig)
+            assert rig.fbp_lattice_mode == "CORNER_PIN"
+            corners = corner_module.corner_handles(rig)
+            assert sorted(corners) == ["BL", "BR", "TL", "TR"]
+            assert min(helper.data.points_u, helper.data.points_v) >= corner_module.MIN_POINTS
+            scene.frame_set(1)
+            rest = surface()
+            assert ops.lattice_corner_pin(rig_name=rig.name, action="KEY") == {"FINISHED"}
+            scene.frame_set(10)
+            corners["TR"].location.x -= 0.2
+            corners["TR"].location.y -= 0.1
+            corners["TR"].keyframe_insert("location", frame=10)
+            geo.fbp_update_live_lattices(scene, force=True)
+            tilted = surface()
+            assert drift(rest, tilted) > 0.05
+            # A projective map keeps straight lines straight: the diagonal stays a line.
+            matrix = corner_module.homography(
+                [r for _role, _label, r, _turn in corner_module.ROLES],
+                corner_module.corner_targets(rig, helper),
+            )
+            assert abs(float(matrix[2][0])) + abs(float(matrix[2][1])) > 1.0e-4
+            scene.frame_set(1)
+            geo.fbp_update_live_lattices(scene, force=True)
+            assert drift(rest, surface()) < 1.0e-3
+            assert corners["TR"].id_data == armature
+            assert layers.fbp_resolve_rig_from_any_object(corners["TR"].id_data, bpy.context) == rig
+            assert ops.lattice_corner_pin(rig_name=rig.name, action="REMOVE") == {"FINISHED"}
+            assert rig.fbp_lattice_mode == "FREEFORM" and not corner_module.corner_handles(rig)
+
+            # Removing the effect leaves no controller behind.
+            geo._fbp_remove_lattice_effect(rig)
+            assert not [obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]
+            assert not [obj for obj in bpy.data.objects if obj.name.startswith("FBP Handle")]
+    finally:
+        scene.frame_set(frame)
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed([*owned, *[obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]]):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"types": ["GRID", "BONES", "PINS", "CORNER_PIN"]}
+
+
 def _effect_stage_materials(geo, rig):
     """Return ``{modifier name: [(socket, shader effect ids)]}`` for material inputs."""
     result = {}
@@ -5188,6 +5482,8 @@ def run_background():
             ("effect_controls_roundtrip", test_effect_controls_roundtrip),
             ("gradient_handles_cycles", test_gradient_handles_cycles),
             ("lattice_poses_contract", test_lattice_poses_contract),
+            ("lattice_pins_contract", test_lattice_pins_contract),
+            ("lattice_types_contract", test_lattice_types_contract),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),
             ("audited_operator_tooltips", test_audited_operator_tooltips),
