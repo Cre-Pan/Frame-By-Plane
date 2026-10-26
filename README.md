@@ -100,7 +100,16 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 
 ---
 
-## Prepared update: 8.0.1
+## Prepared update: 8.1.0
+
+- **Lattice as a puppet rig:** Grid with Point Handles, Corner Pin, Bones with IK and Puppet Pins, all in one Controls armature.
+- Every effect has its own icon, and the add menus are reordered into coherent sections.
+- **Color Key** absorbs Chroma Key, with Despill and green/blue screen presets.
+- **Riso Print** gains Drift Angle, Print Rotation, a real Seed and Animate.
+- A tidier **Z Pie** and shorter tooltips.
+- Fixes for Halftone, Slice Shift, Grain, Extrude Array, Paper Shards, Fiber Tufts and Crosshatch.
+
+Also includes everything from 8.0.1:
 
 - Five new effects: **Frame Stack**, **Knit & Crochet**, **Riso Print**, **Oil Paint** and **Edge Distance Mask**.
 - Fewer popups: plane settings live in the file browser sidebar and in Blender's Adjust Last Operation panel.
@@ -113,7 +122,7 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 - A safer compositor: opening a file adds nothing, Compositor Off restores your own render setup, and F12 never changes until you opt in.
 - Faster effect stacks and many effect-stack fixes (Hide in Render, duplicates, variants, groups, masks, copy/paste and presets).
 
-See the [8.0.1 release notes](release-notes/8.0.1.md). The public release is still 7.2.0.
+See the [8.1.0 release notes](release-notes/8.1.0.md). The public release is still 7.2.0.
 
 ## What's new in 7.2.0
 
@@ -144,11 +153,11 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.0.1-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.0.1-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.0.1-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.0.1-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.0.1-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.1.0-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.1.0-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.1.0-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.1.0-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.1.0-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.

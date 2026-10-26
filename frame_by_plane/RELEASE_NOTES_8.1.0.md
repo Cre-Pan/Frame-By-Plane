@@ -1,6 +1,30 @@
-# 🎞️ Frame By Plane — 8.0.1
+# 🎞️ Frame By Plane — 8.1.0
 
-Frame By Plane 8 LTS for Blender 5.2 LTS. 8.0.1 adds five new effects, replaces the plane creation popups with the file browser sidebar and Blender's Adjust Last Operation panel, and fixes the Image Projector. Everything from 8.0.0 is listed below.
+Frame By Plane 8 LTS for Blender 5.2 LTS. 8.1.0 turns the Lattice into a puppet rig (Grid, Corner Pin, Bones and Pins), gives every effect its own icon, merges Chroma Key into Color Key, extends Riso Print, reorganizes the Z Pie and fixes several effects. Everything from 8.0.1 and 8.0.0 is listed below.
+
+## 🆕 New in 8.1.0
+
+- 🌀 **Lattice types:** the Lattice panel opens on a **Type** menu (**Grid**, **Corner Pin**, **Bones**, **Pins**, **Camera**). The types stack on the same cage, and all handles and bones of a layer live in one Controls armature, posed and keyed in Pose Mode.
+- 📌 **Puppet Pins:** click on the layer to place pins, move or rotate them and the drawing bends around them while the other pins hold. **Bend** pins only rotate or scale their area, and **Stiff Area** keeps a region rigid. Pins use native Hooks with weights that follow the drawing.
+- 🦴 **Bones:** click joints on the layer to build chains, with an IK handle at the end of each chain. A native Armature deforms the cage, so it keys, saves and renders like any rig.
+- ◰ **Corner Pin:** four corner handles map the layer onto any quad with true perspective. **Grid** gains **Point Handles** you can move and key without entering Edit Mode.
+- 🎨 **Every effect has an icon** in the add menus, the effect stack and the pie menu. The Image, Mask and Mesh add menus are reordered into coherent sections.
+- 🟩 **Color Key** now includes everything Chroma Key did, with a new **Despill** and the Green Screen and Blue Screen presets. Files that use Chroma Key are converted automatically.
+- 🖨️ **Riso Print:** **Drift Angle**, **Print Rotation**, a real **Seed** and **Animate** with Speed and Stepped.
+- 🥧 **Z Pie:** Hide, Solo and Holdout on one row, plus Show Overlays and Show Onion Skin; Lock and Selectability only while a layer is selected. Cursor on Camera is an icon button.
+- 💬 **Shorter tooltips:** one short sentence per operator and per effect.
+
+### 🛠️ Fixes in 8.1.0
+
+- Halftone: Color Mode and Use Source Color work again, so BW Light, BW Dark and a custom Ink Color render as expected.
+- Slice Shift: neighbouring bands move in opposite directions, so Bands has a visible effect.
+- Grain no longer writes negative colors in dark areas.
+- Oil Paint and Edge Distance Mask build about five times faster the first time.
+- Felt Fuzz: the Render Density slider ends at 400,000 strands to avoid running out of memory.
+- Extrude Array: transparent areas no longer render black in Cycles.
+- Paper Shards and Fiber Tufts follow the exact image alpha, and dark chips no longer sink below the plane.
+- Crosshatch: smoother line edges, and diagonal hatches use the same spacing as straight ones.
+- Files saved with the old versions of these effects are updated when opened.
 
 ## 🆕 New in 8.0.1
 
@@ -117,11 +141,11 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.0.1-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.0.1-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.0.1-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.0.1-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.0.1-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.1.0-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.1.0-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.1.0-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.1.0-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.1.0-linux_x64.zip` |
 
 Install the ZIP through **Edit > Preferences > Get Extensions > Install from Disk**. Do not install GitHub's automatically generated Source code ZIP.
 

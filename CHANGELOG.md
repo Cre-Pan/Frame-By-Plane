@@ -2,36 +2,13 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [Unreleased]
+## [8.1.0] - Unreleased
 
 ### Effects
 
 - **Riso Print**: the old Seed only turned the misregistration, so it is now **Drift Angle**. New **Print Rotation** turns the halftone screen and the grain, and a real **Seed** reshuffles the grain and the dots (each ink's screen phase and the dot size jitter). Riso Print now has the Animation section of the other effects: **Animate** with **Speed** and **Stepped** boils the grain and dots over time.
-
-## [8.0.1] - Unreleased
-
-### New effects
-
-- **Frame Stack** (Mesh, for image sequences and videos): turns time into a solid. Earlier frames are stacked in depth behind the plane, one slice per frame, with per-slice offset, depth, rotation, twist and scale. **Follow Playback** keeps the newest frame on the plane and the past trailing behind; **Fixed Range** stacks a chosen range and its Start Frame can be animated to scroll the solid through time. Opacity offers the front/back threshold (faint front slices), **Depth Fade**, a **Luminance Key** that hides dark or bright areas without a separate mask video, and **Glow**, an additive mode that needs no sorting. An optional **Outline** draws the volume edges. The plane keeps full resolution; earlier slices use a grid whose detail is set separately for viewport, playback and render. Cycles automatically gets enough transparent bounces for the slices. Concept inspired by "Video Frame Stack" by hipofizus.
-
-- **Knit & Crochet** (Mesh, for images, sequences and videos): rebuilds the image as yarn. **Knit** makes stockinette V stitches in columns, each row tucked under the next; **Crochet** makes single-crochet stitches (a head over two posts) in brick-offset rows. Every stitch takes its colour from the image, transparent areas stay empty, and sequences and videos stay animated. Thickness, plies and twist shape the yarn; Fuzz adds a woolly sheen; Color Variation and Hand-made add irregularity; Self Light keeps the yarn readable in unlit scenes. Stitch count is set separately for viewport, playback and render.
-
-- **Riso Print** (Image, Pixel / Print menu): reprints the image with two or three spot inks on colored paper, like a risograph. Each ink takes its share of the color, drifts slightly out of register, and can turn into rotated halftone dots with mottled ink grain. Inks, paper, misregistration, dot size, grain and seed are editable, with presets for Pink & Blue, Three Drum and Green & Orange.
-
-- **Oil Paint** (Image, Edges menu): an anisotropic Kuwahara filter. Color flattens into brush-stroke patches that follow the image's edges while contours stay sharp. Radius sets the stroke size, Anisotropy stretches strokes along edges (0 is the classic round filter) and Sharpness decides how crisp the stroke borders are. Transparent pixels never darken the paint.
-
-- **Edge Distance Mask** (Mask, Nodes menu): a mask that ramps from the artwork's transparent edge inward over a set distance, for glowing borders, inner strokes and grow-in reveals (animate Threshold). Invert keeps the band along the edge. With Image Border on, the picture's own border counts as an edge, so fully opaque images get a frame-shaped falloff.
-
-### Effects menu
-
 - **Color Key** (Mask) now includes everything Chroma Key did. Invert keys the color out like a green screen, the new **Despill** greys the leftover key color along soft edges, the debug view gains **Distance**, and the Green Screen and Blue Screen presets moved here. Chroma Key is no longer a separate effect: files that use it are converted to Color Key automatically when opened. Despill applies when the key targets the whole layer.
 - Every effect has its own icon in the add menus, the effect stack and the pie menu. Section titles no longer carry icons, internal variants share their family icon, and Solarize sits under Film.
-
-### Plane creation
-
-- **Fewer popups.** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar instead of a dialog after the file browser. Color, Gradient, Holdout, Color Plane from Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup.
-- The settings follow Blender's own layout: collapsible Plane and Camera Settings, a compact Playback row and Playback and color preset dropdowns, two-row presets with Dimensions, and an icon-only Orientation. The orientation Swap button is gone.
-- In the plane settings, **Set Scene In/Out from Media** is labeled **Set Scene Length from Media**.
 
 ### Lattice puppet pins
 
@@ -48,6 +25,11 @@ All notable public changes to Frame By Plane are documented here.
 - **Grid** gains **Point Handles**: one handle per cage point that you can move and keyframe without entering the cage's Edit Mode (cages of up to 100 points).
 - **Pins** gain **Bend** pins, which stay in place and only rotate or scale their area, and a per-pin **Stiff Area** that keeps the area around a pin rigid.
 
+### Z Pie and tooltips
+
+- Z Pie: Hide, Solo and Holdout sit on the first south row; a second row adds Show Overlays (always) and Show Onion Skin (inside a Grease Pencil object). Lock and Selectability appear only while a Frame By Plane layer is selected, or one is still locked from the Pie. Cursor on Camera is an icon-only camera button.
+- Operator and effect tooltips are one short sentence; the automatic "Use when", "Example" and "Note" paragraphs are gone. Italian translations follow.
+
 ### Fixes
 
 - Halftone: Color Mode and Use Source Color had no effect, so BW Light, BW Dark and a custom Ink Color all rendered the source colors. They now work, and files saved with the old Halftone are updated when opened.
@@ -59,6 +41,28 @@ All notable public changes to Frame By Plane are documented here.
 - Paper Shards: chips darker than about 40% luminance sank below the plane and disappeared. Luminance Lift now raises chips from the plane (light ones for positive values, dark ones for negative values) and never pushes them under it. Files saved with the old Paper Shards are updated when opened.
 - Paper Shards and Fiber Tufts: near the edge of a cutout, chips and fibers landed on transparent pixels (and rendered black) while opaque pixels next to them stayed empty. Each chip and fiber is now tested against the exact image alpha, and files saved with the old versions are updated when opened.
 - Crosshatch: line edges are smoothed over one source pixel, which removes the jagged edges and moiré, and diagonal hatches now use the same spacing and width as the straight ones. Files saved with the old Crosshatch are updated when opened.
+
+## [8.0.1] - Unreleased
+
+### New effects
+
+- **Frame Stack** (Mesh, for image sequences and videos): turns time into a solid. Earlier frames are stacked in depth behind the plane, one slice per frame, with per-slice offset, depth, rotation, twist and scale. **Follow Playback** keeps the newest frame on the plane and the past trailing behind; **Fixed Range** stacks a chosen range and its Start Frame can be animated to scroll the solid through time. Opacity offers the front/back threshold (faint front slices), **Depth Fade**, a **Luminance Key** that hides dark or bright areas without a separate mask video, and **Glow**, an additive mode that needs no sorting. An optional **Outline** draws the volume edges. The plane keeps full resolution; earlier slices use a grid whose detail is set separately for viewport, playback and render. Cycles automatically gets enough transparent bounces for the slices. Concept inspired by "Video Frame Stack" by hipofizus.
+
+- **Knit & Crochet** (Mesh, for images, sequences and videos): rebuilds the image as yarn. **Knit** makes stockinette V stitches in columns, each row tucked under the next; **Crochet** makes single-crochet stitches (a head over two posts) in brick-offset rows. Every stitch takes its colour from the image, transparent areas stay empty, and sequences and videos stay animated. Thickness, plies and twist shape the yarn; Fuzz adds a woolly sheen; Color Variation and Hand-made add irregularity; Self Light keeps the yarn readable in unlit scenes. Stitch count is set separately for viewport, playback and render.
+
+- **Riso Print** (Image, Pixel / Print menu): reprints the image with two or three spot inks on colored paper, like a risograph. Each ink takes its share of the color, drifts slightly out of register, and can turn into rotated halftone dots with mottled ink grain. Inks, paper, misregistration, dot size, grain and seed are editable, with presets for Pink & Blue, Three Drum and Green & Orange.
+
+- **Oil Paint** (Image, Edges menu): an anisotropic Kuwahara filter. Color flattens into brush-stroke patches that follow the image's edges while contours stay sharp. Radius sets the stroke size, Anisotropy stretches strokes along edges (0 is the classic round filter) and Sharpness decides how crisp the stroke borders are. Transparent pixels never darken the paint.
+
+- **Edge Distance Mask** (Mask, Nodes menu): a mask that ramps from the artwork's transparent edge inward over a set distance, for glowing borders, inner strokes and grow-in reveals (animate Threshold). Invert keeps the band along the edge. With Image Border on, the picture's own border counts as an edge, so fully opaque images get a frame-shaped falloff.
+
+### Plane creation
+
+- **Fewer popups.** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar instead of a dialog after the file browser. Color, Gradient, Holdout, Color Plane from Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup.
+- The settings follow Blender's own layout: collapsible Plane and Camera Settings, a compact Playback row and Playback and color preset dropdowns, two-row presets with Dimensions, and an icon-only Orientation. The orientation Swap button is gone.
+- In the plane settings, **Set Scene In/Out from Media** is labeled **Set Scene Length from Media**.
+
+### Fixes
 
 - Image Projector: the projection was blurred by default because the light Radius also set the image size. The image size now follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone instead of losing its corners.
 - Image Projector: image sequences numbered from anything other than 1 (for example 0101) projected nothing, and sequences got the wrong aspect ratio.
