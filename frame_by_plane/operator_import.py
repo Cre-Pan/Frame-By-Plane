@@ -5403,8 +5403,8 @@ class FBP_OT_ImportPSD(Operator):
     detected_clipping: IntProperty(description='Detected Clipping value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     detected_masks: IntProperty(description='Detected Masks value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     detected_complex_groups: IntProperty(description='Detected Complex Groups value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
-    detected_blend_modes: IntProperty(description='End value for this operation. Example: final frame, loop boundary, exposure end or generated range limit.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
-    backend_version: StringProperty(description='End value for this operation. Example: final frame, loop boundary, exposure end or generated range limit.', default="", options={'HIDDEN', 'SKIP_SAVE'})
+    detected_blend_modes: IntProperty(description='Detected blend modes (internal)', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    backend_version: StringProperty(description='Importer version (internal)', default="", options={'HIDDEN', 'SKIP_SAVE'})
     confirm_large_import: BoolProperty(
         name="I Understand — Continue Import",
         description="Confirm extraction of a very large PSD/PSB that may require substantial time, memory and cache storage",
@@ -5625,14 +5625,14 @@ class FBP_OT_ImportProcreate(Operator):
     detected_hidden: IntProperty(description='Detected Hidden value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     detected_clipping: IntProperty(description='Detected Clipping value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     detected_masks: IntProperty(description='Detected Masks value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
-    detected_blend_modes: IntProperty(description='End value for this operation. Example: final frame, loop boundary, exposure end or generated range limit.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
+    detected_blend_modes: IntProperty(description='Detected blend modes (internal)', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     detected_candidates: IntProperty(description='Detected Candidates value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     detected_entries: IntProperty(description='Detected Entries value used by the current import workflow. Changes are applied only to compatible Frame By Plane data.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     detected_has_preview: BoolProperty(description='Toggle this option for the current import workflow. Disabled keeps the data available but prevents this behavior from being applied.', default=False, options={'HIDDEN', 'SKIP_SAVE'})
     detected_video: BoolProperty(description='Toggle this option for the current import workflow. Disabled keeps the data available but prevents this behavior from being applied.', default=False, options={'HIDDEN', 'SKIP_SAVE'})
     detected_video_members: IntProperty(description='Complete embedded movie files detected in the Procreate archive.', default=0, min=0, options={'HIDDEN', 'SKIP_SAVE'})
     extract_time_lapse: BoolProperty(name='Extract Time-lapse Video', description='Extract one complete embedded movie into the non-destructive Procreate cache when available', default=False, options={'SKIP_SAVE'})
-    backend_version: StringProperty(description='End value for this operation. Example: final frame, loop boundary, exposure end or generated range limit.', default="", options={'HIDDEN', 'SKIP_SAVE'})
+    backend_version: StringProperty(description='Importer version (internal)', default="", options={'HIDDEN', 'SKIP_SAVE'})
     confirm_large_import: BoolProperty(
         name="I Understand — Continue Import",
         description="Confirm extraction of a very large Procreate document that may require substantial time, memory and cache storage",

@@ -3342,47 +3342,12 @@ def fbp_effect_tooltip(effect_id):
         return cached
     definition = fbp_effect_definition(effect_id)
     if not definition:
-        return "Frame By Plane effect\n\nUse when: selecting or adding a registered Frame By Plane effect."
+        return "Frame By Plane effect."
     label = str(definition.get("label", effect_id) or effect_id)
-    description = str(definition.get("description", "") or "").strip()
-    category = str(definition.get("category", "2D") or "2D")
-    performance = str(definition.get("performance", "LIGHT") or "LIGHT").replace("_", " ").title()
-    supports = ", ".join(str(item).title() for item in definition.get("supports", ())) or "Selected compatible layers"
-    target_labels = {
-        "IMAGE_PLANE": "Single Plane",
-        "GREASE_PENCIL_MASK": "Grease Pencil Mask",
-        "GREASE_PENCIL_OBJECT": "Grease Pencil Object",
-        "CAMERA": "Camera",
-        "COMPOSITOR": "Compositor",
-    }
-    targets = ", ".join(
-        target_labels.get(str(item), str(item).replace("_", " ").title())
-        for item in definition.get("targets", ("IMAGE_PLANE",))
-    ) or "Single Plane"
-    animation = (
-        "Evolution, Stepped and Seed available"
-        if definition.get("evolve_property")
-        else "Static/deterministic; no Evolution control is exposed"
-    )
-    local_masks = (
-        "Can receive local effect masks"
-        if bool(definition.get("can_receive_local_masks", False)) or str(definition.get("stage", "")).upper() in {"COLOR", "UV"}
-        else "Use as a whole-layer effect or mask source"
-    )
-    warning = ""
+    description = " ".join(str(definition.get("description", "") or "").split())
+    tooltip = description or f"Add {label}."
     if str(definition.get("performance", "")).upper() in {"HEAVY", "VERY_HEAVY"}:
-        warning = "\n\nWarning: heavy effect. Test viewport playback before stacking many copies."
-    example_by_category = {
-        "MASK": "Example: add this to the Mask stack, or attach it to one effect through the effect-mask button.",
-        "3D": "Example: use this for multiplane depth, mesh deformation, outlines, thickness or camera-aware layer behavior.",
-        "2D": "Example: place this after color/UV effects when you want a visible image-processing result on the layer.",
-    }
-    example = example_by_category.get(category, "Example: add it to selected compatible Frame By Plane layers from the Effects library.")
-    tooltip = (
-        f"{label}\n{description}\n\n"
-        f"Use on: {supports}\nTargets: {targets}\nType: {category}\nPerformance: {performance}\n"
-        f"Animation: {animation}\nMasking: {local_masks}\n\n{example}{warning}"
-    )
+        tooltip += "\nHeavy effect: may slow down playback."
     if len(_FBP_EFFECT_TOOLTIP_CACHE) >= 1024 and effect_id not in _FBP_EFFECT_TOOLTIP_CACHE:
         _FBP_EFFECT_TOOLTIP_CACHE.clear()
     _FBP_EFFECT_TOOLTIP_CACHE[effect_id] = tooltip

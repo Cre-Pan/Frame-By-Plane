@@ -437,16 +437,8 @@ class FBP_OT_SyncRenderOutput(Operator):
     @classmethod
     def description(cls, _context, properties):
         if bool(getattr(properties, "from_native", True)):
-            return (
-                "Read Blender's native Render File Path into the Frame By Plane output builder. "
-                "Only scene RNA changes; no folders or files are created, the operation is idempotent, "
-                "and Blender Undo is intentionally not advertised for runtime path synchronization."
-            )
-        return (
-            "Push the Frame By Plane output builder path into Blender's native Render File Path. "
-            "Only scene RNA changes; no folders or files are created, the operation is idempotent, "
-            "and Blender Undo is intentionally not advertised for runtime path synchronization."
-        )
+            return "Copy Blender's render output path into Frame By Plane; no folders or files are created."
+        return "Copy the Frame By Plane output path into Blender's render settings; no folders or files are created."
 
     @classmethod
     def poll(cls, context):
