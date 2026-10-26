@@ -114,6 +114,7 @@ from .effects_registry import (
     FBP_EFFECT_MIRROR,
     FBP_EFFECT_THICKNESS,
     FBP_EFFECT_FELT_FUZZ,
+    FBP_EFFECT_GRAIN,
     FBP_EFFECT_FIBER_TUFTS,
     FBP_EFFECT_PAPER_SHARDS,
     FBP_EFFECT_SPHERE_SCREEN,
@@ -6152,12 +6153,30 @@ def _fbp_append_effect_group_from_library(
     return node_group
 
 
+def _fbp_patch_grain_clamp(node_group):
+    """Keep bundled Grain from writing negative colors.
+
+    The bundled group adds centered noise (-0.18..0.18) without clamping, so
+    dark pixels became negative emission. Every built-in color effect clamps
+    its mix, and Grain now does the same.
+    """
+    try:
+        node = node_group.nodes.get("Add Grain")
+        if node is not None and getattr(node, "bl_idname", "") == "ShaderNodeMix" and not node.clamp_result:
+            node.clamp_result = True
+    except FBP_DATA_ERRORS:
+        pass
+    return node_group
+
+
 def _fbp_prepare_canonical_effect_group(effect_id, node_group):
     """Upgrade bundled contracts once, before per-rig private copies exist."""
     if node_group is None:
         return None
     if effect_id == FBP_EFFECT_FELT_FUZZ and not _fbp_patch_alpha_mask(node_group):
         return None
+    if effect_id == FBP_EFFECT_GRAIN:
+        _fbp_patch_grain_clamp(node_group)
     return node_group
 
 

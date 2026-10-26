@@ -4581,6 +4581,140 @@ def test_knit_crochet_stitches(_module):
     return {"knit": knit, "crochet": crochet}
 
 
+def test_effect_audit_fixes_contract(_module):
+    """Effect fixes from the 8.0 audit: live controls, clamped Grain, fast builds."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    builtin = importlib.import_module(f"{PACKAGE}.builtin_effects")
+    registry = importlib.import_module(f"{PACKAGE}.effects_registry")
+    rig = _effect_stack_fixture_rig("FBP Effect Audit Fixes")
+    owned = [rig, *rig.children_recursive]
+    results = {}
+    try:
+        for effect_id in ("HALFTONE", "SLICE_SHIFT", "GRAIN", "OIL_PAINT", "EDGE_DISTANCE_MASK"):
+            assert geo.fbp_add_effect(rig, effect_id, select_object_mask_helper=False, inherit_active_group=False), effect_id
+        _flush_fbp_safe_tasks()
+
+        def group_for(effect_id):
+            nodes = geo._fbp_find_shader_effect_nodes_for_rig(rig, effect_id)
+            assert nodes and nodes[0].node_tree is not None, effect_id
+            return nodes[0].node_tree
+
+        # Color Mode and Use Source Color must reach the Halftone graph.
+        halftone = group_for("HALFTONE")
+        assert halftone.nodes["Halftone Source Color Mode"].inputs[0].is_linked
+        assert halftone.nodes["Halftone BW Dark Mode"].inputs[0].is_linked
+        assert halftone.nodes["Halftone Source or Custom Ink"].inputs[0].is_linked
+        # Neighbouring Slice Shift bands move in opposite directions.
+        assert group_for("SLICE_SHIFT").nodes.get("Slice Band Parity") is not None
+        grain = group_for("GRAIN").nodes.get("Add Grain")
+        assert grain is not None and grain.clamp_result
+        # Large print effects instance shared helpers instead of 500-node graphs.
+        for effect_id, limit in (("OIL_PAINT", 260), ("EDGE_DISTANCE_MASK", 200)):
+            group = group_for(effect_id)
+            helpers = {node.node_tree.name for node in group.nodes if node.type == "GROUP" and node.node_tree}
+            assert helpers and len(group.nodes) <= limit, (effect_id, len(group.nodes), helpers)
+            results[effect_id] = len(group.nodes)
+
+        # A saved group from an older contract is swapped in place on load.
+        definition = registry.FBP_EFFECT_REGISTRY["HALFTONE"]
+        halftone["fbp_effect_contract_version"] = 1
+        assert not builtin._builtin_group_is_complete(halftone, definition)
+        assert builtin.fbp_upgrade_stale_effect_groups(registry.FBP_EFFECT_REGISTRY, SOURCE / "assets") >= 1
+        upgraded = group_for("HALFTONE")
+        assert builtin._builtin_group_is_complete(upgraded, definition)
+        assert upgraded.name == definition["canonical_name"], upgraded.name
+
+        density = bpy.types.Object.bl_rna.properties["fbp_felt_render_density"]
+        assert density.soft_max <= 400000, density.soft_max
+        for effect_id in ("HALFTONE", "SLICE_SHIFT", "GRAIN", "OIL_PAINT", "EDGE_DISTANCE_MASK"):
+            assert geo.fbp_remove_effect(rig, effect_id), effect_id
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return results
+
+
+def test_effect_audit_followup_contract(_module):
+    """Crosshatch, Extrude Array, Paper Shards and Fiber Tufts audit fixes."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    core = importlib.import_module(f"{PACKAGE}.core")
+    registry = importlib.import_module(f"{PACKAGE}.effects_registry")
+    rig = _effect_stack_fixture_rig("FBP Effect Audit Followup")
+    owned = [rig, *rig.children_recursive]
+    results = {}
+    try:
+        for effect_id in ("CROSSHATCH", "PAPER_SHARDS", "FIBER_TUFTS", "THICKNESS"):
+            assert geo.fbp_add_effect(rig, effect_id, select_object_mask_helper=False, inherit_active_group=False), effect_id
+        _flush_fbp_safe_tasks()
+        plane = geo._fbp_plane(rig, repair=False)
+
+        crosshatch = geo._fbp_find_shader_effect_nodes_for_rig(rig, "CROSSHATCH")[0].node_tree
+        # Diagonal hatches use the same spacing as straight ones, with soft edges.
+        assert crosshatch.nodes.get("Crosshatch Diagonal A Spacing") is not None
+        assert crosshatch.nodes["Crosshatch 1 Soft Edge"].inputs[1].is_linked
+
+        def modifier_group(effect_id):
+            name = registry.FBP_EFFECT_REGISTRY[effect_id]["modifier_name"]
+            modifier = plane.modifiers.get(name)
+            assert modifier is not None and modifier.node_group is not None, effect_id
+            return modifier.node_group
+
+        # Scattered chips and fibers follow the exact alpha, not whole faces.
+        shards = modifier_group("PAPER_SHARDS")
+        assert shards.nodes.get("Shards Drop Transparent Points") is not None
+        assert shards.nodes.get("Shard Source Any Corner Opaque") is not None
+        assert modifier_group("FIBER_TUFTS").nodes.get("Fiber Drop Transparent Points") is not None
+        # Luminance Lift raises chips from the plane instead of sinking dark ones.
+        assert shards.nodes["Shard Image Lift Above Plane"].outputs[0].is_linked
+        # Files saved with the old scatter are upgraded on load.
+        # The layer owns a private copy; it is replaced by a private fresh copy
+        # that keeps its name, owner tags and layer image.
+        builtin = importlib.import_module(f"{PACKAGE}.builtin_effects")
+        assert shards.get("fbp_private_effect_group")
+        private_name = shards.name
+        image_before = [
+            node.inputs["Image"].default_value for node in shards.nodes
+            if node.bl_idname == "GeometryNodeImageTexture" and node.get("fbp_alpha_image_node")
+        ]
+        assert image_before and all(image is not None for image in image_before)
+        shards["fbp_effect_contract_version"] = 1
+        assert builtin.fbp_upgrade_stale_effect_groups(registry.FBP_EFFECT_REGISTRY, SOURCE / "assets") >= 1
+        upgraded = modifier_group("PAPER_SHARDS")
+        assert int(upgraded.get("fbp_effect_contract_version", 0)) == 2
+        assert upgraded.name == private_name and upgraded.get("fbp_private_effect_group"), upgraded.name
+        assert upgraded.get("fbp_effect_owner") == plane.name
+        image_after = [
+            node.inputs["Image"].default_value for node in upgraded.nodes
+            if node.bl_idname == "GeometryNodeImageTexture" and node.get("fbp_alpha_image_node")
+        ]
+        assert image_after == image_before, (image_before, image_after)
+
+        # Each Extrude Array copy is one more transparent surface for Cycles.
+        rig.fbp_thickness_mode = "VOLUME"
+        _flush_fbp_safe_tasks()
+        volume_count = core._fbp_cycles_transparent_surface_count(bpy.context.scene, rigs=[rig])
+        rig.fbp_thickness_mode = "ARRAY"
+        rig.fbp_thickness_array_count = 40
+        _flush_fbp_safe_tasks()
+        array_count = core._fbp_cycles_transparent_surface_count(bpy.context.scene, rigs=[rig])
+        assert array_count == volume_count + 39, (volume_count, array_count)
+        recommended, _surfaces = core._fbp_cycles_recommended_transparent_bounces(bpy.context.scene, rigs=[rig])
+        assert recommended > 40, recommended
+        results = {"volume_surfaces": volume_count, "array_surfaces": array_count}
+        for effect_id in ("CROSSHATCH", "PAPER_SHARDS", "FIBER_TUFTS", "THICKNESS"):
+            assert geo.fbp_remove_effect(rig, effect_id), effect_id
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return results
+
+
 def test_print_paint_and_edge_distance_cycles(_module):
     """Riso Print, Oil Paint and Edge Distance Mask render their contracts."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -5501,6 +5635,8 @@ def run_background():
             ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("frame_stack_samples_earlier_frames", test_frame_stack_samples_earlier_frames),
             ("knit_crochet_stitches", test_knit_crochet_stitches),
+            ("effect_audit_fixes_contract", test_effect_audit_fixes_contract),
+            ("effect_audit_followup_contract", test_effect_audit_followup_contract),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),

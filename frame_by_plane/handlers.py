@@ -1,6 +1,7 @@
 """Blender handlers, timers and render-state guards for Frame by Plane."""
 
 import time
+from pathlib import Path
 
 import bpy
 
@@ -1263,6 +1264,18 @@ def fbp_deferred_load_post_rebuild():
         fbp_warn_once(
             "aspect_remesh_load_upgrade",
             "Could not update the shared mesh-effect remesh group",
+            exc,
+        )
+
+    try:
+        from .builtin_effects import fbp_upgrade_stale_effect_groups
+        fbp_upgrade_stale_effect_groups(
+            _effects_registry.FBP_EFFECT_REGISTRY, Path(__file__).resolve().parent / "assets",
+        )
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "stale_effect_load_upgrade",
+            "Could not update saved effect groups",
             exc,
         )
 
