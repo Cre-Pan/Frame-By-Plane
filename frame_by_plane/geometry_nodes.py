@@ -21194,7 +21194,7 @@ _FBP_EFFECT_UI_GROUPS = {
     ),
     FBP_EFFECT_RISO_PRINT: (
         ("Inks", "COLOR", ("fbp_riso_ink_1", "fbp_riso_ink_2", "fbp_riso_use_ink_3", "fbp_riso_ink_3", "fbp_riso_paper")),
-        ("Print", "OUTLINER_OB_IMAGE", ("fbp_riso_misregistration", "fbp_riso_halftone", "fbp_riso_dot_size", "fbp_riso_grain", "fbp_riso_seed")),
+        ("Print", "OUTLINER_OB_IMAGE", ("fbp_riso_misregistration", "fbp_riso_halftone", "fbp_riso_dot_size", "fbp_riso_grain", "fbp_riso_drift_angle", "fbp_riso_print_rotation", "fbp_riso_seed")),
         ("Mix", "MODIFIER", ("fbp_riso_factor",)),
     ),
     FBP_EFFECT_SMOOTH_TOON: (

@@ -11,6 +11,7 @@ import time
 import tracemalloc
 import traceback
 import tomllib
+import types
 from pathlib import Path
 
 import bpy
@@ -4301,6 +4302,29 @@ def test_print_paint_and_edge_distance_cycles(_module):
             for node in nodes:
                 assert any(getattr(inner, "image", None) is not None for inner in node.node_tree.nodes if inner.type == "TEX_IMAGE"), effect_id
                 assert abs(node.inputs["Texel X"].default_value - 1.0 / 16.0) < 1e-6, effect_id
+            if effect_id == "RISO_PRINT":
+                # Drift Angle, Print Rotation and the real Seed are separate
+                # inputs, and Animate steps the Seed on held frames.
+                rig.fbp_riso_drift_angle = 0.5
+                rig.fbp_riso_print_rotation = 0.25
+                rig.fbp_riso_seed = 7.0
+                _flush_fbp_safe_tasks()
+                for node in nodes:
+                    assert abs(node.inputs["Drift Angle"].default_value - 0.5) < 1e-6
+                    assert abs(node.inputs["Print Rotation"].default_value - 0.25) < 1e-6
+                    assert abs(node.inputs["Seed"].default_value - 7.0) < 1e-6
+                setattr(rig, geo._fbp_animation_key(effect_id, "evolve"), True)
+                setattr(rig, geo._fbp_animation_key(effect_id, "step"), 2)
+                # Evaluate held frames without moving the shared test scene.
+                seeds = [
+                    geo._fbp_effect_runtime_value(
+                        rig, effect_id, "fbp_riso_seed", rig.fbp_riso_seed,
+                        scene=types.SimpleNamespace(frame_start=1, frame_current=frame),
+                    )
+                    for frame in (1, 2, 3)
+                ]
+                assert seeds[0] == seeds[1] != seeds[2], seeds
+                setattr(rig, geo._fbp_animation_key(effect_id, "evolve"), False)
             assert geo.fbp_remove_effect(rig, effect_id)
         finally:
             for obj in reversed(owned):

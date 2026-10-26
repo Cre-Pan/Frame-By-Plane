@@ -10259,7 +10259,9 @@ def _create_riso_print(name):
     Each ink samples the source at its own pixel offset, takes its share of the
     color's absorbance (1 − color) from a least-squares split over the ink
     absorbances (1 − ink), optionally turns it into rotated halftone dots, and
-    overprints on the paper by multiplying.
+    overprints on the paper by multiplying. Drift Angle turns the direction the
+    drums slip, Print Rotation turns the whole screen, and Seed reshuffles the
+    grain, each ink's screen phase and the size jitter of the dots.
     """
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
     for n, t, d, mi, ma in (
@@ -10274,6 +10276,8 @@ def _create_riso_print(name):
         ("Halftone", "NodeSocketFloat", .6, 0, 1),
         ("Dot Size", "NodeSocketFloat", 6, 1, 256),
         ("Grain", "NodeSocketFloat", .35, 0, 1),
+        ("Drift Angle", "NodeSocketFloat", 0, None, None),
+        ("Print Rotation", "NodeSocketFloat", 0, None, None),
         ("Seed", "NodeSocketFloat", 0, 0, 1000),
         ("Factor", "NodeSocketFloat", 1, 0, 1),
         ("Texel X", "NodeSocketFloat", .001, 0, 1),
@@ -10286,9 +10290,13 @@ def _create_riso_print(name):
     g = _Graph(group, "Riso", x=-700, y=1400, rows=28)
     uv = inp.outputs["UV Vector"]
     u, v = g.separate(uv, label="UV")
-    pixel_x = g.math("DIVIDE", u, g.math("MAXIMUM", inp.outputs["Texel X"], 0.0000001), label="Pixel X")
-    pixel_y = g.math("DIVIDE", v, g.math("MAXIMUM", inp.outputs["Texel Y"], 0.0000001), label="Pixel Y")
-    seed_angle = g.math("MULTIPLY", inp.outputs["Seed"], 1.7, label="Seed Angle")
+    source_x = g.math("DIVIDE", u, g.math("MAXIMUM", inp.outputs["Texel X"], 0.0000001), label="Pixel X")
+    source_y = g.math("DIVIDE", v, g.math("MAXIMUM", inp.outputs["Texel Y"], 0.0000001), label="Pixel Y")
+    # Print Rotation turns the screen and the grain together, in source pixels.
+    cos_p = g.math("COSINE", inp.outputs["Print Rotation"], label="Print Cos")
+    sin_p = g.math("SINE", inp.outputs["Print Rotation"], label="Print Sin")
+    pixel_x = g.math("SUBTRACT", g.math("MULTIPLY", source_x, cos_p), g.math("MULTIPLY", source_y, sin_p), label="Print X")
+    pixel_y = g.math("ADD", g.math("MULTIPLY", source_x, sin_p), g.math("MULTIPLY", source_y, cos_p), label="Print Y")
 
     # Ink absorbances and the pieces of the least-squares separation: two inks
     # solve the 2×2 normal equations, three inks solve the 3×3 system exactly
@@ -10324,7 +10332,7 @@ def _create_riso_print(name):
     for index, (ink_name, drift, screen) in enumerate((
         ("Ink 1", 0.3, 15.0), ("Ink 2", 2.4, 75.0), ("Ink 3", 4.4, 45.0),
     )):
-        angle = g.math("ADD", seed_angle, drift, label=f"{ink_name} Drift")
+        angle = g.math("ADD", inp.outputs["Drift Angle"], drift, label=f"{ink_name} Drift")
         direction = g.combine(g.math("COSINE", angle), g.math("SINE", angle), label=f"{ink_name} Direction")
         shift = g.texel_offset(inp, g.vector("SCALE", direction, scale=inp.outputs["Misregistration"]), label=f"{ink_name} Shift")
         color, alpha = g.sample(g.vector("ADD", uv, shift), label=f"{ink_name} Source")
@@ -10336,9 +10344,22 @@ def _create_riso_print(name):
         rx = g.math("SUBTRACT", g.math("MULTIPLY", pixel_x, cos_s), g.math("MULTIPLY", pixel_y, sin_s), label=f"{ink_name} Screen X")
         ry = g.math("ADD", g.math("MULTIPLY", pixel_x, sin_s), g.math("MULTIPLY", pixel_y, cos_s), label=f"{ink_name} Screen Y")
         cell = g.vector("DIVIDE", g.combine(rx, ry), g.combine(inp.outputs["Dot Size"], inp.outputs["Dot Size"], 1.0), label=f"{ink_name} Cell")
+        # Seed moves each ink's screen phase and jitters every dot's size.
+        x, y = g._place()
+        phase = _node(group, "ShaderNodeTexWhiteNoise", f"Riso {ink_name} Screen Phase", x, y)
+        phase.noise_dimensions = "4D"
+        phase.inputs["Vector"].default_value = (float(index + 1), 0.0, 0.0)
+        links.new(inp.outputs["Seed"], phase.inputs["W"])
+        cell = g.vector("ADD", cell, g.vector("MULTIPLY", phase.outputs["Color"], (1.0, 1.0, 0.0)), label=f"{ink_name} Phased Cell")
         local = g.vector("SUBTRACT", g.vector("FRACTION", cell), (0.5, 0.5, 0.0), label=f"{ink_name} Local")
         distance = g.vector("LENGTH", local, label=f"{ink_name} Dot Distance")
-        dot_radius = g.math("MULTIPLY", g.math("SQRT", density), 0.7071, label=f"{ink_name} Dot Radius")
+        x, y = g._place()
+        jitter = _node(group, "ShaderNodeTexWhiteNoise", f"Riso {ink_name} Dot Jitter", x, y)
+        jitter.noise_dimensions = "4D"
+        links.new(g.vector("FLOOR", cell), jitter.inputs["Vector"])
+        links.new(g.math("ADD", inp.outputs["Seed"], 31.0 * index + 5.0), jitter.inputs["W"])
+        dot_scale = g.math("ADD", g.math("MULTIPLY", jitter.outputs["Value"], 0.3), 0.85, label=f"{ink_name} Dot Jitter Scale")
+        dot_radius = g.math("MULTIPLY", g.math("MULTIPLY", g.math("SQRT", density), 0.7071), dot_scale, label=f"{ink_name} Dot Radius")
         dot = g.clamp01(g.math("ADD", g.math("MULTIPLY", g.math("SUBTRACT", dot_radius, distance), 12.0), 0.5), label=f"{ink_name} Dot")
         dot = g.math("MULTIPLY", dot, g.clamp01(g.math("MULTIPLY", density, 20.0)), label=f"{ink_name} Dot Gate")
         screened = g.math("ADD", density, g.math("MULTIPLY", g.math("SUBTRACT", dot, density), inp.outputs["Halftone"]), label=f"{ink_name} Screened")
