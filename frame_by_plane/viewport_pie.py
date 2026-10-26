@@ -27,7 +27,7 @@ from .shortcut_runtime import (
     unregister_keymap_items,
 )
 from .ui_style import configure_layout, hint_row, section_gap, section_header
-from .ui_icons import effect_enum_icon, effect_icon_kwargs, ui_icon_kwargs
+from .ui_icons import effect_custom_icon_value, effect_enum_icon, effect_icon_kwargs, ui_icon_kwargs
 
 
 _FBP_VIEWPORT_PIE_KEYMAPS = globals().get("_FBP_VIEWPORT_PIE_KEYMAPS", [])
@@ -93,6 +93,12 @@ def _pie_fixed_button_row(layout, label, *, enabled=True):
     button.scale_y = _PIE_BUTTON_SCALE_Y
     button.enabled = bool(enabled)
     return button
+
+
+def _slot_icon_kwargs(effect_id, icon):
+    """Prefer the effect's PNG icon; otherwise keep the raw native icon name."""
+    value = effect_custom_icon_value(effect_id) if effect_id else 0
+    return {"icon_value": value} if value else {"icon": icon}
 
 
 def _pie_pad_south_list(layout, used_rows):
@@ -703,7 +709,11 @@ def _curated_quick_effect_rows(category):
         normalized_category = "2D" if actual_category == "BASE" else actual_category
         if effect_id in seen or normalized_category != category:
             continue
-        if bool(definition.get("custom_invalid", False)) or bool(definition.get("custom_hidden", False)):
+        if (
+            bool(definition.get("custom_invalid", False))
+            or bool(definition.get("custom_hidden", False))
+            or bool(definition.get("hidden", False))
+        ):
             continue
         tail.append((str(definition.get("label", effect_id) or effect_id).casefold(), effect_id))
     for _sort_label, effect_id in sorted(tail):
@@ -728,7 +738,7 @@ def _quick_effect_enum_items_for_category(category):
                     effect_id,
                     f"{section} · {label}",
                     f"Use {label} in this quick slot",
-                    icon,
+                    effect_enum_icon(effect_id, icon),
                     enum_index,
                 ))
             _QUICK_EFFECT_ENUM_CACHE[category] = items
@@ -1595,7 +1605,7 @@ class FBP_OT_QuickEffectsPopup(Operator):
                 prefs=prefs,
             )
             row = layout.row(align=True)
-            row.label(text=f"{index}. {label}", icon=icon)
+            row.label(text=f"{index}. {label}", **_slot_icon_kwargs(effect_id, icon))
             image = row.operator(
                 FBP_OT_QuickEffectLibraryPopup.bl_idname,
                 text="Image",
@@ -1690,7 +1700,7 @@ def _quick_effect_slot_presentation(context, index, *, prefs=None):
 def _draw_quick_effect_slot_menu(menu, context, index):
     layout = configure_layout(menu.layout)
     effect_id, label, icon = _quick_effect_slot_presentation(context, index)
-    layout.label(text=label, icon=icon)
+    layout.label(text=label, **_slot_icon_kwargs(effect_id, icon))
     layout.separator()
     image = layout.operator(
         FBP_OT_QuickEffectLibraryPopup.bl_idname,
@@ -1777,12 +1787,12 @@ class FBP_MT_QuickEffectSlots(Menu):
             align=True,
         )
         for index, menu_class in enumerate(_QUICK_EFFECT_SLOT_MENUS, start=1):
-            _effect_id, _label, icon = _quick_effect_slot_presentation(
+            effect_id, _label, icon = _quick_effect_slot_presentation(
                 context,
                 index,
                 prefs=prefs,
             )
-            slots.menu(menu_class.bl_idname, text=f"Slot {index}", icon=icon)
+            slots.menu(menu_class.bl_idname, text=f"Slot {index}", **_slot_icon_kwargs(effect_id, icon))
         layout.separator()
         layout.operator(
             FBP_OT_ResetQuickEffectSlots.bl_idname,
@@ -2543,7 +2553,7 @@ class FBP_MT_ViewportPie(Menu):
             op = effect_row.operator(
                 FBP_OT_PieAddEffect.bl_idname,
                 text=label,
-                icon=icon,
+                **_slot_icon_kwargs(effect_id, icon),
             )
             op.effect_id = effect_id
             used_effect_rows += 1

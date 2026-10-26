@@ -22,6 +22,11 @@ All notable public changes to Frame By Plane are documented here.
 
 - **Edge Distance Mask** (Mask, Nodes menu): a mask that ramps from the artwork's transparent edge inward over a set distance, for glowing borders, inner strokes and grow-in reveals (animate Threshold). Invert keeps the band along the edge. With Image Border on, the picture's own border counts as an edge, so fully opaque images get a frame-shaped falloff.
 
+### Effects menu
+
+- **Color Key** (Mask) now includes everything Chroma Key did. Invert keys the color out like a green screen, the new **Despill** greys the leftover key color along soft edges, the debug view gains **Distance**, and the Green Screen and Blue Screen presets moved here. Chroma Key is no longer a separate effect: files that use it are converted to Color Key automatically when opened. Despill applies when the key targets the whole layer.
+- Every effect has its own icon in the add menus, the effect stack and the pie menu. Section titles no longer carry icons, internal variants share their family icon, and Solarize sits under Film.
+
 ### Plane creation
 
 - **Fewer popups.** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar instead of a dialog after the file browser. Color, Gradient, Holdout, Color Plane from Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup.

@@ -1268,6 +1268,16 @@ def fbp_deferred_load_post_rebuild():
         )
 
     try:
+        from .geometry_nodes import fbp_migrate_chroma_key_scene_rigs
+        fbp_migrate_chroma_key_scene_rigs()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "chroma_key_color_key_migration",
+            "Could not convert Chroma Key to Color Key",
+            exc,
+        )
+
+    try:
         from .builtin_effects import fbp_upgrade_stale_effect_groups
         fbp_upgrade_stale_effect_groups(
             _effects_registry.FBP_EFFECT_REGISTRY, Path(__file__).resolve().parent / "assets",
