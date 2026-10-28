@@ -22928,13 +22928,13 @@ def fbp_draw_effect_settings(
             ):
                 hint_row(
                     box,
-                    "Yellow: move and turn the circle · Blue: inner radius · Orange: outer radius.",
+                    "Centre: move and turn the circle · Stops: inner and outer radius.",
                     icon="INFO",
                 )
             elif effect_id in {FBP_EFFECT_GRADIENT_MASK, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_TILT_SHIFT}:
                 hint_row(
                     box,
-                    "Yellow: move, rotate and resize · Blue/Orange: edit boundaries.",
+                    "Centre: move, rotate and resize · Stops: edit the ends.",
                     icon="INFO",
                 )
             elif bool(getattr(rig, "fbp_effect_controls_enabled", True)):

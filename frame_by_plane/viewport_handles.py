@@ -26,14 +26,15 @@ BOUNDS_HANDLE_ROLES = (
 
 FOLLOW_CONSTRAINT = "FBP Follow Plane"
 LATTICE_FOLLOW_MODIFIER = "FBP • Follow Lattice"
-# Marks objects that the handle overlay draws.
-KEY_OVERLAY_HANDLE = "fbp_overlay_handle"
 # Plane name, stored so lookups survive a constraint whose target was cleared.
 KEY_FOLLOW_PLANE = "fbp_follow_plane"
 
-# One accent for every handle; selection is shown by a lighter fill.
-HANDLE_COLOR = (1.0, 0.55, 0.05, 1.0)
-HANDLE_SELECTED_COLOR = (1.0, 0.86, 0.6, 1.0)
+# Handles are white like Blender's own gizmos; a selected handle takes the
+# theme's gizmo yellow (``handle_selected_color``), with this as the fallback.
+HANDLE_COLOR = (0.96, 0.96, 0.96, 1.0)
+HANDLE_SELECTED_COLOR = (0.96, 0.945, 0.3, 1.0)
+# Diffuse colour of the shared handle material (Solid shading, Material colour).
+HANDLE_MATERIAL_COLOR = (0.96, 0.96, 0.96, 0.9)
 HANDLE_OUTLINE_COLOR = (0.0, 0.0, 0.0, 0.45)
 STOP_RING_COLOR = (1.0, 1.0, 1.0, 1.0)
 GUIDE_COLOR = (1.0, 1.0, 1.0, 0.9)
@@ -136,9 +137,8 @@ def open_chevron_points(tip, stroke, head):
     return outline[2:7] + [(float(tip) - half / math.sin(_ARROW_HALF_ANGLE), 0.0)]
 
 
-def append_arrow_geometry(verts, faces, start, end, thickness, head_length, head_width=None):
+def append_arrow_geometry(verts, faces, start, end, thickness, head_length):
     """A line arrow along +X from ``start`` to ``end`` with an open V head."""
-    del head_width
     append_polygon_geometry(verts, faces, open_arrow_points(start, end, thickness, head_length))
 
 
@@ -202,9 +202,6 @@ class HandleShape:
         """Apply a 2D map to every vertex (used to cancel an object transform)."""
         self.verts = [(*function(x, y), z) for x, y, z in self.verts]
         return self
-
-    def as_tuple(self):
-        return self.verts, self.faces
 
 
 def dashed_pieces(points, dash, gap, *, closed=False):
@@ -444,6 +441,15 @@ def radius_handle_geometry(size, radii, center=(0.0, 0.0), dash=None):
     return shape
 
 
+def handle_selected_color(context=None):
+    """The theme's gizmo yellow, so selected handles match Blender's gizmos."""
+    try:
+        theme = (context or bpy.context).preferences.themes[0]
+        return (*tuple(theme.user_interface.gizmo_primary)[:3], 1.0)
+    except (AttributeError, IndexError) + _DATA_ERRORS:
+        return HANDLE_SELECTED_COLOR
+
+
 def write_handle_mesh(mesh, geometry):
     """Replace ``mesh`` with handle geometry: a ``(verts, faces)`` pair or a HandleShape."""
     if isinstance(geometry, HandleShape):
@@ -478,7 +484,7 @@ def ensure_viewport_handle_material():
     material = bpy.data.materials.get("FBP Viewport Control Handle")
     if material is None:
         material = bpy.data.materials.new("FBP Viewport Control Handle")
-    target = (1.0, 0.55, 0.05, 0.9)
+    target = HANDLE_MATERIAL_COLOR
     try:
         current = tuple(float(value) for value in material.diffuse_color)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
@@ -613,10 +619,6 @@ def plane_followers(plane):
     return children + tuple(obj for obj in followers if obj not in children)
 
 
-def forget_plane_followers():
-    _FOLLOWER_CACHE.clear()
-
-
 def is_attached_to(obj, plane):
     constraint = follow_constraint(obj)
     try:
@@ -675,23 +677,14 @@ def sync_lattice_follow(obj, plane, *, enabled=True):
     return changed
 
 
-def mark_overlay_handle(obj):
-    try:
-        if not bool(obj.get(KEY_OVERLAY_HANDLE, False)):
-            obj[KEY_OVERLAY_HANDLE] = True
-            return True
-    except _DATA_ERRORS:
-        pass
-    return False
-
-
 __all__ = [
     "BOUNDS_HANDLE_ROLES",
     "FOLLOW_CONSTRAINT",
     "LATTICE_FOLLOW_MODIFIER",
-    "KEY_OVERLAY_HANDLE",
     "HANDLE_COLOR",
     "HANDLE_SELECTED_COLOR",
+    "HANDLE_MATERIAL_COLOR",
+    "handle_selected_color",
     "HANDLE_OUTLINE_COLOR",
     "STOP_RING_COLOR",
     "GUIDE_COLOR",
@@ -728,8 +721,6 @@ __all__ = [
     "attach_to_plane",
     "is_attached_to",
     "plane_followers",
-    "forget_plane_followers",
     "plane_lattice_modifier",
     "sync_lattice_follow",
-    "mark_overlay_handle",
 ]

@@ -42,6 +42,7 @@ from .runtime import (
     fbp_warn,
 )
 from .viewport_handles import (
+    HANDLE_COLOR,
     angle_handle_geometry,
     attach_to_plane,
     attached_plane,
@@ -50,7 +51,6 @@ from .viewport_handles import (
     ensure_viewport_handle_material,
     gradient_stop_geometry,
     is_attached_to,
-    mark_overlay_handle,
     offset_handle_geometry,
     point_handle_geometry,
     radius_handle_geometry,
@@ -188,6 +188,19 @@ CONTROL_SPECS = {
     "HALFTONE": ({"role": "CENTER", "mode": "POINT", "x": "fbp_halftone_center_x", "y": "fbp_halftone_center_y", "angle": "fbp_halftone_rotation", "angle_sign": -1.0},),
     "RIM": ({"role": "OFFSET", "mode": "OFFSET", "x": "fbp_rim_offset_x", "y": "fbp_rim_offset_y", "angle": "fbp_rim_rotation"},),
     "SHADOW": ({"role": "OFFSET", "mode": "OFFSET", "x": "fbp_shadow_offset_x", "y": "fbp_shadow_offset_y"},),
+    # Mattes: the cross sits on the matte's centre and turns with it. The
+    # matte is sampled at R(rotation) * (UV - .5) / Scale + .5 - Offset.
+    "ALPHA_MATTE": ({
+        "role": "MATTE", "mode": "OFFSET", "x": "fbp_alpha_matte_uv_offset_x", "y": "fbp_alpha_matte_uv_offset_y",
+        "angle": "fbp_alpha_matte_uv_rotation", "angle_sign": -1.0,
+        "matte_scale": ("fbp_alpha_matte_uv_scale_x", "fbp_alpha_matte_uv_scale_y"),
+    },),
+    "LUMA_MATTE": ({
+        "role": "MATTE", "mode": "OFFSET", "x": "fbp_luma_matte_uv_offset_x", "y": "fbp_luma_matte_uv_offset_y",
+        "angle": "fbp_luma_matte_uv_rotation", "angle_sign": -1.0,
+        "matte_scale": ("fbp_luma_matte_uv_scale_x", "fbp_luma_matte_uv_scale_y"),
+    },),
+    "RISO_PRINT": ({"role": "DRIFT", "mode": "ANGLE", "angle": "fbp_riso_drift_angle"},),
     "DIRECTIONAL_BLUR": ({"role": "DIRECTION", "mode": "DIRECTION", "x": "fbp_directional_blur_control_x", "y": "fbp_directional_blur_control_y", "angle": "fbp_directional_blur_angle", "distance": "fbp_directional_blur_distance"},),
     "CHROMATIC_ABERRATION": ({"role": "ANGLE", "mode": "ANGLE", "angle": "fbp_chromatic_aberration_angle"},),
     "HEX_PIXELATE": ({"role": "GRID", "mode": "ANGLE", "angle": "fbp_hex_pixelate_rotation"},),
@@ -689,12 +702,6 @@ def _is_range_handle_mode(mode):
     }
 
 
-def _uses_control_mesh(mode):
-    """Every control is a flat handle mesh (files before 8.1 used Empties)."""
-    del mode
-    return True
-
-
 def _control_scale_x(control):
     try:
         return max(float(control.scale.x), 1.0e-6)
@@ -721,6 +728,30 @@ def _radius_control_radii(rig, spec):
     if spec.get("outer"):
         radii.append(radius + max(float(getattr(rig, spec["outer"], 0.0) or 0.0), 0.0))
     return [(abs(r * sx), abs(r * sy)) for r in radii]
+
+
+def _matte_transform(rig, spec):
+    rotation = float(getattr(rig, spec.get("angle", ""), 0.0) or 0.0) if spec.get("angle") else 0.0
+    scale_x, scale_y = (
+        max(float(getattr(rig, name, 1.0) or 1.0), 1.0e-3) for name in spec["matte_scale"]
+    )
+    return math.cos(rotation), math.sin(rotation), scale_x, scale_y
+
+
+def _matte_center_from_offset(rig, spec, offset_x, offset_y):
+    """UV where the matte's centre appears: .5 + Scale * R(-rotation) * Offset."""
+    cos_r, sin_r, scale_x, scale_y = _matte_transform(rig, spec)
+    return (
+        0.5 + scale_x * (offset_x * cos_r + offset_y * sin_r),
+        0.5 + scale_y * (-offset_x * sin_r + offset_y * cos_r),
+    )
+
+
+def _matte_offset_from_center(rig, spec, u, v):
+    """Inverse of :func:`_matte_center_from_offset`."""
+    cos_r, sin_r, scale_x, scale_y = _matte_transform(rig, spec)
+    dx, dy = (u - 0.5) / scale_x, (v - 0.5) / scale_y
+    return dx * cos_r - dy * sin_r, dx * sin_r + dy * cos_r
 
 
 KEY_RADIUS_KNOB_ANGLE = "fbp_effect_control_radius_angle"
@@ -941,16 +972,6 @@ def _refresh_effect_control_meshes(rig, effect_id, controls=None):
     return changed
 
 
-def _control_base_rotation(mode):
-    """Handle meshes are authored in the plane's XY space: no correction.
-
-    Files before 8.1 used Empties that needed a +90° X (circles) or +90° Y
-    (arrows) correction; ensuring a control resets it to zero.
-    """
-    del mode
-    return (0.0, 0.0)
-
-
 def _control_follows_lattice(mode):
     # The Wind arrow is a 3D direction, not a point on the drawing.
     return str(mode or "").upper() != "VECTOR_DIRECTION"
@@ -975,7 +996,7 @@ def _control_display_size(rig, mode="", role=""):
 def _control_color(role, mode):
     """Object colour, used by Solid shading's Object colour mode."""
     del role, mode
-    return (1.0, 0.55, 0.05, 1.0)
+    return HANDLE_COLOR
 
 
 def ensure_effect_control(rig, effect_id, spec, *, select=False):
@@ -1084,12 +1105,13 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
                 control.delta_scale = (1.0, 1.0, 1.0)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
-        target_rotation_x, target_rotation_y = _control_base_rotation(mode)
+        # Handle meshes are authored in the plane's XY space. Empties from
+        # files before 8.1 carried a +90° X or Y correction: reset it.
         if mode != "VECTOR_DIRECTION":
-            if abs(float(control.rotation_euler.x) - target_rotation_x) > 1.0e-7:
-                control.rotation_euler.x = target_rotation_x
-            if abs(float(control.rotation_euler.y) - target_rotation_y) > 1.0e-7:
-                control.rotation_euler.y = target_rotation_y
+            if abs(float(control.rotation_euler.x)) > 1.0e-7:
+                control.rotation_euler.x = 0.0
+            if abs(float(control.rotation_euler.y)) > 1.0e-7:
+                control.rotation_euler.y = 0.0
         if str(getattr(control, "display_type", "") or "") != "SOLID":
             control.display_type = "SOLID"
         _ensure_control_handle_mesh(control, rig, mode, role, spec)
@@ -1099,7 +1121,6 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
             if needs_contract_repair:
                 attach_to_plane(control, plane)
         sync_lattice_follow(control, plane, enabled=_control_follows_lattice(mode))
-        mark_overlay_handle(control)
         target_color = _control_color(role, mode)
         if tuple(round(float(value), 5) for value in control.color) != tuple(round(value, 5) for value in target_color):
             control.color = target_color
@@ -1939,7 +1960,9 @@ def _sync_control_transforms_from_properties(rig, effect_id, *, create=False):
         if mode in {"POINT", "OFFSET"}:
             x = float(getattr(rig, spec["x"], 0.5 if mode == "POINT" else 0.0))
             y = float(getattr(rig, spec["y"], 0.5 if mode == "POINT" else 0.0))
-            if mode == "OFFSET":
+            if spec.get("matte_scale"):
+                x, y = _matte_center_from_offset(rig, spec, x, y)
+            elif mode == "OFFSET":
                 x += 0.5; y += 0.5
             angle = (
                 float(getattr(rig, spec["angle"], 0.0)) * float(spec.get("angle_sign", 1.0) or 1.0)
@@ -2330,14 +2353,16 @@ def sync_properties_from_control(control):
         return False
 
     if mode in {"POINT", "OFFSET"}:
+        if spec.get("angle"):
+            set_driven(spec.get("angle"), float(control.rotation_euler.z) * float(spec.get("angle_sign", 1.0) or 1.0))
         u, v = _local_to_uv(rig, control.location.x, control.location.y)
-        if mode == "OFFSET":
+        if spec.get("matte_scale"):
+            u, v = _matte_offset_from_center(rig, spec, u, v)
+        elif mode == "OFFSET":
             u -= 0.5
             v -= 0.5
         set_driven(spec.get("x"), u)
         set_driven(spec.get("y"), v)
-        if spec.get("angle"):
-            set_driven(spec.get("angle"), float(control.rotation_euler.z) * float(spec.get("angle_sign", 1.0) or 1.0))
     elif mode == "DIRECTION":
         _plane, bounds, _uv = _plane_and_mapping(rig)
         width = max(abs(bounds[1] - bounds[0]), 1.0e-6)
@@ -3694,8 +3719,8 @@ def audit_effect_controls(scene, *, repair=False, context=None):
                 or (
                     expected_mode != "VECTOR_DIRECTION"
                     and (
-                        abs(float(control.rotation_euler.x) - _control_base_rotation(expected_mode)[0]) > 1.0e-6
-                        or abs(float(control.rotation_euler.y) - _control_base_rotation(expected_mode)[1]) > 1.0e-6
+                        abs(float(control.rotation_euler.x)) > 1.0e-6
+                        or abs(float(control.rotation_euler.y)) > 1.0e-6
                     )
                 )
                 or _control_shape_is_stale(control, owner, expected_mode, role)

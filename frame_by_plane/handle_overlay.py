@@ -27,13 +27,12 @@ from .viewport_handles import (
     GUIDE_OUTLINE_COLOR,
     HANDLE_COLOR,
     HANDLE_OUTLINE_COLOR,
-    HANDLE_SELECTED_COLOR,
-    KEY_OVERLAY_HANDLE,
     PART_ATTRIBUTE,
     PART_HANDLE,
     PART_STOP_RING,
     PART_SWATCH,
     STOP_RING_COLOR,
+    handle_selected_color,
 )
 
 
@@ -154,6 +153,7 @@ def _draw_handles():
         guides.extend(solid)
     for _solid, dashed in mask_guides:
         guides.extend(dashed)
+    selected_color = handle_selected_color(context)
     shapes = []
     for obj in handles:
         try:
@@ -165,11 +165,11 @@ def _draw_handles():
         if not triangles:
             continue
         fills = []
-        accent = HANDLE_SELECTED_COLOR if selected else HANDLE_COLOR
+        accent = selected_color if selected else HANDLE_COLOR
         if PART_HANDLE in triangles:
             fills.append((triangles[PART_HANDLE], accent))
         if PART_STOP_RING in triangles:
-            fills.append((triangles[PART_STOP_RING], HANDLE_COLOR if selected else STOP_RING_COLOR))
+            fills.append((triangles[PART_STOP_RING], selected_color if selected else STOP_RING_COLOR))
         if PART_SWATCH in triangles:
             swatch = _swatch_color(obj)
             if swatch is not None:
@@ -301,9 +301,9 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
         self.draw_custom_shape(shape)
 
     def draw(self, context):
-        del context
         self._draw_part(self.fbp_rim, (0.0, 0.0, 0.0), 0.45)
-        ring = HANDLE_COLOR[:3] if self.is_highlight or self.is_modal else STOP_RING_COLOR[:3]
+        active = self.is_highlight or self.is_modal
+        ring = handle_selected_color(context)[:3] if active else STOP_RING_COLOR[:3]
         self._draw_part(self.fbp_ring, ring)
         self._draw_part(self.fbp_disc, tuple(self.fbp_swatch))
 
@@ -423,13 +423,6 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
 
 
 _GIZMO_CLASSES = (FBP_GT_gradient_stop, FBP_GGT_gradient_stops)
-
-
-def is_overlay_handle(obj):
-    try:
-        return bool(obj.get(KEY_OVERLAY_HANDLE, False))
-    except FBP_DATA_ERRORS:
-        return False
 
 
 def register():

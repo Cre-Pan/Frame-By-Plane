@@ -27,7 +27,8 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Viewport controls
 
-- The handles of Crop, Extend and every effect with viewport controls (Swirl, Gradient Mask, Tilt Shift, Directional Blur, Pixelate, Shadow, Wind and the others), and the bounds handles of Shape Masks, are redrawn in one minimal style: thin flat bars, L corners, rings, crosses and arrows in a single orange, lighter while selected.
+- The handles of Crop, Extend and every effect with viewport controls (Swirl, Gradient Mask, Tilt Shift, Directional Blur, Pixelate, Shadow, Wind and the others), and the bounds handles of Shape Masks, are redrawn in one minimal style: thin flat bars, L corners, rings, crosses and arrows in white, like Blender's gizmos, turning to the theme's gizmo yellow while selected.
+- New viewport controls: Alpha Matte and Luma Matte get a cross on the matte's centre that moves and turns it, and Riso Print gets an arrow for the Drift Angle.
 - Handles are always drawn in front, in every shading mode. In Material Preview and Rendered the solid Crop and Extend bars used to sink behind the image.
 - No more dashed relationship lines: handles follow their plane through a collapsed Child Of constraint instead of a parent. Files saved with the old handles are converted when the handles are next shown.
 - Handles lie on the plane's real edges: they turn with a tilted layer and bend with it when the Lattice effect deforms it (Grid, Corner Pin, Bones, Pins, Camera), so Crop corners stay on the deformed corners.

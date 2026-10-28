@@ -42,10 +42,11 @@ from .runtime import (
 )
 from .transactions import FBPTransaction
 from .viewport_handles import (
+    HANDLE_COLOR,
+    HANDLE_MATERIAL_COLOR,
     attach_to_plane,
     attached_plane,
     is_attached_to,
-    mark_overlay_handle,
     plane_followers,
 )
 
@@ -943,8 +944,8 @@ def _object_mask_bounds_handles_need_repair(helper, owner=None):
         return True
 
     material = bpy.data.materials.get("FBP Viewport Control Handle")
-    target_color = (1.0, 0.55, 0.05, 1.0)
-    target_material_color = (1.0, 0.55, 0.05, 0.9)
+    target_color = HANDLE_COLOR
+    target_material_color = HANDLE_MATERIAL_COLOR
     if material is None or not _object_mask_values_equal(
         getattr(material, "diffuse_color", ()), target_material_color
     ):
@@ -1023,7 +1024,6 @@ def _configure_object_mask_handle(handle, helper, owner, role):
             changed = attach_to_plane(handle, plane) or changed
         # No Lattice deformation here: the mask itself is not bent by the
         # Lattice, so its cage and handles show where it really cuts.
-        changed = mark_overlay_handle(handle) or changed
         if mesh is not None and str(mesh.get("fbp_object_mask_handle_mesh", "") or "") != signature:
             verts, faces = bounds_handle_geometry(size, role)
             mesh.clear_geometry()
@@ -1041,7 +1041,7 @@ def _configure_object_mask_handle(handle, helper, owner, role):
             ("hide_render", True),
             ("hide_select", False),
             ("display_type", "SOLID"),
-            ("color", (1.0, 0.55, 0.05, 1.0)),
+            ("color", HANDLE_COLOR),
             ("lock_location", (False, False, True)),
             ("lock_rotation", (True, True, True)),
             ("lock_scale", (True, True, True)),
