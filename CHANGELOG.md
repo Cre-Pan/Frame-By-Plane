@@ -31,6 +31,10 @@ All notable public changes to Frame By Plane are documented here.
 - Handles are always drawn in front, in every shading mode. In Material Preview and Rendered the solid Crop and Extend bars used to sink behind the image.
 - No more dashed relationship lines: handles follow their plane through a collapsed Child Of constraint instead of a parent. Files saved with the old handles are converted when the handles are next shown.
 - Handles lie on the plane's real edges: they turn with a tilted layer and bend with it when the Lattice effect deforms it (Grid, Corner Pin, Bones, Pins, Camera), so Crop corners stay on the deformed corners.
+- Gradient handles work like Figma's: Gradient Mask and Gradient Light stops are colour swatches (white and black for the mask, the ramp colours for the light) joined by a thin line. Stops added in the Gradient Light Color Ramp appear on that line in their own colour and slide along it with the mouse (with Undo).
+- Arrows (Directional Blur, Wave Warp, Emboss, Wind and the other angle handles) are lines with an open V head, and the Directional Blur arrow head keeps its shape at any distance.
+- Swirl, Bulge / Pinch, Ripple and Vignette show their reach as a dashed circle with a knob that changes the radius; Vignette also shows where it reaches full strength. Radial Gradient Mask shows its inner and outer circles dashed.
+- Shape Masks show a dashed line where the Feather reaches full opacity.
 
 ### Z Pie and tooltips
 

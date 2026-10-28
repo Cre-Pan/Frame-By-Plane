@@ -1129,6 +1129,108 @@ def iter_visible_object_mask_handles(context=None):
                 continue
 
 
+_FEATHER_INTERIOR_CACHE = {}
+
+
+def _polygon_max_interior(points):
+    """Deepest interior distance of a polygon, as the mask rasterizer normalizes it."""
+    key = _geometry_signature(points)
+    cached = _FEATHER_INTERIOR_CACHE.get(key)
+    if cached is not None:
+        return cached
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    steps = 32
+    best = 0.0
+    for row in range(steps + 1):
+        y = min_y + (max_y - min_y) * row / steps
+        for column in range(steps + 1):
+            x = min_x + (max_x - min_x) * column / steps
+            if _point_inside_polygon(x, y, points):
+                best = max(best, _distance_to_segments(x, y, points))
+    if len(_FEATHER_INTERIOR_CACHE) > 64:
+        _FEATHER_INTERIOR_CACHE.clear()
+    _FEATHER_INTERIOR_CACHE[key] = best
+    return best
+
+
+def _inset_polygon(points, distance):
+    """Offset a polygon inwards by ``distance`` (mitred corners)."""
+    count = len(points)
+    area = sum(
+        points[i][0] * points[(i + 1) % count][1] - points[(i + 1) % count][0] * points[i][1]
+        for i in range(count)
+    )
+    sign = 1.0 if area > 0.0 else -1.0
+    result = []
+    for index in range(count):
+        px, py = points[index - 1]
+        cx, cy = points[index]
+        nx, ny = points[(index + 1) % count]
+        normals = []
+        for ax, ay, bx, by in ((px, py, cx, cy), (cx, cy, nx, ny)):
+            length = math.hypot(bx - ax, by - ay)
+            if length <= 1.0e-12:
+                continue
+            normals.append((-(by - ay) / length * sign, (bx - ax) / length * sign))
+        if not normals:
+            result.append((cx, cy))
+            continue
+        mx = sum(normal[0] for normal in normals) / len(normals)
+        my = sum(normal[1] for normal in normals) / len(normals)
+        miter = mx * mx + my * my
+        factor = distance / max(miter, 0.25)
+        result.append((cx + mx * factor, cy + my * factor))
+    return result
+
+
+def iter_object_mask_guides(context=None):
+    """Guide lines of visible Shape Masks, for the always-in-front overlay.
+
+    Yields ``(solid_segments, dashed_segments)`` as world-space point pairs.
+    The dashed line is where Feather reaches full opacity: the shader fades
+    the mask in over ``Feather`` times the deepest interior distance.
+    """
+    del context
+    from .viewport_handles import dashed_pieces
+    for record in tuple(_HELPER_REGISTRY.values()):
+        helper = _resolve_object_record(record)
+        try:
+            if not is_object_mask_helper(helper) or not helper.visible_get():
+                continue
+            contract = object_mask_contract(helper) or {}
+            owner = find_object_mask_owner(helper)
+            shape = normalize_object_mask_shape(contract.get("shape", "SQUARE"))
+            feather = float(getattr(owner, f"fbp_{shape.lower()}_mask_feather", 0.0) or 0.0) if owner else 0.0
+            if feather <= 1.0e-4:
+                continue
+            points = _ordered_polygon_points(helper)
+            if len(points) < 3:
+                continue
+            depth = _polygon_max_interior(points) * min(feather, 1.0)
+            if depth >= _polygon_max_interior(points) * 0.995:
+                continue
+            matrix = helper.matrix_world
+            inner = [matrix @ Vector((x, y, 0.0)) for x, y in _inset_polygon(points, depth)]
+            outline = [matrix @ Vector((x, y, 0.0)) for x, y in points]
+        except FBP_DATA_ERRORS:
+            continue
+        perimeter = sum((outline[i] - outline[i - 1]).length for i in range(len(outline)))
+        dash = max(perimeter / 72.0, 1.0e-5)
+        # Dash in the plane's own 2D frame, then lift back to world space.
+        origin = matrix.translation
+        axis_x = (matrix.col[0].xyz).normalized()
+        axis_y = (matrix.col[1].xyz).normalized()
+        flat = [((point - origin).dot(axis_x), (point - origin).dot(axis_y)) for point in inner]
+        segments = []
+        for piece in dashed_pieces(flat, dash, dash * 0.7, closed=True):
+            world = [origin + axis_x * x + axis_y * y for x, y in piece]
+            for first, second in zip(world, world[1:]):
+                segments.extend((first, second))
+        yield (), segments
+
+
 def sync_object_mask_bounds_handles(helper, *, handles=None):
     if not is_object_mask_helper(helper):
         return False

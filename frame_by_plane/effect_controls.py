@@ -48,14 +48,17 @@ from .viewport_handles import (
     bounds_handle_geometry,
     direction_handle_geometry,
     ensure_viewport_handle_material,
+    gradient_stop_geometry,
     is_attached_to,
     mark_overlay_handle,
     offset_handle_geometry,
     point_handle_geometry,
+    radius_handle_geometry,
     range_bar_geometry,
     range_center_geometry,
     sync_lattice_follow,
     vector_handle_geometry,
+    write_handle_mesh,
 )
 
 
@@ -139,7 +142,9 @@ _CONTEXT_OBJECTS_CACHE_TTL = 0.35
 
 # One source of truth for effects that expose spatial interaction. Modes:
 # POINT: normalized UV center; OFFSET: UV offset around 0.5; DIRECTION: Z angle
-# and X scale; paired ranges use IN/OUT boundaries plus one CENTER helper.
+# and X scale; paired ranges use IN/OUT boundaries plus one CENTER helper;
+# RADIUS: a knob on the effect radius (UV units around x/y, or the centre),
+# drawn with the dashed circle it controls.
 CONTROL_SPECS = {
     "CROP": (
         {"role": "LEFT", "mode": "CROP_EXTEND", "axis": "X", "props": ("fbp_crop_left",)},
@@ -162,12 +167,23 @@ CONTROL_SPECS = {
         {"role": "BOTTOM_RIGHT", "mode": "CROP_EXTEND", "axis": "XY", "props": ("fbp_extend_right", "fbp_extend_bottom")},
     ),
     "PIXELATE": ({"role": "GRID", "mode": "OFFSET", "x": "fbp_pixelate_offset_x", "y": "fbp_pixelate_offset_y", "angle": "fbp_pixelate_rotation"},),
-    "SWIRL": ({"role": "CENTER", "mode": "POINT", "x": "fbp_swirl_center_x", "y": "fbp_swirl_center_y", "angle": "fbp_swirl_angle"},),
-    "BULGE_PINCH": ({"role": "CENTER", "mode": "POINT", "x": "fbp_bulge_pinch_center_x", "y": "fbp_bulge_pinch_center_y"},),
+    "SWIRL": (
+        {"role": "CENTER", "mode": "POINT", "x": "fbp_swirl_center_x", "y": "fbp_swirl_center_y", "angle": "fbp_swirl_angle"},
+        {"role": "RADIUS", "mode": "RADIUS", "x": "fbp_swirl_center_x", "y": "fbp_swirl_center_y", "radius": "fbp_swirl_radius"},
+    ),
+    "BULGE_PINCH": (
+        {"role": "CENTER", "mode": "POINT", "x": "fbp_bulge_pinch_center_x", "y": "fbp_bulge_pinch_center_y"},
+        {"role": "RADIUS", "mode": "RADIUS", "x": "fbp_bulge_pinch_center_x", "y": "fbp_bulge_pinch_center_y", "radius": "fbp_bulge_pinch_radius"},
+    ),
     "LENS_WARP": ({"role": "CENTER", "mode": "POINT", "x": "fbp_lens_warp_center_x", "y": "fbp_lens_warp_center_y"},),
     "WAVE_WARP": ({"role": "DIRECTION", "mode": "ANGLE", "angle": "fbp_wave_warp_angle"},),
     "WIND_BENDER": ({"role": "DIRECTION", "mode": "VECTOR_DIRECTION", "vector": "fbp_wind_direction"},),
-    "RIPPLE_DISTORTION": ({"role": "CENTER", "mode": "POINT", "x": "fbp_ripple_distortion_center_x", "y": "fbp_ripple_distortion_center_y"},),
+    "RIPPLE_DISTORTION": (
+        {"role": "CENTER", "mode": "POINT", "x": "fbp_ripple_distortion_center_x", "y": "fbp_ripple_distortion_center_y"},
+        {"role": "RADIUS", "mode": "RADIUS", "x": "fbp_ripple_distortion_center_x", "y": "fbp_ripple_distortion_center_y", "radius": "fbp_ripple_distortion_radius"},
+    ),
+    # Vignette darkens from Radius to Radius + Smoothness around the centre.
+    "VIGNETTE": ({"role": "RADIUS", "mode": "RADIUS", "radius": "fbp_vignette_radius", "outer": "fbp_vignette_smoothness"},),
     "KALEIDOSCOPE": ({"role": "CENTER", "mode": "POINT", "x": "fbp_kaleidoscope_center_x", "y": "fbp_kaleidoscope_center_y", "angle": "fbp_kaleidoscope_rotation"},),
     "HALFTONE": ({"role": "CENTER", "mode": "POINT", "x": "fbp_halftone_center_x", "y": "fbp_halftone_center_y", "angle": "fbp_halftone_rotation", "angle_sign": -1.0},),
     "RIM": ({"role": "OFFSET", "mode": "OFFSET", "x": "fbp_rim_offset_x", "y": "fbp_rim_offset_y", "angle": "fbp_rim_rotation"},),
@@ -220,7 +236,7 @@ def validate_effect_control_specs():
     valid_modes = {
         "POINT", "OFFSET", "DIRECTION", "ANGLE", "VECTOR_DIRECTION",
         "CROP_EXTEND", "GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE",
-        "TILT_RANGE", "RANGE_CENTER",
+        "TILT_RANGE", "RANGE_CENTER", "RADIUS",
     }
     for effect_id, specs in CONTROL_SPECS.items():
         definition = FBP_EFFECT_REGISTRY.get(effect_id, {}) or {}
@@ -248,6 +264,8 @@ def validate_effect_control_specs():
                 required = ("angle",)
             elif mode == "VECTOR_DIRECTION":
                 required = ("vector",)
+            elif mode == "RADIUS":
+                required = ("radius",)
             for key in required:
                 if not str(spec.get(key, "") or ""):
                     issues.append(f"{prefix}: {mode} requires {key}")
@@ -256,7 +274,7 @@ def validate_effect_control_specs():
             property_names = set(spec.get("props", ()) or ())
             property_names.update(
                 str(spec.get(key, "") or "")
-                for key in ("x", "y", "angle", "distance", "vector")
+                for key in ("x", "y", "angle", "distance", "vector", "radius", "outer")
                 if str(spec.get(key, "") or "")
             )
             unknown = sorted(name for name in property_names if name not in known)
@@ -320,7 +338,7 @@ def effect_control_driven_properties(effect_id):
             value = str(value or "")
             if value:
                 properties.add(value)
-        for key in ("x", "y", "angle", "distance", "vector"):
+        for key in ("x", "y", "angle", "distance", "vector", "radius"):
             value = str(spec.get(key, "") or "")
             if value:
                 properties.add(value)
@@ -622,6 +640,12 @@ def _expected_control_locks(mode, spec=None):
             (True, True, False),
             (True, True, True),
         )
+    if mode == "RADIUS":
+        return (
+            (False, False, True),
+            (True, True, True),
+            (True, True, True),
+        )
     if mode == "VECTOR_DIRECTION":
         # Wind uses a true 3D directional null: location/scale stay fixed,
         # but the arrow can rotate freely on all axes.
@@ -671,38 +695,160 @@ def _uses_control_mesh(mode):
     return True
 
 
-def _control_mesh_signature(rig, mode, role, spec=None):
+def _control_scale_x(control):
+    try:
+        return max(float(control.scale.x), 1.0e-6)
+    except (AttributeError, ReferenceError, TypeError, ValueError):
+        return 1.0
+
+
+def _control_angle(control):
+    try:
+        return float(control.rotation_euler.z)
+    except (AttributeError, ReferenceError, TypeError, ValueError):
+        return 0.0
+
+
+def _radius_control_radii(rig, spec):
+    """Plane-local ``(rx, ry)`` of the dashed circles of a RADIUS control.
+
+    Radius effects measure distance in UV units, so on a non-square plane
+    their circle is an ellipse on the drawing.
+    """
+    sx, sy = _uv_axis_scales(rig)
+    radius = max(float(getattr(rig, spec.get("radius", ""), 0.5) or 0.0), 0.0)
+    radii = [radius]
+    if spec.get("outer"):
+        radii.append(radius + max(float(getattr(rig, spec["outer"], 0.0) or 0.0), 0.0))
+    return [(abs(r * sx), abs(r * sy)) for r in radii]
+
+
+KEY_RADIUS_KNOB_ANGLE = "fbp_effect_control_radius_angle"
+
+
+def _radius_knob_angle(control):
+    """UV-space angle of a RADIUS knob around its centre (kept where it was left)."""
+    try:
+        return float(control.get(KEY_RADIUS_KNOB_ANGLE, 0.0) or 0.0) if control is not None else 0.0
+    except FBP_DATA_ERRORS + (TypeError, ValueError):
+        return 0.0
+
+
+def _radius_center_uv(rig, spec):
+    x = float(getattr(rig, spec["x"], 0.5)) if spec.get("x") else 0.5
+    y = float(getattr(rig, spec["y"], 0.5)) if spec.get("y") else 0.5
+    return x, y
+
+
+def _radius_knob_location(rig, spec, control):
+    cx, cy = _radius_center_uv(rig, spec)
+    radius = max(float(getattr(rig, spec.get("radius", ""), 0.5) or 0.0), 0.0)
+    angle = _radius_knob_angle(control)
+    return _uv_to_local(rig, cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
+
+
+def _place_radius_controls(rig, effect_id):
+    """Keep RADIUS knobs on their circle after the centre or the radius moved."""
+    changed = False
+    for spec in CONTROL_SPECS.get(str(effect_id or "").upper(), ()):
+        if str(spec.get("mode", "") or "").upper() != "RADIUS":
+            continue
+        control = find_effect_control(rig, effect_id, spec.get("role", "RADIUS"))
+        if control is None or control.name in _PENDING_CONTROL_SIGNATURES:
+            continue
+        changed = _set_control_transform(
+            control, location=_radius_knob_location(rig, spec, control), angle=0.0, scale_x=1.0
+        ) or changed
+    return changed
+
+
+def _radial_gradient_radii(rig):
+    """Plane-local ``(rx, ry)`` of the inner and outer Gradient Mask circles."""
+    position = float(getattr(rig, "fbp_gradient_mask_position", 0.5))
+    scale = max(float(getattr(rig, "fbp_gradient_mask_scale", 1.0)), 1.0e-6)
+    feather = max(float(getattr(rig, "fbp_gradient_mask_feather", 0.2)), 0.0)
+    inner = max((1.0 - position - feather * 0.5) / (2.0 * scale), 0.0)
+    outer = max((1.0 - position + feather * 0.5) / (2.0 * scale), inner + 1.0e-4)
+    sx, sy = _uv_axis_scales(rig)
+    ax, ay = _radial_axis_factors(rig)
+    return [(abs(r * sx / ax), abs(r * sy / ay)) for r in (inner, outer)]
+
+
+def _control_mesh_parameters(rig, mode, role, spec=None, control=None):
+    """Values a control mesh is built from, beyond its size (see the signature)."""
+    mode = str(mode or "").upper()
+    if mode == "DIRECTION":
+        return {"length": _control_scale_x(control)}
+    if mode == "RANGE_CENTER":
+        parameters = {
+            "reference": _range_reference_length(rig),
+            "scale_x": _control_scale_x(control),
+        }
+        if str((spec or {}).get("range_mode", "") or "").upper() == "GRADIENT_RANGE" and _gradient_is_radial(rig):
+            parameters["radii"] = _radial_gradient_radii(rig)
+            parameters["angle"] = _control_angle(control)
+        return parameters
+    if mode == "RADIUS" and spec:
+        radii = _radius_control_radii(rig, spec)
+        angle = _radius_knob_angle(control)
+        rx, ry = radii[0]
+        return {"radii": radii, "center": (-math.cos(angle) * rx, -math.sin(angle) * ry)}
+    return {}
+
+
+def _format_parameter(value):
+    if isinstance(value, (list, tuple)):
+        return ",".join(_format_parameter(item) for item in value)
+    return f"{float(value):.4f}"
+
+
+def _control_mesh_signature(rig, mode, role, spec=None, control=None):
     mode = str(mode or "").upper()
     role = str(role or "").upper()
     size = _control_display_size(rig, mode, role)
     extra = ""
-    if mode == "RANGE_CENTER":
-        extra = f":{_range_reference_length(rig):.6f}"
-    elif mode in {"POINT", "OFFSET"} and spec and spec.get("angle"):
+    if mode in {"POINT", "OFFSET"} and spec and spec.get("angle"):
         extra = ":angle"
-    return f"fbp_handle_v4:{mode}:{role}:{size:.6f}{extra}"
+    parameters = _control_mesh_parameters(rig, mode, role, spec, control)
+    for key in sorted(parameters):
+        extra += f":{key}={_format_parameter(parameters[key])}"
+    return f"fbp_handle_v5:{mode}:{role}:{size:.6f}{extra}"
 
 
-def _control_mesh_geometry(rig, mode, role, spec=None):
+def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
     """Return the flat, plane-local mesh of one control.
 
-    Shapes are deliberately thin and single-coloured: bars and L corners for
-    bounds, a ring for centres, a cross for offsets and arrows for angles.
+    Shapes are thin and single-coloured: bars and L corners for bounds, a ring
+    for centres, a cross for offsets, line arrows for angles, colour stops for
+    gradients and a knob with a dashed circle for radii.
     """
     mode = str(mode or "").upper()
     role = str(role or "").upper()
     size = _control_display_size(rig, mode, role)
     with_angle = bool(spec and spec.get("angle"))
+    parameters = _control_mesh_parameters(rig, mode, role, spec, control)
     if _is_crop_extend_mode(mode):
         return bounds_handle_geometry(size, role)
     if mode == "RANGE_CENTER":
-        return range_center_geometry(size, _range_reference_length(rig))
-    if mode in {"GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE", "TILT_RANGE"}:
+        return range_center_geometry(
+            size,
+            parameters["reference"],
+            scale_x=parameters["scale_x"],
+            radii=parameters.get("radii", ()),
+            radial_angle=parameters.get("angle", 0.0),
+        )
+    if mode in {"GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE"}:
+        return gradient_stop_geometry(size)
+    if mode == "TILT_RANGE":
         return range_bar_geometry(size)
+    if mode == "RADIUS":
+        return radius_handle_geometry(
+            size, parameters.get("radii", ()), parameters.get("center", (0.0, 0.0))
+        )
     if mode == "OFFSET":
         return offset_handle_geometry(size, with_angle=with_angle)
     if mode == "DIRECTION":
-        return direction_handle_geometry(size)
+        return direction_handle_geometry(size, parameters["length"])
     if mode == "ANGLE":
         return angle_handle_geometry(size)
     if mode == "VECTOR_DIRECTION":
@@ -755,21 +901,19 @@ def _control_spec(effect_id, role):
 def _ensure_control_handle_mesh(control, rig, mode, role, spec=None):
     if control is None or getattr(control, "type", "") != "MESH":
         return False
-    signature = _control_mesh_signature(rig, mode, role, spec)
+    signature = _control_mesh_signature(rig, mode, role, spec, control)
     try:
         if str(control.get(KEY_CONTROL_MESH_SIGNATURE, "") or "") == signature and getattr(control, "data", None):
             return False
     except FBP_DATA_ERRORS:
         pass
-    verts, faces = _control_mesh_geometry(rig, mode, role, spec)
+    geometry = _control_mesh_geometry(rig, mode, role, spec, control)
     mesh = getattr(control, "data", None)
     if mesh is None:
         mesh = bpy.data.meshes.new(f"FBP Control Mesh • {role}")
         control.data = mesh
     try:
-        mesh.clear_geometry()
-        mesh.from_pydata(verts, [], faces)
-        mesh.update()
+        write_handle_mesh(mesh, geometry)
         mat = ensure_viewport_handle_material()
         if not mesh.materials:
             mesh.materials.append(mat)
@@ -780,6 +924,21 @@ def _ensure_control_handle_mesh(control, rig, mode, role, spec=None):
     except (ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not rebuild viewport handle mesh", exc)
         return False
+
+
+def _refresh_effect_control_meshes(rig, effect_id, controls=None):
+    """Rebuild the meshes whose shape follows a value (arrow length, radii)."""
+    changed = False
+    controls = controls or {}
+    for spec in CONTROL_SPECS.get(str(effect_id or "").upper(), ()):
+        mode = str(spec.get("mode", "") or "").upper()
+        if mode not in {"DIRECTION", "RANGE_CENTER", "RADIUS"}:
+            continue
+        role = str(spec.get("role", "") or "").upper()
+        control = controls.get(role) or find_effect_control(rig, effect_id, role)
+        if control is not None:
+            changed = _ensure_control_handle_mesh(control, rig, mode, role, spec) or changed
+    return changed
 
 
 def _control_base_rotation(mode):
@@ -1734,6 +1893,13 @@ def _refresh_crop_extend_from_control(rig, property_names):
 
 
 def sync_controls_from_properties(rig, effect_id, *, create=False):
+    changed = _sync_control_transforms_from_properties(rig, effect_id, create=create)
+    if rig and effect_has_controls(effect_id):
+        changed = _refresh_effect_control_meshes(rig, effect_id) or changed
+    return changed
+
+
+def _sync_control_transforms_from_properties(rig, effect_id, *, create=False):
     effect_id = str(effect_id or "").upper()
     specs = CONTROL_SPECS.get(effect_id, ())
     if not rig or not specs:
@@ -1815,6 +1981,13 @@ def sync_controls_from_properties(rig, effect_id, *, create=False):
                 control,
                 location=_uv_to_local(rig, 0.5, 0.5),
                 rotation=_control_rotation_from_direction(rig, vector),
+                scale_x=1.0,
+            ) or changed
+        elif mode == "RADIUS":
+            changed = _set_control_transform(
+                control,
+                location=_radius_knob_location(rig, spec, control),
+                angle=0.0,
                 scale_x=1.0,
             ) or changed
         elif mode == "CROP_EXTEND":
@@ -2177,6 +2350,17 @@ def sync_properties_from_control(control):
         set_driven(spec.get("distance"), distance)
     elif mode == "ANGLE":
         set_driven(spec.get("angle"), float(control.rotation_euler.z) * float(spec.get("angle_sign", 1.0) or 1.0))
+    elif mode == "RADIUS":
+        cx, cy = _radius_center_uv(rig, spec)
+        u, v = _local_to_uv(rig, control.location.x, control.location.y)
+        if math.hypot(u - cx, v - cy) > 1.0e-6:
+            angle = math.atan2(v - cy, u - cx)
+            try:
+                if abs(_radius_knob_angle(control) - angle) > 1.0e-6:
+                    control[KEY_RADIUS_KNOB_ANGLE] = angle
+            except FBP_DATA_ERRORS:
+                pass
+        set_driven(spec.get("radius"), max(math.hypot(u - cx, v - cy), 0.001))
     elif mode == "VECTOR_DIRECTION":
         set_driven(spec.get("vector"), _control_direction_vector(rig, control))
     elif mode == "CROP_EXTEND":
@@ -2275,6 +2459,9 @@ def sync_properties_from_control(control):
     if changed_properties:
         _refresh_effect_from_control(rig, effect_id, changed_properties)
         _tag_effect_control_ui_redraw()
+        if mode == "POINT":
+            _place_radius_controls(rig, effect_id)
+    _refresh_effect_control_meshes(rig, effect_id)
     signature = _control_signature(control)
     try:
         stored = tuple(float(value) for value in control.get(KEY_SYNC_SIGNATURE, ()) or ())
@@ -2605,6 +2792,60 @@ def iter_visible_effect_controls(context=None):
                 yield control
         except FBP_DATA_ERRORS:
             continue
+
+
+def _linear_to_display(value):
+    value = max(0.0, min(1.0, float(value)))
+    return value * 12.92 if value <= 0.0031308 else 1.055 * value ** (1.0 / 2.4) - 0.055
+
+
+def _display_color(color):
+    """Opaque display-space colour of a scene-linear RGB(A) value."""
+    return (*(_linear_to_display(channel) for channel in tuple(color)[:3]), 1.0)
+
+
+def gradient_light_ramp(rig):
+    """The Gradient Light Color Ramp whose stops the viewport shows."""
+    try:
+        from .geometry_nodes import fbp_effect_color_ramp_node
+        node = fbp_effect_color_ramp_node(rig, "GRADIENT_LIGHT")
+        return getattr(node, "color_ramp", None)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def control_swatch_color(control):
+    """Display colour of a gradient stop handle, or None for a hollow stop.
+
+    Gradient Mask stops are white where the layer stays visible and black
+    where it is masked out; Gradient Light stops show the ramp's first and
+    last colours.
+    """
+    try:
+        effect_id = str(control.get(KEY_EFFECT_ID, "") or "").upper()
+        role = str(control.get(KEY_ROLE, "") or "").upper()
+    except FBP_DATA_ERRORS:
+        return None
+    if role not in {"IN", "OUT"} or effect_id not in {"GRADIENT_MASK", "GRADIENT_LIGHT"}:
+        return None
+    rig = effect_control_owner(control)
+    if rig is None:
+        return None
+    try:
+        if effect_id == "GRADIENT_MASK":
+            # Linear: 0 at IN, 1 at OUT. Radial: IN is the inner (visible) circle.
+            visible = (role == "OUT") != _gradient_is_radial(rig)
+            if bool(getattr(rig, "fbp_gradient_mask_invert", False)):
+                visible = not visible
+            return (1.0, 1.0, 1.0, 1.0) if visible else (0.0, 0.0, 0.0, 1.0)
+        ramp = gradient_light_ramp(rig)
+        elements = sorted(tuple(getattr(ramp, "elements", ()) or ()), key=lambda item: float(item.position))
+        if not elements:
+            return None
+        element = elements[0] if role == "IN" else elements[-1]
+        return _display_color(element.color)
+    except FBP_DATA_ERRORS:
+        return None
 
 
 def _object_is_selected_or_active(obj, context=None):
@@ -3379,7 +3620,7 @@ def _control_shape_is_stale(control, owner, expected_mode, role):
         return bool(
             getattr(control, "type", "") != "MESH"
             or str(control.get(KEY_CONTROL_MESH_SIGNATURE, "") or "")
-            != _control_mesh_signature(owner, expected_mode, role, spec)
+            != _control_mesh_signature(owner, expected_mode, role, spec, control)
         )
     except FBP_DATA_ERRORS:
         return True
