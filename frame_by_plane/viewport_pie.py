@@ -425,6 +425,10 @@ def _rig_related_objects(rigs):
             descendants = tuple(getattr(rig, "children_recursive", ()) or ())
             if not descendants:
                 descendants = tuple(getattr(rig, "children", ()) or ())
+            if plane is not None:
+                # Viewport handles follow the plane through a constraint.
+                from .viewport_handles import plane_followers
+                descendants += plane_followers(plane)
             for child in descendants:
                 _append_unique_object(objects, object_keys, child)
                 if (
