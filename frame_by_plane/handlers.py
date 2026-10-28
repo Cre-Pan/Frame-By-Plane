@@ -412,6 +412,13 @@ def fbp_deferred_scene_sync():
                 fbp_refresh_drawing_scene(context.scene)
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
+            try:
+                # The Frame Stack timing table is a generated image: its
+                # pixels are not saved, so rebuild them for the loaded file.
+                from .geometry_nodes import fbp_sync_frame_stack_scene
+                fbp_sync_frame_stack_scene(context.scene)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
     except Exception as exc:
         try:
             fbp_warn("Could not sync Frame by Plane after scene switch", exc)

@@ -6035,13 +6035,13 @@ def register_properties():
         name="Render", description="Slice grid detail for final rendering. The plane itself always keeps full resolution",
         default=7, min=0, max=8, update=update_frame_stack_render_detail_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_step = IntProperty(
-        name="Frame Step", description="Source frames between two slices. Negative values stack upcoming frames instead of earlier ones",
+        name="Frame Step", description="Playback frames between two slices: drawings of an image sequence in its timing order, frames of a video. Negative values stack upcoming frames instead of earlier ones",
         default=2, min=-1000, max=1000, soft_min=-24, soft_max=24, options={'ANIMATABLE'}, update=update_frame_stack_step_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_fixed_start = BoolProperty(
         name="Fixed Range", description="Stack a fixed range of frames starting at Start Frame instead of following playback",
         default=False, update=update_frame_stack_fixed_start_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_start_frame = IntProperty(
-        name="Start Frame", description="Source frame shown by the front slice when Fixed Range is on. Animate it to scroll the solid through time",
+        name="Start Frame", description="Timeline frame whose image the front slice shows when Fixed Range is on. Animate it to scroll the solid through time",
         default=1, min=-1000000, max=1000000, options={'ANIMATABLE'}, update=update_frame_stack_start_frame_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_offset_x = FloatProperty(
         name="Offset X", description="Per-slice horizontal offset",
