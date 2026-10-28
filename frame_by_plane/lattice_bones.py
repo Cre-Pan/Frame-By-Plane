@@ -39,16 +39,23 @@ HANDLE_KEY = "fbp_lattice_handle"
 SHAPE_KEY = "fbp_lattice_handle_shape"
 
 # Handle shapes: meshes drawn flat on the drawing, in bone space (X, Y). Faces
-# draw filled, so a handle reads as a solid dot with a thin outline.
+# draw filled, so strokes are thin polygons like the effect controls: dots for
+# points, thick L brackets for corners, a dashed circle for a pin's area.
 _SHAPES = {
     "PIN": "FBP Handle • Pin",
     "BEND": "FBP Handle • Bend",
     "POINT": "FBP Handle • Point",
+    "GRID_CORNER": "FBP Handle • Grid Corner",
     "CORNER": "FBP Handle • Corner",
     "IK": "FBP Handle • IK",
 }
+# Pins draw their area as a dashed circle; its radius (in shape units) is part
+# of the shape, so pins get one shared mesh per rounded area.
+_AREA_KINDS = {"PIN", "BEND"}
+PIN_AREA_DEFAULT = 2.6
+_AREA_STEP = 0.2
 # Bump when a shape changes: shapes saved in older files are rebuilt in place.
-SHAPE_VERSION = 2
+SHAPE_VERSION = 3
 SHAPE_VERSION_KEY = "fbp_lattice_handle_shape_version"
 # One accent for every handle, shared with the effect controls (Crop, Extend
 # and the others); the shape tells the kinds apart. (normal, selected, active)
@@ -60,12 +67,15 @@ HANDLE_COLORS = (
 HANDLE_WIRE_WIDTH = 2.0
 # Size of each kind relative to the layer's base handle size (half a point).
 _KIND_SCALE = {
-    "PIN": 1.6,
-    "BEND": 2.0,
-    "POINT": 1.0,
+    "PIN": 1.0,
+    "BEND": 1.0,
+    "POINT": 0.8,
+    "GRID_CORNER": 1.0,
     "CORNER": 1.0,
-    "IK": 1.6,
+    "IK": 1.4,
 }
+# Kinds that sit on cage points and must not cover their neighbours.
+_GRID_KINDS = {"POINT", "GRID_CORNER"}
 
 
 def is_bones_object(obj):
@@ -138,9 +148,27 @@ def rig_bones(armature):
 # --- Armature ----------------------------------------------------------------
 
 
-def _shape_object(kind):
-    """Return the shared mesh used to draw a kind of handle."""
+def _area_ratio(area):
+    """Round a pin area (in shape units) so pins share a few meshes."""
+    try:
+        area = float(area)
+    except (TypeError, ValueError):
+        area = PIN_AREA_DEFAULT
+    return max(PIN_AREA_DEFAULT, round(area / _AREA_STEP) * _AREA_STEP)
+
+
+def _shape_name(kind, area=None):
     name = _SHAPES[kind]
+    if kind in _AREA_KINDS:
+        ratio = _area_ratio(PIN_AREA_DEFAULT if area is None else area)
+        if abs(ratio - PIN_AREA_DEFAULT) > 1.0e-6:
+            name = f"{name} {ratio:.1f}"
+    return name
+
+
+def _shape_object(kind, area=None):
+    """Return the shared mesh used to draw a kind of handle."""
+    name = _shape_name(kind, area)
     obj = bpy.data.objects.get(name)
     if (
         obj is not None and getattr(obj, "type", "") == 'MESH'
@@ -149,54 +177,78 @@ def _shape_object(kind):
         return obj
     vertices, edges, faces = [], [], []
 
-    def loop(radius, segments=32, start=0.0, sweep=math.tau, closed=True, centre=(0.0, 0.0)):
-        first = len(vertices)
+    def ring_points(radius, segments, start=0.0, sweep=math.tau, centre=(0.0, 0.0), closed=True):
         count = segments if closed else segments + 1
-        for index in range(count):
-            angle = start + sweep * index / float(segments)
-            vertices.append((centre[0] + radius * math.cos(angle), centre[1] + radius * math.sin(angle), 0.0))
-        for index in range(count - 1):
-            edges.append((first + index, first + index + 1))
-        if closed:
-            edges.append((first + count - 1, first))
-        return list(range(first, first + count))
+        return [
+            (centre[0] + radius * math.cos(start + sweep * index / float(segments)),
+             centre[1] + radius * math.sin(start + sweep * index / float(segments)))
+            for index in range(count)
+        ]
 
-    def disc(radius, segments=24, centre=(0.0, 0.0)):
-        faces.append(tuple(loop(radius, segments, centre=centre)))
-
-    def line(*points):
+    def polygon(points):
         first = len(vertices)
         vertices.extend((x, y, 0.0) for x, y in points)
-        edges.extend((first + index, first + index + 1) for index in range(len(points) - 1))
-        return list(range(first, first + len(points)))
+        indices = list(range(first, first + len(points)))
+        faces.append(tuple(indices))
+        return indices
 
-    def square(half):
-        corners = line((half, half), (-half, half), (-half, -half), (half, -half))
-        edges.append((corners[-1], corners[0]))
-        faces.append(tuple(corners))
+    def band(radius, width, segments=32, start=0.0, sweep=math.tau, closed=True):
+        """A filled stroke along a circle or an arc."""
+        outer = ring_points(radius + width * 0.5, segments, start, sweep, closed=closed)
+        inner = ring_points(radius - width * 0.5, segments, start, sweep, closed=closed)
+        first = len(vertices)
+        vertices.extend((x, y, 0.0) for x, y in outer + inner)
+        count = len(outer)
+        last = count if closed else count - 1
+        for index in range(last):
+            following = (index + 1) % count
+            faces.append((first + index, first + following, first + count + following, first + count + index))
+
+    def dashes(radius, width, count=28):
+        """A dashed circle: every other segment of a filled ring."""
+        step = math.tau / count
+        for index in range(0, count, 2):
+            band(radius, width, segments=2, start=index * step, sweep=step, closed=False)
+
+    def bracket(arm, thickness):
+        """A thick L whose outer corner sits on the handle, opening to +X/+Y."""
+        half = thickness * 0.5
+        polygon((
+            (-half, -half), (arm, -half), (arm, half),
+            (half, half), (half, arm), (-half, arm),
+        ))
 
     if kind == "PIN":
-        loop(1.0)
-        disc(0.32, segments=16)
+        # Puppet pin: a dot in a ring, its area as a dashed circle.
+        polygon(ring_points(0.45, 20))
+        band(1.0, 0.24)
+        dashes(_area_ratio(area if area is not None else PIN_AREA_DEFAULT), 0.12)
     elif kind == "BEND":
-        # An open ring with an arrow: this handle turns, it does not move.
-        loop(1.0, segments=28, start=math.radians(20.0), sweep=math.radians(300.0), closed=False)
-        tip = (math.cos(math.radians(320.0)), math.sin(math.radians(320.0)))
-        line((tip[0] - 0.32, tip[1] - 0.05), tip, (tip[0] - 0.05, tip[1] + 0.32))
-        disc(0.26, segments=16)
+        # Bend pin: turns, does not move. Dot, open arc with an arrow head.
+        polygon(ring_points(0.4, 20))
+        band(1.0, 0.24, segments=24, start=math.radians(30.0), sweep=math.radians(290.0), closed=False)
+        tip_angle = math.radians(320.0)
+        tip = (math.cos(tip_angle), math.sin(tip_angle))
+        polygon((
+            (tip[0] + 0.32 * math.cos(tip_angle), tip[1] + 0.32 * math.sin(tip_angle)),
+            (tip[0] - 0.32 * math.cos(tip_angle), tip[1] - 0.32 * math.sin(tip_angle)),
+            (tip[0] + 0.42 * math.sin(tip_angle), tip[1] - 0.42 * math.cos(tip_angle)),
+        ))
+        dashes(_area_ratio(area if area is not None else PIN_AREA_DEFAULT), 0.12)
     elif kind == "POINT":
-        square(1.0)
-    elif kind == "CORNER":
-        # A square with an L bracket opening towards +X/+Y (rotated per corner).
-        square(1.0)
-        line((3.0, 0.0), (1.6, 0.0))
-        line((0.0, 1.6), (0.0, 3.0))
-    else:  # IK
-        loop(1.0)
-        line((-1.4, 0.0), (-0.6, 0.0))
-        line((0.6, 0.0), (1.4, 0.0))
-        line((0.0, -1.4), (0.0, -0.6))
-        line((0.0, 0.6), (0.0, 1.4))
+        polygon(ring_points(1.0, 20))
+    elif kind in {"GRID_CORNER", "CORNER"}:
+        bracket(2.4, 0.6)
+    else:  # IK: a ring with a cross, the hand's target.
+        band(1.0, 0.18)
+        for angle in (0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi):
+            c, s_ = math.cos(angle), math.sin(angle)
+            polygon((
+                (0.55 * c - 0.08 * s_, 0.55 * s_ + 0.08 * c),
+                (1.45 * c - 0.08 * s_, 1.45 * s_ + 0.08 * c),
+                (1.45 * c + 0.08 * s_, 1.45 * s_ - 0.08 * c),
+                (0.55 * c + 0.08 * s_, 0.55 * s_ - 0.08 * c),
+            ))
     mesh = bpy.data.meshes.get(name) or bpy.data.meshes.new(name)
     mesh.clear_geometry()
     mesh.from_pydata(vertices, edges, faces)
@@ -239,7 +291,7 @@ def handle_size(plane, kind="", rig=None):
     if not kind:
         return size
     size *= _KIND_SCALE.get(kind, 1.0)
-    if kind == "POINT" and rig is not None:
+    if kind in _GRID_KINDS and rig is not None:
         # Dense grids: a point never covers its neighbours.
         cell = _cage_cell(plane, rig)
         if cell > 0.0:
@@ -258,9 +310,19 @@ def _apply_color(color):
     color.custom.show_colored_constraints = False
 
 
-def style_bone(pose_bone, kind, size, *, rotation=0.0):
+def pin_area(plane, size, stiffness):
+    """Radius of a pin's dashed area in shape units (its Stiff Area, at least the default)."""
+    try:
+        extent = max(float(plane.dimensions.x), float(plane.dimensions.y))
+        stiff = float(stiffness) * 0.25 * extent
+    except (TypeError, ValueError) + FBP_DATA_ERRORS:
+        return PIN_AREA_DEFAULT
+    return max(PIN_AREA_DEFAULT, stiff / max(size, 1.0e-6))
+
+
+def style_bone(pose_bone, kind, size, *, rotation=0.0, area=None):
     """Give a pose bone the shape and colour of a handle kind."""
-    pose_bone.custom_shape = _shape_object(kind)
+    pose_bone.custom_shape = _shape_object(kind, area)
     pose_bone.use_custom_shape_bone_size = False
     pose_bone.custom_shape_scale_xyz = (size, size, size)
     pose_bone.custom_shape_rotation_euler = (0.0, 0.0, rotation)
@@ -272,11 +334,21 @@ def style_bone(pose_bone, kind, size, *, rotation=0.0):
         pass
 
 
-def restyle_handles(rig, plane):
-    """Re-apply shapes, colours and sizes to every handle of a layer.
+def style_deform_bone(pose_bone):
+    """Bones draw as sticks in the handle accent."""
+    try:
+        _apply_color(pose_bone.color)
+        _apply_color(pose_bone.bone.color)
+    except FBP_DATA_ERRORS:
+        pass
 
-    Rotation stays as it is (corner brackets face their own corner). Return
-    the number of handles restyled.
+
+def restyle_handles(rig, plane):
+    """Re-apply shapes, colours and sizes to every handle and bone of a layer.
+
+    Rotation stays as it is (corner brackets face their own corner); pins
+    redraw their area from their Stiff Area. Return the number of handles
+    restyled.
     """
     armature = bones_object(rig)
     if armature is None or plane is None:
@@ -293,10 +365,16 @@ def restyle_handles(rig, plane):
         except FBP_DATA_ERRORS:
             kind = ""
         if kind not in _SHAPES:
+            if shape is None and getattr(pose_bone.bone, "use_deform", False):
+                style_deform_bone(pose_bone)
             continue
         try:
             rotation = float(pose_bone.custom_shape_rotation_euler[2])
-            style_bone(pose_bone, kind, handle_size(plane, kind, rig), rotation=rotation)
+            size = handle_size(plane, kind, rig)
+            area = None
+            if kind in _AREA_KINDS:
+                area = pin_area(plane, size, getattr(pose_bone, "fbp_lattice_pin_stiffness", 0.0))
+            style_bone(pose_bone, kind, size, rotation=rotation, area=area)
             count += 1
         except FBP_DATA_ERRORS:
             continue
@@ -304,6 +382,7 @@ def restyle_handles(rig, plane):
         armature[SHAPE_VERSION_KEY] = SHAPE_VERSION
     except FBP_DATA_ERRORS:
         pass
+    _remove_unused_shapes()
     return count
 
 
@@ -515,6 +594,8 @@ def setup_pose_constraints(armature, chains, size=None):
             bone.lock_scale = (False, False, True)
             bone.lock_ik_x = True
             bone.lock_ik_y = True
+            if bone.bone.use_deform:
+                style_deform_bone(bone)
         if not target:
             continue
         target_bone = pose_bones.get(target)
@@ -686,13 +767,19 @@ def remove_armature(rig, helper=None):
 
 
 def _remove_unused_shapes():
-    """Drop the shared handle shapes once no controls armature is left."""
+    """Drop handle shapes no bone uses (all of them once no controls armature is left)."""
     try:
-        if any(is_bones_object(obj) for obj in bpy.data.objects):
-            return
-        for name in _SHAPES.values():
-            obj = bpy.data.objects.get(name)
-            if obj is None or not str(obj.get(SHAPE_KEY, "") or ""):
+        in_use = set()
+        for armature in bpy.data.objects:
+            if is_bones_object(armature):
+                for pose_bone in armature.pose.bones:
+                    if pose_bone.custom_shape is not None:
+                        in_use.add(pose_bone.custom_shape.name)
+        for obj in tuple(bpy.data.objects):
+            if not str(obj.get(SHAPE_KEY, "") or "") or obj.name in in_use:
+                continue
+            # Base shapes stay while any controls armature may need them again.
+            if in_use and obj.name in _SHAPES.values():
                 continue
             mesh = obj.data
             bpy.data.objects.remove(obj, do_unlink=True)
@@ -742,5 +829,7 @@ __all__ = (
     "reset_pose",
     "rig_bones",
     "setup_pose_constraints",
+    "pin_area",
     "style_bone",
+    "style_deform_bone",
 )

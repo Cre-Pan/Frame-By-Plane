@@ -3054,8 +3054,12 @@ def test_lattice_types_contract(_module):
             # resized by Handle Size without moving or rebinding anything.
             armature = bones_module.bones_object(rig)
             assert armature.show_in_front
-            first = handles[0]
-            assert first.custom_shape is not None and len(first.custom_shape.data.polygons) == 1
+            # Cage corners are L brackets, every other point is a dot.
+            shapes = {h.custom_shape[bones_module.SHAPE_KEY] for h in handles}
+            assert shapes == {"POINT", "GRID_CORNER"}, shapes
+            assert sum(h.custom_shape[bones_module.SHAPE_KEY] == "GRID_CORNER" for h in handles) == 4
+            first = [h for h in handles if h.custom_shape[bones_module.SHAPE_KEY] == "POINT"][0]
+            assert len(first.custom_shape.data.polygons) == 1
             assert first.color.palette == 'CUSTOM'
             normal = tuple(first.color.custom.normal)
             assert normal[0] > 0.9 and normal[2] < 0.2, normal
@@ -3126,8 +3130,11 @@ def test_lattice_types_contract(_module):
             assert drift(rest, surface()) > 0.01
             bend.rotation_euler.z = 0.0
             before = str(helper.get(pins_module.BIND_SIGNATURE_KEY, ""))
+            area_shape = other.custom_shape.name
             other.fbp_lattice_pin_stiffness = 0.6
             _flush_fbp_safe_tasks()
+            # The pin's dashed circle grows to show its Stiff Area.
+            assert other.custom_shape.name != area_shape
             assert str(helper.get(pins_module.BIND_SIGNATURE_KEY, "")) != before
             assert drift(rest, surface()) < 1.0e-4
 

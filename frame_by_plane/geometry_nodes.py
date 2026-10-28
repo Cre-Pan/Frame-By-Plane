@@ -5028,6 +5028,8 @@ def update_lattice_pin_stiffness_cb(pin, context=None):
         rig = None
     if rig is not None:
         update_lattice_pins_cb(rig, context)
+        # The pin's dashed circle shows its Stiff Area.
+        update_lattice_handle_size_cb(rig, context)
     return None
 
 
