@@ -100,7 +100,7 @@ def ensure_handles(rig, helper, plane):
         for _role, label, (x, y), _turn in missing
     ]
     names = add_handle_bones(armature, specs)
-    size = handle_size(plane) * 0.7
+    size = handle_size(plane, KIND_CORNER, rig)
     for (role, _label, _rest, turn), name in zip(missing, names):
         handle = armature.pose.bones[name]
         handle[HANDLE_KEY] = KIND_CORNER

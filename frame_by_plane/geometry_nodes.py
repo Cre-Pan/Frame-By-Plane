@@ -5007,6 +5007,18 @@ def update_lattice_pins_cb(rig, context=None):
     return None
 
 
+def update_lattice_handle_size_cb(rig, context=None):
+    """Resize the layer's handles; their shapes and transforms are untouched."""
+    if fbp_is_silent_property_update(rig) or not rig:
+        return None
+    try:
+        from .lattice_bones import restyle_handles
+        restyle_handles(rig, _fbp_plane(rig, repair=False))
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not resize the Lattice handles", exc)
+    return None
+
+
 def update_lattice_pin_stiffness_cb(pin, context=None):
     """Rebuild the weights of a pin's layer after its Stiff Area changed."""
     try:
@@ -5016,6 +5028,8 @@ def update_lattice_pin_stiffness_cb(pin, context=None):
         rig = None
     if rig is not None:
         update_lattice_pins_cb(rig, context)
+        # The pin's dashed circle shows its Stiff Area.
+        update_lattice_handle_size_cb(rig, context)
     return None
 
 
@@ -23463,6 +23477,8 @@ def fbp_draw_effect_settings(
                 size_row.enabled = False
                 size_row.label(text=f"{int(helper.data.points_u)} × {int(helper.data.points_v)} points", icon="MESH_GRID")
             _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_interpolation", labels)
+            if armature is not None:
+                body.prop(rig, "fbp_lattice_handle_size", slider=True)
             _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_mesh_detail_mode", labels)
             if _fbp_lattice_mesh_detail_mode(rig) == "AUTO":
                 _fbp_draw_effect_property(body, rig, definition, "fbp_lattice_mesh_density", labels)
@@ -23514,11 +23530,14 @@ def fbp_draw_effect_settings(
                 handles_row = target.row(align=True)
                 handles_row.label(text=f"{len(point_handles)} point handles", icon="MESH_GRID")
                 _ops_row(handles_row, "fbp.lattice_point_handles", (
-                    ("SELECT", "", "RESTRICT_SELECT_OFF"),
+                    ("SELECT", "", "POSE_HLT"),
                     ("KEY", "", "KEYFRAME_HLT"),
                     ("REST", "", "LOOP_BACK"),
                     ("REMOVE", "", "TRASH"),
                 ), enabled=lattice_ready)
+            if armature is None or str(getattr(armature, "mode", "OBJECT")) != 'POSE':
+                from .shortcut_runtime import primary_shortcut_label
+                _hint(target, f"{primary_shortcut_label('T')} on the plane: pose it with the handles")
             _draw_poses(target)
 
         def _draw_corner_pin(target):
@@ -34436,7 +34455,7 @@ class FBP_OT_AddLatticeBones(Operator):
                 _fbp_select_only(context, rig)
             return {'CANCELLED'}
         _fbp_select_only(context, armature, "POSE")
-        setup_pose_constraints(armature, chains, size=handle_size(plane))
+        setup_pose_constraints(armature, chains, size=handle_size(plane, "IK", rig))
         bind(rig, helper, plane, force=True)
         _fbp_invalidate_live_lattice_cache()
         self.report({'INFO'}, "Bones ready: R rotates a bone, G moves an IK handle, I keys the pose")
@@ -34605,7 +34624,7 @@ _FBP_LATTICE_HANDLE_ACTIONS = (
     ('ADD', "Add Point Handles", "Give every cage point a handle you can move and keyframe in Pose Mode, without editing the cage"),
     ('KEY', "Key Points", "Keyframe every point handle at the current frame"),
     ('REST', "Rest", "Return every point handle to its cage point"),
-    ('SELECT', "Select Points", "Select every point handle"),
+    ('SELECT', "Pose Points", "Enter Pose Mode on the point handles (Ctrl+T on the plane does the same)"),
     ('REMOVE', "Remove Point Handles", "Remove the point handles and their animation"),
 )
 
@@ -35025,6 +35044,23 @@ def fbp_clear_effect_runtime_caches():
     _FBP_DEFAULT_FONT_CACHE = None
 
 
+def _fbp_restyle_existing_lattice_handles(objects):
+    """Give handles saved by older versions the current shapes and colours."""
+    try:
+        from .lattice_bones import SHAPE_VERSION, SHAPE_VERSION_KEY, bones_owner, is_bones_object, restyle_handles
+    except ImportError:
+        return
+    for armature in objects:
+        try:
+            if not is_bones_object(armature) or int(armature.get(SHAPE_VERSION_KEY, 0) or 0) == SHAPE_VERSION:
+                continue
+            rig = bones_owner(armature)
+            if rig is not None:
+                restyle_handles(rig, _fbp_plane(rig, repair=False))
+        except (TypeError, ValueError) + FBP_DATA_ERRORS:
+            continue
+
+
 def _fbp_stabilize_existing_lattice_helpers():
     """Upgrade cages and heal active contracts once outside UI/depsgraph draw."""
     try:
@@ -35040,6 +35076,7 @@ def _fbp_stabilize_existing_lattice_helpers():
                 _fbp_stabilize_lattice_helper(helper)
         except FBP_DATA_ERRORS:
             continue
+    _fbp_restyle_existing_lattice_handles(objects)
     fbp_repair_existing_lattice_contracts()
     return None
 

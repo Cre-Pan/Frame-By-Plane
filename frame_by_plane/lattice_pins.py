@@ -201,13 +201,21 @@ def _next_pin_id(rig):
     return str(index)
 
 
-def _setup_handle(pin, kind, size, *, rotation=0.0):
+def _setup_handle(pin, kind, size, *, rotation=0.0, shape=None):
     """Planar transform locks and the handle look."""
     pin.rotation_mode = 'XYZ'
     pin.lock_location = (kind == KIND_BEND, kind == KIND_BEND, True)
     pin.lock_rotation = (True, True, kind == KIND_POINT)
     pin.lock_scale = (kind == KIND_POINT, kind == KIND_POINT, True)
-    style_bone(pin, kind, size, rotation=rotation)
+    style_bone(pin, shape or kind, size, rotation=rotation)
+
+
+def _grid_corner_turn(u_index, v_index, points_u, points_v):
+    """Rotation of the L bracket on a cage corner, or None for other points."""
+    last_u, last_v = points_u - 1, points_v - 1
+    return {
+        (0, 0): 0.0, (last_u, 0): 90.0, (last_u, last_v): 180.0, (0, last_v): 270.0,
+    }.get((u_index, v_index))
 
 
 def _attach_hook(helper, armature, pin, pin_id):
@@ -237,7 +245,7 @@ def add_pins(rig, helper, plane, world_locations, kind=KIND_PIN, *, bind_now=Tru
         ids.append(str(index))
         specs.append((f"{label} {index}", _local_head(rig, armature, world)))
     names = add_handle_bones(armature, specs)
-    size = handle_size(plane) * (1.4 if kind == KIND_BEND else 1.0)
+    size = handle_size(plane, kind, rig)
     pins = []
     for name, pin_id in zip(names, ids):
         pin = armature.pose.bones[name]
@@ -289,7 +297,8 @@ def add_point_handles(rig, helper, plane):
         u_index, v_index = index % points_u, index // points_u
         specs.append((f"Point {u_index + 1}·{v_index + 1}", _local_head(rig, armature, helper_world @ local)))
     names = add_handle_bones(armature, specs)
-    size = handle_size(plane) * 0.45
+    size = handle_size(plane, KIND_POINT, rig)
+    corner_size = handle_size(plane, "GRID_CORNER", rig)
     for index, (name, pin_id) in enumerate(zip(names, ids)):
         handle = armature.pose.bones[name]
         handle[HANDLE_KEY] = KIND_POINT
@@ -297,7 +306,12 @@ def add_point_handles(rig, helper, plane):
         handle[PIN_POINT_KEY] = index
         handle[PIN_GRID_KEY] = f"{points_u}x{points_v}"
         handle[PIN_REST_KEY] = (0.0, 0.0, 0.0)
-        _setup_handle(handle, KIND_POINT, size)
+        # Corners of the cage read as corners; every other point is a dot.
+        turn = _grid_corner_turn(index % points_u, index // points_u, points_u, points_v)
+        if turn is None:
+            _setup_handle(handle, KIND_POINT, size)
+        else:
+            _setup_handle(handle, KIND_POINT, corner_size, rotation=math.radians(turn), shape="GRID_CORNER")
         _attach_hook(helper, armature, handle, pin_id)
     bind(rig, helper, plane, force=True)
     return points_u * points_v

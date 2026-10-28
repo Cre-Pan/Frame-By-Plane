@@ -928,6 +928,17 @@ class FBP_AddonPreferences(AddonPreferences):
         default=True,
         update=update_shortcut_preferences_cb,
     )
+    shortcut_layer_pose: BoolProperty(
+        name="Layer Pose Mode",
+        description=f"Use {primary_shortcut_label('T')} (like Free Transform in Photoshop) to pose Frame By Plane layers with their Lattice handles and to go back to the plane; other objects keep Blender's shortcut",
+        default=True,
+        update=update_shortcut_preferences_cb,
+    )
+    pose_mode_auto_lattice: BoolProperty(
+        name="Lattice on Pose Mode",
+        description="When the Layer Pose shortcut poses a layer that has no Lattice yet, turn Lattice on with one handle per cage point. Off: it poses only layers that already have Lattice",
+        default=True,
+    )
     shortcut_gp_alt_s_guard: BoolProperty(
         name="Grease Pencil Radius Guard",
         description=f"Observe {alt_shortcut_label('S')} during Grease Pencil mask editing so the live mask preview refreshes after Blender changes stroke radius",
@@ -2075,6 +2086,11 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'shortcut_viewport_pie', text='Z · Viewport Pie', toggle=True, icon='SHADING_RENDERED')
                 row.prop(self, 'shortcut_tab_layer_edit', text='Tab · Layer Edit', toggle=True, icon='EDITMODE_HLT')
+                row = _row(body)
+                row.prop(self, 'shortcut_layer_pose', text=f"{primary_shortcut_label('T')} · Layer Pose", toggle=True, icon='POSE_HLT')
+                sub = row.row(align=True)
+                sub.enabled = bool(self.shortcut_layer_pose)
+                sub.prop(self, 'pose_mode_auto_lattice', text='Auto Lattice', toggle=True, icon='MOD_LATTICE')
                 if self.shortcut_viewport_pie:
                     hint_row(
                         body,
@@ -3247,6 +3263,10 @@ def update_lattice_visibility_cb(self, context):
 
 def update_lattice_pins_cb(self, context):
     return _call_geometry_nodes('update_lattice_pins_cb', self, context)
+
+
+def update_lattice_handle_size_cb(self, context):
+    return _call_geometry_nodes('update_lattice_handle_size_cb', self, context)
 
 
 def update_lattice_pin_stiffness_cb(self, context):
@@ -6118,6 +6138,12 @@ def register_properties():
         name="Cage",
         description="Show the non-rendering Lattice cage in the viewport while the effect is enabled",
         default=True, update=update_lattice_visibility_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_handle_size = FloatProperty(
+        name="Handle Size",
+        description="Scale every Lattice handle of this layer (points, pins, corners and IK targets) without changing the deformation",
+        default=1.0, min=0.25, max=4.0, soft_min=0.5, soft_max=2.5, subtype='FACTOR',
+        update=update_lattice_handle_size_cb,
     )
     _FBP_OBJECT_RNA.fbp_lattice_grid_preset = EnumProperty(
         name="Cage Grid",
