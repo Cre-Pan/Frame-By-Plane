@@ -6884,6 +6884,214 @@ def _fbp_sync_geometry_alpha(rig, modifier):
         return False
 
 
+_FBP_FRAME_STACK_TIMING_CACHE = {}
+_FBP_FRAME_STACK_TABLE_CACHE = {}
+
+
+def _fbp_frame_stack_native_timing(material):
+    """Return the cached playback cycle of a native sequence material."""
+    try:
+        key = (
+            int(material.as_pointer()),
+            str(material.get("fbp_native_playback_signature", "") or ""),
+            int(material.get("fbp_native_frame_start", 1) or 1),
+            str(material.get("fbp_native_loop_mode", "") or ""),
+            str(material.get("fbp_native_source_indices_json", "") or ""),
+            int(material.get("fbp_native_frame_number_base", 1) or 1),
+        )
+    except FBP_DATA_ERRORS:
+        return None
+    if key in _FBP_FRAME_STACK_TIMING_CACHE:
+        return _FBP_FRAME_STACK_TIMING_CACHE[key]
+    try:
+        from .native_backend import fbp_native_playback_timing
+        timing = fbp_native_playback_timing(material)
+    except (ImportError, *FBP_DATA_ERRORS):
+        timing = None
+    if len(_FBP_FRAME_STACK_TIMING_CACHE) >= 256:
+        _FBP_FRAME_STACK_TIMING_CACHE.clear()
+    _FBP_FRAME_STACK_TIMING_CACHE[key] = timing
+    return timing
+
+
+def _fbp_frame_stack_table_image(rig, timing):
+    """Write the sequence timing table read by the Frame Stack group.
+
+    One float pixel per playback position: R is the file frame number, G is 1
+    for a drawn frame and 0 for a blank one. The image is generated, so its
+    pixels are rebuilt from the material metadata after a reload or Undo.
+    """
+    from .builtin_effects import FBP_FRAME_STACK_TABLE_WIDTH as width
+    plane = _fbp_plane(rig)
+    if not plane or not timing:
+        return None, 1
+    files = timing["files"]
+    visible = timing["visible"]
+    rows = max(1, -(-len(files) // width))
+    owner = str(getattr(plane, "name", "") or "")
+    name = f"FBP Frame Stack Timing • {owner}"
+    image = None
+    try:
+        for candidate in bpy.data.images:
+            if (
+                bool(candidate.get("fbp_frame_stack_timing", False))
+                and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
+            ):
+                image = candidate
+                break
+        if image is None:
+            image = bpy.data.images.new(name, width, rows, alpha=True, float_buffer=True, is_data=True)
+            image.use_fake_user = False
+            image["fbp_frame_stack_timing"] = True
+            image["fbp_owned"] = True
+            image["fbp_effect_material_owner"] = owner
+        elif tuple(image.size) != (width, rows):
+            image.scale(width, rows)
+        signature = (files, visible)
+        key = int(image.as_pointer())
+        if _FBP_FRAME_STACK_TABLE_CACHE.get(key) != signature:
+            pixels = [0.0, 0.0, 0.0, 1.0] * (width * rows)
+            for position, (frame_number, shown) in enumerate(zip(files, visible)):
+                pixels[position * 4] = float(frame_number)
+                pixels[position * 4 + 1] = 1.0 if shown else 0.0
+            image.pixels.foreach_set(pixels)
+            image.update()
+            if len(_FBP_FRAME_STACK_TABLE_CACHE) >= 256:
+                _FBP_FRAME_STACK_TABLE_CACHE.clear()
+            _FBP_FRAME_STACK_TABLE_CACHE[key] = signature
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not write the Frame Stack timing table", exc)
+        return None, 1
+    return image, rows
+
+
+def _fbp_sync_frame_stack_timing(rig, modifier, scene=None):
+    """Point Frame Stack at the playback position of the layer's source.
+
+    Slices step through what the plane plays, not through file numbers: an
+    image sequence follows its timing order (reordered and repeated rows,
+    loops, blank frames) through the timing table, a video steps through its
+    frames. Fixed Range reads the position shown at the Start Frame.
+    """
+    node_group = getattr(modifier, "node_group", None) if modifier else None
+    if not node_group:
+        return False
+    interface_inputs = _fbp_interface_inputs(node_group)
+    if "Stack Position" not in interface_inputs:
+        return False
+    scene = scene or getattr(bpy.context, "scene", None)
+    try:
+        timeline_frame = int(getattr(scene, "frame_current", 1))
+        if bool(getattr(rig, "fbp_frame_stack_fixed_start", False)):
+            timeline_frame = int(getattr(rig, "fbp_frame_stack_start_frame", timeline_frame))
+    except FBP_DATA_ERRORS:
+        timeline_frame = 1
+    material, source_node = _fbp_material_image_node(rig)
+    try:
+        source_image = getattr(source_node, "image", None) if source_node else None
+        source_kind = str(getattr(source_image, "source", "") or "").upper()
+        src_user = getattr(source_node, "image_user", None) if source_node else None
+    except FBP_DATA_ERRORS:
+        source_image, source_kind, src_user = None, "", None
+
+    timing = (
+        _fbp_frame_stack_native_timing(material)
+        if source_kind == "SEQUENCE" and material is not None
+        else None
+    )
+    table_image = None
+    table_rows = 1
+    if timing:
+        from .native_backend import fbp_native_playback_position
+        position = fbp_native_playback_position(timing, timeline_frame)
+        cycle = len(timing["files"])
+        loop = timing["loop_mode"] in {"REPEAT", "PINGPONG"}
+        table_image, table_rows = _fbp_frame_stack_table_image(rig, timing)
+    elif source_kind == "MOVIE" and src_user is not None:
+        try:
+            cycle = max(1, int(getattr(source_image, "frame_duration", 0) or 0))
+            loop = bool(getattr(src_user, "use_cyclic", False))
+        except FBP_DATA_ERRORS:
+            cycle, loop = 0, False
+        position = _fbp_geometry_image_frame(src_user, timeline_frame) - 1
+        if cycle:
+            position = position % cycle if loop else max(0, min(cycle - 1, position))
+    elif source_kind == "SEQUENCE" and src_user is not None:
+        # A sequence without native timing metadata steps through file numbers.
+        position = _fbp_geometry_image_frame(src_user, timeline_frame) - 1
+        cycle, loop = 0, False
+    else:
+        position, cycle, loop = 0, 1, False
+
+    use_table = table_image is not None
+    changed = False
+    table_node = None
+    try:
+        table_node = next(
+            (node for node in node_group.nodes if bool(node.get("fbp_frame_stack_table_node", False))),
+            None,
+        )
+    except FBP_DATA_ERRORS:
+        table_node = None
+    if table_node is not None:
+        image_input = _fbp_node_socket(getattr(table_node, "inputs", ()), "Image")
+        try:
+            if image_input is not None and getattr(image_input, "default_value", None) is not table_image:
+                image_input.default_value = table_image
+                changed = True
+        except FBP_DATA_ERRORS:
+            use_table = False
+    else:
+        use_table = False
+    for socket_name, value in (
+        ("Stack Position", int(position)),
+        ("Cycle Length", int(cycle)),
+        ("Loop", bool(loop)),
+        ("Frame Base", 1),
+        ("Use Timing Table", bool(use_table)),
+        ("Table Rows", int(table_rows)),
+    ):
+        changed = _fbp_set_modifier_input(
+            modifier, node_group, socket_name, value, interface_inputs,
+        ) or changed
+    if changed:
+        try:
+            node_group.update_tag()
+        except FBP_DATA_ERRORS:
+            pass
+    return changed
+
+
+def fbp_sync_frame_stack_scene(scene):
+    """Rebuild Frame Stack timing for every layer, e.g. after loading a file."""
+    try:
+        from .layers import iter_scene_fbp_rigs
+        rigs = tuple(iter_scene_fbp_rigs(scene))
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+    synced = False
+    for rig in rigs:
+        plane = _fbp_plane(rig)
+        if not plane:
+            continue
+        try:
+            modifiers = [
+                modifier for modifier in plane.modifiers
+                if getattr(modifier, "type", "") == "NODES"
+                and _fbp_geometry_effect_id_for_modifier(modifier) == FBP_EFFECT_FRAME_STACK
+            ]
+        except FBP_DATA_ERRORS:
+            continue
+        for modifier in modifiers:
+            if _fbp_sync_frame_stack_timing(rig, modifier, scene=scene):
+                synced = True
+                try:
+                    plane.update_tag()
+                except FBP_DATA_ERRORS:
+                    pass
+    return synced
+
+
 def _fbp_sync_geometry_alpha_frame_offset(rig, scene=None, effect_modifiers=None):
     """Keep image-aware Geometry Nodes bound to the current FBP source.
 
@@ -6968,10 +7176,12 @@ def _fbp_sync_geometry_alpha_frame_offset(rig, scene=None, effect_modifiers=None
                 frame_input.default_value = sequence_frame
                 changed = True
             if "Source Frame" in interface_inputs:
-                # Frame Stack derives one frame per slice from the current one.
                 changed = _fbp_set_modifier_input(
                     modifier, node_group, "Source Frame", sequence_frame, interface_inputs,
                 ) or changed
+            if "Stack Position" in interface_inputs:
+                # Frame Stack derives one frame per slice from the playback position.
+                changed = _fbp_sync_frame_stack_timing(rig, modifier, scene=scene) or changed
 
             if "Use Alpha Mask" in interface_inputs:
                 changed = _fbp_set_modifier_input(
@@ -9115,6 +9325,9 @@ def fbp_update_geometry_effect(
     alpha_changed = False
     if (definition.get("alpha_aware") or definition.get("image_aware")) and sync_alpha:
         alpha_changed = _fbp_sync_geometry_alpha(rig, modifier)
+    if effect_id == FBP_EFFECT_FRAME_STACK:
+        # Fixed Range and Start Frame move the stack position.
+        alpha_changed = _fbp_sync_frame_stack_timing(rig, modifier) or alpha_changed
 
     visibility_changed = _fbp_sync_geometry_effect_eval_visibility(rig, effect_id, modifier)
 

@@ -4446,33 +4446,53 @@ def test_compositor_off_restores_render_setup(_module):
 
 
 def test_frame_stack_samples_earlier_frames(_module):
-    """Every Frame Stack slice shows its own earlier source frame."""
+    """Every Frame Stack slice shows its own earlier frame of the playback."""
     builder = importlib.import_module(f"{PACKAGE}.builder")
     geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     scene = bpy.context.scene
-    folder = WORKDIR / "frame_stack_sequence"
-    folder.mkdir(parents=True, exist_ok=True)
-    colors = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0))
-    names = []
-    for index, color in enumerate(colors, 1):
-        name = f"stack_{index:04d}.png"
-        names.append(name)
-        path = folder / name
-        if not path.is_file():
-            image = bpy.data.images.new(name, 16, 9, alpha=True)
-            image.generated_color = (*color, 1.0)
-            image.filepath_raw = str(path)
-            image.file_format = "PNG"
-            image.save()
-            bpy.data.images.remove(image)
-    previous_duration = scene.fbp_pre_duration
-    previous_frame = scene.frame_current
-    scene.fbp_pre_duration = 1
-    rig = builder.build_fbp_rig(bpy.context, "FBP Frame Stack Test", str(folder), names, (0.0, 0.0, 0.0))
-    owned = [rig, *rig.children_recursive]
-    _flush_fbp_safe_tasks()
+    red, green, blue, yellow = (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0)
 
-    def slices():
+    def write_sequence(folder_name, first_number):
+        folder = WORKDIR / folder_name
+        folder.mkdir(parents=True, exist_ok=True)
+        names = []
+        for offset, color in enumerate((red, green, blue, yellow)):
+            name = f"stack_{first_number + offset:04d}.png"
+            names.append(name)
+            path = folder / name
+            if not path.is_file():
+                image = bpy.data.images.new(name, 16, 9, alpha=True)
+                image.generated_color = (*color, 1.0)
+                image.filepath_raw = str(path)
+                image.file_format = "PNG"
+                image.save()
+                bpy.data.images.remove(image)
+        return folder, names
+
+    previous = (scene.fbp_pre_duration, scene.fbp_pre_loop_mode, scene.frame_current)
+    owned = []
+
+    def build(name, folder, names, duration, loop_mode):
+        scene.fbp_pre_duration = duration
+        scene.fbp_pre_loop_mode = loop_mode
+        # New layers start at the current frame.
+        scene.frame_set(scene.frame_start)
+        rig = builder.build_fbp_rig(bpy.context, name, str(folder), names, (0.0, 0.0, 0.0))
+        owned.extend((rig, *rig.children_recursive))
+        _flush_fbp_safe_tasks()
+        assert geometry.fbp_add_effect(
+            rig, "FRAME_STACK", select_object_mask_helper=False, inherit_active_group=False,
+        )
+        rig.fbp_frame_stack_slices = 4
+        rig.fbp_frame_stack_step = 1
+        rig.fbp_frame_stack_detail = 1
+        rig.fbp_frame_stack_spacing = -0.1
+        _flush_fbp_safe_tasks()
+        return rig
+
+    def slices(rig, frame):
+        scene.frame_set(frame)
+        _flush_fbp_safe_tasks()
         plane = geometry._fbp_plane(rig)
         evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
         mesh = evaluated.to_mesh()
@@ -4487,37 +4507,57 @@ def test_frame_stack_samples_earlier_frames(_module):
         finally:
             evaluated.to_mesh_clear()
 
+    start = scene.frame_start
     try:
-        assert geometry.fbp_add_effect(
-            rig, "FRAME_STACK", select_object_mask_helper=False, inherit_active_group=False,
-        )
-        rig.fbp_frame_stack_slices = 4
-        rig.fbp_frame_stack_step = 1
-        rig.fbp_frame_stack_detail = 1
-        rig.fbp_frame_stack_spacing = -0.1
-        _flush_fbp_safe_tasks()
-        scene.frame_set(scene.frame_start + 3)
-        _flush_fbp_safe_tasks()
+        folder, names = write_sequence("frame_stack_sequence", 1)
+        rig = build("FBP Frame Stack Test", folder, names, 1, "NONE")
         # Frame 4 (yellow) is the plane; slices behind show frames 3, 2 and 1.
-        assert slices() == {-0.1: (0, 0, 1), -0.2: (0, 1, 0), -0.3: (1, 0, 0)}, slices()
+        assert slices(rig, start + 3) == {-0.1: blue, -0.2: green, -0.3: red}, slices(rig, start + 3)
+        # One Shot: nothing played before the first frame, so those slices stay empty.
+        assert slices(rig, start + 1) == {-0.1: red}, slices(rig, start + 1)
 
         rig.fbp_frame_stack_fixed_start = True
-        rig.fbp_frame_stack_start_frame = 2
+        rig.fbp_frame_stack_start_frame = start + 1
         rig.fbp_frame_stack_show_plane = False
         _flush_fbp_safe_tasks()
-        # Fixed range from frame 2: slices 0 and 1 hold frames 2 and 1, the
-        # slices before the first frame stay empty.
-        assert slices() == {0.0: (0, 1, 0), -0.1: (1, 0, 0)}, slices()
+        # Fixed range from the second frame: slices 0 and 1 hold frames 2 and 1.
+        assert slices(rig, start + 3) == {0.0: green, -0.1: red}, slices(rig, start + 3)
         assert geometry.fbp_remove_effect(rig, "FRAME_STACK")
+
+        # A looping sequence numbered from 0100, two frames per drawing: slices
+        # step through drawings and wrap around the cycle when it restarts.
+        folder, names = write_sequence("frame_stack_sequence_0100", 100)
+        looped = build("FBP Frame Stack Loop", folder, names, 2, "REPEAT")
+        assert slices(looped, start + 6) == {-0.1: blue, -0.2: green, -0.3: red}, slices(looped, start + 6)
+        assert slices(looped, start + 8) == {-0.1: yellow, -0.2: blue, -0.3: green}, slices(looped, start + 8)
+        # Fixed Range reads a timeline frame: frame 5 shows the third drawing.
+        looped.fbp_frame_stack_fixed_start = True
+        looped.fbp_frame_stack_start_frame = start + 4
+        looped.fbp_frame_stack_show_plane = False
+        _flush_fbp_safe_tasks()
+        assert slices(looped, start) == {0.0: blue, -0.1: green, -0.2: red, -0.3: yellow}, slices(looped, start)
+
+        # Ping-Pong runs 1 2 3 4 3 2: after the turn the stack looks back the
+        # way the plane came.
+        pingpong = build("FBP Frame Stack Ping-Pong", folder, names, 1, "PINGPONG")
+        assert slices(pingpong, start + 4) == {-0.1: yellow, -0.2: blue, -0.3: green}, slices(pingpong, start + 4)
+        # Each layer keeps its own group, because the group holds its images.
+        groups = [
+            modifier.node_group
+            for layer in (looped, pingpong)
+            for modifier in geometry._fbp_plane(layer).modifiers
+            if modifier.name.startswith("FBP • Frame Stack")
+        ]
+        assert len(groups) == 2 and groups[0] is not groups[1], groups
     finally:
-        scene.fbp_pre_duration = previous_duration
-        scene.frame_set(previous_frame)
+        scene.fbp_pre_duration, scene.fbp_pre_loop_mode = previous[0], previous[1]
+        scene.frame_set(previous[2])
         for obj in reversed(owned):
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
             except (ReferenceError, RuntimeError):
                 pass
-    return {"slices": 4}
+    return {"slices": 4, "sequences": 3}
 
 
 def test_knit_crochet_stitches(_module):

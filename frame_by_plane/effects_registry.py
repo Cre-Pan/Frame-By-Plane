@@ -916,7 +916,8 @@ FBP_EFFECT_REGISTRY = {
         "enabled_key": "fbp_effect_knit_crochet", "builtin": True,
         # Stitches sample the plane image directly (colour and alpha) through
         # the shared image-aware node, so sequences and videos stay animated.
-        "image_aware": True,
+        # The node holds this layer's image: every layer needs its own group.
+        "image_aware": True, "private_group": True,
         "supports": ("IMAGE", "SEQUENCE", "VIDEO", "CUTOUT"),
         "required_input_sockets": (
             "Geometry", "Stitch Type", "Columns", "Row Height", "Loop Width", "Thickness",
@@ -963,16 +964,19 @@ FBP_EFFECT_REGISTRY = {
         "source_names": (), "canonical_name": "FBP_GN_Frame_Stack_800",
         "modifier_name": "FBP • Frame Stack", "asset_id": "frame_by_plane.frame_stack.800",
         "enabled_key": "fbp_effect_frame_stack", "builtin": True,
-        # The tagged Image Texture receives the plane's sequence or movie and
-        # "Source Frame" follows playback, like the other image-aware effects.
-        "image_aware": True,
+        # The tagged Image Texture receives the plane's sequence or movie; the
+        # runtime writes the playback position and, for sequences, a timing
+        # table so slices follow the layer's order, holds and loops. Both
+        # images live in the group, so every layer needs its own copy.
+        "image_aware": True, "private_group": True,
         "supports": ("SEQUENCE", "VIDEO"),
         "required_input_sockets": (
             "Geometry", "Slices", "Frame Step", "Source Frame", "Fixed Start", "Start Frame",
             "Detail", "Offset X", "Offset Y", "Spacing", "Scale Step", "Rotation X",
             "Rotation Y", "Twist", "Front Slices", "Front Opacity", "Back Opacity",
             "Depth Fade", "Luminance Opacity", "Show Plane", "Outline", "Outline Width",
-            "Outline Color", "Glow", "Stack Material",
+            "Outline Color", "Glow", "Stack Material", "Stack Position", "Cycle Length",
+            "Loop", "Frame Base", "Use Timing Table", "Table Rows",
         ),
         "property_map": {
             "fbp_frame_stack_slices": "Slices",
