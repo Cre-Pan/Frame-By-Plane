@@ -54,7 +54,7 @@ SHAPE_VERSION_KEY = "fbp_lattice_handle_shape_version"
 # and the others); the shape tells the kinds apart. (normal, selected, active)
 HANDLE_COLORS = (
     (1.0, 0.55, 0.05),
-    (1.0, 0.93, 0.82),
+    (1.0, 0.86, 0.6),
     (1.0, 1.0, 1.0),
 )
 HANDLE_WIRE_WIDTH = 2.0
@@ -228,14 +228,14 @@ def _cage_cell(plane, rig):
 def handle_size(plane, kind="", rig=None):
     """World half-size of a handle, scaled by the layer's Handle Size.
 
-    A point handle is 4% of the plane's short side (at least 0.02 units), like
+    A point handle is 6% of the plane's short side (0.02 to 0.3 units), like
     the effect controls.
     """
     try:
         size = min(float(plane.dimensions.x), float(plane.dimensions.y))
     except FBP_DATA_ERRORS:
         size = 1.0
-    size = 0.5 * max(0.02, size * 0.04)
+    size = 0.5 * max(0.02, min(0.3, size * 0.06))
     if not kind:
         return size
     size *= _KIND_SCALE.get(kind, 1.0)
