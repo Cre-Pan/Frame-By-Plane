@@ -2037,7 +2037,9 @@ def _sync_control_transforms_from_properties(rig, effect_id, *, create=False):
                 angle, feather / scale,
             ) or changed
         elif mode == "GRADIENT_LIGHT_RANGE":
-            angle = float(getattr(rig, "fbp_gradient_light_angle", 0.0))
+            # The Gradient Light shader rotates UVs by +Light Angle, so its
+            # axis is (cos a, -sin a): the mirror of Gradient Mask's.
+            angle = -float(getattr(rig, "fbp_gradient_light_angle", 0.0))
             position = float(getattr(rig, "fbp_gradient_shadow_position", 0.0))
             softness = max(float(getattr(rig, "fbp_gradient_softness", 0.2)), 0.001)
             center_x = float(getattr(rig, "fbp_gradient_light_center_x", 0.5))
@@ -2443,7 +2445,7 @@ def sync_properties_from_control(control):
                 position = float(getattr(rig, "fbp_gradient_shadow_position", 0.0))
                 set_driven("fbp_gradient_light_center_x", mx - ux * position)
                 set_driven("fbp_gradient_light_center_y", my - uy * position)
-                set_driven("fbp_gradient_light_angle", uv_angle)
+                set_driven("fbp_gradient_light_angle", -uv_angle)
                 set_driven("fbp_gradient_softness", max(span, 0.001))
             else:
                 scale = max(float(getattr(rig, "fbp_gradient_mask_scale", 1.0)), 1.0e-6)
