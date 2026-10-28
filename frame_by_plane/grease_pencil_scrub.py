@@ -722,11 +722,6 @@ def playhead_snap_settings(scene):
     }
 
 
-def animation_snapping_enabled(scene):
-    """Compatibility helper for diagnostics and third-party integrations."""
-    return bool(playhead_snap_settings(scene)["enabled"])
-
-
 def scene_fps(scene):
     try:
         render = scene.render
@@ -1730,15 +1725,6 @@ def reconcile_scrub_bookmarks(scene):
     if changed or normalized != entries:
         _save_bookmark_state(scene, normalized)
     return tuple(matched)
-
-
-def is_scrub_bookmark(marker, scene=None):
-    pointer = _marker_pointer(marker)
-    if pointer and pointer in _BOOKMARK_POINTER_UIDS:
-        return True
-    if scene is not None:
-        return any(candidate is marker for _entry, candidate in reconcile_scrub_bookmarks(scene))
-    return _marker_name_has_bookmark_prefix(marker)
 
 
 def scrub_bookmark_records(scene):

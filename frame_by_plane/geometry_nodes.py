@@ -3693,10 +3693,6 @@ def _fbp_lattice_mesh_detail_levels(rig):
     return max(0, min(6, int(math.ceil(math.log2(target_segments)))))
 
 
-def _fbp_lattice_mesh_segment_count(rig):
-    return 1 << _fbp_lattice_mesh_detail_levels(rig)
-
-
 def _fbp_sync_lattice_detail_modifier(rig, plane, lattice_modifier=None):
     """Create or update the lightweight Simple Subdivision before Lattice."""
     levels = _fbp_lattice_mesh_detail_levels(rig)

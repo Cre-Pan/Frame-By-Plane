@@ -188,19 +188,6 @@ def pin_world(rig, pin):
     return armature_world(rig, pin.id_data) @ pose_matrix(pin)
 
 
-def _next_pin_id(rig):
-    used = set()
-    for pin in rig_pins(rig):
-        try:
-            used.add(int(_pin_id(pin)))
-        except ValueError:
-            continue
-    index = 1
-    while index in used:
-        index += 1
-    return str(index)
-
-
 def _setup_handle(pin, kind, size, *, rotation=0.0, shape=None):
     """Planar transform locks and the handle look."""
     pin.rotation_mode = 'XYZ'
