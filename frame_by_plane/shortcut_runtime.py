@@ -60,6 +60,7 @@ SHORTCUT_PREFERENCE_DEFAULTS = {
     "shortcut_group_layers": True,
     "shortcut_viewport_pie": True,
     "shortcut_tab_layer_edit": True,
+    "shortcut_layer_pose": True,
     "shortcut_gp_alt_s_guard": True,
     "shortcut_gp_frame_scrub": True,
 }

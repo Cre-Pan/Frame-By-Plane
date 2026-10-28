@@ -3050,6 +3050,26 @@ def test_lattice_types_contract(_module):
             assert ops.lattice_point_handles(rig_name=rig.name, action="ADD") == {"FINISHED"}
             handles = pins_module.rig_pins(rig, kinds=(pins_module.KIND_POINT,))
             assert len(handles) == len(helper.data.points)
+            # Minimal handles: filled shapes in the shared accent, always in front,
+            # resized by Handle Size without moving or rebinding anything.
+            armature = bones_module.bones_object(rig)
+            assert armature.show_in_front
+            first = handles[0]
+            assert first.custom_shape is not None and len(first.custom_shape.data.polygons) == 1
+            assert first.color.palette == 'CUSTOM'
+            normal = tuple(first.color.custom.normal)
+            assert normal[0] > 0.9 and normal[2] < 0.2, normal
+            base_scale = float(first.custom_shape_scale_xyz[0])
+            assert abs(base_scale - bones_module.handle_size(plane, "POINT", rig)) < 1.0e-6
+            bind_before = str(helper.get(pins_module.BIND_SIGNATURE_KEY, ""))
+            rig.fbp_lattice_handle_size = 2.0
+            assert abs(float(first.custom_shape_scale_xyz[0]) - 2.0 * base_scale) < 1.0e-6
+            assert str(helper.get(pins_module.BIND_SIGNATURE_KEY, "")) == bind_before
+            rig.fbp_lattice_handle_size = 1.0
+            # Lattice is offered in both the Image (Canvas) and Mesh (Deform) menus.
+            registry = importlib.import_module(f"{PACKAGE}.effects_registry")
+            for sections in (registry.FBP_IMAGE_EFFECT_MENU_SECTIONS, registry.FBP_MESH_EFFECT_MENU_SECTIONS):
+                assert any("LATTICE" in tokens for _label, _icon, tokens in sections)
             corner_index = len(helper.data.points) - 1
             moved_handle = [h for h in handles if int(h[pins_module.PIN_POINT_KEY]) == corner_index][0]
             moved_handle.location.x += 0.2

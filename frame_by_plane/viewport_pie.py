@@ -21,6 +21,7 @@ from .registration import (
 )
 from .shortcut_runtime import (
     addon_keymap,
+    primary_modifier_kwargs,
     refresh_keymap_registration,
     remove_matching_keymap_items,
     shortcut_enabled,
@@ -2620,8 +2621,120 @@ class FBP_OT_ToggleLayerEditMode(Operator):
             fbp_warn("Could not toggle Frame By Plane Edit Mode", exc)
         return {"PASS_THROUGH"}
 
+# The layer a Controls armature returns to when Ctrl+T leaves Pose Mode.
+_POSE_RETURN_KEY = "fbp_pose_return_object"
+
+
+class FBP_OT_ToggleLayerPoseMode(Operator):
+    """Ctrl+T for FBP layers: pose the plane through its Lattice handles.
+
+    A plane is an Empty plus a mesh, so Blender has no Pose Mode for it. The
+    first Ctrl+T turns Lattice on (a Grid cage with one handle per point)
+    and enters Pose Mode on the layer's Controls armature; the next one goes
+    back to Object Mode with the plane selected. Ordinary objects and real
+    armatures pass through to Blender.
+    """
+
+    bl_idname = "fbp.toggle_layer_pose_mode"
+    bl_label = "Pose Frame By Plane Layer"
+    bl_description = "Pose the selected layer with its Lattice handles; Lattice is turned on the first time"
+    bl_options = {"INTERNAL", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            return str(getattr(getattr(context, "area", None), "type", "") or "") == "VIEW_3D"
+        except FBP_DATA_ERRORS:
+            return False
+
+    def execute(self, context):
+        active = getattr(context, "active_object", None)
+        if active is None:
+            return {"PASS_THROUGH"}
+        try:
+            from .lattice_pins import lattice_controller_owner
+            owner = lattice_controller_owner(active)
+            if owner is not None:
+                return self._leave_pose(context, active, owner)
+            if str(getattr(active, "mode", "OBJECT") or "OBJECT").upper() != "OBJECT":
+                return {"PASS_THROUGH"}
+            if bool(getattr(active, "is_fbp_control", False)):
+                rig = active
+            elif bool(getattr(active, "is_fbp_plane", False)):
+                from .layers import fbp_resolve_rig_from_any_object
+                rig = fbp_resolve_rig_from_any_object(active, context)
+            else:
+                return {"PASS_THROUGH"}
+            if rig is None:
+                return {"PASS_THROUGH"}
+            return self._enter_pose(context, rig, active)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not toggle Frame By Plane Pose Mode", exc)
+        return {"PASS_THROUGH"}
+
+    def _enter_pose(self, context, rig, active):
+        from .effects_registry import FBP_EFFECT_LATTICE, fbp_effect_supported_for_rig
+        from .geometry_nodes import fbp_effect_ids_for_rig, fbp_focus_lattice_ui
+        from .lattice_bones import bones_object
+        from .lattice_pins import select_pins
+        if not fbp_effect_supported_for_rig(rig, FBP_EFFECT_LATTICE):
+            self.report({"INFO"}, "This layer has no mesh plane to pose")
+            return {"CANCELLED"}
+        if FBP_EFFECT_LATTICE not in fbp_effect_ids_for_rig(rig):
+            if not _layer_pose_auto_lattice_enabled(context):
+                return {"PASS_THROUGH"}
+            with context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+                if "FINISHED" not in bpy.ops.fbp.add_effect(effect_id=FBP_EFFECT_LATTICE):
+                    return {"CANCELLED"}
+        armature = bones_object(rig)
+        if armature is None or not len(armature.data.bones):
+            # A fresh cage: one handle per point is the quickest thing to pose.
+            if "FINISHED" not in bpy.ops.fbp.lattice_point_handles(rig_name=rig.name, action="ADD"):
+                return {"CANCELLED"}
+            armature = bones_object(rig)
+        if armature is None:
+            self.report({"WARNING"}, "Set up Grid, Bones, Pins or Corner Pin in the Lattice panel first")
+            return {"CANCELLED"}
+        armature[_POSE_RETURN_KEY] = str(getattr(active, "name", "") or "")
+        if not select_pins(context, rig, []):
+            return {"CANCELLED"}
+        fbp_focus_lattice_ui(context, rig)
+        return {"FINISHED"}
+
+    def _leave_pose(self, context, armature, rig):
+        if str(getattr(armature, "mode", "OBJECT") or "OBJECT").upper() != "POSE":
+            return {"PASS_THROUGH"}
+        if bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode="OBJECT")
+        target = bpy.data.objects.get(str(armature.get(_POSE_RETURN_KEY, "") or "")) or rig
+        view_layer = context.view_layer
+        if view_layer.objects.get(target.name) is None:
+            target = rig
+        for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+            try:
+                obj.select_set(False)
+            except FBP_DATA_ERRORS:
+                pass
+        try:
+            target.select_set(True)
+            view_layer.objects.active = target
+        except FBP_DATA_ERRORS:
+            pass
+        return {"FINISHED"}
+
+
+def _layer_pose_auto_lattice_enabled(context=None):
+    try:
+        from .interface_preferences import fbp_get_addon_preferences
+        preferences = fbp_get_addon_preferences(context)
+    except (ImportError, AttributeError):
+        preferences = None
+    return bool(getattr(preferences, "pose_mode_auto_lattice", True)) if preferences is not None else True
+
+
 _CLASSES = (
     FBP_OT_ToggleLayerEditMode,
+    FBP_OT_ToggleLayerPoseMode,
     FBP_OT_CallViewportPie,
     FBP_MT_ViewportPie,
     FBP_OT_SetViewportShading,
@@ -2694,6 +2807,34 @@ def _register_keymaps():
                 _FBP_VIEWPORT_PIE_KEYMAPS.append((keymap, item))
             except FBP_DATA_ERRORS as exc:
                 fbp_warn(f'Could not register Frame By Plane Tab shortcut in {keymap_name}', exc)
+
+    if shortcut_enabled('shortcut_layer_pose'):
+        # Ctrl+T (Cmd+T on macOS), like Free Transform in Photoshop: Object
+        # Mode enters the layer's Lattice Pose Mode and Pose returns to the
+        # plane. Anything else passes through to Blender (Track in Object Mode).
+        for keymap_name in ('Object Mode', 'Pose'):
+            keymap = addon_keymap(
+                keymap_name,
+                fallback_space_type='VIEW_3D',
+                fallback_region_type='WINDOW',
+            )
+            if keymap is None:
+                continue
+            remove_matching_keymap_items(
+                keymap,
+                lambda item: str(getattr(item, 'idname', '') or '')
+                == FBP_OT_ToggleLayerPoseMode.bl_idname,
+            )
+            try:
+                item = keymap.keymap_items.new(
+                    FBP_OT_ToggleLayerPoseMode.bl_idname,
+                    type='T',
+                    value='PRESS',
+                    **primary_modifier_kwargs(),
+                )
+                _FBP_VIEWPORT_PIE_KEYMAPS.append((keymap, item))
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f'Could not register Frame By Plane Ctrl+T shortcut in {keymap_name}', exc)
 
     if shortcut_enabled('shortcut_viewport_pie'):
         for keymap_name in (

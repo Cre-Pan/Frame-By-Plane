@@ -38,7 +38,8 @@ IK_CONSTRAINT = "FBP IK"
 HANDLE_KEY = "fbp_lattice_handle"
 SHAPE_KEY = "fbp_lattice_handle_shape"
 
-# Handle shapes: wire meshes drawn flat on the drawing, in bone space (X, Y).
+# Handle shapes: meshes drawn flat on the drawing, in bone space (X, Y). Faces
+# draw filled, so a handle reads as a solid dot with a thin outline.
 _SHAPES = {
     "PIN": "FBP Handle • Pin",
     "BEND": "FBP Handle • Bend",
@@ -46,12 +47,24 @@ _SHAPES = {
     "CORNER": "FBP Handle • Corner",
     "IK": "FBP Handle • IK",
 }
-_COLORS = {
-    "PIN": 'THEME01',
-    "BEND": 'THEME04',
-    "POINT": 'THEME03',
-    "CORNER": 'THEME09',
-    "IK": 'THEME02',
+# Bump when a shape changes: shapes saved in older files are rebuilt in place.
+SHAPE_VERSION = 2
+SHAPE_VERSION_KEY = "fbp_lattice_handle_shape_version"
+# One accent for every handle, shared with the effect controls (Crop, Extend
+# and the others); the shape tells the kinds apart. (normal, selected, active)
+HANDLE_COLORS = (
+    (1.0, 0.55, 0.05),
+    (1.0, 0.93, 0.82),
+    (1.0, 1.0, 1.0),
+)
+HANDLE_WIRE_WIDTH = 2.0
+# Size of each kind relative to the layer's base handle size (half a point).
+_KIND_SCALE = {
+    "PIN": 1.6,
+    "BEND": 2.0,
+    "POINT": 1.0,
+    "CORNER": 1.0,
+    "IK": 1.6,
 }
 
 
@@ -126,12 +139,15 @@ def rig_bones(armature):
 
 
 def _shape_object(kind):
-    """Return the shared wire mesh used to draw a kind of handle."""
+    """Return the shared mesh used to draw a kind of handle."""
     name = _SHAPES[kind]
     obj = bpy.data.objects.get(name)
-    if obj is not None and getattr(obj, "type", "") == 'MESH':
+    if (
+        obj is not None and getattr(obj, "type", "") == 'MESH'
+        and int(obj.get(SHAPE_VERSION_KEY, 0) or 0) == SHAPE_VERSION
+    ):
         return obj
-    vertices, edges = [], []
+    vertices, edges, faces = [], [], []
 
     def loop(radius, segments=32, start=0.0, sweep=math.tau, closed=True, centre=(0.0, 0.0)):
         first = len(vertices)
@@ -143,28 +159,38 @@ def _shape_object(kind):
             edges.append((first + index, first + index + 1))
         if closed:
             edges.append((first + count - 1, first))
+        return list(range(first, first + count))
+
+    def disc(radius, segments=24, centre=(0.0, 0.0)):
+        faces.append(tuple(loop(radius, segments, centre=centre)))
 
     def line(*points):
         first = len(vertices)
         vertices.extend((x, y, 0.0) for x, y in points)
         edges.extend((first + index, first + index + 1) for index in range(len(points) - 1))
+        return list(range(first, first + len(points)))
+
+    def square(half):
+        corners = line((half, half), (-half, half), (-half, -half), (half, -half))
+        edges.append((corners[-1], corners[0]))
+        faces.append(tuple(corners))
 
     if kind == "PIN":
         loop(1.0)
-        loop(0.18, segments=12)
+        disc(0.32, segments=16)
     elif kind == "BEND":
         # An open ring with an arrow: this handle turns, it does not move.
         loop(1.0, segments=28, start=math.radians(20.0), sweep=math.radians(300.0), closed=False)
         tip = (math.cos(math.radians(320.0)), math.sin(math.radians(320.0)))
         line((tip[0] - 0.32, tip[1] - 0.05), tip, (tip[0] - 0.05, tip[1] + 0.32))
-        line((-0.25, 0.0), (0.25, 0.0))
-        line((0.0, -0.25), (0.0, 0.25))
+        disc(0.26, segments=16)
     elif kind == "POINT":
-        line((0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0), (0.0, 1.0))
+        square(1.0)
     elif kind == "CORNER":
-        # An L bracket opening towards +X/+Y (rotated per corner).
-        line((2.2, 0.0), (0.0, 0.0), (0.0, 2.2))
-        line((0.5, 0.5), (0.5, -0.5), (-0.5, -0.5), (-0.5, 0.5), (0.5, 0.5))
+        # A square with an L bracket opening towards +X/+Y (rotated per corner).
+        square(1.0)
+        line((3.0, 0.0), (1.6, 0.0))
+        line((0.0, 1.6), (0.0, 3.0))
     else:  # IK
         loop(1.0)
         line((-1.4, 0.0), (-0.6, 0.0))
@@ -173,21 +199,63 @@ def _shape_object(kind):
         line((0.0, 0.6), (0.0, 1.4))
     mesh = bpy.data.meshes.get(name) or bpy.data.meshes.new(name)
     mesh.clear_geometry()
-    mesh.from_pydata(vertices, edges, [])
+    mesh.from_pydata(vertices, edges, faces)
     mesh.update()
-    obj = bpy.data.objects.new(name, mesh)
+    if obj is None or getattr(obj, "type", "") != 'MESH':
+        obj = bpy.data.objects.new(name, mesh)
+    else:
+        obj.data = mesh
     # Shapes are not in any scene: keep them with the file.
     obj.use_fake_user = True
     obj[SHAPE_KEY] = kind
+    obj[SHAPE_VERSION_KEY] = SHAPE_VERSION
     return obj
 
 
-def handle_size(plane):
+def _cage_cell(plane, rig):
+    """Smallest cage cell of the layer in world units, or 0 when unknown."""
     try:
-        size = max(float(plane.dimensions.x), float(plane.dimensions.y))
+        points_u = max(2, int(getattr(rig, "fbp_lattice_points_u", 4) or 4))
+        points_v = max(2, int(getattr(rig, "fbp_lattice_points_v", 4) or 4))
+        return min(
+            float(plane.dimensions.x) / (points_u - 1),
+            float(plane.dimensions.y) / (points_v - 1),
+        )
+    except (TypeError, ValueError) + FBP_DATA_ERRORS:
+        return 0.0
+
+
+def handle_size(plane, kind="", rig=None):
+    """World half-size of a handle, scaled by the layer's Handle Size.
+
+    A point handle is 4% of the plane's short side (at least 0.02 units), like
+    the effect controls.
+    """
+    try:
+        size = min(float(plane.dimensions.x), float(plane.dimensions.y))
     except FBP_DATA_ERRORS:
         size = 1.0
-    return max(0.005, size * 0.03)
+    size = 0.5 * max(0.02, size * 0.04)
+    if not kind:
+        return size
+    size *= _KIND_SCALE.get(kind, 1.0)
+    if kind == "POINT" and rig is not None:
+        # Dense grids: a point never covers its neighbours.
+        cell = _cage_cell(plane, rig)
+        if cell > 0.0:
+            size = min(size, cell * 0.18)
+    if rig is not None:
+        try:
+            size *= max(0.1, float(getattr(rig, "fbp_lattice_handle_size", 1.0) or 1.0))
+        except (TypeError, ValueError) + FBP_DATA_ERRORS:
+            pass
+    return max(0.002, size)
+
+
+def _apply_color(color):
+    color.palette = 'CUSTOM'
+    color.custom.normal, color.custom.select, color.custom.active = HANDLE_COLORS
+    color.custom.show_colored_constraints = False
 
 
 def style_bone(pose_bone, kind, size, *, rotation=0.0):
@@ -196,12 +264,47 @@ def style_bone(pose_bone, kind, size, *, rotation=0.0):
     pose_bone.use_custom_shape_bone_size = False
     pose_bone.custom_shape_scale_xyz = (size, size, size)
     pose_bone.custom_shape_rotation_euler = (0.0, 0.0, rotation)
-    pose_bone.custom_shape_wire_width = 2.0
+    pose_bone.custom_shape_wire_width = HANDLE_WIRE_WIDTH
     try:
-        pose_bone.color.palette = _COLORS[kind]
-        pose_bone.bone.color.palette = _COLORS[kind]
+        _apply_color(pose_bone.color)
+        _apply_color(pose_bone.bone.color)
     except FBP_DATA_ERRORS:
         pass
+
+
+def restyle_handles(rig, plane):
+    """Re-apply shapes, colours and sizes to every handle of a layer.
+
+    Rotation stays as it is (corner brackets face their own corner). Return
+    the number of handles restyled.
+    """
+    armature = bones_object(rig)
+    if armature is None or plane is None:
+        return 0
+    count = 0
+    try:
+        pose_bones = tuple(armature.pose.bones)
+    except FBP_DATA_ERRORS:
+        return 0
+    for pose_bone in pose_bones:
+        shape = getattr(pose_bone, "custom_shape", None)
+        try:
+            kind = str(shape.get(SHAPE_KEY, "") or "") if shape is not None else ""
+        except FBP_DATA_ERRORS:
+            kind = ""
+        if kind not in _SHAPES:
+            continue
+        try:
+            rotation = float(pose_bone.custom_shape_rotation_euler[2])
+            style_bone(pose_bone, kind, handle_size(plane, kind, rig), rotation=rotation)
+            count += 1
+        except FBP_DATA_ERRORS:
+            continue
+    try:
+        armature[SHAPE_VERSION_KEY] = SHAPE_VERSION
+    except FBP_DATA_ERRORS:
+        pass
+    return count
 
 
 def ensure_armature(rig, helper, plane):
@@ -218,6 +321,7 @@ def ensure_armature(rig, helper, plane):
         armature.parent = rig
         armature.matrix_parent_inverse = rig.matrix_world.inverted_safe() @ plane_frame(plane, helper)
         armature.show_in_front = True
+        armature[SHAPE_VERSION_KEY] = SHAPE_VERSION
         armature.hide_render = True
         armature.lock_location = (True, True, True)
         armature.lock_rotation = (True, True, True)
@@ -623,6 +727,7 @@ __all__ = (
     "ensure_armature",
     "handle_kind",
     "handle_size",
+    "restyle_handles",
     "is_bones_object",
     "is_handle_bone",
     "key_pose",

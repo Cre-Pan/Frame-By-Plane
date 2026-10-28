@@ -237,7 +237,7 @@ def add_pins(rig, helper, plane, world_locations, kind=KIND_PIN, *, bind_now=Tru
         ids.append(str(index))
         specs.append((f"{label} {index}", _local_head(rig, armature, world)))
     names = add_handle_bones(armature, specs)
-    size = handle_size(plane) * (1.4 if kind == KIND_BEND else 1.0)
+    size = handle_size(plane, kind, rig)
     pins = []
     for name, pin_id in zip(names, ids):
         pin = armature.pose.bones[name]
@@ -289,7 +289,7 @@ def add_point_handles(rig, helper, plane):
         u_index, v_index = index % points_u, index // points_u
         specs.append((f"Point {u_index + 1}·{v_index + 1}", _local_head(rig, armature, helper_world @ local)))
     names = add_handle_bones(armature, specs)
-    size = handle_size(plane) * 0.45
+    size = handle_size(plane, KIND_POINT, rig)
     for index, (name, pin_id) in enumerate(zip(names, ids)):
         handle = armature.pose.bones[name]
         handle[HANDLE_KEY] = KIND_POINT

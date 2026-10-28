@@ -2879,8 +2879,10 @@ for _family_id, _family in FBP_EFFECT_FAMILIES.items():
 # Add-menu sections and explicit column grouping mirror the supplied effect list.
 # Each inner tuple is one visual column; short sections may share a column.
 FBP_IMAGE_EFFECT_MENU_SECTIONS = (
+    # Lattice also lives in Deform (Mesh): reshaping the picture is a canvas
+    # job as much as a mesh one, so it sits next to Crop and Extend.
     ("Canvas", "FULLSCREEN_ENTER", (
-        FBP_EFFECT_CROP, FBP_EFFECT_EXTEND,
+        FBP_EFFECT_CROP, FBP_EFFECT_EXTEND, FBP_EFFECT_LATTICE,
     )),
     ("Color", "COLOR", (
         FBP_EFFECT_HUE_SATURATION, FBP_EFFECT_WHITE_BALANCE, "FAMILY:COLORIZE",
