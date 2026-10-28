@@ -1276,7 +1276,12 @@ def fbp_remove_plane_datablock(plane, *, pending_materials=None):
             return False
         mesh = getattr(plane, 'data', None)
         mats_to_remove = [mat for mat in mesh.materials if mat] if mesh else []
-        for child in tuple(getattr(plane, 'children', ()) or ()):
+        # Viewport handles follow the plane through a constraint, not as children.
+        followers = tuple(
+            obj for obj in bpy.data.objects
+            if obj.get('fbp_follow_plane') == plane.name and obj.parent is None
+        )
+        for child in tuple(getattr(plane, 'children', ()) or ()) + followers:
             try:
                 is_control = bool(child.get('fbp_is_effect_control', False))
                 is_bounds_guide = bool(child.get('fbp_is_crop_extend_bounds_guide', False))

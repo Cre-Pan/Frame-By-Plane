@@ -25,6 +25,13 @@ All notable public changes to Frame By Plane are documented here.
 - **Grid** gains **Point Handles**: one handle per cage point that you can move and keyframe without entering the cage's Edit Mode (cages of up to 100 points).
 - **Pins** gain **Bend** pins, which stay in place and only rotate or scale their area, and a per-pin **Stiff Area** that keeps the area around a pin rigid.
 
+### Viewport controls
+
+- The handles of Crop, Extend and every effect with viewport controls (Swirl, Gradient Mask, Tilt Shift, Directional Blur, Pixelate, Shadow, Wind and the others), and the bounds handles of Shape Masks, are redrawn in one minimal style: thin flat bars, L corners, rings, crosses and arrows in a single orange, lighter while selected.
+- Handles are always drawn in front, in every shading mode. In Material Preview and Rendered the solid Crop and Extend bars used to sink behind the image.
+- No more dashed relationship lines: handles follow their plane through a collapsed Child Of constraint instead of a parent. Files saved with the old handles are converted when the handles are next shown.
+- Handles lie on the plane's real edges: they turn with a tilted layer and bend with it when the Lattice effect deforms it (Grid, Corner Pin, Bones, Pins, Camera), so Crop corners stay on the deformed corners.
+
 ### Z Pie and tooltips
 
 - Z Pie: Hide, Solo and Holdout sit on the first south row; a second row adds Show Overlays (always) and Show Onion Skin (inside a Grease Pencil object). Lock and Selectability appear only while a Frame By Plane layer is selected, or one is still locked from the Pie. Cursor on Camera is an icon-only camera button.

@@ -8,6 +8,7 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.1.0 turns the Lattice into a puppet 
 - 📌 **Puppet Pins:** click on the layer to place pins, move or rotate them and the drawing bends around them while the other pins hold. **Bend** pins only rotate or scale their area, and **Stiff Area** keeps a region rigid. Pins use native Hooks with weights that follow the drawing.
 - 🦴 **Bones:** click joints on the layer to build chains, with an IK handle at the end of each chain. A native Armature deforms the cage, so it keys, saves and renders like any rig.
 - ◰ **Corner Pin:** four corner handles map the layer onto any quad with true perspective. **Grid** gains **Point Handles** you can move and key without entering Edit Mode.
+- 🎯 **Minimal viewport controls:** the handles of Crop, Extend, Shape Masks and every effect with viewport controls are thin, single-colour shapes, always drawn in front in every shading mode, with no relationship lines. They follow a tilted layer and bend with the Lattice deformation.
 - 🎨 **Every effect has an icon** in the add menus, the effect stack and the pie menu. The Image, Mask and Mesh add menus are reordered into coherent sections.
 - 🟩 **Color Key** now includes everything Chroma Key did, with a new **Despill** and the Green Screen and Blue Screen presets. Files that use Chroma Key are converted automatically.
 - 🖨️ **Riso Print:** **Drift Angle**, **Print Rotation**, a real **Seed** and **Animate** with Speed and Stepped.

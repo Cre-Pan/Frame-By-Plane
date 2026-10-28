@@ -41,6 +41,13 @@ from .runtime import (
     fbp_add_transform_driver_variable as _add_transform_driver_variable
 )
 from .transactions import FBPTransaction
+from .viewport_handles import (
+    attach_to_plane,
+    attached_plane,
+    is_attached_to,
+    mark_overlay_handle,
+    plane_followers,
+)
 
 FBP_OBJECT_MASK_SCHEMA_VERSION = 7
 FBP_OBJECT_MASK_SHAPES = frozenset({"SQUARE", "CIRCLE", "TRIANGLE"})
@@ -397,7 +404,7 @@ def find_object_mask_controller_owner(obj):
     if not is_object_mask_bounds_handle(obj):
         return None
     try:
-        plane = getattr(obj, "parent", None)
+        plane = attached_plane(obj)
         owner = getattr(plane, "parent", None) if plane else None
         if owner and bool(getattr(owner, "is_fbp_control", False)):
             return owner
@@ -550,7 +557,7 @@ def _helper_is_direct_plane_child(helper, owner, shape):
     contract = object_mask_contract(helper) or {}
     try:
         return bool(
-            getattr(helper, "parent", None) is plane
+            attached_plane(helper) is plane
             and contract.get("shape") == normalize_object_mask_shape(shape)
         )
     except FBP_DATA_ERRORS:
@@ -628,7 +635,7 @@ def find_object_mask_helper(owner, shape):
 
     plane = getattr(owner, "fbp_plane_target", None)
     try:
-        candidates = tuple(getattr(plane, "children", ()) or ()) if plane else ()
+        candidates = plane_followers(plane) if plane else ()
     except FBP_DATA_ERRORS:
         candidates = ()
 
@@ -825,11 +832,11 @@ def object_mask_bounds_handles(helper):
     if not is_object_mask_helper(helper):
         return ()
     owner = find_object_mask_owner(helper)
-    plane = getattr(owner, "fbp_plane_target", None) if owner else getattr(helper, "parent", None)
+    plane = getattr(owner, "fbp_plane_target", None) if owner else attached_plane(helper)
     shape = object_mask_controller_shape(helper)
     owner_id = ensure_object_mask_owner_id(owner) if owner else ""
     result = []
-    for candidate in tuple(getattr(plane, "children", ()) or ()):
+    for candidate in plane_followers(plane):
         try:
             if (
                 is_object_mask_bounds_handle(candidate)
@@ -912,7 +919,7 @@ def _object_mask_bounds_handles_need_repair(helper, owner=None):
     shape = object_mask_controller_shape(helper)
     handles = []
     try:
-        for candidate in tuple(getattr(plane, "children", ()) or ()):
+        for candidate in plane_followers(plane):
             if (
                 is_object_mask_bounds_handle(candidate)
                 and str(candidate.get(KEY_OWNER_ID, "") or "") == owner_id
@@ -946,9 +953,9 @@ def _object_mask_bounds_handles_need_repair(helper, owner=None):
     for role, handle in by_role.items():
         mesh = getattr(handle, "data", None)
         size = _object_mask_handle_size(owner, role)
-        mesh_signature = f"shape_mask_bounds_v2:{role}:{size:.6f}"
+        mesh_signature = f"shape_mask_bounds_v3:{role}:{size:.6f}"
         try:
-            if getattr(handle, "parent", None) is not plane:
+            if not is_attached_to(handle, plane):
                 return True
             expected_props = (
                 (KEY_IS_BOUNDS_HANDLE, True),
@@ -996,7 +1003,7 @@ def _configure_object_mask_handle(handle, helper, owner, role):
     shape = object_mask_controller_shape(helper)
     owner_id = ensure_object_mask_owner_id(owner)
     size = _object_mask_handle_size(owner, role)
-    signature = f"shape_mask_bounds_v1:{role}:{size:.6f}"
+    signature = f"shape_mask_bounds_v3:{role}:{size:.6f}"
     changed = False
     mesh = getattr(handle, "data", None)
     plane = getattr(owner, "fbp_plane_target", None)
@@ -1011,10 +1018,12 @@ def _configure_object_mask_handle(handle, helper, owner, role):
             (KEY_OWNER_NAME, owner.name),
         ):
             changed = _set_object_mask_id_property(handle, key, value) or changed
-        if plane is not None and getattr(handle, "parent", None) is not plane:
-            handle.parent = plane
-            handle.matrix_parent_inverse = Matrix.Identity(4)
-            changed = True
+        if plane is not None and not is_attached_to(handle, plane):
+            # A collapsed Child Of follows the plane without a relationship line.
+            changed = attach_to_plane(handle, plane) or changed
+        # No Lattice deformation here: the mask itself is not bent by the
+        # Lattice, so its cage and handles show where it really cuts.
+        changed = mark_overlay_handle(handle) or changed
         if mesh is not None and str(mesh.get("fbp_object_mask_handle_mesh", "") or "") != signature:
             verts, faces = bounds_handle_geometry(size, role)
             mesh.clear_geometry()
@@ -1067,8 +1076,7 @@ def ensure_object_mask_bounds_handles(helper, *, select=False, context=None):
                 mesh,
             )
             _link_helper(handle, plane, context=context)
-            handle.parent = plane
-            handle.matrix_parent_inverse = Matrix.Identity(4)
+            attach_to_plane(handle, plane)
         _configure_object_mask_handle(handle, helper, owner, role)
         handles.append(handle)
     for duplicate in existing.values():
@@ -1096,6 +1104,29 @@ def _object_mask_handle_target(helper, role):
         float(helper.location.x) + scaled_x * cos_angle - scaled_y * sin_angle,
         float(helper.location.y) + scaled_x * sin_angle + scaled_y * cos_angle,
     )
+
+
+def iter_visible_object_mask_handles(context=None):
+    """Visible Shape Mask bounds handles, for the always-in-front overlay."""
+    del context
+    planes = {}
+    for record in tuple(_HELPER_REGISTRY.values()):
+        helper = _resolve_object_record(record)
+        plane = attached_plane(helper) if is_object_mask_helper(helper) else None
+        if plane is not None:
+            planes[plane.as_pointer()] = plane
+    # Read-only: this runs while the viewport draws.
+    for plane in planes.values():
+        for handle in plane_followers(plane):
+            try:
+                if (
+                    is_object_mask_bounds_handle(handle)
+                    and handle.type == "MESH"
+                    and handle.visible_get()
+                ):
+                    yield handle
+            except FBP_DATA_ERRORS:
+                continue
 
 
 def sync_object_mask_bounds_handles(helper, *, handles=None):
@@ -1477,8 +1508,7 @@ def create_object_mask_helper(owner, shape, context=None, *, select=True):
             )
             transaction.checkpoint("LINK_HELPER")
             _link_helper(helper, plane, context=context)
-            helper.parent = plane
-            helper.matrix_parent_inverse = Matrix.Identity(4)
+            attach_to_plane(helper, plane)
             min_x, max_x, min_y, max_y = bounds
             center_x = (min_x + max_x) * 0.5
             center_y = (min_y + max_y) * 0.5
@@ -2818,6 +2848,9 @@ def object_mask_runtime_timer():
 
             if maintenance_due:
                 _ensure_helper_wire_topology(helper)
+                if plane is not None and not is_attached_to(helper, plane):
+                    # Follow the plane without a relationship line.
+                    attach_to_plane(helper, plane)
                 if owner is not None and _object_mask_bounds_handles_need_repair(helper, owner):
                     ensure_object_mask_bounds_handles(helper)
             if _helper_runtime_sync_needed(pointer, helper, owner):
@@ -3045,7 +3078,7 @@ def audit_object_masks(rigs, *, repair=False, context=None):
 
     def _direct_owner(helper):
         try:
-            plane = getattr(helper, "parent", None)
+            plane = attached_plane(helper)
             owner = getattr(plane, "parent", None) if plane else None
             if (
                 owner
@@ -3166,15 +3199,13 @@ def audit_object_masks(rigs, *, repair=False, context=None):
             plane = getattr(owner, "fbp_plane_target", None)
             if plane is None:
                 issues.append(f"{helper_name}: owner {owner_name} has no linked plane")
-            elif getattr(helper, "parent", None) is not plane:
-                issues.append(f"{helper_name}: helper is not parented to {owner_name}'s plane")
+            elif not is_attached_to(helper, plane):
+                issues.append(f"{helper_name}: helper does not follow {owner_name}'s plane")
                 if repair:
                     try:
-                        world_matrix = helper.matrix_world.copy()
-                        helper.parent = plane
-                        helper.matrix_parent_inverse = plane.matrix_world.inverted_safe()
-                        helper.matrix_world = world_matrix
-                        stats["mask_repairs"] += 1
+                        # Keeps the world placement of a helper parented elsewhere.
+                        if attach_to_plane(helper, plane):
+                            stats["mask_repairs"] += 1
                     except FBP_DATA_ERRORS:
                         pass
 

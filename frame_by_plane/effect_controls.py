@@ -1,10 +1,13 @@
 """Viewport controls for spatial Frame By Plane effect parameters.
 
-The controls are lightweight Empty objects parented to the generated plane.
-They are shown only for the active effect, never render, and map their local
-transform back to normalized UV or directional effect properties.  The actual
-effect properties remain the source of truth, so deleting a helper never damages
-an effect and it can be recreated on selection.
+The controls are small flat meshes that follow the generated plane through a
+collapsed Child Of constraint (no relationship line) and, when the Lattice
+effect bends the plane, through the same Lattice deformation. They are shown
+only for the active effect, never render, are drawn on top of everything by
+``handle_overlay``, and map their plane-local transform back to normalized UV
+or directional effect properties.  The actual effect properties remain the
+source of truth, so deleting a helper never damages an effect and it can be
+recreated on selection.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import time
 import bpy
 from bpy.props import StringProperty
 from bpy.types import Operator
-from mathutils import Matrix, Vector
+from mathutils import Vector
 
 from .diagnostics import write_diagnostic_report
 from .registration import register_classes, remove_handlers_by_name, unregister_classes
@@ -39,13 +42,24 @@ from .runtime import (
     fbp_warn,
 )
 from .viewport_handles import (
-    append_rect_geometry,
+    angle_handle_geometry,
+    attach_to_plane,
+    attached_plane,
     bounds_handle_geometry,
+    direction_handle_geometry,
     ensure_viewport_handle_material,
+    is_attached_to,
+    mark_overlay_handle,
+    offset_handle_geometry,
+    point_handle_geometry,
+    range_bar_geometry,
+    range_center_geometry,
+    sync_lattice_follow,
+    vector_handle_geometry,
 )
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 KEY_IS_CONTROL = "fbp_is_effect_control"
 KEY_SCHEMA = "fbp_effect_control_schema"
 KEY_EFFECT_ID = "fbp_effect_control_effect"
@@ -71,6 +85,7 @@ _LAST_SELECTION_SIGNATURE = None
 _LAST_SELECTION_CHECK_TIME = 0.0
 _LAST_SELECTION_CONTEXT_MODE = str(globals().get("_LAST_SELECTION_CONTEXT_MODE", "") or "")
 _DEPSGRAPH_SUPPORT_APIS = None
+_LAST_CANDIDATE_SCAN = ((0, 0), 0.0)
 
 
 def _depsgraph_support_apis():
@@ -331,7 +346,7 @@ def effect_control_owner(obj):
     try:
         pointer = int(fbp_obj_runtime_key(obj) or 0)
         owner_name = str(obj.get(KEY_OWNER_NAME, "") or "")
-        plane = getattr(obj, "parent", None)
+        plane = attached_plane(obj)
         plane_name = str(getattr(plane, "name", "") or "") if plane else ""
 
         # Current controls have a canonical control -> plane -> rig chain.
@@ -449,45 +464,69 @@ def _helper_matches(obj, rig, effect_id, role):
 
 
 def _candidate_effect_controls(rig, *, include_cached=False):
-    """Yield canonical plane children, with an optional orphan-repair fallback.
+    """Yield a rig's controls from the name cache, with a file-scan fallback.
 
-    Normal refreshes only inspect the owning plane's children. Walking the
-    process-wide name cache for every role made multi-layer controller sync scale
-    with every helper in the file. The cache fallback is reserved for missing or
-    stale contracts, where the extra scan is useful and infrequent.
+    Controls follow their plane through a constraint, so ``plane.children``
+    only still lists controls saved by older versions (they are migrated on
+    their next sync). The name cache is the hot path. ``include_cached`` is
+    used for missing or stale contracts; it also scans the file, at most once
+    per second while the object count is unchanged, which picks up controls
+    after a reload or when a file is opened.
     """
-    seen = set()
-    plane = getattr(rig, "fbp_plane_target", None) if rig else None
-    try:
-        children = tuple(getattr(plane, "children", ()) or ())
-    except FBP_DATA_ERRORS:
-        children = ()
-    for obj in children:
-        try:
-            pointer = int(fbp_obj_runtime_key(obj) or 0)
-        except FBP_DATA_ERRORS:
-            continue
-        if pointer in seen or not is_effect_control(obj):
-            continue
-        seen.add(pointer)
-        yield obj
-    if not include_cached:
+    global _LAST_CANDIDATE_SCAN
+    if rig is None:
         return
+    seen = set()
+    plane = getattr(rig, "fbp_plane_target", None)
+    try:
+        legacy_children = tuple(getattr(plane, "children", ()) or ())
+    except FBP_DATA_ERRORS:
+        legacy_children = ()
+    cached = []
     for name in tuple(_CONTROL_NAMES):
         obj = bpy.data.objects.get(name)
         if obj is None:
             _CONTROL_NAMES.discard(name)
             continue
+        cached.append(obj)
+    for obj in legacy_children + tuple(cached):
         try:
             pointer = int(fbp_obj_runtime_key(obj) or 0)
         except FBP_DATA_ERRORS:
             continue
         if pointer in seen or not is_effect_control(obj):
             continue
-        if effect_control_owner(obj) is not rig:
+        seen.add(pointer)
+        if effect_control_owner(obj) is rig:
+            yield obj
+    if not include_cached:
+        return
+    try:
+        objects = bpy.data.objects
+        signature = (len(objects), int(fbp_obj_runtime_key(rig) or 0))
+        now = time.monotonic()
+    except FBP_DATA_ERRORS:
+        return
+    last_signature, last_time = _LAST_CANDIDATE_SCAN
+    if last_signature == signature and now - last_time < 1.0:
+        return
+    _LAST_CANDIDATE_SCAN = (signature, now)
+    for obj in tuple(objects):
+        try:
+            pointer = int(fbp_obj_runtime_key(obj) or 0)
+        except FBP_DATA_ERRORS:
+            continue
+        if pointer in seen or not is_effect_control(obj):
             continue
         seen.add(pointer)
-        yield obj
+        _CONTROL_NAMES.add(obj.name)
+        if effect_control_owner(obj) is rig:
+            yield obj
+
+
+def rig_effect_controls(rig):
+    """Every viewport control of one layer."""
+    return tuple(_candidate_effect_controls(rig, include_cached=True))
 
 
 def find_effect_control(rig, effect_id, role):
@@ -627,43 +666,48 @@ def _is_range_handle_mode(mode):
 
 
 def _uses_control_mesh(mode):
-    return _is_crop_extend_mode(mode) or _is_range_handle_mode(mode)
+    """Every control is a flat handle mesh (files before 8.1 used Empties)."""
+    del mode
+    return True
 
 
-def _crop_extend_handle_mesh_signature(rig, role):
-    size = _control_display_size(rig, "CROP_EXTEND", role)
-    return f"crop_extend_handle_v3:{str(role or '').upper()}:{size:.6f}"
-
-
-def _crop_extend_handle_geometry(rig, role, *, size=None):
-    """Return flat mesh geometry for Crop/Extend side and corner handles."""
-    size = _control_display_size(rig, "CROP_EXTEND", role) if size is None else float(size)
-    return bounds_handle_geometry(size, role)
-
-
-def _range_handle_mesh_signature(rig, mode, role, *, size=None, reference=None):
-    size = _control_display_size(rig, mode, role) if size is None else float(size)
-    reference = _range_reference_length(rig) if reference is None else float(reference)
-    return f"range_handle_v1:{str(mode or '').upper()}:{str(role or '').upper()}:{size:.6f}:{reference:.6f}"
-
-
-def _range_handle_geometry(rig, mode, role, *, size=None, reference=None):
-    """Return flat bar geometry for paired gradient/tilt viewport controls."""
+def _control_mesh_signature(rig, mode, role, spec=None):
+    mode = str(mode or "").upper()
     role = str(role or "").upper()
-    size = _control_display_size(rig, mode, role) if size is None else float(size)
-    reference = _range_reference_length(rig) if reference is None else float(reference)
-    thickness = max(size * 0.24, 0.0035)
-    verts = []
-    faces = []
+    size = _control_display_size(rig, mode, role)
+    extra = ""
+    if mode == "RANGE_CENTER":
+        extra = f":{_range_reference_length(rig):.6f}"
+    elif mode in {"POINT", "OFFSET"} and spec and spec.get("angle"):
+        extra = ":angle"
+    return f"fbp_handle_v4:{mode}:{role}:{size:.6f}{extra}"
 
-    if role == "CENTER":
-        # The X-scaled center helper is both a movable midpoint and a visible
-        # connector between the IN/OUT bars, matching Crop/Extend's flat UI.
-        append_rect_geometry(verts, faces, 0.0, 0.0, reference, thickness)
-        append_rect_geometry(verts, faces, 0.0, 0.0, size * 0.72, size * 0.72)
-    else:
-        append_rect_geometry(verts, faces, 0.0, 0.0, thickness, max(size * 2.8, thickness * 3.0))
-    return verts, faces
+
+def _control_mesh_geometry(rig, mode, role, spec=None):
+    """Return the flat, plane-local mesh of one control.
+
+    Shapes are deliberately thin and single-coloured: bars and L corners for
+    bounds, a ring for centres, a cross for offsets and arrows for angles.
+    """
+    mode = str(mode or "").upper()
+    role = str(role or "").upper()
+    size = _control_display_size(rig, mode, role)
+    with_angle = bool(spec and spec.get("angle"))
+    if _is_crop_extend_mode(mode):
+        return bounds_handle_geometry(size, role)
+    if mode == "RANGE_CENTER":
+        return range_center_geometry(size, _range_reference_length(rig))
+    if mode in {"GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE", "TILT_RANGE"}:
+        return range_bar_geometry(size)
+    if mode == "OFFSET":
+        return offset_handle_geometry(size, with_angle=with_angle)
+    if mode == "DIRECTION":
+        return direction_handle_geometry(size)
+    if mode == "ANGLE":
+        return angle_handle_geometry(size)
+    if mode == "VECTOR_DIRECTION":
+        return vector_handle_geometry(size)
+    return point_handle_geometry(size, with_angle=with_angle)
 
 
 def _remove_control_object(control):
@@ -697,31 +741,27 @@ def _remove_control_object(control):
         return False
 
 
-def _ensure_control_handle_mesh(control, rig, mode, role):
+def _control_spec(effect_id, role):
+    role = str(role or "").upper()
+    return next(
+        (
+            item for item in CONTROL_SPECS.get(str(effect_id or "").upper(), ())
+            if str(item.get("role", "") or "").upper() == role
+        ),
+        None,
+    )
+
+
+def _ensure_control_handle_mesh(control, rig, mode, role, spec=None):
     if control is None or getattr(control, "type", "") != "MESH":
         return False
-    if _is_crop_extend_mode(mode):
-        size = _control_display_size(rig, mode, role)
-        signature = f"crop_extend_handle_v3:{str(role or '').upper()}:{size:.6f}"
-        verts, faces = _crop_extend_handle_geometry(rig, role, size=size)
-        label = "Crop/Extend"
-    elif _is_range_handle_mode(mode):
-        size = _control_display_size(rig, mode, role)
-        reference = _range_reference_length(rig)
-        signature = _range_handle_mesh_signature(
-            rig, mode, role, size=size, reference=reference
-        )
-        verts, faces = _range_handle_geometry(
-            rig, mode, role, size=size, reference=reference
-        )
-        label = "Gradient range"
-    else:
-        return False
+    signature = _control_mesh_signature(rig, mode, role, spec)
     try:
         if str(control.get(KEY_CONTROL_MESH_SIGNATURE, "") or "") == signature and getattr(control, "data", None):
             return False
     except FBP_DATA_ERRORS:
         pass
+    verts, faces = _control_mesh_geometry(rig, mode, role, spec)
     mesh = getattr(control, "data", None)
     if mesh is None:
         mesh = bpy.data.meshes.new(f"FBP Control Mesh • {role}")
@@ -738,42 +778,23 @@ def _ensure_control_handle_mesh(control, rig, mode, role):
         control[KEY_CONTROL_MESH_SIGNATURE] = signature
         return True
     except (ReferenceError, RuntimeError, TypeError, ValueError) as exc:
-        fbp_warn(f"Could not rebuild {label} viewport handle mesh", exc)
+        fbp_warn("Could not rebuild viewport handle mesh", exc)
         return False
 
 
-def _control_display_type(mode):
-    mode = str(mode or "").upper()
-    if mode in {"DIRECTION", "ANGLE", "VECTOR_DIRECTION"}:
-        return "SINGLE_ARROW"
-    if mode in {"RANGE_CENTER", "CROP_EXTEND"}:
-        return "CUBE"
-    return "CIRCLE"
-
-
 def _control_base_rotation(mode):
-    """Return the Empty display correction for one control shape.
+    """Handle meshes are authored in the plane's XY space: no correction.
 
-    Effect helpers are parented to the render plane and use plane-local space.
-    In Blender 5.2 the visual CIRCLE empty is authored on a different local
-    drawing plane than the generated image mesh, so a neutral rotation can make
-    Pixelate/point helpers stand upright and appear as a line from camera view.
-    A +90° X correction lays circular helpers directly on the image plane.
-
-    SINGLE_ARROW helpers used as 2D angle controls need a different correction:
-    +90° Y lays the arrow on the image-plane X axis, keeping angle 0 visibly
-    pointing right and aligned with UV rotation. Wind's VECTOR_DIRECTION is 3D:
-    neutral rotation keeps the arrow on the plane local Z axis, crossing the
-    plane by default.
+    Files before 8.1 used Empties that needed a +90° X (circles) or +90° Y
+    (arrows) correction; ensuring a control resets it to zero.
     """
-    mode = str(mode or "").upper()
-    if mode == "VECTOR_DIRECTION":
-        return (0.0, 0.0)
-    if mode in {"DIRECTION", "ANGLE"}:
-        return (0.0, math.pi * 0.5)
-    if mode in {"RANGE_CENTER", "CROP_EXTEND"}:
-        return (0.0, 0.0)
-    return (math.pi * 0.5, 0.0)
+    del mode
+    return (0.0, 0.0)
+
+
+def _control_follows_lattice(mode):
+    # The Wind arrow is a 3D direction, not a point on the drawing.
+    return str(mode or "").upper() != "VECTOR_DIRECTION"
 
 
 def _control_depth(rig):
@@ -784,37 +805,18 @@ def _control_depth(rig):
 
 
 def _control_display_size(rig, mode="", role=""):
+    """Handle size: a small fraction of the plane's shorter side."""
+    del mode, role
     _plane, bounds, _uv_bounds = _plane_and_mapping(rig)
     width = max(abs(bounds[1] - bounds[0]), 1.0e-6)
     height = max(abs(bounds[3] - bounds[2]), 1.0e-6)
-    size = max(0.035, min(0.32, min(width, height) * 0.075))
-    if str(mode or "").upper() in {"DIRECTION", "ANGLE", "VECTOR_DIRECTION"}:
-        size *= 1.25
-    elif str(mode or "").upper() == "CROP_EXTEND":
-        size *= 0.62 if "_" in str(role or "") else 0.78
-    elif str(mode or "").upper() == "RANGE_CENTER":
-        size *= 0.72
-    elif str(role or "").upper() in {"IN", "OUT"}:
-        size *= 0.88
-    return size
+    return max(0.02, min(0.3, min(width, height) * 0.06))
 
 
 def _control_color(role, mode):
-    role = str(role or "").upper()
-    mode = str(mode or "").upper()
-    if mode == "CROP_EXTEND":
-        return (1.0, 0.55, 0.05, 1.0)
-    if role == "OUT":
-        return (1.0, 0.32, 0.08, 1.0)
-    if role == "IN":
-        return (0.12, 0.48, 1.0, 1.0)
-    if role == "CENTER" and mode == "RANGE_CENTER":
-        return (1.0, 0.78, 0.12, 1.0)
-    if mode in {"DIRECTION", "ANGLE", "VECTOR_DIRECTION"}:
-        return (0.18, 0.85, 0.35, 1.0)
-    if mode == "OFFSET":
-        return (0.80, 0.28, 1.0, 1.0)
-    return (0.12, 0.62, 1.0, 1.0)
+    """Object colour, used by Solid shading's Object colour mode."""
+    del role, mode
+    return (1.0, 0.55, 0.05, 1.0)
 
 
 def ensure_effect_control(rig, effect_id, spec, *, select=False):
@@ -838,9 +840,9 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
         except FBP_DATA_ERRORS:
             control = None
 
-    # Crop/Extend and paired range controls require flat mesh shapes. Replace
-    # an invalid non-mesh helper with a stable bar handle.
-    if control is not None and _uses_control_mesh(mode) and getattr(control, "type", "") != "MESH":
+    # Every control is a flat handle mesh. Replace an Empty from an older file;
+    # its values come back from the effect properties on the next sync.
+    if control is not None and getattr(control, "type", "") != "MESH":
         try:
             _remove_control_object(control)
         except FBP_DATA_ERRORS:
@@ -850,23 +852,17 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
     created = control is None
     needs_contract_repair = created
     if created:
-        data = bpy.data.meshes.new(f"FBP Control Mesh • {role}") if _uses_control_mesh(mode) else None
+        data = bpy.data.meshes.new(f"FBP Control Mesh • {role}")
         control = bpy.data.objects.new(_control_name(rig, effect_id, role), data)
         _link_control(control, plane)
-        control.parent = plane
-        control.matrix_parent_inverse = Matrix.Identity(4)
-        base_x, base_y = _control_base_rotation(mode)
         control.location = (0.0, 0.0, _control_depth(rig))
         control.rotation_mode = "XYZ"
-        control.rotation_euler = (base_x, base_y, 0.0)
+        control.rotation_euler = (0.0, 0.0, 0.0)
         control.scale = (1.0, 1.0, 1.0)
-        if _uses_control_mesh(mode):
-            control.display_type = "SOLID"
-            if _is_crop_extend_mode(mode):
-                _apply_crop_extend_transform_limits(control, rig, effect_id, role)
-        else:
-            control.empty_display_type = _control_display_type(mode)
-            control.empty_display_size = _control_display_size(rig, mode, role)
+        control.display_type = "SOLID"
+        if _is_crop_extend_mode(mode):
+            _apply_crop_extend_transform_limits(control, rig, effect_id, role)
+        attach_to_plane(control, plane)
         control.show_in_front = True
         control.hide_render = True
         control.color = _control_color(role, mode)
@@ -885,7 +881,7 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
             needs_contract_repair = bool(
                 previous_owner != str(rig.name)
                 or previous_schema != SCHEMA_VERSION
-                or getattr(control, "parent", None) is not plane
+                or not is_attached_to(control, plane)
             )
             if previous_owner != str(rig.name):
                 control[KEY_OWNER_NAME] = rig.name
@@ -897,19 +893,10 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
                 control[KEY_ROLE] = role
             if str(control.get(KEY_MODE, "") or "") != mode:
                 control[KEY_MODE] = mode
-            if getattr(control, "parent", None) is not plane:
-                control.parent = plane
-                control.matrix_parent_inverse = Matrix.Identity(4)
-            else:
-                # Controls use plane-local XY space. Keeping a neutral parent
-                # inverse makes circles and arrows inherit the complete rig/plane
-                # orientation instead of remaining horizontal in world space.
-                identity = Matrix.Identity(4)
-                try:
-                    if not control.matrix_parent_inverse.is_identity:
-                        control.matrix_parent_inverse = identity
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                    pass
+            # Controls use plane-local XY space through a collapsed Child Of:
+            # a parent would draw a relationship line to the plane origin.
+            if needs_contract_repair:
+                attach_to_plane(control, plane)
         except FBP_DATA_ERRORS:
             pass
 
@@ -944,16 +931,16 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
                 control.rotation_euler.x = target_rotation_x
             if abs(float(control.rotation_euler.y) - target_rotation_y) > 1.0e-7:
                 control.rotation_euler.y = target_rotation_y
-        if _uses_control_mesh(mode):
-            if str(getattr(control, "display_type", "") or "") != "SOLID":
-                control.display_type = "SOLID"
-            _ensure_control_handle_mesh(control, rig, mode, role)
-            if _is_crop_extend_mode(mode):
-                _apply_crop_extend_transform_limits(control, rig, effect_id, role)
-        else:
-            target_display = _control_display_type(mode)
-            if str(getattr(control, "empty_display_type", "") or "") != target_display:
-                control.empty_display_type = target_display
+        if str(getattr(control, "display_type", "") or "") != "SOLID":
+            control.display_type = "SOLID"
+        _ensure_control_handle_mesh(control, rig, mode, role, spec)
+        if _is_crop_extend_mode(mode):
+            _apply_crop_extend_transform_limits(control, rig, effect_id, role)
+            # Keep the plane binding after the limit, which works in plane space.
+            if needs_contract_repair:
+                attach_to_plane(control, plane)
+        sync_lattice_follow(control, plane, enabled=_control_follows_lattice(mode))
+        mark_overlay_handle(control)
         target_color = _control_color(role, mode)
         if tuple(round(float(value), 5) for value in control.color) != tuple(round(value, 5) for value in target_color):
             control.color = target_color
@@ -966,16 +953,21 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
     except FBP_DATA_ERRORS:
         pass
     _configure_locks(control, mode, spec)
-    if not _uses_control_mesh(mode):
-        try:
-            target_size = _control_display_size(rig, mode, role)
-            if abs(float(control.empty_display_size) - target_size) > 1.0e-6:
-                control.empty_display_size = target_size
-        except FBP_DATA_ERRORS:
-            pass
     if select:
         _select_control_preserving_layer(bpy.context, rig, control)
     return control
+
+
+def _control_needs_migration(control):
+    """True for controls saved by an older version (Empty or parented)."""
+    try:
+        return bool(
+            int(control.get(KEY_SCHEMA, 0) or 0) != SCHEMA_VERSION
+            or getattr(control, "type", "") != "MESH"
+            or getattr(control, "parent", None) is not None
+        )
+    except FBP_DATA_ERRORS:
+        return False
 
 
 def _focus_effect_row_for_control(rig, effect_id):
@@ -1593,6 +1585,8 @@ def _apply_crop_extend_transform_limits(
         if constraint is None:
             constraint = control.constraints.new(type="LIMIT_LOCATION")
             constraint.name = CROP_CLAMP_CONSTRAINT
+            # The limits are plane-local: evaluate them before the plane binding.
+            control.constraints.move(len(control.constraints) - 1, 0)
             changed = True
         if effect_id == "EXTEND":
             min_x, max_x, min_y, max_y = _extend_clamp_limits_for_role(
@@ -1748,13 +1742,25 @@ def sync_controls_from_properties(rig, effect_id, *, create=False):
     controls = {}
     crop_extend_state = _crop_extend_bounds(rig) if effect_id in {"CROP", "EXTEND"} else None
     crop_extend_depth = _control_depth(rig) if crop_extend_state is not None else None
+    plane = getattr(rig, "fbp_plane_target", None)
     for spec in specs:
         role = str(spec.get("role", "CONTROL") or "CONTROL").upper()
         control = find_effect_control(rig, effect_id, role)
+        if control is not None and _control_needs_migration(control):
+            if create:
+                control = ensure_effect_control(rig, effect_id, spec)
+            elif plane is not None:
+                # No new objects outside an operator: only drop the parent line.
+                attach_to_plane(control, plane)
         if control is None and create:
             control = ensure_effect_control(rig, effect_id, spec)
         if control is not None:
             controls[role] = control
+            if plane is not None:
+                mode = str(spec.get("mode", "POINT") or "POINT").upper()
+                changed = sync_lattice_follow(
+                    control, plane, enabled=_control_follows_lattice(mode)
+                ) or changed
 
     for spec in specs:
         role = str(spec.get("role", "CONTROL") or "CONTROL").upper()
@@ -2436,7 +2442,10 @@ def cleanup_orphan_effect_controls(scene):
             continue
         keep = False
         try:
-            plane = getattr(control, "parent", None)
+            plane = (
+                attached_plane(control) if is_effect_control(control)
+                else getattr(control, "parent", None)
+            )
             rig = effect_control_owner(control) if is_effect_control(control) else _guide_owner(control)
             keep = bool(
                 plane
@@ -2586,6 +2595,16 @@ def _iter_all_effect_controls(context=None):
         yield obj
     if not found_control and not _CONTROL_NAMES:
         _LAST_CONTROL_EMPTY_SCAN_TIME = now
+
+
+def iter_visible_effect_controls(context=None):
+    """Visible handle meshes, for the always-in-front overlay."""
+    for control in _iter_all_effect_controls(context):
+        try:
+            if control.type == "MESH" and control.visible_get():
+                yield control
+        except FBP_DATA_ERRORS:
+            continue
 
 
 def _object_is_selected_or_active(obj, context=None):
@@ -2889,14 +2908,7 @@ def sync_global_controller_visibility(context=None):
     return changed
 
 def hide_rig_effect_controls(rig, except_effect_id=""):
-    plane = getattr(rig, "fbp_plane_target", None) if rig else None
-    try:
-        children = tuple(getattr(plane, "children", ()) or ())
-    except FBP_DATA_ERRORS:
-        children = ()
-    for child in children:
-        if not is_effect_control(child):
-            continue
+    for child in tuple(_candidate_effect_controls(rig)):
         show = bool(except_effect_id and str(child.get(KEY_EFFECT_ID, "") or "") == except_effect_id)
         _set_control_visibility(child, show)
 
@@ -3362,24 +3374,15 @@ def effect_controls_depsgraph_update(scene, depsgraph, *, updates=None):
 
 
 def _control_shape_is_stale(control, owner, expected_mode, role):
-    expected_mode = str(expected_mode or "").upper()
-    if _uses_control_mesh(expected_mode):
-        try:
-            expected_signature = (
-                _crop_extend_handle_mesh_signature(owner, role)
-                if _is_crop_extend_mode(expected_mode)
-                else _range_handle_mesh_signature(owner, expected_mode, role)
-            )
-            return bool(
-                getattr(control, "type", "") != "MESH"
-                or str(control.get(KEY_CONTROL_MESH_SIGNATURE, "") or "") != expected_signature
-            )
-        except FBP_DATA_ERRORS:
-            return True
-    return bool(
-        str(getattr(control, "empty_display_type", "") or "") != _control_display_type(expected_mode)
-        or abs(float(getattr(control, "empty_display_size", 0.0)) - _control_display_size(owner, expected_mode, role)) > 1.0e-5
-    )
+    try:
+        spec = _control_spec(control.get(KEY_EFFECT_ID, ""), role)
+        return bool(
+            getattr(control, "type", "") != "MESH"
+            or str(control.get(KEY_CONTROL_MESH_SIGNATURE, "") or "")
+            != _control_mesh_signature(owner, expected_mode, role, spec)
+        )
+    except FBP_DATA_ERRORS:
+        return True
 
 
 def audit_effect_controls(scene, *, repair=False, context=None):
@@ -3440,8 +3443,7 @@ def audit_effect_controls(scene, *, repair=False, context=None):
                 int(control.get(KEY_SCHEMA, 0) or 0) != SCHEMA_VERSION
                 or str(control.get(KEY_MODE, "") or "").upper() != expected_mode
                 or str(control.get(KEY_OWNER_NAME, "") or "") != str(owner.name)
-                or getattr(control, "parent", None) is not plane
-                or not bool(getattr(control, "matrix_parent_inverse", Matrix.Identity(4)).is_identity)
+                or not is_attached_to(control, plane)
                 or str(getattr(control, "rotation_mode", "") or "") != "XYZ"
                 or any(abs(float(value)) > 1.0e-8 for value in control.delta_location)
                 or any(abs(float(value)) > 1.0e-8 for value in control.delta_rotation_euler)
@@ -3826,6 +3828,8 @@ def clear_effect_controls_runtime_cache():
     global _LAST_SELECTION_CONTEXT_MODE
     global _LAST_CONTROL_FULL_SCAN_TIME, _LAST_CONTROL_EMPTY_SCAN_TIME
     global _SELECTION_VISIBILITY_EMPTY_SINCE, _SELECTION_VISIBILITY_STABLE_TICKS
+    global _LAST_CANDIDATE_SCAN
+    _LAST_CANDIDATE_SCAN = ((0, 0), 0.0)
     _CONTROL_DRIVEN_PROPS_CACHE.clear()
     _PENDING_CONTROL_SIGNATURES.clear()
     _PENDING_CONTROL_TRANSFORMS.clear()

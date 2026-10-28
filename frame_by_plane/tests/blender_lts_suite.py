@@ -2580,7 +2580,7 @@ def test_effect_controls_roundtrip(_module):
         before = {name: value(rig, name) for name in names}
         controls_module.sync_controls_from_properties(rig, effect_id, create=True)
         _flush_fbp_safe_tasks()
-        for control in rig.children_recursive:
+        for control in controls_module.rig_effect_controls(rig):
             if (
                 controls_module.is_effect_control(control)
                 and str(control.get(controls_module.KEY_EFFECT_ID, "")).upper() == effect_id
