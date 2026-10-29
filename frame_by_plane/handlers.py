@@ -1286,9 +1286,11 @@ def fbp_deferred_load_post_rebuild():
 
     try:
         from .builtin_effects import fbp_upgrade_stale_effect_groups
-        fbp_upgrade_stale_effect_groups(
+        if fbp_upgrade_stale_effect_groups(
             _effects_registry.FBP_EFFECT_REGISTRY, Path(__file__).resolve().parent / "assets",
-        )
+        ):
+            from .geometry_nodes import fbp_resync_geometry_effects
+            fbp_resync_geometry_effects()
     except (ImportError,) + FBP_DATA_ERRORS as exc:
         fbp_warn_once(
             "stale_effect_load_upgrade",

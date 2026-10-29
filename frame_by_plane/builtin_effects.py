@@ -126,6 +126,7 @@ _BUILTIN_EFFECT_CONTRACTS = {
     "FIBER_TUFTS": ("frame_by_plane.fiber_tufts", 2),
     "CROSSHATCH": ("frame_by_plane.shader.crosshatch", 2),
     "FRAME_STACK": ("frame_by_plane.frame_stack", 2),
+    "GLASS": ("frame_by_plane.broken_glass", 2),
 }
 
 # Positions per row of the Frame Stack timing table image.
@@ -300,7 +301,21 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     transform = _node(group, "GeometryNodeTransform", f"{prefix} Position Aspect Grid", x + 2660, y)
     links.new(grid.outputs["Mesh"], transform.inputs["Geometry"])
     links.new(translation.outputs[0], transform.inputs["Translation"])
+    return _project_planar_mesh(
+        group, transform.outputs["Geometry"], geometry_socket, ray_length.outputs[0],
+        prefix=prefix, x=x, y=y, triangulate=triangulate,
+    )
 
+
+def _project_planar_mesh(group, mesh_socket, geometry_socket, ray_length_socket, *, prefix, x, y, triangulate=False):
+    """Drop a generated planar mesh onto the source and give it its UVs and materials.
+
+    ``mesh_socket`` must lie just above the source in local Z. Each vertex is
+    raycast straight down: hits take the source position and ``UVMap``, misses
+    (holes, Crop) are removed, and every face points back at the source
+    material slot it lies on.
+    """
+    links = group.links
     position = _node(group, "GeometryNodeInputPosition", f"{prefix} Remesh Source Position", x + 2660, y - 220)
     source_uv = _node(group, "GeometryNodeInputNamedAttribute", f"{prefix} Source UVMap", x + 2660, y - 420)
     source_uv.data_type = "FLOAT_VECTOR"
@@ -314,7 +329,7 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     raycast.inputs["Ray Direction"].default_value = (0.0, 0.0, -1.0)
     links.new(geometry_socket, raycast.inputs["Target Geometry"])
     links.new(position.outputs["Position"], raycast.inputs["Source Position"])
-    links.new(ray_length.outputs[0], raycast.inputs["Ray Length"])
+    links.new(ray_length_socket, raycast.inputs["Ray Length"])
     sampled_attribute = _input(raycast, "Attribute")
     if sampled_attribute is not None:
         links.new(source_uv.outputs["Attribute"], sampled_attribute)
@@ -325,9 +340,8 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     store_uv.data_type = "FLOAT2"
     store_uv.domain = "CORNER"
     store_uv.inputs["Name"].default_value = "UVMap"
-    links.new(transform.outputs["Geometry"], store_uv.inputs["Geometry"])
-    sampled_uv = _output(raycast, "Attribute")
-    links.new(sampled_uv if sampled_uv is not None else grid.outputs["UV Map"], store_uv.inputs["Value"])
+    links.new(mesh_socket, store_uv.inputs["Geometry"])
+    links.new(_output(raycast, "Attribute"), store_uv.inputs["Value"])
 
     hit_name = "fbp_internal_remesh_hit"
     store_hit = _node(group, "GeometryNodeStoreNamedAttribute", f"{prefix} Store Remesh Hits", x + 3320, y)
@@ -7574,221 +7588,396 @@ def _aspect_corrected_texture_coordinates(
 
 
 def _create_glass(name):
-    """Create separated Voronoi shards from the animated source silhouette."""
+    """Split the plane into triangles that break apart with one Shatter slider.
+
+    Shards lays a jittered triangle grid over the plane; Impact lays rings and
+    spokes around the impact point, with the outer ring on the plane border so
+    the triangles always tile the whole image. The triangles are raycast onto
+    the source for their UVs and material, so they keep showing the image and
+    every image effect below. Shatter then opens the pieces in order, from the
+    impact point outwards (Spread 1) or at random (Spread 0).
+    """
     group = bpy.data.node_groups.new(name, "GeometryNodeTree")
     _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
-    _socket(group, "Subdivision", "INPUT", "NodeSocketInt", default=5, minimum=0, maximum=8)
-    _socket(group, "Thickness", "INPUT", "NodeSocketFloat", default=0.025, minimum=0.0001, maximum=10.0)
-    _socket(group, "Bevel", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Shard Lift", "INPUT", "NodeSocketFloat", default=0.015, minimum=-10.0, maximum=10.0)
-    _socket(group, "Damage Source", "INPUT", "NodeSocketInt", default=1, minimum=0, maximum=2)
-    _socket(group, "Damage Map", "INPUT", "NodeSocketImage")
-    _socket(group, "Cell Scale", "INPUT", "NodeSocketFloat", default=7.0, minimum=0.01, maximum=10000.0)
-    _socket(group, "Correct Aspect", "INPUT", "NodeSocketBool", default=True)
-    _socket(group, "Texture Scale X", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.01, maximum=10000.0)
-    _socket(group, "Texture Scale Y", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.01, maximum=10000.0)
-    _socket(group, "Crack Width", "INPUT", "NodeSocketFloat", default=0.035, minimum=0.0, maximum=0.5)
-    _socket(group, "Damage", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Chaos", "INPUT", "NodeSocketFloat", default=0.65, minimum=0.0, maximum=1.0)
+    _socket(group, "Pattern", "INPUT", "NodeSocketInt", default=1, minimum=0, maximum=1)
+    _socket(group, "Pieces", "INPUT", "NodeSocketInt", default=12, minimum=2, maximum=128)
+    _socket(group, "Irregularity", "INPUT", "NodeSocketFloat", default=0.75, minimum=0.0, maximum=1.0)
+    _socket(group, "Shatter", "INPUT", "NodeSocketFloat", default=0.45, minimum=0.0, maximum=1.0)
+    _socket(group, "Impact X", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.0, maximum=1.0)
+    _socket(group, "Impact Y", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.0, maximum=1.0)
+    _socket(group, "Spread", "INPUT", "NodeSocketFloat", default=0.75, minimum=0.0, maximum=1.0)
+    _socket(group, "Gap", "INPUT", "NodeSocketFloat", default=0.12, minimum=0.0, maximum=0.9)
+    _socket(group, "Explode", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=10.0)
+    _socket(group, "Depth", "INPUT", "NodeSocketFloat", default=0.2, minimum=-10.0, maximum=10.0)
+    _socket(group, "Fall", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0)
+    _socket(group, "Spin", "INPUT", "NodeSocketFloat", default=0.25, minimum=0.0, maximum=10.0)
+    _socket(group, "Thickness", "INPUT", "NodeSocketFloat", default=0.01, minimum=0.0, maximum=10.0)
     _socket(group, "Seed", "INPUT", "NodeSocketFloat", default=0.0, minimum=-100000.0, maximum=100000.0)
     _socket(group, "Alpha Threshold", "INPUT", "NodeSocketFloat", default=0.02, minimum=0.0, maximum=1.0)
-    _socket(group, "Shade Smooth", "INPUT", "NodeSocketBool", default=True)
+    _socket(group, "Glass Surface", "INPUT", "NodeSocketBool", default=False)
     _socket(group, "Glass Material", "INPUT", "NodeSocketMaterial")
     _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
     inp, out = _group_io(group)
     links = group.links
 
-    remeshed = _aspect_remesh(
-        group, inp.outputs["Geometry"], inp.outputs["Subdivision"],
-        # Quads remain preferable for shard extrusion: they halve cap polygon
-        # count while the aspect-balanced grid removes the old wide cells.
-        prefix="Broken Glass", x=-4600, y=700, triangulate=False,
+    def op(operation, label, x, y, a=None, b=None, c=None, value_1=None, value_2=None, value_3=None):
+        node = _math(group, operation, f"Broken Glass {label}", x, y, value_1=value_1, value_2=value_2)
+        if value_3 is not None:
+            node.inputs[2].default_value = value_3
+        for slot, socket in enumerate((a, b, c)):
+            if socket is not None:
+                links.new(socket, node.inputs[slot])
+        return node.outputs[0]
+
+    def vmath(operation, label, x, y, a=None, b=None, scale=None):
+        node = _vector_math(group, operation, f"Broken Glass {label}", x, y)
+        if a is not None:
+            links.new(a, node.inputs[0])
+        if b is not None:
+            links.new(b, node.inputs[1])
+        if scale is not None:
+            links.new(scale, node.inputs["Scale"])
+        return node.outputs["Value" if operation == "LENGTH" else "Vector"]
+
+    def combine(label, x, y, cx=None, cy=None, cz=None):
+        node = _node(group, "ShaderNodeCombineXYZ", f"Broken Glass {label}", x, y)
+        for axis, socket in (("X", cx), ("Y", cy), ("Z", cz)):
+            if socket is not None:
+                links.new(socket, node.inputs[axis])
+        return node.outputs[0]
+
+    def separate(label, x, y, vector):
+        node = _node(group, "ShaderNodeSeparateXYZ", f"Broken Glass {label}", x, y)
+        links.new(vector, node.inputs[0])
+        return node.outputs
+
+    def switch(input_type, label, x, y, condition, false, true):
+        node = _node(group, "GeometryNodeSwitch", f"Broken Glass {label}", x, y)
+        node.input_type = input_type
+        links.new(condition, node.inputs["Switch"])
+        links.new(false, node.inputs["False"])
+        links.new(true, node.inputs["True"])
+        return node.outputs["Output"]
+
+    def random_vector(label, x, y, identifier, seed, minimum=(0.0, 0.0, 0.0), maximum=(1.0, 1.0, 1.0)):
+        node = _node(group, "FunctionNodeRandomValue", f"Broken Glass {label}", x, y)
+        node.data_type = "FLOAT_VECTOR"
+        _input(node, "Min", 0).default_value = minimum
+        _input(node, "Max", 1).default_value = maximum
+        links.new(identifier, _input(node, "ID", 7))
+        links.new(seed, _input(node, "Seed", 8))
+        return _output(node, "Value", 0)
+
+    def on_domain(domain, data_type, label, x, y, value):
+        node = _node(group, "GeometryNodeFieldOnDomain", f"Broken Glass {label}", x, y)
+        node.domain = domain
+        node.data_type = data_type
+        links.new(value, _input(node, "Value"))
+        return _output(node, "Value")
+
+    def store(data_type, domain, attribute, label, x, y, geometry, value):
+        node = _node(group, "GeometryNodeStoreNamedAttribute", f"Broken Glass {label}", x, y)
+        node.data_type = data_type
+        node.domain = domain
+        node.inputs["Name"].default_value = attribute
+        links.new(geometry, node.inputs["Geometry"])
+        links.new(value, node.inputs["Value"])
+        return node.outputs["Geometry"]
+
+    def named(data_type, attribute, label, x, y):
+        node = _node(group, "GeometryNodeInputNamedAttribute", f"Broken Glass {label}", x, y)
+        node.data_type = data_type
+        node.inputs["Name"].default_value = attribute
+        return node.outputs["Attribute"]
+
+    # Plane frame: bounds, impact point and the distance to its farthest corner.
+    bounds = _node(group, "GeometryNodeBoundBox", "Broken Glass Plane Bounds", -5200, 600)
+    links.new(inp.outputs["Geometry"], bounds.inputs["Geometry"])
+    lower = separate("Plane Minimum", -4980, 700, bounds.outputs["Min"])
+    upper = separate("Plane Maximum", -4980, 500, bounds.outputs["Max"])
+    width = op("MAXIMUM", "Plane Width", -4760, 760, op("SUBTRACT", "Raw Width", -4980, 900, upper["X"], lower["X"]), value_2=1.0e-6)
+    height = op("MAXIMUM", "Plane Height", -4760, 600, op("SUBTRACT", "Raw Height", -4980, 300, upper["Y"], lower["Y"]), value_2=1.0e-6)
+    margin = op(
+        "MAXIMUM", "Ray Margin", -4540, 360,
+        op("MULTIPLY", "Ray Margin Scale", -4760, 360, op("MAXIMUM", "Long Side", -4980, 360, width, height), value_2=0.001),
+        value_2=1.0e-4,
     )
-    named_uv = _node(group, "GeometryNodeInputNamedAttribute", "Broken Glass UVMap", -1800, 80)
-    named_uv.data_type = "FLOAT_VECTOR"
-    named_uv.inputs["Name"].default_value = "UVMap"
-    source = _node(group, "GeometryNodeImageTexture", "Broken Glass Source Image", -1560, 180)
+    ray_start = op("ADD", "Ray Start", -4320, 420, upper["Z"], margin)
+    ray_length = op(
+        "ADD", "Ray Length", -4100, 360,
+        op("SUBTRACT", "Plane Depth", -4320, 300, upper["Z"], lower["Z"]),
+        op("MULTIPLY", "Double Ray Margin", -4320, 200, margin, value_2=2.0),
+    )
+    impact_x = op("MULTIPLY_ADD", "Impact Plane X", -4760, 1000, width, inp.outputs["Impact X"], lower["X"])
+    impact_y = op("MULTIPLY_ADD", "Impact Plane Y", -4760, 900, height, inp.outputs["Impact Y"], lower["Y"])
+    impact = combine("Impact Point", -4540, 960, impact_x, impact_y, lower["Z"])
+    reach = vmath(
+        "LENGTH", "Farthest Corner", -4100, 1000,
+        vmath(
+            "MAXIMUM", "Corner Reach", -4320, 1120,
+            vmath("SUBTRACT", "Reach To Minimum", -4540, 1200, impact, bounds.outputs["Min"]),
+            vmath("SUBTRACT", "Reach To Maximum", -4540, 1100, bounds.outputs["Max"], impact),
+        ),
+    )
+    reach = op("MAXIMUM", "Safe Reach", -3880, 1000, reach, value_2=1.0e-6)
+    pieces = op("MAXIMUM", "Safe Pieces", -4760, 1300, inp.outputs["Pieces"], value_2=2.0)
+    irregular = op("MULTIPLY", "Jitter Amount", -4760, 1420, inp.outputs["Irregularity"], value_2=0.8)
+    position = _node(group, "GeometryNodeInputPosition", "Broken Glass Position", -4320, 1500).outputs["Position"]
+    index = _node(group, "GeometryNodeInputIndex", "Broken Glass Index", -4320, 1600).outputs["Index"]
+
+    # Shards: a jittered grid of square-ish cells; border vertices only slide
+    # along the border, so the triangles still cover the whole plane.
+    cell = op("DIVIDE", "Grid Cell", -4100, 1800, op("MAXIMUM", "Grid Long Side", -4320, 1800, width, height), pieces)
+    columns = op("MAXIMUM", "Grid Columns", -3660, 1880, op("ROUND", "Round Columns", -3880, 1880, op("DIVIDE", "Raw Columns", -4100, 1950, width, cell)), value_2=1.0)
+    rows = op("MAXIMUM", "Grid Rows", -3660, 1720, op("ROUND", "Round Rows", -3880, 1720, op("DIVIDE", "Raw Rows", -4100, 1650, height, cell)), value_2=1.0)
+    grid = _node(group, "GeometryNodeMeshGrid", "Broken Glass Shard Grid", -3440, 1800)
+    links.new(width, grid.inputs["Size X"])
+    links.new(height, grid.inputs["Size Y"])
+    links.new(op("ADD", "Grid Vertices X", -3440, 2000, columns, value_2=1.0), grid.inputs["Vertices X"])
+    links.new(op("ADD", "Grid Vertices Y", -3440, 1600, rows, value_2=1.0), grid.inputs["Vertices Y"])
+    grid_x, grid_y = separate("Grid Position", -3440, 1400, position)[:2]
+    edge_tolerance = op("MULTIPLY", "Border Tolerance", -3220, 1300, cell, value_2=0.01)
+    border_margin = op("MULTIPLY", "Border Margin", -3220, 1000, edge_tolerance, value_2=-1.0)
+    free_x = op(
+        "LESS_THAN", "Free X", -3000, 1450,
+        op("ABSOLUTE", "Grid Distance X", -3220, 1500, grid_x),
+        op("MULTIPLY_ADD", "Inner Half Width", -3220, 1400, width, None, border_margin, value_2=0.5),
+    )
+    free_y = op(
+        "LESS_THAN", "Free Y", -3000, 1250,
+        op("ABSOLUTE", "Grid Distance Y", -3220, 1200, grid_y),
+        op("MULTIPLY_ADD", "Inner Half Height", -3220, 1100, height, None, border_margin, value_2=0.5),
+    )
+    grid_jitter = random_vector(
+        "Grid Jitter", -3000, 1650, index, inp.outputs["Seed"],
+        minimum=(-0.5, -0.5, 0.0), maximum=(0.5, 0.5, 0.0),
+    )
+    jitter_x, jitter_y = separate("Grid Jitter Components", -2780, 1650, grid_jitter)[:2]
+    grid_offset_x = op("MULTIPLY", "Grid Offset X", -2340, 1500, op("MULTIPLY", "Grid Jitter X", -2560, 1550, jitter_x, op("DIVIDE", "Cell Width", -2780, 1450, width, columns)), free_x)
+    grid_offset_y = op("MULTIPLY", "Grid Offset Y", -2340, 1300, op("MULTIPLY", "Grid Jitter Y", -2560, 1350, jitter_y, op("DIVIDE", "Cell Height", -2780, 1250, height, rows)), free_y)
+    centre_x = op("MULTIPLY", "Plane Center X", -3660, 1100, op("ADD", "Plane Span X", -3880, 1100, lower["X"], upper["X"]), value_2=0.5)
+    centre_y = op("MULTIPLY", "Plane Center Y", -3660, 1000, op("ADD", "Plane Span Y", -3880, 1000, lower["Y"], upper["Y"]), value_2=0.5)
+    grid_position = combine(
+        "Shard Grid Position", -1900, 1500,
+        op("MULTIPLY_ADD", "Shard X", -2120, 1560, grid_offset_x, irregular, op("ADD", "Grid Center X", -2340, 1700, grid_x, centre_x)),
+        op("MULTIPLY_ADD", "Shard Y", -2120, 1400, grid_offset_y, irregular, op("ADD", "Grid Center Y", -2340, 1150, grid_y, centre_y)),
+        ray_start,
+    )
+    place_grid = _node(group, "GeometryNodeSetPosition", "Broken Glass Place Shard Grid", -1680, 1800)
+    links.new(grid.outputs["Mesh"], place_grid.inputs["Geometry"])
+    links.new(grid_position, place_grid.inputs["Position"])
+    grid_triangles = _node(group, "GeometryNodeTriangulate", "Broken Glass Shard Triangles", -1460, 1800)
+    grid_triangles.inputs["Quad Method"].default_value = "Shortest Diagonal"
+    links.new(place_grid.outputs["Geometry"], grid_triangles.inputs["Mesh"])
+
+    # Impact: spokes are spread over the border side by side, so the four
+    # corners are always spoke ends and the outer ring is the plane outline.
+    ring_count = op("MAXIMUM", "Ring Count", -3880, 2600, op("ROUND", "Round Rings", -4100, 2600, op("MULTIPLY", "Raw Rings", -4320, 2600, pieces, value_2=0.5)), value_2=2.0)
+    spoke_target = op("MAXIMUM", "Spoke Target", -4100, 2400, op("MULTIPLY", "Raw Spokes", -4320, 2400, pieces, value_2=1.6), value_2=8.0)
+    perimeter = op("MULTIPLY", "Half Perimeter", -4100, 2200, op("ADD", "Perimeter Sides", -4320, 2200, width, height), value_2=2.0)
+    side_x = op("MAXIMUM", "Spokes Along X", -3660, 2400, op("ROUND", "Round Spokes X", -3880, 2400, op("DIVIDE", "Raw Spokes X", -3880, 2300, op("MULTIPLY", "Spoke Share X", -4100, 2300, spoke_target, width), perimeter)), value_2=1.0)
+    side_y = op("MAXIMUM", "Spokes Along Y", -3660, 2200, op("ROUND", "Round Spokes Y", -3880, 2200, op("DIVIDE", "Raw Spokes Y", -3880, 2100, op("MULTIPLY", "Spoke Share Y", -4100, 2100, spoke_target, height), perimeter)), value_2=1.0)
+    end_bottom = side_x
+    end_right = op("ADD", "Right Side End", -3440, 2300, side_x, side_y)
+    end_top = op("ADD", "Top Side End", -3220, 2300, end_right, side_x)
+    spokes = op("ADD", "Spoke Count", -3000, 2300, end_top, side_y)
+    radial = _node(group, "GeometryNodeMeshGrid", "Broken Glass Impact Grid", -3000, 2600)
+    radial.inputs["Size X"].default_value = 1.0
+    radial.inputs["Size Y"].default_value = 1.0
+    links.new(op("ADD", "Impact Vertices X", -3220, 2650, spokes, value_2=1.0), radial.inputs["Vertices X"])
+    links.new(op("ADD", "Impact Vertices Y", -3220, 2550, ring_count, value_2=1.0), radial.inputs["Vertices Y"])
+    radial_u, radial_v = separate("Impact Grid Position", -3000, 2900, position)[:2]
+    # The grid spans -0.5..0.5: u * count + count / 2 is the spoke or ring index.
+    spoke = op(
+        "MODULO", "Spoke Index", -2560, 3000,
+        op("ROUND", "Round Spoke", -2780, 3000, op("MULTIPLY_ADD", "Spoke Coordinate", -3000, 3050, radial_u, spokes, op("MULTIPLY", "Half Spokes", -3220, 3150, spokes, value_2=0.5))),
+        spokes,
+    )
+    ring = op(
+        "ROUND", "Ring Index", -2560, 2850,
+        op("MULTIPLY_ADD", "Ring Coordinate", -2780, 2850, radial_v, ring_count, op("MULTIPLY", "Half Rings", -3000, 2750, ring_count, value_2=0.5)),
+    )
+    # The seam column repeats spoke 0, so it gets the same ID and jitter.
+    radial_id = op("MULTIPLY_ADD", "Impact Vertex ID", -2340, 2950, ring, None, spoke, value_2=1024.0)
+    radial_jitter = random_vector(
+        "Impact Jitter", -2120, 3100, radial_id, inp.outputs["Seed"],
+        minimum=(-0.5, -0.5, 0.0), maximum=(0.5, 0.5, 0.0),
+    )
+    radial_jitter_x, radial_jitter_y = separate("Impact Jitter Components", -1900, 3100, radial_jitter)[:2]
+    inner_ring = op(
+        "MULTIPLY", "Inner Ring", -2120, 2800,
+        op("GREATER_THAN", "Past Impact", -2340, 2800, ring, value_2=0.5),
+        op("LESS_THAN", "Before Border", -2340, 2700, ring, op("SUBTRACT", "Last Inner Ring", -2560, 2650, ring_count, value_2=0.5)),
+    )
+    ring_jitter = op("MULTIPLY", "Ring Jitter", -1680, 3000, op("MULTIPLY", "Inner Jitter", -1900, 2900, inner_ring, irregular), radial_jitter_y)
+    spoke_jitter = op("MULTIPLY", "Spoke Jitter", -1680, 3200, op("MULTIPLY", "Spoke Jitter Amount", -1900, 3000, inner_ring, irregular), radial_jitter_x)
+    spoke_t = op("FLOORED_MODULO", "Spoke Position", -1460, 3200, op("ADD", "Jittered Spoke", -1460, 3300, spoke, spoke_jitter), spokes)
+    ring_t = op(
+        "ADD", "Jittered Ring", -1460, 2900,
+        op("POWER", "Ring Spacing", -1680, 2800, op("DIVIDE", "Ring Fraction", -1900, 2800, ring, ring_count), value_2=1.35),
+        op("DIVIDE", "Ring Jitter Scale", -1460, 2800, ring_jitter, ring_count),
+    )
+    # Border point for spoke position t, walking counter-clockwise from the
+    # lower-left corner: bottom, right, top, left.
+    border_bottom = combine("Border Bottom", -1240, 3500, op("MULTIPLY_ADD", "Bottom X", -1460, 3500, op("DIVIDE", "Bottom Fraction", -1680, 3500, spoke_t, side_x), width, lower["X"]), lower["Y"])
+    border_right = combine("Border Right", -1240, 3350, upper["X"], op("MULTIPLY_ADD", "Right Y", -1460, 3350, op("DIVIDE", "Right Fraction", -1680, 3350, op("SUBTRACT", "Right Step", -1900, 3350, spoke_t, end_bottom), side_y), height, lower["Y"]))
+    border_top = combine("Border Top", -1240, 3200, op("SUBTRACT", "Top X", -1460, 3200, upper["X"], op("MULTIPLY", "Top Run", -1680, 3200, op("DIVIDE", "Top Fraction", -1900, 3200, op("SUBTRACT", "Top Step", -2120, 3200, spoke_t, end_right), side_x), width)), upper["Y"])
+    border_left = combine("Border Left", -1240, 3050, lower["X"], op("SUBTRACT", "Left Y", -1460, 3050, upper["Y"], op("MULTIPLY", "Left Run", -1680, 3050, op("DIVIDE", "Left Fraction", -1900, 3050, op("SUBTRACT", "Left Step", -2120, 3050, spoke_t, end_top), side_y), height)))
+    border = switch(
+        "VECTOR", "Border Point", -800, 3300,
+        op("LESS_THAN", "On Bottom", -1020, 3500, spoke_t, end_bottom),
+        switch(
+            "VECTOR", "Border Point Upper", -1020, 3300,
+            op("LESS_THAN", "On Right", -1240, 2900, spoke_t, end_right),
+            switch("VECTOR", "Border Point Top Or Left", -1020, 3100, op("LESS_THAN", "On Top", -1240, 2800, spoke_t, end_top), border_left, border_top),
+            border_right,
+        ),
+        border_bottom,
+    )
+    impact_plane = combine("Impact On Plane", -1020, 2700, impact_x, impact_y)
+    radial_point = vmath(
+        "ADD", "Impact Ring Point", -580, 3000, impact_plane,
+        vmath("SCALE", "Impact Ring Offset", -800, 3000, vmath("SUBTRACT", "Impact To Border", -1020, 3000, border, impact_plane), scale=ring_t),
+    )
+    radial_xy = separate("Impact Ring Components", -360, 3000, radial_point)
+    place_radial = _node(group, "GeometryNodeSetPosition", "Broken Glass Place Impact Grid", -140, 2600)
+    links.new(radial.outputs["Mesh"], place_radial.inputs["Geometry"])
+    links.new(combine("Impact Grid Point", -140, 2900, radial_xy["X"], radial_xy["Y"], ray_start), place_radial.inputs["Position"])
+    radial_triangles = _node(group, "GeometryNodeTriangulate", "Broken Glass Impact Triangles", 80, 2600)
+    radial_triangles.inputs["Quad Method"].default_value = "Beauty"
+    links.new(place_radial.outputs["Geometry"], radial_triangles.inputs["Mesh"])
+
+    use_impact = op("GREATER_THAN", "Use Impact Pattern", 80, 2200, inp.outputs["Pattern"], value_2=0.5)
+    pattern = switch("GEOMETRY", "Pattern", 300, 1800, use_impact, grid_triangles.outputs["Mesh"], radial_triangles.outputs["Mesh"])
+    projected = _project_planar_mesh(
+        group, pattern, inp.outputs["Geometry"], ray_length,
+        prefix="Broken Glass", x=-2140, y=600, triangulate=False,
+    )
+
+    # The impact point collapses its first ring into zero-area triangles.
+    area = _node(group, "GeometryNodeInputMeshFaceArea", "Broken Glass Face Area", 2800, 300)
+    degenerate = op("LESS_THAN", "Degenerate Faces", 3020, 300, area.outputs["Area"], op("MULTIPLY", "Area Floor", 2800, 150, width, op("MULTIPLY", "Area Floor Scale", 2580, 150, height, value_2=1.0e-7)))
+    drop_degenerate = _node(group, "GeometryNodeDeleteGeometry", "Broken Glass Drop Degenerate Faces", 3020, 600)
+    drop_degenerate.domain = "FACE"
+    links.new(projected, drop_degenerate.inputs["Geometry"])
+    links.new(degenerate, drop_degenerate.inputs["Selection"])
+    split = _node(group, "GeometryNodeSplitEdges", "Broken Glass Split Pieces", 3240, 600)
+    links.new(drop_degenerate.outputs["Geometry"], split.inputs["Mesh"])
+
+    # A piece is removed only when its centre and all its corners are clear.
+    uv = named("FLOAT_VECTOR", "UVMap", "UVMap", 3240, 200)
+    source = _node(group, "GeometryNodeImageTexture", "Broken Glass Source Image", 3460, 200)
     source["fbp_alpha_image_node"] = True
-    damage_image = _node(group, "GeometryNodeImageTexture", "Broken Glass Damage Map", -1560, -80)
-    damage_bw = _node(group, "ShaderNodeSeparateXYZ", "Broken Glass Damage Luminance", -1320, -80)
     try:
         source.extension = "EXTEND"
         source.interpolation = "Linear"
-        damage_image.extension = "EXTEND"
-        damage_image.interpolation = "Linear"
-        damage_image.image_user.use_auto_refresh = True
     except (AttributeError, TypeError, ValueError):
         pass
-    links.new(named_uv.outputs["Attribute"], source.inputs["Vector"])
-    links.new(named_uv.outputs["Attribute"], damage_image.inputs["Vector"])
-    links.new(inp.outputs["Damage Map"], damage_image.inputs["Image"])
-    links.new(damage_image.outputs["Color"], damage_bw.inputs["Vector"])
+    links.new(uv, source.inputs["Vector"])
+    clear = op("LESS_THAN", "Clear Alpha", 3680, 200, source.outputs["Alpha"], inp.outputs["Alpha Threshold"])
+    clear_piece = _node(group, "FunctionNodeBooleanMath", "Broken Glass Clear Piece", 4120, 300)
+    clear_piece.operation = "AND"
+    links.new(on_domain("POINT", "BOOLEAN", "Clear Corners", 3900, 300, clear), clear_piece.inputs[0])
+    links.new(on_domain("FACE", "BOOLEAN", "Clear Centre", 3900, 150, clear), clear_piece.inputs[1])
+    drop_clear = _node(group, "GeometryNodeDeleteGeometry", "Broken Glass Drop Clear Pieces", 4120, 600)
+    drop_clear.domain = "FACE"
+    links.new(split.outputs["Mesh"], drop_clear.inputs["Geometry"])
+    links.new(clear_piece.outputs[0], drop_clear.inputs["Selection"])
+    geometry = store("FLOAT_COLOR", "POINT", "fbp_glass_color", "Store Glass Color", 4340, 600, drop_clear.outputs["Geometry"], source.outputs["Color"])
+    geometry = store("FLOAT", "POINT", "fbp_glass_alpha", "Store Glass Alpha", 4560, 600, geometry, source.outputs["Alpha"])
 
-    coordinate_scale = _aspect_corrected_texture_coordinates(
-        group,
-        inp.outputs["Geometry"],
-        named_uv.outputs["Attribute"],
-        inp.outputs["Correct Aspect"],
-        inp.outputs["Cell Scale"],
-        inp.outputs["Texture Scale X"],
-        inp.outputs["Texture Scale Y"],
-        prefix="Broken Glass",
-        result_name="Broken Glass Cell Scale",
-        x=-2880,
-        y=-380,
+    # Every corner of a piece carries the piece centre and its random draw,
+    # so thickness walls added next move together with their face.
+    face_index = on_domain("FACE", "INT", "Piece Index", 4560, 200, index)
+    geometry = store("FLOAT_VECTOR", "POINT", "fbp_glass_piece_center", "Store Piece Center", 4780, 600, geometry, on_domain("FACE", "FLOAT_VECTOR", "Piece Center", 4560, 350, position))
+    geometry = store("FLOAT_VECTOR", "POINT", "fbp_glass_piece_random", "Store Piece Random", 5000, 600, geometry, random_vector("Piece Random", 4780, 200, face_index, inp.outputs["Seed"]))
+    geometry = store("FLOAT_VECTOR", "POINT", "fbp_glass_piece_spin", "Store Piece Spin", 5220, 600, geometry, random_vector(
+        "Piece Spin", 5000, 200, op("ADD", "Spin ID", 4780, 50, face_index, value_2=1000003.0), inp.outputs["Seed"],
+        minimum=(-1.0, -1.0, -1.0), maximum=(1.0, 1.0, 1.0),
+    ))
+    thickness = _node(group, "GeometryNodeExtrudeMesh", "Broken Glass Thickness", 5440, 760)
+    thickness.mode = "FACES"
+    links.new(geometry, thickness.inputs["Mesh"])
+    links.new(combine("Thickness Offset", 5220, 900, cz=inp.outputs["Thickness"]), thickness.inputs["Offset"])
+    back = _node(group, "GeometryNodeFlipFaces", "Broken Glass Back Faces", 5440, 500)
+    links.new(geometry, back.inputs["Mesh"])
+    # The extrusion moves the faces forward; the source copy, flipped, closes
+    # the back so each piece is a solid prism.
+    solid = _node(group, "GeometryNodeJoinGeometry", "Broken Glass Solid Pieces", 5660, 700)
+    links.new(back.outputs["Mesh"], solid.inputs["Geometry"])
+    links.new(thickness.outputs["Mesh"], solid.inputs["Geometry"])
+    thick = op("GREATER_THAN", "Has Thickness", 5440, 1000, inp.outputs["Thickness"], value_2=1.0e-6)
+    geometry = switch("GEOMETRY", "Thickness Bypass", 5880, 600, thick, geometry, solid.outputs["Geometry"])
+
+    # Shatter: each piece opens over a 35% window that starts later the farther
+    # it is from the impact point (Spread) or the higher its random draw.
+    center = named("FLOAT_VECTOR", "fbp_glass_piece_center", "Piece Center Attribute", 5660, 0)
+    draw = separate("Piece Random Components", 5880, -200, named("FLOAT_VECTOR", "fbp_glass_piece_random", "Piece Random Attribute", 5660, -200))
+    spin = named("FLOAT_VECTOR", "fbp_glass_piece_spin", "Piece Spin Attribute", 5660, -400)
+    from_impact = vmath("SUBTRACT", "From Impact", 5880, 100, center, impact_plane)
+    from_impact_xy = separate("From Impact Components", 6100, 100, from_impact)
+    flat_from_impact = combine("Flat From Impact", 6320, 100, from_impact_xy["X"], from_impact_xy["Y"])
+    distance = op("MINIMUM", "Impact Distance", 6760, 100, op("DIVIDE", "Relative Distance", 6540, 100, vmath("LENGTH", "Distance To Impact", 6320, 250, flat_from_impact), reach), value_2=1.0)
+    order = _node(group, "ShaderNodeMix", "Broken Glass Break Order", 6980, 0)
+    order.data_type = "FLOAT"
+    links.new(inp.outputs["Spread"], _input(order, "Factor", 0))
+    links.new(draw["X"], _input(order, "A", 2))
+    links.new(distance, _input(order, "B", 3))
+    start = op("MULTIPLY", "Break Start", 7200, 0, _output(order, "Result", 0), value_2=0.65)
+    progress = _node(group, "ShaderNodeMapRange", "Broken Glass Piece Progress", 7420, 0)
+    progress.interpolation_type = "SMOOTHSTEP"
+    progress.clamp = True
+    links.new(inp.outputs["Shatter"], progress.inputs["Value"])
+    links.new(start, progress.inputs["From Min"])
+    links.new(op("ADD", "Break End", 7200, -150, start, value_2=0.35), progress.inputs["From Max"])
+    progress = progress.outputs["Result"]
+
+    shrink = op("SUBTRACT", "Piece Scale", 7640, 300, None, op("MULTIPLY", "Piece Gap", 7420, 300, inp.outputs["Gap"], progress), value_1=1.0)
+    scaled = vmath("ADD", "Scaled Point", 8080, 400, center, vmath("SCALE", "Scaled Offset", 7860, 400, vmath("SUBTRACT", "Point From Center", 7640, 450, position, center), scale=shrink))
+    rotate = _node(group, "ShaderNodeVectorRotate", "Broken Glass Spin Piece", 8300, 400)
+    rotate.rotation_type = "EULER_XYZ"
+    links.new(scaled, rotate.inputs["Vector"])
+    links.new(center, rotate.inputs["Center"])
+    links.new(vmath("SCALE", "Piece Rotation", 8080, 200, spin, scale=op("MULTIPLY", "Spin Angle", 7860, 200, op("MULTIPLY", "Spin Radians", 7640, 150, inp.outputs["Spin"], value_2=3.14159265), progress)), rotate.inputs["Rotation"])
+
+    direction = vmath("NORMALIZE", "Explode Direction", 6760, -300, vmath("ADD", "Safe Direction", 6540, -300, flat_from_impact, vmath("SCALE", "Direction Nudge", 6320, -400, spin, scale=op("MULTIPLY", "Nudge Size", 6100, -500, reach, value_2=1.0e-3))))
+    explode = op("MULTIPLY", "Explode Distance", 7640, -300, op("MULTIPLY", "Explode Reach", 7420, -300, inp.outputs["Explode"], reach), op("MULTIPLY_ADD", "Explode Variation", 7420, -450, draw["Y"], value_2=0.6, value_3=0.4))
+    depth = op("MULTIPLY", "Depth Distance", 7640, -600, op("MULTIPLY", "Depth Reach", 7420, -600, inp.outputs["Depth"], reach), op("MULTIPLY_ADD", "Depth Variation", 7420, -750, draw["Z"], value_2=0.7, value_3=0.3))
+    fall = op(
+        "MULTIPLY", "Fall Distance", 7640, -900,
+        op("MULTIPLY", "Fall Reach", 7420, -900, inp.outputs["Fall"], height),
+        op("MULTIPLY_ADD", "Fall Variation", 7420, -1050, draw["X"], value_2=0.5, value_3=0.5),
     )
-    seed_vector = _node(group, "ShaderNodeCombineXYZ", "Broken Glass Seed Vector", -1320, -620)
-    seed_y = _math(group, "MULTIPLY", "Broken Glass Seed Y", -1540, -720, value_2=0.618033989)
-    seed_z = _math(group, "MULTIPLY", "Broken Glass Seed Z", -1540, -820, value_2=-0.414213562)
-    shifted = _vector_math(group, "ADD", "Broken Glass Shifted Cells", -1080, -420)
-    links.new(inp.outputs["Seed"], seed_vector.inputs["X"])
-    links.new(inp.outputs["Seed"], seed_y.inputs[0])
-    links.new(inp.outputs["Seed"], seed_z.inputs[0])
-    links.new(seed_y.outputs[0], seed_vector.inputs["Y"])
-    links.new(seed_z.outputs[0], seed_vector.inputs["Z"])
-    links.new(coordinate_scale, shifted.inputs[0])
-    links.new(seed_vector.outputs[0], shifted.inputs[1])
-
-    edges = _configure_voronoi(
-        _node(group, "ShaderNodeTexVoronoi", "Broken Glass Voronoi Edges", -820, -520),
-        "DISTANCE_TO_EDGE",
+    progress_squared = op("MULTIPLY", "Fall Progress", 7860, -900, progress, progress)
+    travel = vmath(
+        "ADD", "Piece Travel", 8300, -300,
+        vmath("SCALE", "Explode Offset", 8080, -300, direction, scale=op("MULTIPLY", "Explode Progress", 7860, -300, explode, progress)),
+        combine(
+            "Lift And Fall", 8080, -600,
+            cy=op("MULTIPLY", "Fall Offset", 8080, -900, fall, op("MULTIPLY", "Fall Down", 7860, -1050, progress_squared, value_2=-1.0)),
+            cz=op("MULTIPLY", "Depth Offset", 7860, -600, depth, progress),
+        ),
     )
-    cells = _configure_voronoi(
-        _node(group, "ShaderNodeTexVoronoi", "Broken Glass Cell Identity", -820, -760),
-        "F1",
-    )
-    cell_bw = _node(group, "ShaderNodeSeparateXYZ", "Broken Glass Cell Random", -580, -760)
-    links.new(shifted.outputs[0], edges.inputs["Vector"])
-    links.new(shifted.outputs[0], cells.inputs["Vector"])
-    links.new(cells.outputs["Color"], cell_bw.inputs["Vector"])
+    moved = _node(group, "GeometryNodeSetPosition", "Broken Glass Break Pieces", 8520, 600)
+    links.new(geometry, moved.inputs["Geometry"])
+    links.new(vmath("ADD", "Broken Point", 8520, 300, rotate.outputs["Vector"], travel), moved.inputs["Position"])
+    geometry = moved.outputs["Geometry"]
+    for attribute in ("fbp_glass_piece_center", "fbp_glass_piece_random", "fbp_glass_piece_spin"):
+        remove = _node(group, "GeometryNodeRemoveAttribute", f"Broken Glass Clean {attribute}", 8740, 600)
+        remove.inputs["Name"].default_value = attribute
+        links.new(geometry, remove.inputs["Geometry"])
+        geometry = remove.outputs["Geometry"]
 
-    damage_field = _select_float_style(
-        group,
-        inp.outputs["Damage Source"],
-        (source.outputs["Alpha"], inp.outputs["Damage"], damage_bw.outputs["X"]),
-        prefix="Broken Glass Damage Source",
-        x=-900,
-        y=-40,
-    )
-    damage_amount = _math(group, "MULTIPLY", "Broken Glass Damage Amount", -520, -80)
-    crack_width = _math(group, "MULTIPLY", "Broken Glass Open Crack Width", -300, -80)
-    crack = _math(group, "LESS_THAN", "Broken Glass Crack Selection", -60, -80)
-    links.new(damage_field, damage_amount.inputs[0])
-    links.new(inp.outputs["Damage"], damage_amount.inputs[1])
-    links.new(inp.outputs["Crack Width"], crack_width.inputs[0])
-    links.new(damage_amount.outputs[0], crack_width.inputs[1])
-    links.new(edges.outputs["Distance"], crack.inputs[0])
-    links.new(crack_width.outputs[0], crack.inputs[1])
-
-    cell_centered = _math(group, "SUBTRACT", "Broken Glass Center Cell", -300, -620, value_2=0.5)
-    lift_chaos = _math(group, "MULTIPLY", "Broken Glass Lift Chaos", -60, -620)
-    lift_amount = _math(group, "MULTIPLY", "Broken Glass Shard Lift", 180, -620)
-    lift_damage = _math(group, "MULTIPLY", "Broken Glass Lift Damage", 420, -620)
-    lift_vector = _node(group, "ShaderNodeCombineXYZ", "Broken Glass Lift Vector", 660, -620)
-    links.new(cell_bw.outputs["X"], cell_centered.inputs[0])
-    links.new(cell_centered.outputs[0], lift_chaos.inputs[0])
-    links.new(inp.outputs["Chaos"], lift_chaos.inputs[1])
-    links.new(lift_chaos.outputs[0], lift_amount.inputs[0])
-    links.new(inp.outputs["Shard Lift"], lift_amount.inputs[1])
-    links.new(lift_amount.outputs[0], lift_damage.inputs[0])
-    links.new(damage_amount.outputs[0], lift_damage.inputs[1])
-    links.new(lift_damage.outputs[0], lift_vector.inputs["Z"])
-
-    store_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Color", -1040, 520)
-    store_color.data_type = "FLOAT_COLOR"
-    store_color.domain = "POINT"
-    store_color.inputs["Name"].default_value = "fbp_glass_color"
-    store_alpha = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Alpha", -800, 520)
-    store_alpha.data_type = "FLOAT"
-    store_alpha.domain = "POINT"
-    store_alpha.inputs["Name"].default_value = "fbp_glass_alpha"
-    store_height = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Crack Field", -560, 520)
-    store_height.data_type = "FLOAT"
-    store_height.domain = "POINT"
-    store_height.inputs["Name"].default_value = "fbp_glass_height"
-    store_normal = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Cell Color", -320, 520)
-    store_normal.data_type = "FLOAT_COLOR"
-    store_normal.domain = "POINT"
-    store_normal.inputs["Name"].default_value = "fbp_glass_normal"
-    links.new(remeshed, store_color.inputs["Geometry"])
-    links.new(source.outputs["Color"], store_color.inputs["Value"])
-    links.new(store_color.outputs["Geometry"], store_alpha.inputs["Geometry"])
-    links.new(source.outputs["Alpha"], store_alpha.inputs["Value"])
-    links.new(store_alpha.outputs["Geometry"], store_height.inputs["Geometry"])
-    links.new(edges.outputs["Distance"], store_height.inputs["Value"])
-    links.new(store_height.outputs["Geometry"], store_normal.inputs["Geometry"])
-    links.new(cells.outputs["Color"], store_normal.inputs["Value"])
-
-    set_position = _node(group, "GeometryNodeSetPosition", "Lift Broken Glass Shards", -60, 520)
-    transparent = _math(group, "LESS_THAN", "Broken Glass Transparent Faces", 160, 180)
-    remove = _node(group, "FunctionNodeBooleanMath", "Broken Glass Remove Faces", 400, 180)
-    remove.operation = "OR"
-    delete = _node(group, "GeometryNodeDeleteGeometry", "Open Broken Glass Cracks", 420, 520)
-    delete.domain = "FACE"
-    links.new(store_normal.outputs["Geometry"], set_position.inputs["Geometry"])
-    links.new(lift_vector.outputs[0], set_position.inputs["Offset"])
-    links.new(source.outputs["Alpha"], transparent.inputs[0])
-    links.new(inp.outputs["Alpha Threshold"], transparent.inputs[1])
-    links.new(transparent.outputs[0], remove.inputs[0])
-    links.new(crack.outputs[0], remove.inputs[1])
-    links.new(set_position.outputs["Geometry"], delete.inputs["Geometry"])
-    links.new(remove.outputs[0], delete.inputs["Selection"])
-
-    back_amount = _math(group, "MULTIPLY", "Broken Glass Back Thickness", 500, 180, value_2=-1.0)
-    thickness = _node(group, "ShaderNodeCombineXYZ", "Broken Glass Thickness", 700, 180)
-    extrude = _node(group, "GeometryNodeExtrudeMesh", "Close Broken Glass Shards", 680, 520)
-    extrude.mode = "FACES"
-    # Extrude each connected shard as one region. Blender's per-face mode makes
-    # one closed cell for every subdivided quad, leaving coincident inner walls
-    # that look like a false tessellation after smooth shading/subdivision.
-    individual = _input(extrude, "Individual")
-    if individual is not None:
-        individual.default_value = False
-    links.new(inp.outputs["Thickness"], back_amount.inputs[0])
-    links.new(back_amount.outputs[0], thickness.inputs["Z"])
-    links.new(delete.outputs["Geometry"], extrude.inputs["Mesh"])
-    links.new(thickness.outputs[0], extrude.inputs["Offset"])
-
-    # A region extrusion contains the displaced cap and its boundary walls, but
-    # not the original front cap. Re-add that source surface, flip only the
-    # generated back cap, then weld the shared rim. This produces one manifold
-    # shell per shard without duplicate faces or hidden walls inside the grid.
-    flip_back = _node(group, "GeometryNodeFlipFaces", "Orient Broken Glass Back Cap", 920, 520)
-    links.new(extrude.outputs["Mesh"], flip_back.inputs["Mesh"])
-    links.new(extrude.outputs["Top"], flip_back.inputs["Selection"])
-    join_volume = _node(group, "GeometryNodeJoinGeometry", "Assemble Broken Glass Volume", 1160, 520)
-    links.new(delete.outputs["Geometry"], join_volume.inputs["Geometry"])
-    links.new(flip_back.outputs["Mesh"], join_volume.inputs["Geometry"])
-    merge_rim = _node(group, "GeometryNodeMergeByDistance", "Weld Broken Glass Rim", 1400, 520)
-    merge_rim.inputs["Distance"].default_value = 1.0e-6
-    links.new(join_volume.outputs["Geometry"], merge_rim.inputs["Geometry"])
-
-    edge_angle = _node(group, "GeometryNodeInputMeshEdgeAngle", "Broken Glass Edge Angle", 1400, 80)
-    sharp_edges = _math(group, "GREATER_THAN", "Broken Glass Sharp Edges", 1640, 80, value_2=0.017453292)
-    bevel = _node(group, "GeometryNodeMeshBevel", "Bevel Broken Glass Geometry", 1640, 520)
-    bevel.inputs["Segments"].default_value = 1
-    bevel.inputs["Shape"].default_value = 0.5
-    bevel.inputs["Miter"].default_value = True
-    has_bevel = _math(group, "GREATER_THAN", "Broken Glass Has Bevel", 1640, 240, value_2=1.0e-6)
-    bevel_switch = _node(group, "GeometryNodeSwitch", "Broken Glass Bevel Bypass", 2120, 520)
-    bevel_switch.input_type = "GEOMETRY"
-    links.new(merge_rim.outputs["Geometry"], bevel.inputs["Mesh"])
-    links.new(edge_angle.outputs["Unsigned Angle"], sharp_edges.inputs[0])
-    links.new(sharp_edges.outputs[0], bevel.inputs["Selection"])
-    links.new(inp.outputs["Bevel"], bevel.inputs["Offset"])
-    links.new(inp.outputs["Bevel"], has_bevel.inputs[0])
-    links.new(has_bevel.outputs[0], bevel_switch.inputs["Switch"])
-    links.new(merge_rim.outputs["Geometry"], bevel_switch.inputs["False"])
-    links.new(bevel.outputs["Mesh"], bevel_switch.inputs["True"])
-
-    material = _node(group, "GeometryNodeSetMaterial", "Broken Glass Material", 2360, 520)
-    smooth = _node(group, "GeometryNodeSetShadeSmooth", "Broken Glass Smooth Shading", 2600, 520)
-    links.new(bevel_switch.outputs["Output"], material.inputs["Geometry"])
-    links.new(inp.outputs["Glass Material"], material.inputs["Material"])
-    links.new(material.outputs["Geometry"], smooth.inputs["Mesh"])
-    links.new(inp.outputs["Shade Smooth"], smooth.inputs["Shade Smooth"])
-    links.new(smooth.outputs["Mesh"], out.inputs["Geometry"])
-    group["fbp_glass_contract_version"] = 6
+    flat = _node(group, "GeometryNodeSetShadeSmooth", "Broken Glass Flat Shading", 8960, 600)
+    flat.inputs["Shade Smooth"].default_value = False
+    links.new(geometry, flat.inputs["Mesh"])
+    glass = _node(group, "GeometryNodeSetMaterial", "Broken Glass Material", 9180, 400)
+    links.new(flat.outputs["Mesh"], glass.inputs["Geometry"])
+    links.new(inp.outputs["Glass Material"], glass.inputs["Material"])
+    result = switch("GEOMETRY", "Surface", 9400, 600, inp.outputs["Glass Surface"], flat.outputs["Mesh"], glass.outputs["Geometry"])
+    links.new(result, out.inputs["Geometry"])
+    group["fbp_glass_contract_version"] = 7
+    group["fbp_effect_contract_version"] = 2
     group["fbp_image_geometry_contract_version"] = 1
     return group
 

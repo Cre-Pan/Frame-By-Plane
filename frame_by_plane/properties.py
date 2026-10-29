@@ -2507,7 +2507,6 @@ _FBP_VIEW_RENDER_PROPERTY_PAIRS = {
     "fbp_cutout_outline_viewport_resolution": "fbp_cutout_outline_render_resolution",
     "fbp_wind_subdivision": "fbp_wind_render_subdivision",
     "fbp_image_relief_subdivision": "fbp_image_relief_render_subdivision",
-    "fbp_glass_subdivision": "fbp_glass_render_subdivision",
     "fbp_crystal_subdivision": "fbp_crystal_render_subdivision",
     "fbp_surface_conform_subdivision": "fbp_surface_conform_render_subdivision",
     "fbp_accordion_subdivision": "fbp_accordion_render_subdivision",
@@ -3392,25 +3391,22 @@ update_image_relief_smooth_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fb
 update_image_relief_smooth_iterations_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_smooth_iterations')
 update_image_relief_alpha_threshold_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_alpha_threshold')
 update_image_relief_shade_smooth_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_shade_smooth')
-update_glass_subdivision_cb = _make_effect_update_callback('GLASS', 'fbp_glass_subdivision')
-update_glass_playback_subdivision_cb = _make_effect_update_callback('GLASS', 'fbp_glass_playback_subdivision')
-update_glass_render_subdivision_cb = _make_effect_update_callback('GLASS', 'fbp_glass_render_subdivision')
+update_glass_pattern_cb = _make_effect_update_callback('GLASS', 'fbp_glass_pattern')
+update_glass_pieces_cb = _make_effect_update_callback('GLASS', 'fbp_glass_pieces')
+update_glass_irregularity_cb = _make_effect_update_callback('GLASS', 'fbp_glass_irregularity')
+update_glass_shatter_cb = _make_effect_update_callback('GLASS', 'fbp_glass_shatter')
+update_glass_impact_x_cb = _make_effect_update_callback('GLASS', 'fbp_glass_impact_x')
+update_glass_impact_y_cb = _make_effect_update_callback('GLASS', 'fbp_glass_impact_y')
+update_glass_spread_cb = _make_effect_update_callback('GLASS', 'fbp_glass_spread')
+update_glass_gap_cb = _make_effect_update_callback('GLASS', 'fbp_glass_gap')
+update_glass_explode_cb = _make_effect_update_callback('GLASS', 'fbp_glass_explode')
+update_glass_depth_cb = _make_effect_update_callback('GLASS', 'fbp_glass_depth')
+update_glass_fall_cb = _make_effect_update_callback('GLASS', 'fbp_glass_fall')
+update_glass_spin_cb = _make_effect_update_callback('GLASS', 'fbp_glass_spin')
 update_glass_thickness_cb = _make_effect_update_callback('GLASS', 'fbp_glass_thickness')
-update_glass_relief_cb = _make_effect_update_callback('GLASS', 'fbp_glass_relief')
-update_glass_source_cb = _make_effect_update_callback('GLASS', 'fbp_glass_source')
-update_glass_normal_image_cb = _make_effect_update_callback('GLASS', 'fbp_glass_normal_image')
-update_glass_noise_scale_cb = _make_effect_update_callback('GLASS', 'fbp_glass_noise_scale')
-update_glass_correct_aspect_cb = _make_effect_update_callback('GLASS', 'fbp_glass_correct_aspect')
-update_glass_texture_scale_x_cb = _make_effect_update_callback('GLASS', 'fbp_glass_texture_scale_x')
-update_glass_texture_scale_y_cb = _make_effect_update_callback('GLASS', 'fbp_glass_texture_scale_y')
-update_glass_crack_width_cb = _make_effect_update_callback('GLASS', 'fbp_glass_crack_width')
-update_glass_damage_cb = _make_effect_update_callback('GLASS', 'fbp_glass_damage')
-update_glass_noise_detail_cb = _make_effect_update_callback('GLASS', 'fbp_glass_noise_detail')
 update_glass_phase_cb = _make_effect_update_callback('GLASS', 'fbp_glass_phase')
 update_glass_alpha_threshold_cb = _make_effect_update_callback('GLASS', 'fbp_glass_alpha_threshold')
-update_glass_shade_smooth_cb = _make_effect_update_callback('GLASS', 'fbp_glass_shade_smooth')
-update_glass_distortion_cb = _make_effect_update_callback('GLASS', 'fbp_glass_distortion')
-update_glass_bevel_cb = _make_effect_update_callback('GLASS', 'fbp_glass_bevel')
+update_glass_use_glass_cb = _make_effect_update_callback('GLASS', 'fbp_glass_use_glass')
 update_glass_roughness_cb = _make_effect_update_callback('GLASS', 'fbp_glass_roughness')
 update_glass_ior_cb = _make_effect_update_callback('GLASS', 'fbp_glass_ior')
 update_glass_tint_cb = _make_effect_update_callback('GLASS', 'fbp_glass_tint')
@@ -5546,79 +5542,69 @@ def register_properties():
         name="Shade Smooth", description="Smooth-shade the displaced image surface",
         default=True, update=update_image_relief_shade_smooth_cb)
 
-    _FBP_OBJECT_RNA.fbp_glass_subdivision = IntProperty(
-        name="Viewport", description="Aspect-balanced quad remesh detail used to resolve Broken Glass fractures while editing",
-        default=5, min=0, max=8, update=update_glass_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_glass_playback_subdivision = IntProperty(
-        name="Playback", description="Maximum Broken Glass remesh detail evaluated during timeline playback",
-        default=4, min=0, max=8, update=update_glass_playback_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_glass_render_subdivision = IntProperty(
-        name="Render", description="Broken Glass remesh detail used for final rendering",
-        default=6, min=0, max=8, update=update_glass_render_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_glass_thickness = FloatProperty(
-        name="Thickness", description="Depth of every closed refractive glass shard",
-        default=0.025, min=0.0001, soft_max=0.25, max=10.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_thickness_cb)
-    _FBP_OBJECT_RNA.fbp_glass_relief = FloatProperty(
-        name="Shard Lift", description="Offset each Voronoi cell by a stable random amount so the fragments no longer share one perfectly flat face",
-        default=0.015, min=-10.0, max=10.0, soft_min=-0.25, soft_max=0.25,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_relief_cb)
-    _FBP_OBJECT_RNA.fbp_glass_source = EnumProperty(
-        name="Damage Source", description="Field that decides where procedural fracture gaps are allowed",
+    _FBP_OBJECT_RNA.fbp_glass_pattern = EnumProperty(
+        name="Pattern", description="How the plane is cut into triangles",
         items=(
-            ('ALPHA', "Source Alpha", "Multiply damage by source alpha variation"),
-            ('PROCEDURAL', "Full Surface", "Fracture the complete visible silhouette"),
-            ('NORMAL', "Damage Map", "Use the selected image luminance as a painted damage mask"),
-        ), default='PROCEDURAL', update=update_glass_source_cb)
-    _FBP_OBJECT_RNA.fbp_glass_normal_image = PointerProperty(
-        name="Damage Map", description="Painted grayscale image controlling where Broken Glass cracks appear",
-        type=bpy.types.Image, update=update_glass_normal_image_cb)
-    _FBP_OBJECT_RNA.fbp_glass_noise_scale = FloatProperty(
-        name="Cell Scale", description="Number and size of Voronoi fracture cells",
-        default=7.0, min=0.01, soft_max=50.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_glass_noise_scale_cb)
-    _FBP_OBJECT_RNA.fbp_glass_correct_aspect = BoolProperty(
-        name="Auto Aspect",
-        description="Keep Voronoi cells proportional on wide or tall planes using the mesh dimensions",
-        default=True, update=update_glass_correct_aspect_cb)
-    _FBP_OBJECT_RNA.fbp_glass_texture_scale_x = FloatProperty(
-        name="Scale X", description="Additional horizontal Voronoi frequency after automatic aspect correction",
-        default=1.0, min=0.01, soft_max=10.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_glass_texture_scale_x_cb)
-    _FBP_OBJECT_RNA.fbp_glass_texture_scale_y = FloatProperty(
-        name="Scale Y", description="Additional vertical Voronoi frequency after automatic aspect correction",
-        default=1.0, min=0.01, soft_max=10.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_glass_texture_scale_y_cb)
-    _FBP_OBJECT_RNA.fbp_glass_crack_width = FloatProperty(
-        name="Crack Width", description="Width of the geometry removed along Voronoi cell borders",
-        default=0.035, min=0.0, soft_max=0.15, max=0.5,
-        options={'ANIMATABLE'}, update=update_glass_crack_width_cb)
-    _FBP_OBJECT_RNA.fbp_glass_damage = FloatProperty(
-        name="Damage", description="Overall amount of open fracture; zero keeps the sheet intact",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_damage_cb)
-    _FBP_OBJECT_RNA.fbp_glass_noise_detail = FloatProperty(
-        name="Chaos", description="Strength of the stable per-cell random lift and crack irregularity",
-        default=0.65, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_glass_noise_detail_cb)
+            ('SHARDS', "Shards", "Even triangles from a jittered grid"),
+            ('IMPACT', "Impact", "Rings and spokes around the impact point, small near it and long towards the border"),
+        ), default='IMPACT', update=update_glass_pattern_cb)
+    _FBP_OBJECT_RNA.fbp_glass_pieces = IntProperty(
+        name="Pieces", description="Number of cuts along the longer side of the plane",
+        default=12, min=2, soft_max=48, max=128, update=update_glass_pieces_cb)
+    _FBP_OBJECT_RNA.fbp_glass_irregularity = FloatProperty(
+        name="Irregularity", description="How far the triangle corners move away from a regular layout",
+        default=0.75, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_irregularity_cb)
+    _FBP_OBJECT_RNA.fbp_glass_shatter = FloatProperty(
+        name="Shatter", description="How far the glass has broken: zero keeps the plane whole, one sends every piece to its full motion",
+        default=0.45, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_shatter_cb)
+    _FBP_OBJECT_RNA.fbp_glass_impact_x = FloatProperty(
+        name="Impact X", description="Horizontal position of the impact point across the plane",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_impact_x_cb)
+    _FBP_OBJECT_RNA.fbp_glass_impact_y = FloatProperty(
+        name="Impact Y", description="Vertical position of the impact point across the plane",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_impact_y_cb)
+    _FBP_OBJECT_RNA.fbp_glass_spread = FloatProperty(
+        name="Spread", description="Break order: one opens the pieces outwards from the impact point, zero in random order",
+        default=0.75, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_spread_cb)
+    _FBP_OBJECT_RNA.fbp_glass_gap = FloatProperty(
+        name="Gap", description="How much each broken piece shrinks, opening cracks between neighbours",
+        default=0.12, min=0.0, max=0.9, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_gap_cb)
+    _FBP_OBJECT_RNA.fbp_glass_explode = FloatProperty(
+        name="Explode", description="Distance the pieces fly away from the impact point, relative to the plane size",
+        default=0.15, min=0.0, soft_max=2.0, max=10.0,
+        options={'ANIMATABLE'}, update=update_glass_explode_cb)
+    _FBP_OBJECT_RNA.fbp_glass_depth = FloatProperty(
+        name="Depth", description="Distance the pieces come out of the plane towards its front, relative to the plane size",
+        default=0.2, min=-10.0, max=10.0, soft_min=-2.0, soft_max=2.0,
+        options={'ANIMATABLE'}, update=update_glass_depth_cb)
+    _FBP_OBJECT_RNA.fbp_glass_fall = FloatProperty(
+        name="Fall", description="Distance the broken pieces drop down the plane, relative to its height",
+        default=0.0, min=-10.0, max=10.0, soft_min=-2.0, soft_max=2.0,
+        options={'ANIMATABLE'}, update=update_glass_fall_cb)
+    _FBP_OBJECT_RNA.fbp_glass_spin = FloatProperty(
+        name="Spin", description="How much the broken pieces tumble; one is up to half a turn on each axis",
+        default=0.25, min=0.0, soft_max=2.0, max=10.0,
+        options={'ANIMATABLE'}, update=update_glass_spin_cb)
+    _FBP_OBJECT_RNA.fbp_glass_thickness = FloatProperty(
+        name="Thickness", description="Depth of every piece; zero keeps flat triangles",
+        default=0.01, min=0.0, soft_max=0.25, max=10.0,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_thickness_cb)
     _FBP_OBJECT_RNA.fbp_glass_phase = FloatProperty(
-        name="Seed", description="Move the procedural cell field to generate or animate a different fracture layout",
+        name="Seed", description="Pick a different random layout and break order",
         default=0.0, soft_min=-100.0, soft_max=100.0,
         options={'ANIMATABLE'}, update=update_glass_phase_cb)
     _FBP_OBJECT_RNA.fbp_glass_alpha_threshold = FloatProperty(
-        name="Alpha Threshold", description="Remove geometry where source alpha is below this value",
+        name="Alpha Threshold", description="Remove pieces that are fully transparent below this alpha",
         default=0.02, min=0.0, max=1.0, subtype='FACTOR', update=update_glass_alpha_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_glass_shade_smooth = BoolProperty(
-        name="Shade Smooth", description="Smooth-shade the closed glass shards",
-        default=True, update=update_glass_shade_smooth_cb)
-    _FBP_OBJECT_RNA.fbp_glass_distortion = FloatProperty(
-        name="Crack Distortion", description="Strength of procedural shard bump refraction",
-        default=0.65, min=0.0, soft_max=3.0, max=10.0,
-        options={'ANIMATABLE'}, update=update_glass_distortion_cb)
-    _FBP_OBJECT_RNA.fbp_glass_bevel = FloatProperty(
-        name="Edge Bevel",
-        description="Blender 5.2 real-geometry Mesh Bevel radius; zero bypasses the node without adding topology",
-        default=0.0, min=0.0, soft_max=0.03, max=1.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_bevel_cb)
+    _FBP_OBJECT_RNA.fbp_glass_use_glass = BoolProperty(
+        name="Glass Surface", description="Render the pieces as refractive glass instead of the plane image",
+        default=False, update=update_glass_use_glass_cb)
     _FBP_OBJECT_RNA.fbp_glass_roughness = FloatProperty(
         name="Roughness", description="Blur and softness of reflections and refraction",
         default=0.12, min=0.0, max=1.0, subtype='FACTOR',
