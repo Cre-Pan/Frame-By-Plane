@@ -64,6 +64,7 @@ def fbp_apply_preferences_to_scene(scene, *, force=False, context=None):
         "fbp_experimental_compositor": getattr(prefs, "default_preview_compositor", False),
         "fbp_preview_procreate_import": getattr(prefs, "default_preview_procreate_import", False),
         "fbp_preview_generic_mesh_effects": getattr(prefs, "default_preview_generic_mesh_effects", False),
+        "fbp_preview_native_effect_shells": getattr(prefs, "default_preview_native_effect_shells", False),
         "fbp_show_gradient_ramp": getattr(prefs, "default_show_gradient_ramp", True),
         "fbp_show_gradient_transform": getattr(prefs, "default_show_gradient_transform", True),
         "fbp_alpha_render_method": getattr(prefs, "default_alpha_render_method", 'AUTO'),

@@ -17605,9 +17605,23 @@ def fbp_sync_effect_items(
             rig.fbp_effects_signature = signature
         if repair_assets or normalize_instance_ids:
             fbp_load_active_effect_instance_settings(rig)
+            _fbp_maintain_effect_shells(target_rigs)
     except FBP_DATA_ERRORS:
         return []
     return target_ids
+
+
+def _fbp_maintain_effect_shells(rigs):
+    """Keep native modifier rows (and preview shells) in step with the stack."""
+    try:
+        from .native_modifiers import fbp_native_after_stack_change
+    except ImportError:
+        return
+    for target_rig in tuple(rigs or ()):
+        try:
+            fbp_native_after_stack_change(target_rig)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not refresh the effect rows in Modifiers", exc)
 
 
 def fbp_schedule_effect_items_sync(rig, rigs=None):
@@ -22456,6 +22470,16 @@ def fbp_draw_effect_settings(
     definition = fbp_effect_definition(effect_id)
     if not definition:
         return
+    shell_available = False
+    try:
+        from .effect_shells import fbp_shell_draw_settings, fbp_shell_supported, fbp_shells_enabled
+        if fbp_shell_draw_settings(layout, rig, effect_id, instance_id):
+            return
+        shell_available = fbp_shell_supported(effect_id) and fbp_shells_enabled(
+            getattr(context, "scene", None)
+        )
+    except ImportError:
+        pass
     box = layout.box()
     configure_layout(box)
     header = box.row(align=True)
@@ -22533,6 +22557,13 @@ def fbp_draw_effect_settings(
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
 
+    if shell_available:
+        shell = header_right.operator(
+            "fbp.effect_shell_toggle", text="", icon="MODIFIER", emboss=False
+        )
+        shell.effect_id = effect_id
+        shell.instance_id = instance_id
+        shell.enable = True
     if definition.get("kind") in {"GEOMETRY", "SHADER"}:
         nodes = header_right.operator(
             "fbp.open_effect_nodes",
@@ -23823,25 +23854,6 @@ def fbp_draw_effect_settings(
         else:
             box.label(text="Applies to the complete layer alpha", icon="IMAGE_ALPHA")
 
-    target_ref = _fbp_effect_ref(effect_id, instance_id)
-    assigned_masks = fbp_masks_targeting_effect(rig, effect_id, instance_id)
-    open_mask_editor = str(
-        getattr(getattr(bpy.context, "scene", None), "fbp_effect_mask_edit_target", "") or ""
-    )
-    if assigned_masks and open_mask_editor != target_ref:
-        local_box = box.box()
-        local_box.label(text="Effect Masks", icon="MOD_MASK")
-        for mask_id in assigned_masks:
-            mask_definition = fbp_effect_definition(mask_id)
-            row = local_box.row(align=True)
-            row.label(
-                text=_fbp_effect_display_label(mask_id, mask_definition, fallback="Mask"),
-                **effect_icon_kwargs(mask_id, mask_definition.get("icon", "MOD_MASK")),
-            )
-            clear = row.operator("fbp.set_effect_mask_target", text="", icon=ui_icon("action.unlink"))
-            clear.mask_effect_id = mask_id
-            clear.target_effect_id = "LAYER"
-            clear.expected_target_effect_id = effect_id
 
     if effect_id == FBP_EFFECT_GAUSSIAN_BLUR:
         gaussian_properties = (
@@ -25060,6 +25072,78 @@ def _fbp_effect_mask_enum_items(_self=None, context=None):
     return _FBP_EFFECT_MASK_ENUM_CACHE
 
 
+_FBP_DEFAULT_EFFECT_MASK = "GRADIENT_MASK"
+
+
+def fbp_draw_effect_mask_panel(layout, context, rigs, rig, effect_id, instance_id=""):
+    """Draw the native-style Mask subpanel under one effect's settings.
+
+    The header checkbox enables the effect's mask, the dropdown picks its type
+    and the attached mask settings are drawn inline, like a modifier panel.
+    """
+    effect_id = fbp_normalize_effect_id(effect_id)
+    if not rig or not _fbp_effect_can_receive_mask(effect_id):
+        return False
+    instance_id = str(instance_id or "") if _fbp_effect_uses_multi_instances(effect_id) else ""
+    attached = tuple(fbp_masks_targeting_effect(rig, effect_id, instance_id))
+    enabled = bool(attached) and all(fbp_effect_visible_state(rig, mask_id) for mask_id in attached)
+    try:
+        header, body = layout.panel("fbp_effect_mask_panel", default_closed=True)
+    except (AttributeError, TypeError):
+        header, body = layout.row(align=True), layout.column(align=False)
+    toggle = header.operator(
+        "fbp.toggle_effect_masks",
+        text="",
+        icon="CHECKBOX_HLT" if enabled else "CHECKBOX_DEHLT",
+        emboss=False,
+    )
+    toggle.target_effect_id = effect_id
+    toggle.target_instance_id = instance_id
+    header.label(text="Mask", icon="MOD_MASK")
+    if attached:
+        header.label(
+            text=", ".join(
+                _fbp_effect_display_label(mask_id, fbp_effect_definition(mask_id), fallback="Mask")
+                for mask_id in attached
+            )
+        )
+    if body is None:
+        return True
+    configure_layout(body)
+    row = body.row(align=True)
+    if len(attached) == 1:
+        current = fbp_effect_definition(attached[0])
+        text = _fbp_effect_display_label(attached[0], current, fallback="Mask")
+        icon_kwargs = effect_icon_kwargs(attached[0], current.get("icon", "MOD_MASK"))
+    else:
+        text = "Add Mask" if attached else "None"
+        icon_kwargs = {"icon": "ADD" if attached else "MOD_MASK"}
+    row.label(text="Type")
+    choose = row.operator_menu_enum(
+        "fbp.set_effect_mask_type", "mask_effect_id", text=text, **icon_kwargs
+    )
+    choose.target_effect_id = effect_id
+    choose.target_instance_id = instance_id
+    advanced = row.operator("fbp.open_effect_masks", text="", icon="PREFERENCES")
+    advanced.effect_id = effect_id
+    advanced.instance_id = instance_id
+    if not attached:
+        hint_row(body, "Tick the box or pick a type to mask only this effect.", icon="INFO", disabled=True)
+        return True
+    settings = body.column(align=False)
+    settings.active = enabled
+    for mask_id in attached:
+        fbp_draw_effect_settings(
+            settings, rig, mask_id,
+            selected_count=len(rigs or ()) or 1,
+            present_count=sum(
+                1 for item in tuple(rigs or ()) if mask_id in fbp_masks_targeting_effect(item, effect_id, instance_id)
+            ) or 1,
+            context=context,
+        )
+    return True
+
+
 def fbp_draw_effect_mask_editor(layout, context, rigs, target_effect_id, target_instance_id=""):
     """Draw a compact mask popup with one native dropdown.
 
@@ -25840,11 +25924,8 @@ class FBP_MT_AddEffect(Menu):
             text="Mask",
             icon="MOD_MASK",
         )
-        layout.menu(
-            "FBP_MT_object_effects_3d",
-            text="Mesh Effects",
-            icon="MOD_SCATTER_ON_SURFACE",
-        )
+        # Mesh effects are real modifiers: they are added from Blender's own
+        # Properties > Modifiers > Add Modifier > Mesh menu.
 
 
 def _fbp_selected_generic_mesh_targets(context):
@@ -26728,11 +26809,6 @@ class FBP_MT_ObjectEffects(Menu):
             text="Mask",
             icon="MOD_MASK",
         )
-        layout.menu(
-            FBP_MT_ObjectEffects3D.bl_idname,
-            text="Mesh Effects",
-            icon="MOD_SCATTER_ON_SURFACE",
-        )
 
 
 def _fbp_context_layer_blend_mode(rig):
@@ -27225,6 +27301,115 @@ class FBP_OT_AddEffectMask(Operator):
             return {"CANCELLED"}
         return {"FINISHED"} if changed else {"CANCELLED"}
 
+
+
+class FBP_OT_ToggleEffectMasks(Operator):
+    bl_idname = "fbp.toggle_effect_masks"
+    bl_label = "Enable Effect Mask"
+    bl_description = "Enable or disable the mask of this effect. With no mask yet, add a Gradient Mask limited to this effect"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    target_effect_id: StringProperty(default="", options={"SKIP_SAVE"})
+    target_instance_id: StringProperty(default="", options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_fbp_selected_rigs(context))
+
+    def execute(self, context):
+        target_effect_id = fbp_normalize_effect_id(self.target_effect_id)
+        target_instance_id = str(self.target_instance_id or "") if _fbp_effect_uses_multi_instances(target_effect_id) else ""
+        target_ref = _fbp_effect_ref(target_effect_id, target_instance_id)
+        if not _fbp_effect_can_receive_mask(target_effect_id):
+            return {"CANCELLED"}
+        rigs = [
+            rig for rig in _fbp_selected_rigs(context)
+            if _fbp_effect_ref_is_active(rig, target_ref)
+        ]
+        if not rigs:
+            return {"CANCELLED"}
+        attached = {rig: tuple(fbp_masks_targeting_effect(rig, target_effect_id, target_instance_id)) for rig in rigs}
+        if not any(attached.values()):
+            success, changed = _fbp_apply_effect_mask_transaction(
+                rigs, _FBP_DEFAULT_EFFECT_MASK, target_effect_id, target_instance_id,
+                add_missing=True,
+            )
+            if not success:
+                self.report({"ERROR"}, "Mask assignment failed; all selected layers were restored")
+                return {"CANCELLED"}
+        else:
+            visible = not all(
+                fbp_effect_visible_state(rig, mask_id)
+                for rig, masks in attached.items() for mask_id in masks
+            )
+            for rig, masks in attached.items():
+                for mask_id in masks:
+                    fbp_set_effect_visible(rig, mask_id, visible)
+        fbp_sync_effect_items(rigs[0], rigs)
+        return {"FINISHED"}
+
+
+class FBP_OT_SetEffectMaskType(Operator):
+    bl_idname = "fbp.set_effect_mask_type"
+    bl_label = "Mask Type"
+    bl_description = "Choose the mask of this effect. It replaces a single attached mask, or adds one more when several are attached"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    mask_effect_id: EnumProperty(
+        name="Mask",
+        description="Mask type limited to this effect",
+        items=_fbp_effect_mask_enum_items,
+        options={"SKIP_SAVE"},
+    )
+    target_effect_id: StringProperty(default="", options={"SKIP_SAVE"})
+    target_instance_id: StringProperty(default="", options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_fbp_selected_rigs(context))
+
+    def execute(self, context):
+        mask_effect_id = fbp_normalize_effect_id(self.mask_effect_id)
+        target_effect_id = fbp_normalize_effect_id(self.target_effect_id)
+        target_instance_id = str(self.target_instance_id or "") if _fbp_effect_uses_multi_instances(target_effect_id) else ""
+        target_ref = _fbp_effect_ref(target_effect_id, target_instance_id)
+        if not _fbp_effect_is_local_mask(mask_effect_id) or not _fbp_effect_can_receive_mask(target_effect_id):
+            return {"CANCELLED"}
+        rigs = [
+            rig for rig in _fbp_selected_rigs(context)
+            if _fbp_effect_ref_is_active(rig, target_ref)
+            and fbp_effect_supported_for_rig(rig, mask_effect_id)
+        ]
+        if not rigs:
+            self.report({"WARNING"}, "This mask is not compatible with the selected layers")
+            return {"CANCELLED"}
+        if not fbp_set_effect_mask_type(rigs, mask_effect_id, target_effect_id, target_instance_id):
+            self.report({"ERROR"}, "Mask assignment failed; all selected layers were restored")
+            return {"CANCELLED"}
+        fbp_sync_effect_items(rigs[0], rigs)
+        return {"FINISHED"}
+
+
+def fbp_set_effect_mask_type(rigs, mask_effect_id, target_effect_id, target_instance_id=""):
+    """Make ``mask_effect_id`` the mask of one effect on every layer.
+
+    A single previously attached mask of another type is replaced; when an
+    effect already combines several masks the new one is added to them.
+    """
+    mask_effect_id = fbp_normalize_effect_id(mask_effect_id)
+    replaced = []
+    for rig in tuple(rigs or ()):
+        attached = tuple(fbp_masks_targeting_effect(rig, target_effect_id, target_instance_id))
+        if len(attached) == 1 and attached[0] != mask_effect_id:
+            replaced.append((rig, attached[0]))
+    success, _changed = _fbp_apply_effect_mask_transaction(
+        rigs, mask_effect_id, target_effect_id, target_instance_id, add_missing=True,
+    )
+    if not success:
+        return False
+    for rig, old_mask in replaced:
+        fbp_remove_effect(rig, old_mask, sync_items=False)
+    return True
 
 
 class FBP_OT_SetEffectMaskTarget(Operator):
@@ -33789,6 +33974,8 @@ classes = (
     FBP_OT_OpenEffectMasks,
     FBP_OT_CloseEffectMasks,
     FBP_OT_AddEffectMask,
+    FBP_OT_ToggleEffectMasks,
+    FBP_OT_SetEffectMaskType,
     FBP_OT_SetEffectMaskTarget,
     FBP_OT_SelectEffect,
     FBP_OT_AddEffect,

@@ -116,6 +116,15 @@ FBP_FEATURE_DEFINITIONS = (
         "preference_property": "default_preview_generic_mesh_effects",
         "disable_hint": "Disable Generic Mesh Preview for an LTS-only project.",
     },
+    {
+        "id": "native_effect_shells",
+        "label": "Image Effects as Modifiers",
+        "maturity": FBP_FEATURE_PREVIEW,
+        "description": "Show supported image effects and masks as native modifiers whose inputs drive the plane material.",
+        "scene_property": "fbp_preview_native_effect_shells",
+        "preference_property": "default_preview_native_effect_shells",
+        "disable_hint": "Return shelled effects to the Frame By Plane panel and disable the preview for an LTS-only project.",
+    },
 )
 
 FBP_LTS_CORE_SCOPE = tuple(

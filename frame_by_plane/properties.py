@@ -841,6 +841,11 @@ class FBP_AddonPreferences(AddonPreferences):
         default='TOP',
         update=update_shift_a_menu_position_cb,
     )
+    modifiers_follow_layer: BoolProperty(
+        name="Modifiers Follow Layer",
+        description="When a Frame By Plane layer is selected, Properties > Modifiers shows the modifiers of its image plane, so mesh effects can be reordered, hidden and removed natively",
+        default=True,
+    )
     show_control_panel_properties: BoolProperty(
         name="Properties",
         description="Show Frame By Plane control panels in Blender Properties and the standard Tool context",
@@ -1477,6 +1482,11 @@ class FBP_AddonPreferences(AddonPreferences):
     default_preview_generic_mesh_effects: BoolProperty(
         name="Generic Mesh Effects",
         description="Enable the preview that applies selected Frame By Plane Geometry Nodes effects to ordinary mesh objects",
+        default=False,
+    )
+    default_preview_native_effect_shells: BoolProperty(
+        name="Image Effects as Modifiers",
+        description="Enable the preview that shows supported image effects and masks as native modifiers in newly initialized files",
         default=False,
     )
     default_show_previews: BoolProperty(
@@ -2144,6 +2154,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'show_panel_layers', text='Layers', toggle=True, icon='RENDERLAYERS')
                 row.prop(self, 'show_panel_grease_pencil', text='Grease Pencil', toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row.prop(self, 'show_panel_layer_settings', text='Layer Settings', toggle=True, icon='TOOL_SETTINGS')
+                body.prop(self, 'modifiers_follow_layer', icon='MODIFIER')
                 if not any_location:
                     hint_row(body, 'Both control-panel locations are disabled. Shift+A, Modifiers, Output and Camera tools remain available.', icon='HIDE_ON')
                 else:
@@ -2272,6 +2283,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'default_preview_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                 row.prop(self, 'default_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                 row.prop(self, 'default_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
+                row.prop(self, 'default_preview_native_effect_shells', text='Image as Modifiers', toggle=True, icon='MODIFIER')
                 scene = getattr(context, 'scene', None)
                 if scene is not None:
                     current = body.box()
@@ -2281,11 +2293,13 @@ class FBP_AddonPreferences(AddonPreferences):
                     row.prop(scene, 'fbp_experimental_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                     row.prop(scene, 'fbp_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                     row.prop(scene, 'fbp_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
+                    row.prop(scene, 'fbp_preview_native_effect_shells', text='Image as Modifiers', toggle=True, icon='MODIFIER')
                     enabled_preview = [
                         label for label, property_name in (
                             ('Compositor', 'fbp_experimental_compositor'),
                             ('Procreate', 'fbp_preview_procreate_import'),
                             ('Generic Mesh', 'fbp_preview_generic_mesh_effects'),
+                            ('Image as Modifiers', 'fbp_preview_native_effect_shells'),
                         )
                         if bool(getattr(scene, property_name, False))
                     ]
@@ -4894,6 +4908,11 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_preview_generic_mesh_effects = BoolProperty(
         name="Generic Mesh Preview",
         description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 8 LTS core scope",
+        default=False,
+    )
+    _FBP_SCENE_RNA.fbp_preview_native_effect_shells = BoolProperty(
+        name="Image Effects as Modifiers",
+        description="Show supported image effects and masks as native modifiers whose inputs drive the plane material. This workflow is outside the Frame By Plane 8 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_color_plane_type = EnumProperty(

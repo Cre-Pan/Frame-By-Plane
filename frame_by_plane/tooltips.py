@@ -682,10 +682,10 @@ CATEGORY_DETAILS = {
 
 
 MENU_TOOLTIPS = {
-    "FBP_MT_add_effect": "Choose Image Effects, Mask or Mesh Effects and add a compatible effect to the selected Frame By Plane layers.",
+    "FBP_MT_add_effect": "Choose Image Effects or Mask and add a compatible effect to the selected Frame By Plane layers. Mesh effects are added from Modifiers > Add Modifier > Mesh.",
     "FBP_MT_effect_presets": "Open built-in and user presets for the active effect. User presets can be applied, renamed or deleted, and the current settings can be saved as a new preset.",
     "FBP_MT_effect_stack_actions": "Open actions for copying, pasting, resetting, sorting or clearing the selected layers' effect stack.",
-    "FBP_MT_object_effects": "Open Frame By Plane's Image, Mask and Mesh libraries for the selected layer directly from Blender's object context menu.",
+    "FBP_MT_object_effects": "Open Frame By Plane's Image and Mask libraries for the selected layer directly from Blender's object context menu.",
     "FBP_MT_object_masks": "Add Shape, generated, Grease Pencil, imported, Alpha Matte or Luma Matte masks from the dedicated Mask Stack.",
     "FBP_MT_object_effects_2d": "Browse compatible base, UV and image-processing effects for the selected Frame By Plane layers.",
     "FBP_MT_object_effects_3d": "Browse compatible Geometry Nodes and mesh effects for the selected Frame By Plane layers.",

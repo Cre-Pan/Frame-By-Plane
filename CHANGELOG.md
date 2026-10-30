@@ -16,6 +16,13 @@ All notable public changes to Frame By Plane are documented here.
 
 - **Edge Distance Mask** (Mask, Nodes menu): a mask that ramps from the artwork's transparent edge inward over a set distance, for glowing borders, inner strokes and grow-in reveals (animate Threshold). Invert keeps the band along the edge. With Image Border on, the picture's own border counts as an edge, so fully opaque images get a frame-shaped falloff.
 
+### Effects in Blender's Modifiers panel
+
+- **Add Modifier > Mesh** (monkey icon) lists the Frame By Plane mesh effects; they are no longer in the Frame By Plane Add Effect menu.
+- With a layer selected, **Properties > Modifiers** shows the modifiers of its image plane (it pins itself to the plane and lets go when you change tab or selection; turn it off with Preferences > Modifiers Follow Layer). Drag and drop, the eye and camera toggles, edit mode display and delete work natively and update the Frame By Plane stack. Duplicating an effect stays in the Frame By Plane stack. Modifiers list effects bottom-up, the Frame By Plane stack top-down.
+- Every image effect has a **Mask** subpanel: the checkbox turns its mask on and off, the dropdown picks the mask type (it replaces the previous one) and the mask settings appear inline.
+- Preview, **Image Effects as Modifiers**: Hue & Saturation, Vignette, Posterize, Gradient Mask, Circle Mask and Square Mask can become native modifiers whose inputs drive the material (keyframes included), in Eevee and Cycles. Enable it under Preferences > Advanced > LTS Feature Scope.
+
 ### Plane creation
 
 - **Fewer popups.** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar instead of a dialog after the file browser. Color, Gradient, Holdout, Color Plane from Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup.
