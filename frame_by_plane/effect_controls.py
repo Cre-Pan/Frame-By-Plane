@@ -1106,7 +1106,7 @@ def ensure_effect_control(rig, effect_id, spec, *, select=False):
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
         # Handle meshes are authored in the plane's XY space. Empties from
-        # files before 8.1 carried a +90° X or Y correction: reset it.
+        # files before 8.2 carried a +90° X or Y correction: reset it.
         if mode != "VECTOR_DIRECTION":
             if abs(float(control.rotation_euler.x)) > 1.0e-7:
                 control.rotation_euler.x = 0.0

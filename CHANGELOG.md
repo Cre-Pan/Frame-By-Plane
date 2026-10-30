@@ -2,7 +2,7 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [8.1.0] - Unreleased
+## [8.2.0] - Unreleased
 
 ### Effects
 
