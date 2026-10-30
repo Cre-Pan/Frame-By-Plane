@@ -613,6 +613,8 @@ ICONS.update({
     "CUTOUT_OUTLINE": _cutout(_star(19.5, 20.5, 11, 4.8)),
     "SCULPT_WAVES": (_stroke(_wave(10), 0.5, 2.4) + p(_wave(18), 2.4)
                      + fill(_wave(26) + " V33 H7 Z", 0.4) + p(_wave(26), 2.4)),
+    "PAPER_SHARDS": (poly([(6, 6), (19, 6), (15.5, 19.5), (6, 23)]) + poly([(22, 6), (33, 6), (33, 33), (20, 33), (18, 21)], 0.55)
+                     + poly([(6, 26), (15, 22.5), (17, 33), (6, 33)], 0.3)),
     "SPHERE_SCREEN": _solid_cube(19.5, 33.5) + _solid_cube(12.7, 20.9) + _solid_cube(26.3, 20.9),
 })
 
