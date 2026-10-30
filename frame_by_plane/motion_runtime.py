@@ -2891,7 +2891,7 @@ class FBP_PG_MotionItem(PropertyGroup):
     end_frame: IntProperty(description='Last timeline frame where this Motion is active. Set to 0 to leave it open-ended.', name="End", default=0, min=0, soft_max=2500, update=_motion_property_update)
     loop_duration: IntProperty(name="Loop Frames", description="Optional exact loop length; zero uses the preset's natural timing", default=0, min=0, soft_max=250, update=_motion_property_update, options={"HIDDEN"})
     location_strength: FloatVectorProperty(description='Vector value for Location Strength. Used for positions, colors or grouped numeric controls in the current Motion system.', name="Position", subtype="TRANSLATION", size=3, default=(0.0, 0.0, 0.1), precision=4, update=_motion_property_update)
-    rotation_strength: FloatVectorProperty(description='Rotation angle used by the effect or helper. Example: rotate bands, hatch lines, gradients or directional sampling.', name="Rotation", subtype="EULER", unit="ROTATION", size=3, default=(0.0, 0.0, math.radians(2.0)), update=_motion_property_update)
+    rotation_strength: FloatVectorProperty(description='Rotation amount', name="Rotation", subtype="EULER", unit="ROTATION", size=3, default=(0.0, 0.0, math.radians(2.0)), update=_motion_property_update)
     scale_strength: FloatProperty(description='Size control for the generated result. Higher values increase visual coverage and may increase viewport cost.', name="Scale", default=0.0, soft_min=-0.5, soft_max=0.5, precision=4, update=_motion_property_update)
     pivot_object: PointerProperty(
         name="Pivot Null", type=bpy.types.Object, poll=_motion_pivot_poll, update=_motion_property_update,
@@ -2905,7 +2905,7 @@ class FBP_PG_MotionItem(PropertyGroup):
     path_loop: BoolProperty(description="Repeat the full extended path after it reaches the last generated repeat.", name="Loop Path", default=True, update=_motion_property_update)
     path_extend: IntProperty(description="Visibly duplicate the generated curve forward. 1 is a single curve; 500 is the maximum preview length.", name="Extend", default=1, min=1, max=500, soft_max=24, update=_motion_follow_curve_update)
     path_shape: EnumProperty(name="Curve Type", description="Shape used when generating a Follow Curve helper", items=MOTION_FOLLOW_CURVE_SHAPE_ITEMS, default="BEZIER", update=_motion_follow_curve_update)
-    path_mode: EnumProperty(description='Operation mode for this Motion system. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Direction", items=MOTION_PATH_MODE_ITEMS, default="FORWARD", update=_motion_property_update)
+    path_mode: EnumProperty(description='Path direction', name="Direction", items=MOTION_PATH_MODE_ITEMS, default="FORWARD", update=_motion_property_update)
     path_follow_rotation: BoolProperty(description='Toggle this option for the current Motion system. Disabled keeps the data available but prevents this behavior from being applied.', name="Follow Rotation", default=False, update=_motion_property_update)
     path_bank_strength: FloatProperty(description='Optional roll added while the object follows a curved path.', name="Bank", subtype="ANGLE", unit="ROTATION", default=0.0, soft_min=-math.pi, soft_max=math.pi, update=_motion_property_update)
     path_resolution: IntProperty(description='Sampling quality for generated paths and spring coils. Higher values are smoother but cost more in viewport playback.', name="Path Quality", default=12, min=2, max=64, update=_motion_follow_curve_update)
@@ -3231,7 +3231,7 @@ class FBP_OT_MotionMove(Operator):
     bl_description = "Reorder the active Motion instance"
     bl_options = {"REGISTER", "UNDO"}
 
-    direction: EnumProperty(description='Direction used by the action. Example: UP/DOWN for stack movement, or positive/negative for directional controls.', items=(("UP", "Up", "Move up"), ("DOWN", "Down", "Move down")), default="UP")
+    direction: EnumProperty(description='Move up or down', items=(("UP", "Up", "Move up"), ("DOWN", "Down", "Move down")), default="UP")
 
     def execute(self, context):
         target = _motion_target_from_context(context)
@@ -3537,10 +3537,10 @@ class FBP_OT_MotionDistribute(Operator):
     bl_description = "Link the active Motion across selected targets, then apply stagger and influence falloff"
     bl_options = {"REGISTER", "UNDO"}
 
-    stagger_mode: EnumProperty(description='Operation mode for this Motion system. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Stagger", items=MOTION_STAGGER_ITEMS, default="PROGRESSIVE")
+    stagger_mode: EnumProperty(description='How the delay spreads across layers', name="Stagger", items=MOTION_STAGGER_ITEMS, default="PROGRESSIVE")
     stagger_frames: IntProperty(description='Timeline frame or frame-count value used by the selected animation, sequence or loop operation.', name="Frames per Step", default=2, min=0, soft_max=48)
     phase_step: FloatProperty(description='Phase Step value used by the current Motion system. Changes are applied only to compatible Frame By Plane data.', name="Phase per Step", subtype="ANGLE", unit="ROTATION", default=0.0)
-    falloff_mode: EnumProperty(description='Operation mode for this Motion system. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Falloff", items=MOTION_FALLOFF_ITEMS, default="NONE")
+    falloff_mode: EnumProperty(description='How the strength fades across layers', name="Falloff", items=MOTION_FALLOFF_ITEMS, default="NONE")
     minimum_influence: FloatProperty(description='Blend strength of this control. 0 disables its visual contribution; 1 applies the full registered effect.', name="Minimum", subtype="FACTOR", default=0.35, min=0.0, max=1.0)
     invert_distance: BoolProperty(name="Invert Distance", description="Give distant targets more influence than the active target", default=False)
     randomize_seed: BoolProperty(description='Deterministic random seed. Change it to get a different variation without changing the overall settings.', name="Randomize Seed per Target", default=True)
@@ -4525,7 +4525,7 @@ def register():
         bpy.types.Object.fbp_motion_master_enabled = BoolProperty(description='Toggle this option for the current Motion system. Disabled keeps the data available but prevents this behavior from being applied.', name="Enable Motion", default=True, update=_motion_master_update)
         bpy.types.Object.fbp_motion_base_captured = BoolProperty(description='Toggle this option for the current Motion system. Disabled keeps the data available but prevents this behavior from being applied.', name="Motion Base Captured", default=False, options={"HIDDEN"})
         bpy.types.Object.fbp_motion_base_location = FloatVectorProperty(description='Vector value for Motion Base Location. Used for positions, colors or grouped numeric controls in the current Motion system.', name="Motion Base Position", size=3, default=(0.0, 0.0, 0.0), options={"HIDDEN"})
-        bpy.types.Object.fbp_motion_base_rotation = FloatVectorProperty(description='Rotation angle used by the effect or helper. Example: rotate bands, hatch lines, gradients or directional sampling.', name="Motion Base Rotation", size=3, subtype="EULER", unit="ROTATION", default=(0.0, 0.0, 0.0), options={"HIDDEN"})
+        bpy.types.Object.fbp_motion_base_rotation = FloatVectorProperty(description='Base rotation before Motion', name="Motion Base Rotation", size=3, subtype="EULER", unit="ROTATION", default=(0.0, 0.0, 0.0), options={"HIDDEN"})
         bpy.types.Object.fbp_motion_base_scale = FloatVectorProperty(description='Size control for the generated result. Higher values increase visual coverage and may increase viewport cost.', name="Motion Base Scale", size=3, default=(1.0, 1.0, 1.0), options={"HIDDEN"})
         bpy.types.Object.fbp_motion_last_bake_report = StringProperty(description='Motion Last Bake Report value used by the current Motion system. Changes are applied only to compatible Frame By Plane data.', name="Motion Bake Report", default="")
 

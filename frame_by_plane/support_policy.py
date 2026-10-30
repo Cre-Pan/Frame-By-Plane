@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 
-FBP_LTS_TARGET_VERSION = "8.0.1"
+FBP_LTS_TARGET_VERSION = "8.2.0"
 FBP_LTS_BLENDER_SERIES = "5.2"
 FBP_LTS_PLATFORM_IDS = (
     "windows-x64",
@@ -115,6 +115,15 @@ FBP_FEATURE_DEFINITIONS = (
         "scene_property": "fbp_preview_generic_mesh_effects",
         "preference_property": "default_preview_generic_mesh_effects",
         "disable_hint": "Disable Generic Mesh Preview for an LTS-only project.",
+    },
+    {
+        "id": "native_effect_shells",
+        "label": "Image Effects as Modifiers",
+        "maturity": FBP_FEATURE_PREVIEW,
+        "description": "Show supported image effects and masks as native modifiers whose inputs drive the plane material.",
+        "scene_property": "fbp_preview_native_effect_shells",
+        "preference_property": "default_preview_native_effect_shells",
+        "disable_hint": "Return shelled effects to the Frame By Plane panel and disable the preview for an LTS-only project.",
     },
 )
 

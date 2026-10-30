@@ -44,6 +44,7 @@ BUILTIN_EFFECT_IDS = {
     "WHITE_BALANCE",
     "CURVES",
     "COLOR_ISOLATE",
+    "REPLACE_COLOR",
     "GRADIENT_LIGHT",
     "RIM",
     "SHADOW",
@@ -114,6 +115,23 @@ BUILTIN_EFFECT_IDS = {
     "RISO_PRINT",
     "EDGE_DISTANCE_MASK",
 }
+
+
+# Effects whose older saved groups computed a wrong result: effect id ->
+# (asset id prefix, contract). Stale groups fail _builtin_group_is_complete and
+# fbp_upgrade_stale_effect_groups swaps them when a file is opened.
+_BUILTIN_EFFECT_CONTRACTS = {
+    "HALFTONE": ("frame_by_plane.shader.halftone", 2),
+    "SLICE_SHIFT": ("frame_by_plane.shader.slice_shift", 2),
+    "PAPER_SHARDS": ("frame_by_plane.paper_shards", 2),
+    "FIBER_TUFTS": ("frame_by_plane.fiber_tufts", 2),
+    "CROSSHATCH": ("frame_by_plane.shader.crosshatch", 2),
+    "FRAME_STACK": ("frame_by_plane.frame_stack", 2),
+    "GLASS": ("frame_by_plane.broken_glass", 2),
+}
+
+# Positions per row of the Frame Stack timing table image.
+FBP_FRAME_STACK_TABLE_WIDTH = 1024
 
 
 def _socket(group, name, in_out, socket_type, *, default=None, minimum=None, maximum=None):
@@ -284,7 +302,21 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     transform = _node(group, "GeometryNodeTransform", f"{prefix} Position Aspect Grid", x + 2660, y)
     links.new(grid.outputs["Mesh"], transform.inputs["Geometry"])
     links.new(translation.outputs[0], transform.inputs["Translation"])
+    return _project_planar_mesh(
+        group, transform.outputs["Geometry"], geometry_socket, ray_length.outputs[0],
+        prefix=prefix, x=x, y=y, triangulate=triangulate,
+    )
 
+
+def _project_planar_mesh(group, mesh_socket, geometry_socket, ray_length_socket, *, prefix, x, y, triangulate=False):
+    """Drop a generated planar mesh onto the source and give it its UVs and materials.
+
+    ``mesh_socket`` must lie just above the source in local Z. Each vertex is
+    raycast straight down: hits take the source position and ``UVMap``, misses
+    (holes, Crop) are removed, and every face points back at the source
+    material slot it lies on.
+    """
+    links = group.links
     position = _node(group, "GeometryNodeInputPosition", f"{prefix} Remesh Source Position", x + 2660, y - 220)
     source_uv = _node(group, "GeometryNodeInputNamedAttribute", f"{prefix} Source UVMap", x + 2660, y - 420)
     source_uv.data_type = "FLOAT_VECTOR"
@@ -298,7 +330,7 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     raycast.inputs["Ray Direction"].default_value = (0.0, 0.0, -1.0)
     links.new(geometry_socket, raycast.inputs["Target Geometry"])
     links.new(position.outputs["Position"], raycast.inputs["Source Position"])
-    links.new(ray_length.outputs[0], raycast.inputs["Ray Length"])
+    links.new(ray_length_socket, raycast.inputs["Ray Length"])
     sampled_attribute = _input(raycast, "Attribute")
     if sampled_attribute is not None:
         links.new(source_uv.outputs["Attribute"], sampled_attribute)
@@ -309,9 +341,8 @@ def _build_aspect_remesh_nodes(group, geometry_socket, level_socket, *, prefix, 
     store_uv.data_type = "FLOAT2"
     store_uv.domain = "CORNER"
     store_uv.inputs["Name"].default_value = "UVMap"
-    links.new(transform.outputs["Geometry"], store_uv.inputs["Geometry"])
-    sampled_uv = _output(raycast, "Attribute")
-    links.new(sampled_uv if sampled_uv is not None else grid.outputs["UV Map"], store_uv.inputs["Value"])
+    links.new(mesh_socket, store_uv.inputs["Geometry"])
+    links.new(_output(raycast, "Attribute"), store_uv.inputs["Value"])
 
     hit_name = "fbp_internal_remesh_hit"
     store_hit = _node(group, "GeometryNodeStoreNamedAttribute", f"{prefix} Store Remesh Hits", x + 3320, y)
@@ -444,6 +475,100 @@ def fbp_upgrade_aspect_remesh_group():
     return True
 
 
+def fbp_upgrade_stale_effect_groups(definitions, asset_dir):
+    """Swap saved groups whose effect contract is out of date.
+
+    Materials and modifiers keep pointing at the group saved in the file, so a
+    fixed builder alone would only reach layers where the effect is added
+    again. Shared groups are replaced by the fresh build; each per-layer private
+    copy gets its own fresh copy that keeps the layer's tags and images. Groups
+    the artist opened for editing are left alone.
+    """
+    upgraded = 0
+    for effect_id, (asset_prefix, _contract) in _BUILTIN_EFFECT_CONTRACTS.items():
+        definition = definitions.get(effect_id)
+        if not definition:
+            continue
+        stale = []
+        for group in tuple(bpy.data.node_groups):
+            try:
+                if (
+                    getattr(group, "library", None) is None
+                    and str(group.get("fbp_effect_asset_id", "") or "").startswith(asset_prefix)
+                    and not bool(group.get("fbp_user_editable_effect_group", False))
+                    and not _builtin_group_is_complete(group, definition)
+                ):
+                    stale.append(group)
+            except FBP_DATA_ERRORS:
+                continue
+        if not stale:
+            continue
+        fresh = create_builtin_effect_group(effect_id, definition, asset_dir)
+        if fresh is None or not _builtin_group_is_complete(fresh, definition):
+            continue
+        canonical_name = str(definition.get("canonical_name", "") or "")
+        shared_used = False
+        for group in stale:
+            try:
+                if bool(group.get("fbp_private_effect_group", False)):
+                    replacement = _fresh_private_copy(fresh, group)
+                else:
+                    replacement = fresh
+                    shared_used = True
+                name = group.name
+                group.user_remap(replacement)
+                bpy.data.node_groups.remove(group)
+                if replacement is not fresh:
+                    replacement.name = name
+                upgraded += 1
+            except FBP_DATA_ERRORS:
+                continue
+        try:
+            # Left unused, the fresh build keeps its fake user and serves as the
+            # canonical group that later private copies start from.
+            if shared_used:
+                fresh.use_fake_user = False
+            if canonical_name and fresh.name != canonical_name and bpy.data.node_groups.get(canonical_name) is None:
+                fresh.name = canonical_name
+        except FBP_DATA_ERRORS:
+            pass
+    return upgraded
+
+
+def _fresh_private_copy(fresh, stale):
+    """Copy a fresh build and carry over a private group's owner tags and images."""
+    copy = fresh.copy()
+    copy.use_fake_user = False
+    for key in stale.keys():
+        if key not in copy:
+            copy[key] = stale[key]
+    # The runtime writes the layer image into the group: the node's image in a
+    # shader group, the Image and Frame sockets in a geometry group, together
+    # with the sampling copied from the plane.
+    for node in stale.nodes:
+        target = copy.nodes.get(node.name)
+        if target is None or target.bl_idname != node.bl_idname:
+            continue
+        if node.bl_idname not in {"ShaderNodeTexImage", "GeometryNodeImageTexture"}:
+            continue
+        for attribute in ("image", "interpolation", "extension", "projection"):
+            if hasattr(node, attribute) and hasattr(target, attribute):
+                try:
+                    setattr(target, attribute, getattr(node, attribute))
+                except FBP_DATA_ERRORS:
+                    pass
+        for socket in node.inputs:
+            if socket.is_linked or socket.name not in {"Image", "Frame"}:
+                continue
+            target_socket = target.inputs.get(socket.name)
+            if target_socket is not None and not target_socket.is_linked:
+                try:
+                    target_socket.default_value = socket.default_value
+                except FBP_DATA_ERRORS:
+                    pass
+    return copy
+
+
 def _aspect_remesh(group, geometry_socket, level_socket, *, prefix, x, y, triangulate=True):
     """Insert the compact shared remesh group and return its geometry output."""
     node = _node(group, "GeometryNodeGroup", f"{prefix} Aspect Remesh", x, y)
@@ -454,13 +579,18 @@ def _aspect_remesh(group, geometry_socket, level_socket, *, prefix, x, y, triang
     return node.outputs["Geometry"]
 
 
-def _alpha_geometry_mask(group, group_input, *, prefix="Alpha", x=-1500, y=240):
+def _alpha_geometry_mask(group, group_input, *, prefix="Alpha", x=-1500, y=240, keep_partial=False):
     """Build the shared image-alpha to temporary mesh contract.
 
     The returned mesh is an aspect-balanced copy with transparent faces
     removed. The source geometry is never modified, so callers can join
     generated geometry back to the animated plane without replacing its
     material or topology.
+
+    With ``keep_partial`` a face whose center is transparent survives while any
+    of its corners is opaque. Scatter effects need this so the edge of the
+    silhouette is not left empty; they then drop the stray points themselves
+    with ``_drop_transparent_points``.
     """
     links = group.links
     remeshed = _aspect_remesh(
@@ -495,7 +625,25 @@ def _alpha_geometry_mask(group, group_input, *, prefix="Alpha", x=-1500, y=240):
     links.new(_output(image_texture, "Alpha"), transparent.inputs[0])
     links.new(group_input.outputs["Alpha Threshold"], transparent.inputs[1])
     links.new(remeshed, delete.inputs["Geometry"])
-    links.new(transparent.outputs[0], delete.inputs["Selection"])
+    if not keep_partial:
+        links.new(transparent.outputs[0], delete.inputs["Selection"])
+        return delete.outputs["Geometry"], image_texture
+    corner_alpha = _node(group, "GeometryNodeFieldOnDomain", f"{prefix} Corner Alpha", x + 240, y - 600)
+    try:
+        corner_alpha.domain = "POINT"
+        corner_alpha.data_type = "FLOAT"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    # Read on the face domain, the point value is the mean of the corners.
+    corner_opaque = _math(group, "GREATER_THAN", f"{prefix} Any Corner Opaque", x + 490, y - 600, value_2=0.0)
+    keep_corner = _math(group, "SUBTRACT", f"{prefix} No Corner Opaque", x + 490, y - 760, value_1=1.0)
+    fully_transparent = _math(group, "MULTIPLY", f"{prefix} Fully Transparent Face", x + 740, y - 480)
+    links.new(_output(image_texture, "Alpha"), _input(corner_alpha, "Value"))
+    links.new(_output(corner_alpha, "Value"), corner_opaque.inputs[0])
+    links.new(corner_opaque.outputs[0], keep_corner.inputs[1])
+    links.new(transparent.outputs[0], fully_transparent.inputs[0])
+    links.new(keep_corner.outputs[0], fully_transparent.inputs[1])
+    links.new(fully_transparent.outputs[0], delete.inputs["Selection"])
     return delete.outputs["Geometry"], image_texture
 
 
@@ -873,7 +1021,19 @@ def _create_slice_shift(name):
     links.new(noise.outputs["Value"], random_center.inputs[0])
     links.new(random_center.outputs[0], random_amount.inputs[0])
     links.new(inp.outputs["Random"], random_amount.inputs[1])
-    links.new(inp.outputs["Shift"], shift_total.inputs[0])
+    # Neighbouring bands move in opposite directions, so Bands cuts the image
+    # into visible slices even with Random at zero. Before contract 2 every
+    # band moved by the same Shift, which only slid the whole image sideways.
+    band_parity = _math(group, "FLOORED_MODULO", "Slice Band Parity", -360, 40, value_2=2.0)
+    band_sign = _math(group, "MULTIPLY_ADD", "Slice Band Direction", -160, 40)
+    band_sign.inputs[1].default_value = -2.0
+    band_sign.inputs[2].default_value = 1.0
+    signed_shift = _math(group, "MULTIPLY", "Signed Slice Shift", 60, 60)
+    links.new(band_index.outputs[0], band_parity.inputs[0])
+    links.new(band_parity.outputs[0], band_sign.inputs[0])
+    links.new(inp.outputs["Shift"], signed_shift.inputs[0])
+    links.new(band_sign.outputs[0], signed_shift.inputs[1])
+    links.new(signed_shift.outputs[0], shift_total.inputs[0])
     links.new(random_amount.outputs[0], shift_total.inputs[1])
     links.new(sep.outputs["X"], shifted_x.inputs[0])
     links.new(shift_total.outputs[0], shifted_x.inputs[1])
@@ -885,6 +1045,7 @@ def _create_slice_shift(name):
     links.new(inv_angle.outputs[0], unrotate.inputs["Angle"])
     result = _uv_mix(group, inp.outputs["Vector"], unrotate.outputs["Vector"], inp.outputs["Factor"], prefix="Slice Shift", x=1260, y=120)
     links.new(result, out.inputs["Vector Out"])
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -2082,8 +2243,15 @@ def _finish_generated_mask(group, inp, out, raw_mask, *, prefix, x=780, y=160, a
 
 
 def _create_color_mask(name):
-    """Create an image-sampled color-range mask for stills and sequences."""
+    """Create the Color Key mask: an image-sampled color-range matte.
+
+    Besides the matte it carries a color pass-through. When the key targets the
+    whole layer, the color stage routes its final color through ``Color In``;
+    Despill greys the pixels close to the key color (the old Chroma Key
+    behavior) so green or blue fringes do not survive along soft edges.
+    """
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
     _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
     _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
@@ -2092,7 +2260,9 @@ def _create_color_mask(name):
     _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.08, minimum=0.0, maximum=1.0)
     _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
     _socket(group, "Invert", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Despill", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
     _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
     _socket(group, "Mask Out", "OUTPUT", "NodeSocketFloat")
     inp, out = _group_io(group)
@@ -2131,11 +2301,44 @@ def _create_color_mask(name):
     source_alpha = _math(group, "MULTIPLY", "Color Mask Source Alpha", 150, -170)
     links.new(ramp.outputs["Result"], source_alpha.inputs[0])
     links.new(image.outputs["Alpha"], source_alpha.inputs[1])
-    group["fbp_generated_mask_contract_version"] = 2
-    return _finish_generated_mask(
+    group["fbp_generated_mask_contract_version"] = 3
+    _finish_generated_mask(
         group, inp, out, source_alpha.outputs[0], prefix="Color Mask",
         x=330, y=130, availability=inp.outputs["Use Image Sample"],
     )
+
+    # Despill: grey the incoming color where the source is close to the key.
+    # The amount follows the un-inverted key, so Invert never moves the spill.
+    spill = _math(group, "MULTIPLY", "Color Key Spill Zone", 150, 520)
+    spill_factor = _math(group, "MULTIPLY", "Color Key Spill Factor", 330, 520)
+    spill_amount = _math(group, "MULTIPLY", "Color Key Despill Amount", 510, 520)
+    grey = _node(group, "ShaderNodeRGBToBW", "Color Key Despill Grey", 510, 700)
+    despill = _mix_rgb(group, "MIX", "Color Key Despill", 720, 620)
+    links.new(source_alpha.outputs[0], spill.inputs[0])
+    links.new(inp.outputs["Use Image Sample"], spill.inputs[1])
+    links.new(spill.outputs[0], spill_factor.inputs[0])
+    links.new(inp.outputs["Factor"], spill_factor.inputs[1])
+    links.new(spill_factor.outputs[0], spill_amount.inputs[0])
+    links.new(inp.outputs["Despill"], spill_amount.inputs[1])
+    links.new(inp.outputs["Color In"], grey.inputs[0])
+    links.new(spill_amount.outputs[0], despill.inputs[0])
+    links.new(inp.outputs["Color In"], despill.inputs[1])
+    links.new(grey.outputs[0], despill.inputs[2])
+    links.new(despill.outputs[0], out.inputs["Color Out"])
+
+    # Debug Preview 2 (Distance) shows the normalized color distance as alpha;
+    # 0 and 1 keep the Final/Matte behavior shared by every generated mask.
+    final_alpha = out.inputs["Alpha Out"].links[0].from_socket
+    show_distance = _math(group, "GREATER_THAN", "Color Key Distance Preview Active", 1500, 340, value_2=1.5)
+    distance_norm = _math(group, "MULTIPLY", "Color Key Normalized Distance", 1500, 480, value_2=0.577350269)
+    distance_preview = _mix_rgb(group, "MIX", "Color Key Distance Preview", 1700, 380)
+    links.new(inp.outputs["Debug Preview"], show_distance.inputs[0])
+    links.new(distance.outputs["Value"], distance_norm.inputs[0])
+    links.new(show_distance.outputs[0], distance_preview.inputs[0])
+    links.new(final_alpha, distance_preview.inputs[1])
+    links.new(distance_norm.outputs[0], distance_preview.inputs[2])
+    links.new(distance_preview.outputs[0], out.inputs["Alpha Out"])
+    return group
 
 
 def _create_luminance_mask(name):
@@ -2793,26 +2996,24 @@ def _create_curves(name):
     return group
 
 
-def _create_color_isolate(name):
-    """Preserve a perceptual HSV color range while desaturating the rest."""
-    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
-    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
-    _socket(group, "Target Color", "INPUT", "NodeSocketColor", default=(1.0, 0.0, 0.0, 1.0))
-    _socket(group, "Tolerance", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=1.0)
-    _socket(group, "Falloff", "INPUT", "NodeSocketFloat", default=0.10, minimum=0.0, maximum=1.0)
-    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
-    inp, out = _group_io(group)
-    links = group.links
+def _perceptual_color_distance(group, color_socket, target_socket, *, distance_name, saturation_weight=0.35, value_weight=0.15):
+    """Return an HSV color distance that follows hue for saturated targets.
 
+    Hue dominates for colorful targets, so shading changes inside one hue
+    still match; grey targets fall back to saturation and value. Color
+    Isolate and Replace Color share it so their Tolerance feels the same;
+    Replace Color lowers the value weight so shadows of the picked color
+    stay selected.
+    """
+    links = group.links
     source_hsv = _node(group, "ShaderNodeSeparateColor", "Source HSV", -1120, 250)
     target_hsv = _node(group, "ShaderNodeSeparateColor", "Target HSV", -1120, 20)
     try:
         source_hsv.mode = target_hsv.mode = "HSV"
     except (AttributeError, TypeError, ValueError):
         pass
-    links.new(inp.outputs["Color In"], source_hsv.inputs[0])
-    links.new(inp.outputs["Target Color"], target_hsv.inputs[0])
+    links.new(color_socket, source_hsv.inputs[0])
+    links.new(target_socket, target_hsv.inputs[0])
 
     hue_sub = _math(group, "SUBTRACT", "Hue Difference", -900, 330)
     hue_abs = _math(group, "ABSOLUTE", "Absolute Hue Difference", -720, 330)
@@ -2826,10 +3027,10 @@ def _create_color_isolate(name):
 
     sat_sub = _math(group, "SUBTRACT", "Saturation Difference", -900, 120)
     sat_abs = _math(group, "ABSOLUTE", "Absolute Saturation Difference", -720, 120)
-    sat_weight = _math(group, "MULTIPLY", "Weighted Saturation Difference", -540, 120, value_2=0.35)
+    sat_weight = _math(group, "MULTIPLY", "Weighted Saturation Difference", -540, 120, value_2=saturation_weight)
     value_sub = _math(group, "SUBTRACT", "Value Difference", -900, -40)
     value_abs = _math(group, "ABSOLUTE", "Absolute Value Difference", -720, -40)
-    value_weight = _math(group, "MULTIPLY", "Weighted Value Difference", -540, -40, value_2=0.15)
+    value_weight = _math(group, "MULTIPLY", "Weighted Value Difference", -540, -40, value_2=value_weight)
     links.new(source_hsv.outputs[1], sat_sub.inputs[0]); links.new(target_hsv.outputs[1], sat_sub.inputs[1])
     links.new(sat_sub.outputs[0], sat_abs.inputs[0]); links.new(sat_abs.outputs[0], sat_weight.inputs[0])
     links.new(source_hsv.outputs[2], value_sub.inputs[0]); links.new(target_hsv.outputs[2], value_sub.inputs[1])
@@ -2855,12 +3056,31 @@ def _create_color_isolate(name):
     inverse_gate = _math(group, "SUBTRACT", "Neutral Target Weight", 180, -80, value_1=1.0)
     chroma_scaled = _math(group, "MULTIPLY", "Chroma Metric Weight", 360, 210)
     gray_scaled = _math(group, "MULTIPLY", "Neutral Metric Weight", 360, -80)
-    distance = _math(group, "ADD", "Color Isolate Distance", 540, 120)
+    distance = _math(group, "ADD", distance_name, 540, 120)
     links.new(target_hsv.outputs[1], saturation_gate.inputs["Value"])
     links.new(saturation_gate.outputs["Result"], inverse_gate.inputs[1])
     links.new(chroma_metric.outputs[0], chroma_scaled.inputs[0]); links.new(saturation_gate.outputs["Result"], chroma_scaled.inputs[1])
     links.new(gray_metric.outputs[0], gray_scaled.inputs[0]); links.new(inverse_gate.outputs[0], gray_scaled.inputs[1])
     links.new(chroma_scaled.outputs[0], distance.inputs[0]); links.new(gray_scaled.outputs[0], distance.inputs[1])
+
+    return distance
+
+
+def _create_color_isolate(name):
+    """Preserve a perceptual HSV color range while desaturating the rest."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Target Color", "INPUT", "NodeSocketColor", default=(1.0, 0.0, 0.0, 1.0))
+    _socket(group, "Tolerance", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=1.0)
+    _socket(group, "Falloff", "INPUT", "NodeSocketFloat", default=0.10, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    distance = _perceptual_color_distance(
+        group, inp.outputs["Color In"], inp.outputs["Target Color"], distance_name="Color Isolate Distance"
+    )
 
     upper = _math(group, "ADD", "Color Isolate Outer Range", 540, -80)
     transition = _node(group, "ShaderNodeMapRange", "Color Isolate Transition", 760, 150)
@@ -2887,6 +3107,110 @@ def _create_color_isolate(name):
     links.new(inp.outputs["Factor"], result.inputs[0]); links.new(inp.outputs["Color In"], result.inputs[1]); links.new(isolated.outputs[0], result.inputs[2])
     links.new(result.outputs[0], out.inputs["Color Out"])
     group["fbp_color_isolate_version"] = 2
+    return group
+
+
+def _create_replace_color(name):
+    """Recolor one picked color range into another, like a selective recolor.
+
+    The selection reuses Color Isolate's perceptual distance: Tolerance is the
+    fully replaced range and Softness the feathered edge around it. Preserve
+    Shading moves the selected pixels by the source-to-target HSV offset, so
+    highlights, shadows and texture survive; at zero they become the flat
+    target color.
+    """
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Source Color", "INPUT", "NodeSocketColor", default=(1.0, 0.0, 0.0, 1.0))
+    _socket(group, "Target Color", "INPUT", "NodeSocketColor", default=(0.0, 0.35, 1.0, 1.0))
+    _socket(group, "Tolerance", "INPUT", "NodeSocketFloat", default=0.08, minimum=0.0, maximum=1.0)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.05, minimum=0.0, maximum=1.0)
+    _socket(group, "Preserve Shading", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    # Compare in a display-like (gamma 2.2) space: linear RGB squeezes the
+    # reds, oranges and yellows together and Tolerance would feel uneven.
+    pixel_display = _node(group, "ShaderNodeGamma", "Replace Color Pixel Display", -1340, 250)
+    source_display = _node(group, "ShaderNodeGamma", "Replace Color Source Display", -1340, 20)
+    for gamma, socket in ((pixel_display, inp.outputs["Color In"]), (source_display, inp.outputs["Source Color"])):
+        gamma.inputs["Gamma"].default_value = 1.0 / 2.2
+        links.new(socket, gamma.inputs["Color"])
+    distance = _perceptual_color_distance(
+        group, pixel_display.outputs[0], source_display.outputs[0], distance_name="Replace Color Distance",
+        saturation_weight=0.25, value_weight=0.03,
+    )
+    safe_softness = _math(group, "MAXIMUM", "Replace Color Safe Softness", 540, -260, value_2=0.00001)
+    upper = _math(group, "ADD", "Replace Color Outer Range", 540, -80)
+    selection = _node(group, "ShaderNodeMapRange", "Replace Color Selection", 760, 150)
+    selection.interpolation_type = "SMOOTHERSTEP"
+    selection.clamp = True
+    selection.inputs["To Min"].default_value = 1.0
+    selection.inputs["To Max"].default_value = 0.0
+    links.new(inp.outputs["Softness"], safe_softness.inputs[0])
+    links.new(inp.outputs["Tolerance"], upper.inputs[0]); links.new(safe_softness.outputs[0], upper.inputs[1])
+    links.new(distance.outputs[0], selection.inputs["Value"])
+    links.new(inp.outputs["Tolerance"], selection.inputs["From Min"]); links.new(upper.outputs[0], selection.inputs["From Max"])
+
+    # Shaded result: pixel HSV + (target HSV - source HSV). Hue wraps around
+    # the wheel; saturation and value clamp, so dark or pale pixels inside the
+    # selection keep their relative shading instead of going flat.
+    pixel_hsv = _node(group, "ShaderNodeSeparateColor", "Replace Color Pixel HSV", -1120, -420)
+    source_hsv = _node(group, "ShaderNodeSeparateColor", "Replace Color Source HSV", -1120, -640)
+    target_hsv = _node(group, "ShaderNodeSeparateColor", "Replace Color Target HSV", -1120, -860)
+    shaded = _node(group, "ShaderNodeCombineColor", "Replace Color Shaded", 540, -560)
+    try:
+        pixel_hsv.mode = source_hsv.mode = target_hsv.mode = shaded.mode = "HSV"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Color In"], pixel_hsv.inputs[0])
+    links.new(inp.outputs["Source Color"], source_hsv.inputs[0])
+    links.new(inp.outputs["Target Color"], target_hsv.inputs[0])
+    for index, channel in enumerate(("Hue", "Saturation", "Value")):
+        y = -420 - index * 180
+        offset = _math(group, "SUBTRACT", f"Replace Color {channel} Offset", -860, y)
+        moved = _math(group, "ADD", f"Replace Color Shifted {channel}", -620, y)
+        links.new(target_hsv.outputs[index], offset.inputs[0]); links.new(source_hsv.outputs[index], offset.inputs[1])
+        links.new(pixel_hsv.outputs[index], moved.inputs[0]); links.new(offset.outputs[0], moved.inputs[1])
+        if channel == "Hue":
+            wrapped = _math(group, "FRACT", "Replace Color Wrapped Hue", -380, y)
+        else:
+            wrapped = _math(group, "ADD", f"Replace Color Clamped {channel}", -380, y, value_2=0.0)
+            wrapped.use_clamp = True
+        links.new(moved.outputs[0], wrapped.inputs[0])
+        links.new(wrapped.outputs[0], shaded.inputs[index])
+
+    replacement = _mix_rgb(group, "MIX", "Replace Color Preserve Shading", 760, -420)
+    links.new(inp.outputs["Preserve Shading"], replacement.inputs[0])
+    links.new(inp.outputs["Target Color"], replacement.inputs[1])
+    links.new(shaded.outputs[0], replacement.inputs[2])
+
+    amount = _math(group, "MULTIPLY", "Replace Color Amount", 980, 150)
+    result = _mix_rgb(group, "MIX", "Replace Color Result", 1200, 100)
+    links.new(selection.outputs["Result"], amount.inputs[0]); links.new(inp.outputs["Factor"], amount.inputs[1])
+    links.new(amount.outputs[0], result.inputs[0])
+    links.new(inp.outputs["Color In"], result.inputs[1])
+    links.new(replacement.outputs[0], result.inputs[2])
+
+    # Debug Preview 1 (Selection) shows the weighted selection in grey.
+    selection_grey = _node(group, "ShaderNodeCombineColor", "Replace Color Selection Grey", 1200, -120)
+    try:
+        selection_grey.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    for index in range(3):
+        links.new(amount.outputs[0], selection_grey.inputs[index])
+    show_selection = _math(group, "GREATER_THAN", "Replace Color Debug Active", 1200, 300, value_2=0.5)
+    preview = _mix_rgb(group, "MIX", "Replace Color Debug Preview", 1420, 100)
+    links.new(inp.outputs["Debug Preview"], show_selection.inputs[0])
+    links.new(show_selection.outputs[0], preview.inputs[0])
+    links.new(result.outputs[0], preview.inputs[1])
+    links.new(selection_grey.outputs[0], preview.inputs[2])
+    links.new(preview.outputs[0], out.inputs["Color Out"])
+    group["fbp_replace_color_version"] = 1
     return group
 
 
@@ -3978,15 +4302,26 @@ def _create_poster_edges(name):
     return group
 
 
-def _periodic_line(group, coordinate_socket, scale_socket, width_socket, prefix, x, y):
+def _periodic_line(group, coordinate_socket, scale_socket, width_socket, prefix, x, y, edge_socket=None):
     scaled = _math(group, "MULTIPLY", f"{prefix} Scale", x, y)
     fraction = _math(group, "FRACT", f"{prefix} Fraction", x + 180, y)
     center = _math(group, "SUBTRACT", f"{prefix} Center", x + 360, y, value_2=0.5)
     absolute = _math(group, "ABSOLUTE", f"{prefix} Absolute", x + 540, y)
-    line = _math(group, "LESS_THAN", f"{prefix} Line", x + 720, y)
     group.links.new(coordinate_socket, scaled.inputs[0]); group.links.new(scale_socket, scaled.inputs[1])
     group.links.new(scaled.outputs[0], fraction.inputs[0]); group.links.new(fraction.outputs[0], center.inputs[0])
-    group.links.new(center.outputs[0], absolute.inputs[0]); group.links.new(absolute.outputs[0], line.inputs[0]); group.links.new(width_socket, line.inputs[1])
+    group.links.new(center.outputs[0], absolute.inputs[0])
+    if edge_socket is None:
+        line = _math(group, "LESS_THAN", f"{prefix} Line", x + 720, y)
+        group.links.new(absolute.outputs[0], line.inputs[0]); group.links.new(width_socket, line.inputs[1])
+        return line.outputs[0]
+    # Soft edge one source pixel wide: (width - distance) / pixel + 0.5, clamped.
+    inside = _math(group, "SUBTRACT", f"{prefix} Inside", x + 720, y)
+    soft = _math(group, "DIVIDE", f"{prefix} Soft Edge", x + 900, y)
+    line = _math(group, "ADD", f"{prefix} Line", x + 1080, y, value_2=0.5)
+    line.use_clamp = True
+    group.links.new(width_socket, inside.inputs[0]); group.links.new(absolute.outputs[0], inside.inputs[1])
+    group.links.new(inside.outputs[0], soft.inputs[0]); group.links.new(edge_socket, soft.inputs[1])
+    group.links.new(soft.outputs[0], line.inputs[0])
     return line.outputs[0]
 
 
@@ -4014,11 +4349,22 @@ def _create_crosshatch(name):
     links.new(combine.outputs[0], rotate.inputs["Vector"]); links.new(inp.outputs["Rotation"], rotate.inputs["Angle"]); links.new(rotate.outputs["Vector"], axes.inputs[0])
     links.new(axes.outputs["X"], diag_a.inputs[0]); links.new(axes.outputs["Y"], diag_a.inputs[1]); links.new(axes.outputs["X"], diag_b.inputs[0]); links.new(axes.outputs["Y"], diag_b.inputs[1])
     links.new(inp.outputs["Color In"], luma.inputs[0]); links.new(luma.outputs[0], darkness.inputs[1])
-    coordinates = (axes.outputs["X"], axes.outputs["Y"], diag_a.outputs[0], diag_b.outputs[0])
+    # x + y grows sqrt(2) times faster across a diagonal line than x across a
+    # vertical one, which packed the diagonal hatches tighter and thinner.
+    diag_a_unit = _math(group, "MULTIPLY", "Crosshatch Diagonal A Spacing", 100, 300, value_2=0.70710678)
+    diag_b_unit = _math(group, "MULTIPLY", "Crosshatch Diagonal B Spacing", 100, 150, value_2=0.70710678)
+    links.new(diag_a.outputs[0], diag_a_unit.inputs[0]); links.new(diag_b.outputs[0], diag_b_unit.inputs[0])
+    # One source pixel measured in line periods. After the aspect correction
+    # both axes are in units of the image height, so Texel Y is that pixel.
+    pixel_period = _math(group, "MULTIPLY", "Crosshatch Pixel Period", -20, 760)
+    pixel_edge = _math(group, "MAXIMUM", "Crosshatch Edge Width", 160, 760, value_2=1.0e-4)
+    links.new(inp.outputs["Scale"], pixel_period.inputs[0]); links.new(inp.outputs["Texel Y"], pixel_period.inputs[1])
+    links.new(pixel_period.outputs[0], pixel_edge.inputs[0])
+    coordinates = (axes.outputs["X"], axes.outputs["Y"], diag_a_unit.outputs[0], diag_b_unit.outputs[0])
     thresholds = (0.18, 0.38, 0.58, 0.76)
     active_lines = []
     for index, (coordinate, threshold) in enumerate(zip(coordinates, thresholds, strict=False), 1):
-        line = _periodic_line(group, coordinate, inp.outputs["Scale"], inp.outputs["Line Width"], f"Crosshatch {index}", 180, 620 - index * 160)
+        line = _periodic_line(group, coordinate, inp.outputs["Scale"], inp.outputs["Line Width"], f"Crosshatch {index}", 180, 620 - index * 160, edge_socket=pixel_edge.outputs[0])
         dark_test = _math(group, "GREATER_THAN", f"Crosshatch Darkness Level {index}", 1100, 620 - index * 160, value_2=threshold)
         level_test = _math(group, "GREATER_THAN", f"Crosshatch Enabled Level {index}", 1100, 540 - index * 160, value_2=(index - 0.5))
         active = _math(group, "MULTIPLY", f"Crosshatch Active {index}", 1300, 600 - index * 160)
@@ -4036,6 +4382,7 @@ def _create_crosshatch(name):
     links.new(inp.outputs["Preserve Color"], base.inputs[0]); links.new(inp.outputs["Paper Color"], base.inputs[1]); links.new(inp.outputs["Color In"], base.inputs[2])
     links.new(hatch, ink.inputs[0]); links.new(base.outputs[0], ink.inputs[1]); links.new(inp.outputs["Ink Color"], ink.inputs[2])
     links.new(inp.outputs["Factor"], final.inputs[0]); links.new(inp.outputs["Color In"], final.inputs[1]); links.new(ink.outputs[0], final.inputs[2]); links.new(final.outputs[0], out.inputs["Color Out"])
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -5122,9 +5469,18 @@ def _create_halftone(name):
     bw_paper.inputs[1].default_value = (1.0, 1.0, 1.0, 1.0)
     bw_paper.inputs[2].default_value = (0.0, 0.0, 0.0, 1.0)
     links.new(bw_dark_mode.outputs[0], bw_paper.inputs[0])
+    # Color Mode picks source-color inks (CMYK/RGB) or fixed BW inks, and Use
+    # Source Color swaps the source for the custom Ink Color. Both inputs were
+    # left unlinked before contract 2, so every mode looked the same.
+    links.new(inp.outputs["Color Mode"], color_source_mode.inputs[0])
+    links.new(inp.outputs["Color Mode"], bw_dark_mode.inputs[0])
+    source_ink = _mix_rgb(group, "MIX", "Halftone Source or Custom Ink", 1190, 720)
+    links.new(inp.outputs["Use Source Color"], source_ink.inputs[0])
+    links.new(inp.outputs["Foreground"], source_ink.inputs[1])
+    links.new(inp.outputs["Color In"], source_ink.inputs[2])
     links.new(color_source_mode.outputs[0], ink.inputs[0])
     links.new(bw_ink.outputs[0], ink.inputs[1])
-    links.new(inp.outputs["Color In"], ink.inputs[2])
+    links.new(source_ink.outputs[0], ink.inputs[2])
     links.new(color_source_mode.outputs[0], paper.inputs[0])
     links.new(bw_paper.outputs[0], paper.inputs[1])
     links.new(inp.outputs["Background"], paper.inputs[2])
@@ -5155,6 +5511,7 @@ def _create_halftone(name):
     links.new(final_alpha.outputs[0], debug_alpha.inputs[1])
     debug_alpha.inputs[2].default_value = (1.0, 1.0, 1.0, 1.0)
     links.new(debug_alpha.outputs[0], out.inputs["Alpha Out"])
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -6545,6 +6902,28 @@ def _create_text_matrix(name):
     return group
 
 
+def _drop_transparent_points(group, inp, points_socket, image_texture, *, prefix, x, y):
+    """Remove scattered points that landed on transparent pixels.
+
+    The alpha mask keeps or drops whole remesh faces by their center sample, so
+    a coarse face straddling the silhouette scatters instances over transparent
+    pixels (sampled black) and leaves opaque pixels near the edge empty. Testing
+    each point against the image makes the scatter follow the exact alpha.
+    """
+    links = group.links
+    transparent = _math(group, "LESS_THAN", f"{prefix} Point On Transparent Pixel", x, y - 200)
+    delete = _node(group, "GeometryNodeDeleteGeometry", f"{prefix} Drop Transparent Points", x + 220, y)
+    try:
+        delete.domain = "POINT"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(_output(image_texture, "Alpha"), transparent.inputs[0])
+    links.new(inp.outputs["Alpha Threshold"], transparent.inputs[1])
+    links.new(points_socket, delete.inputs["Geometry"])
+    links.new(transparent.outputs[0], delete.inputs["Selection"])
+    return delete.outputs["Geometry"]
+
+
 def _instanced_effect_density(group, inp, *, prefix, x, y):
     """Select render or reduced viewport density without rebuilding geometry."""
     links = group.links
@@ -6629,7 +7008,7 @@ def _create_fiber_tufts(name):
     links = group.links
 
     masked_geometry, image_texture = _alpha_geometry_mask(
-        group, inp, prefix="Fiber Source", x=-1980, y=620
+        group, inp, prefix="Fiber Source", x=-1980, y=620, keep_partial=True,
     )
     density = _instanced_effect_density(group, inp, prefix="Fiber", x=-1580, y=620)
     distribute = _node(group, "GeometryNodeDistributePointsOnFaces", "Distribute Fiber Tufts", -1120, 500)
@@ -6637,11 +7016,14 @@ def _create_fiber_tufts(name):
     links.new(masked_geometry, distribute.inputs["Mesh"])
     links.new(density, distribute.inputs["Density"])
     links.new(inp.outputs["Seed"], distribute.inputs["Seed"])
+    fiber_points = _drop_transparent_points(
+        group, inp, distribute.outputs["Points"], image_texture, prefix="Fiber", x=-1120, y=760
+    )
     store_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Fiber Source Color", -880, 500)
     store_color.data_type = "FLOAT_COLOR"
     store_color.domain = "POINT"
     store_color.inputs["Name"].default_value = "fbp_fiber_color"
-    links.new(distribute.outputs["Points"], store_color.inputs["Geometry"])
+    links.new(fiber_points, store_color.inputs["Geometry"])
     links.new(image_texture.outputs["Color"], store_color.inputs["Value"])
     source_uv = _node(group, "GeometryNodeInputNamedAttribute", "Fiber Source UV", -880, 300)
     source_uv.data_type = "FLOAT_VECTOR"
@@ -6736,6 +7118,7 @@ def _create_fiber_tufts(name):
     links.new(join.outputs["Geometry"], out.inputs["Geometry"])
     group["fbp_instancing_contract_version"] = 4
     group["fbp_alpha_geometry_contract_version"] = 2
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -6761,7 +7144,7 @@ def _create_paper_shards(name):
     links = group.links
 
     masked_geometry, image_texture = _alpha_geometry_mask(
-        group, inp, prefix="Shard Source", x=-1920, y=620
+        group, inp, prefix="Shard Source", x=-1920, y=620, keep_partial=True,
     )
     density = _instanced_effect_density(group, inp, prefix="Shards", x=-1500, y=600)
     distribute = _node(group, "GeometryNodeDistributePointsOnFaces", "Distribute Paper Shards", -1040, 500)
@@ -6769,11 +7152,14 @@ def _create_paper_shards(name):
     links.new(masked_geometry, distribute.inputs["Mesh"])
     links.new(density, distribute.inputs["Density"])
     links.new(inp.outputs["Seed"], distribute.inputs["Seed"])
+    shard_points = _drop_transparent_points(
+        group, inp, distribute.outputs["Points"], image_texture, prefix="Shards", x=-1040, y=760
+    )
     store_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Shard Source Color", -800, 500)
     store_color.data_type = "FLOAT_COLOR"
     store_color.domain = "POINT"
     store_color.inputs["Name"].default_value = "fbp_shard_color"
-    links.new(distribute.outputs["Points"], store_color.inputs["Geometry"])
+    links.new(shard_points, store_color.inputs["Geometry"])
     links.new(image_texture.outputs["Color"], store_color.inputs["Value"])
     source_uv = _node(group, "GeometryNodeInputNamedAttribute", "Shard Source UV", -800, 300)
     source_uv.data_type = "FLOAT_VECTOR"
@@ -6828,14 +7214,25 @@ def _create_paper_shards(name):
     centered_luminance = _math(group, "SUBTRACT", "Centered Shard Luminance", 140, -360, value_2=0.5)
     signed_luminance = _math(group, "MULTIPLY", "Signed Shard Luminance", 360, -360, value_2=2.0)
     image_lift = _math(group, "MULTIPLY", "Shard Image Lift", 580, -360)
-    lift_vector = _node(group, "ShaderNodeCombineXYZ", "Shard Image Lift Vector", 800, -360)
+    # Map the signed lift onto 0..|Luminance Lift|. Centering it on the plane
+    # sank every chip darker than about 40% luminance below the opaque plane,
+    # so dark areas showed no shards at all. Positive values now raise light
+    # chips and negative values raise dark chips; none goes below the base.
+    lift_range = _math(group, "ABSOLUTE", "Shard Image Lift Range", 580, -520)
+    lift_from_base = _math(group, "ADD", "Shard Image Lift From Base", 700, -440)
+    lift_half = _math(group, "MULTIPLY", "Shard Image Lift Above Plane", 820, -440, value_2=0.5)
+    lift_vector = _node(group, "ShaderNodeCombineXYZ", "Shard Image Lift Vector", 1000, -360)
     translate = _node(group, "GeometryNodeTranslateInstances", "Lift Shards From Image", 740, 430)
     links.new(image_texture.outputs["Color"], shard_luminance.inputs[0])
     links.new(shard_luminance.outputs["Value"], centered_luminance.inputs[0])
     links.new(centered_luminance.outputs[0], signed_luminance.inputs[0])
     links.new(signed_luminance.outputs[0], image_lift.inputs[0])
     links.new(inp.outputs["Luminance Lift"], image_lift.inputs[1])
-    links.new(image_lift.outputs[0], lift_vector.inputs["Z"])
+    links.new(inp.outputs["Luminance Lift"], lift_range.inputs[0])
+    links.new(image_lift.outputs[0], lift_from_base.inputs[0])
+    links.new(lift_range.outputs[0], lift_from_base.inputs[1])
+    links.new(lift_from_base.outputs[0], lift_half.inputs[0])
+    links.new(lift_half.outputs[0], lift_vector.inputs["Z"])
     links.new(rotate.outputs["Instances"], translate.inputs["Instances"])
     links.new(lift_vector.outputs[0], translate.inputs["Translation"])
 
@@ -6846,6 +7243,7 @@ def _create_paper_shards(name):
     links.new(join.outputs["Geometry"], out.inputs["Geometry"])
     group["fbp_instancing_contract_version"] = 4
     group["fbp_alpha_geometry_contract_version"] = 2
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -7312,221 +7710,396 @@ def _aspect_corrected_texture_coordinates(
 
 
 def _create_glass(name):
-    """Create separated Voronoi shards from the animated source silhouette."""
+    """Split the plane into triangles that break apart with one Shatter slider.
+
+    Shards lays a jittered triangle grid over the plane; Impact lays rings and
+    spokes around the impact point, with the outer ring on the plane border so
+    the triangles always tile the whole image. The triangles are raycast onto
+    the source for their UVs and material, so they keep showing the image and
+    every image effect below. Shatter then opens the pieces in order, from the
+    impact point outwards (Spread 1) or at random (Spread 0).
+    """
     group = bpy.data.node_groups.new(name, "GeometryNodeTree")
     _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
-    _socket(group, "Subdivision", "INPUT", "NodeSocketInt", default=5, minimum=0, maximum=8)
-    _socket(group, "Thickness", "INPUT", "NodeSocketFloat", default=0.025, minimum=0.0001, maximum=10.0)
-    _socket(group, "Bevel", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Shard Lift", "INPUT", "NodeSocketFloat", default=0.015, minimum=-10.0, maximum=10.0)
-    _socket(group, "Damage Source", "INPUT", "NodeSocketInt", default=1, minimum=0, maximum=2)
-    _socket(group, "Damage Map", "INPUT", "NodeSocketImage")
-    _socket(group, "Cell Scale", "INPUT", "NodeSocketFloat", default=7.0, minimum=0.01, maximum=10000.0)
-    _socket(group, "Correct Aspect", "INPUT", "NodeSocketBool", default=True)
-    _socket(group, "Texture Scale X", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.01, maximum=10000.0)
-    _socket(group, "Texture Scale Y", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.01, maximum=10000.0)
-    _socket(group, "Crack Width", "INPUT", "NodeSocketFloat", default=0.035, minimum=0.0, maximum=0.5)
-    _socket(group, "Damage", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Chaos", "INPUT", "NodeSocketFloat", default=0.65, minimum=0.0, maximum=1.0)
+    _socket(group, "Pattern", "INPUT", "NodeSocketInt", default=1, minimum=0, maximum=1)
+    _socket(group, "Pieces", "INPUT", "NodeSocketInt", default=12, minimum=2, maximum=128)
+    _socket(group, "Irregularity", "INPUT", "NodeSocketFloat", default=0.75, minimum=0.0, maximum=1.0)
+    _socket(group, "Shatter", "INPUT", "NodeSocketFloat", default=0.45, minimum=0.0, maximum=1.0)
+    _socket(group, "Impact X", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.0, maximum=1.0)
+    _socket(group, "Impact Y", "INPUT", "NodeSocketFloat", default=0.5, minimum=0.0, maximum=1.0)
+    _socket(group, "Spread", "INPUT", "NodeSocketFloat", default=0.75, minimum=0.0, maximum=1.0)
+    _socket(group, "Gap", "INPUT", "NodeSocketFloat", default=0.12, minimum=0.0, maximum=0.9)
+    _socket(group, "Explode", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=10.0)
+    _socket(group, "Depth", "INPUT", "NodeSocketFloat", default=0.2, minimum=-10.0, maximum=10.0)
+    _socket(group, "Fall", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0)
+    _socket(group, "Spin", "INPUT", "NodeSocketFloat", default=0.25, minimum=0.0, maximum=10.0)
+    _socket(group, "Thickness", "INPUT", "NodeSocketFloat", default=0.01, minimum=0.0, maximum=10.0)
     _socket(group, "Seed", "INPUT", "NodeSocketFloat", default=0.0, minimum=-100000.0, maximum=100000.0)
     _socket(group, "Alpha Threshold", "INPUT", "NodeSocketFloat", default=0.02, minimum=0.0, maximum=1.0)
-    _socket(group, "Shade Smooth", "INPUT", "NodeSocketBool", default=True)
+    _socket(group, "Glass Surface", "INPUT", "NodeSocketBool", default=False)
     _socket(group, "Glass Material", "INPUT", "NodeSocketMaterial")
     _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
     inp, out = _group_io(group)
     links = group.links
 
-    remeshed = _aspect_remesh(
-        group, inp.outputs["Geometry"], inp.outputs["Subdivision"],
-        # Quads remain preferable for shard extrusion: they halve cap polygon
-        # count while the aspect-balanced grid removes the old wide cells.
-        prefix="Broken Glass", x=-4600, y=700, triangulate=False,
+    def op(operation, label, x, y, a=None, b=None, c=None, value_1=None, value_2=None, value_3=None):
+        node = _math(group, operation, f"Broken Glass {label}", x, y, value_1=value_1, value_2=value_2)
+        if value_3 is not None:
+            node.inputs[2].default_value = value_3
+        for slot, socket in enumerate((a, b, c)):
+            if socket is not None:
+                links.new(socket, node.inputs[slot])
+        return node.outputs[0]
+
+    def vmath(operation, label, x, y, a=None, b=None, scale=None):
+        node = _vector_math(group, operation, f"Broken Glass {label}", x, y)
+        if a is not None:
+            links.new(a, node.inputs[0])
+        if b is not None:
+            links.new(b, node.inputs[1])
+        if scale is not None:
+            links.new(scale, node.inputs["Scale"])
+        return node.outputs["Value" if operation == "LENGTH" else "Vector"]
+
+    def combine(label, x, y, cx=None, cy=None, cz=None):
+        node = _node(group, "ShaderNodeCombineXYZ", f"Broken Glass {label}", x, y)
+        for axis, socket in (("X", cx), ("Y", cy), ("Z", cz)):
+            if socket is not None:
+                links.new(socket, node.inputs[axis])
+        return node.outputs[0]
+
+    def separate(label, x, y, vector):
+        node = _node(group, "ShaderNodeSeparateXYZ", f"Broken Glass {label}", x, y)
+        links.new(vector, node.inputs[0])
+        return node.outputs
+
+    def switch(input_type, label, x, y, condition, false, true):
+        node = _node(group, "GeometryNodeSwitch", f"Broken Glass {label}", x, y)
+        node.input_type = input_type
+        links.new(condition, node.inputs["Switch"])
+        links.new(false, node.inputs["False"])
+        links.new(true, node.inputs["True"])
+        return node.outputs["Output"]
+
+    def random_vector(label, x, y, identifier, seed, minimum=(0.0, 0.0, 0.0), maximum=(1.0, 1.0, 1.0)):
+        node = _node(group, "FunctionNodeRandomValue", f"Broken Glass {label}", x, y)
+        node.data_type = "FLOAT_VECTOR"
+        _input(node, "Min", 0).default_value = minimum
+        _input(node, "Max", 1).default_value = maximum
+        links.new(identifier, _input(node, "ID", 7))
+        links.new(seed, _input(node, "Seed", 8))
+        return _output(node, "Value", 0)
+
+    def on_domain(domain, data_type, label, x, y, value):
+        node = _node(group, "GeometryNodeFieldOnDomain", f"Broken Glass {label}", x, y)
+        node.domain = domain
+        node.data_type = data_type
+        links.new(value, _input(node, "Value"))
+        return _output(node, "Value")
+
+    def store(data_type, domain, attribute, label, x, y, geometry, value):
+        node = _node(group, "GeometryNodeStoreNamedAttribute", f"Broken Glass {label}", x, y)
+        node.data_type = data_type
+        node.domain = domain
+        node.inputs["Name"].default_value = attribute
+        links.new(geometry, node.inputs["Geometry"])
+        links.new(value, node.inputs["Value"])
+        return node.outputs["Geometry"]
+
+    def named(data_type, attribute, label, x, y):
+        node = _node(group, "GeometryNodeInputNamedAttribute", f"Broken Glass {label}", x, y)
+        node.data_type = data_type
+        node.inputs["Name"].default_value = attribute
+        return node.outputs["Attribute"]
+
+    # Plane frame: bounds, impact point and the distance to its farthest corner.
+    bounds = _node(group, "GeometryNodeBoundBox", "Broken Glass Plane Bounds", -5200, 600)
+    links.new(inp.outputs["Geometry"], bounds.inputs["Geometry"])
+    lower = separate("Plane Minimum", -4980, 700, bounds.outputs["Min"])
+    upper = separate("Plane Maximum", -4980, 500, bounds.outputs["Max"])
+    width = op("MAXIMUM", "Plane Width", -4760, 760, op("SUBTRACT", "Raw Width", -4980, 900, upper["X"], lower["X"]), value_2=1.0e-6)
+    height = op("MAXIMUM", "Plane Height", -4760, 600, op("SUBTRACT", "Raw Height", -4980, 300, upper["Y"], lower["Y"]), value_2=1.0e-6)
+    margin = op(
+        "MAXIMUM", "Ray Margin", -4540, 360,
+        op("MULTIPLY", "Ray Margin Scale", -4760, 360, op("MAXIMUM", "Long Side", -4980, 360, width, height), value_2=0.001),
+        value_2=1.0e-4,
     )
-    named_uv = _node(group, "GeometryNodeInputNamedAttribute", "Broken Glass UVMap", -1800, 80)
-    named_uv.data_type = "FLOAT_VECTOR"
-    named_uv.inputs["Name"].default_value = "UVMap"
-    source = _node(group, "GeometryNodeImageTexture", "Broken Glass Source Image", -1560, 180)
+    ray_start = op("ADD", "Ray Start", -4320, 420, upper["Z"], margin)
+    ray_length = op(
+        "ADD", "Ray Length", -4100, 360,
+        op("SUBTRACT", "Plane Depth", -4320, 300, upper["Z"], lower["Z"]),
+        op("MULTIPLY", "Double Ray Margin", -4320, 200, margin, value_2=2.0),
+    )
+    impact_x = op("MULTIPLY_ADD", "Impact Plane X", -4760, 1000, width, inp.outputs["Impact X"], lower["X"])
+    impact_y = op("MULTIPLY_ADD", "Impact Plane Y", -4760, 900, height, inp.outputs["Impact Y"], lower["Y"])
+    impact = combine("Impact Point", -4540, 960, impact_x, impact_y, lower["Z"])
+    reach = vmath(
+        "LENGTH", "Farthest Corner", -4100, 1000,
+        vmath(
+            "MAXIMUM", "Corner Reach", -4320, 1120,
+            vmath("SUBTRACT", "Reach To Minimum", -4540, 1200, impact, bounds.outputs["Min"]),
+            vmath("SUBTRACT", "Reach To Maximum", -4540, 1100, bounds.outputs["Max"], impact),
+        ),
+    )
+    reach = op("MAXIMUM", "Safe Reach", -3880, 1000, reach, value_2=1.0e-6)
+    pieces = op("MAXIMUM", "Safe Pieces", -4760, 1300, inp.outputs["Pieces"], value_2=2.0)
+    irregular = op("MULTIPLY", "Jitter Amount", -4760, 1420, inp.outputs["Irregularity"], value_2=0.8)
+    position = _node(group, "GeometryNodeInputPosition", "Broken Glass Position", -4320, 1500).outputs["Position"]
+    index = _node(group, "GeometryNodeInputIndex", "Broken Glass Index", -4320, 1600).outputs["Index"]
+
+    # Shards: a jittered grid of square-ish cells; border vertices only slide
+    # along the border, so the triangles still cover the whole plane.
+    cell = op("DIVIDE", "Grid Cell", -4100, 1800, op("MAXIMUM", "Grid Long Side", -4320, 1800, width, height), pieces)
+    columns = op("MAXIMUM", "Grid Columns", -3660, 1880, op("ROUND", "Round Columns", -3880, 1880, op("DIVIDE", "Raw Columns", -4100, 1950, width, cell)), value_2=1.0)
+    rows = op("MAXIMUM", "Grid Rows", -3660, 1720, op("ROUND", "Round Rows", -3880, 1720, op("DIVIDE", "Raw Rows", -4100, 1650, height, cell)), value_2=1.0)
+    grid = _node(group, "GeometryNodeMeshGrid", "Broken Glass Shard Grid", -3440, 1800)
+    links.new(width, grid.inputs["Size X"])
+    links.new(height, grid.inputs["Size Y"])
+    links.new(op("ADD", "Grid Vertices X", -3440, 2000, columns, value_2=1.0), grid.inputs["Vertices X"])
+    links.new(op("ADD", "Grid Vertices Y", -3440, 1600, rows, value_2=1.0), grid.inputs["Vertices Y"])
+    grid_x, grid_y = separate("Grid Position", -3440, 1400, position)[:2]
+    edge_tolerance = op("MULTIPLY", "Border Tolerance", -3220, 1300, cell, value_2=0.01)
+    border_margin = op("MULTIPLY", "Border Margin", -3220, 1000, edge_tolerance, value_2=-1.0)
+    free_x = op(
+        "LESS_THAN", "Free X", -3000, 1450,
+        op("ABSOLUTE", "Grid Distance X", -3220, 1500, grid_x),
+        op("MULTIPLY_ADD", "Inner Half Width", -3220, 1400, width, None, border_margin, value_2=0.5),
+    )
+    free_y = op(
+        "LESS_THAN", "Free Y", -3000, 1250,
+        op("ABSOLUTE", "Grid Distance Y", -3220, 1200, grid_y),
+        op("MULTIPLY_ADD", "Inner Half Height", -3220, 1100, height, None, border_margin, value_2=0.5),
+    )
+    grid_jitter = random_vector(
+        "Grid Jitter", -3000, 1650, index, inp.outputs["Seed"],
+        minimum=(-0.5, -0.5, 0.0), maximum=(0.5, 0.5, 0.0),
+    )
+    jitter_x, jitter_y = separate("Grid Jitter Components", -2780, 1650, grid_jitter)[:2]
+    grid_offset_x = op("MULTIPLY", "Grid Offset X", -2340, 1500, op("MULTIPLY", "Grid Jitter X", -2560, 1550, jitter_x, op("DIVIDE", "Cell Width", -2780, 1450, width, columns)), free_x)
+    grid_offset_y = op("MULTIPLY", "Grid Offset Y", -2340, 1300, op("MULTIPLY", "Grid Jitter Y", -2560, 1350, jitter_y, op("DIVIDE", "Cell Height", -2780, 1250, height, rows)), free_y)
+    centre_x = op("MULTIPLY", "Plane Center X", -3660, 1100, op("ADD", "Plane Span X", -3880, 1100, lower["X"], upper["X"]), value_2=0.5)
+    centre_y = op("MULTIPLY", "Plane Center Y", -3660, 1000, op("ADD", "Plane Span Y", -3880, 1000, lower["Y"], upper["Y"]), value_2=0.5)
+    grid_position = combine(
+        "Shard Grid Position", -1900, 1500,
+        op("MULTIPLY_ADD", "Shard X", -2120, 1560, grid_offset_x, irregular, op("ADD", "Grid Center X", -2340, 1700, grid_x, centre_x)),
+        op("MULTIPLY_ADD", "Shard Y", -2120, 1400, grid_offset_y, irregular, op("ADD", "Grid Center Y", -2340, 1150, grid_y, centre_y)),
+        ray_start,
+    )
+    place_grid = _node(group, "GeometryNodeSetPosition", "Broken Glass Place Shard Grid", -1680, 1800)
+    links.new(grid.outputs["Mesh"], place_grid.inputs["Geometry"])
+    links.new(grid_position, place_grid.inputs["Position"])
+    grid_triangles = _node(group, "GeometryNodeTriangulate", "Broken Glass Shard Triangles", -1460, 1800)
+    grid_triangles.inputs["Quad Method"].default_value = "Shortest Diagonal"
+    links.new(place_grid.outputs["Geometry"], grid_triangles.inputs["Mesh"])
+
+    # Impact: spokes are spread over the border side by side, so the four
+    # corners are always spoke ends and the outer ring is the plane outline.
+    ring_count = op("MAXIMUM", "Ring Count", -3880, 2600, op("ROUND", "Round Rings", -4100, 2600, op("MULTIPLY", "Raw Rings", -4320, 2600, pieces, value_2=0.5)), value_2=2.0)
+    spoke_target = op("MAXIMUM", "Spoke Target", -4100, 2400, op("MULTIPLY", "Raw Spokes", -4320, 2400, pieces, value_2=1.6), value_2=8.0)
+    perimeter = op("MULTIPLY", "Half Perimeter", -4100, 2200, op("ADD", "Perimeter Sides", -4320, 2200, width, height), value_2=2.0)
+    side_x = op("MAXIMUM", "Spokes Along X", -3660, 2400, op("ROUND", "Round Spokes X", -3880, 2400, op("DIVIDE", "Raw Spokes X", -3880, 2300, op("MULTIPLY", "Spoke Share X", -4100, 2300, spoke_target, width), perimeter)), value_2=1.0)
+    side_y = op("MAXIMUM", "Spokes Along Y", -3660, 2200, op("ROUND", "Round Spokes Y", -3880, 2200, op("DIVIDE", "Raw Spokes Y", -3880, 2100, op("MULTIPLY", "Spoke Share Y", -4100, 2100, spoke_target, height), perimeter)), value_2=1.0)
+    end_bottom = side_x
+    end_right = op("ADD", "Right Side End", -3440, 2300, side_x, side_y)
+    end_top = op("ADD", "Top Side End", -3220, 2300, end_right, side_x)
+    spokes = op("ADD", "Spoke Count", -3000, 2300, end_top, side_y)
+    radial = _node(group, "GeometryNodeMeshGrid", "Broken Glass Impact Grid", -3000, 2600)
+    radial.inputs["Size X"].default_value = 1.0
+    radial.inputs["Size Y"].default_value = 1.0
+    links.new(op("ADD", "Impact Vertices X", -3220, 2650, spokes, value_2=1.0), radial.inputs["Vertices X"])
+    links.new(op("ADD", "Impact Vertices Y", -3220, 2550, ring_count, value_2=1.0), radial.inputs["Vertices Y"])
+    radial_u, radial_v = separate("Impact Grid Position", -3000, 2900, position)[:2]
+    # The grid spans -0.5..0.5: u * count + count / 2 is the spoke or ring index.
+    spoke = op(
+        "MODULO", "Spoke Index", -2560, 3000,
+        op("ROUND", "Round Spoke", -2780, 3000, op("MULTIPLY_ADD", "Spoke Coordinate", -3000, 3050, radial_u, spokes, op("MULTIPLY", "Half Spokes", -3220, 3150, spokes, value_2=0.5))),
+        spokes,
+    )
+    ring = op(
+        "ROUND", "Ring Index", -2560, 2850,
+        op("MULTIPLY_ADD", "Ring Coordinate", -2780, 2850, radial_v, ring_count, op("MULTIPLY", "Half Rings", -3000, 2750, ring_count, value_2=0.5)),
+    )
+    # The seam column repeats spoke 0, so it gets the same ID and jitter.
+    radial_id = op("MULTIPLY_ADD", "Impact Vertex ID", -2340, 2950, ring, None, spoke, value_2=1024.0)
+    radial_jitter = random_vector(
+        "Impact Jitter", -2120, 3100, radial_id, inp.outputs["Seed"],
+        minimum=(-0.5, -0.5, 0.0), maximum=(0.5, 0.5, 0.0),
+    )
+    radial_jitter_x, radial_jitter_y = separate("Impact Jitter Components", -1900, 3100, radial_jitter)[:2]
+    inner_ring = op(
+        "MULTIPLY", "Inner Ring", -2120, 2800,
+        op("GREATER_THAN", "Past Impact", -2340, 2800, ring, value_2=0.5),
+        op("LESS_THAN", "Before Border", -2340, 2700, ring, op("SUBTRACT", "Last Inner Ring", -2560, 2650, ring_count, value_2=0.5)),
+    )
+    ring_jitter = op("MULTIPLY", "Ring Jitter", -1680, 3000, op("MULTIPLY", "Inner Jitter", -1900, 2900, inner_ring, irregular), radial_jitter_y)
+    spoke_jitter = op("MULTIPLY", "Spoke Jitter", -1680, 3200, op("MULTIPLY", "Spoke Jitter Amount", -1900, 3000, inner_ring, irregular), radial_jitter_x)
+    spoke_t = op("FLOORED_MODULO", "Spoke Position", -1460, 3200, op("ADD", "Jittered Spoke", -1460, 3300, spoke, spoke_jitter), spokes)
+    ring_t = op(
+        "ADD", "Jittered Ring", -1460, 2900,
+        op("POWER", "Ring Spacing", -1680, 2800, op("DIVIDE", "Ring Fraction", -1900, 2800, ring, ring_count), value_2=1.35),
+        op("DIVIDE", "Ring Jitter Scale", -1460, 2800, ring_jitter, ring_count),
+    )
+    # Border point for spoke position t, walking counter-clockwise from the
+    # lower-left corner: bottom, right, top, left.
+    border_bottom = combine("Border Bottom", -1240, 3500, op("MULTIPLY_ADD", "Bottom X", -1460, 3500, op("DIVIDE", "Bottom Fraction", -1680, 3500, spoke_t, side_x), width, lower["X"]), lower["Y"])
+    border_right = combine("Border Right", -1240, 3350, upper["X"], op("MULTIPLY_ADD", "Right Y", -1460, 3350, op("DIVIDE", "Right Fraction", -1680, 3350, op("SUBTRACT", "Right Step", -1900, 3350, spoke_t, end_bottom), side_y), height, lower["Y"]))
+    border_top = combine("Border Top", -1240, 3200, op("SUBTRACT", "Top X", -1460, 3200, upper["X"], op("MULTIPLY", "Top Run", -1680, 3200, op("DIVIDE", "Top Fraction", -1900, 3200, op("SUBTRACT", "Top Step", -2120, 3200, spoke_t, end_right), side_x), width)), upper["Y"])
+    border_left = combine("Border Left", -1240, 3050, lower["X"], op("SUBTRACT", "Left Y", -1460, 3050, upper["Y"], op("MULTIPLY", "Left Run", -1680, 3050, op("DIVIDE", "Left Fraction", -1900, 3050, op("SUBTRACT", "Left Step", -2120, 3050, spoke_t, end_top), side_y), height)))
+    border = switch(
+        "VECTOR", "Border Point", -800, 3300,
+        op("LESS_THAN", "On Bottom", -1020, 3500, spoke_t, end_bottom),
+        switch(
+            "VECTOR", "Border Point Upper", -1020, 3300,
+            op("LESS_THAN", "On Right", -1240, 2900, spoke_t, end_right),
+            switch("VECTOR", "Border Point Top Or Left", -1020, 3100, op("LESS_THAN", "On Top", -1240, 2800, spoke_t, end_top), border_left, border_top),
+            border_right,
+        ),
+        border_bottom,
+    )
+    impact_plane = combine("Impact On Plane", -1020, 2700, impact_x, impact_y)
+    radial_point = vmath(
+        "ADD", "Impact Ring Point", -580, 3000, impact_plane,
+        vmath("SCALE", "Impact Ring Offset", -800, 3000, vmath("SUBTRACT", "Impact To Border", -1020, 3000, border, impact_plane), scale=ring_t),
+    )
+    radial_xy = separate("Impact Ring Components", -360, 3000, radial_point)
+    place_radial = _node(group, "GeometryNodeSetPosition", "Broken Glass Place Impact Grid", -140, 2600)
+    links.new(radial.outputs["Mesh"], place_radial.inputs["Geometry"])
+    links.new(combine("Impact Grid Point", -140, 2900, radial_xy["X"], radial_xy["Y"], ray_start), place_radial.inputs["Position"])
+    radial_triangles = _node(group, "GeometryNodeTriangulate", "Broken Glass Impact Triangles", 80, 2600)
+    radial_triangles.inputs["Quad Method"].default_value = "Beauty"
+    links.new(place_radial.outputs["Geometry"], radial_triangles.inputs["Mesh"])
+
+    use_impact = op("GREATER_THAN", "Use Impact Pattern", 80, 2200, inp.outputs["Pattern"], value_2=0.5)
+    pattern = switch("GEOMETRY", "Pattern", 300, 1800, use_impact, grid_triangles.outputs["Mesh"], radial_triangles.outputs["Mesh"])
+    projected = _project_planar_mesh(
+        group, pattern, inp.outputs["Geometry"], ray_length,
+        prefix="Broken Glass", x=-2140, y=600, triangulate=False,
+    )
+
+    # The impact point collapses its first ring into zero-area triangles.
+    area = _node(group, "GeometryNodeInputMeshFaceArea", "Broken Glass Face Area", 2800, 300)
+    degenerate = op("LESS_THAN", "Degenerate Faces", 3020, 300, area.outputs["Area"], op("MULTIPLY", "Area Floor", 2800, 150, width, op("MULTIPLY", "Area Floor Scale", 2580, 150, height, value_2=1.0e-7)))
+    drop_degenerate = _node(group, "GeometryNodeDeleteGeometry", "Broken Glass Drop Degenerate Faces", 3020, 600)
+    drop_degenerate.domain = "FACE"
+    links.new(projected, drop_degenerate.inputs["Geometry"])
+    links.new(degenerate, drop_degenerate.inputs["Selection"])
+    split = _node(group, "GeometryNodeSplitEdges", "Broken Glass Split Pieces", 3240, 600)
+    links.new(drop_degenerate.outputs["Geometry"], split.inputs["Mesh"])
+
+    # A piece is removed only when its centre and all its corners are clear.
+    uv = named("FLOAT_VECTOR", "UVMap", "UVMap", 3240, 200)
+    source = _node(group, "GeometryNodeImageTexture", "Broken Glass Source Image", 3460, 200)
     source["fbp_alpha_image_node"] = True
-    damage_image = _node(group, "GeometryNodeImageTexture", "Broken Glass Damage Map", -1560, -80)
-    damage_bw = _node(group, "ShaderNodeSeparateXYZ", "Broken Glass Damage Luminance", -1320, -80)
     try:
         source.extension = "EXTEND"
         source.interpolation = "Linear"
-        damage_image.extension = "EXTEND"
-        damage_image.interpolation = "Linear"
-        damage_image.image_user.use_auto_refresh = True
     except (AttributeError, TypeError, ValueError):
         pass
-    links.new(named_uv.outputs["Attribute"], source.inputs["Vector"])
-    links.new(named_uv.outputs["Attribute"], damage_image.inputs["Vector"])
-    links.new(inp.outputs["Damage Map"], damage_image.inputs["Image"])
-    links.new(damage_image.outputs["Color"], damage_bw.inputs["Vector"])
+    links.new(uv, source.inputs["Vector"])
+    clear = op("LESS_THAN", "Clear Alpha", 3680, 200, source.outputs["Alpha"], inp.outputs["Alpha Threshold"])
+    clear_piece = _node(group, "FunctionNodeBooleanMath", "Broken Glass Clear Piece", 4120, 300)
+    clear_piece.operation = "AND"
+    links.new(on_domain("POINT", "BOOLEAN", "Clear Corners", 3900, 300, clear), clear_piece.inputs[0])
+    links.new(on_domain("FACE", "BOOLEAN", "Clear Centre", 3900, 150, clear), clear_piece.inputs[1])
+    drop_clear = _node(group, "GeometryNodeDeleteGeometry", "Broken Glass Drop Clear Pieces", 4120, 600)
+    drop_clear.domain = "FACE"
+    links.new(split.outputs["Mesh"], drop_clear.inputs["Geometry"])
+    links.new(clear_piece.outputs[0], drop_clear.inputs["Selection"])
+    geometry = store("FLOAT_COLOR", "POINT", "fbp_glass_color", "Store Glass Color", 4340, 600, drop_clear.outputs["Geometry"], source.outputs["Color"])
+    geometry = store("FLOAT", "POINT", "fbp_glass_alpha", "Store Glass Alpha", 4560, 600, geometry, source.outputs["Alpha"])
 
-    coordinate_scale = _aspect_corrected_texture_coordinates(
-        group,
-        inp.outputs["Geometry"],
-        named_uv.outputs["Attribute"],
-        inp.outputs["Correct Aspect"],
-        inp.outputs["Cell Scale"],
-        inp.outputs["Texture Scale X"],
-        inp.outputs["Texture Scale Y"],
-        prefix="Broken Glass",
-        result_name="Broken Glass Cell Scale",
-        x=-2880,
-        y=-380,
+    # Every corner of a piece carries the piece centre and its random draw,
+    # so thickness walls added next move together with their face.
+    face_index = on_domain("FACE", "INT", "Piece Index", 4560, 200, index)
+    geometry = store("FLOAT_VECTOR", "POINT", "fbp_glass_piece_center", "Store Piece Center", 4780, 600, geometry, on_domain("FACE", "FLOAT_VECTOR", "Piece Center", 4560, 350, position))
+    geometry = store("FLOAT_VECTOR", "POINT", "fbp_glass_piece_random", "Store Piece Random", 5000, 600, geometry, random_vector("Piece Random", 4780, 200, face_index, inp.outputs["Seed"]))
+    geometry = store("FLOAT_VECTOR", "POINT", "fbp_glass_piece_spin", "Store Piece Spin", 5220, 600, geometry, random_vector(
+        "Piece Spin", 5000, 200, op("ADD", "Spin ID", 4780, 50, face_index, value_2=1000003.0), inp.outputs["Seed"],
+        minimum=(-1.0, -1.0, -1.0), maximum=(1.0, 1.0, 1.0),
+    ))
+    thickness = _node(group, "GeometryNodeExtrudeMesh", "Broken Glass Thickness", 5440, 760)
+    thickness.mode = "FACES"
+    links.new(geometry, thickness.inputs["Mesh"])
+    links.new(combine("Thickness Offset", 5220, 900, cz=inp.outputs["Thickness"]), thickness.inputs["Offset"])
+    back = _node(group, "GeometryNodeFlipFaces", "Broken Glass Back Faces", 5440, 500)
+    links.new(geometry, back.inputs["Mesh"])
+    # The extrusion moves the faces forward; the source copy, flipped, closes
+    # the back so each piece is a solid prism.
+    solid = _node(group, "GeometryNodeJoinGeometry", "Broken Glass Solid Pieces", 5660, 700)
+    links.new(back.outputs["Mesh"], solid.inputs["Geometry"])
+    links.new(thickness.outputs["Mesh"], solid.inputs["Geometry"])
+    thick = op("GREATER_THAN", "Has Thickness", 5440, 1000, inp.outputs["Thickness"], value_2=1.0e-6)
+    geometry = switch("GEOMETRY", "Thickness Bypass", 5880, 600, thick, geometry, solid.outputs["Geometry"])
+
+    # Shatter: each piece opens over a 35% window that starts later the farther
+    # it is from the impact point (Spread) or the higher its random draw.
+    center = named("FLOAT_VECTOR", "fbp_glass_piece_center", "Piece Center Attribute", 5660, 0)
+    draw = separate("Piece Random Components", 5880, -200, named("FLOAT_VECTOR", "fbp_glass_piece_random", "Piece Random Attribute", 5660, -200))
+    spin = named("FLOAT_VECTOR", "fbp_glass_piece_spin", "Piece Spin Attribute", 5660, -400)
+    from_impact = vmath("SUBTRACT", "From Impact", 5880, 100, center, impact_plane)
+    from_impact_xy = separate("From Impact Components", 6100, 100, from_impact)
+    flat_from_impact = combine("Flat From Impact", 6320, 100, from_impact_xy["X"], from_impact_xy["Y"])
+    distance = op("MINIMUM", "Impact Distance", 6760, 100, op("DIVIDE", "Relative Distance", 6540, 100, vmath("LENGTH", "Distance To Impact", 6320, 250, flat_from_impact), reach), value_2=1.0)
+    order = _node(group, "ShaderNodeMix", "Broken Glass Break Order", 6980, 0)
+    order.data_type = "FLOAT"
+    links.new(inp.outputs["Spread"], _input(order, "Factor", 0))
+    links.new(draw["X"], _input(order, "A", 2))
+    links.new(distance, _input(order, "B", 3))
+    start = op("MULTIPLY", "Break Start", 7200, 0, _output(order, "Result", 0), value_2=0.65)
+    progress = _node(group, "ShaderNodeMapRange", "Broken Glass Piece Progress", 7420, 0)
+    progress.interpolation_type = "SMOOTHSTEP"
+    progress.clamp = True
+    links.new(inp.outputs["Shatter"], progress.inputs["Value"])
+    links.new(start, progress.inputs["From Min"])
+    links.new(op("ADD", "Break End", 7200, -150, start, value_2=0.35), progress.inputs["From Max"])
+    progress = progress.outputs["Result"]
+
+    shrink = op("SUBTRACT", "Piece Scale", 7640, 300, None, op("MULTIPLY", "Piece Gap", 7420, 300, inp.outputs["Gap"], progress), value_1=1.0)
+    scaled = vmath("ADD", "Scaled Point", 8080, 400, center, vmath("SCALE", "Scaled Offset", 7860, 400, vmath("SUBTRACT", "Point From Center", 7640, 450, position, center), scale=shrink))
+    rotate = _node(group, "ShaderNodeVectorRotate", "Broken Glass Spin Piece", 8300, 400)
+    rotate.rotation_type = "EULER_XYZ"
+    links.new(scaled, rotate.inputs["Vector"])
+    links.new(center, rotate.inputs["Center"])
+    links.new(vmath("SCALE", "Piece Rotation", 8080, 200, spin, scale=op("MULTIPLY", "Spin Angle", 7860, 200, op("MULTIPLY", "Spin Radians", 7640, 150, inp.outputs["Spin"], value_2=3.14159265), progress)), rotate.inputs["Rotation"])
+
+    direction = vmath("NORMALIZE", "Explode Direction", 6760, -300, vmath("ADD", "Safe Direction", 6540, -300, flat_from_impact, vmath("SCALE", "Direction Nudge", 6320, -400, spin, scale=op("MULTIPLY", "Nudge Size", 6100, -500, reach, value_2=1.0e-3))))
+    explode = op("MULTIPLY", "Explode Distance", 7640, -300, op("MULTIPLY", "Explode Reach", 7420, -300, inp.outputs["Explode"], reach), op("MULTIPLY_ADD", "Explode Variation", 7420, -450, draw["Y"], value_2=0.6, value_3=0.4))
+    depth = op("MULTIPLY", "Depth Distance", 7640, -600, op("MULTIPLY", "Depth Reach", 7420, -600, inp.outputs["Depth"], reach), op("MULTIPLY_ADD", "Depth Variation", 7420, -750, draw["Z"], value_2=0.7, value_3=0.3))
+    fall = op(
+        "MULTIPLY", "Fall Distance", 7640, -900,
+        op("MULTIPLY", "Fall Reach", 7420, -900, inp.outputs["Fall"], height),
+        op("MULTIPLY_ADD", "Fall Variation", 7420, -1050, draw["X"], value_2=0.5, value_3=0.5),
     )
-    seed_vector = _node(group, "ShaderNodeCombineXYZ", "Broken Glass Seed Vector", -1320, -620)
-    seed_y = _math(group, "MULTIPLY", "Broken Glass Seed Y", -1540, -720, value_2=0.618033989)
-    seed_z = _math(group, "MULTIPLY", "Broken Glass Seed Z", -1540, -820, value_2=-0.414213562)
-    shifted = _vector_math(group, "ADD", "Broken Glass Shifted Cells", -1080, -420)
-    links.new(inp.outputs["Seed"], seed_vector.inputs["X"])
-    links.new(inp.outputs["Seed"], seed_y.inputs[0])
-    links.new(inp.outputs["Seed"], seed_z.inputs[0])
-    links.new(seed_y.outputs[0], seed_vector.inputs["Y"])
-    links.new(seed_z.outputs[0], seed_vector.inputs["Z"])
-    links.new(coordinate_scale, shifted.inputs[0])
-    links.new(seed_vector.outputs[0], shifted.inputs[1])
-
-    edges = _configure_voronoi(
-        _node(group, "ShaderNodeTexVoronoi", "Broken Glass Voronoi Edges", -820, -520),
-        "DISTANCE_TO_EDGE",
+    progress_squared = op("MULTIPLY", "Fall Progress", 7860, -900, progress, progress)
+    travel = vmath(
+        "ADD", "Piece Travel", 8300, -300,
+        vmath("SCALE", "Explode Offset", 8080, -300, direction, scale=op("MULTIPLY", "Explode Progress", 7860, -300, explode, progress)),
+        combine(
+            "Lift And Fall", 8080, -600,
+            cy=op("MULTIPLY", "Fall Offset", 8080, -900, fall, op("MULTIPLY", "Fall Down", 7860, -1050, progress_squared, value_2=-1.0)),
+            cz=op("MULTIPLY", "Depth Offset", 7860, -600, depth, progress),
+        ),
     )
-    cells = _configure_voronoi(
-        _node(group, "ShaderNodeTexVoronoi", "Broken Glass Cell Identity", -820, -760),
-        "F1",
-    )
-    cell_bw = _node(group, "ShaderNodeSeparateXYZ", "Broken Glass Cell Random", -580, -760)
-    links.new(shifted.outputs[0], edges.inputs["Vector"])
-    links.new(shifted.outputs[0], cells.inputs["Vector"])
-    links.new(cells.outputs["Color"], cell_bw.inputs["Vector"])
+    moved = _node(group, "GeometryNodeSetPosition", "Broken Glass Break Pieces", 8520, 600)
+    links.new(geometry, moved.inputs["Geometry"])
+    links.new(vmath("ADD", "Broken Point", 8520, 300, rotate.outputs["Vector"], travel), moved.inputs["Position"])
+    geometry = moved.outputs["Geometry"]
+    for attribute in ("fbp_glass_piece_center", "fbp_glass_piece_random", "fbp_glass_piece_spin"):
+        remove = _node(group, "GeometryNodeRemoveAttribute", f"Broken Glass Clean {attribute}", 8740, 600)
+        remove.inputs["Name"].default_value = attribute
+        links.new(geometry, remove.inputs["Geometry"])
+        geometry = remove.outputs["Geometry"]
 
-    damage_field = _select_float_style(
-        group,
-        inp.outputs["Damage Source"],
-        (source.outputs["Alpha"], inp.outputs["Damage"], damage_bw.outputs["X"]),
-        prefix="Broken Glass Damage Source",
-        x=-900,
-        y=-40,
-    )
-    damage_amount = _math(group, "MULTIPLY", "Broken Glass Damage Amount", -520, -80)
-    crack_width = _math(group, "MULTIPLY", "Broken Glass Open Crack Width", -300, -80)
-    crack = _math(group, "LESS_THAN", "Broken Glass Crack Selection", -60, -80)
-    links.new(damage_field, damage_amount.inputs[0])
-    links.new(inp.outputs["Damage"], damage_amount.inputs[1])
-    links.new(inp.outputs["Crack Width"], crack_width.inputs[0])
-    links.new(damage_amount.outputs[0], crack_width.inputs[1])
-    links.new(edges.outputs["Distance"], crack.inputs[0])
-    links.new(crack_width.outputs[0], crack.inputs[1])
-
-    cell_centered = _math(group, "SUBTRACT", "Broken Glass Center Cell", -300, -620, value_2=0.5)
-    lift_chaos = _math(group, "MULTIPLY", "Broken Glass Lift Chaos", -60, -620)
-    lift_amount = _math(group, "MULTIPLY", "Broken Glass Shard Lift", 180, -620)
-    lift_damage = _math(group, "MULTIPLY", "Broken Glass Lift Damage", 420, -620)
-    lift_vector = _node(group, "ShaderNodeCombineXYZ", "Broken Glass Lift Vector", 660, -620)
-    links.new(cell_bw.outputs["X"], cell_centered.inputs[0])
-    links.new(cell_centered.outputs[0], lift_chaos.inputs[0])
-    links.new(inp.outputs["Chaos"], lift_chaos.inputs[1])
-    links.new(lift_chaos.outputs[0], lift_amount.inputs[0])
-    links.new(inp.outputs["Shard Lift"], lift_amount.inputs[1])
-    links.new(lift_amount.outputs[0], lift_damage.inputs[0])
-    links.new(damage_amount.outputs[0], lift_damage.inputs[1])
-    links.new(lift_damage.outputs[0], lift_vector.inputs["Z"])
-
-    store_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Color", -1040, 520)
-    store_color.data_type = "FLOAT_COLOR"
-    store_color.domain = "POINT"
-    store_color.inputs["Name"].default_value = "fbp_glass_color"
-    store_alpha = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Alpha", -800, 520)
-    store_alpha.data_type = "FLOAT"
-    store_alpha.domain = "POINT"
-    store_alpha.inputs["Name"].default_value = "fbp_glass_alpha"
-    store_height = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Crack Field", -560, 520)
-    store_height.data_type = "FLOAT"
-    store_height.domain = "POINT"
-    store_height.inputs["Name"].default_value = "fbp_glass_height"
-    store_normal = _node(group, "GeometryNodeStoreNamedAttribute", "Store Broken Glass Cell Color", -320, 520)
-    store_normal.data_type = "FLOAT_COLOR"
-    store_normal.domain = "POINT"
-    store_normal.inputs["Name"].default_value = "fbp_glass_normal"
-    links.new(remeshed, store_color.inputs["Geometry"])
-    links.new(source.outputs["Color"], store_color.inputs["Value"])
-    links.new(store_color.outputs["Geometry"], store_alpha.inputs["Geometry"])
-    links.new(source.outputs["Alpha"], store_alpha.inputs["Value"])
-    links.new(store_alpha.outputs["Geometry"], store_height.inputs["Geometry"])
-    links.new(edges.outputs["Distance"], store_height.inputs["Value"])
-    links.new(store_height.outputs["Geometry"], store_normal.inputs["Geometry"])
-    links.new(cells.outputs["Color"], store_normal.inputs["Value"])
-
-    set_position = _node(group, "GeometryNodeSetPosition", "Lift Broken Glass Shards", -60, 520)
-    transparent = _math(group, "LESS_THAN", "Broken Glass Transparent Faces", 160, 180)
-    remove = _node(group, "FunctionNodeBooleanMath", "Broken Glass Remove Faces", 400, 180)
-    remove.operation = "OR"
-    delete = _node(group, "GeometryNodeDeleteGeometry", "Open Broken Glass Cracks", 420, 520)
-    delete.domain = "FACE"
-    links.new(store_normal.outputs["Geometry"], set_position.inputs["Geometry"])
-    links.new(lift_vector.outputs[0], set_position.inputs["Offset"])
-    links.new(source.outputs["Alpha"], transparent.inputs[0])
-    links.new(inp.outputs["Alpha Threshold"], transparent.inputs[1])
-    links.new(transparent.outputs[0], remove.inputs[0])
-    links.new(crack.outputs[0], remove.inputs[1])
-    links.new(set_position.outputs["Geometry"], delete.inputs["Geometry"])
-    links.new(remove.outputs[0], delete.inputs["Selection"])
-
-    back_amount = _math(group, "MULTIPLY", "Broken Glass Back Thickness", 500, 180, value_2=-1.0)
-    thickness = _node(group, "ShaderNodeCombineXYZ", "Broken Glass Thickness", 700, 180)
-    extrude = _node(group, "GeometryNodeExtrudeMesh", "Close Broken Glass Shards", 680, 520)
-    extrude.mode = "FACES"
-    # Extrude each connected shard as one region. Blender's per-face mode makes
-    # one closed cell for every subdivided quad, leaving coincident inner walls
-    # that look like a false tessellation after smooth shading/subdivision.
-    individual = _input(extrude, "Individual")
-    if individual is not None:
-        individual.default_value = False
-    links.new(inp.outputs["Thickness"], back_amount.inputs[0])
-    links.new(back_amount.outputs[0], thickness.inputs["Z"])
-    links.new(delete.outputs["Geometry"], extrude.inputs["Mesh"])
-    links.new(thickness.outputs[0], extrude.inputs["Offset"])
-
-    # A region extrusion contains the displaced cap and its boundary walls, but
-    # not the original front cap. Re-add that source surface, flip only the
-    # generated back cap, then weld the shared rim. This produces one manifold
-    # shell per shard without duplicate faces or hidden walls inside the grid.
-    flip_back = _node(group, "GeometryNodeFlipFaces", "Orient Broken Glass Back Cap", 920, 520)
-    links.new(extrude.outputs["Mesh"], flip_back.inputs["Mesh"])
-    links.new(extrude.outputs["Top"], flip_back.inputs["Selection"])
-    join_volume = _node(group, "GeometryNodeJoinGeometry", "Assemble Broken Glass Volume", 1160, 520)
-    links.new(delete.outputs["Geometry"], join_volume.inputs["Geometry"])
-    links.new(flip_back.outputs["Mesh"], join_volume.inputs["Geometry"])
-    merge_rim = _node(group, "GeometryNodeMergeByDistance", "Weld Broken Glass Rim", 1400, 520)
-    merge_rim.inputs["Distance"].default_value = 1.0e-6
-    links.new(join_volume.outputs["Geometry"], merge_rim.inputs["Geometry"])
-
-    edge_angle = _node(group, "GeometryNodeInputMeshEdgeAngle", "Broken Glass Edge Angle", 1400, 80)
-    sharp_edges = _math(group, "GREATER_THAN", "Broken Glass Sharp Edges", 1640, 80, value_2=0.017453292)
-    bevel = _node(group, "GeometryNodeMeshBevel", "Bevel Broken Glass Geometry", 1640, 520)
-    bevel.inputs["Segments"].default_value = 1
-    bevel.inputs["Shape"].default_value = 0.5
-    bevel.inputs["Miter"].default_value = True
-    has_bevel = _math(group, "GREATER_THAN", "Broken Glass Has Bevel", 1640, 240, value_2=1.0e-6)
-    bevel_switch = _node(group, "GeometryNodeSwitch", "Broken Glass Bevel Bypass", 2120, 520)
-    bevel_switch.input_type = "GEOMETRY"
-    links.new(merge_rim.outputs["Geometry"], bevel.inputs["Mesh"])
-    links.new(edge_angle.outputs["Unsigned Angle"], sharp_edges.inputs[0])
-    links.new(sharp_edges.outputs[0], bevel.inputs["Selection"])
-    links.new(inp.outputs["Bevel"], bevel.inputs["Offset"])
-    links.new(inp.outputs["Bevel"], has_bevel.inputs[0])
-    links.new(has_bevel.outputs[0], bevel_switch.inputs["Switch"])
-    links.new(merge_rim.outputs["Geometry"], bevel_switch.inputs["False"])
-    links.new(bevel.outputs["Mesh"], bevel_switch.inputs["True"])
-
-    material = _node(group, "GeometryNodeSetMaterial", "Broken Glass Material", 2360, 520)
-    smooth = _node(group, "GeometryNodeSetShadeSmooth", "Broken Glass Smooth Shading", 2600, 520)
-    links.new(bevel_switch.outputs["Output"], material.inputs["Geometry"])
-    links.new(inp.outputs["Glass Material"], material.inputs["Material"])
-    links.new(material.outputs["Geometry"], smooth.inputs["Mesh"])
-    links.new(inp.outputs["Shade Smooth"], smooth.inputs["Shade Smooth"])
-    links.new(smooth.outputs["Mesh"], out.inputs["Geometry"])
-    group["fbp_glass_contract_version"] = 6
+    flat = _node(group, "GeometryNodeSetShadeSmooth", "Broken Glass Flat Shading", 8960, 600)
+    flat.inputs["Shade Smooth"].default_value = False
+    links.new(geometry, flat.inputs["Mesh"])
+    glass = _node(group, "GeometryNodeSetMaterial", "Broken Glass Material", 9180, 400)
+    links.new(flat.outputs["Mesh"], glass.inputs["Geometry"])
+    links.new(inp.outputs["Glass Material"], glass.inputs["Material"])
+    result = switch("GEOMETRY", "Surface", 9400, 600, inp.outputs["Glass Surface"], flat.outputs["Mesh"], glass.outputs["Geometry"])
+    links.new(result, out.inputs["Geometry"])
+    group["fbp_glass_contract_version"] = 7
+    group["fbp_effect_contract_version"] = 2
     group["fbp_image_geometry_contract_version"] = 1
     return group
 
@@ -8527,6 +9100,11 @@ def _create_frame_stack(name):
     aspect-balanced copy of the plane that samples its own source frame into
     ``fbp_frame_stack_color`` / ``fbp_frame_stack_alpha``; the plane itself
     stays the full-resolution current frame.
+
+    Slices step through playback positions, not file numbers. The runtime
+    writes the current position, the cycle length and, for image sequences, a
+    timing table (one pixel per position: R = file frame, G = visible) that
+    follows the layer's playback order, holds, loops and blank frames.
     """
     group = bpy.data.node_groups.new(name, "GeometryNodeTree")
     _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
@@ -8554,6 +9132,12 @@ def _create_frame_stack(name):
     _socket(group, "Outline Color", "INPUT", "NodeSocketColor", default=(1.0, 1.0, 1.0, 1.0))
     _socket(group, "Glow", "INPUT", "NodeSocketBool", default=False)
     _socket(group, "Stack Material", "INPUT", "NodeSocketMaterial")
+    _socket(group, "Stack Position", "INPUT", "NodeSocketInt", default=0, minimum=-1000000, maximum=1000000)
+    _socket(group, "Cycle Length", "INPUT", "NodeSocketInt", default=0, minimum=0, maximum=1000000)
+    _socket(group, "Loop", "INPUT", "NodeSocketBool", default=False)
+    _socket(group, "Frame Base", "INPUT", "NodeSocketInt", default=1, minimum=-1000000, maximum=1000000)
+    _socket(group, "Use Timing Table", "INPUT", "NodeSocketBool", default=False)
+    _socket(group, "Table Rows", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=100000)
     _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
     inp, out = _group_io(group)
     links = group.links
@@ -8573,11 +9157,8 @@ def _create_frame_stack(name):
     links.new(first_index.outputs["Output"], iterations.inputs[1])
     safe_iterations = _math(group, "MAXIMUM", "Frame Stack Safe Iterations", -2160, -200, value_2=0.0)
     links.new(iterations.outputs[0], safe_iterations.inputs[0])
-    base_frame = _node(group, "GeometryNodeSwitch", "Frame Stack Base Frame", -2380, -420)
-    base_frame.input_type = "INT"
-    links.new(inp.outputs["Fixed Start"], base_frame.inputs["Switch"])
-    links.new(inp.outputs["Source Frame"], base_frame.inputs["False"])
-    links.new(inp.outputs["Start Frame"], base_frame.inputs["True"])
+    # Source Frame, Fixed Start and Start Frame stay in the interface for the
+    # property contract; the runtime folds them into Stack Position.
     last_index = _math(group, "SUBTRACT", "Frame Stack Last Index", -2380, -620, value_2=1.0)
     links.new(inp.outputs["Slices"], last_index.inputs[0])
 
@@ -8596,9 +9177,100 @@ def _create_frame_stack(name):
     frame_delta = _math(group, "MULTIPLY", "Frame Stack Frame Delta", -1440, -40)
     links.new(index.outputs[0], frame_delta.inputs[0])
     links.new(inp.outputs["Frame Step"], frame_delta.inputs[1])
-    frame = _math(group, "SUBTRACT", "Frame Stack Slice Frame", -1220, -40)
-    links.new(base_frame.outputs["Output"], frame.inputs[0])
-    links.new(frame_delta.outputs[0], frame.inputs[1])
+    position = _math(group, "SUBTRACT", "Frame Stack Slice Position", -1220, -40)
+    links.new(inp.outputs["Stack Position"], position.inputs[0])
+    links.new(frame_delta.outputs[0], position.inputs[1])
+
+    # Looping layers wrap earlier positions around the cycle; otherwise a
+    # position before the first frame or past the last one stays empty.
+    has_cycle = _math(group, "GREATER_THAN", "Frame Stack Has Cycle", -1220, -760, value_2=0.5)
+    links.new(inp.outputs["Cycle Length"], has_cycle.inputs[0])
+    safe_cycle = _math(group, "MAXIMUM", "Frame Stack Safe Cycle", -1220, -960, value_2=1.0)
+    links.new(inp.outputs["Cycle Length"], safe_cycle.inputs[0])
+    wrapped = _math(group, "FLOORED_MODULO", "Frame Stack Wrapped Position", -1000, -960)
+    links.new(position.outputs[0], wrapped.inputs[0])
+    links.new(safe_cycle.outputs[0], wrapped.inputs[1])
+    wrap_on = _math(group, "MULTIPLY", "Frame Stack Wrap On", -1000, -760)
+    links.new(inp.outputs["Loop"], wrap_on.inputs[0])
+    links.new(has_cycle.outputs[0], wrap_on.inputs[1])
+    slice_position = _node(group, "GeometryNodeSwitch", "Frame Stack Cycle Position", -780, -860)
+    slice_position.input_type = "FLOAT"
+    links.new(wrap_on.outputs[0], slice_position.inputs["Switch"])
+    links.new(position.outputs[0], slice_position.inputs["False"])
+    links.new(wrapped.outputs[0], slice_position.inputs["True"])
+    q = slice_position.outputs["Output"]
+    after_start = _math(group, "GREATER_THAN", "Frame Stack After Start", -560, -760, value_2=-0.5)
+    links.new(q, after_start.inputs[0])
+    before_end = _math(group, "LESS_THAN", "Frame Stack Before End", -560, -960)
+    links.new(q, before_end.inputs[0])
+    links.new(inp.outputs["Cycle Length"], before_end.inputs[1])
+    open_end = _math(group, "SUBTRACT", "Frame Stack Open End", -560, -1160, value_1=1.0)
+    links.new(has_cycle.outputs[0], open_end.inputs[1])
+    in_end = _math(group, "MAXIMUM", "Frame Stack In End", -340, -960)
+    links.new(before_end.outputs[0], in_end.inputs[0])
+    links.new(open_end.outputs[0], in_end.inputs[1])
+    in_range = _math(group, "MULTIPLY", "Frame Stack In Range", -120, -860)
+    links.new(after_start.outputs[0], in_range.inputs[0])
+    links.new(in_end.outputs[0], in_range.inputs[1])
+
+    # Timing table lookup, read back as single values through a one-point
+    # Sample Index because the image Frame input takes no field.
+    table_width = float(FBP_FRAME_STACK_TABLE_WIDTH)
+    table_column = _math(group, "FLOORED_MODULO", "Frame Stack Table Column", -780, -1400, value_2=table_width)
+    links.new(q, table_column.inputs[0])
+    table_u = _math(group, "MULTIPLY_ADD", "Frame Stack Table U", -560, -1400)
+    table_u.inputs[1].default_value = 1.0 / table_width
+    table_u.inputs[2].default_value = 0.5 / table_width
+    links.new(table_column.outputs[0], table_u.inputs[0])
+    table_row_raw = _math(group, "DIVIDE", "Frame Stack Table Row Raw", -780, -1600, value_2=table_width)
+    links.new(q, table_row_raw.inputs[0])
+    table_row = _math(group, "FLOOR", "Frame Stack Table Row", -560, -1600)
+    links.new(table_row_raw.outputs[0], table_row.inputs[0])
+    table_row_center = _math(group, "ADD", "Frame Stack Table Row Center", -340, -1600, value_2=0.5)
+    links.new(table_row.outputs[0], table_row_center.inputs[0])
+    table_v = _math(group, "DIVIDE", "Frame Stack Table V", -120, -1600)
+    links.new(table_row_center.outputs[0], table_v.inputs[0])
+    links.new(inp.outputs["Table Rows"], table_v.inputs[1])
+    table_uv = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Table UV", 100, -1500)
+    links.new(table_u.outputs[0], table_uv.inputs["X"])
+    links.new(table_v.outputs[0], table_uv.inputs["Y"])
+    table = _node(group, "GeometryNodeImageTexture", "Frame Stack Timing Table", 320, -1500)
+    table["fbp_frame_stack_table_node"] = True
+    try:
+        table.extension = "EXTEND"
+        table.interpolation = "Closest"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(table_uv.outputs[0], table.inputs["Vector"])
+    table_point = _node(group, "GeometryNodePoints", "Frame Stack Table Point", 320, -1800)
+    table_point.inputs["Count"].default_value = 1
+    table_sample = _node(group, "GeometryNodeSampleIndex", "Frame Stack Table Sample", 540, -1600)
+    table_sample.data_type = "FLOAT_COLOR"
+    table_sample.domain = "POINT"
+    links.new(table_point.outputs["Points"], table_sample.inputs["Geometry"])
+    links.new(table.outputs["Color"], table_sample.inputs["Value"])
+    table_channels = _node(group, "FunctionNodeSeparateColor", "Frame Stack Table Channels", 760, -1600)
+    links.new(table_sample.outputs["Value"], table_channels.inputs["Color"])
+
+    direct_frame = _math(group, "ADD", "Frame Stack Direct Frame", 100, -1200)
+    links.new(q, direct_frame.inputs[0])
+    links.new(inp.outputs["Frame Base"], direct_frame.inputs[1])
+    source_frame = _node(group, "GeometryNodeSwitch", "Frame Stack Source Frame", 980, -1300)
+    source_frame.input_type = "FLOAT"
+    links.new(inp.outputs["Use Timing Table"], source_frame.inputs["Switch"])
+    links.new(direct_frame.outputs[0], source_frame.inputs["False"])
+    links.new(table_channels.outputs["Red"], source_frame.inputs["True"])
+    table_visible = _node(group, "GeometryNodeSwitch", "Frame Stack Table Visible", 980, -1500)
+    table_visible.input_type = "FLOAT"
+    table_visible.inputs["False"].default_value = 1.0
+    links.new(inp.outputs["Use Timing Table"], table_visible.inputs["Switch"])
+    links.new(table_channels.outputs["Green"], table_visible.inputs["True"])
+    slice_shown = _math(group, "MULTIPLY", "Frame Stack Slice Shown", 1200, -1400)
+    links.new(in_range.outputs[0], slice_shown.inputs[0])
+    links.new(table_visible.outputs["Output"], slice_shown.inputs[1])
+    frame = _node(group, "FunctionNodeFloatToInt", "Frame Stack Slice Frame", 1200, -1200)
+    frame.rounding_mode = "ROUND"
+    links.new(source_frame.outputs["Output"], frame.inputs[0])
 
     uv = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack UVMap", -1440, 420)
     uv.data_type = "FLOAT_VECTOR"
@@ -8661,10 +9333,13 @@ def _create_frame_stack(name):
     alpha_depth = _math(group, "MULTIPLY", "Frame Stack Alpha Depth", 320, -300)
     links.new(alpha.outputs[0], alpha_depth.inputs[0])
     links.new(depth_keep.outputs[0], alpha_depth.inputs[1])
-    final_alpha = _math(group, "MULTIPLY", "Frame Stack Alpha", 540, -300)
-    final_alpha.use_clamp = True
-    links.new(alpha_depth.outputs[0], final_alpha.inputs[0])
-    links.new(key_factor.outputs[0], final_alpha.inputs[1])
+    keyed_alpha = _math(group, "MULTIPLY", "Frame Stack Keyed Alpha", 540, -300)
+    keyed_alpha.use_clamp = True
+    links.new(alpha_depth.outputs[0], keyed_alpha.inputs[0])
+    links.new(key_factor.outputs[0], keyed_alpha.inputs[1])
+    final_alpha = _math(group, "MULTIPLY", "Frame Stack Alpha", 540, -500)
+    links.new(keyed_alpha.outputs[0], final_alpha.inputs[0])
+    links.new(slice_shown.outputs[0], final_alpha.inputs[1])
 
     store_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Color", 760, 400)
     store_color.data_type = "FLOAT_COLOR"
@@ -8836,7 +9511,8 @@ def _create_frame_stack(name):
     links.new(outline_switch.outputs["Output"], join.inputs["Geometry"])
     links.new(join.outputs["Geometry"], out.inputs["Geometry"])
     out.location = (7000, 400)
-    group["fbp_frame_stack_contract_version"] = 1
+    group["fbp_frame_stack_contract_version"] = 2
+    group["fbp_effect_contract_version"] = 2
     return group
 
 
@@ -10167,6 +10843,88 @@ def _sobel_gradient(group, inp, radius_socket, prefix, x, y):
     return gx, gy
 
 
+_OIL_PAINT_STEPS = (1.0 / 3.0, 2.0 / 3.0, 1.0)
+
+
+def _internal_helper_group(name, build):
+    """Return a shared, image-free helper group used inside a large effect.
+
+    Blender revalidates the whole node tree after every node, link or default
+    value written from Python, so one 500-node graph took about two seconds to
+    build on first use. Repeated math moved into a small helper is built once
+    and instanced, which keeps first use fast; shaders inline groups, so the
+    compiled result is unchanged. Helpers carry no image nodes and no fake user:
+    they are shared by every layer and leave with the last effect that uses them.
+    """
+    existing = bpy.data.node_groups.get(name)
+    if existing is not None:
+        try:
+            if getattr(existing, "library", None) is None and bool(existing.get("fbp_internal_helper_complete", False)):
+                return existing
+            if existing.users == 0:
+                bpy.data.node_groups.remove(existing)
+        except FBP_DATA_ERRORS:
+            pass
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    try:
+        build(group)
+    except Exception:
+        try:
+            bpy.data.node_groups.remove(group)
+        except FBP_DATA_ERRORS:
+            pass
+        raise
+    group["fbp_internal_helper_complete"] = True
+    return group
+
+
+def _build_oil_paint_sector_uvs(group):
+    """Nine sample positions of one Kuwahara sector from its two signed axes."""
+    _socket(group, "UV", "INPUT", "NodeSocketVector")
+    _socket(group, "Along", "INPUT", "NodeSocketVector")
+    _socket(group, "Across", "INPUT", "NodeSocketVector")
+    for term in range(1, 10):
+        _socket(group, f"UV {term}", "OUTPUT", "NodeSocketVector")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Sector", x=-600, y=600, rows=12)
+    scaled_u = [g.vector("SCALE", inp.outputs["Along"], scale=f) for f in _OIL_PAINT_STEPS]
+    scaled_v = [g.vector("SCALE", inp.outputs["Across"], scale=f) for f in _OIL_PAINT_STEPS]
+    term = 1
+    for pu in range(3):
+        for pv in range(3):
+            offset = g.vector("ADD", scaled_u[pu], scaled_v[pv], label="Sector Offset")
+            group.links.new(g.vector("ADD", inp.outputs["UV"], offset, label="Sector UV"), out.inputs[f"UV {term}"])
+            term += 1
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
+
+
+def _build_oil_paint_sector_stats(group):
+    """Alpha-weighted mean color and luminance deviation of ten samples."""
+    for term in range(10):
+        _socket(group, f"Color {term}", "INPUT", "NodeSocketColor", default=(0.0, 0.0, 0.0, 1.0))
+    for term in range(10):
+        _socket(group, f"Alpha {term}", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Mean", "OUTPUT", "NodeSocketVector")
+    _socket(group, "Deviation", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Sector", x=-600, y=900, rows=24)
+    terms = []
+    for term in range(10):
+        alpha = inp.outputs[f"Alpha {term}"]
+        premultiplied = g.vector("SCALE", inp.outputs[f"Color {term}"], scale=alpha, label="Premultiplied")
+        luma = g.luma(premultiplied)
+        terms.append((premultiplied, alpha, luma, g.math("MULTIPLY", luma, luma, label="Luma Squared")))
+    color_sum = g.total([term[0] for term in terms], vector=True)
+    alpha_sum = g.math("ADD", g.total([term[1] for term in terms]), 0.0001, label="Alpha Sum")
+    mean = g.vector("SCALE", color_sum, scale=g.math("DIVIDE", 1.0, alpha_sum), label="Sector Mean")
+    luma_mean = g.math("MULTIPLY", g.total([term[2] for term in terms]), 1.0 / len(terms), label="Luma Mean")
+    luma2_mean = g.math("MULTIPLY", g.total([term[3] for term in terms]), 1.0 / len(terms), label="Luma2 Mean")
+    variance = g.math("MAXIMUM", g.math("SUBTRACT", luma2_mean, g.math("MULTIPLY", luma_mean, luma_mean)), 0.0, label="Variance")
+    group.links.new(mean, out.inputs["Mean"])
+    group.links.new(g.math("SQRT", variance, label="Deviation"), out.inputs["Deviation"])
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
+
+
 def _create_oil_paint(name):
     """Anisotropic Kuwahara: four elongated sectors, the calmest one wins.
 
@@ -10208,32 +10966,32 @@ def _create_oil_paint(name):
     across = g.math("DIVIDE", radius, root, label="Across Radius")
     axis_u = g.texel_offset(inp, g.vector("SCALE", tangent, scale=along), label="Axis Along")
     axis_v = g.texel_offset(inp, g.vector("SCALE", normal, scale=across), label="Axis Across")
-    steps = (1.0 / 3.0, 2.0 / 3.0, 1.0)
-    scaled_u = {sign * f: g.vector("SCALE", axis_u, scale=sign * f) for f in steps for sign in (-1, 1)}
-    scaled_v = {sign * f: g.vector("SCALE", axis_v, scale=sign * f) for f in steps for sign in (-1, 1)}
-
+    # The repeated per-sector math lives in two small shared helper groups.
+    # Only the image samples stay in this graph (the runtime points them at the
+    # layer image), which keeps first use fast; see _internal_helper_group.
+    sector_uvs = _internal_helper_group("FBP_SH_Oil_Paint_Sector_UVs_810", _build_oil_paint_sector_uvs)
+    sector_stats = _internal_helper_group("FBP_SH_Oil_Paint_Sector_Stats_810", _build_oil_paint_sector_stats)
+    axes_u = {1: axis_u, -1: g.vector("SCALE", axis_u, scale=-1.0, label="Axis Along Reversed")}
+    axes_v = {1: axis_v, -1: g.vector("SCALE", axis_v, scale=-1.0, label="Axis Across Reversed")}
     center_color, center_alpha = g.sample(uv, label="Center")
-
-    def weighted(color, alpha):
-        premultiplied = g.vector("SCALE", color, scale=alpha, label="Premultiplied")
-        luma = g.luma(premultiplied)
-        return premultiplied, alpha, luma, g.math("MULTIPLY", luma, luma, label="Luma Squared")
-
-    center = weighted(center_color, center_alpha)
     sectors = []
-    for su, sv in ((1, 1), (-1, 1), (-1, -1), (1, -1)):
-        terms = [center]
-        for pu, pv in ((pu, pv) for pu in steps for pv in steps):
-            offset = g.vector("ADD", scaled_u[su * pu], scaled_v[sv * pv], label="Sector Offset")
-            color, alpha = g.sample(g.vector("ADD", uv, offset, label="Sector UV"), label="Sector")
-            terms.append(weighted(color, alpha))
-        color_sum = g.total([term[0] for term in terms], vector=True)
-        alpha_sum = g.math("ADD", g.total([term[1] for term in terms]), 0.0001, label="Alpha Sum")
-        mean = g.vector("SCALE", color_sum, scale=g.math("DIVIDE", 1.0, alpha_sum), label="Sector Mean")
-        luma_mean = g.math("MULTIPLY", g.total([term[2] for term in terms]), 1.0 / len(terms), label="Luma Mean")
-        luma2_mean = g.math("MULTIPLY", g.total([term[3] for term in terms]), 1.0 / len(terms), label="Luma2 Mean")
-        variance = g.math("MAXIMUM", g.math("SUBTRACT", luma2_mean, g.math("MULTIPLY", luma_mean, luma_mean)), 0.0, label="Variance")
-        sectors.append((mean, g.math("SQRT", variance, label="Deviation")))
+    for index, (su, sv) in enumerate(((1, 1), (-1, 1), (-1, -1), (1, -1))):
+        x, y = g._place()
+        uvs = _node(group, "ShaderNodeGroup", f"Oil Paint Sector {index} UVs", x, y)
+        uvs.node_tree = sector_uvs
+        links.new(uv, uvs.inputs["UV"])
+        links.new(axes_u[su], uvs.inputs["Along"])
+        links.new(axes_v[sv], uvs.inputs["Across"])
+        x, y = g._place()
+        stats = _node(group, "ShaderNodeGroup", f"Oil Paint Sector {index} Stats", x, y)
+        stats.node_tree = sector_stats
+        links.new(center_color, stats.inputs["Color 0"])
+        links.new(center_alpha, stats.inputs["Alpha 0"])
+        for term in range(1, 10):
+            color, alpha = g.sample(uvs.outputs[f"UV {term}"], label="Sector")
+            links.new(color, stats.inputs[f"Color {term}"])
+            links.new(alpha, stats.inputs[f"Alpha {term}"])
+        sectors.append((stats.outputs["Mean"], stats.outputs["Deviation"]))
 
     lowest = g.total([sector[1] for sector in sectors], operation="MINIMUM")
     weight_scale = g.math("MULTIPLY", inp.outputs["Sharpness"], -16.0, label="Weight Scale")
@@ -10259,7 +11017,9 @@ def _create_riso_print(name):
     Each ink samples the source at its own pixel offset, takes its share of the
     color's absorbance (1 − color) from a least-squares split over the ink
     absorbances (1 − ink), optionally turns it into rotated halftone dots, and
-    overprints on the paper by multiplying.
+    overprints on the paper by multiplying. Drift Angle turns the direction the
+    drums slip, Print Rotation turns the whole screen, and Seed reshuffles the
+    grain, each ink's screen phase and the size jitter of the dots.
     """
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
     for n, t, d, mi, ma in (
@@ -10274,6 +11034,8 @@ def _create_riso_print(name):
         ("Halftone", "NodeSocketFloat", .6, 0, 1),
         ("Dot Size", "NodeSocketFloat", 6, 1, 256),
         ("Grain", "NodeSocketFloat", .35, 0, 1),
+        ("Drift Angle", "NodeSocketFloat", 0, None, None),
+        ("Print Rotation", "NodeSocketFloat", 0, None, None),
         ("Seed", "NodeSocketFloat", 0, 0, 1000),
         ("Factor", "NodeSocketFloat", 1, 0, 1),
         ("Texel X", "NodeSocketFloat", .001, 0, 1),
@@ -10286,9 +11048,13 @@ def _create_riso_print(name):
     g = _Graph(group, "Riso", x=-700, y=1400, rows=28)
     uv = inp.outputs["UV Vector"]
     u, v = g.separate(uv, label="UV")
-    pixel_x = g.math("DIVIDE", u, g.math("MAXIMUM", inp.outputs["Texel X"], 0.0000001), label="Pixel X")
-    pixel_y = g.math("DIVIDE", v, g.math("MAXIMUM", inp.outputs["Texel Y"], 0.0000001), label="Pixel Y")
-    seed_angle = g.math("MULTIPLY", inp.outputs["Seed"], 1.7, label="Seed Angle")
+    source_x = g.math("DIVIDE", u, g.math("MAXIMUM", inp.outputs["Texel X"], 0.0000001), label="Pixel X")
+    source_y = g.math("DIVIDE", v, g.math("MAXIMUM", inp.outputs["Texel Y"], 0.0000001), label="Pixel Y")
+    # Print Rotation turns the screen and the grain together, in source pixels.
+    cos_p = g.math("COSINE", inp.outputs["Print Rotation"], label="Print Cos")
+    sin_p = g.math("SINE", inp.outputs["Print Rotation"], label="Print Sin")
+    pixel_x = g.math("SUBTRACT", g.math("MULTIPLY", source_x, cos_p), g.math("MULTIPLY", source_y, sin_p), label="Print X")
+    pixel_y = g.math("ADD", g.math("MULTIPLY", source_x, sin_p), g.math("MULTIPLY", source_y, cos_p), label="Print Y")
 
     # Ink absorbances and the pieces of the least-squares separation: two inks
     # solve the 2×2 normal equations, three inks solve the 3×3 system exactly
@@ -10324,7 +11090,7 @@ def _create_riso_print(name):
     for index, (ink_name, drift, screen) in enumerate((
         ("Ink 1", 0.3, 15.0), ("Ink 2", 2.4, 75.0), ("Ink 3", 4.4, 45.0),
     )):
-        angle = g.math("ADD", seed_angle, drift, label=f"{ink_name} Drift")
+        angle = g.math("ADD", inp.outputs["Drift Angle"], drift, label=f"{ink_name} Drift")
         direction = g.combine(g.math("COSINE", angle), g.math("SINE", angle), label=f"{ink_name} Direction")
         shift = g.texel_offset(inp, g.vector("SCALE", direction, scale=inp.outputs["Misregistration"]), label=f"{ink_name} Shift")
         color, alpha = g.sample(g.vector("ADD", uv, shift), label=f"{ink_name} Source")
@@ -10336,9 +11102,22 @@ def _create_riso_print(name):
         rx = g.math("SUBTRACT", g.math("MULTIPLY", pixel_x, cos_s), g.math("MULTIPLY", pixel_y, sin_s), label=f"{ink_name} Screen X")
         ry = g.math("ADD", g.math("MULTIPLY", pixel_x, sin_s), g.math("MULTIPLY", pixel_y, cos_s), label=f"{ink_name} Screen Y")
         cell = g.vector("DIVIDE", g.combine(rx, ry), g.combine(inp.outputs["Dot Size"], inp.outputs["Dot Size"], 1.0), label=f"{ink_name} Cell")
+        # Seed moves each ink's screen phase and jitters every dot's size.
+        x, y = g._place()
+        phase = _node(group, "ShaderNodeTexWhiteNoise", f"Riso {ink_name} Screen Phase", x, y)
+        phase.noise_dimensions = "4D"
+        phase.inputs["Vector"].default_value = (float(index + 1), 0.0, 0.0)
+        links.new(inp.outputs["Seed"], phase.inputs["W"])
+        cell = g.vector("ADD", cell, g.vector("MULTIPLY", phase.outputs["Color"], (1.0, 1.0, 0.0)), label=f"{ink_name} Phased Cell")
         local = g.vector("SUBTRACT", g.vector("FRACTION", cell), (0.5, 0.5, 0.0), label=f"{ink_name} Local")
         distance = g.vector("LENGTH", local, label=f"{ink_name} Dot Distance")
-        dot_radius = g.math("MULTIPLY", g.math("SQRT", density), 0.7071, label=f"{ink_name} Dot Radius")
+        x, y = g._place()
+        jitter = _node(group, "ShaderNodeTexWhiteNoise", f"Riso {ink_name} Dot Jitter", x, y)
+        jitter.noise_dimensions = "4D"
+        links.new(g.vector("FLOOR", cell), jitter.inputs["Vector"])
+        links.new(g.math("ADD", inp.outputs["Seed"], 31.0 * index + 5.0), jitter.inputs["W"])
+        dot_scale = g.math("ADD", g.math("MULTIPLY", jitter.outputs["Value"], 0.3), 0.85, label=f"{ink_name} Dot Jitter Scale")
+        dot_radius = g.math("MULTIPLY", g.math("MULTIPLY", g.math("SQRT", density), 0.7071), dot_scale, label=f"{ink_name} Dot Radius")
         dot = g.clamp01(g.math("ADD", g.math("MULTIPLY", g.math("SUBTRACT", dot_radius, distance), 12.0), 0.5), label=f"{ink_name} Dot")
         dot = g.math("MULTIPLY", dot, g.clamp01(g.math("MULTIPLY", density, 20.0)), label=f"{ink_name} Dot Gate")
         screened = g.math("ADD", density, g.math("MULTIPLY", g.math("SUBTRACT", dot, density), inp.outputs["Halftone"]), label=f"{ink_name} Screened")
@@ -10366,6 +11145,40 @@ def _create_riso_print(name):
     links.new(mix.outputs[0], out.inputs["Color Out"])
     out.location = (mix.location[0] + 240, 300)
     return group
+
+
+def _build_edge_distance_ring_uvs(group, turned):
+    """Eight sample positions on one ring, every 45° (odd rings turned 22.5°)."""
+    _socket(group, "UV", "INPUT", "NodeSocketVector")
+    _socket(group, "Radius", "INPUT", "NodeSocketFloat", default=1.0)
+    _socket(group, "Texel X", "INPUT", "NodeSocketFloat", default=0.001)
+    _socket(group, "Texel Y", "INPUT", "NodeSocketFloat", default=0.001)
+    for sample in range(8):
+        _socket(group, f"UV {sample}", "OUTPUT", "NodeSocketVector")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Ring", x=-600, y=700, rows=16)
+    texel = g.combine(inp.outputs["Texel X"], inp.outputs["Texel Y"], 0.0, label="Texel")
+    for sample in range(8):
+        angle = math.radians(sample * 45.0 + (22.5 if turned else 0.0))
+        pixel = g.vector("SCALE", g.combine(math.cos(angle), math.sin(angle)), scale=inp.outputs["Radius"], label="Reach")
+        offset = g.vector("MULTIPLY", pixel, texel, label="Texel Offset")
+        group.links.new(g.vector("ADD", inp.outputs["UV"], offset, label="Sample UV"), out.inputs[f"UV {sample}"])
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
+
+
+def _build_edge_distance_ring_inside(group):
+    """How much of one ring lies inside the artwork, from its eight alphas."""
+    for sample in range(8):
+        _socket(group, f"Alpha {sample}", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Inside", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    g = _Graph(group, "Ring", x=-600, y=700, rows=16)
+    outside = [g.math("SUBTRACT", 1.0, inp.outputs[f"Alpha {sample}"], label="Outside") for sample in range(8)]
+    # About a third of the ring outside counts as fully crossing the edge;
+    # partial counts keep the falloff smooth between rings.
+    crossing = g.clamp01(g.math("MULTIPLY", g.total(outside), 0.4), label="Crossing")
+    group.links.new(g.math("SUBTRACT", 1.0, crossing, label="Inside"), out.inputs["Inside"])
+    out.location = (g.x + 190 * (g.count // g.rows + 1), 0)
 
 
 def _create_edge_distance_mask(name):
@@ -10403,20 +11216,32 @@ def _create_edge_distance_mask(name):
     jitter = _node(group, "ShaderNodeTexWhiteNoise", "Edge Distance Ring Jitter", x, y)
     jitter.noise_dimensions = "3D"
     group.links.new(g.vector("SCALE", uv, scale=4096.0, label="Jitter Coordinate"), jitter.inputs["Vector"])
+    ring_uvs = {
+        turned: _internal_helper_group(
+            f"FBP_SH_Edge_Distance_Ring_UVs_{'Turned_' if turned else ''}810",
+            lambda helper, turned=turned: _build_edge_distance_ring_uvs(helper, turned),
+        )
+        for turned in (False, True)
+    }
+    ring_inside = _internal_helper_group("FBP_SH_Edge_Distance_Ring_Inside_810", _build_edge_distance_ring_inside)
     inside_rings = []
     for ring in range(1, rings + 1):
         step = g.math("SUBTRACT", float(ring), jitter.outputs["Value"], label=f"Ring {ring} Step")
         radius = g.math("MULTIPLY", distance, g.math("MULTIPLY", step, 1.0 / rings), label=f"Ring {ring} Radius")
-        outside = []
-        for step in range(8):
-            angle = math.radians(step * 45.0 + (22.5 if ring % 2 else 0.0))
-            pixel = g.vector("SCALE", g.combine(math.cos(angle), math.sin(angle)), scale=radius, label=f"Ring {ring} Reach")
-            _color, alpha = g.sample(g.vector("ADD", uv, g.texel_offset(inp, pixel)), label=f"Ring {ring} Sample")
-            outside.append(g.math("SUBTRACT", 1.0, alpha, label=f"Ring {ring} Outside"))
-        # About a third of the ring outside counts as fully crossing the edge;
-        # partial counts keep the falloff smooth between rings.
-        crossing = g.clamp01(g.math("MULTIPLY", g.total(outside), 0.4), label=f"Ring {ring} Crossing")
-        inside_rings.append(g.math("SUBTRACT", 1.0, crossing, label=f"Ring {ring} Inside"))
+        x, y = g._place()
+        uvs = _node(group, "ShaderNodeGroup", f"Edge Distance Ring {ring} UVs", x, y)
+        uvs.node_tree = ring_uvs[bool(ring % 2)]
+        group.links.new(uv, uvs.inputs["UV"])
+        group.links.new(radius, uvs.inputs["Radius"])
+        group.links.new(inp.outputs["Texel X"], uvs.inputs["Texel X"])
+        group.links.new(inp.outputs["Texel Y"], uvs.inputs["Texel Y"])
+        x, y = g._place()
+        inside = _node(group, "ShaderNodeGroup", f"Edge Distance Ring {ring} Inside", x, y)
+        inside.node_tree = ring_inside
+        for sample in range(8):
+            _color, alpha = g.sample(uvs.outputs[f"UV {sample}"], label=f"Ring {ring} Sample")
+            group.links.new(alpha, inside.inputs[f"Alpha {sample}"])
+        inside_rings.append(inside.outputs["Inside"])
     alpha_depth = g.math("MULTIPLY", g.math("MULTIPLY", g.total(inside_rings), 1.0 / rings), center_alpha, label="Alpha Depth")
 
     u, v = g.separate(uv, label="UV")
@@ -10580,7 +11405,7 @@ def _builtin_group_is_complete(group, definition):
     if required_uv_store and group.nodes.get(required_uv_store) is None:
         return False
     generated_mask_contracts = {
-        "frame_by_plane.shader.color_mask": 2,
+        "frame_by_plane.shader.color_mask": 3,
         "frame_by_plane.shader.luminance_mask": 3,
         "frame_by_plane.shader.channel_mask": 3,
         "frame_by_plane.shader.gradient_mask": 4,
@@ -10597,6 +11422,19 @@ def _builtin_group_is_complete(group, definition):
     if required_mask_contract:
         try:
             if int(group.get("fbp_generated_mask_contract_version", 0) or 0) < required_mask_contract:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+    required_effect_contract = next(
+        (
+            version for prefix, version in _BUILTIN_EFFECT_CONTRACTS.values()
+            if definition_asset_id.startswith(prefix)
+        ),
+        0,
+    )
+    if required_effect_contract:
+        try:
+            if int(group.get("fbp_effect_contract_version", 0) or 0) < required_effect_contract:
                 return False
         except FBP_DATA_ERRORS:
             return False
@@ -10694,6 +11532,7 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
         "WHITE_BALANCE": lambda: _create_white_balance(canonical_name),
         "CURVES": lambda: _create_curves(canonical_name),
         "COLOR_ISOLATE": lambda: _create_color_isolate(canonical_name),
+        "REPLACE_COLOR": lambda: _create_replace_color(canonical_name),
         "GRADIENT_LIGHT": lambda: _create_gradient_light(canonical_name),
         "RIM": lambda: _create_rim(canonical_name),
         "SHADOW": lambda: _create_shadow(canonical_name),

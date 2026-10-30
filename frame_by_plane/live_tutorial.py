@@ -1424,21 +1424,6 @@ def _theme_palette(context: bpy.types.Context) -> dict[str, tuple[float, float, 
     return palette
 
 
-def _draw_rect(x: float, y: float, w: float, h: float, color: tuple[float, float, float, float]) -> None:
-    if w <= 0.0 or h <= 0.0:
-        return
-    shader = _color_shader()
-    batch = batch_for_shader(
-        shader,
-        "TRIS",
-        {"pos": ((x, y), (x + w, y), (x + w, y + h), (x, y + h))},
-        indices=((0, 1, 2), (0, 2, 3)),
-    )
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
-
-
 def _round_rect_points(x: float, y: float, w: float, h: float, radius: float, segments: int = 10):
     radius = max(0.0, min(float(radius), float(w) * 0.5, float(h) * 0.5))
     if radius <= 0.0:
@@ -1467,17 +1452,6 @@ def _draw_round_rect(x: float, y: float, w: float, h: float, radius: float, colo
     shader.bind()
     shader.uniform_float("color", color)
     batch.draw(shader)
-
-
-def _draw_round_outline(x: float, y: float, w: float, h: float, radius: float, color, width: float = 1.0) -> None:
-    perimeter = _round_rect_points(x, y, w, h, radius)
-    shader = _color_shader()
-    batch = batch_for_shader(shader, "LINE_STRIP", {"pos": (*perimeter, perimeter[0])})
-    gpu.state.line_width_set(max(1.0, float(width)))
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
-    gpu.state.line_width_set(1.0)
 
 
 def _prepare_tutorial_icon_image(image: bpy.types.Image | None) -> bpy.types.Image | None:
@@ -2594,11 +2568,6 @@ def fbp_notify_tutorial_action(context: bpy.types.Context, *task_keys: str) -> b
     _advance_completed_page(state)
     _tag_area(operator._target_area_ptr)
     return True
-
-def fbp_tutorial_is_running() -> bool:
-    """True while the Live Tutorial HUD is open, so dialogs can explain their options."""
-    return _ACTIVE_OPERATOR is not None
-
 
 _ACTIVE_OPERATOR: "FBP_OT_live_tutorial_modal | None" = None
 _RESUME_STATE: TutorialState | None = None

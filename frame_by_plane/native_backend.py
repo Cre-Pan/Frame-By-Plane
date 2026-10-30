@@ -1,5 +1,6 @@
 """Blender native image/video backend for Frame by Plane layers."""
 
+import bisect
 import hashlib
 import json
 import os
@@ -1043,6 +1044,67 @@ def _runtime_sequence_is_available(mat):
     if not directory or not files:
         return False
     return len(_valid_files(directory, files)) == len(files)
+
+def fbp_native_playback_timing(mat):
+    """Return the playback cycle of one native sequence material.
+
+    Each entry is one position of the playback cycle in timing order (a
+    Ping-Pong cycle runs forward and back): the runtime frame number Blender
+    resolves for it, whether the row is a blank frame and how long it holds.
+    Returns ``None`` for movies, stills and incomplete metadata.
+    """
+    try:
+        if (
+            not mat
+            or not bool(mat.get("fbp_native_sequence", False))
+            or bool(mat.get("fbp_native_video", False))
+            or bool(mat.get("fbp_native_static_image", False))
+        ):
+            return None
+        row_count = max(1, int(mat.get("fbp_native_frame_count", 1) or 1))
+        default_duration = max(1, int(mat.get("fbp_native_duration_per_image", 1) or 1))
+        durations = _decode_json_values(
+            mat.get("fbp_native_item_durations_json", ""), row_count, default_duration, int,
+        )
+        loop_mode = str(mat.get("fbp_native_loop_mode", "NONE") or "NONE")
+        frame_start = int(mat.get("fbp_native_frame_start", 1) or 1)
+    except FBP_DATA_ERRORS:
+        return None
+    source_indices = _source_indices_from_material(mat, row_count)
+    if len(source_indices) != row_count or any(index < 0 for index in source_indices):
+        source_indices = list(range(row_count))
+    flags = _transparent_flags_from_material(mat, row_count) or [False] * row_count
+    frame_number_base = _material_frame_number_base(mat)
+    order, seq_durations = _timing_order_for_mode(row_count, durations, loop_mode)
+    ends = []
+    elapsed = 0
+    for duration in seq_durations:
+        elapsed += max(1, int(duration))
+        ends.append(elapsed)
+    return {
+        "files": tuple(frame_number_base + int(source_indices[row]) for row in order),
+        "visible": tuple(not bool(flags[row]) for row in order),
+        "ends": tuple(ends),
+        "loop_mode": loop_mode,
+        "frame_start": frame_start,
+    }
+
+
+def fbp_native_playback_position(timing, timeline_frame):
+    """Return the cycle position a native sequence shows at ``timeline_frame``.
+
+    Mirrors ``_source_index_at_elapsed``: frames before the start hold the
+    first position, one-shot playback holds the last one after the end.
+    """
+    ends = timing["ends"]
+    total = max(1, int(ends[-1]) if ends else 1)
+    elapsed = int(timeline_frame) - int(timing["frame_start"])
+    if timing["loop_mode"] in {'REPEAT', 'PINGPONG'}:
+        local = max(0, elapsed) % total
+    else:
+        local = max(0, min(elapsed, total - 1))
+    return min(len(ends) - 1, bisect.bisect_right(ends, local)) if ends else 0
+
 
 def fbp_native_source_sequence_from_rig(rig):
     """Return the immutable disk sequence stored by the current native backend."""

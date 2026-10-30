@@ -7,7 +7,6 @@ automatically. No telemetry, project data or automatic messages are sent.
 
 from __future__ import annotations
 
-import re
 import textwrap
 import time
 from pathlib import Path
@@ -170,12 +169,6 @@ def _preferences(context=None):
         return fbp_get_addon_preferences(context)
     except FBP_DATA_ERRORS:
         return None
-
-
-def _version_tuple(value):
-    """Return the comparable ``major.minor.patch`` release key."""
-    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)", str(value or ""))
-    return tuple(int(part) for part in match.groups()) if match else ()
 
 
 def _install_stamp():

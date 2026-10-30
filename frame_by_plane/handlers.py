@@ -1,6 +1,7 @@
 """Blender handlers, timers and render-state guards for Frame by Plane."""
 
 import time
+from pathlib import Path
 
 import bpy
 
@@ -409,6 +410,13 @@ def fbp_deferred_scene_sync():
             try:
                 from .drawing_plane import fbp_refresh_drawing_scene
                 fbp_refresh_drawing_scene(context.scene)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+            try:
+                # The Frame Stack timing table is a generated image: its
+                # pixels are not saved, so rebuild them for the loaded file.
+                from .geometry_nodes import fbp_sync_frame_stack_scene
+                fbp_sync_frame_stack_scene(context.scene)
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
     except Exception as exc:
@@ -1263,6 +1271,30 @@ def fbp_deferred_load_post_rebuild():
         fbp_warn_once(
             "aspect_remesh_load_upgrade",
             "Could not update the shared mesh-effect remesh group",
+            exc,
+        )
+
+    try:
+        from .geometry_nodes import fbp_migrate_chroma_key_scene_rigs
+        fbp_migrate_chroma_key_scene_rigs()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "chroma_key_color_key_migration",
+            "Could not convert Chroma Key to Color Key",
+            exc,
+        )
+
+    try:
+        from .builtin_effects import fbp_upgrade_stale_effect_groups
+        if fbp_upgrade_stale_effect_groups(
+            _effects_registry.FBP_EFFECT_REGISTRY, Path(__file__).resolve().parent / "assets",
+        ):
+            from .geometry_nodes import fbp_resync_geometry_effects
+            fbp_resync_geometry_effects()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "stale_effect_load_upgrade",
+            "Could not update saved effect groups",
             exc,
         )
 

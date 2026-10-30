@@ -1,6 +1,35 @@
-# 🎞️ Frame By Plane — 8.0.1
+# 🎞️ Frame By Plane — 8.2.0
 
-Frame By Plane 8 LTS for Blender 5.2 LTS. 8.0.1 adds five new effects, replaces the plane creation popups with the file browser sidebar and Blender's Adjust Last Operation panel, and fixes the Image Projector. Everything from 8.0.0 is listed below.
+Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet rig (Grid, Corner Pin, Bones and Pins), redraws every viewport control in one minimal style, gives every effect its own icon, makes Frame Stack follow image sequence playback, merges Chroma Key into Color Key, extends Riso Print, reorganizes the Z Pie and fixes several effects. Everything from 8.0.1 and 8.0.0 is listed below.
+
+## 🆕 New in 8.2.0
+
+- 🌀 **Lattice types:** the Lattice panel opens on a **Type** menu (**Grid**, **Corner Pin**, **Bones**, **Pins**, **Camera**). The types stack on the same cage, and all handles and bones of a layer live in one Controls armature, posed and keyed in Pose Mode.
+- 📌 **Puppet Pins:** click on the layer to place pins, move or rotate them and the drawing bends around them while the other pins hold. **Bend** pins only rotate or scale their area, and **Stiff Area** keeps a region rigid. Pins use native Hooks with weights that follow the drawing.
+- 🦴 **Bones:** click joints on the layer to build chains, with an IK handle at the end of each chain. A native Armature deforms the cage, so it keys, saves and renders like any rig.
+- ◰ **Corner Pin:** four corner handles map the layer onto any quad with true perspective. **Grid** gains **Point Handles** you can move and key without entering Edit Mode.
+- 🎯 **Minimal viewport controls:** the handles of Crop, Extend, Shape Masks and every effect with viewport controls are thin, single-colour shapes, always drawn in front in every shading mode, with no relationship lines. They follow a tilted layer and bend with the Lattice deformation. Gradients get Figma-style colour stops you can slide, arrows have an open V head, and Swirl, Bulge / Pinch, Ripple, Vignette, radial gradients and Shape Mask feathers show their reach as a dashed line.
+- 🧩 **Effects in Blender's Modifiers panel:** mesh effects are in **Add Modifier > Mesh**, and with a layer selected Properties > Modifiers shows its plane, so drag and drop, the eye and camera toggles and delete work natively. Every image effect gets a **Mask** subpanel. Preview: **Image Effects as Modifiers** for a first set of image effects and masks (Preferences > Advanced > LTS Feature Scope).
+- 💥 **Broken Glass** is a shatter tool: it cuts the layer into triangles (**Impact** or **Shards**) and one **Shatter** slider breaks them apart, with Spread, Gap, Explode, Depth, Fall and Spin, and presets.
+- 🎨 **Replace Color** (Image, Color): recolor every pixel close to a Source Color with a Target Color, with Tolerance, Softness and Preserve Shading.
+- 🎨 **Every effect has an icon** in the add menus, the effect stack and the pie menu. The Image, Mask and Mesh add menus are reordered into coherent sections.
+- 🧱 **Frame Stack follows playback:** with image sequences the slices step through the drawings in the layer's timing order, so holds, reordered rows, loops, Ping-Pong and sequences numbered from any value stack correctly. Each layer keeps its own Frame Stack (and Knit & Crochet).
+- 🟩 **Color Key** now includes everything Chroma Key did, with a new **Despill** and the Green Screen and Blue Screen presets. Files that use Chroma Key are converted automatically.
+- 🖨️ **Riso Print:** **Drift Angle**, **Print Rotation**, a real **Seed** and **Animate** with Speed and Stepped.
+- 🥧 **Z Pie:** Hide, Solo and Holdout on one row, plus Show Overlays and Show Onion Skin; Lock and Selectability only while a layer is selected. Cursor on Camera is an icon button.
+- 💬 **Shorter tooltips:** one short sentence per operator and per effect.
+
+### 🛠️ Fixes in 8.2.0
+
+- Halftone: Color Mode and Use Source Color work again, so BW Light, BW Dark and a custom Ink Color render as expected.
+- Slice Shift: neighbouring bands move in opposite directions, so Bands has a visible effect.
+- Grain no longer writes negative colors in dark areas.
+- Oil Paint and Edge Distance Mask build about five times faster the first time.
+- Felt Fuzz: the Render Density slider ends at 400,000 strands to avoid running out of memory.
+- Extrude Array: transparent areas no longer render black in Cycles.
+- Paper Shards and Fiber Tufts follow the exact image alpha, and dark chips no longer sink below the plane.
+- Crosshatch: smoother line edges, and diagonal hatches use the same spacing as straight ones.
+- Files saved with the old versions of these effects are updated when opened.
 
 ## 🆕 New in 8.0.1
 
@@ -117,11 +146,11 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.0.1-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.0.1-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.0.1-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.0.1-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.0.1-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.2.0-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.2.0-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.2.0-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.2.0-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.2.0-linux_x64.zip` |
 
 Install the ZIP through **Edit > Preferences > Get Extensions > Install from Disk**. Do not install GitHub's automatically generated Source code ZIP.
 

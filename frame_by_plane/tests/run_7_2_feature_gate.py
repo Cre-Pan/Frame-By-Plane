@@ -24,6 +24,7 @@ TESTS = (
     "image_properties_regression.py",
     "addon_lifecycle_regression.py",
     "ui_draw_sweep.py",
+    "native_modifiers_regression.py",
 )
 
 

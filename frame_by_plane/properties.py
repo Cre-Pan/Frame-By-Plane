@@ -121,6 +121,7 @@ class _FBPTrackedRNAOwner:
 _FBP_SCENE_RNA = _FBPTrackedRNAOwner(bpy.types.Scene, "Scene")
 _FBP_COLLECTION_RNA = _FBPTrackedRNAOwner(bpy.types.Collection, "Collection")
 _FBP_OBJECT_RNA = _FBPTrackedRNAOwner(bpy.types.Object, "Object")
+_FBP_POSE_BONE_RNA = _FBPTrackedRNAOwner(bpy.types.PoseBone, "PoseBone")
 
 
 CAMERA_RATIO_ITEMS = [
@@ -841,6 +842,11 @@ class FBP_AddonPreferences(AddonPreferences):
         default='TOP',
         update=update_shift_a_menu_position_cb,
     )
+    modifiers_follow_layer: BoolProperty(
+        name="Modifiers Follow Layer",
+        description="When a Frame By Plane layer is selected, Properties > Modifiers shows the modifiers of its image plane, so mesh effects can be reordered, hidden and removed natively",
+        default=True,
+    )
     show_control_panel_properties: BoolProperty(
         name="Properties",
         description="Show Frame By Plane control panels in Blender Properties and the standard Tool context",
@@ -878,7 +884,7 @@ class FBP_AddonPreferences(AddonPreferences):
             (
                 'CURSOR_PIVOT',
                 "Cursor + Pivot",
-                "Show Cursor On Camera when available and the compact pivot controls",
+                "Show Cursor on Camera and the pivot controls",
                 'PIVOT_CURSOR',
                 0,
             ),
@@ -908,7 +914,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     pie_show_south_actions: BoolProperty(
         name="South Actions",
-        description="Show Hide, Solo, Lock, Selectability and Holdout in the south sector",
+        description="Show Hide, Solo, Holdout, Overlays and the layer Lock buttons in the south sector",
         default=True,
     )
     pie_show_masks: BoolProperty(
@@ -926,6 +932,17 @@ class FBP_AddonPreferences(AddonPreferences):
         description="Use Tab to enter the relevant edit mode for Frame By Plane layers while passing ordinary objects through to Blender",
         default=True,
         update=update_shortcut_preferences_cb,
+    )
+    shortcut_layer_pose: BoolProperty(
+        name="Layer Pose Mode",
+        description=f"Use {primary_shortcut_label('T')} (like Free Transform in Photoshop) to pose Frame By Plane layers with their Lattice handles and to go back to the plane; other objects keep Blender's shortcut",
+        default=True,
+        update=update_shortcut_preferences_cb,
+    )
+    pose_mode_auto_lattice: BoolProperty(
+        name="Lattice on Pose Mode",
+        description="When the Layer Pose shortcut poses a layer that has no Lattice yet, turn Lattice on with one handle per cage point. Off: it poses only layers that already have Lattice",
+        default=True,
     )
     shortcut_gp_alt_s_guard: BoolProperty(
         name="Grease Pencil Radius Guard",
@@ -1477,6 +1494,11 @@ class FBP_AddonPreferences(AddonPreferences):
     default_preview_generic_mesh_effects: BoolProperty(
         name="Generic Mesh Effects",
         description="Enable the preview that applies selected Frame By Plane Geometry Nodes effects to ordinary mesh objects",
+        default=False,
+    )
+    default_preview_native_effect_shells: BoolProperty(
+        name="Image Effects as Modifiers",
+        description="Enable the preview that shows supported image effects and masks as native modifiers in newly initialized files",
         default=False,
     )
     default_show_previews: BoolProperty(
@@ -2074,6 +2096,11 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'shortcut_viewport_pie', text='Z · Viewport Pie', toggle=True, icon='SHADING_RENDERED')
                 row.prop(self, 'shortcut_tab_layer_edit', text='Tab · Layer Edit', toggle=True, icon='EDITMODE_HLT')
+                row = _row(body)
+                row.prop(self, 'shortcut_layer_pose', text=f"{primary_shortcut_label('T')} · Layer Pose", toggle=True, icon='POSE_HLT')
+                sub = row.row(align=True)
+                sub.enabled = bool(self.shortcut_layer_pose)
+                sub.prop(self, 'pose_mode_auto_lattice', text='Auto Lattice', toggle=True, icon='MOD_LATTICE')
                 if self.shortcut_viewport_pie:
                     hint_row(
                         body,
@@ -2144,6 +2171,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'show_panel_layers', text='Layers', toggle=True, icon='RENDERLAYERS')
                 row.prop(self, 'show_panel_grease_pencil', text='Grease Pencil', toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row.prop(self, 'show_panel_layer_settings', text='Layer Settings', toggle=True, icon='TOOL_SETTINGS')
+                body.prop(self, 'modifiers_follow_layer', icon='MODIFIER')
                 if not any_location:
                     hint_row(body, 'Both control-panel locations are disabled. Shift+A, Modifiers, Output and Camera tools remain available.', icon='HIDE_ON')
                 else:
@@ -2272,6 +2300,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'default_preview_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                 row.prop(self, 'default_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                 row.prop(self, 'default_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
+                row.prop(self, 'default_preview_native_effect_shells', text='Image as Modifiers', toggle=True, icon='MODIFIER')
                 scene = getattr(context, 'scene', None)
                 if scene is not None:
                     current = body.box()
@@ -2281,11 +2310,13 @@ class FBP_AddonPreferences(AddonPreferences):
                     row.prop(scene, 'fbp_experimental_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                     row.prop(scene, 'fbp_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                     row.prop(scene, 'fbp_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
+                    row.prop(scene, 'fbp_preview_native_effect_shells', text='Image as Modifiers', toggle=True, icon='MODIFIER')
                     enabled_preview = [
                         label for label, property_name in (
                             ('Compositor', 'fbp_experimental_compositor'),
                             ('Procreate', 'fbp_preview_procreate_import'),
                             ('Generic Mesh', 'fbp_preview_generic_mesh_effects'),
+                            ('Image as Modifiers', 'fbp_preview_native_effect_shells'),
                         )
                         if bool(getattr(scene, property_name, False))
                     ]
@@ -2490,7 +2521,6 @@ _FBP_VIEW_RENDER_PROPERTY_PAIRS = {
     "fbp_cutout_outline_viewport_resolution": "fbp_cutout_outline_render_resolution",
     "fbp_wind_subdivision": "fbp_wind_render_subdivision",
     "fbp_image_relief_subdivision": "fbp_image_relief_render_subdivision",
-    "fbp_glass_subdivision": "fbp_glass_render_subdivision",
     "fbp_crystal_subdivision": "fbp_crystal_render_subdivision",
     "fbp_surface_conform_subdivision": "fbp_surface_conform_render_subdivision",
     "fbp_accordion_subdivision": "fbp_accordion_render_subdivision",
@@ -2771,6 +2801,8 @@ update_riso_misregistration_cb = _make_effect_update_callback('RISO_PRINT', 'fbp
 update_riso_halftone_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_halftone')
 update_riso_dot_size_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_dot_size')
 update_riso_grain_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_grain')
+update_riso_drift_angle_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_drift_angle')
+update_riso_print_rotation_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_print_rotation')
 update_riso_seed_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_seed')
 update_riso_factor_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_factor')
 update_edge_distance_mask_distance_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_distance')
@@ -2903,6 +2935,7 @@ update_color_mask_tolerance_cb = _make_effect_update_callback('COLOR_MASK', 'fbp
 update_color_mask_softness_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_softness')
 update_color_mask_factor_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_factor')
 update_color_mask_invert_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_invert')
+update_color_mask_despill_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_despill')
 update_luminance_mask_minimum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_minimum')
 update_luminance_mask_maximum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_maximum')
 update_luminance_mask_softness_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_softness')
@@ -3241,6 +3274,18 @@ def update_lattice_visibility_cb(self, context):
     return _call_geometry_nodes('update_lattice_visibility_cb', self, context)
 
 
+def update_lattice_pins_cb(self, context):
+    return _call_geometry_nodes('update_lattice_pins_cb', self, context)
+
+
+def update_lattice_handle_size_cb(self, context):
+    return _call_geometry_nodes('update_lattice_handle_size_cb', self, context)
+
+
+def update_lattice_pin_stiffness_cb(self, context):
+    return _call_geometry_nodes('update_lattice_pin_stiffness_cb', self, context)
+
+
 def update_lattice_interpolation_cb(self, context):
     try:
         from .fbp_dirty import mark_geometry_callback
@@ -3360,25 +3405,22 @@ update_image_relief_smooth_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fb
 update_image_relief_smooth_iterations_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_smooth_iterations')
 update_image_relief_alpha_threshold_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_alpha_threshold')
 update_image_relief_shade_smooth_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_shade_smooth')
-update_glass_subdivision_cb = _make_effect_update_callback('GLASS', 'fbp_glass_subdivision')
-update_glass_playback_subdivision_cb = _make_effect_update_callback('GLASS', 'fbp_glass_playback_subdivision')
-update_glass_render_subdivision_cb = _make_effect_update_callback('GLASS', 'fbp_glass_render_subdivision')
+update_glass_pattern_cb = _make_effect_update_callback('GLASS', 'fbp_glass_pattern')
+update_glass_pieces_cb = _make_effect_update_callback('GLASS', 'fbp_glass_pieces')
+update_glass_irregularity_cb = _make_effect_update_callback('GLASS', 'fbp_glass_irregularity')
+update_glass_shatter_cb = _make_effect_update_callback('GLASS', 'fbp_glass_shatter')
+update_glass_impact_x_cb = _make_effect_update_callback('GLASS', 'fbp_glass_impact_x')
+update_glass_impact_y_cb = _make_effect_update_callback('GLASS', 'fbp_glass_impact_y')
+update_glass_spread_cb = _make_effect_update_callback('GLASS', 'fbp_glass_spread')
+update_glass_gap_cb = _make_effect_update_callback('GLASS', 'fbp_glass_gap')
+update_glass_explode_cb = _make_effect_update_callback('GLASS', 'fbp_glass_explode')
+update_glass_depth_cb = _make_effect_update_callback('GLASS', 'fbp_glass_depth')
+update_glass_fall_cb = _make_effect_update_callback('GLASS', 'fbp_glass_fall')
+update_glass_spin_cb = _make_effect_update_callback('GLASS', 'fbp_glass_spin')
 update_glass_thickness_cb = _make_effect_update_callback('GLASS', 'fbp_glass_thickness')
-update_glass_relief_cb = _make_effect_update_callback('GLASS', 'fbp_glass_relief')
-update_glass_source_cb = _make_effect_update_callback('GLASS', 'fbp_glass_source')
-update_glass_normal_image_cb = _make_effect_update_callback('GLASS', 'fbp_glass_normal_image')
-update_glass_noise_scale_cb = _make_effect_update_callback('GLASS', 'fbp_glass_noise_scale')
-update_glass_correct_aspect_cb = _make_effect_update_callback('GLASS', 'fbp_glass_correct_aspect')
-update_glass_texture_scale_x_cb = _make_effect_update_callback('GLASS', 'fbp_glass_texture_scale_x')
-update_glass_texture_scale_y_cb = _make_effect_update_callback('GLASS', 'fbp_glass_texture_scale_y')
-update_glass_crack_width_cb = _make_effect_update_callback('GLASS', 'fbp_glass_crack_width')
-update_glass_damage_cb = _make_effect_update_callback('GLASS', 'fbp_glass_damage')
-update_glass_noise_detail_cb = _make_effect_update_callback('GLASS', 'fbp_glass_noise_detail')
 update_glass_phase_cb = _make_effect_update_callback('GLASS', 'fbp_glass_phase')
 update_glass_alpha_threshold_cb = _make_effect_update_callback('GLASS', 'fbp_glass_alpha_threshold')
-update_glass_shade_smooth_cb = _make_effect_update_callback('GLASS', 'fbp_glass_shade_smooth')
-update_glass_distortion_cb = _make_effect_update_callback('GLASS', 'fbp_glass_distortion')
-update_glass_bevel_cb = _make_effect_update_callback('GLASS', 'fbp_glass_bevel')
+update_glass_use_glass_cb = _make_effect_update_callback('GLASS', 'fbp_glass_use_glass')
 update_glass_roughness_cb = _make_effect_update_callback('GLASS', 'fbp_glass_roughness')
 update_glass_ior_cb = _make_effect_update_callback('GLASS', 'fbp_glass_ior')
 update_glass_tint_cb = _make_effect_update_callback('GLASS', 'fbp_glass_tint')
@@ -3512,6 +3554,12 @@ update_color_isolate_target_cb = _make_effect_update_callback('COLOR_ISOLATE', '
 update_color_isolate_tolerance_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_tolerance')
 update_color_isolate_falloff_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_falloff')
 update_color_isolate_factor_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_factor')
+update_replace_color_source_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_source')
+update_replace_color_target_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_target')
+update_replace_color_tolerance_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_tolerance')
+update_replace_color_softness_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_softness')
+update_replace_color_preserve_shading_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_preserve_shading')
+update_replace_color_factor_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_factor')
 update_white_balance_temperature_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_temperature')
 update_white_balance_tint_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_tint')
 update_white_balance_factor_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_factor')
@@ -3608,6 +3656,7 @@ _EFFECT_ANIMATION_IDS = (
     'HUE_SATURATION',
     'GRAIN',
     'PAPER_FIBERS',
+    'RISO_PRINT',
     'POSTERIZE',
     'DIGITAL_NOISE',
     'DOT_MATRIX',
@@ -4896,6 +4945,11 @@ def register_properties():
         description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 8 LTS core scope",
         default=False,
     )
+    _FBP_SCENE_RNA.fbp_preview_native_effect_shells = BoolProperty(
+        name="Image Effects as Modifiers",
+        description="Show supported image effects and masks as native modifiers whose inputs drive the plane material. This workflow is outside the Frame By Plane 8 LTS core scope",
+        default=False,
+    )
     _FBP_SCENE_RNA.fbp_color_plane_type = EnumProperty(
         name="Plane Type",
         description="Choose what kind of camera-ratio plane to create",
@@ -5293,8 +5347,10 @@ def register_properties():
         default=False, update=update_wind_preview_falloff_cb)
     _FBP_OBJECT_RNA.fbp_felt_render_density = IntProperty(
         name="Render Density",
-        description="Approximate strand count generated by Felt Fuzz at render quality. Higher values increase density, memory use and render time substantially.",
-        default=50000, min=1000, soft_max=3000000, max=3000000, step=100,
+        description="Approximate strand count generated by Felt Fuzz at render quality. Each 100,000 strands need about 1 GB of memory at render; values above the slider range can be typed in.",
+        # Rendering costs about 10 KB per strand, so the old 3,000,000 slider
+        # end asked for roughly 30 GB. Typed values still reach the hard max.
+        default=50000, min=1000, soft_max=400000, max=3000000, step=100,
         options={'ANIMATABLE'}, update=update_felt_render_density_cb)
     _FBP_OBJECT_RNA.fbp_felt_viewport_percentage = FloatProperty(
         name="Viewport %", description="Fraction of the render strand count displayed in the viewport",
@@ -5511,79 +5567,69 @@ def register_properties():
         name="Shade Smooth", description="Smooth-shade the displaced image surface",
         default=True, update=update_image_relief_shade_smooth_cb)
 
-    _FBP_OBJECT_RNA.fbp_glass_subdivision = IntProperty(
-        name="Viewport", description="Aspect-balanced quad remesh detail used to resolve Broken Glass fractures while editing",
-        default=5, min=0, max=8, update=update_glass_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_glass_playback_subdivision = IntProperty(
-        name="Playback", description="Maximum Broken Glass remesh detail evaluated during timeline playback",
-        default=4, min=0, max=8, update=update_glass_playback_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_glass_render_subdivision = IntProperty(
-        name="Render", description="Broken Glass remesh detail used for final rendering",
-        default=6, min=0, max=8, update=update_glass_render_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_glass_thickness = FloatProperty(
-        name="Thickness", description="Depth of every closed refractive glass shard",
-        default=0.025, min=0.0001, soft_max=0.25, max=10.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_thickness_cb)
-    _FBP_OBJECT_RNA.fbp_glass_relief = FloatProperty(
-        name="Shard Lift", description="Offset each Voronoi cell by a stable random amount so the fragments no longer share one perfectly flat face",
-        default=0.015, min=-10.0, max=10.0, soft_min=-0.25, soft_max=0.25,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_relief_cb)
-    _FBP_OBJECT_RNA.fbp_glass_source = EnumProperty(
-        name="Damage Source", description="Field that decides where procedural fracture gaps are allowed",
+    _FBP_OBJECT_RNA.fbp_glass_pattern = EnumProperty(
+        name="Pattern", description="How the plane is cut into triangles",
         items=(
-            ('ALPHA', "Source Alpha", "Multiply damage by source alpha variation"),
-            ('PROCEDURAL', "Full Surface", "Fracture the complete visible silhouette"),
-            ('NORMAL', "Damage Map", "Use the selected image luminance as a painted damage mask"),
-        ), default='PROCEDURAL', update=update_glass_source_cb)
-    _FBP_OBJECT_RNA.fbp_glass_normal_image = PointerProperty(
-        name="Damage Map", description="Painted grayscale image controlling where Broken Glass cracks appear",
-        type=bpy.types.Image, update=update_glass_normal_image_cb)
-    _FBP_OBJECT_RNA.fbp_glass_noise_scale = FloatProperty(
-        name="Cell Scale", description="Number and size of Voronoi fracture cells",
-        default=7.0, min=0.01, soft_max=50.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_glass_noise_scale_cb)
-    _FBP_OBJECT_RNA.fbp_glass_correct_aspect = BoolProperty(
-        name="Auto Aspect",
-        description="Keep Voronoi cells proportional on wide or tall planes using the mesh dimensions",
-        default=True, update=update_glass_correct_aspect_cb)
-    _FBP_OBJECT_RNA.fbp_glass_texture_scale_x = FloatProperty(
-        name="Scale X", description="Additional horizontal Voronoi frequency after automatic aspect correction",
-        default=1.0, min=0.01, soft_max=10.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_glass_texture_scale_x_cb)
-    _FBP_OBJECT_RNA.fbp_glass_texture_scale_y = FloatProperty(
-        name="Scale Y", description="Additional vertical Voronoi frequency after automatic aspect correction",
-        default=1.0, min=0.01, soft_max=10.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_glass_texture_scale_y_cb)
-    _FBP_OBJECT_RNA.fbp_glass_crack_width = FloatProperty(
-        name="Crack Width", description="Width of the geometry removed along Voronoi cell borders",
-        default=0.035, min=0.0, soft_max=0.15, max=0.5,
-        options={'ANIMATABLE'}, update=update_glass_crack_width_cb)
-    _FBP_OBJECT_RNA.fbp_glass_damage = FloatProperty(
-        name="Damage", description="Overall amount of open fracture; zero keeps the sheet intact",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_damage_cb)
-    _FBP_OBJECT_RNA.fbp_glass_noise_detail = FloatProperty(
-        name="Chaos", description="Strength of the stable per-cell random lift and crack irregularity",
-        default=0.65, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_glass_noise_detail_cb)
+            ('SHARDS', "Shards", "Even triangles from a jittered grid"),
+            ('IMPACT', "Impact", "Rings and spokes around the impact point, small near it and long towards the border"),
+        ), default='IMPACT', update=update_glass_pattern_cb)
+    _FBP_OBJECT_RNA.fbp_glass_pieces = IntProperty(
+        name="Pieces", description="Number of cuts along the longer side of the plane",
+        default=12, min=2, soft_max=48, max=128, update=update_glass_pieces_cb)
+    _FBP_OBJECT_RNA.fbp_glass_irregularity = FloatProperty(
+        name="Irregularity", description="How far the triangle corners move away from a regular layout",
+        default=0.75, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_irregularity_cb)
+    _FBP_OBJECT_RNA.fbp_glass_shatter = FloatProperty(
+        name="Shatter", description="How far the glass has broken: zero keeps the plane whole, one sends every piece to its full motion",
+        default=0.45, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_shatter_cb)
+    _FBP_OBJECT_RNA.fbp_glass_impact_x = FloatProperty(
+        name="Impact X", description="Horizontal position of the impact point across the plane",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_impact_x_cb)
+    _FBP_OBJECT_RNA.fbp_glass_impact_y = FloatProperty(
+        name="Impact Y", description="Vertical position of the impact point across the plane",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_impact_y_cb)
+    _FBP_OBJECT_RNA.fbp_glass_spread = FloatProperty(
+        name="Spread", description="Break order: one opens the pieces outwards from the impact point, zero in random order",
+        default=0.75, min=0.0, max=1.0, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_spread_cb)
+    _FBP_OBJECT_RNA.fbp_glass_gap = FloatProperty(
+        name="Gap", description="How much each broken piece shrinks, opening cracks between neighbours",
+        default=0.12, min=0.0, max=0.9, subtype='FACTOR',
+        options={'ANIMATABLE'}, update=update_glass_gap_cb)
+    _FBP_OBJECT_RNA.fbp_glass_explode = FloatProperty(
+        name="Explode", description="Distance the pieces fly away from the impact point, relative to the plane size",
+        default=0.15, min=0.0, soft_max=2.0, max=10.0,
+        options={'ANIMATABLE'}, update=update_glass_explode_cb)
+    _FBP_OBJECT_RNA.fbp_glass_depth = FloatProperty(
+        name="Depth", description="Distance the pieces come out of the plane towards its front, relative to the plane size",
+        default=0.2, min=-10.0, max=10.0, soft_min=-2.0, soft_max=2.0,
+        options={'ANIMATABLE'}, update=update_glass_depth_cb)
+    _FBP_OBJECT_RNA.fbp_glass_fall = FloatProperty(
+        name="Fall", description="Distance the broken pieces drop down the plane, relative to its height",
+        default=0.0, min=-10.0, max=10.0, soft_min=-2.0, soft_max=2.0,
+        options={'ANIMATABLE'}, update=update_glass_fall_cb)
+    _FBP_OBJECT_RNA.fbp_glass_spin = FloatProperty(
+        name="Spin", description="How much the broken pieces tumble; one is up to half a turn on each axis",
+        default=0.25, min=0.0, soft_max=2.0, max=10.0,
+        options={'ANIMATABLE'}, update=update_glass_spin_cb)
+    _FBP_OBJECT_RNA.fbp_glass_thickness = FloatProperty(
+        name="Thickness", description="Depth of every piece; zero keeps flat triangles",
+        default=0.01, min=0.0, soft_max=0.25, max=10.0,
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_thickness_cb)
     _FBP_OBJECT_RNA.fbp_glass_phase = FloatProperty(
-        name="Seed", description="Move the procedural cell field to generate or animate a different fracture layout",
+        name="Seed", description="Pick a different random layout and break order",
         default=0.0, soft_min=-100.0, soft_max=100.0,
         options={'ANIMATABLE'}, update=update_glass_phase_cb)
     _FBP_OBJECT_RNA.fbp_glass_alpha_threshold = FloatProperty(
-        name="Alpha Threshold", description="Remove geometry where source alpha is below this value",
+        name="Alpha Threshold", description="Remove pieces that are fully transparent below this alpha",
         default=0.02, min=0.0, max=1.0, subtype='FACTOR', update=update_glass_alpha_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_glass_shade_smooth = BoolProperty(
-        name="Shade Smooth", description="Smooth-shade the closed glass shards",
-        default=True, update=update_glass_shade_smooth_cb)
-    _FBP_OBJECT_RNA.fbp_glass_distortion = FloatProperty(
-        name="Crack Distortion", description="Strength of procedural shard bump refraction",
-        default=0.65, min=0.0, soft_max=3.0, max=10.0,
-        options={'ANIMATABLE'}, update=update_glass_distortion_cb)
-    _FBP_OBJECT_RNA.fbp_glass_bevel = FloatProperty(
-        name="Edge Bevel",
-        description="Blender 5.2 real-geometry Mesh Bevel radius; zero bypasses the node without adding topology",
-        default=0.0, min=0.0, soft_max=0.03, max=1.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_bevel_cb)
+    _FBP_OBJECT_RNA.fbp_glass_use_glass = BoolProperty(
+        name="Glass Surface", description="Render the pieces as refractive glass instead of the plane image",
+        default=False, update=update_glass_use_glass_cb)
     _FBP_OBJECT_RNA.fbp_glass_roughness = FloatProperty(
         name="Roughness", description="Blur and softness of reflections and refraction",
         default=0.12, min=0.0, max=1.0, subtype='FACTOR',
@@ -6000,13 +6046,13 @@ def register_properties():
         name="Render", description="Slice grid detail for final rendering. The plane itself always keeps full resolution",
         default=7, min=0, max=8, update=update_frame_stack_render_detail_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_step = IntProperty(
-        name="Frame Step", description="Source frames between two slices. Negative values stack upcoming frames instead of earlier ones",
+        name="Frame Step", description="Playback frames between two slices: drawings of an image sequence in its timing order, frames of a video. Negative values stack upcoming frames instead of earlier ones",
         default=2, min=-1000, max=1000, soft_min=-24, soft_max=24, options={'ANIMATABLE'}, update=update_frame_stack_step_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_fixed_start = BoolProperty(
         name="Fixed Range", description="Stack a fixed range of frames starting at Start Frame instead of following playback",
         default=False, update=update_frame_stack_fixed_start_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_start_frame = IntProperty(
-        name="Start Frame", description="Source frame shown by the front slice when Fixed Range is on. Animate it to scroll the solid through time",
+        name="Start Frame", description="Timeline frame whose image the front slice shows when Fixed Range is on. Animate it to scroll the solid through time",
         default=1, min=-1000000, max=1000000, options={'ANIMATABLE'}, update=update_frame_stack_start_frame_cb)
     _FBP_OBJECT_RNA.fbp_frame_stack_offset_x = FloatProperty(
         name="Offset X", description="Per-slice horizontal offset",
@@ -6083,6 +6129,7 @@ def register_properties():
         items=[
             ('FREEFORM', 'Freeform', 'Edit the native Lattice control points in Edit Mode; select all points to move, rotate or scale the full cage'),
             ('CAMERA_FLATTEN', 'Camera Flatten', 'Bake the plane perspective into the Lattice so the deformed surface becomes parallel to the active camera'),
+            ('CORNER_PIN', 'Corner Pin', 'Four corner handles map the layer onto any quad with a true perspective, like After Effects Corner Pin'),
         ],
         default='FREEFORM',
         update=update_lattice_camera_settings_cb,
@@ -6102,6 +6149,12 @@ def register_properties():
         name="Cage",
         description="Show the non-rendering Lattice cage in the viewport while the effect is enabled",
         default=True, update=update_lattice_visibility_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_handle_size = FloatProperty(
+        name="Handle Size",
+        description="Scale every Lattice handle of this layer (points, pins, corners and IK targets) without changing the deformation",
+        default=1.0, min=0.25, max=4.0, soft_min=0.5, soft_max=2.5, subtype='FACTOR',
+        update=update_lattice_handle_size_cb,
     )
     _FBP_OBJECT_RNA.fbp_lattice_grid_preset = EnumProperty(
         name="Cage Grid",
@@ -6156,6 +6209,43 @@ def register_properties():
     )
     _FBP_OBJECT_RNA.fbp_lattice_points_u = IntProperty(name="Cage Columns", description="Number of planar control-point columns along the plane local X axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
     _FBP_OBJECT_RNA.fbp_lattice_points_v = IntProperty(name="Cage Rows", description="Number of planar control-point rows along the plane local Y axis. Changing it resamples the current shape and poses onto the new grid.", default=4, min=2, max=64, update=update_lattice_effect_cb)
+    _FBP_OBJECT_RNA.fbp_lattice_rig_type = EnumProperty(
+        name="Lattice Type",
+        description="How the layer is deformed. The types stack: a Corner Pin layer can still have bones and pins",
+        items=[
+            ('GRID', 'Grid', 'A cage of 4, 6, 8 or more points with deformation poses and animatable point handles', 'MOD_LATTICE', 0),
+            ('CORNER_PIN', 'Corner Pin', 'Four corner handles with true perspective, for fake perspective and screen replacements', 'VIEW_PERSPECTIVE', 1),
+            ('BONES', 'Bones', 'A chain of bones such as shoulder, elbow and hand, with IK, like Moho bones', 'BONE_DATA', 2),
+            ('PINS', 'Pins', 'Puppet pins for free, organic deformation, like After Effects Puppet', 'PINNED', 3),
+            ('CAMERA', 'Camera', 'Camera Flatten: keep a 3D layer looking the same from the camera while it moves', 'CAMERA_DATA', 4),
+        ],
+        default='GRID',
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_pin_kind = EnumProperty(
+        name="New Pin",
+        description="Kind of pin placed by Add Pins",
+        items=[
+            ('PIN', 'Pin', 'Move, rotate and scale its area', 'PINNED', 0),
+            ('BEND', 'Bend', 'Stays in place and only rotates or scales its area, like an After Effects bend pin', 'FORCE_VORTEX', 1),
+        ],
+        default='PIN',
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_bones_ik = BoolProperty(
+        name="IK Handles",
+        description="Give every new chain of two or more bones an IK handle at its end: drag the hand and the arm follows",
+        default=True,
+    )
+    _FBP_POSE_BONE_RNA.fbp_lattice_pin_stiffness = FloatProperty(
+        name="Stiff Area",
+        description="Size of the area around this pin that moves rigidly instead of bending, like an After Effects starch pin. 0 bends right up to the pin",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_lattice_pin_stiffness_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_lattice_pins_follow_drawing = BoolProperty(
+        name="Follow Drawing",
+        description="Spread each puppet pin's influence through the opaque parts of the layer image, so a pin does not drag a separate part of the drawing across a transparent gap. Disable it for an even falloff across the whole cage",
+        default=True, update=update_lattice_pins_cb,
+    )
     _FBP_OBJECT_RNA.fbp_lattice_interpolation = EnumProperty(name="Interpolation", description="Interpolation used between Lattice control points. This can be changed without resetting the current deformation.", items=[('LINEAR','Linear','Linear interpolation'),('CARDINAL','Cardinal','Cardinal interpolation'),('CATMULL_ROM','Catmull-Rom','Catmull-Rom interpolation'),('BSPLINE','B-Spline','Smooth B-Spline interpolation')], default='BSPLINE', update=update_lattice_interpolation_cb)
     _FBP_OBJECT_RNA.fbp_cutout_outline_viewport_resolution = IntProperty(
         name="Viewport Alpha Detail", description="Subdivision level used to trace the alpha silhouette while editing",
@@ -6576,7 +6666,7 @@ def register_properties():
         name="Rotation", description="Rotate the matte around the center of its sampled UV space",
         default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_luma_matte_uv_rotation_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_color = FloatVectorProperty(
-        name="Target Color", description="Source color selected by Color Mask",
+        name="Target Color", description="Source color selected by Color Key",
         subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 1.0, 0.0, 1.0),
         update=update_color_mask_color_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_tolerance = FloatProperty(
@@ -6584,16 +6674,20 @@ def register_properties():
         default=0.12, min=0.0, max=1.732, soft_max=1.0, subtype='FACTOR',
         update=update_color_mask_tolerance_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_softness = FloatProperty(
-        name="Softness", description="Smooth transition outside the Color Mask tolerance",
+        name="Softness", description="Smooth transition outside the Color Key tolerance",
         default=0.08, min=0.0, max=1.0, subtype='FACTOR',
         update=update_color_mask_softness_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_factor = FloatProperty(
-        name="Factor", description="Blend between the unmasked result and Color Mask",
+        name="Factor", description="Blend between the unmasked result and Color Key",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
         update=update_color_mask_factor_cb)
     _FBP_OBJECT_RNA.fbp_color_mask_invert = BoolProperty(
-        name="Invert", description="Use colors outside the selected range",
+        name="Invert", description="Use colors outside the selected range. Enable it to key the color out, like a green or blue screen",
         default=False, update=update_color_mask_invert_cb)
+    _FBP_OBJECT_RNA.fbp_color_mask_despill = FloatProperty(
+        name="Despill", description="Grey the leftover key color along soft edges. Applies when the key targets the whole Layer",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+        update=update_color_mask_despill_cb)
     _FBP_OBJECT_RNA.fbp_luminance_mask_minimum = FloatProperty(
         name="Minimum", description="Lowest source luminance included by Luminance Mask. Minimum and Maximum are automatically ordered if their values cross",
         default=0.2, min=0.0, max=1.0, subtype='FACTOR',
@@ -7330,7 +7424,9 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_riso_halftone = FloatProperty(name="Halftone", description="Blend from flat ink density (0) to rotated halftone dots (1).", default=0.6, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_halftone_cb)
     _FBP_OBJECT_RNA.fbp_riso_dot_size = FloatProperty(name="Dot Size", description="Halftone cell size in source-image pixels.", default=6.0, min=1.0, soft_max=48.0, max=256.0, update=update_riso_dot_size_cb)
     _FBP_OBJECT_RNA.fbp_riso_grain = FloatProperty(name="Grain", description="Uneven ink coverage that lets the paper show through.", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_grain_cb)
-    _FBP_OBJECT_RNA.fbp_riso_seed = FloatProperty(name="Seed", description="Changes the drift directions and the grain pattern. Animate it for a boiling print.", default=0.0, min=0.0, max=1000.0, update=update_riso_seed_cb)
+    _FBP_OBJECT_RNA.fbp_riso_drift_angle = FloatProperty(name="Drift Angle", description="Direction the ink drums slip out of register.", subtype='ANGLE', default=0.0, update=update_riso_drift_angle_cb)
+    _FBP_OBJECT_RNA.fbp_riso_print_rotation = FloatProperty(name="Print Rotation", description="Rotate the halftone screen and the grain.", subtype='ANGLE', default=0.0, update=update_riso_print_rotation_cb)
+    _FBP_OBJECT_RNA.fbp_riso_seed = FloatProperty(name="Seed", description="Reshuffle the grain and the halftone dots. Use Animate to change it over time.", default=0.0, min=0.0, max=1000.0, update=update_riso_seed_cb)
     _FBP_OBJECT_RNA.fbp_riso_factor = FloatProperty(name="Factor", description="Blend between the source and the printed result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_factor_cb)
     _FBP_OBJECT_RNA.fbp_edge_distance_mask_distance = FloatProperty(name="Distance", description="Width of the ramp from the transparent edge inward, in source-image pixels.", default=32.0, min=1.0, soft_max=256.0, max=1024.0, update=update_edge_distance_mask_distance_cb)
     _FBP_OBJECT_RNA.fbp_edge_distance_mask_threshold = FloatProperty(name="Threshold", description="Where the mask turns on along the ramp. Animate it for a grow-in reveal from the outline.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_threshold_cb)
@@ -7402,6 +7498,12 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_color_isolate_tolerance = FloatProperty(description="Maximum color distance considered a match to the target color. Higher values include a broader range of hues.", name="Tolerance", default=0.12, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_tolerance_cb)
     _FBP_OBJECT_RNA.fbp_color_isolate_falloff = FloatProperty(description="Soft transition width around the Color Isolate tolerance boundary. Higher values create smoother masks.", name="Falloff", default=0.1, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_falloff_cb)
     _FBP_OBJECT_RNA.fbp_color_isolate_factor = FloatProperty(description="Blend between the original image and Color Isolate.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_factor_cb)
+    _FBP_OBJECT_RNA.fbp_replace_color_source = FloatVectorProperty(description="Color to replace. Use the eyedropper in the color picker to sample it from the viewport.", name="Source Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.0, 0.0, 1.0), update=update_replace_color_source_cb)
+    _FBP_OBJECT_RNA.fbp_replace_color_target = FloatVectorProperty(description="New color for the selected range.", name="Target Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.35, 1.0, 1.0), update=update_replace_color_target_cb)
+    _FBP_OBJECT_RNA.fbp_replace_color_tolerance = FloatProperty(description="How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.", name="Tolerance", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_tolerance_cb)
+    _FBP_OBJECT_RNA.fbp_replace_color_softness = FloatProperty(description="Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.", name="Softness", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_softness_cb)
+    _FBP_OBJECT_RNA.fbp_replace_color_preserve_shading = FloatProperty(description="Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.", name="Preserve Shading", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_preserve_shading_cb)
+    _FBP_OBJECT_RNA.fbp_replace_color_factor = FloatProperty(description="Blend between the original image and Replace Color.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_factor_cb)
     _FBP_OBJECT_RNA.fbp_white_balance_temperature = FloatProperty(name="Temperature", description="Shift white balance from cold blue at negative values to warm amber at positive values.", default=0.0, min=-1.0, max=1.0, update=update_white_balance_temperature_cb)
     _FBP_OBJECT_RNA.fbp_white_balance_tint = FloatProperty(name="Tint", description="Shift white balance from green at negative values to magenta at positive values.", default=0.0, min=-1.0, max=1.0, update=update_white_balance_tint_cb)
     _FBP_OBJECT_RNA.fbp_white_balance_factor = FloatProperty(name="Factor", description="Blend between the original image and White Balance correction.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_white_balance_factor_cb)
@@ -7613,6 +7715,7 @@ def unregister_properties():
         (bpy.types.Scene, "Scene"),
         (bpy.types.Collection, "Collection"),
         (bpy.types.Object, "Object"),
+        (bpy.types.PoseBone, "PoseBone"),
     ):
         removed += _unregister_fbp_type_properties(owner, owner_name)
     return removed
