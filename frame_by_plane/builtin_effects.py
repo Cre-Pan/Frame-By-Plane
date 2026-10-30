@@ -44,6 +44,7 @@ BUILTIN_EFFECT_IDS = {
     "WHITE_BALANCE",
     "CURVES",
     "COLOR_ISOLATE",
+    "REPLACE_COLOR",
     "GRADIENT_LIGHT",
     "RIM",
     "SHADOW",
@@ -2995,26 +2996,24 @@ def _create_curves(name):
     return group
 
 
-def _create_color_isolate(name):
-    """Preserve a perceptual HSV color range while desaturating the rest."""
-    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
-    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
-    _socket(group, "Target Color", "INPUT", "NodeSocketColor", default=(1.0, 0.0, 0.0, 1.0))
-    _socket(group, "Tolerance", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=1.0)
-    _socket(group, "Falloff", "INPUT", "NodeSocketFloat", default=0.10, minimum=0.0, maximum=1.0)
-    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
-    inp, out = _group_io(group)
-    links = group.links
+def _perceptual_color_distance(group, color_socket, target_socket, *, distance_name, saturation_weight=0.35, value_weight=0.15):
+    """Return an HSV color distance that follows hue for saturated targets.
 
+    Hue dominates for colorful targets, so shading changes inside one hue
+    still match; grey targets fall back to saturation and value. Color
+    Isolate and Replace Color share it so their Tolerance feels the same;
+    Replace Color lowers the value weight so shadows of the picked color
+    stay selected.
+    """
+    links = group.links
     source_hsv = _node(group, "ShaderNodeSeparateColor", "Source HSV", -1120, 250)
     target_hsv = _node(group, "ShaderNodeSeparateColor", "Target HSV", -1120, 20)
     try:
         source_hsv.mode = target_hsv.mode = "HSV"
     except (AttributeError, TypeError, ValueError):
         pass
-    links.new(inp.outputs["Color In"], source_hsv.inputs[0])
-    links.new(inp.outputs["Target Color"], target_hsv.inputs[0])
+    links.new(color_socket, source_hsv.inputs[0])
+    links.new(target_socket, target_hsv.inputs[0])
 
     hue_sub = _math(group, "SUBTRACT", "Hue Difference", -900, 330)
     hue_abs = _math(group, "ABSOLUTE", "Absolute Hue Difference", -720, 330)
@@ -3028,10 +3027,10 @@ def _create_color_isolate(name):
 
     sat_sub = _math(group, "SUBTRACT", "Saturation Difference", -900, 120)
     sat_abs = _math(group, "ABSOLUTE", "Absolute Saturation Difference", -720, 120)
-    sat_weight = _math(group, "MULTIPLY", "Weighted Saturation Difference", -540, 120, value_2=0.35)
+    sat_weight = _math(group, "MULTIPLY", "Weighted Saturation Difference", -540, 120, value_2=saturation_weight)
     value_sub = _math(group, "SUBTRACT", "Value Difference", -900, -40)
     value_abs = _math(group, "ABSOLUTE", "Absolute Value Difference", -720, -40)
-    value_weight = _math(group, "MULTIPLY", "Weighted Value Difference", -540, -40, value_2=0.15)
+    value_weight = _math(group, "MULTIPLY", "Weighted Value Difference", -540, -40, value_2=value_weight)
     links.new(source_hsv.outputs[1], sat_sub.inputs[0]); links.new(target_hsv.outputs[1], sat_sub.inputs[1])
     links.new(sat_sub.outputs[0], sat_abs.inputs[0]); links.new(sat_abs.outputs[0], sat_weight.inputs[0])
     links.new(source_hsv.outputs[2], value_sub.inputs[0]); links.new(target_hsv.outputs[2], value_sub.inputs[1])
@@ -3057,12 +3056,31 @@ def _create_color_isolate(name):
     inverse_gate = _math(group, "SUBTRACT", "Neutral Target Weight", 180, -80, value_1=1.0)
     chroma_scaled = _math(group, "MULTIPLY", "Chroma Metric Weight", 360, 210)
     gray_scaled = _math(group, "MULTIPLY", "Neutral Metric Weight", 360, -80)
-    distance = _math(group, "ADD", "Color Isolate Distance", 540, 120)
+    distance = _math(group, "ADD", distance_name, 540, 120)
     links.new(target_hsv.outputs[1], saturation_gate.inputs["Value"])
     links.new(saturation_gate.outputs["Result"], inverse_gate.inputs[1])
     links.new(chroma_metric.outputs[0], chroma_scaled.inputs[0]); links.new(saturation_gate.outputs["Result"], chroma_scaled.inputs[1])
     links.new(gray_metric.outputs[0], gray_scaled.inputs[0]); links.new(inverse_gate.outputs[0], gray_scaled.inputs[1])
     links.new(chroma_scaled.outputs[0], distance.inputs[0]); links.new(gray_scaled.outputs[0], distance.inputs[1])
+
+    return distance
+
+
+def _create_color_isolate(name):
+    """Preserve a perceptual HSV color range while desaturating the rest."""
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Target Color", "INPUT", "NodeSocketColor", default=(1.0, 0.0, 0.0, 1.0))
+    _socket(group, "Tolerance", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=1.0)
+    _socket(group, "Falloff", "INPUT", "NodeSocketFloat", default=0.10, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    distance = _perceptual_color_distance(
+        group, inp.outputs["Color In"], inp.outputs["Target Color"], distance_name="Color Isolate Distance"
+    )
 
     upper = _math(group, "ADD", "Color Isolate Outer Range", 540, -80)
     transition = _node(group, "ShaderNodeMapRange", "Color Isolate Transition", 760, 150)
@@ -3089,6 +3107,110 @@ def _create_color_isolate(name):
     links.new(inp.outputs["Factor"], result.inputs[0]); links.new(inp.outputs["Color In"], result.inputs[1]); links.new(isolated.outputs[0], result.inputs[2])
     links.new(result.outputs[0], out.inputs["Color Out"])
     group["fbp_color_isolate_version"] = 2
+    return group
+
+
+def _create_replace_color(name):
+    """Recolor one picked color range into another, like a selective recolor.
+
+    The selection reuses Color Isolate's perceptual distance: Tolerance is the
+    fully replaced range and Softness the feathered edge around it. Preserve
+    Shading moves the selected pixels by the source-to-target HSV offset, so
+    highlights, shadows and texture survive; at zero they become the flat
+    target color.
+    """
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Source Color", "INPUT", "NodeSocketColor", default=(1.0, 0.0, 0.0, 1.0))
+    _socket(group, "Target Color", "INPUT", "NodeSocketColor", default=(0.0, 0.35, 1.0, 1.0))
+    _socket(group, "Tolerance", "INPUT", "NodeSocketFloat", default=0.08, minimum=0.0, maximum=1.0)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.05, minimum=0.0, maximum=1.0)
+    _socket(group, "Preserve Shading", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Factor", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Preview", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    inp, out = _group_io(group)
+    links = group.links
+
+    # Compare in a display-like (gamma 2.2) space: linear RGB squeezes the
+    # reds, oranges and yellows together and Tolerance would feel uneven.
+    pixel_display = _node(group, "ShaderNodeGamma", "Replace Color Pixel Display", -1340, 250)
+    source_display = _node(group, "ShaderNodeGamma", "Replace Color Source Display", -1340, 20)
+    for gamma, socket in ((pixel_display, inp.outputs["Color In"]), (source_display, inp.outputs["Source Color"])):
+        gamma.inputs["Gamma"].default_value = 1.0 / 2.2
+        links.new(socket, gamma.inputs["Color"])
+    distance = _perceptual_color_distance(
+        group, pixel_display.outputs[0], source_display.outputs[0], distance_name="Replace Color Distance",
+        saturation_weight=0.25, value_weight=0.03,
+    )
+    safe_softness = _math(group, "MAXIMUM", "Replace Color Safe Softness", 540, -260, value_2=0.00001)
+    upper = _math(group, "ADD", "Replace Color Outer Range", 540, -80)
+    selection = _node(group, "ShaderNodeMapRange", "Replace Color Selection", 760, 150)
+    selection.interpolation_type = "SMOOTHERSTEP"
+    selection.clamp = True
+    selection.inputs["To Min"].default_value = 1.0
+    selection.inputs["To Max"].default_value = 0.0
+    links.new(inp.outputs["Softness"], safe_softness.inputs[0])
+    links.new(inp.outputs["Tolerance"], upper.inputs[0]); links.new(safe_softness.outputs[0], upper.inputs[1])
+    links.new(distance.outputs[0], selection.inputs["Value"])
+    links.new(inp.outputs["Tolerance"], selection.inputs["From Min"]); links.new(upper.outputs[0], selection.inputs["From Max"])
+
+    # Shaded result: pixel HSV + (target HSV - source HSV). Hue wraps around
+    # the wheel; saturation and value clamp, so dark or pale pixels inside the
+    # selection keep their relative shading instead of going flat.
+    pixel_hsv = _node(group, "ShaderNodeSeparateColor", "Replace Color Pixel HSV", -1120, -420)
+    source_hsv = _node(group, "ShaderNodeSeparateColor", "Replace Color Source HSV", -1120, -640)
+    target_hsv = _node(group, "ShaderNodeSeparateColor", "Replace Color Target HSV", -1120, -860)
+    shaded = _node(group, "ShaderNodeCombineColor", "Replace Color Shaded", 540, -560)
+    try:
+        pixel_hsv.mode = source_hsv.mode = target_hsv.mode = shaded.mode = "HSV"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    links.new(inp.outputs["Color In"], pixel_hsv.inputs[0])
+    links.new(inp.outputs["Source Color"], source_hsv.inputs[0])
+    links.new(inp.outputs["Target Color"], target_hsv.inputs[0])
+    for index, channel in enumerate(("Hue", "Saturation", "Value")):
+        y = -420 - index * 180
+        offset = _math(group, "SUBTRACT", f"Replace Color {channel} Offset", -860, y)
+        moved = _math(group, "ADD", f"Replace Color Shifted {channel}", -620, y)
+        links.new(target_hsv.outputs[index], offset.inputs[0]); links.new(source_hsv.outputs[index], offset.inputs[1])
+        links.new(pixel_hsv.outputs[index], moved.inputs[0]); links.new(offset.outputs[0], moved.inputs[1])
+        if channel == "Hue":
+            wrapped = _math(group, "FRACT", "Replace Color Wrapped Hue", -380, y)
+        else:
+            wrapped = _math(group, "ADD", f"Replace Color Clamped {channel}", -380, y, value_2=0.0)
+            wrapped.use_clamp = True
+        links.new(moved.outputs[0], wrapped.inputs[0])
+        links.new(wrapped.outputs[0], shaded.inputs[index])
+
+    replacement = _mix_rgb(group, "MIX", "Replace Color Preserve Shading", 760, -420)
+    links.new(inp.outputs["Preserve Shading"], replacement.inputs[0])
+    links.new(inp.outputs["Target Color"], replacement.inputs[1])
+    links.new(shaded.outputs[0], replacement.inputs[2])
+
+    amount = _math(group, "MULTIPLY", "Replace Color Amount", 980, 150)
+    result = _mix_rgb(group, "MIX", "Replace Color Result", 1200, 100)
+    links.new(selection.outputs["Result"], amount.inputs[0]); links.new(inp.outputs["Factor"], amount.inputs[1])
+    links.new(amount.outputs[0], result.inputs[0])
+    links.new(inp.outputs["Color In"], result.inputs[1])
+    links.new(replacement.outputs[0], result.inputs[2])
+
+    # Debug Preview 1 (Selection) shows the weighted selection in grey.
+    selection_grey = _node(group, "ShaderNodeCombineColor", "Replace Color Selection Grey", 1200, -120)
+    try:
+        selection_grey.mode = "RGB"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    for index in range(3):
+        links.new(amount.outputs[0], selection_grey.inputs[index])
+    show_selection = _math(group, "GREATER_THAN", "Replace Color Debug Active", 1200, 300, value_2=0.5)
+    preview = _mix_rgb(group, "MIX", "Replace Color Debug Preview", 1420, 100)
+    links.new(inp.outputs["Debug Preview"], show_selection.inputs[0])
+    links.new(show_selection.outputs[0], preview.inputs[0])
+    links.new(result.outputs[0], preview.inputs[1])
+    links.new(selection_grey.outputs[0], preview.inputs[2])
+    links.new(preview.outputs[0], out.inputs["Color Out"])
+    group["fbp_replace_color_version"] = 1
     return group
 
 
@@ -11410,6 +11532,7 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
         "WHITE_BALANCE": lambda: _create_white_balance(canonical_name),
         "CURVES": lambda: _create_curves(canonical_name),
         "COLOR_ISOLATE": lambda: _create_color_isolate(canonical_name),
+        "REPLACE_COLOR": lambda: _create_replace_color(canonical_name),
         "GRADIENT_LIGHT": lambda: _create_gradient_light(canonical_name),
         "RIM": lambda: _create_rim(canonical_name),
         "SHADOW": lambda: _create_shadow(canonical_name),

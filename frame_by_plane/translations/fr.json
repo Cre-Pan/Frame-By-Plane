@@ -7622,5 +7622,15 @@
 "Cracked": "Fissuré",
 "Shattered": "Brisé",
 "Falling Shards": "Éclats qui tombent",
-"Glass Pane": "Vitre"
+"Glass Pane": "Vitre",
+"Replace Color": "Remplacer la couleur",
+"Preserve Shading": "Préserver l'ombrage",
+"Colors": "Couleurs",
+"Recolor a picked color range into a new color. Tolerance and Softness set how far the selection reaches; Preserve Shading keeps highlights and shadows.": "Recolore une plage de couleurs choisie avec une nouvelle couleur. Tolérance et Douceur règlent l'étendue de la sélection ; Préserver l'ombrage garde les lumières et les ombres.",
+"Color to replace. Use the eyedropper in the color picker to sample it from the viewport.": "Couleur à remplacer. Utilisez la pipette du sélecteur de couleur pour l'échantillonner dans la vue 3D.",
+"New color for the selected range.": "Nouvelle couleur pour la plage sélectionnée.",
+"How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.": "Écart maximal avec la Couleur source pour qu'une couleur soit entièrement remplacée. Des valeurs plus élevées englobent davantage de teintes voisines.",
+"Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.": "Zone adoucie au-delà de la Tolérance où le remplacement s'estompe. Des valeurs plus élevées donnent des bords plus doux.",
+"Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "Garde les lumières, les ombres et la texture des pixels remplacés. Zéro peint la Couleur cible unie.",
+"Blend between the original image and Replace Color.": "Mélange entre l'image d'origine et Remplacer la couleur."
 }

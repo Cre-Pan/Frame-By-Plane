@@ -493,6 +493,11 @@ ICONS = {
     "THRESHOLD": _histogram(threshold=19) + p("M19 6 V33", 1.6),
     "COLOR_ISOLATE": "".join(circ(11 + i * 8.5, 11 + j * 8.5, 3.2, 0.4, True, 1.4)
                              for j in range(3) for i in range(3) if (i, j) != (1, 1)) + circ(19.5, 19.5, 4.2),
+    # Dark swatch becomes the light one; the grey return arrow keeps the
+    # direction readable at menu size.
+    "REPLACE_COLOR": (rect(5, 5, 15, 15, 1.0, 3).replace(P, "#5e5e5e") + rect(19, 19, 15, 15, 1.0, 3)
+                      + p("M24 6.5 Q32.5 6.5 32.5 14.5", 2.2) + p("M29.3 11.8 L32.5 15 L35.7 11.8", 2.0)
+                      + s("M15 32.5 Q6.5 32.5 6.5 24.5", 2.2) + s("M3.3 27.2 L6.5 24 L9.7 27.2", 2.0)),
     # ---------------------------------------------------------------- Posterize family
     "FAMILY_POSTERIZE": ('<defs><clipPath id="c"><circle cx="19.5" cy="19.5" r="12"/></clipPath></defs>'
                          '<g clip-path="url(#c)">' + rect(7, 7, 25, 8.5, 1.0) + rect(7, 15.5, 25, 8, 0.6)

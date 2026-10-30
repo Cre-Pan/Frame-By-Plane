@@ -7653,5 +7653,15 @@
 "Cracked": "Agrietado",
 "Shattered": "Hecho añicos",
 "Falling Shards": "Fragmentos cayendo",
-"Glass Pane": "Lámina de cristal"
+"Glass Pane": "Lámina de cristal",
+"Replace Color": "Reemplazar color",
+"Preserve Shading": "Conservar sombreado",
+"Colors": "Colores",
+"Recolor a picked color range into a new color. Tolerance and Softness set how far the selection reaches; Preserve Shading keeps highlights and shadows.": "Cambia un rango de color elegido por un color nuevo. Tolerancia y Suavidad fijan cuánto abarca la selección; Conservar sombreado mantiene luces y sombras.",
+"Color to replace. Use the eyedropper in the color picker to sample it from the viewport.": "Color que se reemplaza. Usa el cuentagotas del selector de color para tomarlo del visor.",
+"New color for the selected range.": "Nuevo color para el rango seleccionado.",
+"How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.": "Cuánto puede alejarse un color del Color del origen y seguir reemplazándose por completo. Valores más altos incluyen más tonos cercanos.",
+"Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.": "Franja suavizada más allá de la Tolerancia donde el reemplazo se desvanece. Valores más altos dan bordes más suaves.",
+"Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "Mantiene luces, sombras y textura de los píxeles reemplazados. Cero pinta el Color objetivo plano.",
+"Blend between the original image and Replace Color.": "Mezcla entre la imagen original y Reemplazar color."
 }

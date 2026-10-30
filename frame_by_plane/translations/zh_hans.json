@@ -7759,5 +7759,15 @@
 "Cracked": "开裂",
 "Shattered": "粉碎的",
 "Falling Shards": "下落的碎片",
-"Glass Pane": "玻璃板"
+"Glass Pane": "玻璃板",
+"Replace Color": "替换颜色",
+"Preserve Shading": "保留明暗",
+"Colors": "颜色",
+"Recolor a picked color range into a new color. Tolerance and Softness set how far the selection reaches; Preserve Shading keeps highlights and shadows.": "将选定的颜色范围重新着色为新颜色。容差和柔和度决定选区范围；保留明暗会保留高光和阴影。",
+"Color to replace. Use the eyedropper in the color picker to sample it from the viewport.": "要替换的颜色。可使用拾色器中的吸管从视口取色。",
+"New color for the selected range.": "所选范围的新颜色。",
+"How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.": "颜色与源颜色相差多少仍会被完全替换。值越高，包含的相近色调越多。",
+"Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.": "容差之外替换逐渐淡出的羽化范围。值越高边缘越平滑。",
+"Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "保留被替换像素的高光、阴影和纹理。为零时以纯目标颜色填充。",
+"Blend between the original image and Replace Color.": "在原始图像与替换颜色之间混合。"
 }
