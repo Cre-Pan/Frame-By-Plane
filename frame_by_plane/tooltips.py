@@ -309,10 +309,10 @@ EXACT_TOOLTIPS = {
 
 
 MENU_TOOLTIPS = {
-    "FBP_MT_add_effect": "Add an Image, Mask or Mesh effect to the selected layers.",
+    "FBP_MT_add_effect": "Add an Image effect or Mask to the selected layers. Mesh effects are in Modifiers > Add Modifier > Mesh.",
     "FBP_MT_effect_presets": "Apply, save, rename or delete presets for the active effect.",
     "FBP_MT_effect_stack_actions": "Copy, paste, reset, sort or clear the effect stack.",
-    "FBP_MT_object_effects": "Open the Image, Mask and Mesh effect libraries.",
+    "FBP_MT_object_effects": "Open the Image and Mask effect libraries.",
     "FBP_MT_object_masks": "Add a mask to the selected layer.",
     "FBP_MT_object_effects_2d": "Add an image effect to the selected layers.",
     "FBP_MT_object_effects_3d": "Add a mesh effect to the selected layers.",

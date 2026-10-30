@@ -3709,20 +3709,26 @@ def test_preview_scope_policy(_module):
             class inputs:
                 owner = type('Value', (), dict(value='test'))()
 
+    class ShellModifier:
+        type = "NODES"
+        id_data = {}
+        node_group = {"fbp_shell_group": True}
+
     class PreviewObject:
-        modifiers = (PreviewModifier(),)
+        modifiers = (PreviewModifier(), ShellModifier())
 
     class PreviewScene:
         fbp_experimental_compositor = True
         fbp_preview_procreate_import = False
         fbp_preview_generic_mesh_effects = False
+        fbp_preview_native_effect_shells = False
         fbp_compositor_layers = (object(), object())
         fbp_compositor_enabled = True
         fbp_layered_report_format = "PROCREATE"
         objects = (PreviewObject(),)
 
     usage = feature_scope.fbp_preview_feature_usage(PreviewScene())
-    assert len(usage) == 3, usage
+    assert len(usage) == 4, usage
     assert all(item["used"] for item in usage), usage
     assert next(item for item in usage if item["id"] == "compositor_layers")["enabled"]
     diagnostics = feature_scope.fbp_preview_diagnostics_text(PreviewScene())

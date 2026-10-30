@@ -6,7 +6,7 @@ import bpy
 from bpy.types import Panel, UIList, Menu, Operator
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .geometry_nodes import fbp_active_effect_id, fbp_active_effect_instance_id, fbp_can_move_effect_selection, fbp_draw_effect_settings, fbp_draw_effect_mask_editor, fbp_effect_presence, fbp_effect_source_rig, fbp_focus_lattice_ui, fbp_schedule_effect_items_sync, fbp_selected_effect_instances
+from .geometry_nodes import fbp_active_effect_id, fbp_active_effect_instance_id, fbp_can_move_effect_selection, fbp_draw_effect_settings, fbp_draw_effect_mask_editor, fbp_draw_effect_mask_panel, fbp_effect_presence, fbp_effect_source_rig, fbp_focus_lattice_ui, fbp_schedule_effect_items_sync, fbp_selected_effect_instances
 from .effect_instances import split_effect_instance_token
 from .effects_registry import (
     FBP_EFFECT_CLIPPING_MASK,
@@ -4580,6 +4580,10 @@ def draw_effects_ui(layout, context, *, force_view=None):
                 context=context,
                 instance_id=fbp_active_effect_instance_id(rig),
             )
+            fbp_draw_effect_mask_panel(
+                layout, context, selected_rigs, source_rig, active_effect,
+                fbp_active_effect_instance_id(rig),
+            )
     if not visible_effects:
         hint_row(
             layout,
@@ -5377,6 +5381,7 @@ class FBP_PT_ModifierShortcuts(Panel):
 
     def draw(self, context):
         layout = configure_layout(self.layout)
+        _fbp_request_modifiers_follow(context)
         # Add Effect / Add Mask live in the stack UI itself.  The Modifiers tab
         # should open directly on the real Frame By Plane lists/settings.
         _fbp_draw_properties_modifier_effects(layout, context)
@@ -5419,6 +5424,18 @@ class FBP_PT_LatticeControls(_FBPLatticeControlsPanel, Panel):
 class FBP_PT_LatticeControlsBone(_FBPLatticeControlsPanel, Panel):
     bl_idname = "FBP_PT_lattice_controls_bone"
     bl_context = 'bone'
+
+
+def _fbp_request_modifiers_follow(context):
+    """Ask once for the Modifiers tab to show the selected layer's plane."""
+    space = getattr(context, "space_data", None)
+    if space is None or getattr(space, "type", "") != 'PROPERTIES' or bool(getattr(space, "use_pin_id", False)):
+        return
+    try:
+        from .native_modifiers import fbp_request_properties_follow
+        fbp_request_properties_follow()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 # SECTION 10 - Menu: Shift+A > Frame By Plane #

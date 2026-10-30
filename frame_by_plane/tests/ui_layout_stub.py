@@ -45,7 +45,7 @@ class StubLayout:
                 return StubLayout(self.calls), StubLayout(self.calls)
             if name in {"row", "column", "box", "split", "column_flow", "grid_flow"}:
                 return StubLayout(self.calls)
-            if name == "operator":
+            if name in {"operator", "operator_menu_enum"}:
                 return _StubOperatorProperties(args[0] if args else kwargs.get("operator", ""))
             return None
 

@@ -83,6 +83,7 @@ def fbp_preview_feature_usage(scene=None):
         "compositor_layers": [],
         "procreate_import": [],
         "generic_mesh_effects": [],
+        "native_effect_shells": [],
     }
     if scene is not None:
         try:
@@ -114,6 +115,7 @@ def fbp_preview_feature_usage(scene=None):
             pass
 
         generic_count = 0
+        shell_count = 0
         procreate_rigs = 0
         try:
             objects = tuple(getattr(scene, "objects", ()) or ())
@@ -135,11 +137,18 @@ def fbp_preview_feature_usage(scene=None):
                 try:
                     if mesh_modifier_metadata(modifier).get("fbp_generic_mesh_effect", False):
                         generic_count += 1
+                    group = getattr(modifier, "node_group", None)
+                    if group is not None and bool(group.get("fbp_shell_group", False)):
+                        shell_count += 1
                 except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                     continue
         if generic_count:
             evidence["generic_mesh_effects"].append(
                 f"{generic_count} FBP-owned Generic Mesh modifier(s)"
+            )
+        if shell_count:
+            evidence["native_effect_shells"].append(
+                f"{shell_count} image effect modifier shell(s)"
             )
         if procreate_rigs:
             evidence["procreate_import"].append(
