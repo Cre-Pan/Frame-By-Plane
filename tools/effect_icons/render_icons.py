@@ -1,7 +1,10 @@
 """Rasterize designs.py into 39x39 PNG effect icons.
 
 Usage (needs Node + Playwright with Chromium, and Pillow):
-    python tools/effect_icons/render_icons.py [output_dir]
+    python tools/effect_icons/render_icons.py [output_dir] [EFFECT_ID ...]
+
+With effect ids only those icons are rendered, so hand-made PNGs from the
+Figma sheet are left alone.
 
 Each icon is rendered at 8x in Chromium and downsampled, which keeps the soft
 edges consistent with the hand-made mask icons.
@@ -68,9 +71,10 @@ def icon_filename(effect_id):
 def main():
     out_dir = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_OUT
     os.makedirs(out_dir, exist_ok=True)
+    ids = sys.argv[2:] or list(ICONS)
     size = 39 * SCALE
     with tempfile.TemporaryDirectory() as tmp:
-        jobs = [{"svg": svg(eid, SCALE), "out": os.path.join(tmp, eid + ".png")} for eid in ICONS]
+        jobs = [{"svg": svg(eid, SCALE), "out": os.path.join(tmp, eid + ".png")} for eid in ids]
         jobs_path = os.path.join(tmp, "jobs.json")
         with open(jobs_path, "w") as handle:
             json.dump(jobs, handle)
@@ -78,11 +82,11 @@ def main():
         with open(script, "w") as handle:
             handle.write(NODE_SCRIPT % (size, size, size, size))
         subprocess.run(["node", script, jobs_path], check=True)
-        for eid in ICONS:
+        for eid in ids:
             with open(os.path.join(tmp, eid + ".png"), "rb") as handle:
                 big = Image.open(io.BytesIO(handle.read())).convert("RGBA")
             fit_glyph(big).resize((39, 39), Image.LANCZOS).save(os.path.join(out_dir, icon_filename(eid)), optimize=True)
-    print(f"Rendered {len(ICONS)} icons into {out_dir}")
+    print(f"Rendered {len(ids)} icons into {out_dir}")
 
 
 if __name__ == "__main__":
