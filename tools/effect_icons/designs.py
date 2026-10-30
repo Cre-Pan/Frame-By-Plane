@@ -566,6 +566,63 @@ ICONS = {
     "TEXT_MATRIX": _text_matrix(),
 }
 
+# ---------------------------------------------------------------- 8.2 pass (Ale's picks, Blender-style shapes)
+
+
+def _camera(x, y, w, h, op=1.0):
+    return rect(x, y, w, h, op, 2) + poly([(x + w + 1, y + h / 2), (x + w + 7, y + 1), (x + w + 7, y + h - 1)], op)
+
+
+def _wave(y, amp=4.0, x0=7, x1=32, n=2):
+    w = (x1 - x0) / (2 * n)
+    return f"M{x0} {y} " + " ".join(f"q{w / 2:.2f} {-amp if i % 2 == 0 else amp} {w:.2f} 0" for i in range(2 * n))
+
+
+def _cutout(d, outer=8.0, gap=4.4, op=0.5):
+    """Shape plus an outline that follows it at a fixed gap."""
+    return (f'<defs><mask id="m"><rect width="39" height="39" fill="#000"/>'
+            f'<path d="{d}" fill="#fff" stroke="#fff" stroke-width="{outer}" stroke-linejoin="round"/>'
+            f'<path d="{d}" fill="#000" stroke="#000" stroke-width="{gap}" stroke-linejoin="round"/></mask></defs>'
+            f'<rect width="39" height="39" fill="{P}" fill-opacity="{op}" mask="url(#m)"/>'
+            f'<path d="{d}" fill="{P}" stroke="{P}" stroke-width="1" stroke-linejoin="round"/>')
+
+
+def _star(cx, cy, ro, ri, n=5):
+    pts = [(cx + (ro if i % 2 == 0 else ri) * math.cos(-math.pi / 2 + i * math.pi / n),
+            cy + (ro if i % 2 == 0 else ri) * math.sin(-math.pi / 2 + i * math.pi / n)) for i in range(2 * n)]
+    return hpath(pts)
+
+
+# Solid greys: touching cubes are told apart by face shading only, so the
+# faces must not let the cube behind show through.
+_CUBE_TONES = ("#d9d9d9", "#8e8e8e", "#5e5e5e")
+
+
+def _solid_cube(x, y, r=6.8, h=3.6, v=9.0):
+    """Upright cube whose front-bottom corner sits at (x, y)."""
+    top, front = (x, y - v), (x, y)
+    left, right, back = (x - r, y - v - h), (x + r, y - v - h), (x, y - v - 2 * h)
+    faces = ([top, right, back, left], [left, top, front, (x - r, y - h)], [top, right, (x + r, y - h), front])
+    return "".join(f'<path d="{hpath(f)}" fill="{tone}"/>' for f, tone in zip(faces, _CUBE_TONES))
+
+
+ICONS.update({
+    "CAMERA_SCALE_LOCK": (p("M6 6 H12 M6 6 V12 M33 6 H27 M33 6 V12 M6 33 H12 M6 33 V27 M33 33 H27 M33 33 V27", 2.2)
+                          + _camera(10, 14, 13, 11)),
+    "CAMERA_BILLBOARD": (rect(19, 6, 13, 27, 0.3, 2) + rect(19, 6, 6, 27, 1.0, 1.5)
+                         + poly([(6, 19.5), (13, 14.5), (13, 24.5)])),
+    "FRAME_STACK": rect(15, 6, 18, 18, 0.3, 2.5) + rect(10.5, 10.5, 18, 18, 0.55, 2.5) + rect(6, 15, 18, 18, 1.0, 2.5),
+    "MOTION": circ(10, 26, 3.2, 0.25) + circ(17, 19.5, 3.8, 0.5) + circ(26, 13, 5.5, 1.0),
+    "SURFACE_CONFORM": (fill("M6 33 V27 Q12 21 19.5 27 T33 27 V33 Z", 0.4) + p("M6 22 Q12 16 19.5 22 T33 22", 2.4)
+                        + s("M6 10 H33", 2.2)),
+    "CUTOUT_OUTLINE": _cutout(_star(19.5, 20.5, 11, 4.8)),
+    "SCULPT_WAVES": (_stroke(_wave(10), 0.5, 2.4) + p(_wave(18), 2.4)
+                     + fill(_wave(26) + " V33 H7 Z", 0.4) + p(_wave(26), 2.4)),
+    "PAPER_SHARDS": (poly([(6, 6), (19, 6), (15.5, 19.5), (6, 23)]) + poly([(22, 6), (33, 6), (33, 33), (20, 33), (18, 21)], 0.55)
+                     + poly([(6, 26), (15, 22.5), (17, 33), (6, 33)], 0.3)),
+    "SPHERE_SCREEN": _solid_cube(19.5, 33.5) + _solid_cube(12.7, 20.9) + _solid_cube(26.3, 20.9),
+})
+
 # Effects Ale chose to keep on their native Blender icon (effects_registry.py).
 NATIVE_ONLY = (
     "CROP",
