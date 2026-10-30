@@ -30,6 +30,8 @@ from .registration import (
 _MODULE_SUFFIX = "native_modifiers"
 _MESH_MENU_LABEL = "Mesh"
 _MESH_MENU_ICON = "MESH_MONKEY"
+_MASK_MENU_LABEL = "Mask"
+_MASK_MENU_ICON = "MOD_MASK"
 
 # rig pointer -> {token: (modifier pointer, viewport, render)}
 _SNAPSHOTS = {}
@@ -630,6 +632,16 @@ class FBP_MT_ModifierAddMesh(Menu):
         _geo()._fbp_draw_effect_add_columns(self.layout, context, "3D")
 
 
+class FBP_MT_ModifierAddMask(Menu):
+    bl_idname = "FBP_MT_modifier_add_mask"
+    bl_label = _MASK_MENU_LABEL
+    bl_description = "Frame By Plane masks that mask the whole layer"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
+
+    def draw(self, context):
+        _geo()._fbp_draw_effect_add_columns(self.layout, context, "MASK")
+
+
 def draw_modifier_add_mesh(self, context):
     rig, _plane = _context_layer(context)
     if rig is None:
@@ -637,9 +649,10 @@ def draw_modifier_add_mesh(self, context):
     layout = self.layout
     layout.separator()
     layout.menu(FBP_MT_ModifierAddMesh.bl_idname, text=_MESH_MENU_LABEL, icon=_MESH_MENU_ICON)
+    layout.menu(FBP_MT_ModifierAddMask.bl_idname, text=_MASK_MENU_LABEL, icon=_MASK_MENU_ICON)
 
 
-classes = (FBP_MT_ModifierAddMesh,)
+classes = (FBP_MT_ModifierAddMesh, FBP_MT_ModifierAddMask)
 
 
 def register():

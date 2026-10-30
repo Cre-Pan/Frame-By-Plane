@@ -143,6 +143,11 @@ def test_modifier_add_menu():
         native.draw_modifier_add_mesh(Owner, bpy.context)
         entry = [call for call in Owner.layout.calls if call[0] == "menu"]
         assert entry and entry[0][2]["icon"] == "MESH_MONKEY" and entry[0][2]["text"] == "Mesh"
+        assert len(entry) == 2 and entry[1][2]["icon"] == "MOD_MASK" and entry[1][2]["text"] == "Mask"
+        Owner.layout = StubLayout()
+        native.FBP_MT_ModifierAddMask.draw(Owner, bpy.context)
+        labels = [call[2].get("text") for call in Owner.layout.calls if call[0] == "operator"]
+        assert "Gradient Mask" in labels and "Circle Mask" in labels, labels
         Owner.layout = StubLayout()
         native.FBP_MT_ModifierAddMesh.draw(Owner, bpy.context)
         labels = [call[2].get("text") for call in Owner.layout.calls if call[0] == "operator"]
@@ -175,6 +180,25 @@ def test_mask_panel():
         assert any(call[0] == "panel" for call in layout.calls)
         report = geo.fbp_local_effect_mask_contract_report(rig)
         assert not report["issues"], report
+    finally:
+        _remove(rig)
+
+
+def test_toggle_foldouts():
+    geo, _native, _shells = _modules()
+    rig = _rig("FBP Native Toggle Foldouts")
+    try:
+        _add(geo, rig, "ASCII", "MESH_WIGGLE")
+        layout = StubLayout()
+        geo.fbp_draw_effect_settings(layout, rig, "ASCII", selected_count=1)
+        panels = [call[1][0] for call in layout.calls if call[0] == "panel"]
+        assert "fbp_effect_ascii_edges" in panels, panels
+        toggles = {call[1][1] for call in layout.calls if call[0] == "prop" and call[2].get("text") == ""}
+        assert "fbp_terminal_ascii_use_edges" in toggles, toggles
+        layout = StubLayout()
+        geo.fbp_draw_effect_settings(layout, rig, "MESH_WIGGLE", selected_count=1)
+        panels = [call[1][0] for call in layout.calls if call[0] == "panel"]
+        assert "fbp_effect_animation" in panels, panels
     finally:
         _remove(rig)
 
@@ -318,7 +342,10 @@ def test_effect_shells():
             pass
 
 
-TESTS = (test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_effect_shells)
+TESTS = (
+    test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
+    test_effect_shells,
+)
 
 failed = []
 try:

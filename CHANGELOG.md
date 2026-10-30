@@ -19,8 +19,10 @@ All notable public changes to Frame By Plane are documented here.
 ### Effects in Blender's Modifiers panel
 
 - **Add Modifier > Mesh** (monkey icon) lists the Frame By Plane mesh effects; they are no longer in the Frame By Plane Add Effect menu.
+- **Add Modifier > Mask** lists the Frame By Plane masks that mask the whole layer.
 - With a layer selected, **Properties > Modifiers** shows the modifiers of its image plane (it pins itself to the plane and lets go when you change tab or selection; turn it off with Preferences > Modifiers Follow Layer). Drag and drop, the eye and camera toggles, edit mode display and delete work natively and update the Frame By Plane stack. Duplicating an effect stays in the Frame By Plane stack. Modifiers list effects bottom-up, the Frame By Plane stack top-down.
 - Every image effect has a **Mask** subpanel: the checkbox turns its mask on and off, the dropdown picks the mask type (it replaces the previous one) and the mask settings appear inline.
+- Optional effect sections (Animation, ASCII Edges, Text Matrix Playback Limit) use the same foldout: arrow, checkbox, name.
 - Preview, **Image Effects as Modifiers**: Hue & Saturation, Vignette, Posterize, Gradient Mask, Circle Mask and Square Mask can become native modifiers whose inputs drive the material (keyframes included), in Eevee and Cycles. Enable it under Preferences > Advanced > LTS Feature Scope.
 
 ### Plane creation
