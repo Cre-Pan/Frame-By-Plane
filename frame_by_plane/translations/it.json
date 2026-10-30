@@ -7888,5 +7888,15 @@
 "Rename sequence files to a pattern Blender can read. Undo cannot revert it.": "Rinomina i file della sequenza con uno schema leggibile da Blender. Annulla non può ripristinarlo.",
 "Delete the broken layers listed in the last report. Undo cannot revert it.": "Elimina i livelli danneggiati elencati nell'ultimo report. Annulla non può ripristinarlo.",
 "Copy Blender's render output path into Frame By Plane; no folders or files are created.": "Copia in Frame By Plane il percorso di output del render di Blender; non crea cartelle né file.",
-"Copy the Frame By Plane output path into Blender's render settings; no folders or files are created.": "Copia il percorso di output di Frame By Plane nelle impostazioni di render di Blender; non crea cartelle né file."
+"Copy the Frame By Plane output path into Blender's render settings; no folders or files are created.": "Copia il percorso di output di Frame By Plane nelle impostazioni di render di Blender; non crea cartelle né file.",
+"Replace Color": "Sostituisci colore",
+"Preserve Shading": "Mantieni ombreggiatura",
+"Colors": "Colori",
+"Recolor a picked color range into a new color. Tolerance and Softness set how far the selection reaches; Preserve Shading keeps highlights and shadows.": "Ricolora una gamma di colori scelta con un nuovo colore. Tolleranza e Morbidezza decidono quanto si estende la selezione; Mantieni ombreggiatura conserva luci e ombre.",
+"Color to replace. Use the eyedropper in the color picker to sample it from the viewport.": "Colore da sostituire. Usa il contagocce del selettore colore per campionarlo dalla viewport.",
+"New color for the selected range.": "Nuovo colore per la gamma selezionata.",
+"How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.": "Quanto un colore può distare dal Colore sorgente ed essere comunque sostituito del tutto. Valori più alti includono più tonalità vicine.",
+"Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.": "Fascia sfumata oltre la Tolleranza in cui la sostituzione svanisce. Valori più alti danno bordi più morbidi.",
+"Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "Conserva luci, ombre e texture dei pixel sostituiti. Zero dipinge il Colore bersaglio piatto.",
+"Blend between the original image and Replace Color.": "Miscela tra l'immagine originale e Sostituisci colore."
 }

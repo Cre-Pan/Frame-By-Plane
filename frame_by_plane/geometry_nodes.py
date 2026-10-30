@@ -152,6 +152,7 @@ from .effects_registry import (
     FBP_EFFECT_DIRECTIONAL_BLUR,
     FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_EDGE_DETECT,
     FBP_EFFECT_SMOOTH_TOON, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_FALSE_COLOR, FBP_EFFECT_CHROMATIC_ABERRATION,
+    FBP_EFFECT_REPLACE_COLOR,
     FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES,
     FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS,
     FBP_EFFECT_ALPHA_MATTE,
@@ -21720,6 +21721,10 @@ _FBP_EFFECT_UI_GROUPS = {
     FBP_EFFECT_FALSE_COLOR: (
         ("Palette", "COLOR", ("fbp_false_color_dark", "fbp_false_color_light")),
         ("Mix", "MODIFIER", ("fbp_false_color_factor",)),
+    ),
+    FBP_EFFECT_REPLACE_COLOR: (
+        ("Colors", "EYEDROPPER", ("fbp_replace_color_source", "fbp_replace_color_target", "fbp_replace_color_tolerance", "fbp_replace_color_softness")),
+        ("Mix", "MODIFIER", ("fbp_replace_color_preserve_shading", "fbp_replace_color_factor")),
     ),
     FBP_EFFECT_CHROMATIC_ABERRATION: (
         ("Chromatic Offset", "SEQ_CHROMA_SCOPE", ("fbp_chromatic_aberration_distance", "fbp_chromatic_aberration_angle")),

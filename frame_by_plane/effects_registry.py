@@ -104,6 +104,7 @@ FBP_EFFECT_BRIGHTNESS_CONTRAST = "BRIGHTNESS_CONTRAST"
 FBP_EFFECT_INVERT = "INVERT"
 FBP_EFFECT_THRESHOLD = "THRESHOLD"
 FBP_EFFECT_COLOR_ISOLATE = "COLOR_ISOLATE"
+FBP_EFFECT_REPLACE_COLOR = "REPLACE_COLOR"
 FBP_EFFECT_DUOTONE = "DUOTONE"
 FBP_EFFECT_RECOLOR = "RECOLOR"
 FBP_EFFECT_GRADIENT_MAP = "GRADIENT_MAP"
@@ -1941,6 +1942,24 @@ FBP_EFFECT_REGISTRY = {
         },
         "builtin": True,
     },
+    FBP_EFFECT_REPLACE_COLOR: {
+        "label": "Replace Color", "icon": "EYEDROPPER", "kind": "SHADER", "stage": "COLOR",
+        "source_names": (), "canonical_name": "FBP_SH_Replace_Color_820",
+        "asset_id": "frame_by_plane.shader.replace_color.820", "enabled_key": "fbp_effect_replace_color",
+        "input_socket": "Color In", "output_socket": "Color Out",
+        "required_input_sockets": ("Source Color", "Target Color", "Tolerance", "Softness", "Preserve Shading", "Factor"),
+        "property_map": {
+            "fbp_replace_color_source": "Source Color",
+            "fbp_replace_color_target": "Target Color",
+            "fbp_replace_color_tolerance": "Tolerance",
+            "fbp_replace_color_softness": "Softness",
+            "fbp_replace_color_preserve_shading": "Preserve Shading",
+            "fbp_replace_color_factor": "Factor",
+        },
+        "debug_modes": (("FINAL", "Final"), ("SELECTION", "Selection")),
+        "debug_socket": "Debug Preview",
+        "builtin": True,
+    },
     FBP_EFFECT_DUOTONE: {
         "label": "Duotone", "icon": "IMAGE_RGB_ALPHA", "kind": "SHADER", "stage": "COLOR",
         "source_names": ("FBP_Duotone",), "canonical_name": "FBP_SH_Duotone_445",
@@ -2400,6 +2419,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_INVERT: ("BASE", "LIGHT", "Invert the final color output. Factor allows partial inversion."),
     FBP_EFFECT_THRESHOLD: ("BASE", "LIGHT", "Convert luminance into a hard black-and-white threshold."),
     FBP_EFFECT_COLOR_ISOLATE: ("BASE", "LIGHT", "Keep a selected color range and suppress the remaining colors."),
+    FBP_EFFECT_REPLACE_COLOR: ("BASE", "LIGHT", "Recolor a picked color range into a new color. Tolerance and Softness set how far the selection reaches; Preserve Shading keeps highlights and shadows."),
     FBP_EFFECT_DUOTONE: ("BASE", "LIGHT", "Map shadows and highlights to two editable colors."),
     FBP_EFFECT_RECOLOR: ("2D", "LIGHT", "Map source luminance through an editable Color Ramp while preserving the original alpha."),
     FBP_EFFECT_GRADIENT_MAP: ("2D", "LIGHT", "Figma-inspired Gradient Map that remaps source luminance through an editable Color Ramp."),
@@ -2745,7 +2765,7 @@ FBP_SHADER_STAGE_ORDER = {
     "COLOR": (
         FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_OIL_PAINT, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
         FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_CURVES, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD,
-        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE, FBP_EFFECT_RISO_PRINT,
+        FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_REPLACE_COLOR, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE, FBP_EFFECT_RISO_PRINT,
         FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
         FBP_EFFECT_DIGITAL_NOISE,
         FBP_EFFECT_PAPER_FIBERS, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW, FBP_EFFECT_GOBO_SHADOWS,
@@ -2760,7 +2780,7 @@ FBP_BASE_EFFECT_MENU_ORDER = (
     FBP_EFFECT_SOLID_MASK, FBP_EFFECT_DUOTONE, FBP_EFFECT_TRITONE, FBP_EFFECT_RECOLOR,
     FBP_EFFECT_VIGNETTE, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW,
     FBP_EFFECT_INVERT, FBP_EFFECT_UNSHARP_MASK,
-    FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE,
+    FBP_EFFECT_THRESHOLD, FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_REPLACE_COLOR,
 )
 FBP_3D_EFFECT_MENU_ORDER = (
     FBP_EFFECT_CAMERA_SCALE_LOCK, FBP_EFFECT_CAMERA_BILLBOARD, FBP_EFFECT_MIRROR,
@@ -2890,7 +2910,8 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
     )),
     ("Color", "COLOR", (
         FBP_EFFECT_HUE_SATURATION, FBP_EFFECT_WHITE_BALANCE, "FAMILY:COLORIZE",
-        FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_FILTER_PRESETS,
+        FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_REPLACE_COLOR,
+        FBP_EFFECT_FILTER_PRESETS,
     )),
     ("Tone", "IMAGE_ALPHA", (
         FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_CURVES, FBP_EFFECT_INVERT,
@@ -3483,6 +3504,7 @@ __all__ = (
     "FBP_EFFECT_INVERT",
     "FBP_EFFECT_THRESHOLD",
     "FBP_EFFECT_COLOR_ISOLATE",
+    "FBP_EFFECT_REPLACE_COLOR",
     "FBP_EFFECT_DUOTONE",
     "FBP_EFFECT_RECOLOR",
     "FBP_EFFECT_GRADIENT_MAP",

@@ -7572,5 +7572,15 @@
 "restore sequence rows and backend": "Sequenzzeilen und Backend wiederherstellen",
 "restore shader effect stack": "Shader-Effektstapel wiederherstellen",
 "sequence replacement failure": "Fehler beim Ersetzen der Sequenz",
-"‹  Back": "‹  Zurück"
+"‹  Back": "‹  Zurück",
+"Replace Color": "Farbe ersetzen",
+"Preserve Shading": "Schattierung erhalten",
+"Colors": "Farben",
+"Recolor a picked color range into a new color. Tolerance and Softness set how far the selection reaches; Preserve Shading keeps highlights and shadows.": "Färbt einen gewählten Farbbereich in eine neue Farbe um. Toleranz und Weichheit bestimmen, wie weit die Auswahl reicht; Schattierung erhalten bewahrt Lichter und Schatten.",
+"Color to replace. Use the eyedropper in the color picker to sample it from the viewport.": "Zu ersetzende Farbe. Mit der Pipette im Farbwähler aus dem Viewport aufnehmen.",
+"New color for the selected range.": "Neue Farbe für den ausgewählten Bereich.",
+"How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.": "Wie weit eine Farbe von der Quellfarbe entfernt sein darf und trotzdem vollständig ersetzt wird. Höhere Werte erfassen mehr benachbarte Farbtöne.",
+"Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.": "Weicher Bereich jenseits der Toleranz, in dem die Ersetzung ausblendet. Höhere Werte ergeben weichere Kanten.",
+"Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "Erhält Lichter, Schatten und Textur der ersetzten Pixel. Null malt die flache Zielfarbe.",
+"Blend between the original image and Replace Color.": "Zwischen Originalbild und Farbe ersetzen mischen."
 }

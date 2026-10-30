@@ -493,6 +493,9 @@ ICONS = {
     "THRESHOLD": _histogram(threshold=19) + p("M19 6 V33", 1.6),
     "COLOR_ISOLATE": "".join(circ(11 + i * 8.5, 11 + j * 8.5, 3.2, 0.4, True, 1.4)
                              for j in range(3) for i in range(3) if (i, j) != (1, 1)) + circ(19.5, 19.5, 4.2),
+    "REPLACE_COLOR": (circ(10.5, 19.5, 5.5, 0.5) + circ(28.5, 19.5, 5.5)
+                      + p("M5.5 10 Q19.5 2 33 10.5", 1.4) + p("M29 6.5 L33 10.5 L28 12.5", 1.4)
+                      + s("M33.5 29 Q19.5 37 6 28.5", 1.4)),
     # ---------------------------------------------------------------- Posterize family
     "FAMILY_POSTERIZE": ('<defs><clipPath id="c"><circle cx="19.5" cy="19.5" r="12"/></clipPath></defs>'
                          '<g clip-path="url(#c)">' + rect(7, 7, 25, 8.5, 1.0) + rect(7, 15.5, 25, 8, 0.6)

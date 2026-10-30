@@ -7722,5 +7722,15 @@
 "restore sequence rows and backend": "シーケンス行とバックエンドを復元",
 "restore shader effect stack": "シェーダーエフェクトスタックを復元",
 "sequence replacement failure": "シーケンスの置き換えに失敗",
-"‹  Back": "‹  戻る"
+"‹  Back": "‹  戻る",
+"Replace Color": "色の置換",
+"Preserve Shading": "シェーディングを保持",
+"Colors": "カラー",
+"Recolor a picked color range into a new color. Tolerance and Softness set how far the selection reaches; Preserve Shading keeps highlights and shadows.": "選んだ色の範囲を新しい色に置き換えます。許容値とソフトネスで選択範囲の広さを決め、シェーディングを保持でハイライトと影を残します。",
+"Color to replace. Use the eyedropper in the color picker to sample it from the viewport.": "置き換える色。カラーピッカーのスポイトでビューポートから取得できます。",
+"New color for the selected range.": "選択範囲の新しい色。",
+"How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.": "ソースカラーからどこまで離れた色を完全に置き換えるか。値を大きくすると近い色相も含まれます。",
+"Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.": "許容値の外側で置換がフェードアウトする範囲。値を大きくするとエッジが滑らかになります。",
+"Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "置き換えたピクセルのハイライト、影、テクスチャを保持します。0 ではターゲットカラーで平坦に塗ります。",
+"Blend between the original image and Replace Color.": "元の画像と色の置換の間でブレンド。"
 }
