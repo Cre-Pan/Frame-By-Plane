@@ -176,6 +176,8 @@ CONTROL_SPECS = {
         {"role": "RADIUS", "mode": "RADIUS", "x": "fbp_bulge_pinch_center_x", "y": "fbp_bulge_pinch_center_y", "radius": "fbp_bulge_pinch_radius"},
     ),
     "LENS_WARP": ({"role": "CENTER", "mode": "POINT", "x": "fbp_lens_warp_center_x", "y": "fbp_lens_warp_center_y"},),
+    # Broken Glass: the impact point the cracks open from.
+    "GLASS": ({"role": "CENTER", "mode": "POINT", "x": "fbp_glass_impact_x", "y": "fbp_glass_impact_y"},),
     "WAVE_WARP": ({"role": "DIRECTION", "mode": "ANGLE", "angle": "fbp_wave_warp_angle"},),
     "WIND_BENDER": ({"role": "DIRECTION", "mode": "VECTOR_DIRECTION", "vector": "fbp_wind_direction"},),
     "RIPPLE_DISTORTION": (

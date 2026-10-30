@@ -214,7 +214,6 @@ from .effects_registry import (
 
 _FBP_LOADABLE_EFFECT_IMAGES = {
     (FBP_EFFECT_CRYSTAL, "fbp_crystal_influence_image"): "fbp_crystal_use_influence_map",
-    (FBP_EFFECT_GLASS, "fbp_glass_normal_image"): "",
     (FBP_EFFECT_IMAGE_RELIEF, "fbp_image_relief_depth_image"): "",
     (FBP_EFFECT_SPHERE_SCREEN, "fbp_sphere_screen_depth_image"): "",
 }
@@ -7854,7 +7853,6 @@ def _fbp_ensure_glass_material(rig):
         tint = tuple(getattr(rig, "fbp_glass_tint", (0.72, 0.92, 1.0, 1.0)))
         source_factor = max(0.0, min(1.0, float(getattr(rig, "fbp_glass_source_color", 0.35) or 0.0)))
         tint_weight = 1.0 - source_factor
-        distortion = max(0.0, float(getattr(rig, "fbp_glass_distortion", 0.65) or 0.0))
         roughness = max(0.0, min(1.0, float(getattr(rig, "fbp_glass_roughness", 0.12) or 0.0)))
         ior = max(1.0, float(getattr(rig, "fbp_glass_ior", 1.45) or 1.45))
         edge_tint = max(0.0, min(1.0, float(getattr(rig, "fbp_glass_edge_tint", 0.55) or 0.0)))
@@ -7871,7 +7869,8 @@ def _fbp_ensure_glass_material(rig):
         _fbp_set_socket_default_if_changed(source_mix.inputs[0], source_factor)
         _fbp_set_socket_default_if_changed(normal_map.inputs["Strength"], 0.0)
         _fbp_set_socket_default_if_changed(normal_select.inputs[0], 0.0)
-        _fbp_set_socket_default_if_changed(bump.inputs["Strength"], distortion)
+        # Shards are flat triangles, so there is no crack height to bump.
+        _fbp_set_socket_default_if_changed(bump.inputs["Strength"], 0.0)
         _fbp_set_socket_default_if_changed(bump.inputs["Distance"], 0.1)
         _fbp_set_socket_default_if_changed(edge_strength.inputs[1], edge_tint * tint_weight)
         # At Source Color 100%, Tint is absent from both the surface and the
@@ -8861,7 +8860,7 @@ def _fbp_cast_effect_value(prop_name, value):
         "fbp_sphere_screen_shape": {"SPHERE": 0, "CUBE": 1, "CYLINDER": 2, "CONE": 3},
         "fbp_sphere_screen_depth_mode": {"LIGHTS": 0, "SHADOWS": 1, "SATURATION": 2, "CUSTOM": 3},
         "fbp_image_relief_depth_mode": {"LIGHTS": 0, "SHADOWS": 1, "SATURATION": 2, "CUSTOM": 3},
-        "fbp_glass_source": {"ALPHA": 0, "PROCEDURAL": 1, "NORMAL": 2},
+        "fbp_glass_pattern": {"SHARDS": 0, "IMPACT": 1},
         "fbp_crystal_texture_type": {"VORONOI": 0, "NOISE": 1, "WAVE": 2, "BRICK": 3},
         "fbp_crystal_pattern_mode": {"DIAMOND": 0, "CRYSTAL": 1, "LIQUID": 2},
         "fbp_sculpt_waves_style": {"RADIAL": 0, "MOIRE": 1, "SPIRAL": 2},
@@ -9290,8 +9289,8 @@ def fbp_update_geometry_effect(
 
     if effect_id == FBP_EFFECT_GLASS:
         glass_material_properties = {
-            "fbp_glass_source", "fbp_glass_normal_image", "fbp_glass_distortion",
-            "fbp_glass_bevel", "fbp_glass_roughness", "fbp_glass_ior", "fbp_glass_tint",
+            "fbp_glass_use_glass",
+            "fbp_glass_roughness", "fbp_glass_ior", "fbp_glass_tint",
             "fbp_glass_source_color", "fbp_glass_edge_tint", "fbp_glass_absorption",
             "fbp_glass_thickness",
         }
@@ -19063,6 +19062,26 @@ def fbp_migrate_chroma_key_scene_rigs():
     return migrated
 
 
+def fbp_resync_geometry_effects():
+    """Push every layer's settings into its Geometry Nodes effect modifiers.
+
+    A swapped effect group keeps the modifier's saved socket values by socket
+    identifier, which no longer line up once the group interface changed.
+    """
+    synced = 0
+    for obj in tuple(getattr(bpy.data, "objects", ()) or ()):
+        for effect_id in FBP_GEOMETRY_EFFECT_ID_SET:
+            key = str(fbp_effect_definition(effect_id).get("enabled_key", "") or "")
+            try:
+                if not key or not obj.get(key, False):
+                    continue
+            except FBP_DATA_ERRORS:
+                break
+            if fbp_update_geometry_effect(obj, effect_id):
+                synced += 1
+    return synced
+
+
 def fbp_remove_effect(rig, effect_id, *, sync_items=True):
     effect_id = fbp_normalize_effect_id(effect_id)
     removed_gp_canvas = None
@@ -21577,10 +21596,9 @@ _FBP_EFFECT_UI_GROUPS = {
         ("Surface", "NORMALS_FACE", ("fbp_image_relief_alpha_threshold", "fbp_image_relief_shade_smooth")),
     ),
     FBP_EFFECT_GLASS: (
-        ("Quality", "MOD_SUBSURF", ("fbp_glass_subdivision", "fbp_glass_playback_subdivision", "fbp_glass_render_subdivision")),
-        ("Broken Geometry", "MOD_EXPLODE", ("fbp_glass_thickness", "fbp_glass_relief", "fbp_glass_crack_width", "fbp_glass_damage", "fbp_glass_bevel", "fbp_glass_alpha_threshold", "fbp_glass_shade_smooth")),
-        ("Fracture Field", "NODE_TEXTURE", ("fbp_glass_source", "fbp_glass_normal_image", "fbp_glass_noise_scale", "fbp_glass_correct_aspect", "fbp_glass_texture_scale_x", "fbp_glass_texture_scale_y", "fbp_glass_noise_detail", "fbp_glass_phase")),
-        ("Optics", "MATERIAL", ("fbp_glass_distortion", "fbp_glass_roughness", "fbp_glass_ior", "fbp_glass_tint", "fbp_glass_source_color", "fbp_glass_edge_tint", "fbp_glass_absorption")),
+        ("Shatter", "MOD_EXPLODE", ("fbp_glass_shatter", "fbp_glass_impact_x", "fbp_glass_impact_y", "fbp_glass_spread", "fbp_glass_gap", "fbp_glass_explode", "fbp_glass_depth", "fbp_glass_fall", "fbp_glass_spin")),
+        ("Pieces", "MOD_TRIANGULATE", ("fbp_glass_pattern", "fbp_glass_pieces", "fbp_glass_irregularity", "fbp_glass_phase", "fbp_glass_thickness", "fbp_glass_alpha_threshold")),
+        ("Glass", "MATERIAL", ("fbp_glass_use_glass", "fbp_glass_roughness", "fbp_glass_ior", "fbp_glass_tint", "fbp_glass_source_color", "fbp_glass_edge_tint", "fbp_glass_absorption")),
     ),
     FBP_EFFECT_CRYSTAL: (
         ("Quality", "MOD_SUBSURF", ("fbp_crystal_subdivision", "fbp_crystal_playback_subdivision", "fbp_crystal_render_subdivision", "fbp_crystal_silhouette_detail", "fbp_crystal_surface_subdivision")),
@@ -23347,83 +23365,49 @@ def fbp_draw_effect_settings(
             warning.alert = True
             warning.label(text="High paper mesh detail may slow viewport playback", icon="ERROR")
     elif effect_id == FBP_EFFECT_GLASS:
-        quality = _fbp_draw_native_foldout(
-            box, "fbp_glass_quality", "Quality", "MOD_SUBSURF",
+        # Shatter is the one slider that matters, so it leads, full width.
+        _fbp_draw_effect_property(box, rig, definition, "fbp_glass_shatter", labels)
+        shatter = _fbp_draw_native_foldout(
+            box, "fbp_glass_motion", "Break", "MOD_EXPLODE",
         )
-        if quality is not None:
-            _fbp_draw_quality_triplet(
-                quality, rig, title="Aspect Remesh", icon="MOD_SUBSURF",
-                viewport_prop="fbp_glass_subdivision",
-                playback_prop="fbp_glass_playback_subdivision",
-                render_prop="fbp_glass_render_subdivision", show_title=False,
-            )
-            toggles = quality.row(align=True)
-            toggles.label(text="Surface")
-            _fbp_draw_icon_toggle(
-                toggles, rig, "fbp_glass_shade_smooth",
-                icon_on="NORMALS_VERTEX", icon_off="NORMALS_FACE",
-            )
-
-        geometry = _fbp_draw_native_foldout(
-            box, "fbp_glass_geometry", "Broken Geometry", "MOD_EXPLODE",
-        )
-        if geometry is not None:
+        if shatter is not None:
             _fbp_draw_compact_effect_properties(
-                geometry, rig, definition,
-                ("fbp_glass_thickness", "fbp_glass_relief", "fbp_glass_crack_width", "fbp_glass_damage", "fbp_glass_bevel", "fbp_glass_alpha_threshold"),
+                shatter, rig, definition,
+                ("fbp_glass_impact_x", "fbp_glass_impact_y", "fbp_glass_spread", "fbp_glass_gap", "fbp_glass_explode", "fbp_glass_depth", "fbp_glass_fall", "fbp_glass_spin"),
                 labels,
             )
 
-        fracture = _fbp_draw_native_foldout(
-            box, "fbp_glass_fracture", "Fracture Field", "NODE_TEXTURE",
-            default_closed=True,
+        pieces = _fbp_draw_native_foldout(
+            box, "fbp_glass_pieces_panel", "Pieces", "MOD_TRIANGULATE",
         )
-        if fracture is not None:
-            options = fracture.row(align=True)
-            options.label(text="Mapping")
-            _fbp_draw_icon_toggle(
-                options, rig, "fbp_glass_correct_aspect",
-                icon_on="FULLSCREEN_ENTER", icon_off="FULLSCREEN_EXIT",
-            )
-            _fbp_draw_effect_property(
-                fracture, rig, definition, "fbp_glass_source", labels,
-            )
-            if str(getattr(rig, "fbp_glass_source", "PROCEDURAL") or "PROCEDURAL") == "NORMAL":
-                fracture.label(text="Damage Map", icon="IMAGE_DATA")
-                _fbp_draw_effect_image_slot(
-                    fracture, rig, FBP_EFFECT_GLASS, "fbp_glass_normal_image",
-                )
+        if pieces is not None:
+            pieces.row(align=True).prop(rig, "fbp_glass_pattern", expand=True)
             _fbp_draw_compact_effect_properties(
-                fracture, rig, definition,
-                ("fbp_glass_noise_scale", "fbp_glass_texture_scale_x", "fbp_glass_texture_scale_y", "fbp_glass_noise_detail", "fbp_glass_phase"),
+                pieces, rig, definition,
+                ("fbp_glass_pieces", "fbp_glass_irregularity", "fbp_glass_thickness", "fbp_glass_phase", "fbp_glass_alpha_threshold"),
                 labels,
             )
 
         optics = _fbp_draw_native_foldout(
-            box, "fbp_glass_optics", "Optics", "MATERIAL", default_closed=True,
+            box, "fbp_glass_optics", "Glass", "MATERIAL", default_closed=True,
         )
         if optics is not None:
+            _fbp_draw_effect_property(optics, rig, definition, "fbp_glass_use_glass", labels)
+            column = optics.column(align=False)
+            column.active = bool(getattr(rig, "fbp_glass_use_glass", False))
             _fbp_draw_compact_effect_properties(
-                optics, rig, definition,
-                ("fbp_glass_distortion", "fbp_glass_roughness", "fbp_glass_ior", "fbp_glass_source_color", "fbp_glass_tint", "fbp_glass_edge_tint", "fbp_glass_absorption"),
+                column, rig, definition,
+                ("fbp_glass_roughness", "fbp_glass_ior", "fbp_glass_source_color", "fbp_glass_tint", "fbp_glass_edge_tint", "fbp_glass_absorption"),
                 labels,
             )
-        scene = getattr(context, "scene", None) if context is not None else getattr(bpy.context, "scene", None)
-        if str(getattr(getattr(scene, "render", None), "engine", "") or "") != "CYCLES":
-            note = box.row(align=False)
-            note.label(text="Eevee transmission preview active · Cycles is more accurate", icon="INFO")
-        if str(getattr(rig, "fbp_glass_source", "PROCEDURAL") or "PROCEDURAL") == "NORMAL" and getattr(rig, "fbp_glass_normal_image", None) is None:
+            scene = getattr(context, "scene", None) if context is not None else getattr(bpy.context, "scene", None)
+            if column.active and str(getattr(getattr(scene, "render", None), "engine", "") or "") != "CYCLES":
+                note = optics.row(align=False)
+                note.label(text="Eevee transmission preview active · Cycles is more accurate", icon="INFO")
+        if int(getattr(rig, "fbp_glass_pieces", 0) or 0) >= 64:
             warning = box.row(align=False)
             warning.alert = True
-            warning.label(text="Choose a grayscale damage map", icon="IMAGE_DATA")
-        if int(getattr(rig, "fbp_glass_subdivision", 0) or 0) >= 6:
-            warning = box.row(align=False)
-            warning.alert = True
-            warning.label(text="High Broken Glass remesh detail may slow playback", icon="ERROR")
-        if float(getattr(rig, "fbp_glass_bevel", 0.0) or 0.0) > 1.0e-6:
-            warning = box.row(align=False)
-            warning.alert = True
-            warning.label(text="Mesh Bevel adds real topology; inspect very small shard corners", icon="ERROR")
+            warning.label(text="Many pieces may slow playback", icon="ERROR")
     elif effect_id == FBP_EFFECT_CRYSTAL:
         quality = _fbp_draw_native_foldout(
             box, "fbp_crystal_quality", "Quality & Silhouette", "MOD_SUBSURF",
@@ -28202,9 +28186,10 @@ FBP_BUILTIN_EFFECT_PRESETS = {
         "Neon Both": {"fbp_rim_mode": "BOTH", "fbp_rim_blend_mode": "ADD", "fbp_rim_width": 0.01, "fbp_rim_expand": 0.015, "fbp_rim_blur": 0.04, "fbp_rim_softness": 1.0, "fbp_rim_intensity": 1.2, "fbp_rim_color": (0.05, 0.65, 1.0, 1.0)},
     },
     FBP_EFFECT_GLASS: {
-        "Clean Cracks": {"fbp_glass_source": "PROCEDURAL", "fbp_glass_noise_scale": 6.0, "fbp_glass_crack_width": 0.025, "fbp_glass_damage": 0.75, "fbp_glass_relief": 0.008, "fbp_glass_noise_detail": 0.35, "fbp_glass_thickness": 0.018, "fbp_glass_distortion": 0.3, "fbp_glass_roughness": 0.04, "fbp_glass_ior": 1.45, "fbp_glass_tint": (0.9, 0.97, 1.0, 1.0)},
-        "Shattered": {"fbp_glass_source": "PROCEDURAL", "fbp_glass_noise_scale": 12.0, "fbp_glass_crack_width": 0.055, "fbp_glass_damage": 1.0, "fbp_glass_relief": 0.04, "fbp_glass_noise_detail": 0.9, "fbp_glass_thickness": 0.03, "fbp_glass_distortion": 1.4, "fbp_glass_roughness": 0.12, "fbp_glass_ior": 1.46, "fbp_glass_tint": (0.64, 0.86, 1.0, 1.0)},
-        "Frosted Shards": {"fbp_glass_source": "PROCEDURAL", "fbp_glass_noise_scale": 9.0, "fbp_glass_crack_width": 0.04, "fbp_glass_damage": 0.9, "fbp_glass_relief": 0.025, "fbp_glass_noise_detail": 0.75, "fbp_glass_thickness": 0.04, "fbp_glass_distortion": 2.0, "fbp_glass_roughness": 0.45, "fbp_glass_ior": 1.4, "fbp_glass_tint": (0.72, 0.88, 1.0, 1.0), "fbp_glass_absorption": 1.2},
+        "Cracked": {"fbp_glass_pattern": "IMPACT", "fbp_glass_shatter": 0.25, "fbp_glass_spread": 1.0, "fbp_glass_gap": 0.05, "fbp_glass_explode": 0.0, "fbp_glass_depth": 0.03, "fbp_glass_fall": 0.0, "fbp_glass_spin": 0.03},
+        "Shattered": {"fbp_glass_pattern": "IMPACT", "fbp_glass_shatter": 0.65, "fbp_glass_spread": 0.75, "fbp_glass_gap": 0.15, "fbp_glass_explode": 0.35, "fbp_glass_depth": 0.4, "fbp_glass_fall": 0.0, "fbp_glass_spin": 0.5},
+        "Falling Shards": {"fbp_glass_pattern": "SHARDS", "fbp_glass_shatter": 0.7, "fbp_glass_spread": 0.3, "fbp_glass_gap": 0.08, "fbp_glass_explode": 0.08, "fbp_glass_depth": 0.15, "fbp_glass_fall": 0.9, "fbp_glass_spin": 0.6},
+        "Glass Pane": {"fbp_glass_use_glass": True, "fbp_glass_pattern": "IMPACT", "fbp_glass_shatter": 0.35, "fbp_glass_thickness": 0.02, "fbp_glass_roughness": 0.04, "fbp_glass_ior": 1.45, "fbp_glass_source_color": 0.6, "fbp_glass_tint": (0.9, 0.97, 1.0, 1.0)},
     },
     FBP_EFFECT_CRYSTAL: {
         "Diamond Cave": {"fbp_crystal_texture_type": "VORONOI", "fbp_crystal_pattern_mode": "DIAMOND", "fbp_crystal_depth": 0.18, "fbp_crystal_roundness": 0.7, "fbp_crystal_blur_iterations": 10, "fbp_crystal_pattern_scale": 9.0, "fbp_crystal_pattern_detail": 7.0, "fbp_crystal_pattern_strength": 0.055, "fbp_crystal_roughness": 0.08, "fbp_crystal_ior": 1.47, "fbp_crystal_tint": (0.36, 0.78, 1.0, 1.0), "fbp_crystal_absorption": 0.9},
