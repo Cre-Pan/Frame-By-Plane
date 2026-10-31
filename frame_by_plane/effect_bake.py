@@ -10,6 +10,17 @@ and the original is hidden but otherwise left as it was.
 
 Geometry (mesh) effects are not baked: they are switched off while baking and
 stay live afterwards.
+
+Speed: each frame is one Cycles bake. The material is routed to
+``Mix(Transparent, Emission)`` and baked as a Combined pass that keeps only
+emission, so Cycles writes the colour and the alpha in the same pass (two
+Emit bakes used to be needed). Auto tiling is switched off while baking, so
+Cycles bakes the whole image as one tile instead of many 2048 px tiles.
+
+The Combined pass is premultiplied and scene linear, so it is baked into a
+float image and turned into straight sRGB before the PNG is written. Because
+the texture's Alpha stays connected while baking, Cycles also no longer
+premultiplies the source colour, which darkened soft edges in older bakes.
 """
 
 from __future__ import annotations
@@ -73,7 +84,11 @@ def _input_source(node, names):
 
 
 class _MaterialRouting:
-    """Temporarily route a material's final colour or alpha to an Emission."""
+    """Temporarily route a material to ``Mix(Transparent, Emission)``.
+
+    The Emission takes the final colour and the Mix factor the final alpha, so
+    one Combined bake (emission only) gives both straight colour and alpha.
+    """
 
     def __init__(self, material, target_image):
         from .materials import fbp_active_surface_chain
@@ -95,20 +110,22 @@ class _MaterialRouting:
                 self.alpha = (None, 1.0)
         nodes = self.tree.nodes
         self.emission = nodes.new("ShaderNodeEmission")
-        self.emission[_BAKE_NODE_TAG] = True
         self.emission.inputs["Strength"].default_value = 1.0
+        self.transparent = nodes.new("ShaderNodeBsdfTransparent")
+        self.transparent.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        self.mix = nodes.new("ShaderNodeMixShader")
         self.target = nodes.new("ShaderNodeTexImage")
-        self.target[_BAKE_NODE_TAG] = True
         self.target.image = target_image
+        self._nodes = (self.emission, self.transparent, self.mix, self.target)
+        for node in self._nodes:
+            node[_BAKE_NODE_TAG] = True
         self.previous_active = nodes.active
         nodes.active = self.target
 
-    def route(self, kind):
+    def route(self):
         links = self.tree.links
+        source, default = self.color
         color_input = self.emission.inputs["Color"]
-        while color_input.links:
-            links.remove(color_input.links[0])
-        source, default = self.color if kind == "COLOR" else self.alpha
         if source is not None:
             links.new(source, color_input)
         elif default is not None:
@@ -117,11 +134,18 @@ class _MaterialRouting:
             except TypeError:
                 values = (float(default),) * 3
             color_input.default_value = (*values[:3], 1.0) if len(values) >= 3 else (values[0],) * 3 + (1.0,)
-        links.new(self.emission.outputs["Emission"], self.surface)
-
-    def set_image(self, image):
-        self.target.image = image
-        self.tree.nodes.active = self.target
+        source, default = self.alpha
+        factor = self.mix.inputs[0]
+        if source is not None:
+            links.new(source, factor)
+        else:
+            try:
+                factor.default_value = float(default if default is not None else 1.0)
+            except (TypeError, ValueError):
+                factor.default_value = 1.0
+        links.new(self.transparent.outputs[0], self.mix.inputs[1])
+        links.new(self.emission.outputs["Emission"], self.mix.inputs[2])
+        links.new(self.mix.outputs[0], self.surface)
 
     def restore(self):
         links = self.tree.links
@@ -132,7 +156,7 @@ class _MaterialRouting:
                 links.new(self.original, self.surface)
         except FBP_DATA_ERRORS as exc:
             fbp_warn("Could not restore the material after Apply Effects", exc)
-        for node in (self.emission, self.target):
+        for node in self._nodes:
             try:
                 self.tree.nodes.remove(node)
             except FBP_DATA_ERRORS:
@@ -296,6 +320,27 @@ def _new_image(name, width, height, colorspace):
     return image
 
 
+def _straight_srgb(pixels):
+    """Premultiplied scene-linear RGBA (flat float32) to straight sRGB, in place."""
+    import numpy
+
+    rgba = pixels.reshape(-1, 4)
+    alpha = rgba[:, 3]
+    rgb = rgba[:, :3]
+    covered = alpha > 1e-6
+    rgb[covered] /= alpha[covered, None]
+    rgb[~covered] = 0.0
+    numpy.clip(rgb, 0.0, 1.0, out=rgb)
+    low = rgb <= 0.0031308
+    encoded = numpy.power(rgb, 1.0 / 2.4, dtype=numpy.float32)
+    encoded *= 1.055
+    encoded -= 0.055
+    encoded[low] = rgb[low] * 12.92
+    rgb[...] = encoded
+    numpy.clip(alpha, 0.0, 1.0, out=alpha)
+    return pixels
+
+
 def _bake_frames(context, rig, plane, materials, width, height, frame_list, directory, prefix):
     import numpy
 
@@ -310,24 +355,23 @@ def _bake_frames(context, rig, plane, materials, width, height, frame_list, dire
         "use_selected_to_active": bake.use_selected_to_active,
         "target": bake.target,
     }
+    frame_changed = False
     cycles = getattr(scene, "cycles", None)
     saved_cycles = {}
     modifiers = [(modifier, bool(modifier.show_render)) for modifier in _geometry_effect_modifiers(rig)]
-    color_image = _new_image("FBP Bake Color", width, height, "sRGB")
-    alpha_image = _new_image("FBP Bake Alpha", width, height, "Non-Color")
+    bake_image = bpy.data.images.new("FBP Bake Linear", width, height, alpha=True, float_buffer=True)
     output_image = _new_image("FBP Bake Output", width, height, "sRGB")
+    pixels = numpy.empty(width * height * 4, dtype=numpy.float32)
     routings = []
     files = []
-    pixel_count = width * height * 4
-    blank = numpy.zeros(pixel_count, dtype=numpy.float32)
-    color_pixels = numpy.empty(pixel_count, dtype=numpy.float32)
-    alpha_pixels = numpy.empty(pixel_count, dtype=numpy.float32)
     window_manager = context.window_manager
     try:
         render.engine = "CYCLES"
         cycles = getattr(scene, "cycles", None)
         if cycles is not None:
-            for key, value in (("samples", 1), ("use_denoising", False)):
+            # One whole-image tile: Cycles' default 2048 px auto tiles make a
+            # large bake about 1.5x slower and a bake needs no tiling memory.
+            for key, value in (("samples", 1), ("use_denoising", False), ("use_auto_tile", False)):
                 if hasattr(cycles, key):
                     saved_cycles[key] = getattr(cycles, key)
                     setattr(cycles, key, value)
@@ -337,7 +381,12 @@ def _bake_frames(context, rig, plane, materials, width, height, frame_list, dire
         bake.target = "IMAGE_TEXTURES"
         for modifier, _shown in modifiers:
             modifier.show_render = False
-        routings = [_MaterialRouting(material, color_image) for material in materials]
+        routings = [_MaterialRouting(material, bake_image) for material in materials]
+        for routing in routings:
+            routing.route()
+        # Pixels outside the UVs keep this, so it is cleared once, not per frame.
+        pixels.fill(0.0)
+        bake_image.pixels.foreach_set(pixels)
         override = {
             "object": plane,
             "active_object": plane,
@@ -346,20 +395,19 @@ def _bake_frames(context, rig, plane, materials, width, height, frame_list, dire
         }
         window_manager.progress_begin(0, len(frame_list))
         for index, frame in enumerate(frame_list, start=1):
-            scene.frame_set(frame)
-            for image, kind in ((color_image, "COLOR"), (alpha_image, "ALPHA")):
-                image.pixels.foreach_set(blank)
-                for routing in routings:
-                    routing.set_image(image)
-                    routing.route(kind)
-                with context.temp_override(**override):
-                    result = bpy.ops.object.bake(type="EMIT", margin=0, use_clear=False, target="IMAGE_TEXTURES")
-                if "FINISHED" not in result:
-                    raise RuntimeError("Cycles did not bake the frame")
-            color_image.pixels.foreach_get(color_pixels)
-            alpha_image.pixels.foreach_get(alpha_pixels)
-            color_pixels[3::4] = alpha_pixels[0::4]
-            output_image.pixels.foreach_set(color_pixels)
+            if frame != int(scene.frame_current):
+                scene.frame_set(frame)
+                frame_changed = True
+            # Combined with only emission: straight colour plus alpha (from
+            # the Transparent mix) in one pass.
+            with context.temp_override(**override):
+                result = bpy.ops.object.bake(
+                    type="COMBINED", pass_filter={"EMIT"}, margin=0, use_clear=False, target="IMAGE_TEXTURES",
+                )
+            if "FINISHED" not in result:
+                raise RuntimeError("Cycles did not bake the frame")
+            bake_image.pixels.foreach_get(pixels)
+            output_image.pixels.foreach_set(_straight_srgb(pixels))
             filename = f"{prefix}{index:04d}.png"
             output_image.filepath_raw = os.path.join(directory, filename)
             output_image.file_format = "PNG"
@@ -378,7 +426,7 @@ def _bake_frames(context, rig, plane, materials, width, height, frame_list, dire
                 modifier.show_render = shown
             except FBP_DATA_ERRORS:
                 pass
-        for image in (color_image, alpha_image, output_image):
+        for image in (bake_image, output_image):
             try:
                 bpy.data.images.remove(image)
             except FBP_DATA_ERRORS:
@@ -391,7 +439,8 @@ def _bake_frames(context, rig, plane, materials, width, height, frame_list, dire
             bake.use_selected_to_active = saved["use_selected_to_active"]
             bake.target = saved["target"]
             render.engine = saved["engine"]
-            scene.frame_set(saved["frame"])
+            if frame_changed:
+                scene.frame_set(saved["frame"])
         except FBP_DATA_ERRORS as exc:
             fbp_warn("Could not restore render settings after Apply Effects", exc)
     return files

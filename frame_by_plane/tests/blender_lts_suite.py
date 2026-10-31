@@ -3512,6 +3512,48 @@ def test_effect_bake_cycles(_module):
     return {"pixel": [round(value, 3) for value in pixel]}
 
 
+def test_effect_bake_straight_alpha(_module):
+    """One Combined bake keeps the colour of half-transparent pixels straight.
+
+    Two Emit bakes left the texture's Alpha unconnected, so Cycles baked a
+    premultiplied colour and soft edges came out darker.
+    """
+    _skip_unless_cycles_render()
+    bake = importlib.import_module(f"{PACKAGE}.effect_bake")
+    rig = _effect_stack_fixture_rig("FBP Effect Bake Straight Alpha", alpha=0.5)
+    owned = [rig, *rig.children_recursive]
+    try:
+        plane = rig.fbp_plane_target
+        materials = bake._plane_materials(plane)
+        width, height = bake._source_size(materials)
+        output = WORKDIR / "fbp_effect_bake_straight"
+        output.mkdir(exist_ok=True)
+        files = bake._bake_frames(
+            bpy.context, rig, plane, materials, width, height,
+            [int(bpy.context.scene.frame_current)], str(output), "bake_",
+        )
+        assert not any(
+            node.get(bake._BAKE_NODE_TAG) for material in materials for node in material.node_tree.nodes
+        ), "temporary bake nodes must be removed"
+        image = bpy.data.images.load(str(output / files[0]), check_existing=False)
+        try:
+            index = (8 * 16 + 8) * 4
+            pixel = tuple(image.pixels[index:index + 4])
+        finally:
+            bpy.data.images.remove(image)
+        # The fixture is (0.2, 0.4, 0.8) at 50% alpha.
+        assert abs(pixel[3] - 0.5) < 0.02, pixel
+        for value, expected in zip(pixel[:3], (0.2, 0.4, 0.8)):
+            assert abs(value - expected) < 0.02, pixel
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"pixel": [round(value, 3) for value in pixel]}
+
+
 def test_effect_bake_switch_off(_module):
     """After Apply Effects the image effects are switched off, not removed."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -5728,6 +5770,7 @@ def run_background():
             ("remesh_effects_keep_image_material", test_remesh_effects_keep_image_material),
             ("effect_global_mask_hide_cycles", test_effect_global_mask_hide_cycles),
             ("effect_bake_cycles", test_effect_bake_cycles),
+            ("effect_bake_straight_alpha", test_effect_bake_straight_alpha),
             ("effect_bake_switch_off", test_effect_bake_switch_off),
             ("effect_family_variant_keeps_position", test_effect_family_variant_keeps_position),
             ("effect_duplicate_placement", test_effect_duplicate_placement),
