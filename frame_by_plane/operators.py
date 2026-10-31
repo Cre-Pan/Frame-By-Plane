@@ -155,6 +155,7 @@ from .operator_render import (
 from .operator_procedural import (
     FBP_OT_CreateColorPlane,
     FBP_OT_ResetCrop,
+    FBP_OT_CropAlpha,
     FBP_OT_ResetExtend,
     FBP_OT_FocusCropExtend,
     FBP_OT_PopupCrop,
@@ -352,6 +353,7 @@ classes = (
     FBP_OT_BackgroundRenderStatus,
     FBP_OT_CreateColorPlane,
     FBP_OT_ResetCrop,
+    FBP_OT_CropAlpha,
     FBP_OT_ResetExtend,
     FBP_OT_FocusCropExtend,
     FBP_OT_PopupCrop,

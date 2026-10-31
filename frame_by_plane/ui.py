@@ -4690,7 +4690,12 @@ class FBP_OT_RigShapePopup(Operator):
             layout.label(text="Layer no longer exists", icon='ERROR')
             return
         layout.prop(rig, "fbp_rig_shape", text="Shape")
-        layout.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
+        if str(getattr(rig, "fbp_rig_shape", "DEFAULT")) == 'ALPHA':
+            row = layout.row(align=True)
+            row.prop(rig, "fbp_rig_shape_alpha_style", expand=True)
+            layout.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
+        else:
+            layout.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
         layout.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
         if str(getattr(rig, "fbp_rig_shape", "DEFAULT")) == 'CUSTOM':
             edit = layout.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')

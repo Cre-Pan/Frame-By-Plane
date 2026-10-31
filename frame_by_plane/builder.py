@@ -188,6 +188,187 @@ def fbp_rig_shape_margin(rig):
         expand = 1.0
     return 0.05 * expand
 
+def _fbp_plane_to_rig_matrix(rig, plane):
+    """Return the plane-local to rig-local matrix, or None when it is identity.
+
+    The rig wire lives in rig-local space while Crop/Extend write plane-local
+    vertices. They only coincide while the plane sits at the rig origin. After
+    Blender's Set Origin (or any edit that offsets the child plane) the two
+    spaces differ, so the wire must be mapped through the parent relation.
+    The relation is read from ``matrix_parent_inverse @ matrix_basis`` instead
+    of ``matrix_world`` because world matrices can still be stale while a layer
+    is being rebuilt.
+    """
+    if rig is None or plane is None:
+        return None
+    try:
+        if getattr(plane, "parent", None) == rig:
+            relation = plane.matrix_parent_inverse @ plane.matrix_basis
+        else:
+            relation = rig.matrix_world.inverted_safe() @ plane.matrix_world
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+    try:
+        identity = mathutils.Matrix.Identity(4)
+        if all(
+            abs(float(relation[row][col]) - float(identity[row][col])) <= 1.0e-9
+            for row in range(4) for col in range(4)
+        ):
+            return None
+    except (IndexError, TypeError, ValueError):
+        return None
+    return relation
+
+
+def fbp_plane_bounds_in_rig_space(rig, min_x, max_x, min_y, max_y, plane=None):
+    """Map plane-local XY bounds to the rig-local XY bounds of the wire."""
+    if plane is None:
+        plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    bounds = (float(min_x), float(max_x), float(min_y), float(max_y))
+    relation = _fbp_plane_to_rig_matrix(rig, plane)
+    if relation is None:
+        return bounds
+    try:
+        corners = [
+            relation @ mathutils.Vector((x, y, 0.0))
+            for x in (bounds[0], bounds[1])
+            for y in (bounds[2], bounds[3])
+        ]
+    except (AttributeError, TypeError, ValueError):
+        return bounds
+    xs = [float(corner.x) for corner in corners]
+    ys = [float(corner.y) for corner in corners]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _fbp_plane_depth_in_rig_space(rig, x=0.0, y=0.0):
+    """Rig-local Z of the plane surface, so the wire sits on the image."""
+    relation = _fbp_plane_to_rig_matrix(rig, getattr(rig, "fbp_plane_target", None) if rig else None)
+    if relation is None:
+        return 0.0
+    try:
+        return float((relation @ mathutils.Vector((float(x), float(y), 0.0))).z)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def _fbp_wire_at_depth(verts, depth):
+    if abs(float(depth)) <= 1.0e-9:
+        return verts
+    return [(x, y, float(depth)) for x, y, _z in verts]
+
+
+def _fbp_plane_mesh_bounds_in_rig_space(rig):
+    plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    vertices = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
+    if not vertices:
+        return None
+    xs = [float(vertex.co.x) for vertex in vertices]
+    ys = [float(vertex.co.y) for vertex in vertices]
+    return fbp_plane_bounds_in_rig_space(rig, min(xs), max(xs), min(ys), max(ys), plane=plane)
+
+
+_FBP_IMAGE_ALPHA_CACHE = globals().get("_FBP_IMAGE_ALPHA_CACHE", {})
+if not isinstance(_FBP_IMAGE_ALPHA_CACHE, dict):
+    _FBP_IMAGE_ALPHA_CACHE = {}
+
+
+def _fbp_plane_source_image(rig):
+    plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    for mat in tuple(getattr(getattr(plane, "data", None), "materials", ()) or ()):
+        tree = getattr(mat, "node_tree", None) if mat else None
+        for node in tuple(getattr(tree, "nodes", ()) or ()):
+            if getattr(node, "type", None) == 'TEX_IMAGE' and getattr(node, "image", None):
+                return node.image
+    return None
+
+
+def fbp_rig_alpha_union(rig):
+    """Return the visible-alpha union of a layer's source, or ``None``.
+
+    Files on disk are read through Pillow (the union of every sequence frame,
+    so the outline and Crop Alpha cover the whole animation). Packed or
+    generated images fall back to the Blender pixel buffer.
+    """
+    from . import rig_alpha_shape as alpha_shape
+
+    paths = []
+    try:
+        from .native_backend import fbp_native_source_sequence_from_rig
+        directory, files = fbp_native_source_sequence_from_rig(rig)
+        for name in files or ():
+            name = str(name or "")
+            if name:
+                paths.append(name if os.path.isabs(name) else os.path.join(str(directory or ""), name))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        paths = []
+    if paths:
+        try:
+            union = alpha_shape.alpha_union_from_paths(paths)
+            if union is not None:
+                return union
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _fbp_warn("Could not read source alpha", exc)
+
+    image = _fbp_plane_source_image(rig)
+    if image is None:
+        return None
+    try:
+        filepath = bpy.path.abspath(str(getattr(image, "filepath", "") or ""))
+        source = str(getattr(image, "source", "FILE") or "FILE")
+        if source == 'FILE' and filepath and os.path.isfile(filepath) and not getattr(image, "packed_file", None):
+            union = alpha_shape.alpha_union_from_paths((filepath,))
+            if union is not None:
+                return union
+        if source not in {'FILE', 'GENERATED'}:
+            return None
+        width, height = (int(value) for value in image.size)
+        if width <= 0 or height <= 0:
+            return None
+        key = (str(image.name_full), width, height, filepath, bool(getattr(image, "is_dirty", False)))
+        cached = _FBP_IMAGE_ALPHA_CACHE.get(str(image.name_full))
+        if cached is not None and cached[0] == key and not key[-1]:
+            return cached[1]
+        import numpy as np
+        pixels = np.empty(width * height * 4, dtype=np.float32)
+        image.pixels.foreach_get(pixels)
+        union = alpha_shape.alpha_union_from_rgba(pixels, width, height)
+        if len(_FBP_IMAGE_ALPHA_CACHE) > 16:
+            _FBP_IMAGE_ALPHA_CACHE.clear()
+        _FBP_IMAGE_ALPHA_CACHE[str(image.name_full)] = (key, union)
+        return union
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        _fbp_warn("Could not read image alpha", exc)
+        return None
+
+
+def _fbp_alpha_rig_geometry(rig, margin):
+    """Rig-space wire geometry outlining the visible alpha, or ``None``."""
+    union = fbp_rig_alpha_union(rig)
+    if union is None:
+        return None
+    from . import rig_alpha_shape as alpha_shape
+    try:
+        _source, cropped, _extended, uv = fbp_plane_reference_bounds(rig)
+        style = str(getattr(rig, "fbp_rig_shape_alpha_style", "PIXEL") or "PIXEL").upper()
+        cells = int(getattr(rig, "fbp_rig_shape_alpha_detail", alpha_shape.FBP_ALPHA_OUTLINE_CELLS) or 64)
+        outline = alpha_shape.outline_for_union(
+            union, uv, cropped, style=style, margin=margin, cells=cells,
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        _fbp_warn("Could not build alpha rig outline", exc)
+        return None
+    if outline is None:
+        return None
+    points, edges = outline
+    relation = _fbp_plane_to_rig_matrix(rig, getattr(rig, "fbp_plane_target", None))
+    if relation is None:
+        verts = [(float(x), float(y), 0.0) for x, y in points]
+    else:
+        verts = [tuple(relation @ mathutils.Vector((x, y, 0.0))) for x, y in points]
+    return verts, edges
+
+
 def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
     """Replace only the control-rig wire mesh, preserving plane/media/effects."""
     if rig is None or not bool(getattr(rig, "is_fbp_control", False)):
@@ -207,17 +388,18 @@ def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
         half_extents = None
         center = (0.0, 0.0)
         margin = fbp_rig_shape_margin(rig)
-        if fit_mode == "FIT_PLANE" or shape == "DEFAULT":
-            plane = getattr(rig, "fbp_plane_target", None)
-            coords = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
-            if coords:
-                xs = [float(vertex.co.x) for vertex in coords]
-                ys = [float(vertex.co.y) for vertex in coords]
+        bounds = _fbp_plane_mesh_bounds_in_rig_space(rig)
+        if bounds is not None:
+            min_x, max_x, min_y, max_y = bounds
+            # Both fit modes follow the visible (cropped) plane, so a cropped
+            # layer or a moved origin never leaves the wire off the image.
+            center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
+        if fit_mode == "FIT_PLANE" or shape in {"DEFAULT", "ALPHA"}:
+            if bounds is not None:
                 half_extents = (
-                    max(0.0001, (max(xs) - min(xs)) * 0.5 + margin),
-                    max(0.0001, (max(ys) - min(ys)) * 0.5 + margin),
+                    max(0.0001, (max_x - min_x) * 0.5 + margin),
+                    max(0.0001, (max_y - min_y) * 0.5 + margin),
                 )
-                center = ((max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5)
             else:
                 aspect_x, aspect_y = fbp_native_aspect_half_extents(rig)
                 half_extents = (
@@ -225,7 +407,12 @@ def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
                     max(0.0001, aspect_y + margin),
                 )
         shape_size = max(0.0002, 2.0 + margin * 2.0)
-        verts, edges = _fbp_rig_shape_geometry(shape, size=shape_size, half_extents=half_extents, center=center)
+        alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == "ALPHA" else None
+        if alpha_geometry is not None:
+            verts, edges = alpha_geometry
+        else:
+            verts, edges = _fbp_rig_shape_geometry(shape, size=shape_size, half_extents=half_extents, center=center)
+            verts = _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig))
         mesh.clear_geometry()
         mesh.from_pydata(verts, edges, [])
         mesh.update()
@@ -399,20 +586,26 @@ def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=
         if shape == 'CUSTOM':
             return True
         margin = fbp_rig_shape_margin(rig) if margin is None else max(0.0, float(margin))
+        # Callers pass plane-local bounds; the wire lives in rig-local space.
+        min_x, max_x, min_y, max_y = fbp_plane_bounds_in_rig_space(rig, min_x, max_x, min_y, max_y)
         min_x, max_x = float(min_x) - margin, float(max_x) + margin
         min_y, max_y = float(min_y) - margin, float(max_y) + margin
         mesh = rig.data
         mesh.clear_geometry()
         fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
         half_extents = None
-        center = (0.0, 0.0)
-        if fit_mode == 'FIT_PLANE' or shape == 'DEFAULT':
+        center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
+        if fit_mode == 'FIT_PLANE' or shape in {'DEFAULT', 'ALPHA'}:
             half_extents = ((max_x - min_x) * 0.5, (max_y - min_y) * 0.5)
-            center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
         shape_size = max(0.0002, 2.0 + margin * 2.0)
-        verts, edges = _fbp_rig_shape_geometry(
-            shape, size=shape_size, half_extents=half_extents, center=center
-        )
+        alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == 'ALPHA' else None
+        if alpha_geometry is not None:
+            verts, edges = alpha_geometry
+        else:
+            verts, edges = _fbp_rig_shape_geometry(
+                shape, size=shape_size, half_extents=half_extents, center=center
+            )
+            verts = _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig))
         mesh.from_pydata(verts, edges, [])
         mesh.update()
         return True

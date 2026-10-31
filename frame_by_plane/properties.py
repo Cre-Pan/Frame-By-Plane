@@ -340,6 +340,12 @@ RIG_SHAPE_ITEMS = [
     ('HEXAGON', "Hexagon", "Six-sided control", fbp_icon("MESH_GRID"), 4),
     ('OCTAGON', "Octagon", "Eight-sided control", fbp_icon("MESH_CIRCLE"), 5),
     ('CUSTOM', "Custom", "Edit and keep the control-rig mesh itself", fbp_icon("TOOL_SETTINGS"), 6),
+    ('ALPHA', "Alpha Outline", "Follow the visible pixels of the image instead of its rectangle", fbp_icon("IMAGE_ALPHA"), 7),
+]
+
+RIG_SHAPE_ALPHA_STYLE_ITEMS = [
+    ('PIXEL', "Pixel", "Stepped outline along the image pixels", fbp_icon("ALIASED"), 0),
+    ('SMOOTH', "Smooth", "Rounded, curve-like outline around the image", fbp_icon("ANTIALIASED"), 1),
 ]
 
 
@@ -5076,6 +5082,19 @@ def register_properties():
             ('PERFECT', "Perfect Shape", "Preserve a square, circle or regular polygon", fbp_icon("MESH_CIRCLE"), 1),
         ),
         default='FIT_PLANE',
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_shape_alpha_style = EnumProperty(
+        name="Outline",
+        description="How the Alpha Outline controller follows the visible pixels",
+        items=RIG_SHAPE_ALPHA_STYLE_ITEMS,
+        default='PIXEL',
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_shape_alpha_detail = IntProperty(
+        name="Detail",
+        description="Outline resolution across the long side of the visible image; higher values follow small details more closely",
+        default=64, min=8, max=256, soft_min=16, soft_max=128,
         update=update_rig_shape_cb,
     )
     _FBP_OBJECT_RNA.fbp_sequence_show_frames = BoolProperty(

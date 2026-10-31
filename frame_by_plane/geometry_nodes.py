@@ -23339,6 +23339,9 @@ def fbp_draw_effect_settings(
     if effect_id == FBP_EFFECT_CROP:
         _fbp_draw_effect_section(box, "Crop Edges", "FULLSCREEN_EXIT")
         _fbp_draw_edge_box(box, rig, "fbp_crop")
+        crop_actions = box.row(align=True)
+        crop_actions.operator("fbp.crop_alpha", text="Crop Alpha", icon="IMAGE_ALPHA")
+        crop_actions.operator("fbp.reset_crop", text="Reset", icon=ui_icon("action.reset"))
         hint_row(
             box,
             "Crop trims the visible source without changing the layer transform.",
