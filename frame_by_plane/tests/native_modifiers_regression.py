@@ -143,10 +143,34 @@ def test_modifier_add_menu():
         native.draw_modifier_add_mesh(Owner, bpy.context)
         entry = [call for call in Owner.layout.calls if call[0] == "menu"]
         assert entry and entry[0][2]["icon"] == "MESH_MONKEY" and entry[0][2]["text"] == "Mesh"
-        Owner.layout = StubLayout()
-        native.FBP_MT_ModifierAddMesh.draw(Owner, bpy.context)
-        labels = [call[2].get("text") for call in Owner.layout.calls if call[0] == "operator"]
+        assert [(call[2]["text"], call[2]["icon"]) for call in entry] == [
+            ("Mesh", "MESH_MONKEY"), ("Image", "IMAGE_DATA"), ("Mask", "MOD_MASK"),
+        ], entry
+        def drawn(menu):
+            Owner.layout = StubLayout()
+            menu.draw(Owner, bpy.context)
+            calls = Owner.layout.calls
+            ops = [call for call in calls if call[0] == "operator"]
+            headers = [call[2].get("text") for call in calls if call[0] == "label"]
+            return calls, ops, headers
+
+        # Classic divided columns: titled sections, FBP artwork icons.
+        calls, ops, headers = drawn(native.FBP_MT_ModifierAddMask)
+        labels = [call[2].get("text") for call in ops]
+        assert sorted(labels) == ["Circle Mask", "Gradient Mask", "Square Mask"], labels
+        mask_titles = [section[0] for section in geo.FBP_MASK_EFFECT_MENU_SECTIONS]
+        assert headers and all(title in mask_titles for title in headers), headers
+        assert all("icon_value" in call[2] or "icon" in call[2] for call in ops)
+        calls, ops, headers = drawn(native.FBP_MT_ModifierAddImage)
+        labels = [call[2].get("text") for call in ops]
+        assert len(labels) == 3 and "Vignette" in labels and "Posterize" in labels, labels
+        assert all(call[1][0] == "fbp.add_effect_modifier" for call in ops), ops
+        image_titles = [section[0] for section in geo.FBP_IMAGE_EFFECT_MENU_SECTIONS]
+        assert headers and all(title in image_titles for title in headers), headers
+        calls, ops, headers = drawn(native.FBP_MT_ModifierAddMesh)
+        labels = [call[2].get("text") for call in ops]
         assert "Mesh Wiggle" in labels and "Paper Shards" in labels, labels
+        assert "Camera & Layout" in headers and "New User Effect" not in labels, (headers, labels)
         Owner.layout = StubLayout()
         geo.FBP_MT_AddEffect.draw(Owner, bpy.context)
         menus = [call[2].get("text") for call in Owner.layout.calls if call[0] == "menu"]
@@ -175,6 +199,25 @@ def test_mask_panel():
         assert any(call[0] == "panel" for call in layout.calls)
         report = geo.fbp_local_effect_mask_contract_report(rig)
         assert not report["issues"], report
+    finally:
+        _remove(rig)
+
+
+def test_toggle_foldouts():
+    geo, _native, _shells = _modules()
+    rig = _rig("FBP Native Toggle Foldouts")
+    try:
+        _add(geo, rig, "ASCII", "MESH_WIGGLE")
+        layout = StubLayout()
+        geo.fbp_draw_effect_settings(layout, rig, "ASCII", selected_count=1)
+        panels = [call[1][0] for call in layout.calls if call[0] == "panel"]
+        assert "fbp_effect_ascii_edges" in panels, panels
+        toggles = {call[1][1] for call in layout.calls if call[0] == "prop" and call[2].get("text") == ""}
+        assert "fbp_terminal_ascii_use_edges" in toggles, toggles
+        layout = StubLayout()
+        geo.fbp_draw_effect_settings(layout, rig, "MESH_WIGGLE", selected_count=1)
+        panels = [call[1][0] for call in layout.calls if call[0] == "panel"]
+        assert "fbp_effect_animation" in panels, panels
     finally:
         _remove(rig)
 
@@ -210,6 +253,34 @@ def _render_setup(name):
 
 def _difference(first, second):
     return max(abs(a - b) for a, b in zip(first, second))
+
+
+def test_add_image_modifier():
+    geo, native, shells = _modules()
+    scene = bpy.context.scene
+    registered = hasattr(bpy.types, "FBP_OT_add_effect_modifier") or "add_effect_modifier" in dir(bpy.ops.fbp)
+    if not registered:
+        bpy.utils.register_class(native.FBP_OT_AddEffectModifier)
+    rig = _rig("FBP Native Add Image")
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        scene.fbp_preview_native_effect_shells = True
+        assert bpy.ops.fbp.add_effect_modifier(effect_id="VIGNETTE") == {"FINISHED"}
+        assert geo.fbp_effect_is_active(rig, "VIGNETTE")
+        assert [shells.fbp_shell_token(mod) for mod in shells.fbp_shell_modifiers(rig)], "Vignette must land as a modifier"
+        scene.fbp_preview_native_effect_shells = False
+        assert bpy.ops.fbp.add_effect_modifier(effect_id="POSTERIZE") == {"FINISHED"}
+        assert geo.fbp_effect_is_active(rig, "POSTERIZE")
+        assert scene.fbp_preview_native_effect_shells, "adding from Add Modifier opts into the preview"
+        assert len(shells.fbp_shell_modifiers(rig)) == 2
+    finally:
+        scene.fbp_preview_native_effect_shells = False
+        _remove(rig)
+        if not registered:
+            bpy.utils.unregister_class(native.FBP_OT_AddEffectModifier)
 
 
 def test_effect_shells():
@@ -318,7 +389,10 @@ def test_effect_shells():
             pass
 
 
-TESTS = (test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_effect_shells)
+TESTS = (
+    test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
+    test_add_image_modifier, test_effect_shells,
+)
 
 failed = []
 try:

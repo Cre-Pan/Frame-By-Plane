@@ -22123,6 +22123,25 @@ def _fbp_draw_native_foldout(layout, panel_id, title, icon="OPTIONS", *, default
         return layout.column(align=False)
 
 
+def _fbp_draw_toggle_foldout(layout, panel_id, owner, prop_name, title, *, default_closed=True):
+    """Return the body of a modifier-style foldout: arrow, checkbox, name.
+
+    The checkbox in the header drives ``prop_name``; the body stays drawable
+    while off but is greyed out, like Blender's own optional subpanels.
+    """
+    enabled = bool(getattr(owner, prop_name, False)) if owner is not None else False
+    try:
+        header, body = layout.panel(str(panel_id), default_closed=bool(default_closed))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        header, body = layout.row(align=True), layout.column(align=False)
+    if owner is not None and hasattr(owner, prop_name):
+        header.prop(owner, prop_name, text="")
+    header.label(text=str(title or "Settings"))
+    if body is not None:
+        body.active = enabled
+    return body
+
+
 def _fbp_draw_icon_toggle(layout, rig, prop_name, *, icon_on, icon_off=None):
     if not hasattr(rig, prop_name):
         return False
@@ -24749,23 +24768,23 @@ def fbp_draw_effect_settings(
             labels,
         )
 
-        _fbp_draw_effect_section(box, "Edges", "MOD_EDGESPLIT", separator=True)
-        _fbp_draw_effect_property(
-            box, rig, definition, "fbp_terminal_ascii_use_edges", labels
+        section_gap(box)
+        edge_box = _fbp_draw_toggle_foldout(
+            box, "fbp_effect_ascii_edges", rig, "fbp_terminal_ascii_use_edges",
+            "Edges", default_closed=False,
         )
-        edge_box = box.column(align=False)
-        edge_box.enabled = bool(getattr(rig, "fbp_terminal_ascii_use_edges", True))
-        _fbp_draw_compact_effect_properties(
-            edge_box,
-            rig,
-            definition,
-            (
-                "fbp_terminal_ascii_edge_strength",
-                "fbp_terminal_ascii_edge_threshold",
-                "fbp_terminal_ascii_edge_mix",
-            ),
-            labels,
-        )
+        if edge_box is not None:
+            _fbp_draw_compact_effect_properties(
+                edge_box,
+                rig,
+                definition,
+                (
+                    "fbp_terminal_ascii_edge_strength",
+                    "fbp_terminal_ascii_edge_threshold",
+                    "fbp_terminal_ascii_edge_mix",
+                ),
+                labels,
+            )
 
         _fbp_draw_effect_section(box, "Color", "COLOR", separator=True)
         _fbp_draw_toggle_strip(
@@ -24819,19 +24838,15 @@ def fbp_draw_effect_settings(
         viewport.prop(rig, "fbp_text_matrix_viewport_columns", text="Columns", slider=True)
         viewport.prop(rig, "fbp_text_matrix_viewport_rows", text="Rows", slider=True)
 
-        playback_toggle = box.row(align=True)
-        playback_toggle.prop(
-            rig,
-            "fbp_text_matrix_auto_playback_limit",
-            text="Playback Limit",
-            toggle=True,
-            icon="PLAY",
+        playback_body = _fbp_draw_toggle_foldout(
+            box, "fbp_effect_text_matrix_playback", rig,
+            "fbp_text_matrix_auto_playback_limit", "Playback Limit",
         )
-        playback_grid = box.row(align=True)
-        playback_grid.enabled = bool(getattr(rig, "fbp_text_matrix_auto_playback_limit", True))
-        playback_grid.label(text="Play", icon="PLAY")
-        playback_grid.prop(rig, "fbp_text_matrix_playback_columns", text="Columns", slider=True)
-        playback_grid.prop(rig, "fbp_text_matrix_playback_rows", text="Rows", slider=True)
+        if playback_body is not None:
+            playback_grid = playback_body.row(align=True)
+            playback_grid.label(text="Play", icon="PLAY")
+            playback_grid.prop(rig, "fbp_text_matrix_playback_columns", text="Columns", slider=True)
+            playback_grid.prop(rig, "fbp_text_matrix_playback_rows", text="Rows", slider=True)
 
         render = box.row(align=True)
         render.label(text="Render", icon="RESTRICT_RENDER_OFF")
@@ -24998,7 +25013,6 @@ def fbp_draw_effect_settings(
             warning.alert = True
             warning.label(text="High pixel sampling may slow interaction", icon="ERROR")
     if definition.get("evolve_property"):
-        _fbp_draw_effect_section(box, "Animation", "TIME", separator=True)
         instance_animation = (
             fbp_effect_instance_animation_item(
                 rig, effect_id, instance_id, ensure=False
@@ -25007,19 +25021,21 @@ def fbp_draw_effect_settings(
             else None
         )
         animation_owner = instance_animation or rig
+        section_gap(box)
+        animation_body = None
         if instance_id and instance_animation is None:
+            _fbp_draw_effect_section(box, "Animation", "TIME")
             warning = box.row(align=False)
             warning.enabled = False
             warning.label(text="Instance animation is initializing", icon="FILE_REFRESH")
         else:
-            animation = box.row(align=True)
-            animation.prop(
-                animation_owner,
+            animation_body = _fbp_draw_toggle_foldout(
+                box, "fbp_effect_animation", animation_owner,
                 "evolve" if instance_animation is not None else _fbp_animation_key(effect_id, "evolve"),
-                text="Animate",
-                toggle=True,
-                icon="PREVIEW_RANGE",
+                "Animation",
             )
+        if animation_body is not None:
+            animation = animation_body.row(align=True)
             animation.prop(
                 animation_owner,
                 "speed" if instance_animation is not None else _fbp_effect_evolution_speed_property(effect_id, definition),
@@ -25030,7 +25046,7 @@ def fbp_draw_effect_settings(
                 "step" if instance_animation is not None else _fbp_animation_key(effect_id, "step"),
                 text="Stepped",
             )
-            seed_row = box.row(align=True)
+            seed_row = animation_body.row(align=True)
             seed_row.prop(
                 animation_owner,
                 "seed" if instance_animation is not None else _fbp_animation_key(effect_id, "seed"),
@@ -25045,7 +25061,7 @@ def fbp_draw_effect_settings(
                 icon="DUPLICATE",
             )
             if instance_animation is not None:
-                hint = box.row(align=False)
+                hint = animation_body.row(align=False)
                 hint.enabled = False
                 hint.label(
                     text="Parameters and animation are keyframeable per copy",
