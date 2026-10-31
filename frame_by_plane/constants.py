@@ -14,7 +14,7 @@ from .support_policy import (
 
 # Release metadata lives here so the add-on header, preferences and local
 # What's New UI cannot silently drift apart during incremental releases.
-FBP_VERSION = (8, 0, 1)
+FBP_VERSION = (8, 2, 0)
 FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
 
 # Final LTS runtime policy. Keep these values aligned with blender_manifest.toml.
@@ -277,6 +277,65 @@ FBP_ICONS = {
     'COLLECTION_COLOR_06': 'COLLECTION_COLOR_06',  # Outliner collection color icon 06.
     'COLLECTION_COLOR_07': 'COLLECTION_COLOR_07',  # Outliner collection color icon 07.
     'COLLECTION_COLOR_08': 'COLLECTION_COLOR_08',  # Outliner collection color icon 08.
+    # Effect library icons (effects_registry.py). Every name below exists in Blender 5.2.
+    'MOD_OCEAN': 'MOD_OCEAN',  # Wave Mask fallback when the PNG is missing.
+    'RESTRICT_COLOR_OFF': 'RESTRICT_COLOR_OFF',  # Color Mask fallback when the PNG is missing.
+    'ALIGN_JUSTIFY': 'ALIGN_JUSTIFY',
+    'BRUSHES_ALL': 'BRUSHES_ALL',
+    'CONSOLE': 'CONSOLE',
+    'CON_TRACKTO': 'CON_TRACKTO',
+    'FCURVE': 'FCURVE',
+    'FORCE_TURBULENCE': 'FORCE_TURBULENCE',
+    'FREEZE': 'FREEZE',
+    'FULLSCREEN_EXIT': 'FULLSCREEN_EXIT',
+    'IMAGE_RGB_ALPHA': 'IMAGE_RGB_ALPHA',
+    'IMAGE_ZDEPTH': 'IMAGE_ZDEPTH',
+    'LIGHTPROBE_VOLUME': 'LIGHTPROBE_VOLUME',
+    'LIGHT_AREA': 'LIGHT_AREA',
+    'LIGHT_POINT': 'LIGHT_POINT',
+    'LIGHT_SPOT': 'LIGHT_SPOT',
+    'LINE_DATA': 'LINE_DATA',
+    'MARKER': 'MARKER',
+    'MATSHADERBALL': 'MATSHADERBALL',
+    'MESH_ICOSPHERE': 'MESH_ICOSPHERE',
+    'MOD_ARRAY': 'MOD_ARRAY',
+    'MOD_BEVEL': 'MOD_BEVEL',
+    'MOD_BRIGHTNESS_CONTRAST': 'MOD_BRIGHTNESS_CONTRAST',
+    'MOD_CAST': 'MOD_CAST',
+    'MOD_CLOTH': 'MOD_CLOTH',
+    'MOD_COLOR_BALANCE': 'MOD_COLOR_BALANCE',
+    'MOD_DASH': 'MOD_DASH',
+    'MOD_EDGESPLIT': 'MOD_EDGESPLIT',
+    'MOD_HUE_SATURATION': 'MOD_HUE_SATURATION',
+    'MOD_LATTICE': 'MOD_LATTICE',
+    'MOD_LINEART': 'MOD_LINEART',
+    'MOD_MIRROR': 'MOD_MIRROR',
+    'MOD_NOISE': 'MOD_NOISE',
+    'MOD_OFFSET': 'MOD_OFFSET',
+    'MOD_OPACITY': 'MOD_OPACITY',
+    'MOD_OUTLINE': 'MOD_OUTLINE',
+    'MOD_SHRINKWRAP': 'MOD_SHRINKWRAP',
+    'MOD_TINT': 'MOD_TINT',
+    'MOD_TONEMAP': 'MOD_TONEMAP',
+    'MOD_TRIANGULATE': 'MOD_TRIANGULATE',
+    'MOD_UVPROJECT': 'MOD_UVPROJECT',
+    'MOD_WARP': 'MOD_WARP',
+    'MOD_WHITE_BALANCE': 'MOD_WHITE_BALANCE',
+    'OUTLINER_DATA_POINTCLOUD': 'OUTLINER_DATA_POINTCLOUD',
+    'PARTICLEMODE': 'PARTICLEMODE',
+    'PROP_PROJECTED': 'PROP_PROJECTED',
+    'SEQ_CHROMA_SCOPE': 'SEQ_CHROMA_SCOPE',
+    'SEQ_HISTOGRAM': 'SEQ_HISTOGRAM',
+    'SEQ_LUMA_WAVEFORM': 'SEQ_LUMA_WAVEFORM',
+    'SEQ_STRIP_DUPLICATE': 'SEQ_STRIP_DUPLICATE',
+    'SHARPCURVE': 'SHARPCURVE',
+    'SMALL_CAPS': 'SMALL_CAPS',
+    'SNAP_EDGE': 'SNAP_EDGE',
+    'SPLIT_HORIZONTAL': 'SPLIT_HORIZONTAL',
+    'STRANDS': 'STRANDS',
+    'SYNTAX_OFF': 'SYNTAX_OFF',
+    'TPAINT_HLT': 'TPAINT_HLT',
+    'TRACKER': 'TRACKER',
 }
 
 FBP_ARTIST_COLOR_TAGS = frozenset({

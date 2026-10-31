@@ -4395,7 +4395,10 @@ def draw_effects_ui(layout, context, *, force_view=None):
     active_object = getattr(context, "object", None)
     force_lattice_mesh_view = False
     try:
-        if active_object is not None and str(getattr(active_object, "type", "") or "") == "LATTICE":
+        from .lattice_pins import is_lattice_controller as is_pin
+        if active_object is not None and (
+            str(getattr(active_object, "type", "") or "") == "LATTICE" or is_pin(active_object)
+        ):
             owner = fbp_resolve_rig_from_any_object(active_object, context)
             if owner is not None and owner in selected_rigs:
                 rig = owner
@@ -4409,11 +4412,7 @@ def draw_effects_ui(layout, context, *, force_view=None):
 
                 def _focus_lattice_from_panel():
                     current = getattr(bpy.context, "active_object", None)
-                    if (
-                        current is None
-                        or str(getattr(current, "type", "") or "") != "LATTICE"
-                        or str(getattr(current, "name", "") or "") != helper_name
-                    ):
+                    if current is None or str(getattr(current, "name", "") or "") != helper_name:
                         return None
                     current_owner = bpy.data.objects.get(owner_name)
                     if current_owner is not None:
@@ -5386,6 +5385,45 @@ class FBP_PT_ModifierShortcuts(Panel):
         # Add Effect / Add Mask live in the stack UI itself.  The Modifiers tab
         # should open directly on the real Frame By Plane lists/settings.
         _fbp_draw_properties_modifier_effects(layout, context)
+
+
+class _FBPLatticeControlsPanel:
+    """Lattice settings next to the layer's controls armature (Pose Mode has no Modifiers tab)."""
+
+    bl_label = "Frame By Plane Lattice"
+    bl_description = "Edit the Lattice effect of the layer these handles and bones belong to"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_order = 0
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            from .lattice_pins import lattice_controller_owner
+            return lattice_controller_owner(getattr(context, "object", None)) is not None
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def draw_header(self, _context):
+        self.layout.label(text="", icon="MOD_LATTICE")
+
+    def draw(self, context):
+        from .lattice_pins import lattice_controller_owner
+        rig = lattice_controller_owner(getattr(context, "object", None))
+        if rig is None:
+            return
+        layout = configure_layout(self.layout)
+        fbp_draw_effect_settings(layout, rig, "LATTICE", context=context)
+
+
+class FBP_PT_LatticeControls(_FBPLatticeControlsPanel, Panel):
+    bl_idname = "FBP_PT_lattice_controls"
+    bl_context = 'data'
+
+
+class FBP_PT_LatticeControlsBone(_FBPLatticeControlsPanel, Panel):
+    bl_idname = "FBP_PT_lattice_controls_bone"
+    bl_context = 'bone'
 
 
 def _fbp_request_modifiers_follow(context):
@@ -6568,6 +6606,8 @@ ui_classes = (
     FBP_PT_ToolSequence,
     FBP_PT_ImagePlaneData,
     FBP_PT_ModifierShortcuts,
+    FBP_PT_LatticeControls,
+    FBP_PT_LatticeControlsBone,
     FBP_MT_FrameByPlaneAdd,
     FBP_MT_ObjectMaskContext,
     FBP_MT_ObjectLayerContext,

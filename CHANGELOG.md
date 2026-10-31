@@ -2,6 +2,70 @@
 
 All notable public changes to Frame By Plane are documented here.
 
+## [8.2.0] - Unreleased
+
+### Effects
+
+- **Broken Glass** is rebuilt as a shatter tool. It cuts the layer into triangles, either **Impact** (rings and spokes around an impact point, small slivers near it and long shards towards the border) or **Shards** (an even jittered grid), and one **Shatter** slider breaks them apart: at zero the layer is whole, then the pieces open outwards from the impact point (**Spread**) and shrink (**Gap**), fly out (**Explode**), come forward (**Depth**), drop (**Fall**) and tumble (**Spin**). **Pieces**, **Irregularity**, **Thickness** and **Seed** shape the cut, and the impact point has a viewport handle. The pieces keep showing the layer image and the image effects below; **Glass Surface** switches them to the refractive glass material. New presets: Cracked, Shattered, Falling Shards and Glass Pane. Saved files update on open.
+- New **Replace Color** image effect (Color section). Pick a **Source Color** (the color picker has an eyedropper) and a **Target Color**: every pixel close to the source is recolored. **Tolerance** sets how far the selection reaches and **Softness** feathers its edge, with the same feel as Color Isolate but measured in display colors and almost ignoring lightness, so the shadows of the picked color stay selected. **Preserve Shading** keeps highlights, shadows and texture by moving the pixels by the source-to-target hue, saturation and value offset; at zero it paints the flat target color. The **Selection** debug view shows what gets replaced.
+- **Riso Print**: the old Seed only turned the misregistration, so it is now **Drift Angle**. New **Print Rotation** turns the halftone screen and the grain, and a real **Seed** reshuffles the grain and the dots (each ink's screen phase and the dot size jitter). Riso Print now has the Animation section of the other effects: **Animate** with **Speed** and **Stepped** boils the grain and dots over time.
+- **Color Key** (Mask) now includes everything Chroma Key did. Invert keys the color out like a green screen, the new **Despill** greys the leftover key color along soft edges, the debug view gains **Distance**, and the Green Screen and Blue Screen presets moved here. Chroma Key is no longer a separate effect: files that use it are converted to Color Key automatically when opened. Despill applies when the key targets the whole layer.
+- Every effect has its own icon in the add menus, the effect stack and the pie menu. Section titles no longer carry icons, internal variants share their family icon, and Solarize sits under Film.
+- **Frame Stack** follows the playback of image sequences instead of their file numbers. Slices step through the drawings in the layer's timing order, so reordered or repeated rows, blank frames and sequences numbered from any value (0100, 1001…) stack correctly. Looping layers wrap the stack around the cycle when it restarts and Ping-Pong looks back the way the plane came; One Shot keeps the slices before the first frame empty. **Start Frame** of Fixed Range is now a timeline frame. Each layer keeps its own Frame Stack, so two sequences with the effect no longer show the same images (the same fix applies to Knit & Crochet). Saved files update on open.
+
+### Lattice puppet pins
+
+- **Puppet Pins** for the Lattice effect, in the spirit of Puppet Warp. **Add Pins** lets you click on the layer to place pins (Ctrl+Click removes one, Enter finishes). Move a pin with G or rotate it with R and the drawing bends around it while the other pins hold their areas still; keyframe pins like any bone (**Key Pins**). **Rest Pose** returns them to the undeformed layer and **Set as Rest** moves a pin to a better spot without bending the drawing.
+- Pins use native Hook modifiers on the cage with automatic smooth weights, so they work with Poses and the cage, animate, save and render without anything running at playback time. **Follow Drawing** spreads each pin's influence through the opaque parts of the image, so a pin on a hand does not drag a separate nearby part across a transparent gap.
+- The first pin refines the cage to about 24 points on the long side so the bend stays smooth.
+
+### Lattice types
+
+- The Lattice panel now opens on a **Type** menu: **Grid**, **Corner Pin**, **Bones**, **Pins** and **Camera**. The types stack on the same cage, and the panel lists the other types that are active on the layer. Cage and mesh settings and Poses fold into collapsible sections.
+- All the handles and bones of a layer live in one **Controls** armature, so the viewport shows no relationship line per handle. Handles have their own shapes and colours (pins, bend pins, corners, point handles, IK targets), bones are drawn as sticks, and everything is posed and keyed in Pose Mode. The Lattice settings also appear in the armature's Object Data and Bone tabs.
+- **Bones**, in the spirit of Moho: **Add Bones** lets you click joints on the layer (shoulder, elbow, hand). Right Click ends a chain, and a chain that starts on an existing joint branches from it. Ctrl+Click removes the last bone, and Enter finishes in Pose Mode. A chain of two or more bones gets an IK handle at its end. The bones are a native Armature that deforms the cage with smooth weights that follow the drawing, so it can be keyframed, saved and rendered like any rig. **Edit Bones**, **Key Pose**, **Rest Pose**, **Rebind** and **Remove** are in the panel.
+- **Corner Pin**, like After Effects: four corner handles map the layer onto any quad with a true perspective, so the drawing foreshortens instead of only shearing. The handles keyframe, and the cage follows them live and on every frame. **Edit Cage** freezes the perspective into a Freeform cage.
+- **Grid** gains **Point Handles**: one handle per cage point that you can move and keyframe without entering the cage's Edit Mode (cages of up to 100 points).
+- **Pins** gain **Bend** pins, which stay in place and only rotate or scale their area, and a per-pin **Stiff Area** that keeps the area around a pin rigid.
+
+### Viewport controls
+
+- The handles of Crop, Extend and every effect with viewport controls (Swirl, Gradient Mask, Tilt Shift, Directional Blur, Pixelate, Shadow, Wind and the others), and the bounds handles of Shape Masks, are redrawn in one minimal style: thin flat bars, L corners, rings, crosses and arrows in white, like Blender's gizmos, turning to the theme's gizmo yellow while selected.
+- New viewport controls: Alpha Matte and Luma Matte get a cross on the matte's centre that moves and turns it, and Riso Print gets an arrow for the Drift Angle.
+- Handles are always drawn in front, in every shading mode. In Material Preview and Rendered the solid Crop and Extend bars used to sink behind the image.
+- No more dashed relationship lines: handles follow their plane through a collapsed Child Of constraint instead of a parent. Files saved with the old handles are converted when the handles are next shown.
+- Handles lie on the plane's real edges: they turn with a tilted layer and bend with it when the Lattice effect deforms it (Grid, Corner Pin, Bones, Pins, Camera), so Crop corners stay on the deformed corners.
+- Gradient handles work like Figma's: Gradient Mask and Gradient Light stops are colour swatches (white and black for the mask, the ramp colours for the light) joined by a thin line. Stops added in the Gradient Light Color Ramp appear on that line in their own colour and slide along it with the mouse (with Undo).
+- Arrows (Directional Blur, Wave Warp, Emboss, Wind and the other angle handles) are lines with an open V head, and the Directional Blur arrow head keeps its shape at any distance.
+- Swirl, Bulge / Pinch, Ripple and Vignette show their reach as a dashed circle with a knob that changes the radius; Vignette also shows where it reaches full strength. Radial Gradient Mask shows its inner and outer circles dashed.
+- Shape Masks show a dashed line where the Feather reaches full opacity.
+
+### Z Pie and tooltips
+
+- Z Pie: Hide, Solo and Holdout sit on the first south row; a second row adds Show Overlays (always) and Show Onion Skin (inside a Grease Pencil object). Lock and Selectability appear only while a Frame By Plane layer is selected, or one is still locked from the Pie. Cursor on Camera is an icon-only camera button.
+- Operator and effect tooltips are one short sentence; the automatic "Use when", "Example" and "Note" paragraphs are gone. Italian translations follow.
+
+### Effects in Blender's Modifiers panel
+
+- **Add Modifier > Mesh** (monkey icon) lists the Frame By Plane mesh effects; they are no longer in the Frame By Plane Add Effect menu.
+- **Add Modifier > Image** and **Add Modifier > Mask** list, for now, only the effects that work as native modifiers (Hue & Saturation, Vignette, Posterize; Gradient, Circle and Square Mask). Like Mesh, they open as divided columns with the Frame By Plane icons, and adding from there lands the effect in the Modifiers list (it turns the Image Effects as Modifiers preview on).
+- With a layer selected, **Properties > Modifiers** shows the modifiers of its image plane (it pins itself to the plane and lets go when you change tab or selection; turn it off with Preferences > Modifiers Follow Layer). Drag and drop, the eye and camera toggles, edit mode display and delete work natively and update the Frame By Plane stack. Duplicating an effect stays in the Frame By Plane stack. Modifiers list effects bottom-up, the Frame By Plane stack top-down.
+- Every image effect has a **Mask** subpanel: the checkbox turns its mask on and off, the dropdown picks the mask type (it replaces the previous one) and the mask settings appear inline.
+- Optional effect sections (Animation, ASCII Edges, Text Matrix Playback Limit) use the same foldout: arrow, checkbox, name.
+- Preview, **Image Effects as Modifiers**: Hue & Saturation, Vignette, Posterize, Gradient Mask, Circle Mask and Square Mask can become native modifiers whose inputs drive the material (keyframes included), in Eevee and Cycles. Enable it under Preferences > Advanced > LTS Feature Scope.
+
+### Fixes
+
+- Halftone: Color Mode and Use Source Color had no effect, so BW Light, BW Dark and a custom Ink Color all rendered the source colors. They now work, and files saved with the old Halftone are updated when opened.
+- Slice Shift: every band moved by the same Shift, which only slid the whole image sideways and left Bands with no visible effect. Neighbouring bands now move in opposite directions; files saved with the old Slice Shift are updated when opened.
+- Grain no longer writes negative colors in dark areas.
+- Oil Paint and Edge Distance Mask build about five times faster the first time they are added to a file (2 s and 1.5 s before), with an identical result.
+- Felt Fuzz: the Render Density slider ends at 400,000 strands instead of 3,000,000. Rendering needs about 1 GB per 100,000 strands, so the old slider end could exhaust memory; higher values can still be typed.
+- Extrude: in Array mode, transparent areas rendered black in Cycles once the copies used up the transparent-bounce limit. The automatic limit raised at render time now counts every Array copy.
+- Paper Shards: chips darker than about 40% luminance sank below the plane and disappeared. Luminance Lift now raises chips from the plane (light ones for positive values, dark ones for negative values) and never pushes them under it. Files saved with the old Paper Shards are updated when opened.
+- Paper Shards and Fiber Tufts: near the edge of a cutout, chips and fibers landed on transparent pixels (and rendered black) while opaque pixels next to them stayed empty. Each chip and fiber is now tested against the exact image alpha, and files saved with the old versions are updated when opened.
+- Crosshatch: line edges are smoothed over one source pixel, which removes the jagged edges and moiré, and diagonal hatches now use the same spacing and width as the straight ones. Files saved with the old Crosshatch are updated when opened.
+
 ## [8.0.1] - Unreleased
 
 ### New effects
@@ -15,15 +79,6 @@ All notable public changes to Frame By Plane are documented here.
 - **Oil Paint** (Image, Edges menu): an anisotropic Kuwahara filter. Color flattens into brush-stroke patches that follow the image's edges while contours stay sharp. Radius sets the stroke size, Anisotropy stretches strokes along edges (0 is the classic round filter) and Sharpness decides how crisp the stroke borders are. Transparent pixels never darken the paint.
 
 - **Edge Distance Mask** (Mask, Nodes menu): a mask that ramps from the artwork's transparent edge inward over a set distance, for glowing borders, inner strokes and grow-in reveals (animate Threshold). Invert keeps the band along the edge. With Image Border on, the picture's own border counts as an edge, so fully opaque images get a frame-shaped falloff.
-
-### Effects in Blender's Modifiers panel
-
-- **Add Modifier > Mesh** (monkey icon) lists the Frame By Plane mesh effects; they are no longer in the Frame By Plane Add Effect menu.
-- **Add Modifier > Image** and **Add Modifier > Mask** list, for now, only the effects that work as native modifiers (Hue & Saturation, Vignette, Posterize; Gradient, Circle and Square Mask). Like Mesh, they open as divided columns with the Frame By Plane icons, and adding from there lands the effect in the Modifiers list (it turns the Image Effects as Modifiers preview on).
-- With a layer selected, **Properties > Modifiers** shows the modifiers of its image plane (it pins itself to the plane and lets go when you change tab or selection; turn it off with Preferences > Modifiers Follow Layer). Drag and drop, the eye and camera toggles, edit mode display and delete work natively and update the Frame By Plane stack. Duplicating an effect stays in the Frame By Plane stack. Modifiers list effects bottom-up, the Frame By Plane stack top-down.
-- Every image effect has a **Mask** subpanel: the checkbox turns its mask on and off, the dropdown picks the mask type (it replaces the previous one) and the mask settings appear inline.
-- Optional effect sections (Animation, ASCII Edges, Text Matrix Playback Limit) use the same foldout: arrow, checkbox, name.
-- Preview, **Image Effects as Modifiers**: Hue & Saturation, Vignette, Posterize, Gradient Mask, Circle Mask and Square Mask can become native modifiers whose inputs drive the material (keyframes included), in Eevee and Cycles. Enable it under Preferences > Advanced > LTS Feature Scope.
 
 ### Plane creation
 
