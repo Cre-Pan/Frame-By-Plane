@@ -3554,6 +3554,45 @@ def test_effect_bake_straight_alpha(_module):
     return {"pixel": [round(value, 3) for value in pixel]}
 
 
+def test_effect_bake_eevee_camera(_module):
+    """The EEVEE camera of Apply Effects frames the plane's UV square exactly."""
+    from bpy_extras.object_utils import world_to_camera_view
+
+    bake = importlib.import_module(f"{PACKAGE}.effect_bake")
+    rig = _effect_stack_fixture_rig("FBP Effect Bake Camera", width=32)
+    owned = [rig, *rig.children_recursive]
+    scene = bpy.data.scenes.new("FBP Effect Bake Camera Scene")
+    camera = None
+    try:
+        rig.location = (1.0, 2.0, 3.0)
+        rig.rotation_euler = (0.3, 0.2, 0.5)
+        bpy.context.view_layer.update()
+        plane = rig.fbp_plane_target
+        width, height = bake._source_size(bake._plane_materials(plane))
+        assert (width, height) == (32, 16), (width, height)
+        scene.render.resolution_x, scene.render.resolution_y = width, height
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        camera = bake._fitted_camera(scene, plane, depsgraph, width, height)
+        origin, u_edge, v_edge = bake._uv_frame(plane, depsgraph)
+        for (u, v) in ((0, 0), (1, 0), (0, 1), (1, 1), (0.5, 0.5)):
+            point = origin + u_edge * u + v_edge * v
+            projected = world_to_camera_view(scene, camera, point)
+            assert abs(projected.x - u) < 1e-4 and abs(projected.y - v) < 1e-4, (u, v, tuple(projected))
+            assert projected.z > 0.0, tuple(projected)
+    finally:
+        if camera is not None:
+            data = camera.data
+            bpy.data.objects.remove(camera, do_unlink=True)
+            bpy.data.cameras.remove(data)
+        bpy.data.scenes.remove(scene)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"framed": True}
+
+
 def test_effect_bake_switch_off(_module):
     """After Apply Effects the image effects are switched off, not removed."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -5771,6 +5810,7 @@ def run_background():
             ("effect_global_mask_hide_cycles", test_effect_global_mask_hide_cycles),
             ("effect_bake_cycles", test_effect_bake_cycles),
             ("effect_bake_straight_alpha", test_effect_bake_straight_alpha),
+            ("effect_bake_eevee_camera", test_effect_bake_eevee_camera),
             ("effect_bake_switch_off", test_effect_bake_switch_off),
             ("effect_family_variant_keeps_position", test_effect_family_variant_keeps_position),
             ("effect_duplicate_placement", test_effect_duplicate_placement),
