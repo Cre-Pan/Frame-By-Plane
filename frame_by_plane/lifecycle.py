@@ -44,6 +44,7 @@ _HANDLER_SPECS = (
     ("frame_change_post", "fbp_gp_frame_change", 1, "grease_pencil_bridge"),
     ("load_post", "fbp_gp_load_post", 1, "grease_pencil_bridge"),
     ("frame_change_post", "_cursor_on_camera_frame_handler", 1, "viewport_pie"),
+    ("frame_change_post", "fbp_rig_alpha_frame_change", 1, "rig_alpha_follow"),
     ("depsgraph_update_post", "fbp_depsgraph_native_ops_handler", 1, "scene_sync"),
     ("depsgraph_update_post", "effect_controls_depsgraph_update", 0, "effect_controls"),
     ("depsgraph_update_post", "fbp_gp_depsgraph_update", 0, "grease_pencil_bridge"),

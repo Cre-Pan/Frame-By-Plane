@@ -4694,6 +4694,7 @@ class FBP_OT_RigShapePopup(Operator):
             row = layout.row(align=True)
             row.prop(rig, "fbp_rig_shape_alpha_style", expand=True)
             layout.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
+            layout.prop(rig, "fbp_rig_shape_alpha_follow", text="Follow Frame")
         else:
             layout.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
         layout.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)

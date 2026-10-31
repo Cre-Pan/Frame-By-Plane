@@ -1090,6 +1090,30 @@ def fbp_native_playback_timing(mat):
     }
 
 
+def fbp_native_source_path_at_frame(rig, timeline_frame):
+    """Return the source file a native sequence shows at ``timeline_frame``.
+
+    Returns ``(path, visible)``. ``path`` is empty for stills, movies or
+    incomplete metadata; ``visible`` is False on blank (transparent) rows.
+    """
+    mat = _native_material_from_rig(rig)
+    timing = fbp_native_playback_timing(mat)
+    if not timing or not timing.get("files"):
+        return "", True
+    directory, files = _source_sequence_from_material(mat)
+    if not directory or not files:
+        return "", True
+    position = fbp_native_playback_position(timing, timeline_frame)
+    try:
+        source_index = int(timing["files"][position]) - _material_frame_number_base(mat)
+        visible = bool(timing["visible"][position])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return "", True
+    if source_index < 0 or source_index >= len(files):
+        return "", True
+    return os.path.abspath(str(_media_path(directory, files[source_index]))), visible
+
+
 def fbp_native_playback_position(timing, timeline_frame):
     """Return the cycle position a native sequence shows at ``timeline_frame``.
 

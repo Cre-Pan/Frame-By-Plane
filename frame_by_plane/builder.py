@@ -273,6 +273,42 @@ if not isinstance(_FBP_IMAGE_ALPHA_CACHE, dict):
     _FBP_IMAGE_ALPHA_CACHE = {}
 
 
+_FBP_ALPHA_FOLLOW_STATE = globals().get("_FBP_ALPHA_FOLLOW_STATE", {})
+if not isinstance(_FBP_ALPHA_FOLLOW_STATE, dict):
+    _FBP_ALPHA_FOLLOW_STATE = {}
+
+
+def _fbp_alpha_follow_key(rig):
+    try:
+        return int(rig.as_pointer())
+    except (AttributeError, ReferenceError):
+        return id(rig)
+
+
+def fbp_refresh_alpha_follow_rigs(scene):
+    """Rebuild Alpha Outline wires that follow the frame when the frame changes."""
+    if scene is None:
+        return 0
+    refreshed = 0
+    for obj in tuple(getattr(scene, "objects", ()) or ()):
+        try:
+            if (
+                not bool(getattr(obj, "is_fbp_control", False))
+                or str(getattr(obj, "fbp_rig_shape", "") or "") != "ALPHA"
+                or not bool(getattr(obj, "fbp_rig_shape_alpha_follow", False))
+                or str(getattr(obj, "mode", "OBJECT") or "OBJECT") != "OBJECT"
+            ):
+                continue
+        except ReferenceError:
+            continue
+        path = fbp_rig_alpha_frame_source(obj, scene)
+        if not path or _FBP_ALPHA_FOLLOW_STATE.get(_fbp_alpha_follow_key(obj)) == path:
+            continue
+        if fbp_apply_rig_shape(obj, "ALPHA"):
+            refreshed += 1
+    return refreshed
+
+
 def _fbp_plane_source_image(rig):
     plane = getattr(rig, "fbp_plane_target", None) if rig else None
     for mat in tuple(getattr(getattr(plane, "data", None), "materials", ()) or ()):
@@ -283,14 +319,40 @@ def _fbp_plane_source_image(rig):
     return None
 
 
-def fbp_rig_alpha_union(rig):
+def fbp_rig_alpha_frame_source(rig, scene=None, *, force=False):
+    """Source file shown now when the Alpha Outline follows the frame, else ""."""
+    if not force and not bool(getattr(rig, "fbp_rig_shape_alpha_follow", False)):
+        return ""
+    scene = scene or getattr(getattr(bpy, "context", None), "scene", None)
+    if scene is None:
+        return ""
+    try:
+        from .native_backend import fbp_native_source_path_at_frame
+        path, visible = fbp_native_source_path_at_frame(rig, int(scene.frame_current))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ""
+    return path if path and visible and os.path.isfile(path) else ""
+
+
+def fbp_rig_alpha_union(rig, *, frame_path=None):
     """Return the visible-alpha union of a layer's source, or ``None``.
 
     Files on disk are read through Pillow (the union of every sequence frame,
     so the outline and Crop Alpha cover the whole animation). Packed or
-    generated images fall back to the Blender pixel buffer.
+    generated images fall back to the Blender pixel buffer. ``frame_path``
+    restricts the outline to the one frame shown now (Follow Frame).
     """
     from . import rig_alpha_shape as alpha_shape
+
+    if frame_path:
+        try:
+            union = alpha_shape.alpha_union_from_paths(
+                (frame_path,), max_side=alpha_shape.FBP_ALPHA_FRAME_MAX_SIDE,
+            )
+            if union is not None:
+                return union
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _fbp_warn("Could not read frame alpha", exc)
 
     paths = []
     try:
@@ -342,9 +404,54 @@ def fbp_rig_alpha_union(rig):
         return None
 
 
+def _fbp_wrap_uv(value, mode):
+    if 0.0 <= value <= 1.0:
+        return value
+    if mode == "REPEAT":
+        return value % 1.0
+    if mode == "MIRROR":
+        period = value % 2.0
+        return period if period <= 1.0 else 2.0 - period
+    if mode == "EDGE":
+        return min(1.0, max(0.0, value))
+    return None
+
+
+def fbp_rig_alpha_visible_at_uv(rig, u, v, scene=None):
+    """True/False when the pixel at UV (u, v) of the shown frame is visible.
+
+    Returns ``None`` when the alpha cannot be read, so callers can fall back
+    to treating the plane as solid.
+    """
+    try:
+        from .native_backend import fbp_native_source_path_at_frame
+        scene = scene or getattr(getattr(bpy, "context", None), "scene", None)
+        path, visible = fbp_native_source_path_at_frame(rig, int(scene.frame_current)) if scene else ("", True)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        path, visible = "", True
+    if not visible:
+        return False
+    frame_path = path if path and os.path.isfile(path) else None
+    union = fbp_rig_alpha_union(rig, frame_path=frame_path)
+    if union is None:
+        return None
+    mode = str(getattr(rig, "fbp_extend_mode", "MIRROR") or "MIRROR").upper()
+    u = _fbp_wrap_uv(float(u), mode)
+    v = _fbp_wrap_uv(float(v), mode)
+    if u is None or v is None:
+        return False
+    mask = union.mask
+    rows, cols = mask.shape
+    col = min(cols - 1, max(0, int(u * cols)))
+    row = min(rows - 1, max(0, int((1.0 - v) * rows)))
+    return bool(mask[row, col])
+
+
 def _fbp_alpha_rig_geometry(rig, margin):
     """Rig-space wire geometry outlining the visible alpha, or ``None``."""
-    union = fbp_rig_alpha_union(rig)
+    frame_path = fbp_rig_alpha_frame_source(rig)
+    union = fbp_rig_alpha_union(rig, frame_path=frame_path)
+    _FBP_ALPHA_FOLLOW_STATE[_fbp_alpha_follow_key(rig)] = frame_path
     if union is None:
         return None
     from . import rig_alpha_shape as alpha_shape

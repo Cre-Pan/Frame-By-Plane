@@ -877,6 +877,12 @@ class FBP_AddonPreferences(AddonPreferences):
         default=True,
         update=update_shortcut_preferences_cb,
     )
+    shortcut_click_through_alpha: BoolProperty(
+        name="Click Through Transparency",
+        description="Click on an image layer's visible pixels to select it; clicks on transparent pixels reach the layer behind",
+        default=True,
+        update=update_shortcut_preferences_cb,
+    )
     shortcut_viewport_pie: BoolProperty(
         name="Viewport Pie",
         description="Use Z for the native Blender Frame By Plane Pie Menu",
@@ -2132,6 +2138,8 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'shortcut_duplicate_layer', text='Shift+D · Duplicate', toggle=True, icon='DUPLICATE')
                 row.prop(self, 'shortcut_group_layers', text=f"{primary_shortcut_label('G')} · Collection", toggle=True, icon='OUTLINER_COLLECTION')
+                row = _row(body)
+                row.prop(self, 'shortcut_click_through_alpha', text='Click · Through Transparency', toggle=True, icon='RESTRICT_SELECT_OFF')
                 row = _row(body)
                 row.prop(self, 'shortcut_gp_alt_s_guard', text=f"{alt_shortcut_label('S')} · GP Radius", toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row = _row(body)
@@ -5089,6 +5097,12 @@ def register_properties():
         description="How the Alpha Outline controller follows the visible pixels",
         items=RIG_SHAPE_ALPHA_STYLE_ITEMS,
         default='PIXEL',
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_shape_alpha_follow = BoolProperty(
+        name="Follow Frame",
+        description="For image sequences, outline only the drawing shown on the current frame instead of every frame together",
+        default=True,
         update=update_rig_shape_cb,
     )
     _FBP_OBJECT_RNA.fbp_rig_shape_alpha_detail = IntProperty(

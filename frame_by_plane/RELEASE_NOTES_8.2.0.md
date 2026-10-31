@@ -19,7 +19,8 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet 
 - 🥧 **Z Pie:** Hide, Solo and Holdout on one row, plus Show Overlays and Show Onion Skin; Lock and Selectability only while a layer is selected. Cursor on Camera is an icon button.
 - 💬 **Shorter tooltips:** one short sentence per operator and per effect.
 - ✂️ **Crop Alpha:** one button in Crop crops the selected layers to their visible pixels without moving them. Image sequences use the union of every frame.
-- 🔲 **Alpha Outline rig shape:** the layer's controller can follow the visible pixels of the image, **Pixel** (stepped) or **Smooth** (rounded), with a Detail slider. It updates with Crop and Expand.
+- 🔲 **Alpha Outline rig shape:** the layer's controller can follow the visible pixels of the image, **Pixel** (stepped) or **Smooth** (curved), with a Detail slider. With **Follow Frame** an image sequence's outline follows the drawing shown on each frame. It updates with Crop and Expand.
+- 👆 **Click Through Transparency:** click on an image's visible pixels to select its layer; clicks on transparent pixels reach the layer behind. On by default, switchable in Preferences > Shortcuts.
 
 ### 🛠️ Fixes in 8.2.0
 

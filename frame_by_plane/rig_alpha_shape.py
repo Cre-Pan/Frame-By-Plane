@@ -10,8 +10,9 @@ Two outline styles are produced:
 
 * ``PIXEL`` follows the edges of the occupied cells, giving a stepped,
   pixel-art friendly silhouette.
-* ``SMOOTH`` runs marching squares on a softened mask and rounds the result
-  with Chaikin subdivision, giving a curve-like silhouette.
+* ``SMOOTH`` runs marching squares on a softened mask and smooths the
+  contour into continuous curves (straight runs stay straight, steps and
+  corners become arcs).
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ except ImportError:  # pragma: no cover - Blender always provides NumPy.
 # Long side of the cached full-canvas alpha union. Large enough for a precise
 # Crop Alpha and outline, small enough to keep memory and drag updates cheap.
 FBP_ALPHA_UNION_MAX_SIDE = 1024
+# Long side of single-frame masks used by Follow Frame (cheaper, cached more).
+FBP_ALPHA_FRAME_MAX_SIDE = 512
 # Default outline resolution (cells on the long side of the visible region).
 FBP_ALPHA_OUTLINE_CELLS = 64
 # Sequences are sampled evenly beyond this many frames.
@@ -35,7 +38,7 @@ FBP_ALPHA_MAX_FRAMES = 96
 _VIDEO_EXTENSIONS = {
     ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpeg", ".mpg", ".mxf", ".ogv",
 }
-_UNION_CACHE_LIMIT = 16
+_UNION_CACHE_LIMIT = 160
 _UNION_CACHE = globals().get("_UNION_CACHE", {})
 if not isinstance(_UNION_CACHE, dict):
     _UNION_CACHE = {}
@@ -472,49 +475,84 @@ def _marching_squares_loops(field, iso=0.5):
     return loops
 
 
-def _chaikin(loop, iterations=2):
-    for _ in range(max(0, int(iterations))):
-        out = []
-        count = len(loop)
-        for index in range(count):
-            (ax, ay), (bx, by) = loop[index], loop[(index + 1) % count]
-            out.append((ax * 0.75 + bx * 0.25, ay * 0.75 + by * 0.25))
-            out.append((ax * 0.25 + bx * 0.75, ay * 0.25 + by * 0.75))
-        loop = out
-    return loop
-
-
-def _simplify_loop(loop, tolerance):
-    """Drop points that sit almost on the line between their neighbours."""
-    if len(loop) <= 8:
-        return loop
-    out = list(loop)
-    changed = True
-    while changed and len(out) > 8:
-        changed = False
-        result = []
-        count = len(out)
-        index = 0
-        while index < count:
-            prev = result[-1] if result else out[-1]
-            point = out[index]
-            nxt = out[(index + 1) % count]
-            dx, dy = nxt[0] - prev[0], nxt[1] - prev[1]
-            length = (dx * dx + dy * dy) ** 0.5
+def _douglas_peucker(points, tolerance):
+    """Simplify an open polyline, keeping both ends."""
+    if len(points) <= 2:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        first, last = stack.pop()
+        (ax, ay), (bx, by) = points[first], points[last]
+        dx, dy = bx - ax, by - ay
+        length = (dx * dx + dy * dy) ** 0.5
+        best, best_index = -1.0, -1
+        for index in range(first + 1, last):
+            px, py = points[index]
             if length > 1e-12:
-                distance = abs(dx * (prev[1] - point[1]) - dy * (prev[0] - point[0])) / length
-                if distance < tolerance and index % 2 == 1:
-                    changed = True
-                    index += 1
-                    continue
-            result.append(point)
-            index += 1
-        out = result
+                distance = abs(dx * (ay - py) - dy * (ax - px)) / length
+            else:
+                distance = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+            if distance > best:
+                best, best_index = distance, index
+        if best_index >= 0 and best > tolerance:
+            keep[best_index] = True
+            stack.append((first, best_index))
+            stack.append((best_index, last))
+    return [point for point, flag in zip(points, keep) if flag]
+
+
+def _simplify_closed(loop, tolerance):
+    """Douglas-Peucker for a closed loop, split at the two farthest points."""
+    if len(loop) <= 4:
+        return list(loop)
+    x0, y0 = loop[0]
+    far = max(range(len(loop)), key=lambda i: (loop[i][0] - x0) ** 2 + (loop[i][1] - y0) ** 2)
+    first = _douglas_peucker(loop[: far + 1], tolerance)
+    second = _douglas_peucker(loop[far:] + [loop[0]], tolerance)
+    out = first[:-1] + second[:-1]
+    return out if len(out) >= 4 else list(loop)
+
+
+def _resample_closed(loop, step):
+    """Resample a closed polyline at an even arc-length spacing."""
+    pts = np.asarray(loop + [loop[0]], dtype=np.float64)
+    seg = np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1]))
+    total = float(seg.sum())
+    if total <= 1e-9:
+        return np.asarray(loop, dtype=np.float64)
+    count = max(8, int(round(total / max(1e-6, step))))
+    dist = np.concatenate(([0.0], np.cumsum(seg)))
+    targets = np.linspace(0.0, total, count, endpoint=False)
+    xs = np.interp(targets, dist, pts[:, 0])
+    ys = np.interp(targets, dist, pts[:, 1])
+    return np.stack((xs, ys), axis=1)
+
+
+def _gaussian_closed(points, sigma):
+    """Circular Gaussian smoothing of a closed contour (keeps straight runs straight)."""
+    count = len(points)
+    radius = int(max(1, round(sigma * 3.0)))
+    if count <= radius * 2 + 1:
+        radius = max(1, (count - 1) // 2)
+    offsets = np.arange(-radius, radius + 1)
+    weights = np.exp(-0.5 * (offsets / max(1e-6, sigma)) ** 2)
+    weights /= weights.sum()
+    out = np.zeros_like(points)
+    for offset, weight in zip(offsets, weights):
+        out += weight * np.roll(points, -int(offset), axis=0)
     return out
 
 
-def smooth_outline(grid, *, smoothing=2):
-    """Return (points, edges) of rounded closed loops around occupied cells."""
+def smooth_outline(grid, *, step=0.5, sigma_cells=2.2, tolerance=0.015):
+    """Return (points, edges) of smooth closed curves around occupied cells.
+
+    Marching squares gives the iso contour; it is resampled evenly and
+    smoothed with a circular Gaussian, the same smoothing a dense Bezier fit
+    gives: straight runs stay straight, steps and corners become curves.
+    A light Douglas-Peucker pass then drops points the eye cannot see.
+    """
     _require_numpy()
     field = _soften(grid)
     loops = _marching_squares_loops(field)
@@ -523,10 +561,12 @@ def smooth_outline(grid, *, smoothing=2):
     for loop in loops:
         # Field sample (r, c) is the centre of padded cell c; lattice x = c - 1 + 0.5.
         loop = [(x - 0.5, y - 0.5) for x, y in loop]
-        loop = _simplify_loop(_chaikin(loop, smoothing), 0.02)
+        dense = _resample_closed(loop, step)
+        curve = _gaussian_closed(dense, sigma_cells / step)
+        curve = _simplify_closed([(float(x), float(y)) for x, y in curve], tolerance)
         start = len(points)
-        points.extend(loop)
-        count = len(loop)
+        points.extend(curve)
+        count = len(curve)
         edges.extend((start + i, start + (i + 1) % count) for i in range(count))
     return points, edges
 
