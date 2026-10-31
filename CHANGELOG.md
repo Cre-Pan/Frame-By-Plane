@@ -19,7 +19,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Effects in Blender's Modifiers panel
 
 - **Add Modifier > Mesh** (monkey icon) lists the Frame By Plane mesh effects; they are no longer in the Frame By Plane Add Effect menu.
-- **Add Modifier > Mask** lists the Frame By Plane masks that mask the whole layer.
+- **Add Modifier > Image** lists the image effects by category, and **Add Modifier > Mask** the masks that mask the whole layer. Like Blender's own modifier menus, each is one column with built-in icons. With the Image Effects as Modifiers preview on (toggle at the bottom of the Image menu), supported effects land in the list as modifiers.
 - With a layer selected, **Properties > Modifiers** shows the modifiers of its image plane (it pins itself to the plane and lets go when you change tab or selection; turn it off with Preferences > Modifiers Follow Layer). Drag and drop, the eye and camera toggles, edit mode display and delete work natively and update the Frame By Plane stack. Duplicating an effect stays in the Frame By Plane stack. Modifiers list effects bottom-up, the Frame By Plane stack top-down.
 - Every image effect has a **Mask** subpanel: the checkbox turns its mask on and off, the dropdown picks the mask type (it replaces the previous one) and the mask settings appear inline.
 - Optional effect sections (Animation, ASCII Edges, Text Matrix Playback Limit) use the same foldout: arrow, checkbox, name.

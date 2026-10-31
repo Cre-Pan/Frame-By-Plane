@@ -143,11 +143,25 @@ def test_modifier_add_menu():
         native.draw_modifier_add_mesh(Owner, bpy.context)
         entry = [call for call in Owner.layout.calls if call[0] == "menu"]
         assert entry and entry[0][2]["icon"] == "MESH_MONKEY" and entry[0][2]["text"] == "Mesh"
-        assert len(entry) == 2 and entry[1][2]["icon"] == "MOD_MASK" and entry[1][2]["text"] == "Mask"
+        assert [(call[2]["text"], call[2]["icon"]) for call in entry] == [
+            ("Mesh", "MESH_MONKEY"), ("Image", "IMAGE_DATA"), ("Mask", "MOD_MASK"),
+        ], entry
         Owner.layout = StubLayout()
         native.FBP_MT_ModifierAddMask.draw(Owner, bpy.context)
         labels = [call[2].get("text") for call in Owner.layout.calls if call[0] == "operator"]
         assert "Gradient Mask" in labels and "Circle Mask" in labels, labels
+        # Native style: one flat column of builtin icons, no section headers.
+        assert not [call for call in Owner.layout.calls if call[0] in {"label", "column", "split", "grid_flow"}]
+        assert all("icon" in call[2] for call in Owner.layout.calls if call[0] == "operator")
+        Owner.layout = StubLayout()
+        native.FBP_MT_ModifierAddImage.draw(Owner, bpy.context)
+        submenus = [call[2].get("text") for call in Owner.layout.calls if call[0] == "menu"]
+        assert submenus[:2] == ["Color", "Light"], submenus
+        assert any(call[0] == "prop" for call in Owner.layout.calls)
+        Owner.layout = StubLayout()
+        native._IMAGE_SECTION_MENUS[0].draw(Owner, bpy.context)
+        ops = [call for call in Owner.layout.calls if call[0] == "operator"]
+        assert any(call[2].get("text") == "Vignette" and call[1][0] == "fbp.add_effect_modifier" for call in ops), ops
         Owner.layout = StubLayout()
         native.FBP_MT_ModifierAddMesh.draw(Owner, bpy.context)
         labels = [call[2].get("text") for call in Owner.layout.calls if call[0] == "operator"]
@@ -234,6 +248,33 @@ def _render_setup(name):
 
 def _difference(first, second):
     return max(abs(a - b) for a, b in zip(first, second))
+
+
+def test_add_image_modifier():
+    geo, native, shells = _modules()
+    scene = bpy.context.scene
+    registered = hasattr(bpy.types, "FBP_OT_add_effect_modifier") or "add_effect_modifier" in dir(bpy.ops.fbp)
+    if not registered:
+        bpy.utils.register_class(native.FBP_OT_AddEffectModifier)
+    rig = _rig("FBP Native Add Image")
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        scene.fbp_preview_native_effect_shells = True
+        assert bpy.ops.fbp.add_effect_modifier(effect_id="VIGNETTE") == {"FINISHED"}
+        assert geo.fbp_effect_is_active(rig, "VIGNETTE")
+        assert [shells.fbp_shell_token(mod) for mod in shells.fbp_shell_modifiers(rig)], "Vignette must land as a modifier"
+        scene.fbp_preview_native_effect_shells = False
+        assert bpy.ops.fbp.add_effect_modifier(effect_id="POSTERIZE") == {"FINISHED"}
+        assert geo.fbp_effect_is_active(rig, "POSTERIZE")
+        assert len(shells.fbp_shell_modifiers(rig)) == 1, "preview off adds to the stack only"
+    finally:
+        scene.fbp_preview_native_effect_shells = False
+        _remove(rig)
+        if not registered:
+            bpy.utils.unregister_class(native.FBP_OT_AddEffectModifier)
 
 
 def test_effect_shells():
@@ -344,7 +385,7 @@ def test_effect_shells():
 
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
-    test_effect_shells,
+    test_add_image_modifier, test_effect_shells,
 )
 
 failed = []
