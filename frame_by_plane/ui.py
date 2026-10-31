@@ -4689,6 +4689,7 @@ class FBP_OT_RigShapePopup(Operator):
         if rig is None:
             layout.label(text="Layer no longer exists", icon='ERROR')
             return
+        layout.prop(rig, "fbp_rig_visible", text="Show Rig", toggle=True, icon='MOD_MESHDEFORM')
         layout.prop(rig, "fbp_rig_shape", text="Shape")
         if str(getattr(rig, "fbp_rig_shape", "DEFAULT")) == 'ALPHA':
             row = layout.row(align=True)

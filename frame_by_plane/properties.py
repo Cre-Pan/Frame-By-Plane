@@ -883,6 +883,16 @@ class FBP_AddonPreferences(AddonPreferences):
         default=True,
         update=update_shortcut_preferences_cb,
     )
+    rig_show_on_new_layers: BoolProperty(
+        name="Show Rig on New Layers",
+        description="New layers show their controller wire; off keeps it hidden and you select layers by clicking their visible pixels",
+        default=False,
+    )
+    rig_select_by_image: BoolProperty(
+        name="Rig Layers: Click Image Too",
+        description="Layers that show their rig can also be selected by clicking their visible pixels; off selects them only from the rig wire",
+        default=False,
+    )
     shortcut_viewport_pie: BoolProperty(
         name="Viewport Pie",
         description="Use Z for the native Blender Frame By Plane Pie Menu",
@@ -2140,6 +2150,9 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'shortcut_group_layers', text=f"{primary_shortcut_label('G')} · Collection", toggle=True, icon='OUTLINER_COLLECTION')
                 row = _row(body)
                 row.prop(self, 'shortcut_click_through_alpha', text='Click · Through Transparency', toggle=True, icon='RESTRICT_SELECT_OFF')
+                row = _row(body)
+                row.prop(self, 'rig_show_on_new_layers', text='Show Rig on New Layers', toggle=True, icon='MOD_MESHDEFORM')
+                row.prop(self, 'rig_select_by_image', text='Rig Layers: Click Image Too', toggle=True, icon='IMAGE_DATA')
                 row = _row(body)
                 row.prop(self, 'shortcut_gp_alt_s_guard', text=f"{alt_shortcut_label('S')} · GP Radius", toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row = _row(body)
@@ -5090,6 +5103,12 @@ def register_properties():
             ('PERFECT', "Perfect Shape", "Preserve a square, circle or regular polygon", fbp_icon("MESH_CIRCLE"), 1),
         ),
         default='FIT_PLANE',
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_visible = BoolProperty(
+        name="Show Rig",
+        description="Show this layer's controller wire. When hidden, click the visible pixels of the image to select the layer; an outline marks it while selected",
+        default=True,
         update=update_rig_shape_cb,
     )
     _FBP_OBJECT_RNA.fbp_rig_shape_alpha_style = EnumProperty(

@@ -476,6 +476,94 @@ def _fbp_alpha_rig_geometry(rig, margin):
     return verts, edges
 
 
+_FBP_RIG_WIRE_CACHE = globals().get("_FBP_RIG_WIRE_CACHE", {})
+if not isinstance(_FBP_RIG_WIRE_CACHE, dict):
+    _FBP_RIG_WIRE_CACHE = {}
+
+
+def fbp_show_rig_on_new_layers():
+    try:
+        from .interface_preferences import fbp_get_addon_preferences
+        preferences = fbp_get_addon_preferences()
+        return bool(getattr(preferences, "rig_show_on_new_layers", False)) if preferences else False
+    except (ImportError, AttributeError, ReferenceError, RuntimeError):
+        return False
+
+
+def fbp_rig_wire_visible(rig):
+    """True when the layer shows its rig wire (Show Rig); Custom always shows."""
+    if str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper() == "CUSTOM":
+        return True
+    return bool(getattr(rig, "fbp_rig_visible", True))
+
+
+def _fbp_write_rig_wire(rig, mesh, verts, edges):
+    """Store the wire outline and write it to the rig mesh.
+
+    With Show Rig off the mesh keeps only the outline points (no edges), so
+    Blender draws nothing while bounds, framing and transforms still work.
+    The selection overlay draws the cached outline instead.
+    """
+    verts = [tuple(float(value) for value in vert) for vert in verts]
+    edges = [tuple(int(value) for value in edge) for edge in edges]
+    _FBP_RIG_WIRE_CACHE[_fbp_alpha_follow_key(rig)] = (verts, edges)
+    mesh.clear_geometry()
+    mesh.from_pydata(verts, edges if fbp_rig_wire_visible(rig) else [], [])
+    mesh.update()
+
+
+def _fbp_rig_shape_wire(rig, shape):
+    """Rig-space (verts, edges) for a preset or Alpha Outline shape."""
+    fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
+    half_extents = None
+    center = (0.0, 0.0)
+    margin = fbp_rig_shape_margin(rig)
+    bounds = _fbp_plane_mesh_bounds_in_rig_space(rig)
+    if bounds is not None:
+        min_x, max_x, min_y, max_y = bounds
+        # Both fit modes follow the visible (cropped) plane, so a cropped
+        # layer or a moved origin never leaves the wire off the image.
+        center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
+    if fit_mode == "FIT_PLANE" or shape in {"DEFAULT", "ALPHA"}:
+        if bounds is not None:
+            half_extents = (
+                max(0.0001, (max_x - min_x) * 0.5 + margin),
+                max(0.0001, (max_y - min_y) * 0.5 + margin),
+            )
+        else:
+            aspect_x, aspect_y = fbp_native_aspect_half_extents(rig)
+            half_extents = (
+                max(0.0001, aspect_x + margin),
+                max(0.0001, aspect_y + margin),
+            )
+    shape_size = max(0.0002, 2.0 + margin * 2.0)
+    alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == "ALPHA" else None
+    if alpha_geometry is not None:
+        return alpha_geometry
+    verts, edges = _fbp_rig_shape_geometry(shape, size=shape_size, half_extents=half_extents, center=center)
+    return _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig)), edges
+
+
+def fbp_rig_outline_geometry(rig):
+    """Rig-space outline for the selection overlay (cached, computed on demand)."""
+    if rig is None:
+        return None
+    cached = _FBP_RIG_WIRE_CACHE.get(_fbp_alpha_follow_key(rig))
+    if cached is not None:
+        return cached
+    shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper()
+    if shape == "CUSTOM":
+        return None
+    try:
+        verts, edges = _fbp_rig_shape_wire(rig, shape)
+    except Exception as exc:
+        _fbp_warn("Could not build the rig outline", exc)
+        return None
+    result = ([tuple(v) for v in verts], [tuple(e) for e in edges])
+    _FBP_RIG_WIRE_CACHE[_fbp_alpha_follow_key(rig)] = result
+    return result
+
+
 def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
     """Replace only the control-rig wire mesh, preserving plane/media/effects."""
     if rig is None or not bool(getattr(rig, "is_fbp_control", False)):
@@ -492,37 +580,8 @@ def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
         if str(getattr(rig, "mode", "OBJECT") or "OBJECT") != "OBJECT":
             return False
         fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
-        half_extents = None
-        center = (0.0, 0.0)
-        margin = fbp_rig_shape_margin(rig)
-        bounds = _fbp_plane_mesh_bounds_in_rig_space(rig)
-        if bounds is not None:
-            min_x, max_x, min_y, max_y = bounds
-            # Both fit modes follow the visible (cropped) plane, so a cropped
-            # layer or a moved origin never leaves the wire off the image.
-            center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
-        if fit_mode == "FIT_PLANE" or shape in {"DEFAULT", "ALPHA"}:
-            if bounds is not None:
-                half_extents = (
-                    max(0.0001, (max_x - min_x) * 0.5 + margin),
-                    max(0.0001, (max_y - min_y) * 0.5 + margin),
-                )
-            else:
-                aspect_x, aspect_y = fbp_native_aspect_half_extents(rig)
-                half_extents = (
-                    max(0.0001, aspect_x + margin),
-                    max(0.0001, aspect_y + margin),
-                )
-        shape_size = max(0.0002, 2.0 + margin * 2.0)
-        alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == "ALPHA" else None
-        if alpha_geometry is not None:
-            verts, edges = alpha_geometry
-        else:
-            verts, edges = _fbp_rig_shape_geometry(shape, size=shape_size, half_extents=half_extents, center=center)
-            verts = _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig))
-        mesh.clear_geometry()
-        mesh.from_pydata(verts, edges, [])
-        mesh.update()
+        verts, edges = _fbp_rig_shape_wire(rig, shape)
+        _fbp_write_rig_wire(rig, mesh, verts, edges)
         mesh["fbp_rig_shape"] = shape
         mesh["fbp_rig_shape_fit_mode"] = fit_mode
         rig.update_tag()
@@ -698,7 +757,6 @@ def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=
         min_x, max_x = float(min_x) - margin, float(max_x) + margin
         min_y, max_y = float(min_y) - margin, float(max_y) + margin
         mesh = rig.data
-        mesh.clear_geometry()
         fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
         half_extents = None
         center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
@@ -713,8 +771,7 @@ def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=
                 shape, size=shape_size, half_extents=half_extents, center=center
             )
             verts = _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig))
-        mesh.from_pydata(verts, edges, [])
-        mesh.update()
+        _fbp_write_rig_wire(rig, mesh, verts, edges)
         return True
     except Exception as exc:
         _fbp_warn("Could not update rig frame mesh bounds", exc)
@@ -818,6 +875,13 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
         tag_layer_contract(rig)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
+    try:
+        # Like image layers, new colour planes hide their rig wire unless the
+        # Show Rig on New Layers preference is on; click the plane to select.
+        fbp_set_rna_property_silent(rig, 'fbp_rig_visible', fbp_show_rig_on_new_layers())
+        fbp_apply_rig_shape(rig)
+    except FBP_DATA_IO_ERRORS as exc:
+        _fbp_warn('Could not apply the default rig visibility', exc)
     return rig
 
 # SECTION 04 - Plane Extension / Crop Geometry #
@@ -1240,6 +1304,7 @@ def build_fbp_rig(
         # Layers without readable alpha (videos) keep the rectangle fallback.
         try:
             fbp_set_rna_property_silent(rig, "fbp_rig_shape", "ALPHA")
+            fbp_set_rna_property_silent(rig, "fbp_rig_visible", fbp_show_rig_on_new_layers())
             fbp_apply_rig_shape(rig, "ALPHA")
         except FBP_DATA_IO_ERRORS as exc:
             _fbp_warn("Could not apply the default Alpha Outline", exc)

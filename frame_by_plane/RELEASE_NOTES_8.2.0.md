@@ -20,7 +20,7 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet 
 - 💬 **Shorter tooltips:** one short sentence per operator and per effect.
 - ✂️ **Crop Alpha:** one button in Crop crops the selected layers to their visible pixels without moving them. Image sequences use the union of every frame.
 - 🔲 **Alpha Outline rig shape (default for new image layers):** the layer's controller follows the visible pixels of the image, **Smooth** (curves that keep sharp corners sharp) or **Pixel** (stepped), with a Detail slider. With **Follow Frame** an image sequence's outline follows the drawing shown on each frame. It updates with Crop and Expand.
-- 👆 **Click Through Transparency:** click on an image's visible pixels to select its layer; clicks on transparent pixels reach the layer behind. On by default, switchable in Preferences > Shortcuts.
+- 👆 **Rig hidden, click the image:** new layers hide their controller wire. Click an image's visible pixels to select its layer, and clicks on transparent pixels reach the layer behind; a thin outline marks the selected layer. **Show Rig** (Rig Shape popup) brings the wire back per layer, and layers that show it are picked from the wire only, unless **Rig Layers: Click Image Too** is on. Preferences > Shortcuts holds both options plus **Show Rig on New Layers**.
 
 ### 🛠️ Fixes in 8.2.0
 

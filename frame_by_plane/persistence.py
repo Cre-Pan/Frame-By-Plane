@@ -66,6 +66,7 @@ _FBP_PERSISTENCE_LAYER_PROPERTIES = (
     "fbp_rig_shape_alpha_style",
     "fbp_rig_shape_alpha_detail",
     "fbp_rig_shape_alpha_follow",
+    "fbp_rig_visible",
     "fbp_sequence_show_frames",
     "fbp_depth_order",
     "fbp_loop_mode",

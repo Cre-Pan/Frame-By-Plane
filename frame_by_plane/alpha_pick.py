@@ -4,8 +4,10 @@ Frame By Plane image planes are not selectable themselves; a layer is picked
 through its control rig. This operator runs before Blender's click select in
 Object Mode: it walks the view ray through the scene, skips planes whose
 pixel under the cursor is transparent and selects the layer of the first
-visible pixel. Anything else (no plane hit, a regular object in front, a
-locked layer) is passed through to Blender's own selection untouched.
+visible pixel. Layers that show their rig wire are skipped (picked from the
+wire) unless the "Rig Layers: Click Image Too" preference is on. Anything else
+(no plane hit, a click on a rig wire, a regular object in front, a locked
+layer) is passed through to Blender's own selection untouched.
 """
 
 from bpy.props import BoolProperty
@@ -61,7 +63,48 @@ def _uv_at_hit(obj_eval, depsgraph, world_location, world_direction):
     return None
 
 
-def fbp_pick_layer_through_alpha(context, origin, direction):
+def _select_by_image_allowed(rig, by_image_with_rig):
+    """Layers that show their rig are picked from the wire unless allowed."""
+    from .builder import fbp_rig_wire_visible
+
+    return bool(by_image_with_rig) or not fbp_rig_wire_visible(rig)
+
+
+def _rig_wire_near_cursor(context, coord, radius):
+    """True when a visible rig wire passes within ``radius`` pixels of ``coord``."""
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+    from .builder import fbp_rig_wire_visible
+
+    region = context.region
+    region_data = context.region_data
+    cx, cy = float(coord[0]), float(coord[1])
+    limit = float(radius) * float(radius)
+    for obj in tuple(getattr(context, "visible_objects", ()) or ()):
+        try:
+            if not bool(getattr(obj, "is_fbp_control", False)) or not fbp_rig_wire_visible(obj):
+                continue
+            if bool(getattr(obj, "hide_select", False)):
+                continue
+            mesh = obj.data
+            matrix = obj.matrix_world
+            points = [location_3d_to_region_2d(region, region_data, matrix @ vert.co) for vert in mesh.vertices]
+            for edge in mesh.edges:
+                a = points[edge.vertices[0]]
+                b = points[edge.vertices[1]]
+                if a is None or b is None:
+                    continue
+                dx, dy = b.x - a.x, b.y - a.y
+                length = dx * dx + dy * dy
+                t = 0.0 if length <= 1e-9 else max(0.0, min(1.0, ((cx - a.x) * dx + (cy - a.y) * dy) / length))
+                px, py = a.x + dx * t - cx, a.y + dy * t - cy
+                if px * px + py * py <= limit:
+                    return True
+        except (*FBP_DATA_ERRORS, IndexError):
+            continue
+    return False
+
+
+def fbp_pick_layer_through_alpha(context, origin, direction, *, by_image_with_rig=False):
     """Return ``(rig, hit_fbp_plane)`` for a world ray.
 
     ``rig`` is the layer whose visible pixel is hit first, or ``None``.
@@ -85,7 +128,11 @@ def fbp_pick_layer_through_alpha(context, origin, direction):
             # A regular object (or anything else) in front: Blender decides.
             return None, crossed_plane
         crossed_plane = True
-        selectable = not bool(getattr(rig, "hide_select", False)) and rig.visible_get()
+        selectable = (
+            not bool(getattr(rig, "hide_select", False))
+            and rig.visible_get()
+            and _select_by_image_allowed(rig, by_image_with_rig)
+        )
         if selectable:
             uv = _uv_at_hit(obj, depsgraph, location, direction)
             visible = True
@@ -96,6 +143,22 @@ def fbp_pick_layer_through_alpha(context, origin, direction):
                 return rig, True
         origin = location + direction * 1.0e-4
     return None, crossed_plane
+
+
+def _ui_scale(context):
+    try:
+        return float(context.preferences.system.ui_scale) or 1.0
+    except FBP_DATA_ERRORS:
+        return 1.0
+
+
+def _by_image_with_rig():
+    try:
+        from .interface_preferences import fbp_get_addon_preferences
+        preferences = fbp_get_addon_preferences()
+        return bool(getattr(preferences, "rig_select_by_image", False)) if preferences else False
+    except (ImportError, AttributeError, ReferenceError, RuntimeError):
+        return False
 
 
 class FBP_OT_SelectThroughAlpha(Operator):
@@ -123,9 +186,14 @@ class FBP_OT_SelectThroughAlpha(Operator):
         region_data = context.region_data
         coord = (event.mouse_region_x, event.mouse_region_y)
         try:
+            # A click on (or right next to) a visible rig wire stays Blender's.
+            if _rig_wire_near_cursor(context, coord, 8.0 * _ui_scale(context)):
+                return {'PASS_THROUGH'}
             origin = view3d_utils.region_2d_to_origin_3d(region, region_data, coord)
             direction = view3d_utils.region_2d_to_vector_3d(region, region_data, coord)
-            rig, _crossed_plane = fbp_pick_layer_through_alpha(context, origin, direction)
+            rig, _crossed_plane = fbp_pick_layer_through_alpha(
+                context, origin, direction, by_image_with_rig=_by_image_with_rig(),
+            )
         except (*FBP_DATA_ERRORS, ValueError):
             return {'PASS_THROUGH'}
         if rig is None:
