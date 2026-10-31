@@ -146,26 +146,29 @@ def test_modifier_add_menu():
         assert [(call[2]["text"], call[2]["icon"]) for call in entry] == [
             ("Mesh", "MESH_MONKEY"), ("Image", "IMAGE_DATA"), ("Mask", "MOD_MASK"),
         ], entry
-        Owner.layout = StubLayout()
-        native.FBP_MT_ModifierAddMask.draw(Owner, bpy.context)
-        labels = [call[2].get("text") for call in Owner.layout.calls if call[0] == "operator"]
-        assert "Gradient Mask" in labels and "Circle Mask" in labels, labels
-        # Native style: one flat column of builtin icons, no section headers.
-        assert not [call for call in Owner.layout.calls if call[0] in {"label", "column", "split", "grid_flow"}]
-        assert all("icon" in call[2] for call in Owner.layout.calls if call[0] == "operator")
-        Owner.layout = StubLayout()
-        native.FBP_MT_ModifierAddImage.draw(Owner, bpy.context)
-        submenus = [call[2].get("text") for call in Owner.layout.calls if call[0] == "menu"]
-        assert submenus[:2] == ["Color", "Light"], submenus
-        assert any(call[0] == "prop" for call in Owner.layout.calls)
-        Owner.layout = StubLayout()
-        native._IMAGE_SECTION_MENUS[0].draw(Owner, bpy.context)
-        ops = [call for call in Owner.layout.calls if call[0] == "operator"]
-        assert any(call[2].get("text") == "Vignette" and call[1][0] == "fbp.add_effect_modifier" for call in ops), ops
-        Owner.layout = StubLayout()
-        native.FBP_MT_ModifierAddMesh.draw(Owner, bpy.context)
-        labels = [call[2].get("text") for call in Owner.layout.calls if call[0] == "operator"]
+        def drawn(menu):
+            Owner.layout = StubLayout()
+            menu.draw(Owner, bpy.context)
+            calls = Owner.layout.calls
+            ops = [call for call in calls if call[0] == "operator"]
+            headers = [call[2].get("text") for call in calls if call[0] == "label"]
+            return calls, ops, headers
+
+        # Classic divided columns: titled sections, FBP artwork icons.
+        calls, ops, headers = drawn(native.FBP_MT_ModifierAddMask)
+        labels = [call[2].get("text") for call in ops]
+        assert sorted(labels) == ["Circle Mask", "Gradient Mask", "Square Mask"], labels
+        assert headers == ["Shape", "Nodes"], headers
+        assert all("icon_value" in call[2] or "icon" in call[2] for call in ops)
+        calls, ops, headers = drawn(native.FBP_MT_ModifierAddImage)
+        labels = [call[2].get("text") for call in ops]
+        assert len(labels) == 3 and "Vignette" in labels and "Posterize" in labels, labels
+        assert all(call[1][0] == "fbp.add_effect_modifier" for call in ops), ops
+        assert headers == ["Color"], headers
+        calls, ops, headers = drawn(native.FBP_MT_ModifierAddMesh)
+        labels = [call[2].get("text") for call in ops]
         assert "Mesh Wiggle" in labels and "Paper Shards" in labels, labels
+        assert "Camera & Layout" in headers and "New User Effect" not in labels, (headers, labels)
         Owner.layout = StubLayout()
         geo.FBP_MT_AddEffect.draw(Owner, bpy.context)
         menus = [call[2].get("text") for call in Owner.layout.calls if call[0] == "menu"]
@@ -269,7 +272,8 @@ def test_add_image_modifier():
         scene.fbp_preview_native_effect_shells = False
         assert bpy.ops.fbp.add_effect_modifier(effect_id="POSTERIZE") == {"FINISHED"}
         assert geo.fbp_effect_is_active(rig, "POSTERIZE")
-        assert len(shells.fbp_shell_modifiers(rig)) == 1, "preview off adds to the stack only"
+        assert scene.fbp_preview_native_effect_shells, "adding from Add Modifier opts into the preview"
+        assert len(shells.fbp_shell_modifiers(rig)) == 2
     finally:
         scene.fbp_preview_native_effect_shells = False
         _remove(rig)

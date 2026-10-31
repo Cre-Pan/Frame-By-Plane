@@ -625,15 +625,15 @@ def _context_layer(context):
     return rig, plane
 
 
-def _native_item_icon(effect_id, fallback="MODIFIER"):
-    """Built-in Blender icon for one effect, like the native modifier menus."""
-    from .ui_icons import fbp_icon
+def _item_icon_kwargs(effect_id, fallback="MODIFIER"):
+    """Frame By Plane effect artwork when there is one, else its Blender icon."""
+    from .ui_icons import effect_icon_kwargs
     definition = _geo().fbp_effect_definition(effect_id) or {}
-    return fbp_icon(str(definition.get("icon", fallback) or fallback))
+    return effect_icon_kwargs(effect_id, str(definition.get("icon", fallback) or fallback))
 
 
 def _draw_native_items(layout, context, tokens):
-    """Draw one flat, single-column list of add entries (native menu style)."""
+    """Draw the add entries of one menu section, one per row."""
     geo = _geo()
     rigs, active_effects = geo._fbp_effect_add_menu_state(context)
     layout.operator_context = "INVOKE_REGION_WIN"
@@ -651,7 +651,7 @@ def _draw_native_items(layout, context, tokens):
             row.enabled = bool(rigs) and not on_every_rig("GREASE_PENCIL_MASK")
             row.operator(
                 "fbp.add_grease_pencil_mask", text="Grease Pencil Mask",
-                icon="OUTLINER_OB_GREASEPENCIL",
+                **_item_icon_kwargs("GREASE_PENCIL_MASK", "OUTLINER_OB_GREASEPENCIL"),
             )
             continue
         if token == "LAYER_BLEND_CONTROL":
@@ -678,21 +678,78 @@ def _draw_native_items(layout, context, tokens):
         ) and not on_every_rig(effect_id)
         op = row.operator(
             FBP_OT_AddEffectModifier.bl_idname,
-            text=geo._fbp_effect_display_label(effect_id, definition),
-            icon=_native_item_icon(effect_id),
+            text=str(definition.get("label", "") or geo._fbp_effect_display_label(effect_id, definition)),
+            **_item_icon_kwargs(effect_id),
         )
         op.effect_id = effect_id
 
 
-def _draw_native_sections(layout, context, view, sections):
-    for index, (_title, _icon, tokens) in enumerate(sections):
-        if index:
-            layout.separator()
-        _draw_native_items(layout, context, tokens)
-    custom = tuple(_geo()._fbp_custom_effect_ids_for_view(view))
-    if custom:
-        layout.separator()
-        _draw_native_items(layout, context, custom)
+def _section_title(title):
+    title = str(title or "")
+    return title.title() if title.isupper() else title
+
+
+def _draw_native_columns(layout, context, sections, column_groups, only=None):
+    """Draw sections as divided columns, like Blender's classic Add Modifier.
+
+    Each column carries one or more titled sections under a separator line.
+    ``only`` keeps just the effects that already work as native modifiers;
+    sections left empty disappear and the remaining ones fill the columns.
+    """
+    geo = _geo()
+    kept, placed = [], set()
+    for title, _icon, tokens in sections:
+        if only is not None:
+            expanded = []
+            for token in tokens:
+                token = str(token or "")
+                if token.startswith("FAMILY:"):
+                    family = geo.fbp_effect_family_definition(token.split(":", 1)[1].upper())
+                    expanded.extend(variant for variant, _label in family.get("variants", ()))
+                else:
+                    expanded.append(token)
+            tokens = tuple(token for token in expanded if token.upper() in only)
+            placed.update(tokens)
+        kept.append((title, tuple(tokens)))
+    if only is not None:
+        # Modifier-ready effects that the curated library reaches another way
+        # (Posterize lives outside its sections) join the first shown section.
+        view_ids = {
+            str(token).upper()
+            for _title, _icon, tokens in sections for token in tokens
+            if not str(token).startswith("FAMILY:")
+        }
+        categories = {
+            str((geo.fbp_effect_definition(token) or {}).get("category", "") or "")
+            for token in view_ids
+        }
+        missing = tuple(
+            effect_id for effect_id in only
+            if effect_id not in placed
+            and str((geo.fbp_effect_definition(effect_id) or {}).get("category", "") or "") in categories
+        )
+        first = next((index for index, (_t, tokens) in enumerate(kept) if tokens), None)
+        if missing and first is not None:
+            kept[first] = (kept[first][0], kept[first][1] + missing)
+    groups = [
+        [index for index in group if kept[index][1]]
+        for group in column_groups
+    ]
+    groups = [group for group in groups if group]
+    if not groups:
+        layout.label(text="No effects available", icon="INFO")
+        return
+    layout.operator_context = "INVOKE_REGION_WIN"
+    columns = layout.row(align=False)
+    for group in groups:
+        column = columns.column(align=False)
+        for local_index, index in enumerate(group):
+            if local_index:
+                column.separator()
+            title, tokens = kept[index]
+            column.label(text=_section_title(title))
+            column.separator(type="LINE")
+            _draw_native_items(column, context, tokens)
 
 
 class FBP_OT_AddEffectModifier(bpy.types.Operator):
@@ -722,10 +779,14 @@ class FBP_OT_AddEffectModifier(bpy.types.Operator):
         result = geo.FBP_OT_AddEffect.execute(self, context)
         if "FINISHED" not in result:
             return {"CANCELLED"}
-        # Image effects and masks have no Blender modifier of their own: with
-        # the preview enabled the supported ones get a shell, so the entry
-        # really lands in the Modifiers panel the artist added it from.
-        if effect_shells.fbp_shell_supported(effect_id) and effect_shells.fbp_shells_enabled(context.scene):
+        # Image effects and masks have no Blender modifier of their own: the
+        # supported ones get a shell, so the entry really lands in the
+        # Modifiers panel the artist added it from. Adding one from there is
+        # the explicit opt-in to the Image Effects as Modifiers preview.
+        if effect_shells.fbp_shell_supported(effect_id):
+            scene = context.scene
+            if not effect_shells.fbp_shells_enabled(scene) and hasattr(scene, _SHELL_SCENE_PROPERTY):
+                setattr(scene, _SHELL_SCENE_PROPERTY, True)
             for rig in rigs:
                 added = [
                     token for token in geo._fbp_mixed_effect_tokens(rig)
@@ -746,70 +807,43 @@ class FBP_MT_ModifierAddMesh(Menu):
     bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
-        _draw_native_sections(self.layout, context, "3D", _geo().FBP_MESH_EFFECT_MENU_SECTIONS)
-
-
-class FBP_MT_ModifierAddMask(Menu):
-    bl_idname = "FBP_MT_modifier_add_mask"
-    bl_label = _MASK_MENU_LABEL
-    bl_description = "Frame By Plane masks that mask the whole layer"
-    bl_options = {"SEARCH_ON_KEY_PRESS"}
-
-    def draw(self, context):
-        _draw_native_sections(self.layout, context, "MASK", _geo().FBP_MASK_EFFECT_MENU_SECTIONS)
-
-
-def _image_section_menu(index, title):
-    """One Image submenu per effect category, like Blender's own categories."""
-
-    def draw(self, context):
-        section = _geo().FBP_IMAGE_EFFECT_MENU_SECTIONS[index]
-        _draw_native_items(self.layout, context, section[2])
-
-    return type(
-        f"FBP_MT_modifier_add_image_{index}",
-        (Menu,),
-        {
-            "bl_idname": f"FBP_MT_modifier_add_image_{index}",
-            "bl_label": str(title).title() if str(title).isupper() else str(title),
-            "bl_options": {"SEARCH_ON_KEY_PRESS"},
-            "draw": draw,
-        },
-    )
-
-
-def _image_menus():
-    from .effects_registry import FBP_IMAGE_EFFECT_MENU_SECTIONS
-    return tuple(
-        _image_section_menu(index, title)
-        for index, (title, _icon, _tokens) in enumerate(FBP_IMAGE_EFFECT_MENU_SECTIONS)
-    )
-
-
-_IMAGE_SECTION_MENUS = _image_menus()
+        geo = _geo()
+        _draw_native_columns(
+            self.layout, context,
+            geo.FBP_MESH_EFFECT_MENU_SECTIONS, geo.FBP_MESH_EFFECT_MENU_COLUMNS,
+        )
 
 
 class FBP_MT_ModifierAddImage(Menu):
     bl_idname = "FBP_MT_modifier_add_image"
     bl_label = _IMAGE_MENU_LABEL
-    bl_description = "Frame By Plane image effects for the selected layer"
+    bl_description = "Frame By Plane image effects that work as modifiers"
     bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
-        from . import effect_shells
-        layout = self.layout
-        for menu in _IMAGE_SECTION_MENUS:
-            layout.menu(menu.bl_idname, text=menu.bl_label)
-        custom = tuple(_geo()._fbp_custom_effect_ids_for_view("2D"))
-        if custom:
-            layout.separator()
-            _draw_native_items(layout, context, custom)
-        scene = getattr(context, "scene", None)
-        if scene is not None and hasattr(scene, _SHELL_SCENE_PROPERTY):
-            layout.separator()
-            layout.prop(scene, _SHELL_SCENE_PROPERTY, text="Show as Modifiers (Preview)")
-            if not effect_shells.fbp_shells_enabled(scene):
-                layout.label(text="Off: effects are added to the Frame By Plane stack", icon="INFO")
+        from .effect_shells import FBP_SHELL_EFFECTS
+        geo = _geo()
+        _draw_native_columns(
+            self.layout, context,
+            geo.FBP_IMAGE_EFFECT_MENU_SECTIONS, geo.FBP_IMAGE_EFFECT_MENU_COLUMNS,
+            only=FBP_SHELL_EFFECTS,
+        )
+
+
+class FBP_MT_ModifierAddMask(Menu):
+    bl_idname = "FBP_MT_modifier_add_mask"
+    bl_label = _MASK_MENU_LABEL
+    bl_description = "Frame By Plane masks for the whole layer that work as modifiers"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
+
+    def draw(self, context):
+        from .effect_shells import FBP_SHELL_EFFECTS
+        geo = _geo()
+        _draw_native_columns(
+            self.layout, context,
+            geo.FBP_MASK_EFFECT_MENU_SECTIONS, geo.FBP_MASK_EFFECT_MENU_COLUMNS,
+            only=FBP_SHELL_EFFECTS,
+        )
 
 
 def draw_modifier_add_mesh(self, context):
@@ -827,7 +861,6 @@ classes = (
     FBP_OT_AddEffectModifier,
     FBP_MT_ModifierAddMesh,
     FBP_MT_ModifierAddMask,
-    *_IMAGE_SECTION_MENUS,
     FBP_MT_ModifierAddImage,
 )
 
