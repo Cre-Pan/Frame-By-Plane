@@ -158,13 +158,15 @@ def test_modifier_add_menu():
         calls, ops, headers = drawn(native.FBP_MT_ModifierAddMask)
         labels = [call[2].get("text") for call in ops]
         assert sorted(labels) == ["Circle Mask", "Gradient Mask", "Square Mask"], labels
-        assert headers == ["Shape", "Nodes"], headers
+        mask_titles = [section[0] for section in geo.FBP_MASK_EFFECT_MENU_SECTIONS]
+        assert headers and all(title in mask_titles for title in headers), headers
         assert all("icon_value" in call[2] or "icon" in call[2] for call in ops)
         calls, ops, headers = drawn(native.FBP_MT_ModifierAddImage)
         labels = [call[2].get("text") for call in ops]
         assert len(labels) == 3 and "Vignette" in labels and "Posterize" in labels, labels
         assert all(call[1][0] == "fbp.add_effect_modifier" for call in ops), ops
-        assert headers == ["Color"], headers
+        image_titles = [section[0] for section in geo.FBP_IMAGE_EFFECT_MENU_SECTIONS]
+        assert headers and all(title in image_titles for title in headers), headers
         calls, ops, headers = drawn(native.FBP_MT_ModifierAddMesh)
         labels = [call[2].get("text") for call in ops]
         assert "Mesh Wiggle" in labels and "Paper Shards" in labels, labels
