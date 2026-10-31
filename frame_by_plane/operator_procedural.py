@@ -4,6 +4,7 @@ import json
 
 import bpy
 from bpy.props import (
+    IntProperty,
     StringProperty,
 )
 from bpy.types import Operator
@@ -27,7 +28,7 @@ from .layers import (
 )
 from .scene_sync import sync_layer_collection
 from .runtime import fbp_set_rna_property_silent, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
-from .core import update_object_padding_cb
+from .core import fbp_refresh_crop_extend, update_object_padding_cb
 from .ui_style import configure_layout, hint_row, section_gap, section_header
 from .operator_common import (
     _fbp_refresh_layer_tree,
@@ -158,6 +159,8 @@ def _draw_crop_extend_popup(operator, context, mode):
     row.prop(rig, f"{prefix}_right", text="Right", slider=True)
     box.prop(rig, f"{prefix}_bottom", text="Bottom", slider=True)
     section_gap(layout)
+    if is_crop:
+        layout.operator("fbp.crop_alpha", text="Crop Alpha", icon=fbp_icon("IMAGE_ALPHA"))
     layout.operator(
         "fbp.reset_crop" if is_crop else "fbp.reset_extend",
         text="Reset Crop" if is_crop else "Reset Extend",
@@ -260,6 +263,91 @@ class FBP_OT_ResetCrop(Operator):
             )
         self.report({'INFO'}, f"Reset Crop on {len(rigs)} layer(s)")
         return {'FINISHED'} if rigs else {'CANCELLED'}
+
+def fbp_crop_rig_to_alpha(rig, context, padding=0):
+    """Crop one layer to the union of its visible pixels.
+
+    Returns "APPLIED", "FULL" (already tight), "EMPTY" or "UNAVAILABLE".
+    The pivot and transform are untouched, exactly like the Crop handles.
+    """
+    from .builder import fbp_rig_alpha_union
+    from .rig_alpha_shape import crop_fractions_for_union
+
+    union = fbp_rig_alpha_union(rig)
+    if union is None:
+        return "UNAVAILABLE"
+    try:
+        source_width = int(rig.get("fbp_source_width", 0) or 0)
+        source_height = int(rig.get("fbp_source_height", 0) or 0)
+    except FBP_DATA_ERRORS:
+        source_width = source_height = 0
+    if source_width > 0 and source_height > 0 and (
+        source_width != union.width or source_height != union.height
+    ):
+        return "UNAVAILABLE"
+    fractions = crop_fractions_for_union(union, padding)
+    if fractions is None:
+        return "EMPTY"
+    left, right, bottom, top = fractions
+    current = tuple(
+        float(getattr(rig, name, 0.0) or 0.0)
+        for name in ("fbp_crop_left", "fbp_crop_right", "fbp_crop_bottom", "fbp_crop_top")
+    )
+    if all(abs(a - b) <= 1.0e-6 for a, b in zip(current, fractions)):
+        return "FULL"
+    for name, value in (
+        ("fbp_crop_left", left), ("fbp_crop_right", right),
+        ("fbp_crop_bottom", bottom), ("fbp_crop_top", top),
+    ):
+        fbp_set_rna_property_silent(rig, name, float(value))
+    fbp_refresh_crop_extend(rig, context)
+    return "APPLIED"
+
+
+class FBP_OT_CropAlpha(Operator):
+    bl_idname = "fbp.crop_alpha"
+    bl_label = "Crop Alpha"
+    bl_description = (
+        "Crop the selected layers to their visible pixels without moving them; "
+        "image sequences use the union of every frame"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    padding: IntProperty(
+        name="Padding",
+        description="Transparent pixels kept around the visible pixels",
+        default=0, min=0, soft_max=32, max=256,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return bool(get_selected_rigs(context))
+
+    def execute(self, context):
+        rigs = tuple(get_selected_rigs(context) or ())
+        if not rigs:
+            self.report({'WARNING'}, "Select a Frame By Plane layer first")
+            return {'CANCELLED'}
+        results = {}
+        for rig in rigs:
+            try:
+                status = fbp_crop_rig_to_alpha(rig, context, self.padding)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, OSError):
+                status = "UNAVAILABLE"
+            results[status] = results.get(status, 0) + 1
+        applied = results.get("APPLIED", 0)
+        if applied:
+            self.report({'INFO'}, f"Crop Alpha applied to {applied} layer(s)")
+            return {'FINISHED'}
+        if results.get("FULL"):
+            self.report({'INFO'}, "Already cropped to the visible pixels")
+            return {'FINISHED'}
+        if results.get("EMPTY"):
+            self.report({'WARNING'}, "The image is fully transparent")
+        else:
+            self.report({'WARNING'}, "No readable alpha for the selected layers")
+        return {'CANCELLED'}
+
 
 class FBP_OT_ResetExtend(Operator):
     bl_idname = "fbp.reset_extend"

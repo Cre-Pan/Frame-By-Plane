@@ -18,6 +18,8 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet 
 - 🖨️ **Riso Print:** **Drift Angle**, **Print Rotation**, a real **Seed** and **Animate** with Speed and Stepped.
 - 🥧 **Z Pie:** Hide, Solo and Holdout on one row, plus Show Overlays and Show Onion Skin; Lock and Selectability only while a layer is selected. Cursor on Camera is an icon button.
 - 💬 **Shorter tooltips:** one short sentence per operator and per effect.
+- ✂️ **Crop Alpha:** one button in Crop crops the selected layers to their visible pixels without moving them. Image sequences use the union of every frame.
+- 🔲 **Alpha Outline rig shape:** the layer's controller can follow the visible pixels of the image, **Pixel** (stepped) or **Smooth** (rounded), with a Detail slider. It updates with Crop and Expand.
 
 ### 🛠️ Fixes in 8.2.0
 
@@ -30,6 +32,7 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet 
 - Paper Shards and Fiber Tufts follow the exact image alpha, and dark chips no longer sink below the plane.
 - Crosshatch: smoother line edges, and diagonal hatches use the same spacing as straight ones.
 - Files saved with the old versions of these effects are updated when opened.
+- The Rig Shape stays on the image after Crop or after moving the layer's origin: changing Shape, Fit or Expand no longer shifts the controller away from the plane, and Perfect Shape is centred on the visible (cropped) image.
 
 ## 🆕 New in 8.0.1
 
