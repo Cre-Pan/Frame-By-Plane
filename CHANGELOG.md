@@ -65,6 +65,7 @@ All notable public changes to Frame By Plane are documented here.
 - Paper Shards: chips darker than about 40% luminance sank below the plane and disappeared. Luminance Lift now raises chips from the plane (light ones for positive values, dark ones for negative values) and never pushes them under it. Files saved with the old Paper Shards are updated when opened.
 - Paper Shards and Fiber Tufts: near the edge of a cutout, chips and fibers landed on transparent pixels (and rendered black) while opaque pixels next to them stayed empty. Each chip and fiber is now tested against the exact image alpha, and files saved with the old versions are updated when opened.
 - Crosshatch: line edges are smoothed over one source pixel, which removes the jagged edges and moiré, and diagonal hatches now use the same spacing and width as the straight ones. Files saved with the old Crosshatch are updated when opened.
+- Apply Effects is faster: each frame is one Cycles bake instead of two (colour and alpha come out of the same pass), and the image is baked as one tile instead of 2048 px tiles. A single 4000 × 6000 frame with a Grease Pencil mask takes about 25 s instead of 39 s on 4 CPU threads, and 10 frames at 1080p about 8.8 s instead of 11.6 s. Half-transparent pixels also keep their colour: before, soft edges and semi-transparent areas were baked darker.
 
 ## [8.0.1] - Unreleased
 
