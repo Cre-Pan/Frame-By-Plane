@@ -11,8 +11,8 @@ Two outline styles are produced:
 * ``PIXEL`` follows the edges of the occupied cells, giving a stepped,
   pixel-art friendly silhouette.
 * ``SMOOTH`` runs marching squares on a softened mask and smooths the
-  contour into continuous curves (straight runs stay straight, steps and
-  corners become arcs).
+  contour into continuous curves; straight runs stay straight, pixel steps
+  become curves and real corners stay sharp.
 """
 
 from __future__ import annotations
@@ -409,46 +409,52 @@ def _marching_squares_loops(field, iso=0.5):
         links.setdefault(a, []).append(b)
         links.setdefault(b, []).append(a)
 
-    for r in range(height - 1):
-        for c in range(width - 1):
-            tl, tr = inside[r, c], inside[r, c + 1]
-            bl, br = inside[r + 1, c], inside[r + 1, c + 1]
-            code = (tl << 3) | (tr << 2) | (br << 1) | int(bl)
-            if code in (0, 15):
-                continue
-            top = ("h", r, c)
-            bottom = ("h", r + 1, c)
-            left = ("v", r, c)
-            right = ("v", r, c + 1)
-            if code in (5, 10):
-                centre = (field[r, c] + field[r, c + 1] + field[r + 1, c] + field[r + 1, c + 1]) / 4.0
-                joined = centre >= iso
-                if code == 5:  # tr and bl inside
-                    if joined:
-                        link(top, left)
-                        link(bottom, right)
-                    else:
-                        link(top, right)
-                        link(bottom, left)
-                else:  # tl and br inside
-                    if joined:
-                        link(top, right)
-                        link(bottom, left)
-                    else:
-                        link(top, left)
-                        link(bottom, right)
-                continue
-            crossed = []
-            if tl != tr:
-                crossed.append(top)
-            if tr != br:
-                crossed.append(right)
-            if bl != br:
-                crossed.append(bottom)
-            if tl != bl:
-                crossed.append(left)
-            if len(crossed) == 2:
-                link(crossed[0], crossed[1])
+    codes = (
+        (inside[:-1, :-1].astype(np.int8) << 3)
+        | (inside[:-1, 1:].astype(np.int8) << 2)
+        | (inside[1:, 1:].astype(np.int8) << 1)
+        | inside[1:, :-1].astype(np.int8)
+    )
+    # Only cells the contour crosses need work; skip the solid and empty ones.
+    for r, c in zip(*np.nonzero((codes != 0) & (codes != 15))):
+        r = int(r)
+        c = int(c)
+        code = int(codes[r, c])
+        tl, tr = bool(code & 8), bool(code & 4)
+        br, bl = bool(code & 2), bool(code & 1)
+        top = ("h", r, c)
+        bottom = ("h", r + 1, c)
+        left = ("v", r, c)
+        right = ("v", r, c + 1)
+        if code in (5, 10):
+            centre = (field[r, c] + field[r, c + 1] + field[r + 1, c] + field[r + 1, c + 1]) / 4.0
+            joined = centre >= iso
+            if code == 5:  # tr and bl inside
+                if joined:
+                    link(top, left)
+                    link(bottom, right)
+                else:
+                    link(top, right)
+                    link(bottom, left)
+            else:  # tl and br inside
+                if joined:
+                    link(top, right)
+                    link(bottom, left)
+                else:
+                    link(top, left)
+                    link(bottom, right)
+            continue
+        crossed = []
+        if tl != tr:
+            crossed.append(top)
+        if tr != br:
+            crossed.append(right)
+        if bl != br:
+            crossed.append(bottom)
+        if tl != bl:
+            crossed.append(left)
+        if len(crossed) == 2:
+            link(crossed[0], crossed[1])
 
     loops = []
     seen = set()
@@ -545,24 +551,160 @@ def _gaussian_closed(points, sigma):
     return out
 
 
-def smooth_outline(grid, *, step=0.5, sigma_cells=2.2, tolerance=0.015):
+def _turning_angles(points, window):
+    """Turn (radians) at each sample, measured between chords ``window`` apart.
+
+    Measuring across a window ignores pixel stair steps (they alternate and
+    cancel) and keeps real corners, which turn in one direction.
+    """
+    before = points - np.roll(points, window, axis=0)
+    after = np.roll(points, -window, axis=0) - points
+    cross = before[:, 0] * after[:, 1] - before[:, 1] * after[:, 0]
+    dot = (before * after).sum(axis=1)
+    return np.abs(np.arctan2(cross, dot))
+
+
+def _find_corners(points, window, threshold):
+    """Indices of corner samples: local maxima of the turn above ``threshold``."""
+    angles = _turning_angles(points, window)
+    count = len(points)
+    flagged = angles > threshold
+    if not flagged.any():
+        return []
+    if flagged.all():
+        return []
+    corners = []
+    start = int(np.flatnonzero(~flagged)[0])
+    index = 0
+    while index < count:
+        position = (start + index) % count
+        if flagged[position]:
+            run = []
+            while index < count and flagged[(start + index) % count]:
+                run.append((start + index) % count)
+                index += 1
+            corners.append(max(run, key=lambda item: angles[item]))
+        else:
+            index += 1
+    return sorted(corners)
+
+
+def _corner_point(points, index, window):
+    """Sharp corner where the straight runs on both sides of ``index`` meet."""
+    count = len(points)
+    a0 = points[(index - 2 * window) % count]
+    a1 = points[(index - window) % count]
+    b0 = points[(index + window) % count]
+    b1 = points[(index + 2 * window) % count]
+    da = a1 - a0
+    db = b1 - b0
+    denom = da[0] * db[1] - da[1] * db[0]
+    if abs(denom) < 1e-9:
+        return points[index]
+    t = ((b0[0] - a0[0]) * db[1] - (b0[1] - a0[1]) * db[0]) / denom
+    hit = a0 + da * t
+    reach = float(np.hypot(*(b0 - a1))) + float(np.hypot(*da))
+    if float(np.hypot(*(hit - points[index]))) > reach:
+        return points[index]
+    return hit
+
+
+def _gaussian_open(points, sigma):
+    """Gaussian smoothing of an open run with its two ends held in place."""
+    count = len(points)
+    if count < 3:
+        return points
+    radius = int(max(1, round(sigma * 3.0)))
+    offsets = np.arange(-radius, radius + 1)
+    weights = np.exp(-0.5 * (offsets / max(1e-6, sigma)) ** 2)
+    weights /= weights.sum()
+    padded = np.concatenate((
+        np.repeat(points[:1], radius, axis=0), points, np.repeat(points[-1:], radius, axis=0),
+    ))
+    out = np.zeros_like(points)
+    for offset, weight in zip(offsets, weights):
+        out += weight * padded[radius + offset: radius + offset + count]
+    out[0] = points[0]
+    out[-1] = points[-1]
+    return out
+
+
+def _smooth_with_corners(dense, step, sigma_cells, corners, window):
+    """Smooth a closed contour, keeping the given corner samples sharp."""
+    if not corners or len(dense) < window * 6:
+        return _gaussian_closed(dense, sigma_cells / step)
+    count = len(dense)
+    corners = sorted(set(int(index) % count for index in corners))
+    sharp = {index: _corner_point(dense, index, window) for index in corners}
+    result = []
+    for position, corner in enumerate(corners):
+        nxt = corners[(position + 1) % len(corners)]
+        span = (nxt - corner) % count or count
+        # Skip the rounded transition right next to each corner: the run goes
+        # straight from the sharp corner into the smoothed edge.
+        trim = min(window, max(0, span // 2 - 1))
+        run = [dense[(corner + offset) % count] for offset in range(trim, span - trim + 1)]
+        if len(run) >= 2:
+            run = _gaussian_open(np.asarray(run, dtype=np.float64), sigma_cells / step)
+        result.append(sharp[corner])
+        result.extend(run)
+    return np.asarray(result, dtype=np.float64)
+
+
+def _dense_loops(grid, step):
+    loops = _marching_squares_loops(_soften(grid))
+    # Field sample (r, c) is the centre of padded cell c; lattice x = c - 1 + 0.5.
+    return [_resample_closed([(x - 0.5, y - 0.5) for x, y in loop], step) for loop in loops]
+
+
+def smooth_outline(grid, *, grow=0, step=0.5, sigma_cells=2.2, tolerance=0.015,
+                   corner_window_cells=2.5, corner_angle=0.95):
     """Return (points, edges) of smooth closed curves around occupied cells.
 
     Marching squares gives the iso contour; it is resampled evenly and
-    smoothed with a circular Gaussian, the same smoothing a dense Bezier fit
-    gives: straight runs stay straight, steps and corners become curves.
-    A light Douglas-Peucker pass then drops points the eye cannot see.
+    smoothed: straight runs stay straight, pixel steps and soft bends become
+    curves, and real corners (a sustained turn, like a box corner) stay sharp.
+    Corners are found on the silhouette itself and carried onto the outline
+    grown by ``grow`` cells, so Expand does not round them off.
     """
     _require_numpy()
-    field = _soften(grid)
-    loops = _marching_squares_loops(field)
+    grow = max(0, int(grow))
+    base_window = max(2, int(round(corner_window_cells / step)))
+    corner_points = []
+    for dense in _dense_loops(grid, step):
+        if len(dense) < base_window * 6:
+            continue
+        for index in _find_corners(dense, base_window, corner_angle):
+            corner_points.append(_corner_point(dense, index, base_window) + grow)
+    target = dilate(grid, grow) if grow else grid
+    window = max(base_window, int(np.ceil((grow * 1.2 + 1.0) / step))) if grow else base_window
+    reach = grow * 1.6 + 1.5
     points = []
     edges = []
-    for loop in loops:
-        # Field sample (r, c) is the centre of padded cell c; lattice x = c - 1 + 0.5.
-        loop = [(x - 0.5, y - 0.5) for x, y in loop]
-        dense = _resample_closed(loop, step)
-        curve = _gaussian_closed(dense, sigma_cells / step)
+    for dense in (_dense_loops(target, step) if grow else _dense_loops(grid, step)):
+        corners = []
+        turns = _turning_angles(dense, window) if len(dense) > window * 2 else None
+        for corner in corner_points:
+            distances = np.hypot(dense[:, 0] - corner[0], dense[:, 1] - corner[1])
+            nearest = int(np.argmin(distances))
+            if float(distances[nearest]) > reach or turns is None:
+                continue
+            # Keep only corners the grown outline still turns at; corners
+            # swallowed by Expand (e.g. where two shapes merge) stay smooth.
+            if float(turns[nearest]) < corner_angle * 0.8:
+                continue
+            corners.append(nearest)
+        if corners and turns is not None:
+            # Two corners closer than the tangent window would fight each
+            # other: keep the sharper one.
+            corners = sorted(set(corners), key=lambda index: -float(turns[index]))
+            kept = []
+            count = len(dense)
+            for index in corners:
+                if all(min((index - other) % count, (other - index) % count) >= window for other in kept):  # noqa: E501
+                    kept.append(index)
+            corners = kept
+        curve = _smooth_with_corners(dense, step, sigma_cells, corners, window)
         curve = _simplify_closed([(float(x), float(y)) for x, y in curve], tolerance)
         start = len(points)
         points.extend(curve)
@@ -588,11 +730,10 @@ def outline_for_union(union: AlphaUnion, uv_rect, bounds, *, style="PIXEL",
     cell_h = (y1 - y0) / float(gh)
     cell = max(1e-9, min(abs(cell_w), abs(cell_h)))
     steps = int(round(max(0.0, float(margin)) / cell)) if margin else 0
-    grown = dilate(grid, steps)
     if str(style or "PIXEL").upper() == "SMOOTH":
-        points, edges = smooth_outline(grown)
+        points, edges = smooth_outline(grid, grow=steps)
     else:
-        points, edges = pixel_outline(grown)
+        points, edges = pixel_outline(dilate(grid, steps))
     if not points or not edges:
         return None
     mapped = [

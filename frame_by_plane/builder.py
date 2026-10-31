@@ -457,7 +457,7 @@ def _fbp_alpha_rig_geometry(rig, margin):
     from . import rig_alpha_shape as alpha_shape
     try:
         _source, cropped, _extended, uv = fbp_plane_reference_bounds(rig)
-        style = str(getattr(rig, "fbp_rig_shape_alpha_style", "PIXEL") or "PIXEL").upper()
+        style = str(getattr(rig, "fbp_rig_shape_alpha_style", "SMOOTH") or "SMOOTH").upper()
         cells = int(getattr(rig, "fbp_rig_shape_alpha_detail", alpha_shape.FBP_ALPHA_OUTLINE_CELLS) or 64)
         outline = alpha_shape.outline_for_union(
             union, uv, cropped, style=style, margin=margin, cells=cells,
@@ -1236,6 +1236,13 @@ def build_fbp_rig(
             natural_order = sorted(files_list, key=natural_sort_key)
             is_reversed = files_list == list(reversed(natural_order)) and files_list != natural_order
             fbp_set_rna_property_silent(rig, "fbp_sequence_reversed", is_reversed)
+        # New image layers get a controller that follows their visible pixels.
+        # Layers without readable alpha (videos) keep the rectangle fallback.
+        try:
+            fbp_set_rna_property_silent(rig, "fbp_rig_shape", "ALPHA")
+            fbp_apply_rig_shape(rig, "ALPHA")
+        except FBP_DATA_IO_ERRORS as exc:
+            _fbp_warn("Could not apply the default Alpha Outline", exc)
         return rig
     except Exception as exc:
         _fbp_warn("Native Image Sequence import failed", exc)

@@ -345,7 +345,7 @@ RIG_SHAPE_ITEMS = [
 
 RIG_SHAPE_ALPHA_STYLE_ITEMS = [
     ('PIXEL', "Pixel", "Stepped outline along the image pixels", fbp_icon("ALIASED"), 0),
-    ('SMOOTH', "Smooth", "Rounded, curve-like outline around the image", fbp_icon("ANTIALIASED"), 1),
+    ('SMOOTH', "Smooth", "Curved outline around the image that keeps sharp corners sharp", fbp_icon("ANTIALIASED"), 1),
 ]
 
 
@@ -5096,7 +5096,7 @@ def register_properties():
         name="Outline",
         description="How the Alpha Outline controller follows the visible pixels",
         items=RIG_SHAPE_ALPHA_STYLE_ITEMS,
-        default='PIXEL',
+        default='SMOOTH',
         update=update_rig_shape_cb,
     )
     _FBP_OBJECT_RNA.fbp_rig_shape_alpha_follow = BoolProperty(
