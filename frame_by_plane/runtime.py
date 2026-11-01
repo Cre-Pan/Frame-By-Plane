@@ -23,6 +23,44 @@ _FBP_REGISTRATION_STATES = frozenset({
 })
 
 
+FBP_IMAGE_BUFFER_RELEASED_KEY = "fbp_buffer_released"
+
+
+def fbp_release_orphan_image(image):
+    """Free a zero-user generated Image's pixels without deleting the ID.
+
+    Blender 5.2 Eevee keeps raw ``Image *`` pointers inside cached GPU
+    materials (and Undo steps can restore material states that point at older
+    images). Its parallel texture loader in ``MaterialModule::end_sync`` then
+    dereferences those pointers, so ``bpy.data.images.remove`` on an Image that
+    a stale shader still lists crashes Blender with an access violation in
+    ``image_acquire_ibuf``. Freeing only the buffers keeps the ID valid while
+    returning its memory; zero-user Images are not written to the .blend file,
+    so the empty ID disappears on the next save/reload.
+    """
+    if image is None:
+        return False
+    try:
+        if int(getattr(image, "users", 0) or 0) != 0:
+            return False
+        if bool(image.get(FBP_IMAGE_BUFFER_RELEASED_KEY, False)):
+            return True
+        image.buffers_free()
+        image[FBP_IMAGE_BUFFER_RELEASED_KEY] = True
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_mark_image_in_use(image):
+    """Clear the released marker when a retired buffer is published again."""
+    try:
+        if image is not None and FBP_IMAGE_BUFFER_RELEASED_KEY in image:
+            del image[FBP_IMAGE_BUFFER_RELEASED_KEY]
+    except FBP_DATA_IO_ERRORS:
+        pass
+
+
 def fbp_set_registration_state(value):
     """Store the volatile add-on lifecycle state outside saved Blender data."""
     state = str(value or "INACTIVE").strip().upper()

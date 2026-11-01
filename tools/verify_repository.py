@@ -157,6 +157,28 @@ def main() -> None:
             + ", ".join(base_exception_catches)
         )
 
+    # Deleting an Image ID that a cached Eevee GPU material still lists
+    # crashes Blender 5.2 in image_acquire_ibuf. Runtime code must release
+    # generated buffers with fbp_release_orphan_image() instead.
+    image_remove_allowed = {
+        # A just-loaded atlas rejected before any material could use it.
+        "builtin_effects.py",
+        # Transaction rollback of IDs created inside the same operator.
+        "generation_transaction.py",
+    }
+    image_removals = [
+        str(path.relative_to(ROOT))
+        for path in ADDON.rglob("*.py")
+        if "tests" not in path.relative_to(ADDON).parts
+        and path.name not in image_remove_allowed
+        and "bpy.data.images.remove(" in path.read_text(encoding="utf-8")
+    ]
+    if image_removals:
+        fail(
+            "Runtime code deletes Image IDs (use fbp_release_orphan_image): "
+            + ", ".join(image_removals)
+        )
+
     print(f"Frame By Plane {manifest_version}: repository checks passed")
     print(f"Declared platforms: {', '.join(sorted(platforms))}")
     print(f"Bundled wheels: {len(wheels)}")
