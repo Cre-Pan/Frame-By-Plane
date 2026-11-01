@@ -7255,19 +7255,6 @@ def _fbp_frame_stack_thumbnail(path, width, height, colorspace="sRGB", is_data=F
     return result
 
 
-def fbp_clear_frame_stack_thumbnails():
-    """Drop every cached Frame Stack thumbnail and stack image signature."""
-    _FBP_FRAME_STACK_THUMBS.clear()
-    _FBP_FRAME_STACK_THUMB_BYTES[0] = 0
-    _FBP_FRAME_STACK_PATHS_CACHE.clear()
-    _FBP_FRAME_STACK_CELLS_CACHE.clear()
-    _FBP_FRAME_STACK_CANVASES.clear()
-    _FBP_FRAME_STACK_IMAGE_STATE.clear()
-    _FBP_FRAME_STACK_FAILED_PATHS.clear()
-    _FBP_FRAME_STACK_SIZES.clear()
-    _FBP_FRAME_STACK_OCIO.clear()
-
-
 def _fbp_frame_stack_slice_positions(position, cycle, loop, step, count):
     """Playback position of every slice, or ``None`` where it stays empty.
 
@@ -7294,7 +7281,13 @@ def _fbp_frame_stack_prepare_cells_image(image, owner, width, height):
     writes land in that buffer without any colour conversion.
     """
     if image is not None and not bool(image.is_float):
-        bpy.data.images.remove(image)
+        # A byte image from an earlier build. Removing image datablocks from
+        # here is unsafe, so untag it and leave it to orphan cleanup.
+        try:
+            image["fbp_frame_stack_cells"] = False
+            image.name = f"{image.name} (retired)"
+        except FBP_DATA_ERRORS:
+            pass
         image = None
     if image is None:
         image = bpy.data.images.new(
