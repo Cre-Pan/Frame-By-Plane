@@ -9,8 +9,6 @@ code to operators or scene logic.
 FBP_UI_GAP_SECTION = 0.35
 FBP_UI_ROW_SCALE = 1.0
 FBP_UI_LIST_MIN_ROWS = 7
-FBP_UI_EFFECT_MIN_ROWS = 10
-FBP_UI_EFFECT_MAX_ROWS = 14
 FBP_UI_COMPACT_WIDTH = 360.0
 _UI_METRIC_CACHE = globals().get("_UI_METRIC_CACHE", {})
 if not isinstance(_UI_METRIC_CACHE, dict):
