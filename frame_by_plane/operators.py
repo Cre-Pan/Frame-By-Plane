@@ -152,9 +152,11 @@ from .operator_render import (
     FBP_OT_StopBackgroundRender,
     FBP_OT_BackgroundRenderStatus,
 )
+from .alpha_pick import FBP_OT_SelectThroughAlpha
 from .operator_procedural import (
     FBP_OT_CreateColorPlane,
     FBP_OT_ResetCrop,
+    FBP_OT_CropAlpha,
     FBP_OT_ResetExtend,
     FBP_OT_FocusCropExtend,
     FBP_OT_PopupCrop,
@@ -199,10 +201,12 @@ def _register_keymaps():
 
     owned_ids = {
         'fbp.duplicate_or_default',
+        'fbp.delete_or_default',
         'fbp.create_layer_collection',
         'fbp.ungroup_selected_layers',
         'fbp.group_or_pass',
         'fbp.ungroup_or_pass',
+        'fbp.select_through_alpha',
     }
     remove_matching_keymap_items(
         keymap,
@@ -217,6 +221,18 @@ def _register_keymaps():
             shift=True,
         )
         _addon_keymaps.append((keymap, item))
+
+    if shortcut_enabled('shortcut_delete_layer'):
+        # X asks for confirmation and Delete does not, as in Blender. Both
+        # pass through to Blender's delete when no FBP layer is selected.
+        for key, confirm in (('X', True), ('DEL', False)):
+            item = keymap.keymap_items.new(
+                'fbp.delete_or_default',
+                type=key,
+                value='PRESS',
+            )
+            item.properties.confirm = confirm
+            _addon_keymaps.append((keymap, item))
 
     if shortcut_enabled('shortcut_group_layers'):
         group_item = keymap.keymap_items.new(
@@ -234,6 +250,23 @@ def _register_keymaps():
             **primary_modifier_kwargs(shift=True),
         )
         _addon_keymaps.append((keymap, ungroup_item))
+
+
+    if shortcut_enabled('shortcut_click_through_alpha'):
+        select_mouse = 'LEFT'
+        try:
+            keyconfig = bpy.context.window_manager.keyconfigs.active
+            select_mouse = str(getattr(getattr(keyconfig, 'preferences', None), 'select_mouse', 'LEFT') or 'LEFT')
+        except (AttributeError, ReferenceError, RuntimeError):
+            select_mouse = 'LEFT'
+        mouse = 'RIGHTMOUSE' if select_mouse == 'RIGHT' else 'LEFTMOUSE'
+        value = 'PRESS' if mouse == 'RIGHTMOUSE' else 'CLICK'
+        for toggle in (False, True):
+            pick_item = keymap.keymap_items.new(
+                'fbp.select_through_alpha', type=mouse, value=value, shift=toggle,
+            )
+            pick_item.properties.toggle = toggle
+            _addon_keymaps.append((keymap, pick_item))
 
 
 def _unregister_keymaps():
@@ -352,6 +385,8 @@ classes = (
     FBP_OT_BackgroundRenderStatus,
     FBP_OT_CreateColorPlane,
     FBP_OT_ResetCrop,
+    FBP_OT_CropAlpha,
+    FBP_OT_SelectThroughAlpha,
     FBP_OT_ResetExtend,
     FBP_OT_FocusCropExtend,
     FBP_OT_PopupCrop,

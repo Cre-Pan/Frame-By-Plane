@@ -3899,7 +3899,9 @@ class FBP_PT_CameraSettings(Panel):
         row = adaptive_row(setup, context)
         row.prop(sc, "fbp_gen_camera", text="Create Camera", toggle=True, icon='CAMERA_DATA')
         row.prop(sc, "fbp_cam_pivot", text="Cursor Pivot", toggle=True, icon='PIVOT_CURSOR')
-        setup.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row = setup.row(align=True)
+        row.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row.prop(sc, "fbp_fit_mode", text="")
         setup.prop(sc, "fbp_camera_fit_source_aspect", text="Use Source Aspect on Import", icon='IMAGE_DATA')
 
 
@@ -4620,11 +4622,25 @@ class FBP_OT_RigShapePopup(Operator):
         if rig is None:
             layout.label(text="Layer no longer exists", icon='ERROR')
             return
-        layout.prop(rig, "fbp_rig_shape", text="Shape")
-        layout.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
-        layout.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
-        if str(getattr(rig, "fbp_rig_shape", "DEFAULT")) == 'CUSTOM':
-            edit = layout.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
+        header = layout.row(align=True)
+        header.prop(rig, "fbp_rig_visible", text="Use Rig")
+        shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT"))
+        body = layout.column()
+        # Custom rigs always show their wire, so their controls stay live.
+        body.active = bool(getattr(rig, "fbp_rig_visible", True)) or shape == 'CUSTOM'
+        body.prop(rig, "fbp_rig_shape", text="Shape")
+        if shape == 'ALPHA':
+            row = body.row(align=True)
+            row.prop(rig, "fbp_rig_shape_alpha_style", expand=True)
+            body.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
+            body.prop(rig, "fbp_rig_shape_alpha_follow", text="Follow Frame")
+        else:
+            if shape == 'POLYGON':
+                body.prop(rig, "fbp_rig_shape_sides", text="Sides", slider=True)
+            body.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
+        body.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
+        if shape == 'CUSTOM':
+            edit = body.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
             edit.rig_name = rig.name
 
 
@@ -4879,9 +4895,13 @@ class FBP_PT_Sequence(Panel):
 
         row = box.row(align=False)
         if len(selected_rigs) > 1:
-            row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row.operator_menu_enum("fbp.multi_fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         else:
-            row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row.operator_menu_enum("fbp.fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         row.operator("fbp.popup_transform", text="Transform", icon=ui_icon("sequence.transform"))
         row.operator("fbp.open_effects_masks", text="Effects & Masks", icon='SHADERFX')
         if mixed_backends:

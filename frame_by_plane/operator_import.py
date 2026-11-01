@@ -39,6 +39,7 @@ from .path_utils import (
 from .builder import (
     apply_fit_to_camera,
     build_fbp_rig,
+    fbp_layer_placement,
     fbp_prepare_media_source,
     fbp_scene_orientation_is_horizontal,
     fbp_store_prepared_media_metadata,
@@ -1927,6 +1928,7 @@ class FBP_OT_AutoSceneBuilder(Operator):
                 context.scene.tool_settings.transform_pivot_point = 'CURSOR'
 
         generated = []
+        placement = fbp_layer_placement(sc, getattr(sc, "camera", None), cursor_loc)
 
         folder_content_cache = {}
         top_entries = fbp_child_entries(
@@ -1942,6 +1944,7 @@ class FBP_OT_AutoSceneBuilder(Operator):
                 generated.extend(fbp_build_project_folder(
                     context, full, root_coll, cursor_loc, depth_counter,
                     color_seed=0, depth=0, color_state=collection_color_state,
+                    placement=placement,
                     separate_sequences=False,
                     reverse_sequences=False,
                     content_cache=folder_content_cache,
@@ -1951,34 +1954,26 @@ class FBP_OT_AutoSceneBuilder(Operator):
                     depth_counter[0] += 3
             elif kind == 'IMAGE':
                 # Audio and non-image files are already excluded; direct image file = root static layer.
-                rig_loc = cursor_loc.copy()
-                offset = sc.fbp_layer_offset * depth_counter[0]
-                if fbp_scene_orientation_is_horizontal(sc):
-                    rig_loc.z -= offset
-                else:
-                    rig_loc.y += offset
+                rig_loc = placement.location(sc.fbp_layer_offset * depth_counter[0])
                 color_index = int(collection_color_state.get('next', 0))
                 collection_color_state['next'] = color_index + 1
                 rig = build_fbp_rig(context, name, base, [os.path.basename(full)], rig_loc,
                                     color_tag=f"COLOR_{(color_index % 8) + 1:02d}", target_collection=root_coll,
                                     color_variant_index=color_index, follow_collection_color=False)
+                placement.orient(rig)
                 rig.fbp_depth_order = depth_counter[0]
                 depth_counter[0] += 1
                 generated.append(rig)
             elif kind == 'IMAGE_GROUP':
                 # Multiple animations inside the same root folder, e.g. An1 - 1/2 and An2 - 1/2.
                 group_path, group_files = full
-                rig_loc = cursor_loc.copy()
-                offset = sc.fbp_layer_offset * depth_counter[0]
-                if fbp_scene_orientation_is_horizontal(sc):
-                    rig_loc.z -= offset
-                else:
-                    rig_loc.y += offset
+                rig_loc = placement.location(sc.fbp_layer_offset * depth_counter[0])
                 color_index = int(collection_color_state.get('next', 0))
                 collection_color_state['next'] = color_index + 1
                 rig = build_fbp_rig(context, name, group_path, group_files, rig_loc,
                                     color_tag=f"COLOR_{(color_index % 8) + 1:02d}", target_collection=root_coll,
                                     color_variant_index=color_index, follow_collection_color=False)
+                placement.orient(rig)
                 rig.fbp_depth_order = depth_counter[0]
                 depth_counter[0] += 1
                 generated.append(rig)
@@ -2158,6 +2153,9 @@ class FBP_OT_GenerateMultiplane(Operator):
                 context.scene.tool_settings.transform_pivot_point = 'CURSOR'
 
         cam = sc.camera
+        # Every layer is generated centred in front of the camera, whatever
+        # its height or rotation; without a camera the cursor layout is kept.
+        placement = fbp_layer_placement(sc, cam, cursor_loc)
         last_rig = None
         generated_rigs = []
         generation_issues = []
@@ -2203,12 +2201,8 @@ class FBP_OT_GenerateMultiplane(Operator):
                 depth_index += 3
             last_collection_name = collection_name or last_collection_name
 
-            rig_loc = cursor_loc.copy()
             offset = sc.fbp_layer_offset * depth_index
-            if fbp_scene_orientation_is_horizontal(sc):
-                rig_loc.z -= offset
-            else:
-                rig_loc.y += offset
+            rig_loc = placement.location(offset)
 
             layer_collection = target_collection
             follows_collection = bool(
@@ -2267,6 +2261,7 @@ class FBP_OT_GenerateMultiplane(Operator):
                     source_frame_numbers=source_frame_numbers or None,
                     source_preset=str(getattr(p_item, 'source_preset', '') or ''),
                 )
+                placement.orient(rig)
                 if generation_owner is not None:
                     generation_owner.record_rig(rig)
             except Exception as exc:
@@ -2627,9 +2622,12 @@ class FBP_OT_ImportSequence(Operator):
             "cancellable": False,
         }
         try:
+            cursor_location = context.scene.cursor.location.copy()
             rig = build_fbp_rig(
                 context, single_name, self.directory, f_list,
-                context.scene.cursor.location.copy(), target_collection=target_collection)
+                cursor_location, target_collection=target_collection)
+            if getattr(context.scene, "camera", None):
+                fbp_layer_placement(context.scene, context.scene.camera, cursor_location).place(rig)
             generation_owner = _fbp_generation_owner_for_operator(self)
             if generation_owner is not None:
                 generation_owner.record_rig(rig)
@@ -3663,13 +3661,14 @@ def _fbp_execute_single_plane_import(operator, context, directory, filenames, *,
         )
 
     target_collection = context.collection if context.collection else context.scene.collection
+    cursor_location = context.scene.cursor.location.copy()
     try:
         rig = build_fbp_rig(
             context,
             rig_name,
             directory,
             sorted_files,
-            context.scene.cursor.location.copy(),
+            cursor_location,
             target_collection=target_collection,
         )
     except Exception as exc:
@@ -3701,6 +3700,10 @@ def _fbp_execute_single_plane_import(operator, context, directory, filenames, *,
         # Adding one plane keeps the project framing unless the artist asks
         # the camera to adopt the new image aspect.
         _fbp_apply_camera_source_aspect(scene, (rig,), force=True)
+    if getattr(scene, "camera", None):
+        # Generate the plane centred in front of the camera, also when the
+        # camera sits above or below the cursor or is rotated.
+        fbp_layer_placement(scene, scene.camera, cursor_location).place(rig)
     if getattr(scene, "camera", None) and getattr(scene, "fbp_auto_scale", False):
         context.view_layer.update()
         apply_fit_to_camera(context, rig, scene.camera)
@@ -6265,6 +6268,9 @@ def _fbp_draw_scene_camera_settings(layout, scene, panel_id, *, projection=False
     chooser.prop(scene, "camera", text="Camera")
     col.separator(factor=0.5)
     col.prop(scene, "fbp_auto_scale", text="Fit to Camera")
+    fit_mode = col.row()
+    fit_mode.enabled = bool(getattr(scene, "fbp_auto_scale", False))
+    fit_mode.prop(scene, "fbp_fit_mode", text="Fit Mode")
     col.prop(scene, "fbp_pre_track_cam", text="Track to Camera")
     # A new camera follows the source-aspect setting, an existing one only
     # changes shape on request: the same checkbox drives whichever applies.
@@ -6938,14 +6944,17 @@ def _fbp_create_single_rig_from_path(context, path):
     filename = os.path.basename(path)
     context.scene.fbp_last_directory = directory
     target_collection = context.collection if context.collection else context.scene.collection
+    cursor_location = context.scene.cursor.location.copy()
     rig = build_fbp_rig(
         context,
         clean_layer_name_from_path(filename),
         directory,
         [filename],
-        context.scene.cursor.location.copy(),
+        cursor_location,
         target_collection=target_collection,
     )
+    if getattr(context.scene, "camera", None):
+        fbp_layer_placement(context.scene, context.scene.camera, cursor_location).place(rig)
     bpy.ops.object.select_all(action='DESELECT')
     if object_in_view_layer(rig, context):
         rig.select_set(True)
