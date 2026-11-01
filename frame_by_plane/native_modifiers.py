@@ -34,7 +34,6 @@ _MASK_MENU_LABEL = "Mask"
 _MASK_MENU_ICON = "MOD_MASK"
 _IMAGE_MENU_LABEL = "Image"
 _IMAGE_MENU_ICON = "IMAGE_DATA"
-_SHELL_SCENE_PROPERTY = "fbp_preview_native_effect_shells"
 
 # rig pointer -> {token: (modifier pointer, viewport, render)}
 _SNAPSHOTS = {}
@@ -207,8 +206,10 @@ def _remove_token(geo, rig, token):
 
 
 def _is_shader(geo, token):
+    """True for rows that only represent an effect: image effects, masks and
+    the layer effects (Crop, Emission...) that have no modifier of their own."""
     effect_id = geo._fbp_effect_ref_effect_id(token)
-    return geo.fbp_effect_definition(effect_id).get("kind") == "SHADER"
+    return geo.fbp_effect_definition(effect_id).get("kind") in {"SHADER", "BASE"}
 
 
 def fbp_sync_native_modifiers(rig):
@@ -342,7 +343,10 @@ def fbp_sync_native_modifiers(rig):
                 report["visibility"].append((token, "RENDER", render))
 
         try:
-            from .effect_shells import fbp_shell_maintain
+            from .effect_shells import fbp_shell_ensure, fbp_shell_maintain
+            # Every image effect and mask lives in Modifiers: new ones from
+            # any Add path (menus, pie, presets, paste) get their row here.
+            fbp_shell_ensure(rig)
             fbp_shell_maintain(rig)
         except ImportError:
             pass
@@ -460,6 +464,11 @@ def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
         rig = fbp_resolve_rig_from_any_object(obj)
         if rig is None:
             continue
+        try:
+            from .effect_shells import fbp_shell_sync_values
+            fbp_shell_sync_values(rig)
+        except (ImportError, *FBP_DATA_ERRORS) as exc:
+            fbp_warn("Could not sync an effect modifier with its layer", exc)
         if _SIGNATURES.get(_rig_key(rig)) == _plane_signature(obj):
             continue
         _PENDING_RIGS.add(rig.name)
@@ -780,13 +789,8 @@ class FBP_OT_AddEffectModifier(bpy.types.Operator):
         if "FINISHED" not in result:
             return {"CANCELLED"}
         # Image effects and masks have no Blender modifier of their own: the
-        # supported ones get a shell, so the entry really lands in the
-        # Modifiers panel the artist added it from. Adding one from there is
-        # the explicit opt-in to the Image Effects as Modifiers preview.
+        # shell lands the entry in the Modifiers panel it was added from.
         if effect_shells.fbp_shell_supported(effect_id):
-            scene = context.scene
-            if not effect_shells.fbp_shells_enabled(scene) and hasattr(scene, _SHELL_SCENE_PROPERTY):
-                setattr(scene, _SHELL_SCENE_PROPERTY, True)
             for rig in rigs:
                 added = [
                     token for token in geo._fbp_mixed_effect_tokens(rig)
@@ -821,12 +825,12 @@ class FBP_MT_ModifierAddImage(Menu):
     bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
-        from .effect_shells import FBP_SHELL_EFFECTS
+        from .effect_shells import fbp_shell_effects
         geo = _geo()
         _draw_native_columns(
             self.layout, context,
             geo.FBP_IMAGE_EFFECT_MENU_SECTIONS, geo.FBP_IMAGE_EFFECT_MENU_COLUMNS,
-            only=FBP_SHELL_EFFECTS,
+            only=fbp_shell_effects(),
         )
 
 
@@ -837,12 +841,12 @@ class FBP_MT_ModifierAddMask(Menu):
     bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
-        from .effect_shells import FBP_SHELL_EFFECTS
+        from .effect_shells import fbp_shell_effects
         geo = _geo()
         _draw_native_columns(
             self.layout, context,
             geo.FBP_MASK_EFFECT_MENU_SECTIONS, geo.FBP_MASK_EFFECT_MENU_COLUMNS,
-            only=FBP_SHELL_EFFECTS,
+            only=fbp_shell_effects(),
         )
 
 

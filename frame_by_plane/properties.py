@@ -1519,11 +1519,6 @@ class FBP_AddonPreferences(AddonPreferences):
         description="Enable the preview that applies selected Frame By Plane Geometry Nodes effects to ordinary mesh objects",
         default=False,
     )
-    default_preview_native_effect_shells: BoolProperty(
-        name="Image Effects as Modifiers",
-        description="Enable the preview that shows supported image effects and masks as native modifiers in newly initialized files",
-        default=False,
-    )
     default_show_previews: BoolProperty(
         name="List Thumbnails",
         description="Show thumbnails inside layer, frame and Cutout library lists; the large active Cutout preview always remains visible",
@@ -2328,7 +2323,6 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'default_preview_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                 row.prop(self, 'default_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                 row.prop(self, 'default_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
-                row.prop(self, 'default_preview_native_effect_shells', text='Image as Modifiers', toggle=True, icon='MODIFIER')
                 scene = getattr(context, 'scene', None)
                 if scene is not None:
                     current = body.box()
@@ -2338,13 +2332,11 @@ class FBP_AddonPreferences(AddonPreferences):
                     row.prop(scene, 'fbp_experimental_compositor', text='Compositor Tools', toggle=True, icon='NODE_COMPOSITING')
                     row.prop(scene, 'fbp_preview_procreate_import', text='Procreate', toggle=True, icon='BRUSH_DATA')
                     row.prop(scene, 'fbp_preview_generic_mesh_effects', text='Generic Mesh', toggle=True, icon='MESH_DATA')
-                    row.prop(scene, 'fbp_preview_native_effect_shells', text='Image as Modifiers', toggle=True, icon='MODIFIER')
                     enabled_preview = [
                         label for label, property_name in (
                             ('Compositor', 'fbp_experimental_compositor'),
                             ('Procreate', 'fbp_preview_procreate_import'),
                             ('Generic Mesh', 'fbp_preview_generic_mesh_effects'),
-                            ('Image as Modifiers', 'fbp_preview_native_effect_shells'),
                         )
                         if bool(getattr(scene, property_name, False))
                     ]
@@ -4971,11 +4963,6 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_preview_generic_mesh_effects = BoolProperty(
         name="Generic Mesh Preview",
         description="Enable Frame By Plane Geometry Nodes effects on ordinary mesh objects. This workflow is outside the Frame By Plane 8 LTS core scope",
-        default=False,
-    )
-    _FBP_SCENE_RNA.fbp_preview_native_effect_shells = BoolProperty(
-        name="Image Effects as Modifiers",
-        description="Show supported image effects and masks as native modifiers whose inputs drive the plane material. This workflow is outside the Frame By Plane 8 LTS core scope",
         default=False,
     )
     _FBP_SCENE_RNA.fbp_color_plane_type = EnumProperty(

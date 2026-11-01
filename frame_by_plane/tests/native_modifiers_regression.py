@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import traceback
+import types
 from pathlib import Path
 
 import bpy
@@ -105,13 +106,14 @@ def test_native_round_trip():
         assert geo._fbp_stored_effect_visibility(rig, "MESH_WIGGLE", True) is False
         vignette = _token(geo, rig, "VIGNETTE")
         effect_id, instance_id = geo._fbp_effect_ref_parts(vignette)
-        plane.modifiers["FBP • Vignette"].show_render = False
+        # Every image effect has its own modifier row (its shell).
+        plane.modifiers["Vignette"].show_render = False
         native.fbp_sync_native_modifiers(rig)
         assert geo.fbp_effect_render_visible_state(rig, effect_id, instance_id) is False
         # A change made in the Frame By Plane panel shows on the native row.
         geo.fbp_set_effect_render_visible(rig, effect_id, True, instance_id)
         native.fbp_sync_native_modifiers(rig)
-        assert plane.modifiers["FBP • Vignette"].show_render is True
+        assert plane.modifiers["Vignette"].show_render is True
 
         # Native delete removes the effect; a native copy is dropped.
         plane.modifiers.remove(plane.modifiers["FBP • Mesh Wiggle"])
@@ -157,13 +159,14 @@ def test_modifier_add_menu():
         # Classic divided columns: titled sections, FBP artwork icons.
         calls, ops, headers = drawn(native.FBP_MT_ModifierAddMask)
         labels = [call[2].get("text") for call in ops]
-        assert sorted(labels) == ["Circle Mask", "Gradient Mask", "Square Mask"], labels
+        assert {"Circle Mask", "Gradient Mask", "Square Mask", "Noise Mask"} <= set(labels), labels
         mask_titles = [section[0] for section in geo.FBP_MASK_EFFECT_MENU_SECTIONS]
         assert headers and all(title in mask_titles for title in headers), headers
         assert all("icon_value" in call[2] or "icon" in call[2] for call in ops)
         calls, ops, headers = drawn(native.FBP_MT_ModifierAddImage)
         labels = [call[2].get("text") for call in ops]
-        assert len(labels) == 3 and "Vignette" in labels and "Posterize" in labels, labels
+        assert {"Vignette", "Halftone", "Bloom", "Hue & Saturation", "Crop", "Extend"} <= set(labels), labels
+        assert "Layer Blend" not in labels, labels
         assert all(call[1][0] == "fbp.add_effect_modifier" for call in ops), ops
         image_titles = [section[0] for section in geo.FBP_IMAGE_EFFECT_MENU_SECTIONS]
         assert headers and all(title in image_titles for title in headers), headers
@@ -213,7 +216,8 @@ def test_toggle_foldouts():
         panels = [call[1][0] for call in layout.calls if call[0] == "panel"]
         assert "fbp_effect_ascii_edges" in panels, panels
         toggles = {call[1][1] for call in layout.calls if call[0] == "prop" and call[2].get("text") == ""}
-        assert "fbp_terminal_ascii_use_edges" in toggles, toggles
+        # ASCII lives on its modifier: the header checkbox edits that input.
+        assert "value" in toggles, toggles
         layout = StubLayout()
         geo.fbp_draw_effect_settings(layout, rig, "MESH_WIGGLE", selected_count=1)
         panels = [call[1][0] for call in layout.calls if call[0] == "panel"]
@@ -267,17 +271,13 @@ def test_add_image_modifier():
             obj.select_set(False)
         rig.select_set(True)
         bpy.context.view_layer.objects.active = rig
-        scene.fbp_preview_native_effect_shells = True
         assert bpy.ops.fbp.add_effect_modifier(effect_id="VIGNETTE") == {"FINISHED"}
         assert geo.fbp_effect_is_active(rig, "VIGNETTE")
         assert [shells.fbp_shell_token(mod) for mod in shells.fbp_shell_modifiers(rig)], "Vignette must land as a modifier"
-        scene.fbp_preview_native_effect_shells = False
         assert bpy.ops.fbp.add_effect_modifier(effect_id="POSTERIZE") == {"FINISHED"}
         assert geo.fbp_effect_is_active(rig, "POSTERIZE")
-        assert scene.fbp_preview_native_effect_shells, "adding from Add Modifier opts into the preview"
         assert len(shells.fbp_shell_modifiers(rig)) == 2
     finally:
-        scene.fbp_preview_native_effect_shells = False
         _remove(rig)
         if not registered:
             bpy.utils.unregister_class(native.FBP_OT_AddEffectModifier)
@@ -286,7 +286,6 @@ def test_add_image_modifier():
 def test_effect_shells():
     geo, native, shells = _modules()
     scene = bpy.context.scene
-    scene.fbp_preview_native_effect_shells = True
     rig = _rig("FBP Native Shells")
     camera = None
     try:
@@ -389,9 +388,89 @@ def test_effect_shells():
             pass
 
 
+def test_shell_value_sync():
+    """Modifier edits reach the layer; presets and Copy to Selected reach the modifier."""
+    geo, _native, shells = _modules()
+    source = _rig("FBP Shell Sync Source")
+    target = _rig("FBP Shell Sync Target")
+    try:
+        _add(geo, source, "POSTERIZE")
+        modifier = shells.fbp_shell_modifier(
+            source, "POSTERIZE", geo._fbp_effect_ref_parts(_token(geo, source, "POSTERIZE"))[1]
+        )
+        assert modifier is not None, "adding an image effect must create its modifier"
+        steps = next(entry for entry in shells._shell_mapping(modifier.node_group) if entry[0] == "fbp_posterize_steps")
+
+        # Modifiers panel edit -> layer setting.
+        geo._fbp_modifier_input_set(modifier, steps[2], 7)
+        assert shells.fbp_shell_sync_values(source)
+        posterize = geo._fbp_effect_ref_parts(_token(geo, source, "POSTERIZE"))
+        if posterize[1]:
+            channel = geo.fbp_effect_instance_channel(source, *posterize, "fbp_posterize_steps")
+            assert int(round(geo.fbp_effect_instance_channel_value(channel))) == 7
+        else:
+            assert int(source.fbp_posterize_steps) == 7, source.fbp_posterize_steps
+
+        # Frame By Plane write (preset, script) -> modifier input.
+        source.fbp_posterize_steps = 3
+        geo.update_effect_setting_cb(source, None, "POSTERIZE", "fbp_posterize_steps", "")
+        shells.fbp_shell_sync_values(source)
+        assert int(shells._modifier_input(modifier, steps[2])) == 3
+
+        # Copy to Selected carries the modifier value to the new modifier.
+        geo._fbp_modifier_input_set(modifier, steps[2], 5)
+        shells.fbp_shell_sync_values(source)
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        source.select_set(True)
+        target.select_set(True)
+        bpy.context.view_layer.objects.active = source
+        operator = types.SimpleNamespace(effect_id="POSTERIZE", report=lambda *_args: None)
+        result = geo.FBP_OT_CopyEffectToSelected.execute(operator, bpy.context)
+        assert result == {"FINISHED"}, result
+        copied = shells.fbp_shell_modifier(
+            target, "POSTERIZE", geo._fbp_effect_ref_parts(_token(geo, target, "POSTERIZE"))[1]
+        )
+        assert copied is not None
+        assert int(shells._modifier_input(copied, steps[2])) == 5, shells._modifier_input(copied, steps[2])
+    finally:
+        _remove(source)
+        _remove(target)
+
+
+def test_row_effects():
+    """Layer effects without material nodes still get a native row."""
+    geo, native, shells = _modules()
+    rig = _rig("FBP Native Rows")
+    try:
+        _add(geo, rig, "CROP", "EMISSION", "MOTION")
+        geo.fbp_sync_effect_items(rig)
+        plane = geo._fbp_plane(rig)
+        assert native.fbp_native_ui_order(rig) == geo._fbp_mixed_effect_tokens(rig)
+        for name in ("Crop", "Emission", "Motion"):
+            modifier = plane.modifiers[name]
+            assert shells.fbp_shell_token(modifier), name
+            assert not shells._shell_mapping(modifier.node_group), name
+        # The active row drives the Frame By Plane panel.
+        plane.modifiers.active = plane.modifiers["Crop"]
+        assert native.fbp_native_modifier_token(rig, plane.modifiers.active) == "CROP"
+
+        native.fbp_native_remember(rig)
+        names = [modifier.name for modifier in plane.modifiers]
+        plane.modifiers.move(names.index("Motion"), len(names) - 1)
+        assert native.fbp_sync_native_modifiers(rig)["reordered"]
+        assert geo._fbp_mixed_effect_tokens(rig)[0] == "MOTION"
+
+        plane.modifiers.remove(plane.modifiers["Emission"])
+        assert native.fbp_sync_native_modifiers(rig)["removed"] == ["EMISSION"]
+        assert not geo.fbp_effect_is_active(rig, "EMISSION")
+    finally:
+        _remove(rig)
+
+
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
-    test_add_image_modifier, test_effect_shells,
+    test_add_image_modifier, test_effect_shells, test_shell_value_sync, test_row_effects,
 )
 
 failed = []

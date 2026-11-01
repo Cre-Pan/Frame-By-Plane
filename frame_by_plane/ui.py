@@ -6,7 +6,7 @@ import bpy
 from bpy.types import Panel, UIList, Menu, Operator
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .geometry_nodes import fbp_active_effect_id, fbp_active_effect_instance_id, fbp_can_move_effect_selection, fbp_draw_effect_settings, fbp_draw_effect_mask_editor, fbp_draw_effect_mask_panel, fbp_effect_presence, fbp_effect_source_rig, fbp_focus_lattice_ui, fbp_schedule_effect_items_sync, fbp_selected_effect_instances
+from .geometry_nodes import fbp_active_effect_id, fbp_draw_effect_settings, fbp_draw_effect_mask_editor, fbp_draw_effect_mask_panel, fbp_effect_presence, fbp_effect_source_rig, fbp_focus_lattice_ui, fbp_schedule_effect_items_sync
 from .effect_instances import split_effect_instance_token
 from .effects_registry import (
     FBP_EFFECT_CLIPPING_MASK,
@@ -4331,6 +4331,21 @@ class FBP_PT_GreasePencilStack(Panel):
         tool_row.operator('fbp.use_grease_pencil_as_mask', text='Use as Mask', icon='CLIPUV_HLT')
 
 
+def _fbp_native_active_effect(rig):
+    """Effect and instance of the plane's active modifier, if it is one."""
+    try:
+        from .native_modifiers import _layer_plane, fbp_native_modifier_token
+        from .geometry_nodes import _fbp_effect_ref_parts
+    except ImportError:
+        return "", ""
+    _rig, plane = _layer_plane(rig)
+    modifier = getattr(getattr(plane, "modifiers", None), "active", None) if plane else None
+    token = fbp_native_modifier_token(rig, modifier) if modifier is not None else ""
+    if not token:
+        return "", ""
+    return _fbp_effect_ref_parts(token)
+
+
 def _fbp_draw_blend_control(layout, selected_rigs):
     """Draw Layer Blend as a first-class control above the effects stack."""
     if not selected_rigs:
@@ -4430,16 +4445,11 @@ def draw_effects_ui(layout, context, *, force_view=None):
     selection_status(layout, len(selected_rigs), noun="layer")
     _fbp_draw_blend_control(layout, selected_rigs)
     listed_effects = fbp_schedule_effect_items_sync(rig, selected_rigs)
-    effect_definitions = {
-        effect_id: (fbp_effect_definition(effect_id) or {})
-        for effect_id in listed_effects
-    }
     active_effect = fbp_active_effect_id(rig) if listed_effects else ""
     if force_lattice_mesh_view and FBP_EFFECT_LATTICE in listed_effects:
         active_effect = FBP_EFFECT_LATTICE
     if active_effect == FBP_EFFECT_LAYER_BLEND:
         active_effect = ""
-    active_definition = effect_definitions.get(active_effect, {}) if active_effect else {}
     presence_cache = {}
 
     def effect_presence(effect_id):
@@ -4452,6 +4462,22 @@ def draw_effects_ui(layout, context, *, force_view=None):
             presence_cache[effect_id] = cached
         return cached
 
+    visible_effects = [
+        effect_id for effect_id in listed_effects
+        if effect_id != FBP_EFFECT_LAYER_BLEND
+    ]
+    # Blender's Modifiers panel is the effect stack: add, reorder, hide and
+    # delete effects there. This panel follows its active modifier and draws
+    # that effect's full Frame By Plane controls.
+    native_effect, native_instance = _fbp_native_active_effect(rig)
+    if native_effect:
+        active_effect = native_effect
+        active_instance = native_instance
+    elif not (force_lattice_mesh_view and active_effect == FBP_EFFECT_LATTICE):
+        active_effect, active_instance = "", ""
+    else:
+        active_instance = ""
+    active_definition = (fbp_effect_definition(active_effect) or {}) if active_effect else {}
     present_count, selected_count = effect_presence(active_effect)
     contextual_shape_effect = _fbp_context_shape_mask_effect(
         context, rig, listed_effects, active_effect
@@ -4465,110 +4491,22 @@ def draw_effects_ui(layout, context, *, force_view=None):
             "3D" if active_category == "3D" else "2D"
         ))
     )
-    visible_categories = {"BASE", "2D", "MASK", "3D"}
-
-    visible_effects = [
-        effect_id for effect_id in listed_effects
-        if effect_id != FBP_EFFECT_LAYER_BLEND
-    ]
-    stack_row = layout.row(align=False)
-    stack_box = stack_row.box()
+    stack_box = layout.box()
     configure_layout(stack_box)
     stack_header = section_header(
         stack_box,
-        "Effect Stack",
-        icon="SHADERFX",
+        "Effects",
+        icon="MODIFIER",
         count=len(visible_effects),
     )
-    _fbp_draw_uilist_header_controls(
-        stack_header, context, "EFFECT_IMAGE"
+    stack_header.menu("OBJECT_MT_modifier_add", text="", icon="ADD")
+    hint_row(
+        stack_box,
+        "Add, reorder and hide effects in Properties > Modifiers"
+        if visible_effects else "No effects. Add one from Add Modifier.",
+        icon="INFO",
+        disabled=True,
     )
-
-    # The stack UIList is part of the Modifiers workflow even when the current
-    # category is empty. Showing the empty list keeps Effects and Masks editable
-    # from one stable place instead of replacing it with a plain message.
-    list_type = "FBP_UL_EffectStackUnified"
-    list_id = "STACK"
-    # Keep the Effects UIList at least as tall as the adjacent toolbar.
-    # Count buttons plus visual separators: move x2, Add, Actions, and the
-    # spacer rows between them. This prevents the list from ending above the
-    # icon column in compact stacks.
-    stack_rows = list_rows(
-        len(visible_effects),
-        minimum=FBP_UI_EFFECT_MIN_ROWS,
-        maximum=FBP_UI_EFFECT_MAX_ROWS,
-    )
-    stack_box.template_list(
-        list_type, list_id,
-        rig, "fbp_effects",
-        rig, "fbp_effects_index",
-        rows=stack_rows,
-    )
-
-    selected_effect_instances = tuple(
-        (effect_id, instance_id)
-        for effect_id, instance_id in fbp_selected_effect_instances(
-            rig,
-            fallback_active=True,
-            movable_only=True,
-            categories=visible_categories,
-        )
-        if effect_id != FBP_EFFECT_LAYER_BLEND
-    )
-    selected_effect_refs = tuple(
-        f"{effect_id}::{instance_id}" if instance_id else effect_id
-        for effect_id, instance_id in selected_effect_instances
-    )
-    selected_effect_ids = tuple(dict.fromkeys(
-        effect_id for effect_id, _instance_id in selected_effect_instances
-    ))
-    shared_selection = bool(
-        selected_effect_refs
-        and all(
-            effect_presence(effect_id)[0] == selected_count
-            for effect_id in selected_effect_ids
-        )
-    )
-
-    # One compact, modular side bar shared by every stack category:
-    # extras, movement, delete, then add. Infrequent actions remain in the
-    # COLLAPSEMENU menu instead of lengthening the permanent strip.
-    controls = stack_row.column(align=True)
-    fbp_set_ui_units_x(controls, 1.0)
-
-    extras = controls.operator(
-        "fbp.open_effect_toolbar_menu", text="", icon="COLLAPSEMENU"
-    )
-    extras.menu = "ACTIONS"
-
-    controls.separator()
-    move_group = controls.column(align=True)
-    for direction, icon_name in (
-        ("UP", "SORT_DESC"),
-        ("DOWN", "SORT_ASC"),
-    ):
-        move = move_group.row(align=True)
-        move.enabled = bool(
-            shared_selection
-            and fbp_can_move_effect_selection(
-                selected_rigs, selected_effect_refs, direction
-            )
-        )
-        op = move.operator(
-            "fbp.move_active_effect", text="", icon=icon_name
-        )
-        op.direction = direction
-
-    controls.separator()
-    remove = controls.row(align=True)
-    remove.enabled = bool(selected_effect_instances)
-    remove.operator(
-        "fbp.remove_selected_effects", text="", icon="TRASH"
-    )
-    add = controls.operator(
-        "fbp.open_effect_toolbar_menu", text="", icon="ADD"
-    )
-    add.menu = "ADD"
 
     if active_effect:
         source_rig = fbp_effect_source_rig(selected_rigs, active_effect)
@@ -4578,19 +4516,12 @@ def draw_effects_ui(layout, context, *, force_view=None):
                 selected_count=selected_count,
                 present_count=present_count,
                 context=context,
-                instance_id=fbp_active_effect_instance_id(rig),
+                instance_id=active_instance,
             )
             fbp_draw_effect_mask_panel(
                 layout, context, selected_rigs, source_rig, active_effect,
-                fbp_active_effect_instance_id(rig),
+                active_instance,
             )
-    if not visible_effects:
-        hint_row(
-            layout,
-            "No effects. Use + to add one.",
-            icon="INFO",
-            disabled=True,
-        )
 
     if effects_view == "MASK":
         section_gap(layout)

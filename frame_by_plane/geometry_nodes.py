@@ -10688,6 +10688,18 @@ def _fbp_rebuild_local_mask_receivers(material):
 
 
 def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_override=None):
+    """Rebuild one shader stage, then restore the links modifiers drive."""
+    result = _fbp_rebuild_shader_stage_links(material, stage, source_override, target_override)
+    if material is not None and getattr(material, "node_tree", None) is not None:
+        try:
+            from .effect_shells import fbp_shell_relink_material
+            fbp_shell_relink_material(material)
+        except (ImportError, *FBP_DATA_ERRORS):
+            pass
+    return result
+
+
+def _fbp_rebuild_shader_stage_links(material, stage, source_override=None, target_override=None):
     if not material or not material.node_tree:
         return False
     effect_nodes = _fbp_stage_effect_nodes(material, stage)
@@ -15465,6 +15477,7 @@ def fbp_update_shader_effect(
         except FBP_DATA_ERRORS:
             pass
         _fbp_refresh_geometry_source_materials(rig)
+        _fbp_sync_effect_shell_values(rig)
     return changed
 
 
@@ -23021,14 +23034,11 @@ def fbp_draw_effect_settings(
     definition = fbp_effect_definition(effect_id)
     if not definition:
         return
-    shell_available = False
     try:
-        from .effect_shells import fbp_shell_draw_settings, fbp_shell_supported, fbp_shells_enabled
-        if fbp_shell_draw_settings(layout, rig, effect_id, instance_id):
-            return
-        shell_available = fbp_shell_supported(effect_id) and fbp_shells_enabled(
-            getattr(context, "scene", None)
-        )
+        # Image effects and masks keep their values on their modifier: the
+        # settings below edit those modifier inputs instead of the layer's.
+        from .effect_shells import fbp_shell_layout
+        layout = fbp_shell_layout(layout, rig, effect_id, instance_id)
     except ImportError:
         pass
     box = layout.box()
@@ -23108,13 +23118,6 @@ def fbp_draw_effect_settings(
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
 
-    if shell_available:
-        shell = header_right.operator(
-            "fbp.effect_shell_toggle", text="", icon="MODIFIER", emboss=False
-        )
-        shell.effect_id = effect_id
-        shell.instance_id = instance_id
-        shell.enable = True
     if definition.get("kind") in {"GEOMETRY", "SHADER"}:
         nodes = header_right.operator(
             "fbp.open_effect_nodes",
@@ -31067,6 +31070,26 @@ class FBP_OT_CopyEffectToSelected(Operator):
                         continue
                 except FBP_DATA_ERRORS:
                     continue
+            target_instance_id = (
+                next(
+                    (
+                        _fbp_effect_ref_parts(token)[1]
+                        for token in _fbp_mixed_effect_tokens(target)
+                        if _fbp_effect_ref_effect_id(token) == effect_id
+                    ),
+                    "",
+                )
+                if _fbp_effect_uses_multi_instances(effect_id) else ""
+            )
+            if target_instance_id:
+                # A concrete instance reads its own channels, not the layer
+                # settings: copy the values there too.
+                for prop_name in prop_names:
+                    if hasattr(source, prop_name):
+                        fbp_update_effect_instance_setting_value(
+                            target, effect_id, target_instance_id, prop_name,
+                            getattr(source, prop_name),
+                        )
             if definition.get("kind") == "BASE":
                 try:
                     from .core import update_object_padding_cb
@@ -32031,6 +32054,25 @@ def _fbp_apply_shader_chain_order_direct(rig, stage, desired):
     _fbp_invalidate_effect_ids_cache(rig)
     if any(_fbp_effect_ref_instance_id(token) for token in desired):
         fbp_effect_instance_records_for_rig(rig, ensure=True, sync_storage=True)
+    _fbp_relink_effect_shells(rig)
+
+
+def _fbp_sync_effect_shell_values(rig):
+    """Carry Frame By Plane writes to the effect's modifier, and back."""
+    try:
+        from .effect_shells import fbp_shell_sync_values
+        return fbp_shell_sync_values(rig)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return 0
+
+
+def _fbp_relink_effect_shells(rig):
+    """Restore modifier-driven inputs after a shader stage was rebuilt."""
+    try:
+        from .effect_shells import fbp_shell_refresh_links
+        return fbp_shell_refresh_links(rig)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return 0
 
 
 def _fbp_apply_geometry_chain_order_direct(rig, desired):
