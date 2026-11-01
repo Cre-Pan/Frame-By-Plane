@@ -63,6 +63,7 @@ SHORTCUT_PREFERENCE_DEFAULTS = {
     "shortcut_layer_pose": True,
     "shortcut_gp_alt_s_guard": True,
     "shortcut_gp_frame_scrub": True,
+    "shortcut_click_through_alpha": True,
 }
 
 

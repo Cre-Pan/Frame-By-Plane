@@ -15,7 +15,7 @@ from bpy.props import (
 from bpy.types import Operator
 
 from .constants import fbp_icon, FBP_SUPPORTED_IMAGE_EXT, FBP_SUPPORTED_VIDEO_EXT
-from .builder import fbp_prepare_media_source
+from .builder import fbp_object_local_bounds, fbp_prepare_media_source
 from .pillow_media import fbp_optimize_sequence_entries
 from .ui_style import configure_layout, section_header
 from .path_utils import is_supported_media_file, is_supported_video_file, natural_sort_key
@@ -559,7 +559,7 @@ class FBP_OT_Transform(Operator):
                     rig.rotation_euler[0] = math.radians(90)
                     rig.fbp_is_vertical = True
             elif self.mode == 'TO_GROUND':
-                bbox_world = [rig.matrix_world @ mathutils.Vector(c) for c in rig.bound_box]
+                bbox_world = [rig.matrix_world @ mathutils.Vector(c) for c in fbp_object_local_bounds(rig)]
                 min_z = min(v.z for v in bbox_world)
                 rig.location.z -= min_z
             elif self.mode == 'RESET_ROT':

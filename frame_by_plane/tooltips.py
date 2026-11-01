@@ -188,6 +188,8 @@ EXACT_TOOLTIPS = {
     # Procedural planes and holdouts
     "fbp.create_color_plane": "Create a Color, Gradient or Holdout plane.",
     "fbp.reset_crop": "Reset the crop of the selected layers.",
+    "fbp.crop_alpha": "Crop the selected layers to their visible pixels.",
+    "fbp.select_through_alpha": "Select a layer by its visible pixels, clicking through transparency.",
     "fbp.reset_extend": "Reset the border extension of the selected layers.",
     "fbp.popup_crop": "Crop the selected layers.",
     "fbp.popup_extend": "Extend the borders of the selected layers.",
