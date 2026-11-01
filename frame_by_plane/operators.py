@@ -203,6 +203,7 @@ def _register_keymaps():
 
     owned_ids = {
         'fbp.duplicate_or_default',
+        'fbp.delete_or_default',
         'fbp.create_layer_collection',
         'fbp.ungroup_selected_layers',
         'fbp.group_or_pass',
@@ -223,6 +224,18 @@ def _register_keymaps():
             shift=True,
         )
         _addon_keymaps.append((keymap, item))
+
+    if shortcut_enabled('shortcut_delete_layer'):
+        # X asks for confirmation and Delete does not, as in Blender. Both
+        # pass through to Blender's delete when no FBP layer is selected.
+        for key, confirm in (('X', True), ('DEL', False)):
+            item = keymap.keymap_items.new(
+                'fbp.delete_or_default',
+                type=key,
+                value='PRESS',
+            )
+            item.properties.confirm = confirm
+            _addon_keymaps.append((keymap, item))
 
     if shortcut_enabled('shortcut_group_layers'):
         group_item = keymap.keymap_items.new(
