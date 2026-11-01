@@ -2498,8 +2498,7 @@ def fbp_draw_playback_light_settings(self, context):
         return
     layout = self.layout
     layout.separator()
-    col = layout.column(heading="Frame By Plane")
-    col.prop(scene, "fbp_playback_light_mode", text="Light Playback")
+    layout.prop(scene, "fbp_playback_light_mode", text="Light Playback")
 
 
 def _fbp_playback_popover():
