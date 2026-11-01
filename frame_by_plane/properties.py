@@ -4514,6 +4514,20 @@ def register_properties():
         camera_width_get, camera_width_set, camera_height_get, camera_height_set,
         FBP_CameraFormatPreset,
     )
+    _FBP_SCENE_RNA.fbp_playback_light_mode = EnumProperty(
+        name="Light Playback",
+        description=(
+            "Pause Mesh effects in the viewport while the timeline plays, so playback keeps its frame rate. "
+            "They come back when playback stops. Renders and saved settings never change"
+        ),
+        items=(
+            ("OFF", "Off", "Play every effect at full cost"),
+            ("HEAVY", "Heavy Effects", "Pause Mesh effects that took more than 4 ms to evaluate"),
+            ("ALL", "All Mesh Effects", "Pause every Mesh effect while playing"),
+        ),
+        default="HEAVY",
+        options=set(),
+    )
     _FBP_SCENE_RNA.fbp_camera_aspect = StringProperty(
         name="Aspect Ratio", description="Output shape, landscape by default. Use Swap Dimensions for portrait. Keeps the longest pixel dimension; accounts for non-square pixels",
         get=camera_aspect_get, set=camera_aspect_set, options=set())
