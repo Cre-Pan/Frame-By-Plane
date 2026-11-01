@@ -3899,7 +3899,9 @@ class FBP_PT_CameraSettings(Panel):
         row = adaptive_row(setup, context)
         row.prop(sc, "fbp_gen_camera", text="Create Camera", toggle=True, icon='CAMERA_DATA')
         row.prop(sc, "fbp_cam_pivot", text="Cursor Pivot", toggle=True, icon='PIVOT_CURSOR')
-        setup.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row = setup.row(align=True)
+        row.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row.prop(sc, "fbp_fit_mode", text="")
         setup.prop(sc, "fbp_camera_fit_source_aspect", text="Use Source Aspect on Import", icon='IMAGE_DATA')
 
 
@@ -4893,9 +4895,13 @@ class FBP_PT_Sequence(Panel):
 
         row = box.row(align=False)
         if len(selected_rigs) > 1:
-            row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row.operator_menu_enum("fbp.multi_fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         else:
-            row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row.operator_menu_enum("fbp.fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         row.operator("fbp.popup_transform", text="Transform", icon=ui_icon("sequence.transform"))
         row.operator("fbp.open_effects_masks", text="Effects & Masks", icon='SHADERFX')
         if mixed_backends:

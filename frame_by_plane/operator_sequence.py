@@ -2552,20 +2552,88 @@ class FBP_OT_DeleteOrDefault(Operator):
     bl_idname      = "fbp.delete_or_default"
     bl_label       = "Delete"
     bl_description = "Delete FBP rigs together with their planes, otherwise use Blender's standard delete"
-    bl_options     = {'UNDO'}
+    bl_options     = {'REGISTER', 'UNDO'}
 
-    def invoke(self, context, event):
+    confirm: BoolProperty(
+        name="Confirm",
+        description="Ask before deleting, like Blender's X shortcut",
+        default=True,
+        options={'SKIP_SAVE'},
+    )
+    use_global: BoolProperty(
+        name="Delete Globally",
+        description="Remove ordinary objects from all scenes, like Blender's Delete Globally",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
+
+    @staticmethod
+    def _gp_canvas_active(context):
         try:
             from .grease_pencil_bridge import is_gp_canvas
-            if is_gp_canvas(getattr(context, 'object', None)):
-                return bpy.ops.fbp.delete_grease_pencil_canvas('INVOKE_DEFAULT')
+            return bool(is_gp_canvas(getattr(context, 'object', None)))
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
+            return False
+
+    @staticmethod
+    def _other_selected_objects(context, roots):
+        """Selected objects that are neither FBP layers nor their planes."""
+        from .layers import fbp_resolve_rig_from_any_object
+        others = []
+        for obj in tuple(getattr(context, 'selected_objects', ()) or ()):
+            try:
+                if obj in roots or fbp_resolve_rig_from_any_object(obj, context) is not None:
+                    continue
+                if getattr(obj, 'is_fbp_plane', False):
+                    continue
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+            others.append(obj)
+        return others
+
+    def invoke(self, context, event):
+        if self._gp_canvas_active(context):
+            return bpy.ops.fbp.delete_grease_pencil_canvas('INVOKE_DEFAULT')
+        if not get_selected_fbp_roots(context):
+            # Ordinary objects keep Blender's own X / Delete behavior.
+            return {'PASS_THROUGH'}
+        if self.confirm:
+            try:
+                return context.window_manager.invoke_confirm(
+                    self, event, title="Delete", confirm_text="Delete", icon='WARNING',
+                )
+            except TypeError:
+                return context.window_manager.invoke_confirm(self, event)
+        return self.execute(context)
+
+    def execute(self, context):
+        if self._gp_canvas_active(context):
+            return bpy.ops.fbp.delete_grease_pencil_canvas('EXEC_DEFAULT')
         roots = get_selected_fbp_roots(context)
-        if roots:
-            deleted = delete_fbp_rigs(context, roots)
-            if deleted > 0:
-                self.report({'INFO'}, f"Deleted {deleted} Frame By Plane layer(s)")
-                return {'FINISHED'}
+        if not roots:
+            return bpy.ops.object.delete('EXEC_DEFAULT', use_global=self.use_global, confirm=False)
+        others = self._other_selected_objects(context, roots)
+        # Remove the rigs and their planes in one step. Blender's own delete
+        # removes only the rig, so the plane would stay visible until the
+        # orphan cleanup timer catches it a moment later.
+        deleted = delete_fbp_rigs(context, roots)
+        removed_others = 0
+        if others:
+            try:
+                bpy.ops.object.select_all(action='DESELECT')
+            except RuntimeError:
+                pass
+            for obj in others:
+                try:
+                    if obj.name in context.view_layer.objects:
+                        obj.select_set(True)
+                        removed_others += 1
+                except (AttributeError, ReferenceError, RuntimeError):
+                    pass
+            if removed_others:
+                bpy.ops.object.delete('EXEC_DEFAULT', use_global=self.use_global, confirm=False)
+        if deleted <= 0 and removed_others <= 0:
             return {'CANCELLED'}
-        return bpy.ops.object.delete('INVOKE_DEFAULT')
+        if deleted > 0:
+            self.report({'INFO'}, f"Deleted {deleted} Frame By Plane layer(s)")
+        return {'FINISHED'}

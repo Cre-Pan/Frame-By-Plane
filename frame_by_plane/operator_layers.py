@@ -18,7 +18,7 @@ from .effects_registry import (
     FBP_EFFECT_CLIPPING_MASK, FBP_EFFECT_LAYER_BLEND, fbp_effect_definition,
 )
 from .path_utils import natural_sort_key
-from .builder import apply_fit_to_camera
+from .builder import FBP_FIT_MODE_ITEMS, apply_fit_to_camera, fbp_scene_fit_mode
 from .ui_style import configure_layout, hint_row, section_header
 from .layers import (
     _collection_gp_canvases_for_ui,
@@ -4144,46 +4144,76 @@ class FBP_OT_PopupGenerateCamera(Operator):
         context.scene.fbp_gen_camera = True
         return {'FINISHED'}
 
-class FBP_OT_FitToCamera(Operator):
+class _FBPFitToCameraBase:
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: EnumProperty(
+        name="Fit Mode",
+        description="How the layer is sized to the camera frame",
+        items=FBP_FIT_MODE_ITEMS,
+        default='CONTAIN',
+    )
+    align: BoolProperty(
+        name="Center in Camera",
+        description="Also center the layer in the camera frame and turn it to face the camera, keeping its depth",
+        default=True,
+    )
+
+    def invoke(self, context, event):
+        del event
+        if not self.properties.is_property_set("mode"):
+            self.mode = fbp_scene_fit_mode(context.scene)
+        return self.execute(context)
+
+    def _fit(self, context, *, warn_empty):
+        cam = context.scene.camera
+        if not cam:
+            self.report({'WARNING'}, "No active camera!")
+            return None
+        rigs = get_selected_rigs(context)
+        if not rigs:
+            if warn_empty:
+                self.report({'WARNING'}, "No rig selected!")
+            return None
+        # The last chosen mode becomes the default for the next Fit and for
+        # Fit to Camera during import.
+        try:
+            context.scene.fbp_fit_mode = self.mode
+        except (AttributeError, TypeError, ValueError):
+            pass
+        context.view_layer.update()
+        context.evaluated_depsgraph_get().update()
+        fitted = 0
+        for rig in rigs:
+            fitted += int(bool(apply_fit_to_camera(context, rig, cam, mode=self.mode, align=self.align)))
+        return fitted
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "mode")
+        layout.prop(self, "align")
+
+
+class FBP_OT_FitToCamera(_FBPFitToCameraBase, Operator):
     bl_idname      = "fbp.fit_camera"
     bl_label       = "Fit to Camera"
-    bl_description = "Fit the real image rectangle inside the active camera"
-    bl_options     = {'REGISTER', 'UNDO'}
+    bl_description = "Fit the selected layer to the camera frame: inside, fill, by width, by height or stretched"
 
     def execute(self, context):
-        cam = context.scene.camera
-        if not cam:
-            self.report({'WARNING'}, "No active camera!")
-            return {'CANCELLED'}
-        rigs = get_selected_rigs(context)
-        if not rigs:
-            return {'CANCELLED'}
-        context.view_layer.update()
-        context.evaluated_depsgraph_get().update()
-        for rig in rigs:
-            apply_fit_to_camera(context, rig, cam)
-        return {'FINISHED'}
+        fitted = self._fit(context, warn_empty=False)
+        return {'FINISHED'} if fitted else {'CANCELLED'}
 
-class FBP_OT_MultiFitCamera(Operator):
+class FBP_OT_MultiFitCamera(_FBPFitToCameraBase, Operator):
     bl_idname      = "fbp.multi_fit_camera"
     bl_label       = "Fit All to Camera"
-    bl_description = "Fit all selected real image rectangles inside the active camera"
-    bl_options     = {'REGISTER', 'UNDO'}
+    bl_description = "Fit all selected layers to the camera frame: inside, fill, by width, by height or stretched"
 
     def execute(self, context):
-        cam = context.scene.camera
-        if not cam:
-            self.report({'WARNING'}, "No active camera!")
+        fitted = self._fit(context, warn_empty=True)
+        if not fitted:
             return {'CANCELLED'}
-        rigs = get_selected_rigs(context)
-        if not rigs:
-            self.report({'WARNING'}, "No rig selected!")
-            return {'CANCELLED'}
-        context.view_layer.update()
-        context.evaluated_depsgraph_get().update()
-        for rig in rigs:
-            apply_fit_to_camera(context, rig, cam)
-        self.report({'INFO'}, f"{len(rigs)} layer(s) fitted to camera")
+        self.report({'INFO'}, f"{fitted} layer(s) fitted to camera")
         return {'FINISHED'}
 
 class FBP_OT_SetCurrentFrame(Operator):
