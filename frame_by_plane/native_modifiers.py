@@ -322,6 +322,12 @@ def fbp_sync_native_modifiers(rig):
         # because Frame By Plane drops every stage when it stops being mixed.
         persisted_set = set(geo._fbp_mixed_effect_tokens(rig))
         represented = {token for token, _modifier in fbp_native_modifier_entries(rig)}
+        shells = set()
+        try:
+            from .effect_shells import fbp_shell_modifiers
+            shells = {token for token, _modifier in fbp_shell_modifiers(rig)}
+        except ImportError:
+            pass
         mixed_active = any(
             geo._fbp_mixed_shader_stage_token(item) for item in plane.modifiers
         )
