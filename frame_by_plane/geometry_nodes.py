@@ -24892,7 +24892,11 @@ def fbp_draw_effect_settings(
             row = target.row(align=True)
             row.enabled = lattice_ready
             row.scale_y = 1.2
-            add = row.operator("fbp.add_lattice_bones", text="Add Bones", icon="BONE_DATA")
+            drawing = FBP_OT_AddLatticeBones.fbp_is_running(rig_name)
+            add = row.operator(
+                "fbp.add_lattice_bones", text="Done Drawing" if drawing else "Add Bones",
+                icon="CHECKMARK" if drawing else "BONE_DATA", depress=drawing,
+            )
             add.rig_name = rig_name
             row.prop(rig, "fbp_lattice_bones_ik", text="IK", toggle=True)
             if not bone_count:
@@ -24915,7 +24919,11 @@ def fbp_draw_effect_settings(
             row.enabled = lattice_ready
             row.scale_y = 1.2
             row.prop(rig, "fbp_lattice_pin_kind", text="")
-            add = row.operator("fbp.add_lattice_pins", text="Add Pins", icon="PINNED")
+            placing = FBP_OT_AddLatticePins.fbp_is_running(rig_name)
+            add = row.operator(
+                "fbp.add_lattice_pins", text="Done Placing" if placing else "Add Pins",
+                icon="CHECKMARK" if placing else "PINNED", depress=placing,
+            )
             add.rig_name = rig_name
             if not pins:
                 _hint(target, "Click on the layer to place pins")
@@ -35659,29 +35667,122 @@ def _fbp_click_rest_point(context, plane, region, region_3d, coord):
     return rest
 
 
+# Regions drawn over the 3D View (sidebar, toolbar, headers, asset shelf):
+# a click there belongs to the interface, never to the layer under it.
+_FBP_VIEW3D_OVERLAP_REGIONS = frozenset({
+    'UI', 'TOOLS', 'HEADER', 'TOOL_HEADER', 'FOOTER', 'HUD',
+    'ASSET_SHELF', 'ASSET_SHELF_HEADER', 'NAVIGATION_BAR', 'TOOL_PROPS',
+})
+
+
 def _fbp_view3d_under_mouse(context, event):
-    """Return (area, region, region_3d) of the 3D View under the mouse, or Nones."""
+    """Return (area, region, region_3d) of the 3D View under the mouse.
+
+    Over a 3D View's sidebar, toolbar or header the area comes back without a
+    region, so the click reaches the interface instead of placing a handle.
+    In Quad View the region under the mouse brings its own view.
+    """
     screen = getattr(getattr(context, "window", None), "screen", None)
     if screen is None:
         return None, None, None
     x, y = int(event.mouse_x), int(event.mouse_y)
+
+    def inside(item):
+        return item.x <= x < item.x + item.width and item.y <= y < item.y + item.height
+
     for area in screen.areas:
-        if area.type != 'VIEW_3D':
-            continue
-        if not (area.x <= x < area.x + area.width and area.y <= y < area.y + area.height):
+        if area.type != 'VIEW_3D' or not inside(area):
             continue
         for region in area.regions:
-            if region.type == 'WINDOW' and region.x <= x < region.x + region.width and region.y <= y < region.y + region.height:
-                space = area.spaces.active
-                return area, region, getattr(space, "region_3d", None)
-        return None, None, None
+            if region.type in _FBP_VIEW3D_OVERLAP_REGIONS and region.width > 1 and region.height > 1 and inside(region):
+                return area, None, None
+        for region in area.regions:
+            if region.type == 'WINDOW' and inside(region):
+                region_3d = getattr(region, "data", None)
+                if not isinstance(region_3d, bpy.types.RegionView3D):
+                    region_3d = getattr(area.spaces.active, "region_3d", None)
+                return area, region, region_3d
+        return area, None, None
     return None, None, None
 
 
-class FBP_OT_AddLatticePins(Operator):
+def _fbp_point_on_layer(plane, world_point, margin=0.02):
+    """True when a world point on the plane's surface lies inside the layer rectangle."""
+    try:
+        local = plane.matrix_world.inverted_safe() @ Vector(world_point)
+        xs = [vertex.co.x for vertex in plane.data.vertices]
+        ys = [vertex.co.y for vertex in plane.data.vertices]
+        pad_x = (max(xs) - min(xs)) * margin
+        pad_y = (max(ys) - min(ys)) * margin
+        return min(xs) - pad_x <= local.x <= max(xs) + pad_x and min(ys) - pad_y <= local.y <= max(ys) + pad_y
+    except (ValueError,) + FBP_DATA_ERRORS:
+        return True
+
+
+class _FBPLatticeClickModal:
+    """Shared behaviour of the click-to-place Lattice tools (pins, bones).
+
+    Only one of them runs at a time: pressing its button again ends it, and
+    starting another one ends the previous one. A failed click is reported and
+    never leaves the tool stuck, so Enter, Esc and Right Click always finish.
+    """
+
+    _fbp_active_token = None
+    _fbp_active_key = None
+
+    @classmethod
+    def fbp_is_running(cls, rig_name=""):
+        key = _FBPLatticeClickModal._fbp_active_key
+        return bool(
+            _FBPLatticeClickModal._fbp_active_token is not None and key is not None
+            and key[0] == cls.__name__ and (not rig_name or key[1] == rig_name)
+        )
+
+    def _fbp_claim(self):
+        """Start this tool; return False when the call only ended a running one."""
+        if type(self).fbp_is_running(str(self.rig_name or "")):
+            _FBPLatticeClickModal._fbp_active_token = None
+            _FBPLatticeClickModal._fbp_active_key = None
+            _fbp_tag_view3d_redraw()
+            return False
+        token = object()
+        _FBPLatticeClickModal._fbp_active_token = token
+        _FBPLatticeClickModal._fbp_active_key = (type(self).__name__, str(self.rig_name or ""))
+        self._fbp_token = token
+        return True
+
+    def _fbp_superseded(self):
+        return getattr(self, "_fbp_token", None) is not _FBPLatticeClickModal._fbp_active_token
+
+    def _fbp_release(self):
+        if not self._fbp_superseded():
+            _FBPLatticeClickModal._fbp_active_token = None
+            _FBPLatticeClickModal._fbp_active_key = None
+        self._fbp_token = None
+
+    def cancel(self, context):
+        # Blender drops modal handlers on file load or window close.
+        self._fbp_release()
+        try:
+            context.workspace.status_text_set(None)
+        except FBP_DATA_ERRORS:
+            pass
+        restore_modal_cursor(context)
+
+
+def _fbp_tag_view3d_redraw():
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                area.tag_redraw()
+    except FBP_DATA_ERRORS:
+        pass
+
+
+class FBP_OT_AddLatticePins(_FBPLatticeClickModal, Operator):
     bl_idname = "fbp.add_lattice_pins"
     bl_label = "Add Puppet Pins"
-    bl_description = "Click on the layer in the 3D View to place puppet pins; Ctrl+Click removes the nearest pin. Enter, Esc or Right Click finishes in Pose Mode. Move (G) or rotate (R) a pin to bend the drawing around it, and keyframe it like any bone"
+    bl_description = "Click on the layer in the 3D View to place puppet pins; Ctrl+Click removes the nearest pin. Enter, Esc, Right Click or this button again finishes in Pose Mode. Move (G) or rotate (R) a pin to bend the drawing around it, and keyframe it like any bone"
     bl_options = {'REGISTER', 'UNDO'}
 
     rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
@@ -35711,12 +35812,20 @@ class FBP_OT_AddLatticePins(Operator):
         rig = bpy.data.objects.get(str(self.rig_name or ""))
         if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
             return {'CANCELLED'}
+        if type(self).fbp_is_running(str(self.rig_name or "")):
+            self._fbp_claim()
+            return {'CANCELLED'}
         rig, helper, plane = _fbp_lattice_pins_target(self)
         if helper is None:
             return {'CANCELLED'}
         screen = getattr(getattr(context, "window", None), "screen", None)
         if screen is None or not any(area.type == 'VIEW_3D' for area in screen.areas):
             self.report({'ERROR'}, "Open a 3D View to place pins")
+            return {'CANCELLED'}
+        # Bones left in Edit Mode would keep new pins from getting pose bones.
+        from .lattice_bones import bones_object, leave_edit_mode
+        if not leave_edit_mode(bones_object(rig)):
+            self.report({'ERROR'}, "Press Done on the bones before adding pins")
             return {'CANCELLED'}
         if not rig_pins(rig) and needs_denser_cage(helper):
             # Pins bend the drawing through the cage: give them enough points.
@@ -35731,22 +35840,24 @@ class FBP_OT_AddLatticePins(Operator):
                 return {'CANCELLED'}
             self.report({'INFO'}, f"Cage refined to {points_u} × {points_v} points for puppet pins")
         fbp_set_rna_property_silent(rig, "fbp_lattice_show_cage", False)
+        self._fbp_claim()
         self._status(context)
         try:
             context.window.cursor_modal_set('CROSSHAIR')
         except FBP_DATA_ERRORS:
             pass
         context.window_manager.modal_handler_add(self)
+        _fbp_tag_view3d_redraw()
         return {'RUNNING_MODAL'}
 
     def _finish(self, context):
+        self._fbp_release()
         try:
             context.workspace.status_text_set(None)
         except FBP_DATA_ERRORS:
             pass
         restore_modal_cursor(context)
-        for area in getattr(getattr(context, "screen", None), "areas", ()) or ():
-            area.tag_redraw()
+        _fbp_tag_view3d_redraw()
         return {'FINISHED'}
 
     def _add(self, context, region, region_3d, coord):
@@ -35762,7 +35873,13 @@ class FBP_OT_AddLatticePins(Operator):
         rest = hit[1] if hit is not None else None
         if rest is None:
             rest = ray_plane_point(plane, origin, direction)
-        if rest is None:
+        if rest is None or not _fbp_point_on_layer(plane, rest):
+            self.report({'WARNING'}, "Click on the layer to place a pin")
+            return False
+        # A click on an existing pin picks it instead of stacking a second pin on it.
+        nearest = self._nearest_pin(context, rig, region, region_3d, coord, 12.0)
+        if nearest is not None:
+            select_pins(context, rig, [nearest])
             return False
         existing = rig_pins(rig)
         current = blended_location(rig, helper, existing, rest)
@@ -35776,13 +35893,13 @@ class FBP_OT_AddLatticePins(Operator):
         _fbp_invalidate_live_lattice_cache()
         return True
 
-    def _remove_nearest(self, context, region, region_3d, coord):
+    @staticmethod
+    def _nearest_pin(context, rig, region, region_3d, coord, pixels):
+        """The puppet pin drawn within ``pixels`` (UI scaled) of a click, or None."""
         from bpy_extras import view3d_utils
-        from .lattice_pins import pin_world, puppet_pins, remove_pin
-        rig = bpy.data.objects.get(str(self.rig_name or ""))
-        helper = _fbp_lattice_object(rig) if rig is not None else None
+        from .lattice_pins import pin_world, puppet_pins
         best = None
-        limit = 24.0 * float(getattr(context.preferences.system, "ui_scale", 1.0) or 1.0)
+        limit = pixels * float(getattr(context.preferences.system, "ui_scale", 1.0) or 1.0)
         for pin in puppet_pins(rig):
             # A pin added by the previous click may not be evaluated yet.
             world = pin_world(rig, pin).translation
@@ -35792,11 +35909,20 @@ class FBP_OT_AddLatticePins(Operator):
             distance = (point - Vector(coord)).length
             if distance <= limit and (best is None or distance < best[0]):
                 best = (distance, pin)
-        if best is None:
+        return best[1] if best is not None else None
+
+    def _remove_nearest(self, context, region, region_3d, coord):
+        from .lattice_pins import remove_pin
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        helper = _fbp_lattice_object(rig) if rig is not None else None
+        pin = self._nearest_pin(context, rig, region, region_3d, coord, 24.0)
+        if pin is None:
             return False
-        return remove_pin(rig, helper, best[1])
+        return remove_pin(rig, helper, pin)
 
     def modal(self, context, event):
+        if self._fbp_superseded():
+            return self._finish(context)
         if event.type in {'RET', 'NUMPAD_ENTER', 'ESC'} and event.value == 'PRESS':
             return self._finish(context)
         area, region, region_3d = _fbp_view3d_under_mouse(context, event)
@@ -35811,7 +35937,7 @@ class FBP_OT_AddLatticePins(Operator):
                     self._remove_nearest(context, region, region_3d, coord)
                 else:
                     self._add(context, region, region_3d, coord)
-            except FBP_DATA_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001 - a failed click must never leave the tool stuck
                 self.report({'ERROR'}, f"Could not place the pin: {exc}")
             self._status(context)
             area.tag_redraw()
@@ -35896,7 +36022,7 @@ def _fbp_select_only(context, obj, mode=None):
         return False
 
 
-class FBP_OT_AddLatticeBones(Operator):
+class FBP_OT_AddLatticeBones(_FBPLatticeClickModal, Operator):
     bl_idname = "fbp.add_lattice_bones"
     bl_label = "Add Bones"
     bl_description = "Click joints on the layer to draw a chain of bones: shoulder, elbow, hand. Right Click ends the chain (start the next one on a joint to branch from it), Ctrl+Click removes the last bone, Enter finishes in Pose Mode. Chains get an IK handle at their end"
@@ -35922,6 +36048,9 @@ class FBP_OT_AddLatticeBones(Operator):
         rig = bpy.data.objects.get(str(self.rig_name or ""))
         if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
             return {'CANCELLED'}
+        if type(self).fbp_is_running(str(self.rig_name or "")):
+            self._fbp_claim()
+            return {'CANCELLED'}
         rig, helper, plane = _fbp_lattice_pins_target(self)
         if helper is None:
             return {'CANCELLED'}
@@ -35944,12 +36073,14 @@ class FBP_OT_AddLatticeBones(Operator):
         self._parent = ""
         self._chain = []
         self._chains = []
+        self._fbp_claim()
         self._status(context)
         try:
             context.window.cursor_modal_set('CROSSHAIR')
         except FBP_DATA_ERRORS:
             pass
         context.window_manager.modal_handler_add(self)
+        _fbp_tag_view3d_redraw()
         return {'RUNNING_MODAL'}
 
     def _armature(self):
@@ -36011,8 +36142,23 @@ class FBP_OT_AddLatticeBones(Operator):
         self._joint = local
         self._parent = name
 
+    def _fbp_safe_finish(self, context):
+        try:
+            return self._finish(context)
+        except Exception as exc:  # noqa: BLE001 - the tool must end even if the bones could not be finished
+            self._fbp_release()
+            restore_modal_cursor(context)
+            try:
+                context.workspace.status_text_set(None)
+            except FBP_DATA_ERRORS:
+                pass
+            self.report({'ERROR'}, f"Could not finish the bones: {exc}")
+            return {'CANCELLED'}
+
     def _finish(self, context):
         from .lattice_bones import add_ik_target, bind, bones_object, deform_bones, handle_size, remove_bones, setup_pose_constraints
+        self._fbp_release()
+        _fbp_tag_view3d_redraw()
         self._end_chain()
         try:
             context.workspace.status_text_set(None)
@@ -36048,14 +36194,16 @@ class FBP_OT_AddLatticeBones(Operator):
         return {'FINISHED'}
 
     def modal(self, context, event):
+        if self._fbp_superseded():
+            return self._fbp_safe_finish(context)
         if event.type in {'RET', 'NUMPAD_ENTER', 'ESC'} and event.value == 'PRESS':
-            return self._finish(context)
+            return self._fbp_safe_finish(context)
         area, region, region_3d = _fbp_view3d_under_mouse(context, event)
         if event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
-            if area is None:
+            if area is None or region is None:
                 return {'PASS_THROUGH'}
             if self._joint is None:
-                return self._finish(context)
+                return self._fbp_safe_finish(context)
             self._end_chain()
             self._status(context)
             area.tag_redraw()
@@ -36064,7 +36212,7 @@ class FBP_OT_AddLatticeBones(Operator):
             coord = (event.mouse_x - region.x, event.mouse_y - region.y)
             try:
                 self._click(context, region, region_3d, coord, bool(event.ctrl))
-            except FBP_DATA_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001 - a failed click must never leave the tool stuck
                 self.report({'ERROR'}, f"Could not add the bone: {exc}")
             self._status(context)
             area.tag_redraw()

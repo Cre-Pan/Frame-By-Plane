@@ -43,6 +43,7 @@ from .lattice_bones import (
     ensure_armature,
     handle_size,
     is_bones_object,
+    leave_edit_mode,
     pose_matrix,
     remove_bone_names,
     remove_unused_armature,
@@ -205,12 +206,87 @@ def _grid_corner_turn(u_index, v_index, points_u, points_v):
     }.get((u_index, v_index))
 
 
+def _taken_pin_ids(rig, helper):
+    """Pin ids in use by live pins, plus any id whose Hook or group still exists."""
+    used = {_pin_id(pin) for pin in rig_pins(rig)}
+    if helper is not None:
+        try:
+            used.update(m.name[len(HOOK_PREFIX):] for m in helper.modifiers if m.name.startswith(HOOK_PREFIX))
+            used.update(g.name[len(GROUP_PREFIX):] for g in helper.vertex_groups if g.name.startswith(GROUP_PREFIX))
+        except FBP_DATA_ERRORS:
+            pass
+    return used
+
+
+def drop_orphan_pin_data(rig, helper):
+    """Remove pin Hooks and groups whose pin bone is gone (an interrupted add, a deleted bone).
+
+    An orphan Hook keeps deforming the cage from nowhere and an orphan group
+    would hijack the name of the next pin, so they never outlive their pin.
+    Return the number of removed items.
+    """
+    if helper is None:
+        return 0
+    live = {_pin_id(pin) for pin in rig_pins(rig)}
+    removed = 0
+    try:
+        for modifier in list(helper.modifiers):
+            if modifier.name.startswith(HOOK_PREFIX) and modifier.name[len(HOOK_PREFIX):] not in live:
+                helper.modifiers.remove(modifier)
+                removed += 1
+        for group in list(helper.vertex_groups):
+            if group.name.startswith(GROUP_PREFIX) and group.name[len(GROUP_PREFIX):] not in live:
+                helper.vertex_groups.remove(group)
+                removed += 1
+    except FBP_DATA_ERRORS:
+        pass
+    if removed:
+        helper.pop(BIND_SIGNATURE_KEY, None)
+    return removed
+
+
+def _drop_dead_hooks(helper, armature):
+    """Remove pin Hooks whose bone was deleted (in Edit Mode); they would drag the cage."""
+    try:
+        bones = armature.data.bones
+        dead = [
+            modifier for modifier in helper.modifiers
+            if modifier.type == 'HOOK' and modifier.name.startswith(HOOK_PREFIX)
+            and (modifier.object is not armature or bones.get(str(modifier.subtarget or "")) is None)
+        ]
+        for modifier in dead:
+            _drop_pin_data(helper, modifier.name[len(HOOK_PREFIX):])
+    except FBP_DATA_ERRORS:
+        return 0
+    if dead:
+        helper.pop(BIND_SIGNATURE_KEY, None)
+    return len(dead)
+
+
+def _new_handles(rig, armature, specs):
+    """Add handle bones and return their pose bones (the armature leaves Edit Mode first)."""
+    if not leave_edit_mode(armature):
+        raise RuntimeError("The pin controls are in Edit Mode: press Done on the bones first")
+    names = add_handle_bones(armature, specs)
+    handles = [armature.pose.bones.get(name) for name in names]
+    if any(handle is None for handle in handles):
+        # Never leave half-made pins behind: they would block the next names.
+        remove_bone_names(armature, names)
+        raise RuntimeError("Blender did not create the pin bones; try again in Object or Pose Mode")
+    return handles
+
+
 def _attach_hook(helper, armature, pin, pin_id):
-    helper.vertex_groups.new(name=_group_name(pin_id))
+    for stale in (helper.modifiers.get(_hook_name(pin_id)),):
+        if stale is not None:
+            helper.modifiers.remove(stale)
+    group = helper.vertex_groups.get(_group_name(pin_id))
+    if group is None:
+        group = helper.vertex_groups.new(name=_group_name(pin_id))
     hook = helper.modifiers.new(_hook_name(pin_id), 'HOOK')
     hook.object = armature
     hook.subtarget = pin.name
-    hook.vertex_group = _group_name(pin_id)
+    hook.vertex_group = group.name
     hook.falloff_type = 'NONE'
     hook.strength = 1.0
     hook.show_in_editmode = True
@@ -221,21 +297,27 @@ def _attach_hook(helper, armature, pin, pin_id):
 def add_pins(rig, helper, plane, world_locations, kind=KIND_PIN, *, bind_now=True):
     """Create pins at world locations on the layer and bind them. Return the pins."""
     armature = ensure_armature(rig, helper, plane)
+    drop_orphan_pin_data(rig, helper)
     label = "Bend" if kind == KIND_BEND else "Pin"
     specs, ids = [], []
-    used = {_pin_id(pin) for pin in rig_pins(rig)}
+    used = _taken_pin_ids(rig, helper)
+    # Skip numbers whose name a renamed pin or bone already took, so a new
+    # pin reads "Pin 6", not "Pin 5 2".
+    try:
+        names = {bone.name for bone in armature.data.bones}
+    except FBP_DATA_ERRORS:
+        names = set()
     index = 1
     for world in world_locations:
-        while str(index) in used:
+        while str(index) in used or f"{label} {index}" in names:
             index += 1
         used.add(str(index))
         ids.append(str(index))
         specs.append((f"{label} {index}", _local_head(rig, armature, world)))
-    names = add_handle_bones(armature, specs)
+    handles = _new_handles(rig, armature, specs)
     size = handle_size(plane, kind, rig)
     pins = []
-    for name, pin_id in zip(names, ids):
-        pin = armature.pose.bones[name]
+    for pin, pin_id in zip(handles, ids):
         pin[HANDLE_KEY] = kind
         pin[PIN_ID_KEY] = pin_id
         pin[PIN_REST_KEY] = (0.0, 0.0, 0.0)
@@ -266,6 +348,7 @@ def add_point_handles(rig, helper, plane):
         return 0
     remove_all_pins(rig, helper, kinds=(KIND_POINT,))
     armature = ensure_armature(rig, helper, plane)
+    drop_orphan_pin_data(rig, helper)
     keys = getattr(data, "shape_keys", None)
     if keys is not None and len(keys.key_blocks):
         source = keys.key_blocks[0].data
@@ -273,7 +356,7 @@ def add_point_handles(rig, helper, plane):
     else:
         coordinates = [Vector(point.co_deform) for point in data.points]
     helper_world = helper.matrix_world
-    used = {_pin_id(pin) for pin in rig_pins(rig)}
+    used = _taken_pin_ids(rig, helper)
     specs, ids = [], []
     next_id = 1
     for index, local in enumerate(coordinates[: points_u * points_v]):
@@ -283,11 +366,10 @@ def add_point_handles(rig, helper, plane):
         ids.append(str(next_id))
         u_index, v_index = index % points_u, index // points_u
         specs.append((f"Point {u_index + 1}·{v_index + 1}", _local_head(rig, armature, helper_world @ local)))
-    names = add_handle_bones(armature, specs)
+    handles = _new_handles(rig, armature, specs)
     size = handle_size(plane, KIND_POINT, rig)
     corner_size = handle_size(plane, "GRID_CORNER", rig)
-    for index, (name, pin_id) in enumerate(zip(names, ids)):
-        handle = armature.pose.bones[name]
+    for index, (handle, pin_id) in enumerate(zip(handles, ids)):
         handle[HANDLE_KEY] = KIND_POINT
         handle[PIN_ID_KEY] = pin_id
         handle[PIN_POINT_KEY] = index
@@ -512,6 +594,8 @@ def bind(rig, helper, plane, *, force=False):
     armature = bones_object(rig)
     if armature is not None and str(getattr(armature, "mode", "OBJECT")) == 'EDIT':
         return False
+    if armature is not None:
+        _drop_dead_hooks(helper, armature)
     handles = [pin for pin in rig_pins(rig, kinds=(KIND_POINT,)) if pin_hook(helper, pin) is not None]
     if handles and not _point_handles_match_grid(helper, handles):
         # The cage changed resolution: rebuild the handles on the new points.

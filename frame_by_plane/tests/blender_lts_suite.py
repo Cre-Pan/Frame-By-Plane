@@ -2993,6 +2993,105 @@ def test_lattice_pins_contract(_module):
     return {"grid": [points_u, points_v]}
 
 
+def test_lattice_pin_names_contract(_module):
+    """Add Pin survives renamed pins, stale pin data and controls left in Edit Mode."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    pins_module = importlib.import_module(f"{PACKAGE}.lattice_pins")
+    from mathutils import Vector
+    rig = _effect_stack_fixture_rig("FBP Lattice Pin Names", width=24)
+    owned = [rig, *rig.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+
+    def spot(x, y):
+        xs = [vertex.co.x for vertex in plane.data.vertices]
+        ys = [vertex.co.y for vertex in plane.data.vertices]
+        return plane.matrix_world @ Vector((
+            min(xs) + x * (max(xs) - min(xs)), min(ys) + y * (max(ys) - min(ys)), 0.0,
+        ))
+
+    def hooks_are_consistent():
+        for pin in pins_module.rig_pins(rig):
+            hook = pins_module.pin_hook(helper, pin)
+            assert hook is not None, pin.name
+            assert hook.subtarget == pin.name, (hook.subtarget, pin.name)
+            assert helper.vertex_groups.get(hook.vertex_group) is not None, hook.vertex_group
+
+    try:
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[rig]):
+            assert bpy.ops.fbp.add_effect(effect_id="LATTICE") == {"FINISHED"}
+        plane = geo._fbp_plane(rig)
+        helper = geo._fbp_lattice_object(rig)
+        first = pins_module.add_pin(rig, helper, plane, spot(0.2, 0.5))
+        second = pins_module.add_pin(rig, helper, plane, spot(0.8, 0.5))
+        armature = first.id_data
+        # A renamed pin takes the name the next pin would get.
+        second.name = "Pin 3"
+        third = pins_module.add_pin(rig, helper, plane, spot(0.5, 0.2))
+        assert third.name not in {first.name, "Pin 3"}, third.name
+        hooks_are_consistent()
+        # Pin data left behind by an interrupted add does not hijack the next pin.
+        helper.vertex_groups.new(name="FBP Pin 4")
+        fourth = pins_module.add_pin(rig, helper, plane, spot(0.5, 0.8))
+        hooks_are_consistent()
+        assert not [group.name for group in helper.vertex_groups if "." in group.name]
+        assert pins_module.pin_hook(helper, fourth).name.endswith(fourth.get(pins_module.PIN_ID_KEY))
+        # Controls left in Edit Mode (Add Bones) still get a working pin.
+        bpy.context.view_layer.objects.active = armature
+        armature.select_set(True)
+        with bpy.context.temp_override(active_object=armature, object=armature, selected_objects=[armature]):
+            bpy.ops.object.mode_set(mode="EDIT")
+        assert armature.mode == "EDIT"
+        names = set()
+        for x in (0.3, 0.4, 0.6):
+            pin = pins_module.add_pin(rig, helper, plane, spot(x, 0.6))
+            assert pin.name not in names
+            assert pin.name.count(" ") == 1, pin.name  # "Pin 6", never "Pin 5 2"
+            names.add(pin.name)
+        assert armature.mode == "POSE" or armature.mode == "OBJECT", armature.mode
+        assert len(pins_module.rig_pins(rig)) == 7
+        hooks_are_consistent()
+        # A pin bone deleted by hand takes its Hook and group with it on the next bind.
+        lattice_bones = importlib.import_module(f"{PACKAGE}.lattice_bones")
+        doomed = pins_module.rig_pins(rig)[-1]
+        doomed_id = doomed.get(pins_module.PIN_ID_KEY)
+        lattice_bones.remove_bone_names(armature, [doomed.name])
+        pins_module.bind(rig, helper, plane, force=True)
+        assert helper.modifiers.get(f"{pins_module.HOOK_PREFIX}{doomed_id}") is None
+        assert helper.vertex_groups.get(f"{pins_module.GROUP_PREFIX}{doomed_id}") is None
+        assert len(pins_module.rig_pins(rig)) == 6
+        hooks_are_consistent()
+        # Weights still form a partition of unity.
+        groups = [helper.vertex_groups[pins_module.pin_hook(helper, pin).vertex_group] for pin in pins_module.rig_pins(rig)]
+        for index in range(len(helper.data.points)):
+            total = 0.0
+            for group in groups:
+                try:
+                    total += group.weight(index)
+                except RuntimeError:
+                    pass
+            assert abs(total - 1.0) < 1.0e-3, (index, total)
+    finally:
+        try:
+            if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+        except RuntimeError:
+            pass
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        for obj in reversed([*owned, *[obj for obj in bpy.data.objects if pins_module.is_lattice_controller(obj)]]):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {}
+
+
 def test_lattice_types_contract(_module):
     """Bones, Corner Pin, Grid point handles and Bend/Stiff pins stack on one cage."""
     import math
@@ -6069,6 +6168,7 @@ def run_background():
             ("gradient_handles_cycles", test_gradient_handles_cycles),
             ("lattice_poses_contract", test_lattice_poses_contract),
             ("lattice_pins_contract", test_lattice_pins_contract),
+            ("lattice_pin_names_contract", test_lattice_pin_names_contract),
             ("lattice_types_contract", test_lattice_types_contract),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),

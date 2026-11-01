@@ -42,6 +42,10 @@ All notable public changes to Frame By Plane are documented here.
 - **Puppet Pins** for the Lattice effect, in the spirit of Puppet Warp. **Add Pins** lets you click on the layer to place pins (Ctrl+Click removes one, Enter finishes). Move a pin with G or rotate it with R and the drawing bends around it while the other pins hold their areas still; keyframe pins like any bone (**Key Pins**). **Rest Pose** returns them to the undeformed layer and **Set as Rest** moves a pin to a better spot without bending the drawing.
 - Pins use native Hook modifiers on the cage with automatic smooth weights, so they work with Poses and the cage, animate, save and render without anything running at playback time. **Follow Drawing** spreads each pin's influence through the opaque parts of the image, so a pin on a hand does not drag a separate nearby part across a transparent gap.
 - The first pin refines the cage to about 24 points on the long side so the bend stays smooth.
+- **Add Pins** no longer fails with a `KeyError` ("Pin 3 3" not found) when the layer's bones were left in Edit Mode or a pin had been renamed: the controls leave Edit Mode first, new pins skip names already taken ("Pin 6", never "Pin 5 2") and pin data left behind by an interrupted add is cleaned up instead of hijacking the next pin.
+- **Add Pins** and **Add Bones** always end with Enter, Esc or Right Click, and pressing the button again (it reads **Done Placing** / **Done Drawing** while active) ends it too. Starting the tool twice no longer stacks two tools that kept adding pins after Esc, and a failed click is reported without leaving the tool stuck.
+- Clicks on the 3D View's sidebar, toolbar or header no longer place a pin or a joint under them; a click on an existing pin selects it instead of stacking a second pin on it, a click off the layer places nothing, and Quad View uses the view under the mouse.
+- Deleting a pin bone by hand also removes its Hook and weights, so the cage is no longer dragged by a pin that is gone.
 
 ### Lattice types
 
