@@ -965,6 +965,8 @@ FBP_EFFECT_REGISTRY = {
             "Depth Fade", "Luminance Opacity", "Show Plane", "Outline", "Outline Width",
             "Outline Color", "Glow", "Stack Material", "Stack Position", "Cycle Length",
             "Loop", "Frame Base", "Use Timing Table", "Table Rows",
+            "Use Stack Image", "Stack Columns", "Stack Rows", "Stack Cells",
+            "Cell Width", "Cell Height",
         ),
         "property_map": {
             "fbp_frame_stack_slices": "Slices",
@@ -2501,7 +2503,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_SCULPT_WAVES: ("3D", "MEDIUM", "Sculpt an aspect-balanced triangular grid with radial, moiré or spiral fields. Remesh level controls most of the cost."),
     FBP_EFFECT_KINETIC_TILES: ("3D", "MEDIUM", "Split an aspect-balanced grid into near-square individually extruded tiles. Remesh level controls tile count and evaluation cost."),
     FBP_EFFECT_KNIT_CROCHET: ("3D", "MEDIUM", "Instance one shared stitch mesh per column and row. Columns sets the stitch count; render columns can be raised independently."),
-    FBP_EFFECT_FRAME_STACK: ("3D", "MEDIUM", "Sample one earlier source frame per slice into an aspect-balanced grid. Slices times Detail sets the cost; every slice decodes its own frame."),
+    FBP_EFFECT_FRAME_STACK: ("3D", "MEDIUM", "Image sequences read one small cached thumbnail per slice and build every slice at once; videos sample one earlier frame per slice. Slices times Detail sets the cost."),
     FBP_EFFECT_LAYERED_ECHO: ("3D", "LIGHT", "Array the textured plane with per-axis offset, rotation, scale, twist and animated wave controls. Layer count is the main cost."),
     FBP_EFFECT_LATTICE: ("3D", "LIGHT", "Deform the linked plane through a planar control grid with one selectable point per intersection, or bake its 3D perspective into a camera-parallel surface while preserving the same camera appearance."),
 }
