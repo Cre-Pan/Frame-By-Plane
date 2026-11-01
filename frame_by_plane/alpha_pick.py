@@ -162,6 +162,27 @@ def fbp_pick_layer_through_alpha(context, origin, direction, *, by_image_with_ri
     return None, crossed_plane
 
 
+def fbp_view_ray(region, region_data, coord):
+    """World ``(origin, direction)`` of the view ray under a region pixel.
+
+    In orthographic views (including an orthographic camera) Blender's
+    ``region_2d_to_origin_3d`` can place the origin beyond the scene, so the
+    ray would start behind every plane. The origin is taken on the near clip
+    plane instead, so the ray covers everything the view shows.
+    """
+    from bpy_extras import view3d_utils
+
+    direction = view3d_utils.region_2d_to_vector_3d(region, region_data, coord)
+    if bool(getattr(region_data, "is_perspective", True)):
+        return view3d_utils.region_2d_to_origin_3d(region, region_data, coord), direction
+    x = 2.0 * float(coord[0]) / max(1.0, float(region.width)) - 1.0
+    y = 2.0 * float(coord[1]) / max(1.0, float(region.height)) - 1.0
+    near = region_data.perspective_matrix.inverted_safe() @ Vector((x, y, -1.0, 1.0))
+    if abs(near.w) > 1e-12:
+        near = near / near.w
+    return near.to_3d(), direction
+
+
 def _ui_scale(context):
     try:
         return float(context.preferences.system.ui_scale) or 1.0
@@ -197,8 +218,6 @@ class FBP_OT_SelectThroughAlpha(Operator):
         )
 
     def invoke(self, context, event):
-        from bpy_extras import view3d_utils
-
         region = context.region
         region_data = context.region_data
         coord = (event.mouse_region_x, event.mouse_region_y)
@@ -206,8 +225,7 @@ class FBP_OT_SelectThroughAlpha(Operator):
             # A click on (or right next to) a visible rig wire stays Blender's.
             if _rig_wire_near_cursor(context, coord, 8.0 * _ui_scale(context)):
                 return {'PASS_THROUGH'}
-            origin = view3d_utils.region_2d_to_origin_3d(region, region_data, coord)
-            direction = view3d_utils.region_2d_to_vector_3d(region, region_data, coord)
+            origin, direction = fbp_view_ray(region, region_data, coord)
             rig, _crossed_plane = fbp_pick_layer_through_alpha(
                 context, origin, direction, by_image_with_rig=_by_image_with_rig(),
             )
