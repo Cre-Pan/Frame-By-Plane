@@ -6924,6 +6924,41 @@ def _fbp_frame_stack_native_timing(material):
     return timing
 
 
+_FBP_FRAME_STACK_IMAGE_NAMES = {}
+
+
+def _fbp_frame_stack_find_image(tag, owner):
+    """Return the layer's generated Frame Stack image, remembering its name.
+
+    Scanning ``bpy.data.images`` on every frame change costs more than the
+    rest of the sync once a file holds many images.
+    """
+    key = (tag, owner)
+    name = _FBP_FRAME_STACK_IMAGE_NAMES.get(key)
+    if name is not None:
+        candidate = bpy.data.images.get(name)
+        try:
+            if (
+                candidate is not None
+                and bool(candidate.get(tag, False))
+                and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
+            ):
+                return candidate
+        except FBP_DATA_ERRORS:
+            pass
+        _FBP_FRAME_STACK_IMAGE_NAMES.pop(key, None)
+    for candidate in bpy.data.images:
+        if (
+            bool(candidate.get(tag, False))
+            and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
+        ):
+            if len(_FBP_FRAME_STACK_IMAGE_NAMES) >= 1024:
+                _FBP_FRAME_STACK_IMAGE_NAMES.clear()
+            _FBP_FRAME_STACK_IMAGE_NAMES[key] = candidate.name
+            return candidate
+    return None
+
+
 def _fbp_frame_stack_table_image(rig, timing):
     """Write the sequence timing table read by the Frame Stack group.
 
@@ -6940,15 +6975,8 @@ def _fbp_frame_stack_table_image(rig, timing):
     rows = max(1, -(-len(files) // width))
     owner = str(getattr(plane, "name", "") or "")
     name = f"FBP Frame Stack Timing • {owner}"
-    image = None
     try:
-        for candidate in bpy.data.images:
-            if (
-                bool(candidate.get("fbp_frame_stack_timing", False))
-                and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
-            ):
-                image = candidate
-                break
+        image = _fbp_frame_stack_find_image("fbp_frame_stack_timing", owner)
         if image is None:
             image = bpy.data.images.new(name, width, rows, alpha=True, float_buffer=True, is_data=True)
             image.use_fake_user = False
@@ -6985,6 +7013,9 @@ _FBP_FRAME_STACK_THUMB_BYTES = [0]
 _FBP_FRAME_STACK_THUMB_BUDGET = 256 * 1024 * 1024
 _FBP_FRAME_STACK_PATHS_CACHE = {}
 _FBP_FRAME_STACK_CELLS_CACHE = {}
+_FBP_FRAME_STACK_CANVASES = {}
+_FBP_FRAME_STACK_IMAGE_STATE = {}
+_FBP_FRAME_STACK_OCIO = {}
 _FBP_FRAME_STACK_FAILED_PATHS = {}
 
 
@@ -7065,12 +7096,89 @@ def _fbp_frame_stack_source_size(path):
     return size
 
 
-def _fbp_frame_stack_thumbnail(path, width, height):
-    """Return ``(pixels, is_float, width, height, key)`` for one source file.
+def _fbp_frame_stack_ocio_config():
+    """Path of Blender's OCIO config, so thumbnails convert like Blender."""
+    if "config" not in _FBP_FRAME_STACK_OCIO:
+        path = ""
+        try:
+            candidate = os.path.join(
+                bpy.utils.resource_path("LOCAL"), "datafiles", "colormanagement", "config.ocio",
+            )
+            path = candidate if os.path.isfile(candidate) else ""
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            path = ""
+        _FBP_FRAME_STACK_OCIO["config"] = path
+    return _FBP_FRAME_STACK_OCIO["config"]
 
-    ``pixels`` is a bottom-up RGBA array: uint8 in the file's own encoding
-    for integer formats, float32 scene-linear premultiplied for float ones.
-    Returns ``None`` when the file cannot be read.
+
+def _fbp_frame_stack_ocio_convert(pixels, colorspace):
+    """Convert straight RGB(A) pixels to scene linear with Blender's OCIO."""
+    import numpy as np
+    import OpenImageIO as oiio
+    ocio = _fbp_frame_stack_ocio_config()
+    if not ocio:
+        raise ValueError("Blender colour configuration not found")
+    height, width = pixels.shape[0], pixels.shape[1]
+    buffer = oiio.ImageBuf(oiio.ImageSpec(width, height, 4, oiio.FLOAT))
+    buffer.set_pixels(oiio.ROI(0, width, 0, height, 0, 1, 0, 4), np.ascontiguousarray(pixels, dtype=np.float32))
+    linear = oiio.ImageBufAlgo.colorconvert(
+        buffer, str(colorspace), "scene_linear", unpremult=False, colorconfig=ocio,
+    )
+    if linear.has_error:
+        raise ValueError(linear.geterror())
+    return np.asarray(linear.get_pixels(oiio.FLOAT), dtype=np.float32).reshape(height, width, 4)
+
+
+def _fbp_frame_stack_byte_lut(colorspace):
+    """Per-channel tables from 8-bit codes to scene-linear RGB.
+
+    Loading the OCIO config costs tens of milliseconds per call, so each
+    colour space is converted once: one ramp per input channel, whose
+    outputs add up for the usual curve-then-matrix colour spaces.
+    """
+    key = ("lut", str(colorspace))
+    lut = _FBP_FRAME_STACK_OCIO.get(key)
+    if lut is None:
+        import numpy as np
+        ramp = np.zeros((3, 256, 4), dtype=np.float32)
+        codes = np.arange(256, dtype=np.float32) / 255.0
+        for channel in range(3):
+            ramp[channel, :, channel] = codes
+        ramp[..., 3] = 1.0
+        converted = _fbp_frame_stack_ocio_convert(ramp, colorspace)
+        black = converted[0, 0, :3].copy()
+        lut = tuple(
+            converted[channel, :, :3] - (black * (2.0 / 3.0)) for channel in range(3)
+        )
+        _FBP_FRAME_STACK_OCIO[key] = lut
+    return lut
+
+
+def _fbp_frame_stack_convert_float(pixels, colorspace):
+    """Bring a float thumbnail to scene linear; linear sources pass through."""
+    try:
+        role = _FBP_FRAME_STACK_OCIO.get("scene_linear")
+        if role is None:
+            import OpenImageIO as oiio
+            ocio = _fbp_frame_stack_ocio_config()
+            role = str(oiio.ColorConfig(ocio).getColorSpaceNameByRole("scene_linear") or "") if ocio else ""
+            _FBP_FRAME_STACK_OCIO["scene_linear"] = role
+    except Exception:  # OIIO raises its own error types.
+        role = ""
+    if str(colorspace) in {role, "Linear Rec.709", "scene_linear"}:
+        return pixels
+    return _fbp_frame_stack_ocio_convert(pixels, colorspace)
+
+
+def _fbp_frame_stack_thumbnail(path, width, height, colorspace="sRGB", is_data=False):
+    """Return ``(pixels, width, height, key)`` for one source file.
+
+    ``pixels`` is a bottom-up float32 RGBA array in scene linear holding
+    exactly what the Geometry Image Texture node returns for the full
+    frame, so the stack image (alpha mode Premultiplied, read as stored)
+    matches the Repeat Zone path.
+    ``colorspace`` is the source image's colour space; data images are not
+    converted. Returns ``None`` when the file cannot be read.
     """
     try:
         stat = os.stat(path)
@@ -7079,7 +7187,7 @@ def _fbp_frame_stack_thumbnail(path, width, height):
     file_key = (path, int(stat.st_mtime_ns), int(stat.st_size))
     if _FBP_FRAME_STACK_FAILED_PATHS.get(path) == file_key:
         return None
-    key = (*file_key, int(width), int(height))
+    key = (*file_key, int(width), int(height), str(colorspace or ""), bool(is_data))
     cached = _FBP_FRAME_STACK_THUMBS.get(key)
     if cached is not None:
         _FBP_FRAME_STACK_THUMBS.move_to_end(key)
@@ -7098,6 +7206,7 @@ def _fbp_frame_stack_thumbnail(path, width, height):
         small = oiio.ImageBufAlgo.resize(source, filtername="box", roi=roi)
         if small.has_error:
             raise ValueError(small.geterror())
+        # Float files (EXR) arrive premultiplied, the others straight.
         is_float = str(spec.format).lower() in {"float", "half", "double"}
         pixels = np.asarray(small.get_pixels(oiio.FLOAT), dtype=np.float32)
         pixels = pixels.reshape(height, width, -1)
@@ -7111,13 +7220,25 @@ def _fbp_frame_stack_thumbnail(path, width, height):
             rgba[..., :3] = pixels[..., :1]
             if channels == 2:
                 rgba[..., 3] = pixels[..., 1]
-        rgba = rgba[::-1]
-        if is_float:
-            # Blender keeps float buffers premultiplied.
-            rgba[..., :3] *= rgba[..., 3:4]
-            data = np.ascontiguousarray(rgba)
-        else:
-            data = np.ascontiguousarray(np.rint(np.clip(rgba, 0.0, 1.0) * 255.0).astype(np.uint8))
+        if not is_float:
+            # Quantize like the byte buffer Blender would hold.
+            rgba = np.rint(np.clip(rgba, 0.0, 1.0) * 255.0) * (1.0 / 255.0)
+        if not is_data and colorspace:
+            if is_float:
+                rgba = _fbp_frame_stack_convert_float(rgba, colorspace)
+            else:
+                lut = _fbp_frame_stack_byte_lut(colorspace)
+                codes = np.rint(rgba[..., :3] * 255.0).astype(np.intp)
+                rgb = lut[0][codes[..., 0]] + lut[1][codes[..., 1]] + lut[2][codes[..., 2]]
+                rgba = np.concatenate([rgb.astype(np.float32), rgba[..., 3:4]], axis=-1)
+        rgba = np.array(rgba[::-1], dtype=np.float32)
+        if not is_float:
+            # Match what the Geometry Image Texture node returns for a
+            # straight byte image: Blender premultiplies it on conversion and
+            # the node premultiplies once more, so soft edges keep the look
+            # the Repeat Zone path always had.
+            rgba[..., :3] *= rgba[..., 3:4] * rgba[..., 3:4]
+        data = np.ascontiguousarray(rgba)
     except Exception as exc:  # OIIO raises its own error types.
         if not _FBP_FRAME_STACK_FAILED_PATHS:
             fbp_warn("Frame Stack could not read a thumbnail; using full frames", exc)
@@ -7125,7 +7246,7 @@ def _fbp_frame_stack_thumbnail(path, width, height):
             _FBP_FRAME_STACK_FAILED_PATHS.clear()
         _FBP_FRAME_STACK_FAILED_PATHS[path] = file_key
         return None
-    result = (data, is_float, width, height, key)
+    result = (data, width, height, key)
     _FBP_FRAME_STACK_THUMBS[key] = result
     _FBP_FRAME_STACK_THUMB_BYTES[0] += int(data.nbytes)
     while _FBP_FRAME_STACK_THUMB_BYTES[0] > _FBP_FRAME_STACK_THUMB_BUDGET and len(_FBP_FRAME_STACK_THUMBS) > 1:
@@ -7140,8 +7261,11 @@ def fbp_clear_frame_stack_thumbnails():
     _FBP_FRAME_STACK_THUMB_BYTES[0] = 0
     _FBP_FRAME_STACK_PATHS_CACHE.clear()
     _FBP_FRAME_STACK_CELLS_CACHE.clear()
+    _FBP_FRAME_STACK_CANVASES.clear()
+    _FBP_FRAME_STACK_IMAGE_STATE.clear()
     _FBP_FRAME_STACK_FAILED_PATHS.clear()
     _FBP_FRAME_STACK_SIZES.clear()
+    _FBP_FRAME_STACK_OCIO.clear()
 
 
 def _fbp_frame_stack_slice_positions(position, cycle, loop, step, count):
@@ -7160,6 +7284,31 @@ def _fbp_frame_stack_slice_positions(position, cycle, loop, step, count):
         else:
             result.append(q)
     return result
+
+
+def _fbp_frame_stack_prepare_cells_image(image, owner, width, height):
+    """Create the float stack image or bring its size in line.
+
+    The image is float and scene linear on purpose: once Geometry Nodes has
+    sampled a byte image it carries a float buffer too, and later pixel
+    writes land in that buffer without any colour conversion.
+    """
+    if image is not None and not bool(image.is_float):
+        bpy.data.images.remove(image)
+        image = None
+    if image is None:
+        image = bpy.data.images.new(
+            f"FBP Frame Stack Cells • {owner}", width, height,
+            alpha=True, float_buffer=True,
+        )
+        image.use_fake_user = False
+        image["fbp_frame_stack_cells"] = True
+        image["fbp_owned"] = True
+        image["fbp_effect_material_owner"] = owner
+    elif tuple(image.size) != (width, height):
+        image.scale(width, height)
+    _fbp_set_attr_if_changed(image, "alpha_mode", "PREMUL")
+    return image
 
 
 def _fbp_frame_stack_cells_image(rig, modifier, node_group, interface_inputs, material, timing, position):
@@ -7210,78 +7359,58 @@ def _fbp_frame_stack_cells_image(rig, modifier, node_group, interface_inputs, ma
         shrink = 1.0 / math.sqrt(overflow)
         cell_w = max(2, int(cell_w * shrink))
         cell_h = max(2, int(cell_h * shrink))
+    _src_material, source_node = _fbp_material_image_node(rig)
+    source_image = getattr(source_node, "image", None) if source_node else None
+    try:
+        settings = source_image.colorspace_settings if source_image else None
+        colorspace = str(settings.name) if settings else "sRGB"
+        is_data = bool(getattr(settings, "is_data", False)) if settings else False
+    except FBP_DATA_ERRORS:
+        colorspace, is_data = "sRGB", False
     thumbs = {}
     for path in slots:
         if path is None or path in thumbs:
             continue
-        thumb = _fbp_frame_stack_thumbnail(path, cell_w, cell_h)
+        thumb = _fbp_frame_stack_thumbnail(path, cell_w, cell_h, colorspace, is_data)
         if thumb is None:
             return None
         thumbs[path] = thumb
-    float_flags = {thumb[1] for thumb in thumbs.values()}
-    if len(float_flags) > 1:
-        # Mixed bit depths: the full-frame path handles those.
-        return None
-    is_float = bool(float_flags and float_flags.pop())
     columns = max(1, int(math.ceil(math.sqrt(count))))
     rows = max(1, -(-count // columns))
     width, height = columns * cell_w, rows * cell_h
 
     owner = str(getattr(plane, "name", "") or "")
-    _src_material, source_node = _fbp_material_image_node(rig)
-    source_image = getattr(source_node, "image", None) if source_node else None
     try:
-        colorspace = str(source_image.colorspace_settings.name) if source_image else ""
-        alpha_mode = str(getattr(source_image, "alpha_mode", "STRAIGHT") or "STRAIGHT")
-    except FBP_DATA_ERRORS:
-        colorspace, alpha_mode = "", "STRAIGHT"
-    image = None
-    try:
-        for candidate in bpy.data.images:
-            if (
-                bool(candidate.get("fbp_frame_stack_cells", False))
-                and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
-            ):
-                image = candidate
-                break
-        if image is not None and bool(image.is_float) != bool(is_float):
-            bpy.data.images.remove(image)
-            image = None
-        if image is None:
-            image = bpy.data.images.new(
-                f"FBP Frame Stack Cells • {owner}", width, height,
-                alpha=True, float_buffer=bool(is_float),
-            )
-            image.use_fake_user = False
-            image["fbp_frame_stack_cells"] = True
-            image["fbp_owned"] = True
-            image["fbp_effect_material_owner"] = owner
-        elif tuple(image.size) != (width, height):
-            image.scale(width, height)
-        if is_float:
-            _fbp_set_attr_if_changed(image, "alpha_mode", "PREMUL")
-        else:
-            if colorspace:
-                try:
-                    _fbp_set_attr_if_changed(image.colorspace_settings, "name", colorspace)
-                except FBP_DATA_ERRORS:
-                    pass
-            _fbp_set_attr_if_changed(image, "alpha_mode", alpha_mode)
+        image = _fbp_frame_stack_find_image("fbp_frame_stack_cells", owner)
+        state = (width, height)
+        key = int(image.as_pointer()) if image is not None else 0
+        if image is None or _FBP_FRAME_STACK_IMAGE_STATE.get(key) != state:
+            # Reading is_float or size acquires the image buffer, which costs
+            # more than the rest of a playback frame: check only on changes.
+            image = _fbp_frame_stack_prepare_cells_image(image, owner, width, height)
+            key = int(image.as_pointer())
+            if len(_FBP_FRAME_STACK_IMAGE_STATE) >= 256:
+                _FBP_FRAME_STACK_IMAGE_STATE.clear()
+            _FBP_FRAME_STACK_IMAGE_STATE[key] = state
         signature = (
-            tuple(slots), columns, rows, cell_w, cell_h, bool(is_float),
-            tuple(sorted(thumb[4] for thumb in thumbs.values())),
+            tuple(slots), columns, rows, cell_w, cell_h,
+            tuple(sorted(thumb[3] for thumb in thumbs.values())),
         )
-        key = int(image.as_pointer())
         if _FBP_FRAME_STACK_CELLS_CACHE.get(key) != signature:
             import numpy as np
-            canvas = np.zeros((height, width, 4), dtype=np.float32)
+            canvas = _FBP_FRAME_STACK_CANVASES.get(key)
+            if canvas is None or canvas.shape != (height, width, 4):
+                canvas = np.zeros((height, width, 4), dtype=np.float32)
+                if len(_FBP_FRAME_STACK_CANVASES) >= 64:
+                    _FBP_FRAME_STACK_CANVASES.clear()
+                _FBP_FRAME_STACK_CANVASES[key] = canvas
             for index, path in enumerate(slots):
-                if path is None:
-                    continue
-                data = thumbs[path][0]
                 column, row = index % columns, index // columns
-                cell = data if is_float else data.astype(np.float32) * (1.0 / 255.0)
-                canvas[row * cell_h:(row + 1) * cell_h, column * cell_w:(column + 1) * cell_w] = cell
+                target = canvas[row * cell_h:(row + 1) * cell_h, column * cell_w:(column + 1) * cell_w]
+                if path is None:
+                    target.fill(0.0)
+                else:
+                    target[...] = thumbs[path][0]
             image.pixels.foreach_set(canvas.ravel())
             image.update()
             if len(_FBP_FRAME_STACK_CELLS_CACHE) >= 256:
@@ -7334,7 +7463,6 @@ def _fbp_sync_frame_stack_timing(rig, modifier, scene=None):
         position = fbp_native_playback_position(timing, timeline_frame)
         cycle = len(timing["files"])
         loop = timing["loop_mode"] in {"REPEAT", "PINGPONG"}
-        table_image, table_rows = _fbp_frame_stack_table_image(rig, timing)
     elif source_kind == "MOVIE" and src_user is not None:
         try:
             cycle = max(1, int(getattr(source_image, "frame_duration", 0) or 0))
@@ -7357,6 +7485,9 @@ def _fbp_sync_frame_stack_timing(rig, modifier, scene=None):
             rig, modifier, node_group, interface_inputs, material, timing, position,
         )
     use_cells = cells is not None
+    if timing and not use_cells:
+        # Only the Repeat Zone path reads the timing table.
+        table_image, table_rows = _fbp_frame_stack_table_image(rig, timing)
     use_table = table_image is not None
     changed = False
     cells_node = None
@@ -7435,6 +7566,7 @@ def fbp_sync_frame_stack_scene(scene):
     """Rebuild Frame Stack timing for every layer, e.g. after loading a file."""
     # Generated pixels are not saved: write every stack image again.
     _FBP_FRAME_STACK_CELLS_CACHE.clear()
+    _FBP_FRAME_STACK_IMAGE_STATE.clear()
     try:
         from .layers import iter_scene_fbp_rigs
         rigs = tuple(iter_scene_fbp_rigs(scene))
