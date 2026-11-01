@@ -641,7 +641,7 @@ def _item_icon_kwargs(effect_id, fallback="MODIFIER"):
     return effect_icon_kwargs(effect_id, str(definition.get("icon", fallback) or fallback))
 
 
-def _draw_native_items(layout, context, tokens):
+def _draw_native_items(layout, context, tokens, only=None):
     """Draw the add entries of one menu section, one per row."""
     geo = _geo()
     rigs, active_effects = geo._fbp_effect_add_menu_state(context)
@@ -666,16 +666,38 @@ def _draw_native_items(layout, context, tokens):
         if token == "LAYER_BLEND_CONTROL":
             token = geo.FBP_EFFECT_LAYER_BLEND
         if token.startswith("FAMILY:"):
+            # One entry per family: the variant is chosen afterwards from the
+            # dropdown at the top of the effect's settings.
             family_id = token.split(":", 1)[1].upper()
             family = geo.fbp_effect_family_definition(family_id)
             label = str(family.get("label", family_id.title()) or family_id.title())
+            variants = [
+                variant for variant, _label in family.get("variants", ())
+                if only is None or variant in only
+            ]
+            default = str(family.get("default", "") or "")
+            ordered = ([default] if default in variants else []) + [
+                variant for variant in variants if variant != default
+            ]
+            target = next((
+                variant for variant in ordered
+                if not rigs or all(geo.fbp_effect_supported_for_rig(rig, variant) for rig in rigs)
+            ), "")
             row = layout.row()
-            row.enabled = bool(family.get("default"))
+            row.enabled = bool(target) and not (bool(rigs) and all(
+                any(
+                    variant in active_effects.get(geo._fbp_effect_ids_cache_key(rig), set())
+                    for variant in variants
+                )
+                for rig in rigs
+            ))
             op = row.operator(
-                "fbp.add_effect_family", text=label,
-                icon=str(family.get("icon", "MODIFIER") or "MODIFIER"),
+                FBP_OT_AddEffectModifier.bl_idname, text=label,
+                **_item_icon_kwargs(
+                    f"FAMILY_{family_id}", str(family.get("icon", "MODIFIER") or "MODIFIER"),
+                ),
             )
-            op.family_id = family_id
+            op.effect_id = target or default
             continue
         effect_id = geo.fbp_normalize_effect_id(token)
         definition = geo.fbp_effect_definition(effect_id)
@@ -709,16 +731,24 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
     kept, placed = [], set()
     for title, _icon, tokens in sections:
         if only is not None:
-            expanded = []
+            kept_tokens = []
             for token in tokens:
                 token = str(token or "")
                 if token.startswith("FAMILY:"):
+                    # A family stays one entry while any of its variants works
+                    # as a modifier.
                     family = geo.fbp_effect_family_definition(token.split(":", 1)[1].upper())
-                    expanded.extend(variant for variant, _label in family.get("variants", ()))
-                else:
-                    expanded.append(token)
-            tokens = tuple(token for token in expanded if token.upper() in only)
-            placed.update(tokens)
+                    members = [
+                        variant for variant, _label in family.get("variants", ())
+                        if variant in only
+                    ]
+                    if members:
+                        kept_tokens.append(token)
+                        placed.update(members)
+                elif token.upper() in only:
+                    kept_tokens.append(token)
+                    placed.add(token.upper())
+            tokens = tuple(kept_tokens)
         kept.append((title, tuple(tokens)))
     if only is not None:
         # Modifier-ready effects that the curated library reaches another way
@@ -734,7 +764,7 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
         }
         missing = tuple(
             effect_id for effect_id in only
-            if effect_id not in placed
+            if effect_id not in placed and not geo.fbp_effect_family_id(effect_id)
             and str((geo.fbp_effect_definition(effect_id) or {}).get("category", "") or "") in categories
         )
         first = next((index for index, (_t, tokens) in enumerate(kept) if tokens), None)
@@ -758,7 +788,7 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
             title, tokens = kept[index]
             column.label(text=_section_title(title))
             column.separator(type="LINE")
-            _draw_native_items(column, context, tokens)
+            _draw_native_items(column, context, tokens, only)
 
 
 class FBP_OT_AddEffectModifier(bpy.types.Operator):

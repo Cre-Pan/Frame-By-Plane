@@ -22364,13 +22364,16 @@ def _fbp_draw_effect_property(layout, rig, definition, prop_name, labels=None):
     label = _fbp_effect_property_label(definition, prop_name, labels)
     prop_type, _subtype, _array_length = _fbp_effect_rna_metadata(rig, prop_name)
     is_bool = prop_type == "BOOLEAN"
+    if is_bool:
+        # On/off options read as checkboxes, like Blender's own modifiers,
+        # instead of full-width blue toggle bars.
+        layout.prop(rig, prop_name, text=label)
+        return True
     kwargs = {
         "text": label,
         "icon": _fbp_effect_property_icon(prop_name, label),
     }
-    if is_bool:
-        kwargs["toggle"] = True
-    elif _fbp_effect_property_uses_slider(rig, prop_name, label):
+    if _fbp_effect_property_uses_slider(rig, prop_name, label):
         kwargs["slider"] = True
     layout.prop(rig, prop_name, **kwargs)
     return True
@@ -22787,15 +22790,14 @@ def fbp_effect_settings_ui_issues():
 FBP_EFFECT_SETTINGS_UI_ISSUES = fbp_effect_settings_ui_issues()
 
 
-def _fbp_effect_control_hidden_properties(rig, effect_id):
-    """Properties represented by the active viewport helper instead of sliders."""
-    if not bool(getattr(rig, "fbp_effect_controls_enabled", True)):
-        return frozenset()
-    try:
-        from .effect_controls import effect_control_driven_properties
-        return effect_control_driven_properties(effect_id)
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        return frozenset()
+def _fbp_effect_control_hidden_properties(_rig, _effect_id):
+    """Properties hidden from the panel while a viewport helper drives them.
+
+    None any more: the panel always carries every control the effect needs
+    (Swirl's centre, radius and angle, Pixelate's offsets, ...). The viewport
+    helper edits the same values, so both stay in sync.
+    """
+    return frozenset()
 
 
 def _fbp_draw_registered_effect_properties(layout, rig, effect_id, definition, labels=None, skip=()):
@@ -22975,6 +22977,24 @@ def _fbp_draw_toggle_foldout(layout, panel_id, owner, prop_name, title, *, defau
     if body is not None:
         body.active = enabled
     return body
+
+
+def _fbp_draw_mesh_wiggle_animate(layout, rig):
+    """Animate section for Mesh Wiggle, built from its own timing controls."""
+    try:
+        header, body = layout.panel("fbp_effect_animation", default_closed=False)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        header, body = layout.row(align=True), layout.column(align=False)
+    header.label(text="Animate")
+    if body is None:
+        return
+    seed_row = body.row(align=True)
+    seed_row.prop(rig, "fbp_mesh_wiggle_seed", text="Seed")
+    seed_row.prop(rig, "fbp_mesh_wiggle_hold", text="Stepped")
+    speed_row = body.row(align=False)
+    speed_split = speed_row.split(factor=0.5, align=False)
+    speed_split.prop(rig, "fbp_mesh_wiggle_speed", text="Speed")
+    speed_split.prop(rig, "fbp_mesh_wiggle_unique_seed", text="Unique per Layer")
 
 
 def _fbp_draw_icon_toggle(layout, rig, prop_name, *, icon_on, icon_off=None):
@@ -23886,10 +23906,27 @@ def fbp_draw_effect_settings(
                 gp_mask_header_canvas = gp_canvas
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
-    header_left.label(
-        text=settings_label,
-        **({"icon_value": settings_icon_value} if settings_icon_value else {"icon": settings_icon}),
-    )
+    family_id = fbp_effect_family_id(effect_id)
+    family = fbp_effect_family_definition(family_id) if family_id else {}
+    if family and gp_mask_header_canvas is None:
+        # Sub-effects: the family name with its variant dropdown right next
+        # to it, at the top of the effect panel.
+        # The title itself is the dropdown, so it survives narrow sidebars.
+        variant_menu = header_left.row(align=True)
+        variant_menu.context_string_set(_FBP_VARIANT_CONTEXT_KEY, effect_id)
+        variant_menu.menu(
+            "FBP_MT_effect_family_variants",
+            text=(
+                f"{str(family.get('label', 'Effect') or 'Effect')}: "
+                f"{fbp_effect_variant_label(effect_id)}"
+            ),
+            **({"icon_value": settings_icon_value} if settings_icon_value else {"icon": settings_icon}),
+        )
+    else:
+        header_left.label(
+            text=settings_label,
+            **({"icon_value": settings_icon_value} if settings_icon_value else {"icon": settings_icon}),
+        )
     if present_count is None:
         present_count = selected_count
 
@@ -23961,18 +23998,7 @@ def fbp_draw_effect_settings(
     reset.effect_id = effect_id
     reset.instance_id = instance_id
 
-    family_id = fbp_effect_family_id(effect_id)
-    if family_id:
-        family = fbp_effect_family_definition(family_id)
-        variant = box.row(align=False)
-        variant.menu(
-            "FBP_MT_effect_family_variants",
-            text=(
-                f"{str(family.get('label', 'Effect') or 'Effect')}: "
-                f"{fbp_effect_variant_label(effect_id)}"
-            ),
-            icon="DOWNARROW_HLT",
-        )
+    if family:
         active_family_members = [
             variant_id for variant_id, _label in tuple(family.get("variants", ()) or ())
             if fbp_effect_is_active(rig, variant_id)
@@ -24004,12 +24030,17 @@ def fbp_draw_effect_settings(
                     icon="INFO",
                     disabled=True,
                 )
-            controls = box.row(align=True)
-            controls.enabled = not duplicate_controls
-            controls.prop(
+            # A light checkbox row: the gizmo is a helper, not the effect's
+            # main setting, so it no longer fills the panel with a blue bar.
+            controls_row = box.row(align=False)
+            controls_row.enabled = not duplicate_controls
+            controls_split = controls_row.split(factor=0.6, align=False)
+            controls_split.prop(
                 rig, "fbp_effect_controls_enabled", text="Viewport Control",
-                toggle=True, icon="EMPTY_ARROWS",
             )
+            controls = controls_split.row(align=True)
+            controls.alignment = 'RIGHT'
+            controls.active = bool(getattr(rig, "fbp_effect_controls_enabled", True))
             if effect_id == FBP_EFFECT_GRADIENT_LIGHT:
                 controls.operator(
                     "fbp.gradient_light_controller",
@@ -24203,24 +24234,15 @@ def fbp_draw_effect_settings(
             box, rig, definition,
             (
                 "fbp_mesh_wiggle_strength",
-                "fbp_mesh_wiggle_speed",
-                "fbp_mesh_wiggle_hold",
                 "fbp_mesh_wiggle_w",
-            ),
-            labels,
-        )
-
-        _fbp_draw_effect_section(box, "Noise", "RNDCURVE", separator=True)
-        _fbp_draw_compact_effect_properties(
-            box, rig, definition,
-            (
                 "fbp_mesh_wiggle_noise_scale",
                 "fbp_mesh_wiggle_detail",
-                "fbp_mesh_wiggle_seed",
-                "fbp_mesh_wiggle_unique_seed",
             ),
             labels,
         )
+        # Mesh Wiggle always moves: its own Speed, Stepped and Seed are the
+        # Animate section, drawn last like every other animatable effect.
+        _fbp_draw_mesh_wiggle_animate(box, rig)
         detail = int(getattr(rig, "fbp_mesh_wiggle_subdivisions", 0) or 0)
         if detail >= 5:
             warning = box.row(align=False)
@@ -25840,7 +25862,10 @@ def fbp_draw_effect_settings(
             warning = box.row()
             warning.alert = True
             warning.label(text="High pixel sampling may slow interaction", icon="ERROR")
-    if definition.get("evolve_property"):
+    if definition.get("evolve_property") and not (
+        effect_id == FBP_EFFECT_MESH_WIGGLE
+        and not bool(getattr(rig, _fbp_animation_key(effect_id, "evolve"), False))
+    ):
         instance_animation = (
             fbp_effect_instance_animation_item(
                 rig, effect_id, instance_id, ensure=False
@@ -25852,41 +25877,43 @@ def fbp_draw_effect_settings(
         section_gap(box)
         animation_body = None
         if instance_id and instance_animation is None:
-            _fbp_draw_effect_section(box, "Animation", "TIME")
+            _fbp_draw_effect_section(box, "Animate", "TIME")
             warning = box.row(align=False)
             warning.enabled = False
             warning.label(text="Instance animation is initializing", icon="FILE_REFRESH")
         else:
+            # Always the last section of an animatable effect: the checkbox
+            # turns Animate on/off, Seed and Stepped are visible right away.
             animation_body = _fbp_draw_toggle_foldout(
                 box, "fbp_effect_animation", animation_owner,
                 "evolve" if instance_animation is not None else _fbp_animation_key(effect_id, "evolve"),
-                "Animation",
+                "Animate",
+                default_closed=False,
             )
         if animation_body is not None:
-            animation = animation_body.row(align=True)
-            animation.prop(
-                animation_owner,
-                "speed" if instance_animation is not None else _fbp_effect_evolution_speed_property(effect_id, definition),
-                text="Speed",
-            )
-            animation.prop(
-                animation_owner,
-                "step" if instance_animation is not None else _fbp_animation_key(effect_id, "step"),
-                text="Stepped",
-            )
+            per_instance = instance_animation is not None
             seed_row = animation_body.row(align=True)
             seed_row.prop(
                 animation_owner,
-                "seed" if instance_animation is not None else _fbp_animation_key(effect_id, "seed"),
+                "seed" if per_instance else _fbp_animation_key(effect_id, "seed"),
                 text="Seed",
-                icon="RNDCURVE",
             )
             seed_row.prop(
                 animation_owner,
-                "unique" if instance_animation is not None else _fbp_animation_key(effect_id, "unique"),
+                "step" if per_instance else _fbp_animation_key(effect_id, "step"),
+                text="Stepped",
+            )
+            speed_row = animation_body.row(align=False)
+            speed_split = speed_row.split(factor=0.5, align=False)
+            speed_split.prop(
+                animation_owner,
+                "speed" if per_instance else _fbp_effect_evolution_speed_property(effect_id, definition),
+                text="Speed",
+            )
+            speed_split.prop(
+                animation_owner,
+                "unique" if per_instance else _fbp_animation_key(effect_id, "unique"),
                 text="Unique per Layer",
-                toggle=True,
-                icon="DUPLICATE",
             )
             if instance_animation is not None:
                 hint = animation_body.row(align=False)
@@ -26923,14 +26950,40 @@ def _fbp_draw_family_variant_operator(layout, rigs, source_effect_id, target_eff
         fbp_effect_is_active(target_rig, target_effect_id)
         for target_rig in rigs
     )
-    row.enabled = supported and not already_target_everywhere
+    current = target_effect_id == source_effect_id
+    row.enabled = supported and (current or not already_target_everywhere)
     op = row.operator(
         "fbp.set_effect_family_variant",
         text=str(label),
-        depress=target_effect_id == source_effect_id,
+        icon="CHECKMARK" if current else "BLANK1",
+        depress=current,
     )
     op.source_effect_id = source_effect_id
     op.target_effect_id = target_effect_id
+
+
+_FBP_VARIANT_CONTEXT_KEY = "fbp_variant_effect"
+
+
+def _fbp_variant_menu_effect(context, rig):
+    """Effect whose variant dropdown opened the menu.
+
+    The settings panel stores it on the dropdown's layout; without it the
+    active Modifiers row decides, and only then the legacy active stack item.
+    """
+    try:
+        effect_id = context.fbp_variant_effect
+    except AttributeError:
+        effect_id = ""
+    effect_id = fbp_normalize_effect_id(effect_id or "")
+    if effect_id:
+        return effect_id
+    try:
+        from .ui import _fbp_native_active_effect
+        native_effect, _instance = _fbp_native_active_effect(rig)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        native_effect = ""
+    return fbp_normalize_effect_id(native_effect or fbp_active_effect_id(rig))
 
 
 class FBP_MT_DuotoneVariants(Menu):
@@ -26943,7 +26996,7 @@ class FBP_MT_DuotoneVariants(Menu):
         if not rigs:
             layout.label(text="Select a Frame By Plane layer", icon="INFO")
             return
-        effect_id = fbp_active_effect_id(rigs[0])
+        effect_id = _fbp_variant_menu_effect(context, rigs[0])
         _fbp_draw_family_variant_operator(
             layout, rigs, effect_id, FBP_EFFECT_DUOTONE, "Duotone"
         )
@@ -26962,20 +27015,16 @@ class FBP_MT_EffectFamilyVariants(Menu):
         if not rigs:
             layout.label(text="Select a Frame By Plane layer", icon="INFO")
             return
-        effect_id = fbp_active_effect_id(rigs[0])
+        effect_id = _fbp_variant_menu_effect(context, rigs[0])
         family_id = fbp_effect_family_id(effect_id)
         family = fbp_effect_family_definition(family_id)
         variants = tuple(family.get("variants", ()) or ())
         if not variants:
             layout.label(text="This effect has no variants", icon="INFO")
             return
+        layout.label(text=str(family.get("label", "Variant") or "Variant"))
+        layout.separator(type="LINE")
         for target_effect_id, label in variants:
-            if family_id == "COLORIZE" and target_effect_id == FBP_EFFECT_FALSE_COLOR:
-                continue
-            if family_id == "COLORIZE" and target_effect_id == FBP_EFFECT_DUOTONE:
-                row = layout.row(align=False)
-                row.menu("FBP_MT_duotone_variants", text="Duotone")
-                continue
             _fbp_draw_family_variant_operator(
                 layout, rigs, effect_id, target_effect_id, label
             )
@@ -32473,6 +32522,9 @@ def _fbp_sync_mixed_effect_pipeline(rig):
                     _fbp_effect_stack_owner_id(rig, ensure=True)
                 )
                 modifier.node_group = private_group
+                # Internal plumbing: one folded row instead of a full panel
+                # between the user's effects in the Modifiers list.
+                modifier.show_expanded = False
                 stage_by_token[token] = modifier
                 changed = True
             except FBP_DATA_ERRORS as exc:
