@@ -85,7 +85,7 @@ from .ui_icons import (
     ui_icon_value,
 )
 from .interface_preferences import UILIST_COLUMN_DEFINITIONS, clear_interface_preferences_cache, fbp_get_addon_preferences, fbp_draw_uilist_header, fbp_draw_uilist_profile_preview, fbp_clear_uilist_drag_preview, fbp_set_uilist_drag_preview, fbp_uilist_column_icon_kwargs, fbp_set_uilist_profile_order, fbp_set_uilist_profile_visibility, fbp_uilist_icon_flags, fbp_uilist_icon_order, fbp_uilist_label_alignment, fbp_uilist_fixed_row_layouts, fbp_uilist_row_layouts, fbp_uilist_profile_definition, fbp_uilist_profile_columns, fbp_uilist_is_spacer, fbp_draw_uilist_spacer, fbp_uilist_visible_columns
-from .ui_style import FBP_UI_EFFECT_MAX_ROWS, FBP_UI_EFFECT_MIN_ROWS, FBP_UI_LIST_MIN_ROWS, adaptive_row, configure_layout, empty_state, hint_row, is_compact, list_rows, section_gap, section_header, selection_status
+from .ui_style import FBP_UI_LIST_MIN_ROWS, adaptive_row, configure_layout, empty_state, hint_row, is_compact, list_rows, section_gap, section_header, selection_status
 
 
 _FBP_UILIST_DRAG_ACTIVE = {"profile": "", "column_key": ""}
