@@ -1394,6 +1394,49 @@ def update_frame_preview_color_cb(self, context):
 
 # ── UPDATE CALLBACKS ──────────────────────────────────────────────────────────
 
+def fbp_refresh_crop_extend(rig, context):
+    """Rebuild one layer's Crop / Extend geometry and every dependent helper."""
+    set_plane_mesh_extension(
+        rig,
+        getattr(rig, 'fbp_extend_left', 0.0), getattr(rig, 'fbp_extend_right', 0.0),
+        getattr(rig, 'fbp_extend_bottom', 0.0), getattr(rig, 'fbp_extend_top', 0.0),
+        getattr(rig, 'fbp_extend_mode', 'MIRROR'),
+        getattr(rig, 'fbp_crop_left', 0.0), getattr(rig, 'fbp_crop_right', 0.0),
+        getattr(rig, 'fbp_crop_bottom', 0.0), getattr(rig, 'fbp_crop_top', 0.0),
+    )
+    try:
+        from .object_masks import sync_owner_object_mask_helpers
+        sync_owner_object_mask_helpers(rig)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        from .geometry_nodes import fbp_refresh_aspect_dependent_effect_grids
+        fbp_refresh_aspect_dependent_effect_grids(rig)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        from .effect_controls import (
+            schedule_active_effect_controls,
+            sync_crop_extend_bounds_guide,
+            update_extend_handle_limits,
+        )
+        update_extend_handle_limits(rig)
+        sync_crop_extend_bounds_guide(rig)
+        schedule_active_effect_controls(context)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        from .geometry_nodes import fbp_sync_mattes_for_source_bounds
+        fbp_sync_mattes_for_source_bounds(
+            rig,
+            scene=_fbp_scene_for_rig(
+                rig, preferred=getattr(context, 'scene', None)
+            ),
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
 def update_object_padding_cb(self, context):
     # Live-update Crop / Extend on the active rig, and copy to selected rigs.
     if not is_fbp_layer_object(self):
@@ -1406,45 +1449,7 @@ def update_object_padding_cb(self, context):
         for rig in fbp_edit_targets(context, self):
             if rig != self:
                 fbp_copy_registered_props_silent(rig, self, props)
-            set_plane_mesh_extension(
-                rig,
-                getattr(rig, 'fbp_extend_left', 0.0), getattr(rig, 'fbp_extend_right', 0.0),
-                getattr(rig, 'fbp_extend_bottom', 0.0), getattr(rig, 'fbp_extend_top', 0.0),
-                getattr(rig, 'fbp_extend_mode', 'MIRROR'),
-                getattr(rig, 'fbp_crop_left', 0.0), getattr(rig, 'fbp_crop_right', 0.0),
-                getattr(rig, 'fbp_crop_bottom', 0.0), getattr(rig, 'fbp_crop_top', 0.0),
-            )
-            try:
-                from .object_masks import sync_owner_object_mask_helpers
-                sync_owner_object_mask_helpers(rig)
-            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                pass
-            try:
-                from .geometry_nodes import fbp_refresh_aspect_dependent_effect_grids
-                fbp_refresh_aspect_dependent_effect_grids(rig)
-            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                pass
-            try:
-                from .effect_controls import (
-                    schedule_active_effect_controls,
-                    sync_crop_extend_bounds_guide,
-                    update_extend_handle_limits,
-                )
-                update_extend_handle_limits(rig)
-                sync_crop_extend_bounds_guide(rig)
-                schedule_active_effect_controls(context)
-            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                pass
-            try:
-                from .geometry_nodes import fbp_sync_mattes_for_source_bounds
-                fbp_sync_mattes_for_source_bounds(
-                    rig,
-                    scene=_fbp_scene_for_rig(
-                        rig, preferred=getattr(context, 'scene', None)
-                    ),
-                )
-            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                pass
+            fbp_refresh_crop_extend(rig, context)
     except Exception as exc:
         fbp_warn("Plane Crop / Extend update skipped", exc)
 

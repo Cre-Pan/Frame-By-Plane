@@ -333,13 +333,20 @@ INTERPOLATION_ITEMS = [
 ]
 
 RIG_SHAPE_ITEMS = [
-    ('DEFAULT', "Default", "Adaptive square or rectangle matching the visible plane", fbp_icon("MOD_MESHDEFORM"), 0),
-    ('RECTANGLE', "Rectangle", "Rectangular Frame By Plane control", fbp_icon("MESH_PLANE"), 1),
+    ('ALPHA', "Alpha Outline", "Follow the visible pixels of the image instead of its rectangle", fbp_icon("IMAGE_ALPHA"), 7),
+    ('DEFAULT', "Rectangle", "Rectangle matching the visible plane", fbp_icon("MESH_PLANE"), 0),
+    ('POLYGON', "Polygon", "Regular polygon control; choose how many sides", fbp_icon("MESH_GRID"), 8),
     ('CIRCLE', "Circle", "Circular control, useful for suns, heads and round assets", fbp_icon("MESH_CIRCLE"), 2),
-    ('DIAMOND', "Diamond", "Diamond-shaped control", fbp_icon("MESH_CUBE"), 3),
-    ('HEXAGON', "Hexagon", "Six-sided control", fbp_icon("MESH_GRID"), 4),
-    ('OCTAGON', "Octagon", "Eight-sided control", fbp_icon("MESH_CIRCLE"), 5),
     ('CUSTOM', "Custom", "Edit and keep the control-rig mesh itself", fbp_icon("TOOL_SETTINGS"), 6),
+]
+
+# Shapes of earlier versions, stored as their enum values: Rectangle (1) is
+# the same wire as Default; Diamond, Hexagon and Octagon became Polygon.
+RIG_SHAPE_LEGACY_VALUES = {1: ('DEFAULT', 0), 3: ('POLYGON', 4), 4: ('POLYGON', 6), 5: ('POLYGON', 8)}
+
+RIG_SHAPE_ALPHA_STYLE_ITEMS = [
+    ('PIXEL', "Pixel", "Stepped outline along the image pixels", fbp_icon("ALIASED"), 0),
+    ('SMOOTH', "Smooth", "Curved outline around the image that keeps sharp corners sharp", fbp_icon("ANTIALIASED"), 1),
 ]
 
 
@@ -870,6 +877,22 @@ class FBP_AddonPreferences(AddonPreferences):
         description=f"Use {primary_shortcut_label('G')} to group selected layers and {primary_shortcut_label('G', shift=True)} to ungroup them",
         default=True,
         update=update_shortcut_preferences_cb,
+    )
+    shortcut_click_through_alpha: BoolProperty(
+        name="Click Through Transparency",
+        description="Click on an image layer's visible pixels to select it; clicks on transparent pixels reach the layer behind",
+        default=True,
+        update=update_shortcut_preferences_cb,
+    )
+    rig_show_on_new_layers: BoolProperty(
+        name="Use Rig on New Layers",
+        description="New layers show their controller wire; off keeps it hidden and you select layers by clicking their visible pixels",
+        default=False,
+    )
+    rig_select_by_image: BoolProperty(
+        name="Rig Layers: Click Image Too",
+        description="Layers that show their rig can also be selected by clicking their visible pixels; off selects them only from the rig wire",
+        default=False,
     )
     shortcut_viewport_pie: BoolProperty(
         name="Viewport Pie",
@@ -2121,6 +2144,11 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'shortcut_duplicate_layer', text='Shift+D · Duplicate', toggle=True, icon='DUPLICATE')
                 row.prop(self, 'shortcut_group_layers', text=f"{primary_shortcut_label('G')} · Collection", toggle=True, icon='OUTLINER_COLLECTION')
+                row = _row(body)
+                row.prop(self, 'shortcut_click_through_alpha', text='Click · Through Transparency', toggle=True, icon='RESTRICT_SELECT_OFF')
+                row = _row(body)
+                row.prop(self, 'rig_show_on_new_layers', text='Use Rig on New Layers', toggle=True, icon='MOD_MESHDEFORM')
+                row.prop(self, 'rig_select_by_image', text='Rig Layers: Click Image Too', toggle=True, icon='IMAGE_DATA')
                 row = _row(body)
                 row.prop(self, 'shortcut_gp_alt_s_guard', text=f"{alt_shortcut_label('S')} · GP Radius", toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row = _row(body)
@@ -5063,6 +5091,37 @@ def register_properties():
             ('PERFECT', "Perfect Shape", "Preserve a square, circle or regular polygon", fbp_icon("MESH_CIRCLE"), 1),
         ),
         default='FIT_PLANE',
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_shape_sides = IntProperty(
+        name="Sides",
+        description="Number of sides of the Polygon controller",
+        default=6, min=3, max=50, soft_min=3, soft_max=10,
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_visible = BoolProperty(
+        name="Use Rig",
+        description="Show this layer's controller wire and select the layer from it. Off hides the wire: click the visible pixels of the image to select the layer",
+        default=True,
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_shape_alpha_style = EnumProperty(
+        name="Outline",
+        description="How the Alpha Outline controller follows the visible pixels",
+        items=RIG_SHAPE_ALPHA_STYLE_ITEMS,
+        default='SMOOTH',
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_shape_alpha_follow = BoolProperty(
+        name="Follow Frame",
+        description="For image sequences, outline only the drawing shown on the current frame instead of every frame together",
+        default=True,
+        update=update_rig_shape_cb,
+    )
+    _FBP_OBJECT_RNA.fbp_rig_shape_alpha_detail = IntProperty(
+        name="Detail",
+        description="Outline resolution across the long side of the visible image; higher values follow small details more closely",
+        default=64, min=8, max=256, soft_min=16, soft_max=128,
         update=update_rig_shape_cb,
     )
     _FBP_OBJECT_RNA.fbp_sequence_show_frames = BoolProperty(
