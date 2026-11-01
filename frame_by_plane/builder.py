@@ -294,6 +294,7 @@ def fbp_refresh_alpha_follow_rigs(scene):
                 or str(getattr(obj, "fbp_rig_shape", "") or "") != "ALPHA"
                 or not bool(getattr(obj, "fbp_rig_shape_alpha_follow", False))
                 or str(getattr(obj, "mode", "OBJECT") or "OBJECT") != "OBJECT"
+                or not fbp_rig_wire_visible(obj)
             ):
                 continue
         except ReferenceError:
@@ -501,6 +502,28 @@ def fbp_migrate_legacy_rig_shapes(objects=None):
     return changed
 
 
+def fbp_object_local_bounds(obj):
+    """Local bounding-box corners of ``obj``.
+
+    A layer with Use Rig off keeps an empty rig mesh (so Blender draws no
+    points), so its bounds come from the image plane mapped into rig space.
+    """
+    bounds = tuple(tuple(corner[:3]) for corner in (getattr(obj, "bound_box", ()) or ()))
+    try:
+        if not bool(getattr(obj, "is_fbp_control", False)) or len(obj.data.vertices):
+            return bounds
+        plane = getattr(obj, "fbp_plane_target", None)
+        if plane is None:
+            return bounds
+        corners = tuple(tuple(corner[:3]) for corner in plane.bound_box)
+        relation = _fbp_plane_to_rig_matrix(obj, plane)  # None means identity
+        if relation is None:
+            return corners
+        return tuple(tuple(relation @ mathutils.Vector(corner)) for corner in corners)
+    except FBP_DATA_ERRORS:
+        return bounds
+
+
 def fbp_show_rig_on_new_layers():
     try:
         from .interface_preferences import fbp_get_addon_preferences
@@ -520,13 +543,15 @@ def fbp_rig_wire_visible(rig):
 def _fbp_write_rig_wire(rig, mesh, verts, edges):
     """Write the wire outline to the rig mesh.
 
-    With Use Rig off the mesh keeps only the outline points (no edges), so
-    Blender draws nothing while bounds, framing and transforms still work.
+    With Use Rig off the mesh stays empty, so Blender draws nothing (loose
+    points would still show as dots); ``fbp_object_local_bounds`` gives the
+    layer's bounds from its image plane instead.
     """
-    verts = [tuple(float(value) for value in vert) for vert in verts]
-    edges = [tuple(int(value) for value in edge) for edge in edges]
     mesh.clear_geometry()
-    mesh.from_pydata(verts, edges if fbp_rig_wire_visible(rig) else [], [])
+    if fbp_rig_wire_visible(rig):
+        verts = [tuple(float(value) for value in vert) for vert in verts]
+        edges = [tuple(int(value) for value in edge) for edge in edges]
+        mesh.from_pydata(verts, edges, [])
     mesh.update()
 
 
@@ -580,7 +605,8 @@ def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
         if str(getattr(rig, "mode", "OBJECT") or "OBJECT") != "OBJECT":
             return False
         fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
-        verts, edges = _fbp_rig_shape_wire(rig, shape)
+        # Use Rig off: nothing is drawn, so skip building the outline at all.
+        verts, edges = _fbp_rig_shape_wire(rig, shape) if fbp_rig_wire_visible(rig) else ((), ())
         _fbp_write_rig_wire(rig, mesh, verts, edges)
         mesh["fbp_rig_shape"] = shape
         mesh["fbp_rig_shape_fit_mode"] = fit_mode
@@ -750,6 +776,9 @@ def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=
     try:
         shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper()
         if shape == 'CUSTOM':
+            return True
+        if not fbp_rig_wire_visible(rig):
+            _fbp_write_rig_wire(rig, rig.data, (), ())
             return True
         margin = fbp_rig_shape_margin(rig) if margin is None else max(0.0, float(margin))
         # Callers pass plane-local bounds; the wire lives in rig-local space.

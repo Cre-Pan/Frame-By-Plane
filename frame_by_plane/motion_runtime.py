@@ -1926,7 +1926,8 @@ def _object_world_bounds_center(obj):
     """Return the visible world-space center of an object, not just its origin."""
     try:
         from mathutils import Vector
-        bounds = tuple(getattr(obj, "bound_box", ()) or ())
+        from .builder import fbp_object_local_bounds
+        bounds = fbp_object_local_bounds(obj)
         if not bounds:
             return Vector(_object_world_location(obj))
         total = Vector((0.0, 0.0, 0.0))
@@ -2550,7 +2551,8 @@ def _motion_anchor_parent_location(target, item, base_location, base_rotation, b
         return None
     try:
         from mathutils import Euler, Vector
-        bounds = tuple(getattr(target, "bound_box", ()) or ())
+        from .builder import fbp_object_local_bounds
+        bounds = fbp_object_local_bounds(target)
         if not bounds:
             return None
         xs = [float(point[0]) for point in bounds]
