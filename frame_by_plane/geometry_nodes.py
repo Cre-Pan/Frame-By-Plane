@@ -22831,9 +22831,11 @@ def _fbp_draw_registered_effect_properties(layout, rig, effect_id, definition, l
             str(effect_id or "effect").lower(),
             "".join(character if character.isalnum() else "_" for character in title.lower()),
         )
+        # Every group starts open: the panel shows all of the effect's
+        # controls (Swirl's Radius and Angle used to hide in a closed fold).
         body = _fbp_draw_native_foldout(
             layout, panel_id, title, icon,
-            default_closed=visible_group_index > 0,
+            default_closed=False,
         )
         if body is not None:
             _fbp_draw_compact_effect_properties(body, rig, definition, visible, labels)
@@ -22906,9 +22908,11 @@ def _fbp_draw_effect_instance_properties(
             instance_id[-8:] or "instance",
             "".join(character if character.isalnum() else "_" for character in title.lower()),
         )
+        # Every group starts open: the panel shows all of the effect's
+        # controls (Swirl's Radius and Angle used to hide in a closed fold).
         body = _fbp_draw_native_foldout(
             layout, panel_id, title, icon,
-            default_closed=visible_group_index > 0,
+            default_closed=False,
         )
         if body is not None:
             _draw(body, names)
@@ -24976,6 +24980,7 @@ def fbp_draw_effect_settings(
                 "fbp_noise_mask_threshold",
                 "fbp_noise_mask_softness",
                 "fbp_noise_mask_factor",
+                "fbp_noise_mask_seed",
                 "fbp_noise_mask_invert",
             ),
             labels,
@@ -24985,7 +24990,7 @@ def fbp_draw_effect_settings(
         # the registry-driven fallback. Every other effect automatically exposes
         # its property_map, including newly added variants.
         if effect_id not in _FBP_CONTEXTUAL_EFFECT_SETTINGS:
-            skip = list(("fbp_felt_seed",) if effect_id == FBP_EFFECT_FELT_FUZZ else ())
+            skip = []
             explicit_evolve_speed = str(definition.get("evolve_speed_property", "") or "")
             if explicit_evolve_speed:
                 skip.append(explicit_evolve_speed)
@@ -25003,6 +25008,14 @@ def fbp_draw_effect_settings(
                     box, rig, effect_id, definition, labels, skip=tuple(skip)
                 )
             )
+            if effect_id == FBP_EFFECT_GRADIENT_LIGHT:
+                # Softness and Shadow Color live outside the shader socket map
+                # but are part of the look: keep them in the panel.
+                _fbp_draw_compact_effect_properties(
+                    box, rig, definition,
+                    ("fbp_gradient_softness", "fbp_gradient_shadow_color"),
+                    labels,
+                )
             if drawn == 0:
                 missing = box.row(align=False)
                 missing.alert = True
@@ -25311,7 +25324,7 @@ def fbp_draw_effect_settings(
     if effect_id == FBP_EFFECT_GAUSSIAN_BLUR:
         gaussian_properties = (
             "fbp_gaussian_blur_radius_x", "fbp_gaussian_blur_radius_y",
-            "fbp_gaussian_blur_factor",
+            "fbp_gaussian_blur_samples", "fbp_gaussian_blur_factor",
         )
         if instance_id and _fbp_effect_uses_multi_instances(effect_id):
             _fbp_draw_effect_instance_properties(
@@ -25330,6 +25343,7 @@ def fbp_draw_effect_settings(
             tuple(name for name in (
                 "fbp_directional_blur_angle",
                 "fbp_directional_blur_distance",
+                "fbp_directional_blur_samples",
                 "fbp_directional_blur_factor",
             ) if name not in hidden),
             labels,
