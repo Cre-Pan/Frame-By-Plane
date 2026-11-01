@@ -38,6 +38,15 @@ FBP_ALPHA_MAX_FRAMES = 96
 _VIDEO_EXTENSIONS = {
     ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpeg", ".mpg", ".mxf", ".ogv",
 }
+# Click selection ignores faint pixels and specks: a pixel counts as solid at
+# this opacity, and a click needs solid coverage around it (see ``solid_at``).
+FBP_ALPHA_PICK_MIN_OPACITY = 0.15
+FBP_ALPHA_PICK_MAX_SIDE = 512
+# Pick window radius as a fraction of the image long side, and the share of
+# it (and of the clicked cell) that must be solid.
+FBP_ALPHA_PICK_WINDOW = 0.006
+FBP_ALPHA_PICK_WINDOW_SHARE = 0.2
+FBP_ALPHA_PICK_CELL_SHARE = 0.25
 _UNION_CACHE_LIMIT = 160
 _UNION_CACHE = globals().get("_UNION_CACHE", {})
 if not isinstance(_UNION_CACHE, dict):
@@ -54,10 +63,13 @@ class AlphaUnion:
     on the full-resolution alpha, or ``None`` when every frame is empty.
     """
 
-    __slots__ = ("mask", "width", "height", "exact_bbox", "has_alpha")
+    __slots__ = ("mask", "width", "height", "exact_bbox", "has_alpha", "solid")
 
-    def __init__(self, mask, width, height, exact_bbox, has_alpha=True):
+    def __init__(self, mask, width, height, exact_bbox, has_alpha=True, solid=None):
         self.mask = mask
+        # Share of solid pixels per cell (uint8 0..255, rows top-down) at
+        # most FBP_ALPHA_PICK_MAX_SIDE on its long side; used by click picks.
+        self.solid = solid
         self.width = int(width)
         self.height = int(height)
         self.exact_bbox = tuple(int(v) for v in exact_bbox) if exact_bbox else None
@@ -97,6 +109,47 @@ def _downsample_any(mask, max_side: int):
     return padded.reshape(out_h, factor, out_w, factor).any(axis=(1, 3))
 
 
+def _coverage(mask, max_side: int = FBP_ALPHA_PICK_MAX_SIDE):
+    """Share of True pixels per cell as uint8 (0..255)."""
+    _require_numpy()
+    height, width = mask.shape
+    factor = max(1, int(-(-max(width, height) // max_side)))
+    out_h = int(-(-height // factor))
+    out_w = int(-(-width // factor))
+    padded = np.zeros((out_h * factor, out_w * factor), dtype=np.uint16)
+    padded[:height, :width] = mask
+    total = padded.reshape(out_h, factor, out_w, factor).sum(axis=(1, 3), dtype=np.uint32)
+    return np.minimum(255, (total * 255) // (factor * factor)).astype(np.uint8)
+
+
+def _merge_solid(current, frame):
+    if current is None:
+        return frame
+    if current.shape != frame.shape:
+        return current
+    return np.maximum(current, frame)
+
+
+def solid_at(union: AlphaUnion, u: float, v: float):
+    """True when a click at UV (u, v) lands on a solid mass of pixels.
+
+    Faint pixels (below FBP_ALPHA_PICK_MIN_OPACITY) never count, and a click
+    on a few scattered or very thin pixels is rejected so it reaches the
+    layer behind. ``None`` when the union carries no solid coverage.
+    """
+    solid = getattr(union, "solid", None)
+    if solid is None:
+        return None
+    rows, cols = solid.shape
+    col = min(cols - 1, max(0, int(float(u) * cols)))
+    row = min(rows - 1, max(0, int((1.0 - float(v)) * rows)))
+    if int(solid[row, col]) < FBP_ALPHA_PICK_CELL_SHARE * 255.0:
+        return False
+    radius = max(1, int(round(max(rows, cols) * FBP_ALPHA_PICK_WINDOW)))
+    window = solid[max(0, row - radius): row + radius + 1, max(0, col - radius): col + radius + 1]
+    return float(window.mean()) >= FBP_ALPHA_PICK_WINDOW_SHARE * 255.0
+
+
 def _bbox_of(mask):
     rows = np.flatnonzero(mask.any(axis=1))
     if rows.size == 0:
@@ -109,6 +162,7 @@ def alpha_union_from_masks(masks: Iterable, *, max_side: int = FBP_ALPHA_UNION_M
     """Combine full-resolution boolean masks (rows top-down) of one size."""
     _require_numpy()
     union = None
+    solid = None
     for mask in masks:
         mask = np.asarray(mask, dtype=bool)
         if union is None:
@@ -117,10 +171,11 @@ def alpha_union_from_masks(masks: Iterable, *, max_side: int = FBP_ALPHA_UNION_M
             raise ValueError("Frames do not share one canvas size")
         else:
             union |= mask
+        solid = _merge_solid(solid, _coverage(mask))
     if union is None:
         return None
     height, width = union.shape
-    return AlphaUnion(_downsample_any(union, max_side), width, height, _bbox_of(union))
+    return AlphaUnion(_downsample_any(union, max_side), width, height, _bbox_of(union), True, solid)
 
 
 def alpha_union_from_rgba(pixels, width: int, height: int, *, threshold: float = 0.0,
@@ -132,9 +187,11 @@ def alpha_union_from_rgba(pixels, width: int, height: int, *, threshold: float =
     data = np.asarray(pixels, dtype=np.float32)
     if width <= 0 or height <= 0 or data.size < width * height * 4:
         return None
-    alpha = data[: width * height * 4].reshape(height, width, 4)[:, :, 3]
-    mask = np.flipud(alpha > float(threshold))
-    return alpha_union_from_masks((mask,), max_side=max_side)
+    alpha = np.flipud(data[: width * height * 4].reshape(height, width, 4)[:, :, 3])
+    union = alpha_union_from_masks((alpha > float(threshold),), max_side=max_side)
+    if union is not None:
+        union.solid = _coverage(alpha >= FBP_ALPHA_PICK_MIN_OPACITY)
+    return union
 
 
 def _file_mask(path: str):
@@ -148,8 +205,9 @@ def _file_mask(path: str):
         elif "transparency" in image.info:
             alpha = image.convert("RGBA").getchannel("A")
         else:
-            return width, height, None
-        return width, height, np.asarray(alpha, dtype=np.uint8) > 0
+            return width, height, None, None
+        values = np.asarray(alpha, dtype=np.uint8)
+        return width, height, values > 0, values >= int(round(FBP_ALPHA_PICK_MIN_OPACITY * 255.0))
 
 
 def alpha_union_from_paths(paths: Sequence[str], *, max_side: int = FBP_ALPHA_UNION_MAX_SIDE):
@@ -176,10 +234,11 @@ def alpha_union_from_paths(paths: Sequence[str], *, max_side: int = FBP_ALPHA_UN
         return cached
 
     union = None
+    solid = None
     size = None
     has_alpha = True
     for path in sampled:
-        width, height, mask = _file_mask(path)
+        width, height, mask, solid_mask = _file_mask(path)
         if size is None:
             size = (width, height)
         elif size != (width, height):
@@ -187,11 +246,13 @@ def alpha_union_from_paths(paths: Sequence[str], *, max_side: int = FBP_ALPHA_UN
         if mask is None:
             has_alpha = False
             mask = np.ones((height, width), dtype=bool)
+            solid_mask = mask
         union = mask if union is None else (union | mask)
+        solid = _merge_solid(solid, _coverage(solid_mask))
     if union is None:
         return None
     result = AlphaUnion(
-        _downsample_any(union, max_side), size[0], size[1], _bbox_of(union), has_alpha
+        _downsample_any(union, max_side), size[0], size[1], _bbox_of(union), has_alpha, solid
     )
     if len(_UNION_CACHE) >= _UNION_CACHE_LIMIT:
         _UNION_CACHE.pop(next(iter(_UNION_CACHE)))

@@ -374,6 +374,7 @@ def fbp_deferred_scene_sync():
     """Refresh lightweight layer/UI state after the active Scene changes."""
     if fbp_undo_is_active() or fbp_render_is_active():
         return 0.25
+    _fbp_migrate_rig_shapes()
     try:
         context = bpy.context
         if context and getattr(context, "scene", None):
@@ -1203,8 +1204,17 @@ def fbp_register_object_mask_runtime_timer():
         return False
 
 
+def _fbp_migrate_rig_shapes():
+    try:
+        from .builder import fbp_migrate_legacy_rig_shapes
+        fbp_migrate_legacy_rig_shapes()
+    except (ImportError, *FBP_DATA_ERRORS):
+        pass
+
+
 def fbp_deferred_load_post_rebuild():
     """Rebuild loaded-file services only after Blender exposes an idle Main."""
+    _fbp_migrate_rig_shapes()
     # Retire pre-load Python runtime from the ordinary idle loop, never from
     # load_pre while Eevee or Blender's Main replacement may still be active.
     try:

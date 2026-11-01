@@ -30,37 +30,44 @@ def _fbp_rig_of_plane(obj):
     return None
 
 
-def _uv_at_hit(obj_eval, depsgraph, world_location, world_direction):
-    """UV of the evaluated plane surface at a world hit, or ``None``."""
-    try:
-        inverse = obj_eval.matrix_world.inverted_safe()
-        local_origin = inverse @ (world_location - world_direction * 1.0e-3)
-        local_direction = (inverse.to_3x3() @ world_direction).normalized()
-        hit, location, _normal, index = obj_eval.ray_cast(
-            local_origin, local_direction, distance=1.0, depsgraph=depsgraph,
+def _uv_on_polygon(mesh, polygon_index, local_point):
+    """UV at a point (mesh space) inside polygon ``polygon_index``, or ``None``."""
+    uv_layer = mesh.uv_layers.get("UVMap") or mesh.uv_layers.active
+    if uv_layer is None or not (0 <= polygon_index < len(mesh.polygons)):
+        return None
+    polygon = mesh.polygons[polygon_index]
+    loops = list(polygon.loop_indices)
+    corners = [mesh.vertices[mesh.loops[loop].vertex_index].co for loop in loops]
+    uvs = [uv_layer.data[loop].uv for loop in loops]
+    best = None
+    for tri in range(1, len(loops) - 1):
+        a, b, c = corners[0], corners[tri], corners[tri + 1]
+        mapped = geometry.barycentric_transform(
+            local_point, a, b, c,
+            uvs[0].to_3d(), uvs[tri].to_3d(), uvs[tri + 1].to_3d(),
         )
+        # Project into the triangle plane; keep the triangle that contains it.
+        closest = geometry.closest_point_on_tri(local_point, a, b, c)
+        distance = (closest - local_point).length
+        if best is None or distance < best[0]:
+            best = (distance, float(mapped.x), float(mapped.y))
+    return None if best is None else (best[1], best[2])
+
+
+def _uv_at_hit(obj_eval, matrix, world_location, polygon_index):
+    """UV of the evaluated plane surface at a world hit, or ``None``.
+
+    Uses the face and matrix reported by the scene ray cast, so the result does
+    not depend on the plane's scale, distance or viewing angle.
+    """
+    try:
         mesh = obj_eval.data
-        if not hit or index < 0 or mesh is None:
+        if mesh is None:
             return None
-        uv_layer = mesh.uv_layers.get("UVMap") or mesh.uv_layers.active
-        if uv_layer is None:
-            return None
-        polygon = mesh.polygons[index]
-        loops = list(polygon.loop_indices)
-        corners = [mesh.vertices[mesh.loops[loop].vertex_index].co for loop in loops]
-        uvs = [uv_layer.data[loop].uv for loop in loops]
-        for tri in range(1, len(loops) - 1):
-            a, b, c = corners[0], corners[tri], corners[tri + 1]
-            if geometry.intersect_point_tri(location, a, b, c) is None:
-                continue
-            mapped = geometry.barycentric_transform(
-                location, a, b, c,
-                uvs[0].to_3d(), uvs[tri].to_3d(), uvs[tri + 1].to_3d(),
-            )
-            return float(mapped.x), float(mapped.y)
+        local = matrix.inverted_safe() @ world_location
+        return _uv_on_polygon(mesh, int(polygon_index), local)
     except (*FBP_DATA_ERRORS, IndexError, ValueError):
         return None
-    return None
 
 
 def _select_by_image_allowed(rig, by_image_with_rig):
@@ -118,11 +125,20 @@ def fbp_pick_layer_through_alpha(context, origin, direction, *, by_image_with_ri
     direction = Vector(direction).normalized()
     origin = Vector(origin)
     crossed_plane = False
+    last_hit = None
     for _step in range(_MAX_STEPS):
-        hit, location, _normal, _index, obj, _matrix = scene.ray_cast(depsgraph, origin, direction)
+        hit, location, _normal, index, obj, matrix = scene.ray_cast(depsgraph, origin, direction)
         if not hit or obj is None:
             return None, crossed_plane
         original = getattr(obj, "original", obj)
+        key = (original.name_full if hasattr(original, "name_full") else id(original), int(index))
+        nudge = max(1.0e-4, location.length * 1.0e-6)
+        if key == last_hit:
+            # Same face again (float precision far from the origin): step on.
+            origin = location + direction * (nudge * 100.0)
+            last_hit = None
+            continue
+        last_hit = key
         rig = _fbp_rig_of_plane(original)
         if rig is None:
             # A regular object (or anything else) in front: Blender decides.
@@ -134,14 +150,15 @@ def fbp_pick_layer_through_alpha(context, origin, direction, *, by_image_with_ri
             and _select_by_image_allowed(rig, by_image_with_rig)
         )
         if selectable:
-            uv = _uv_at_hit(obj, depsgraph, location, direction)
+            obj_eval = original.evaluated_get(depsgraph)
+            uv = _uv_at_hit(obj_eval, matrix, location, index)
             visible = True
             if uv is not None:
                 state = fbp_rig_alpha_visible_at_uv(rig, uv[0], uv[1], scene)
                 visible = True if state is None else bool(state)
             if visible:
                 return rig, True
-        origin = location + direction * 1.0e-4
+        origin = location + direction * nudge
     return None, crossed_plane
 
 

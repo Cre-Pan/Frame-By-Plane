@@ -4689,18 +4689,25 @@ class FBP_OT_RigShapePopup(Operator):
         if rig is None:
             layout.label(text="Layer no longer exists", icon='ERROR')
             return
-        layout.prop(rig, "fbp_rig_visible", text="Show Rig", toggle=True, icon='MOD_MESHDEFORM')
-        layout.prop(rig, "fbp_rig_shape", text="Shape")
-        if str(getattr(rig, "fbp_rig_shape", "DEFAULT")) == 'ALPHA':
-            row = layout.row(align=True)
+        header = layout.row(align=True)
+        header.prop(rig, "fbp_rig_visible", text="Use Rig")
+        shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT"))
+        body = layout.column()
+        # Custom rigs always show their wire, so their controls stay live.
+        body.active = bool(getattr(rig, "fbp_rig_visible", True)) or shape == 'CUSTOM'
+        body.prop(rig, "fbp_rig_shape", text="Shape")
+        if shape == 'ALPHA':
+            row = body.row(align=True)
             row.prop(rig, "fbp_rig_shape_alpha_style", expand=True)
-            layout.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
-            layout.prop(rig, "fbp_rig_shape_alpha_follow", text="Follow Frame")
+            body.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
+            body.prop(rig, "fbp_rig_shape_alpha_follow", text="Follow Frame")
         else:
-            layout.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
-        layout.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
-        if str(getattr(rig, "fbp_rig_shape", "DEFAULT")) == 'CUSTOM':
-            edit = layout.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
+            if shape == 'POLYGON':
+                body.prop(rig, "fbp_rig_shape_sides", text="Sides", slider=True)
+            body.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
+        body.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
+        if shape == 'CUSTOM':
+            edit = body.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
             edit.rig_name = rig.name
 
 

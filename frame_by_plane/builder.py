@@ -133,40 +133,37 @@ def fbp_create_rect_mesh(name, size=2.0, with_face=True):
     return mesh
 
 
-def _fbp_rig_shape_geometry(shape, size=2.1, *, half_extents=None, center=(0.0, 0.0)):
+def _fbp_rig_shape_sides(rig):
+    try:
+        return max(3, min(50, int(getattr(rig, "fbp_rig_shape_sides", 6) or 6)))
+    except (TypeError, ValueError):
+        return 6
+
+
+def _fbp_rig_shape_geometry(shape, size=2.1, *, half_extents=None, center=(0.0, 0.0), sides=6):
     """Return local XY wire geometry for a non-rendering FBP control rig."""
     shape = str(shape or "DEFAULT").upper()
-    if shape == "DEFAULT":
-        shape = "RECTANGLE"
     radius = max(0.0001, float(size) * 0.5)
-    if shape == "CIRCLE":
-        count = 32
+    if shape in {"CIRCLE", "POLYGON"}:
+        count = 32 if shape == "CIRCLE" else max(3, min(50, int(sides)))
+        # Polygons rest on a flat bottom edge.
+        offset = 0.0 if shape == "CIRCLE" else (math.pi / count - math.pi * 0.5)
         verts = [
-            (math.cos((math.tau * index) / count) * radius,
-             math.sin((math.tau * index) / count) * radius,
-             0.0)
-            for index in range(count)
-        ]
-    elif shape == "DIAMOND":
-        verts = [(0.0, radius, 0.0), (radius, 0.0, 0.0), (0.0, -radius, 0.0), (-radius, 0.0, 0.0)]
-    elif shape == "HEXAGON":
-        count = 6
-        verts = [
-            (math.cos((math.tau * index) / count) * radius,
-             math.sin((math.tau * index) / count) * radius,
-             0.0)
-            for index in range(count)
-        ]
-    elif shape == "OCTAGON":
-        count = 8
-        verts = [
-            (math.cos((math.tau * index) / count + math.pi / 8.0) * radius,
-             math.sin((math.tau * index) / count + math.pi / 8.0) * radius,
+            (math.cos((math.tau * index) / count + offset) * radius,
+             math.sin((math.tau * index) / count + offset) * radius,
              0.0)
             for index in range(count)
         ]
     else:
         verts = [(-radius, -radius, 0.0), (radius, -radius, 0.0), (radius, radius, 0.0), (-radius, radius, 0.0)]
+    if half_extents is not None and shape == "POLYGON":
+        # Fit to Plane: the polygon's bounding box spans the plane bounds.
+        xs = [x for x, _y, _z in verts]
+        ys = [y for _x, y, _z in verts]
+        mid_x, mid_y = (max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5
+        span_x = max(1e-6, (max(xs) - min(xs)) * 0.5)
+        span_y = max(1e-6, (max(ys) - min(ys)) * 0.5)
+        verts = [((x - mid_x) / span_x * radius, (y - mid_y) / span_y * radius, z) for x, y, z in verts]
     if half_extents is not None:
         hx, hy = half_extents
         hx = max(0.0001, float(hx))
@@ -418,7 +415,8 @@ def _fbp_wrap_uv(value, mode):
 
 
 def fbp_rig_alpha_visible_at_uv(rig, u, v, scene=None):
-    """True/False when the pixel at UV (u, v) of the shown frame is visible.
+    """True/False when a click at UV (u, v) lands on solid pixels of the
+    shown frame (faint pixels and scattered specks do not count).
 
     Returns ``None`` when the alpha cannot be read, so callers can fall back
     to treating the plane as solid.
@@ -440,6 +438,10 @@ def fbp_rig_alpha_visible_at_uv(rig, u, v, scene=None):
     v = _fbp_wrap_uv(float(v), mode)
     if u is None or v is None:
         return False
+    from .rig_alpha_shape import solid_at
+    solid = solid_at(union, u, v)
+    if solid is not None:
+        return solid
     mask = union.mask
     rows, cols = mask.shape
     col = min(cols - 1, max(0, int(u * cols)))
@@ -476,9 +478,27 @@ def _fbp_alpha_rig_geometry(rig, margin):
     return verts, edges
 
 
-_FBP_RIG_WIRE_CACHE = globals().get("_FBP_RIG_WIRE_CACHE", {})
-if not isinstance(_FBP_RIG_WIRE_CACHE, dict):
-    _FBP_RIG_WIRE_CACHE = {}
+def fbp_migrate_legacy_rig_shapes(objects=None):
+    """Move rig shapes removed from the menu (Rectangle, Diamond, Hexagon,
+    Octagon) to Rectangle or Polygon. Returns the number of layers changed."""
+    from .properties import RIG_SHAPE_LEGACY_VALUES
+
+    changed = 0
+    for obj in tuple(objects if objects is not None else bpy.data.objects):
+        try:
+            if not bool(getattr(obj, "is_fbp_control", False)) or getattr(obj, "fbp_rig_shape", "DEFAULT"):
+                continue
+            getter = getattr(obj, "bl_system_properties_get", None)
+            stored = getter() if getter is not None else obj
+            raw = stored.get("fbp_rig_shape") if stored is not None else None
+            shape, sides = RIG_SHAPE_LEGACY_VALUES.get(int(raw) if raw is not None else -1, ('DEFAULT', 0))
+            if sides:
+                obj.fbp_rig_shape_sides = sides
+            obj.fbp_rig_shape = shape
+            changed += 1
+        except (*FBP_DATA_ERRORS, TypeError, ValueError):
+            continue
+    return changed
 
 
 def fbp_show_rig_on_new_layers():
@@ -491,22 +511,20 @@ def fbp_show_rig_on_new_layers():
 
 
 def fbp_rig_wire_visible(rig):
-    """True when the layer shows its rig wire (Show Rig); Custom always shows."""
+    """True when the layer shows its rig wire (Use Rig); Custom always shows."""
     if str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper() == "CUSTOM":
         return True
     return bool(getattr(rig, "fbp_rig_visible", True))
 
 
 def _fbp_write_rig_wire(rig, mesh, verts, edges):
-    """Store the wire outline and write it to the rig mesh.
+    """Write the wire outline to the rig mesh.
 
-    With Show Rig off the mesh keeps only the outline points (no edges), so
+    With Use Rig off the mesh keeps only the outline points (no edges), so
     Blender draws nothing while bounds, framing and transforms still work.
-    The selection overlay draws the cached outline instead.
     """
     verts = [tuple(float(value) for value in vert) for vert in verts]
     edges = [tuple(int(value) for value in edge) for edge in edges]
-    _FBP_RIG_WIRE_CACHE[_fbp_alpha_follow_key(rig)] = (verts, edges)
     mesh.clear_geometry()
     mesh.from_pydata(verts, edges if fbp_rig_wire_visible(rig) else [], [])
     mesh.update()
@@ -540,28 +558,10 @@ def _fbp_rig_shape_wire(rig, shape):
     alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == "ALPHA" else None
     if alpha_geometry is not None:
         return alpha_geometry
-    verts, edges = _fbp_rig_shape_geometry(shape, size=shape_size, half_extents=half_extents, center=center)
+    verts, edges = _fbp_rig_shape_geometry(
+        shape, size=shape_size, half_extents=half_extents, center=center, sides=_fbp_rig_shape_sides(rig),
+    )
     return _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig)), edges
-
-
-def fbp_rig_outline_geometry(rig):
-    """Rig-space outline for the selection overlay (cached, computed on demand)."""
-    if rig is None:
-        return None
-    cached = _FBP_RIG_WIRE_CACHE.get(_fbp_alpha_follow_key(rig))
-    if cached is not None:
-        return cached
-    shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper()
-    if shape == "CUSTOM":
-        return None
-    try:
-        verts, edges = _fbp_rig_shape_wire(rig, shape)
-    except Exception as exc:
-        _fbp_warn("Could not build the rig outline", exc)
-        return None
-    result = ([tuple(v) for v in verts], [tuple(e) for e in edges])
-    _FBP_RIG_WIRE_CACHE[_fbp_alpha_follow_key(rig)] = result
-    return result
 
 
 def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
@@ -768,7 +768,8 @@ def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=
             verts, edges = alpha_geometry
         else:
             verts, edges = _fbp_rig_shape_geometry(
-                shape, size=shape_size, half_extents=half_extents, center=center
+                shape, size=shape_size, half_extents=half_extents, center=center,
+                sides=_fbp_rig_shape_sides(rig),
             )
             verts = _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig))
         _fbp_write_rig_wire(rig, mesh, verts, edges)
@@ -877,7 +878,7 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
         pass
     try:
         # Like image layers, new colour planes hide their rig wire unless the
-        # Show Rig on New Layers preference is on; click the plane to select.
+        # Use Rig on New Layers preference is on; click the plane to select.
         fbp_set_rna_property_silent(rig, 'fbp_rig_visible', fbp_show_rig_on_new_layers())
         fbp_apply_rig_shape(rig)
     except FBP_DATA_IO_ERRORS as exc:

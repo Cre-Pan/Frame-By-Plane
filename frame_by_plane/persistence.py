@@ -63,6 +63,7 @@ _FBP_PERSISTENCE_LAYER_PROPERTIES = (
     "fbp_rig_shape",
     "fbp_rig_shape_expand",
     "fbp_rig_shape_fit_mode",
+    "fbp_rig_shape_sides",
     "fbp_rig_shape_alpha_style",
     "fbp_rig_shape_alpha_detail",
     "fbp_rig_shape_alpha_follow",

@@ -26,7 +26,7 @@ _MODULE_NAMES = (
     # Register Object properties before the Effects UI/handler. On unregister
     # the reverse order removes the frame handler before deleting its RNA props.
     "camera_output", "properties", "i18n", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "timeline_backport", "grease_pencil_scrub", "grease_pencil_bridge", "gp_vertex_colors", "layer_sets", "grease_pencil_workflow", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "effect_shells", "handle_overlay", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "live_tutorial", "solo_overlay", "scene_sync", "persistence",
-    "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers", "rig_alpha_follow", "rig_overlay",
+    "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers", "rig_alpha_follow",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural", "effect_bake",
     "performance_dashboard", "project_health", "actionable_issues", "operator_project", "operators", "ui_icons", "ui_layout", "ui", "compositor_layer_node", "viewport_pie", "tooltips", "native_modifiers",
@@ -36,7 +36,7 @@ if _IS_BACKGROUND:
     # background process. The dedicated FBP render child goes further and omits
     # authoring and import modules; operator_render registers only
     # its lightweight render-state validator in that process.
-    _BACKGROUND_SKIP_MODULES = {"feedback", "live_tutorial", "solo_overlay", "handle_overlay", "rig_overlay", "grease_pencil_scrub", "ui", "viewport_pie", "tooltips"}
+    _BACKGROUND_SKIP_MODULES = {"feedback", "live_tutorial", "solo_overlay", "handle_overlay", "grease_pencil_scrub", "ui", "viewport_pie", "tooltips"}
     if _IS_FBP_RENDER_CHILD:
         _BACKGROUND_SKIP_MODULES.update({
             "procreate_import", "layered_import", "importer",
