@@ -90,6 +90,7 @@ try:
         operator_import.FBP_OT_ImportSequence,
         operator_import.FBP_OT_GenerateMultiplane,
         operator_sequence.FBP_OT_DeleteOrDefault,
+        importlib.import_module(f"{PACKAGE_NAME}.operator_layers").FBP_OT_FitToCamera,
     ):
         if getattr(bpy.types, operator_class.__name__, None) is None:
             bpy.utils.register_class(operator_class)
@@ -159,7 +160,64 @@ try:
     assert not placement.uses_camera
     assert tuple(placement.location(0.5)) == (1.0, 2.5, 3.0)
 
-    # 6. Delete removes rig and plane together, plus other selected objects.
+    # 6. Fit modes, perspective and orthographic, with an off-axis tilted layer.
+    def frame_bounds(rig, camera):
+        bpy.context.view_layer.update()
+        plane = rig.fbp_plane_target
+        evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh()
+        try:
+            points = [world_to_camera_view(scene, camera, plane.matrix_world @ v.co) for v in mesh.vertices]
+        finally:
+            evaluated.to_mesh_clear()
+        xs = [p.x for p in points]
+        ys = [p.y for p in points]
+        return min(xs), max(xs), min(ys), max(ys)
+
+    def close(a, b):
+        return abs(a - b) < 2e-3
+
+    clear_scene()
+    camera = make_camera((0.0, -10.0, 3.0), (90.0, 0.0, 0.0))
+    rig = import_single(workdir, names[0])  # 16 x 9 image
+    for projection in ('PERSP', 'ORTHO'):
+        camera.data.type = projection
+        camera.data.ortho_scale = 7.0
+        for resolution in ((1920, 1080), (1080, 1920), (1000, 1000)):
+            scene.render.resolution_x, scene.render.resolution_y = resolution
+            for mode in ('CONTAIN', 'COVER', 'WIDTH', 'HEIGHT', 'STRETCH'):
+                # Knock the layer off axis and tilt it: Fit must recentre it.
+                rig.location = (2.0, 1.5, -1.0)
+                rig.rotation_euler = (math.radians(70.0), 0.2, 0.4)
+                assert builder.apply_fit_to_camera(bpy.context, rig, camera, mode=mode, align=True)
+                x0, x1, y0, y1 = frame_bounds(rig, camera)
+                label = (projection, resolution, mode, (round(x0, 3), round(x1, 3), round(y0, 3), round(y1, 3)))
+                assert close((x0 + x1) / 2.0, 0.5) and close((y0 + y1) / 2.0, 0.5), label
+                width_match = close(x0, 0.0) and close(x1, 1.0)
+                height_match = close(y0, 0.0) and close(y1, 1.0)
+                if mode == 'STRETCH':
+                    assert width_match and height_match, label
+                elif mode == 'WIDTH':
+                    assert width_match, label
+                elif mode == 'HEIGHT':
+                    assert height_match, label
+                elif mode == 'CONTAIN':
+                    assert (width_match or height_match) and x0 > -2e-3 and x1 < 1.002 and y0 > -2e-3 and y1 < 1.002, label
+                else:
+                    assert (width_match or height_match) and x0 < 2e-3 and x1 > 0.998 and y0 < 2e-3 and y1 > 0.998, label
+    camera.data.type = 'PERSP'
+    scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
+
+    # The Fit operator remembers the chosen mode for the next Fit and imports.
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    assert bpy.ops.fbp.fit_camera('EXEC_DEFAULT', mode='HEIGHT') == {'FINISHED'}
+    assert scene.fbp_fit_mode == 'HEIGHT'
+    scene.fbp_fit_mode = 'CONTAIN'
+
+    # 7. Delete removes rig and plane together, plus other selected objects.
     clear_scene()
     camera = make_camera((0.0, -10.0, 0.0), (90.0, 0.0, 0.0))
     rig = import_single(workdir, names[0])

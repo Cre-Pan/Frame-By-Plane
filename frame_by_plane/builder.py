@@ -1253,32 +1253,69 @@ def fbp_rig_base_image_size(rig):
     base_y = max(float(getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0))[1]), 0.0001)
     return 2.0 * base_x, 2.0 * base_y
 
-def apply_fit_to_camera(context, rig, cam):
-    """Uniformly fit the real image rectangle inside the active camera.
+FBP_FIT_MODE_ITEMS = (
+    ('CONTAIN', "Fit Inside", "Scale uniformly until the first image side touches the camera border; the whole image stays visible", 'FULLSCREEN_EXIT', 0),
+    ('COVER', "Fill Frame", "Scale uniformly until the image covers the whole camera frame; the longer side is cropped by the frame", 'FULLSCREEN_ENTER', 1),
+    ('WIDTH', "Match Width", "Scale uniformly so the image width matches the camera frame width", 'ARROW_LEFTRIGHT', 2),
+    ('HEIGHT', "Match Height", "Scale uniformly so the image height matches the camera frame height", 'EMPTY_SINGLE_ARROW', 3),
+    ('STRETCH', "Stretch", "Scale width and height separately so the image matches the camera frame exactly, changing its proportions", 'MOD_LENGTH', 4),
+)
+FBP_FIT_MODES = frozenset(item[0] for item in FBP_FIT_MODE_ITEMS)
 
-    There is intentionally only one mode: the first image side that touches the
-    camera border stops the scale. Crop / Extend and the wire rig are ignored.
-    """
-    if not rig or not cam:
-        return
-    cam_z = cam.matrix_world.to_3x3() @ mathutils.Vector((0.0, 0.0, -1.0))
-    vec = rig.matrix_world.translation - cam.matrix_world.translation
-    dist = abs(vec.dot(cam_z))
-    if dist < 0.001 and getattr(cam.data, 'type', '') != 'ORTHO':
-        return
 
-    frame = cam.data.view_frame(scene=context.scene)
-    min_x = min(v.x for v in frame)
-    max_x = max(v.x for v in frame)
-    min_y = min(v.y for v in frame)
-    max_y = max(v.y for v in frame)
+def fbp_scene_fit_mode(scene):
+    mode = str(getattr(scene, "fbp_fit_mode", 'CONTAIN') or 'CONTAIN')
+    return mode if mode in FBP_FIT_MODES else 'CONTAIN'
+
+
+def fbp_camera_frame_size(scene, cam, depth):
+    """Return the camera frame (width, height) in world units at ``depth``."""
+    frame = cam.data.view_frame(scene=scene)
+    width = abs(max(v.x for v in frame) - min(v.x for v in frame))
+    height = abs(max(v.y for v in frame) - min(v.y for v in frame))
     if getattr(cam.data, 'type', '') == 'ORTHO':
-        projection_scale = 1.0
+        return width, height
+    if getattr(cam.data, 'type', '') == 'PANO':
+        return 0.0, 0.0
+    frame_z = abs(frame[0].z) if abs(frame[0].z) > 1e-6 else 1.0
+    projection_scale = abs(depth) / frame_z
+    return width * projection_scale, height * projection_scale
+
+
+def apply_fit_to_camera(context, rig, cam, mode=None, align=False):
+    """Fit the real image rectangle to the camera frame.
+
+    ``mode`` is one of FBP_FIT_MODES (default: the Scene Fit Mode). With
+    ``align`` the layer is also centred on the camera frame and turned to
+    face the camera at its current depth. Perspective and orthographic
+    cameras are both measured at the layer's depth along the view axis, so
+    the result does not depend on where the layer sits beside the axis.
+    Crop / Extend and the wire rig are ignored.
+    """
+    if not rig or not cam or getattr(cam, "type", "") != 'CAMERA':
+        return False
+    scene = context.scene if context else bpy.context.scene
+    mode = mode if mode in FBP_FIT_MODES else fbp_scene_fit_mode(scene)
+    is_ortho = getattr(cam.data, 'type', '') == 'ORTHO'
+
+    if align:
+        placement = FBPLayerPlacement(scene, cam, rig.matrix_world.translation.copy())
+        if not placement.uses_camera:
+            return False
+        target_location = placement.location(0.0)
+        target_rotation = placement.rotation
     else:
-        frame_z = abs(frame[0].z) if abs(frame[0].z) > 1e-6 else 1.0
-        projection_scale = dist / frame_z
-    frame_width = abs(max_x - min_x) * projection_scale
-    frame_height = abs(max_y - min_y) * projection_scale
+        target_location = rig.matrix_world.translation.copy()
+        target_rotation = None
+
+    cam_loc, cam_rot, _cam_scale = cam.matrix_world.decompose()
+    forward = cam_rot @ mathutils.Vector((0.0, 0.0, -1.0))
+    depth = (target_location - cam_loc).dot(forward)
+    if abs(depth) < 0.001 and not is_ortho:
+        return False
+    frame_width, frame_height = fbp_camera_frame_size(scene, cam, depth)
+    if frame_width <= 0.0 or frame_height <= 0.0:
+        return False
 
     base_vec = getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0))
     try:
@@ -1295,10 +1332,38 @@ def apply_fit_to_camera(context, rig, cam):
         base_z = max(float(base_vec[2]), 0.0001)
     img_width, img_height = fbp_rig_base_image_size(rig)
     if img_width <= 0 or img_height <= 0:
-        return
+        return False
 
-    factor = min(frame_width / img_width, frame_height / img_height)
-    rig.scale = (base_x * factor, base_y * factor, base_z * factor)
+    factor_x = frame_width / img_width
+    factor_y = frame_height / img_height
+    if mode == 'COVER':
+        factor_x = factor_y = max(factor_x, factor_y)
+    elif mode == 'WIDTH':
+        factor_y = factor_x
+    elif mode == 'HEIGHT':
+        factor_x = factor_y
+    elif mode == 'CONTAIN':
+        factor_x = factor_y = min(factor_x, factor_y)
+    factor_z = math.sqrt(factor_x * factor_y)
+
+    # A scaled parent would multiply the result: divide its world scale out.
+    parent = getattr(rig, "parent", None)
+    parent_scale = parent.matrix_world.to_scale() if parent is not None else mathutils.Vector((1.0, 1.0, 1.0))
+    parent_scale = [value if abs(value) > 1e-8 else 1.0 for value in parent_scale]
+
+    if align:
+        try:
+            world = mathutils.Matrix.LocRotScale(target_location, target_rotation, rig.matrix_world.to_scale())
+            rig.matrix_world = world
+            rig.fbp_is_vertical = bool(placement.vertical)
+        except FBP_DATA_IO_ERRORS:
+            pass
+    rig.scale = (
+        base_x * factor_x / parent_scale[0],
+        base_y * factor_y / parent_scale[1],
+        base_z * factor_z / parent_scale[2],
+    )
+    return True
 
 # SECTION 06 - Image Sequence Rig Builder #
 def fbp_prepare_media_source(context, directory, files_list, item_durations=None):

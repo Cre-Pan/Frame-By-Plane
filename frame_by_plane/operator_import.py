@@ -6268,6 +6268,9 @@ def _fbp_draw_scene_camera_settings(layout, scene, panel_id, *, projection=False
     chooser.prop(scene, "camera", text="Camera")
     col.separator(factor=0.5)
     col.prop(scene, "fbp_auto_scale", text="Fit to Camera")
+    fit_mode = col.row()
+    fit_mode.enabled = bool(getattr(scene, "fbp_auto_scale", False))
+    fit_mode.prop(scene, "fbp_fit_mode", text="Fit Mode")
     col.prop(scene, "fbp_pre_track_cam", text="Track to Camera")
     # A new camera follows the source-aspect setting, an existing one only
     # changes shape on request: the same checkbox drives whichever applies.

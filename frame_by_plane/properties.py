@@ -4925,6 +4925,13 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_cam_pivot    = BoolProperty(name="Pivot on Camera", description="Move the 3D cursor to the camera pivot when creating a camera setup", default=True)
     _FBP_SCENE_RNA.fbp_layer_offset = FloatProperty(name="Space Between Layers", description="Distance between generated layers; imported top-level collections use a larger gap", default=0.5, min=0.001, soft_max=5.0, unit='LENGTH')
     _FBP_SCENE_RNA.fbp_auto_scale   = BoolProperty(name="Auto-Scale (Fit to Cam)", description="Scale generated planes to the camera frame using the image aspect ratio", default=False)
+    from .builder import FBP_FIT_MODE_ITEMS
+    _FBP_SCENE_RNA.fbp_fit_mode = EnumProperty(
+        name="Fit Mode",
+        description="How Fit and Fit to Camera size a layer to the camera frame",
+        items=FBP_FIT_MODE_ITEMS,
+        default='CONTAIN',
+    )
     _FBP_SCENE_RNA.fbp_camera_fit_source_aspect = BoolProperty(
         name="Camera Uses Source Aspect",
         description="When generating a Frame By Plane camera, match the output resolution to the first generated layer source aspect instead of a fixed preset",
