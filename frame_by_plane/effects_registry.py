@@ -2904,19 +2904,20 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
     )),
     ("Tone", "IMAGE_ALPHA", (
         FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_CURVES, FBP_EFFECT_INVERT,
-        FBP_EFFECT_THRESHOLD,
+        FBP_EFFECT_THRESHOLD, "FAMILY:POSTERIZE",
     )),
     ("Light", "OUTLINER_OB_LIGHT", (
         FBP_EFFECT_BLOOM, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW,
-        FBP_EFFECT_VIGNETTE,
+        FBP_EFFECT_VIGNETTE, FBP_EFFECT_GOBO_SHADOWS, FBP_EFFECT_EMISSION,
     )),
     ("Blur & Sharpen", "ONIONSKIN_ON", (
         FBP_EFFECT_GAUSSIAN_BLUR, "FAMILY:DIRECTIONAL_BLUR",
         FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_UNSHARP_MASK,
     )),
+    # Each family is one entry; its variants (Swirl, Lens, ...) are picked
+    # from the dropdown at the top of the effect's settings once added.
     ("Deform", "OUTLINER_OB_SURFACE", (
-        FBP_EFFECT_UV_DISTORTION, FBP_EFFECT_WAVE_WARP, FBP_EFFECT_SWIRL,
-        FBP_EFFECT_BULGE_PINCH, FBP_EFFECT_RIPPLE_DISTORTION, FBP_EFFECT_LENS_WARP,
+        FBP_EFFECT_UV_DISTORTION, "FAMILY:WAVE",
         FBP_EFFECT_SLICE_SHIFT, FBP_EFFECT_KALEIDOSCOPE,
     )),
     ("Pixel & Print", "MESH_GRID", (
@@ -2934,10 +2935,12 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
         FBP_EFFECT_SOLARIZE, FBP_EFFECT_FILM_FADE, FBP_EFFECT_GRAIN, FBP_EFFECT_PAPER_FIBERS,
     )),
 )
+# About ten entries per column: Canvas + Color, Tone + Blur & Sharpen,
+# Light + Deform, Pixel & Print + Edges & Paint, Digital + Film.
 FBP_IMAGE_EFFECT_MENU_COLUMNS = (
-    (0, 1, 2),
-    (3, 4),
-    (5,),
+    (0, 1),
+    (2, 4),
+    (3, 5),
     (6, 7),
     (8, 9),
 )
@@ -2955,7 +2958,7 @@ FBP_MASK_EFFECT_MENU_SECTIONS = (
         "GREASE_PENCIL_MASK_CONTROL", FBP_EFFECT_IMPORTED_MASK, FBP_EFFECT_ALPHA_MATTE, FBP_EFFECT_LUMA_MATTE,
     )),
 )
-FBP_MASK_EFFECT_MENU_COLUMNS = ((0, 1), (2, 3))
+FBP_MASK_EFFECT_MENU_COLUMNS = ((0, 1), (2,), (3,))
 
 FBP_MESH_EFFECT_MENU_SECTIONS = (
     ("Camera & Layout", "CAMERA_DATA", (

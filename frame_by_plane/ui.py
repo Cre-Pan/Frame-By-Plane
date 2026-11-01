@@ -4493,22 +4493,16 @@ def draw_effects_ui(layout, context, *, force_view=None):
             "3D" if active_category == "3D" else "2D"
         ))
     )
-    stack_box = layout.box()
-    configure_layout(stack_box)
-    stack_header = section_header(
-        stack_box,
-        "Effects",
-        icon="MODIFIER",
-        count=len(visible_effects),
-    )
-    stack_header.menu("OBJECT_MT_modifier_add", text="", icon="ADD")
-    hint_row(
-        stack_box,
-        "Add, reorder and hide effects in Properties > Modifiers"
-        if visible_effects else "No effects. Add one from Add Modifier.",
-        icon="INFO",
-        disabled=True,
-    )
+    # The modifier rows below are the stack (add, reorder, hide, delete):
+    # this panel only needs to say what to click when nothing is open.
+    if not active_effect:
+        hint_row(
+            layout,
+            "Click an effect in the modifier list to edit it here"
+            if visible_effects else "Add an effect from Add Modifier > Image, Mask or Mesh",
+            icon="INFO",
+            disabled=True,
+        )
 
     if active_effect:
         source_rig = fbp_effect_source_rig(selected_rigs, active_effect)

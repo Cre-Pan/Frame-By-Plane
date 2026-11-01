@@ -152,10 +152,66 @@ def fbp_native_snapshot(rig):
     return snapshot
 
 
+def fbp_native_hide_inputs(rig):
+    """Hide the inputs of the internal mixed-stack stage rows.
+
+    Stages only carry the material an image effect hands to the next mesh
+    effect; nothing in them is meant to be edited. Effect rows keep every
+    input: they are the effect's controls.
+    """
+    changed = False
+    geo = _geo()
+    plane = geo._fbp_plane(rig, repair=False)
+    if plane is None:
+        return False
+    try:
+        stages = tuple(geo._fbp_mixed_shader_stage_modifiers(plane))
+    except FBP_DATA_ERRORS:
+        return False
+    for modifier in stages:
+        group = getattr(modifier, "node_group", None)
+        if group is None:
+            continue
+        try:
+            for item in group.interface.items_tree:
+                if (
+                    getattr(item, "item_type", "") == "SOCKET"
+                    and getattr(item, "in_out", "") == "INPUT"
+                    and getattr(item, "socket_type", "") != "NodeSocketGeometry"
+                    and not bool(getattr(item, "hide_in_modifier", True))
+                ):
+                    item.hide_in_modifier = True
+                    changed = True
+        except FBP_DATA_ERRORS:
+            continue
+    # A short-lived build hid the effect rows' inputs too: show them again.
+    stage_pointers = {int(item.as_pointer()) for item in stages}
+    for _token, modifier in fbp_native_modifier_entries(rig):
+        if int(modifier.as_pointer()) in stage_pointers:
+            continue
+        group = getattr(modifier, "node_group", None)
+        try:
+            for item in (group.interface.items_tree if group is not None else ()):
+                if (
+                    getattr(item, "item_type", "") == "SOCKET"
+                    and getattr(item, "in_out", "") == "INPUT"
+                    and bool(getattr(item, "hide_in_modifier", False))
+                ):
+                    item.hide_in_modifier = False
+                    changed = True
+        except FBP_DATA_ERRORS:
+            continue
+    return changed
+
+
 def fbp_native_remember(rig):
     key = _rig_key(rig)
     if not key:
         return
+    try:
+        fbp_native_hide_inputs(rig)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not hide effect inputs in the Modifiers panel", exc)
     _SNAPSHOTS[key] = fbp_native_snapshot(rig)
     try:
         from .effect_shells import fbp_shell_modifiers
@@ -270,6 +326,15 @@ def fbp_sync_native_modifiers(rig):
             geo._fbp_mixed_shader_stage_token(item) for item in plane.modifiers
         )
         previous_shells = set(_SHELL_SNAPSHOTS.get(key, ()))
+        applied = _applied_image_modifier(plane)
+        if applied and any(
+            token not in shells and token in persisted_set and _is_shader(geo, token)
+            for token in previous_shells
+        ):
+            # Apply on an image-effect row would just drop the effect: the
+            # row carries no geometry. Undo it and open Apply Effects instead.
+            _redirect_apply_to_bake(rig.name)
+            return report
         for token in previous:
             if token in represented:
                 continue
@@ -354,6 +419,72 @@ def fbp_sync_native_modifiers(rig):
         _SYNCING = False
         fbp_native_remember(rig)
     return report
+
+
+_HANDLED_APPLY = set()
+
+
+def _applied_image_modifier(plane):
+    """Name of the modifier the last operator applied on ``plane``, if any."""
+    try:
+        operators = bpy.context.window_manager.operators
+        last = operators[-1] if len(operators) else None
+    except (AttributeError, IndexError, *FBP_DATA_ERRORS):
+        return ""
+    if last is None or str(getattr(last, "bl_idname", "")) != "OBJECT_OT_modifier_apply":
+        return ""
+    try:
+        pointer = int(last.as_pointer())
+    except FBP_DATA_ERRORS:
+        return ""
+    if pointer in _HANDLED_APPLY:
+        return ""
+    _HANDLED_APPLY.add(pointer)
+    try:
+        return str(last.properties.modifier or "") or "?"
+    except (AttributeError, *FBP_DATA_ERRORS):
+        return "?"
+
+
+def _redirect_apply_to_bake(rig_name):
+    def _run():
+        context = bpy.context
+        window = getattr(context, "window", None) or next(
+            iter(getattr(context.window_manager, "windows", ()) or ()), None
+        )
+        if window is None:
+            return None
+        try:
+            with context.temp_override(window=window):
+                bpy.ops.ed.undo()
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not undo Apply on an image effect", exc)
+            return None
+        rig = bpy.data.objects.get(rig_name)
+        if rig is None:
+            return None
+        try:
+            area = next(
+                (item for item in window.screen.areas if item.type in {"PROPERTIES", "VIEW_3D"}),
+                None,
+            )
+            override = {"window": window}
+            if area is not None:
+                override["area"] = area
+                override["region"] = next(
+                    (region for region in area.regions if region.type == "WINDOW"), None
+                )
+            with context.temp_override(**override):
+                bpy.ops.fbp.apply_image_effects("INVOKE_DEFAULT", rig_name=rig_name)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not open Apply Effects", exc)
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        schedule_once("native_modifiers.apply_redirect", _run, first_interval=0.0)
+    except (ImportError, *FBP_DATA_ERRORS):
+        bpy.app.timers.register(_run, first_interval=0.0)
 
 
 def _mirror_stack_flags(geo, rig):
@@ -460,7 +591,10 @@ def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
             continue
         try:
             from .effect_shells import fbp_shell_sync_values
+            from .geometry_nodes import fbp_pull_geometry_modifier_edits
             fbp_shell_sync_values(rig)
+            # Mesh effects: inputs edited in the Modifiers panel.
+            fbp_pull_geometry_modifier_edits(rig)
         except (ImportError, *FBP_DATA_ERRORS) as exc:
             fbp_warn("Could not sync an effect modifier with its layer", exc)
         if _SIGNATURES.get(_rig_key(rig)) == _plane_signature(obj):
@@ -635,7 +769,7 @@ def _item_icon_kwargs(effect_id, fallback="MODIFIER"):
     return effect_icon_kwargs(effect_id, str(definition.get("icon", fallback) or fallback))
 
 
-def _draw_native_items(layout, context, tokens):
+def _draw_native_items(layout, context, tokens, only=None):
     """Draw the add entries of one menu section, one per row."""
     geo = _geo()
     rigs, active_effects = geo._fbp_effect_add_menu_state(context)
@@ -660,16 +794,38 @@ def _draw_native_items(layout, context, tokens):
         if token == "LAYER_BLEND_CONTROL":
             token = geo.FBP_EFFECT_LAYER_BLEND
         if token.startswith("FAMILY:"):
+            # One entry per family: the variant is chosen afterwards from the
+            # dropdown at the top of the effect's settings.
             family_id = token.split(":", 1)[1].upper()
             family = geo.fbp_effect_family_definition(family_id)
             label = str(family.get("label", family_id.title()) or family_id.title())
+            variants = [
+                variant for variant, _label in family.get("variants", ())
+                if only is None or variant in only
+            ]
+            default = str(family.get("default", "") or "")
+            ordered = ([default] if default in variants else []) + [
+                variant for variant in variants if variant != default
+            ]
+            target = next((
+                variant for variant in ordered
+                if not rigs or all(geo.fbp_effect_supported_for_rig(rig, variant) for rig in rigs)
+            ), "")
             row = layout.row()
-            row.enabled = bool(family.get("default"))
+            row.enabled = bool(target) and not (bool(rigs) and all(
+                any(
+                    variant in active_effects.get(geo._fbp_effect_ids_cache_key(rig), set())
+                    for variant in variants
+                )
+                for rig in rigs
+            ))
             op = row.operator(
-                "fbp.add_effect_family", text=label,
-                icon=str(family.get("icon", "MODIFIER") or "MODIFIER"),
+                FBP_OT_AddEffectModifier.bl_idname, text=label,
+                **_item_icon_kwargs(
+                    f"FAMILY_{family_id}", str(family.get("icon", "MODIFIER") or "MODIFIER"),
+                ),
             )
-            op.family_id = family_id
+            op.effect_id = target or default
             continue
         effect_id = geo.fbp_normalize_effect_id(token)
         definition = geo.fbp_effect_definition(effect_id)
@@ -703,16 +859,24 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
     kept, placed = [], set()
     for title, _icon, tokens in sections:
         if only is not None:
-            expanded = []
+            kept_tokens = []
             for token in tokens:
                 token = str(token or "")
                 if token.startswith("FAMILY:"):
+                    # A family stays one entry while any of its variants works
+                    # as a modifier.
                     family = geo.fbp_effect_family_definition(token.split(":", 1)[1].upper())
-                    expanded.extend(variant for variant, _label in family.get("variants", ()))
-                else:
-                    expanded.append(token)
-            tokens = tuple(token for token in expanded if token.upper() in only)
-            placed.update(tokens)
+                    members = [
+                        variant for variant, _label in family.get("variants", ())
+                        if variant in only
+                    ]
+                    if members:
+                        kept_tokens.append(token)
+                        placed.update(members)
+                elif token.upper() in only:
+                    kept_tokens.append(token)
+                    placed.add(token.upper())
+            tokens = tuple(kept_tokens)
         kept.append((title, tuple(tokens)))
     if only is not None:
         # Modifier-ready effects that the curated library reaches another way
@@ -726,9 +890,17 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
             str((geo.fbp_effect_definition(token) or {}).get("category", "") or "")
             for token in view_ids
         }
+        # Hidden legacy effects (Chroma Key) and effects the Mesh menu already
+        # lists (Motion, Track to Camera) do not belong in this menu.
+        mesh_ids = {
+            str(token).upper()
+            for _title, _icon, tokens in geo.FBP_MESH_EFFECT_MENU_SECTIONS for token in tokens
+        }
         missing = tuple(
             effect_id for effect_id in only
-            if effect_id not in placed
+            if effect_id not in placed and not geo.fbp_effect_family_id(effect_id)
+            and effect_id not in mesh_ids
+            and not bool((geo.fbp_effect_definition(effect_id) or {}).get("hidden", False))
             and str((geo.fbp_effect_definition(effect_id) or {}).get("category", "") or "") in categories
         )
         first = next((index for index, (_t, tokens) in enumerate(kept) if tokens), None)
@@ -752,7 +924,7 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
             title, tokens = kept[index]
             column.label(text=_section_title(title))
             column.separator(type="LINE")
-            _draw_native_items(column, context, tokens)
+            _draw_native_items(column, context, tokens, only)
 
 
 class FBP_OT_AddEffectModifier(bpy.types.Operator):
@@ -795,6 +967,11 @@ class FBP_OT_AddEffectModifier(bpy.types.Operator):
                     instance_id = geo._fbp_effect_ref_instance_id(token) if token else ""
                     effect_shells.fbp_shell_create(rig, effect_id, instance_id)
                 fbp_native_remember(rig)
+        for rig in rigs:
+            try:
+                fbp_native_hide_inputs(rig)
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn("Could not hide effect inputs in the Modifiers panel", exc)
         return {"FINISHED"}
 
 
