@@ -4691,6 +4691,95 @@ def test_frame_stack_samples_earlier_frames(_module):
     return {"slices": 4, "sequences": 3}
 
 
+def test_playback_light_and_native_sample_timing(_module):
+    """Image-effect samples follow the sequence natively; Light Playback pauses and restores."""
+    builder = importlib.import_module(f"{PACKAGE}.builder")
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scene = bpy.context.scene
+    folder = WORKDIR / "playback_light_sequence"
+    folder.mkdir(parents=True, exist_ok=True)
+    names = []
+    for index in range(6):
+        name = f"pl_{index + 1:04d}.png"
+        names.append(name)
+        path = folder / name
+        if not path.is_file():
+            image = bpy.data.images.new(name, 16, 9, alpha=True)
+            image.generated_color = (index / 6.0, 0.5, 1.0 - index / 6.0, 1.0)
+            image.filepath_raw = str(path)
+            image.file_format = "PNG"
+            image.save()
+            bpy.data.images.remove(image)
+    previous = (scene.fbp_pre_duration, scene.frame_current, scene.fbp_playback_light_mode)
+    owned = []
+    try:
+        scene.fbp_pre_duration = 2
+        scene.frame_set(scene.frame_start)
+        rig = builder.build_fbp_rig(bpy.context, "FBP Playback Light", str(folder), names, (0.0, 0.0, 0.0))
+        owned.extend((rig, *rig.children_recursive))
+        _flush_fbp_safe_tasks()
+        assert geometry.fbp_add_effect(rig, "GAUSSIAN_BLUR", select_object_mask_helper=False, inherit_active_group=False)
+        assert geometry.fbp_add_effect(rig, "CRYSTAL", select_object_mask_helper=False, inherit_active_group=False)
+        plane = geometry._fbp_plane(rig)
+        material = plane.data.materials[0]
+        source = geometry._fbp_shader_image_node(material)
+        samples = [
+            (group, node)
+            for group in (n.node_tree for n in material.node_tree.nodes if n.type == "GROUP" and n.node_tree)
+            for node in group.nodes
+            if node.get("fbp_matrix_source_image_node", False)
+        ]
+        assert samples, "Gaussian Blur has no private image samples"
+        scene.frame_set(scene.frame_start + 1)
+        calls = {"count": 0}
+        original_copy = geometry._fbp_copy_shader_image_user
+
+        def counting_copy(source_node, target_node):
+            changed = original_copy(source_node, target_node)
+            calls["count"] += int(bool(changed))
+            return changed
+
+        geometry._fbp_copy_shader_image_user = counting_copy
+        try:
+            for frame in range(scene.frame_start, scene.frame_start + 14):
+                scene.frame_set(frame)
+                expected = source.image_user.frame_offset
+                for group, node in samples:
+                    assert node.image_user.frame_offset == expected, (frame, node.name, node.image_user.frame_offset, expected)
+        finally:
+            geometry._fbp_copy_shader_image_user = original_copy
+        # Timing is native animation now; Python no longer rewrites samples.
+        assert calls["count"] == 0, calls
+        assert all(geometry.fbp_find_action_fcurve(group, node.image_user.path_from_id("frame_offset")) is not None
+                   for group, node in samples)
+
+        crystal = geometry.fbp_find_effect_modifier(rig, "CRYSTAL")
+        assert crystal is not None and crystal.show_viewport
+        scene.fbp_playback_light_mode = "ALL"
+        assert geometry.fbp_suspend_heavy_effects_for_playback(scene) >= 1
+        assert not crystal.show_viewport and crystal.show_render
+        assert geometry.fbp_effect_visible_state(rig, "CRYSTAL"), "paused effect must still read as switched on"
+        assert geometry.fbp_restore_playback_suspended_effects() >= 1
+        assert crystal.show_viewport and geometry.FBP_PLAYBACK_SUSPENDED_KEY not in plane
+        # A user who hides the effect while playing keeps it hidden afterwards.
+        geometry.fbp_suspend_heavy_effects_for_playback(scene)
+        geometry.fbp_set_effect_visible(rig, "CRYSTAL", False)
+        geometry.fbp_restore_playback_suspended_effects()
+        assert not crystal.show_viewport
+        geometry.fbp_set_effect_visible(rig, "CRYSTAL", True)
+        scene.fbp_playback_light_mode = "OFF"
+        assert geometry.fbp_suspend_heavy_effects_for_playback(scene) == 0 and crystal.show_viewport
+    finally:
+        scene.fbp_pre_duration, scene.fbp_playback_light_mode = previous[0], previous[2]
+        scene.frame_set(previous[1])
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"samples": len(samples)}
+
+
 def test_knit_crochet_stitches(_module):
     """Knit & Crochet instances one stitch per grid cell, skipping transparency."""
     builder = importlib.import_module(f"{PACKAGE}.builder")
@@ -5853,6 +5942,7 @@ def run_background():
             ("drop_import_camera_modes", test_drop_import_camera_modes),
             ("render_checked_popup_contract", test_render_checked_popup_contract),
             ("frame_stack_samples_earlier_frames", test_frame_stack_samples_earlier_frames),
+            ("playback_light_and_native_sample_timing", test_playback_light_and_native_sample_timing),
             ("knit_crochet_stitches", test_knit_crochet_stitches),
             ("effect_audit_fixes_contract", test_effect_audit_fixes_contract),
             ("effect_audit_followup_contract", test_effect_audit_followup_contract),
