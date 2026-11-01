@@ -165,7 +165,7 @@ def test_modifier_add_menu():
         assert all("icon_value" in call[2] or "icon" in call[2] for call in ops)
         calls, ops, headers = drawn(native.FBP_MT_ModifierAddImage)
         labels = [call[2].get("text") for call in ops]
-        assert {"Vignette", "Halftone", "Bloom", "Hue & Saturation"} <= set(labels), labels
+        assert {"Vignette", "Halftone", "Bloom", "Hue & Saturation", "Crop", "Extend"} <= set(labels), labels
         assert "Layer Blend" not in labels, labels
         assert all(call[1][0] == "fbp.add_effect_modifier" for call in ops), ops
         image_titles = [section[0] for section in geo.FBP_IMAGE_EFFECT_MENU_SECTIONS]
@@ -438,9 +438,39 @@ def test_shell_value_sync():
         _remove(target)
 
 
+def test_row_effects():
+    """Layer effects without material nodes still get a native row."""
+    geo, native, shells = _modules()
+    rig = _rig("FBP Native Rows")
+    try:
+        _add(geo, rig, "CROP", "EMISSION", "MOTION")
+        geo.fbp_sync_effect_items(rig)
+        plane = geo._fbp_plane(rig)
+        assert native.fbp_native_ui_order(rig) == geo._fbp_mixed_effect_tokens(rig)
+        for name in ("Crop", "Emission", "Motion"):
+            modifier = plane.modifiers[name]
+            assert shells.fbp_shell_token(modifier), name
+            assert not shells._shell_mapping(modifier.node_group), name
+        # The active row drives the Frame By Plane panel.
+        plane.modifiers.active = plane.modifiers["Crop"]
+        assert native.fbp_native_modifier_token(rig, plane.modifiers.active) == "CROP"
+
+        native.fbp_native_remember(rig)
+        names = [modifier.name for modifier in plane.modifiers]
+        plane.modifiers.move(names.index("Motion"), len(names) - 1)
+        assert native.fbp_sync_native_modifiers(rig)["reordered"]
+        assert geo._fbp_mixed_effect_tokens(rig)[0] == "MOTION"
+
+        plane.modifiers.remove(plane.modifiers["Emission"])
+        assert native.fbp_sync_native_modifiers(rig)["removed"] == ["EMISSION"]
+        assert not geo.fbp_effect_is_active(rig, "EMISSION")
+    finally:
+        _remove(rig)
+
+
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
-    test_add_image_modifier, test_effect_shells, test_shell_value_sync,
+    test_add_image_modifier, test_effect_shells, test_shell_value_sync, test_row_effects,
 )
 
 failed = []

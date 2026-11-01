@@ -42,6 +42,13 @@ _SHELL_DERIVED_PROPERTIES = {
     "fbp_directional_blur_samples",
 }
 _SHELL_CATEGORIES = {"BASE", "2D", "MASK"}
+# Layer effects that do not run in the material (Crop and Extend resize the
+# plane, Emission sets its surface, the others move or deform it). Their
+# modifier is a row only: order, eye, camera and delete; the settings stay in
+# the Frame By Plane panel, which shows them while the row is active.
+FBP_SHELL_ROW_EFFECTS = (
+    "CROP", "EXTEND", "EMISSION", "MOTION", "CAMERA_BILLBOARD", "LATTICE",
+)
 _SHELL_EFFECT_CACHE = None
 _SHELL_TOKEN_KEY = "fbp_shell_token"
 _SHELL_GROUP_KEY = "fbp_shell_group"
@@ -71,6 +78,9 @@ def fbp_shell_effects():
             if str(definition.get("category", "") or "") in _SHELL_CATEGORIES
             and str(definition.get("kind", "") or "") in {"SHADER", "MASK"}
             and effect_id not in _SHELL_EXCLUDED
+        ) + tuple(
+            effect_id for effect_id in FBP_SHELL_ROW_EFFECTS
+            if effect_id in FBP_EFFECT_REGISTRY
         )
         _SHELL_EFFECT_CACHE = (key, found)
     return _SHELL_EFFECT_CACHE[1]
@@ -78,6 +88,11 @@ def fbp_shell_effects():
 
 def fbp_shell_supported(effect_id):
     return str(effect_id or "").upper() in fbp_shell_effects()
+
+
+def fbp_shell_is_row(effect_id):
+    """True for effects whose modifier is a row without inputs."""
+    return str(effect_id or "").upper() in FBP_SHELL_ROW_EFFECTS
 
 
 def fbp_shell_token(modifier):
@@ -116,6 +131,8 @@ def fbp_shell_modifier(rig, effect_id, instance_id=""):
 
 def _shell_parameters(effect_id):
     """Return ``[(rig_property, socket_name, rna_property)]`` for one effect."""
+    if fbp_shell_is_row(effect_id):
+        return []
     definition = _geo().fbp_effect_definition(effect_id)
     result = []
     properties = bpy.types.Object.bl_rna.properties
@@ -212,8 +229,9 @@ def _build_shell_group(rig, effect_id, token):
     group["fbp_owned"] = True
     try:
         group.description = (
-            f"{label}: Frame By Plane image effect. The shading runs in the plane "
-            "material; this modifier holds its settings, order and visibility."
+            f"{label}: Frame By Plane effect. The work runs in Frame By Plane; "
+            "this modifier holds its order and visibility (and its settings, "
+            "when it shows any)."
         )
     except FBP_DATA_ERRORS:
         pass
@@ -491,8 +509,9 @@ def fbp_shell_create(rig, effect_id, instance_id=""):
     if existing is not None:
         return existing
     plane = geo._fbp_plane(rig, repair=False)
-    nodes = _effect_nodes(rig, effect_id, instance_id)
-    if plane is None or not nodes:
+    row = fbp_shell_is_row(effect_id)
+    nodes = [] if row else _effect_nodes(rig, effect_id, instance_id)
+    if plane is None or not (nodes or row):
         return None
     token = geo._fbp_effect_ref(effect_id, instance_id)
     group = _build_shell_group(rig, effect_id, token)
@@ -501,7 +520,7 @@ def fbp_shell_create(rig, effect_id, instance_id=""):
     modifier.node_group = group
     modifier.show_in_editmode = False
     parameters = {prop: rna for prop, _socket, rna in _shell_parameters(effect_id)}
-    source = nodes[0]
+    source = nodes[0] if nodes else None
     for prop_name, socket_name, identifier, _attribute in _shell_mapping(group):
         rna = parameters[prop_name]
         if rna.type == "ENUM":

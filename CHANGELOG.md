@@ -53,6 +53,7 @@ All notable public changes to Frame By Plane are documented here.
 - Every image effect has a **Mask** subpanel: the checkbox turns its mask on and off, the dropdown picks the mask type (it replaces the previous one) and the mask settings appear inline.
 - Optional effect sections (Animation, ASCII Edges, Text Matrix Playback Limit) use the same foldout: arrow, checkbox, name.
 - Image effects and masks are native modifiers: each one is a row in Properties > Modifiers whose inputs drive the material (keyframes and drivers included), in Eevee and Cycles. Copy to Selected copies them, and the Frame By Plane panel still edits them, including curves, color ramps and Grease Pencil masks. Pixelate's pixel count and the blur sample counts stay on the layer because Frame By Plane adjusts them before rendering.
+- Crop, Extend, Emission, Motion, Track to Camera and Lattice also get a row in Modifiers (Add Modifier > Image or > Mesh). The row sets their order and lets you delete them; their settings stay in the Frame By Plane panel, which shows them while the row is active.
 - The Frame By Plane effect list is gone: the panel shows the settings of the effect that is active in Properties > Modifiers, and its + button opens Add Modifier. Effect groups, solo and editing several layers at once went with the list.
 
 ### Fixes

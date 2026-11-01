@@ -206,8 +206,10 @@ def _remove_token(geo, rig, token):
 
 
 def _is_shader(geo, token):
+    """True for rows that only represent an effect: image effects, masks and
+    the layer effects (Crop, Emission...) that have no modifier of their own."""
     effect_id = geo._fbp_effect_ref_effect_id(token)
-    return geo.fbp_effect_definition(effect_id).get("kind") == "SHADER"
+    return geo.fbp_effect_definition(effect_id).get("kind") in {"SHADER", "BASE"}
 
 
 def fbp_sync_native_modifiers(rig):
