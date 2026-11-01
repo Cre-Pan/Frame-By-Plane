@@ -25,6 +25,8 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet 
 
 ### 🛠️ Fixes in 8.2.0
 
+- Scrubbing and stepping frames with Mesh effects over image effects is about ten times lighter; box and lasso select of layers without a rig no longer stall on dense Mesh effects.
+- Mesh effect materials copy Math and Mix node inputs one by one instead of repeating the first value.
 - Halftone: Color Mode and Use Source Color work again, so BW Light, BW Dark and a custom Ink Color render as expected.
 - Slice Shift: neighbouring bands move in opposite directions, so Bands has a visible effect.
 - Grain no longer writes negative colors in dark areas.

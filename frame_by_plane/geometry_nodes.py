@@ -2714,6 +2714,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
             _fbp_effect_stat_add("rigs_scanned", len(rigs))
             _fbp_effect_stat_add("camera_binding_passes")
         _fbp_sync_scene_camera_bindings(scene, rigs)
+        deferred_composite_rigs = []
 
         for rig in rigs:
             try:
@@ -2854,16 +2855,23 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         target_nodes=runtime_profile.get("frame_shader_targets", ()),
                         scene=scene,
                     )
-                if (geometry_source_sync or shader_source_sync) and not (
+                if geometry_source_sync or shader_source_sync:
                     # Composite materials mirror static socket values of the
                     # layer material; sequence timing inside them is native
-                    # animation. While playing, only Python-driven values
-                    # (keyed effect settings, Evolve, procedural frames) can
-                    # change, so a plain stack skips the ~2 ms rescan per layer.
-                    _FBP_EFFECT_PLAYBACK_ACTIVE
-                    and not (has_animated_effects or evolve_enabled or procedural_frame_sync)
-                ):
-                    _fbp_refresh_geometry_source_materials(rig)
+                    # animation. A frame change only moves values that are
+                    # keyed, driven or written from Python (effect settings,
+                    # Evolve, procedural frames), so a plain stack skips the
+                    # rescan (several ms per layer) while scrubbing or playing.
+                    if (
+                        render_guard_active
+                        or has_animated_effects
+                        or evolve_enabled
+                        or procedural_frame_sync
+                        or _fbp_layer_material_frame_dependent(rig)
+                    ):
+                        _fbp_refresh_geometry_source_materials(rig)
+                    elif not _FBP_EFFECT_PLAYBACK_ACTIVE:
+                        deferred_composite_rigs.append(rig)
 
             except FBP_DATA_ERRORS:
                 _fbp_invalidate_effect_runtime_profile(rig)
@@ -3040,12 +3048,90 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
+        if deferred_composite_rigs:
+            # Settle the skipped composites once the timeline stops moving.
+            _fbp_schedule_composite_catchup(scene, deferred_composite_rigs)
     finally:
         _FBP_EVOLVE_HANDLER_ACTIVE = False
         if profile_started:
             _fbp_effect_handler_record(
                 (time.perf_counter() - profile_started) * 1000.0
             )
+
+
+_FBP_NATIVE_TIMING_PATHS = (
+    "image_user.frame_offset", "image_user.frame_start", "image_user.frame_duration",
+)
+
+
+def _fbp_layer_material_frame_dependent(rig):
+    """True when the layer material has keys or drivers, or is a color plane
+    whose frames are written from Python, so its values move with the frame."""
+    try:
+        if bool(getattr(rig, "fbp_is_color_plane", False)):
+            return True
+        for material in _fbp_plane_materials(rig):
+            for owner in (material, getattr(material, "node_tree", None)):
+                animation = getattr(owner, "animation_data", None) if owner is not None else None
+                if animation is None:
+                    continue
+                # Sequence timing (ImageUser offsets) is animated natively in
+                # the composites too; any other key or driver moves values.
+                for curve in tuple(animation.drivers) + tuple(fbp_action_fcurves(owner) or ()):
+                    if not str(getattr(curve, "data_path", "") or "").endswith(_FBP_NATIVE_TIMING_PATHS):
+                        return True
+    except FBP_DATA_ERRORS:
+        return True
+    return False
+
+
+def _fbp_schedule_composite_catchup(scene, rigs):
+    """Refresh composite materials skipped on frame changes, once, when idle."""
+    scene_key = fbp_obj_runtime_key(scene)
+    if scene_key is None:
+        return False
+    try:
+        scene_name = str(getattr(scene, "name_full", getattr(scene, "name", "")) or "")
+    except FBP_DATA_ERRORS:
+        scene_name = ""
+    rig_keys = tuple(
+        key for key in (fbp_obj_runtime_key(rig) for rig in rigs) if key is not None
+    )
+
+    def _publish():
+        if fbp_undo_guard_active() or fbp_render_mutation_blocked():
+            return 0.20
+        if _FBP_EFFECT_PLAYBACK_ACTIVE:
+            return None
+        if not fbp_depsgraph_quiet_for(0.15):
+            return 0.10
+        current_scene = fbp_find_id_by_runtime_key(
+            getattr(bpy.data, "scenes", ()), scene_key, scene_name
+        )
+        if current_scene is None:
+            return None
+        wanted = set(rig_keys)
+        try:
+            rigs_now = _fbp_scene_effect_runtime_rigs(current_scene)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return None
+        for rig in rigs_now:
+            try:
+                if fbp_obj_runtime_key(rig) in wanted:
+                    _fbp_refresh_geometry_source_materials(rig)
+            except FBP_DATA_ERRORS:
+                continue
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        return bool(schedule_once(
+            f"effects.composite_catchup:{scene_key}",
+            _publish,
+            first_interval=0.25,
+        ))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
 
 
 def _fbp_selected_rigs_fn():
@@ -4240,7 +4326,6 @@ def _fbp_apply_lattice_camera_flatten(rig, *, scene=None, force=False):
         points_u = max(2, int(data.points_u))
         points_v = max(2, int(data.points_v))
         points_w = max(1, int(data.points_w))
-        points = data.points
         min_x, max_x = float(minimum.x), float(maximum.x)
         min_y, max_y = float(minimum.y), float(maximum.y)
         center_z = float(center_local.z)
@@ -8849,6 +8934,74 @@ def _fbp_geometry_composite_shader_tokens(rig, boundary_token):
     )
 
 
+def _fbp_paired_sockets(source_sockets, target_sockets):
+    """Yield ``(target, source)`` socket pairs that carry a default value.
+
+    A node copy has the same sockets in the same order, so they pair by
+    index. Name lookup is only the fallback: Math and Mix nodes repeat socket
+    names (both Math operands are "Value"), and matching by name copied the
+    first operand into the second.
+    """
+    try:
+        source_list = tuple(source_sockets)
+        target_list = tuple(target_sockets)
+    except FBP_DATA_ERRORS:
+        return
+    same_layout = len(source_list) == len(target_list)
+    for index, target in enumerate(target_list):
+        if not hasattr(target, "default_value"):
+            continue
+        source = source_list[index] if same_layout else None
+        if source is None or getattr(source, "identifier", None) != getattr(target, "identifier", None):
+            source = _fbp_node_socket(source_sockets, str(getattr(target, "name", "") or ""))
+        if source is None or not hasattr(source, "default_value"):
+            continue
+        yield target, source
+
+
+# (owner id, boundary token) -> material name. Each hit is re-validated, so a
+# stale entry (rename, Undo, file load) only costs one fallback scan.
+_FBP_COMPOSITE_MATERIAL_INDEX = {}
+
+
+def _fbp_composite_material_matches(material, owner_id, boundary_token):
+    try:
+        return (
+            str(material.get("fbp_effect_composite_owner_id", "") or "") == owner_id
+            and str(material.get("fbp_effect_composite_boundary", "") or "")
+            == boundary_token
+            and not bool(material.get("fbp_orphan_candidate", False))
+        )
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _fbp_find_composite_material(owner_id, boundary_token):
+    """The live composite material for one stack boundary, or ``None``.
+
+    Frame changes refresh every composite of every layer, so scanning all of
+    ``bpy.data.materials`` per boundary grew with the square of the layer
+    count. A small name index answers the common case directly.
+    """
+    key = (str(owner_id or ""), str(boundary_token or ""))
+    name = _FBP_COMPOSITE_MATERIAL_INDEX.get(key)
+    if name:
+        material = bpy.data.materials.get(name)
+        if material is not None and _fbp_composite_material_matches(material, *key):
+            return material
+        _FBP_COMPOSITE_MATERIAL_INDEX.pop(key, None)
+    for material in tuple(bpy.data.materials):
+        if _fbp_composite_material_matches(material, *key):
+            if len(_FBP_COMPOSITE_MATERIAL_INDEX) > 4096:
+                _FBP_COMPOSITE_MATERIAL_INDEX.clear()
+            try:
+                _FBP_COMPOSITE_MATERIAL_INDEX[key] = str(material.name)
+            except FBP_DATA_ERRORS:
+                pass
+            return material
+    return None
+
+
 def _fbp_geometry_composite_material(
     rig,
     effect_id,
@@ -8889,19 +9042,7 @@ def _fbp_geometry_composite_material(
             str(uv_attribute_type or "GEOMETRY"),
         )
     )
-    existing = None
-    for material in tuple(bpy.data.materials):
-        try:
-            if (
-                str(material.get("fbp_effect_composite_owner_id", "") or "") == owner_id
-                and str(material.get("fbp_effect_composite_boundary", "") or "")
-                == boundary_token
-                and not bool(material.get("fbp_orphan_candidate", False))
-            ):
-                existing = material
-                break
-        except FBP_DATA_ERRORS:
-            continue
+    existing = _fbp_find_composite_material(owner_id, boundary_token)
 
     if existing is not None:
         try:
@@ -8927,33 +9068,21 @@ def _fbp_geometry_composite_material(
                     source_node is None
                     or getattr(source_node, "bl_idname", "")
                     != getattr(node, "bl_idname", "")
+                    # Effect group nodes are synced below, by stack token.
+                    or _fbp_shader_effect_id(node)
                 ):
                     continue
                 try:
                     if hasattr(node, "image") and node.image != source_node.image:
                         node.image = source_node.image
-                    for target_input in getattr(node, "inputs", ()):
-                        source_input = _fbp_node_socket(
-                            getattr(source_node, "inputs", ()),
-                            str(getattr(target_input, "name", "") or ""),
-                        )
-                        if (
-                            source_input is None
-                            or not hasattr(target_input, "default_value")
-                        ):
-                            continue
-                        _fbp_copy_socket_default(source_input, target_input)
-                    for target_output in getattr(node, "outputs", ()):
-                        source_output = _fbp_node_socket(
-                            getattr(source_node, "outputs", ()),
-                            str(getattr(target_output, "name", "") or ""),
-                        )
-                        if (
-                            source_output is None
-                            or not hasattr(target_output, "default_value")
-                        ):
-                            continue
-                        _fbp_copy_socket_default(source_output, target_output)
+                    for target_socket, source_socket in _fbp_paired_sockets(
+                        getattr(source_node, "inputs", ()), getattr(node, "inputs", ())
+                    ):
+                        _fbp_copy_socket_default(source_socket, target_socket)
+                    for target_socket, source_socket in _fbp_paired_sockets(
+                        getattr(source_node, "outputs", ()), getattr(node, "outputs", ())
+                    ):
+                        _fbp_copy_socket_default(source_socket, target_socket)
                     source_ramp = getattr(source_node, "color_ramp", None)
                     target_ramp = getattr(node, "color_ramp", None)
                     if source_ramp is not None and target_ramp is not None:
@@ -9357,6 +9486,17 @@ def _fbp_apply_geometry_material_composites(
 
 def _fbp_refresh_geometry_source_materials(rig):
     """Refresh every Geometry Nodes material input after stack/node changes."""
+    global _FBP_MIXED_TOKENS_MEMO
+    if _FBP_MIXED_TOKENS_MEMO is not None:
+        return _fbp_refresh_geometry_source_materials_pass(rig)
+    _FBP_MIXED_TOKENS_MEMO = {}
+    try:
+        return _fbp_refresh_geometry_source_materials_pass(rig)
+    finally:
+        _FBP_MIXED_TOKENS_MEMO = None
+
+
+def _fbp_refresh_geometry_source_materials_pass(rig):
     plane = _fbp_plane(rig, repair=False)
     if plane is None:
         return False
@@ -9365,6 +9505,9 @@ def _fbp_refresh_geometry_source_materials(rig):
         modifiers = tuple(plane.modifiers)
     except FBP_DATA_ERRORS:
         return False
+    # Ensure every instance id before the first composite reads the stack
+    # order, which is memoised for the rest of this pass.
+    targets = []
     for modifier in modifiers:
         effect_id = _fbp_geometry_effect_id_for_modifier(modifier)
         node_group = getattr(modifier, "node_group", None)
@@ -9376,6 +9519,8 @@ def _fbp_refresh_geometry_source_materials(rig):
             )
             if _fbp_effect_uses_multi_instances(effect_id) else ""
         )
+        targets.append((modifier, effect_id, instance_id))
+    for modifier, effect_id, instance_id in targets:
         changed = _fbp_apply_geometry_material_composites(
             rig, modifier, effect_id, instance_id
         ) or changed
@@ -15046,13 +15191,9 @@ def _fbp_copy_shader_instance_inputs(source_node, target_node):
     if source_node is None or target_node is None:
         return False
     changed = False
-    for target in getattr(target_node, "inputs", ()):
-        source = _fbp_node_socket(
-            getattr(source_node, "inputs", ()),
-            str(getattr(target, "name", "") or ""),
-        )
-        if source is None or not hasattr(target, "default_value"):
-            continue
+    for target, source in _fbp_paired_sockets(
+        getattr(source_node, "inputs", ()), getattr(target_node, "inputs", ())
+    ):
         try:
             changed = _fbp_copy_socket_default(source, target) or changed
         except FBP_DATA_ERRORS:
@@ -17129,8 +17270,23 @@ def fbp_effect_ids_for_rig(rig, *, refresh_custom=False):
         effect_id for effect_id in FBP_3D_EFFECT_MENU_ORDER
         if fbp_effect_definition(effect_id).get("kind") == "BASE"
     )
+    # Scan the plane materials once. Shader rows of the base menu order are
+    # active exactly when a tagged node exists, which fbp_effect_is_active
+    # would otherwise find by rescanning every material node once per row.
+    material_nodes = [
+        (material, _fbp_shader_effect_nodes(material))
+        for material in _fbp_plane_materials(rig)
+    ]
+    shader_ids_present = {
+        _fbp_shader_effect_id(node)
+        for _material, tagged_nodes in material_nodes
+        for node in tagged_nodes
+    }
     for effect_id in base_effect_order:
-        if fbp_effect_is_active(rig, effect_id):
+        if fbp_effect_definition(effect_id).get("kind") == "SHADER":
+            if fbp_normalize_effect_id(effect_id) in shader_ids_present:
+                append_once(effect_id)
+        elif fbp_effect_is_active(rig, effect_id):
             append_once(effect_id)
 
     try:
@@ -17139,8 +17295,7 @@ def fbp_effect_ids_for_rig(rig, *, refresh_custom=False):
     except FBP_DATA_ERRORS:
         pass
 
-    for material in _fbp_plane_materials(rig):
-        tagged_nodes = _fbp_shader_effect_nodes(material)
+    for material, tagged_nodes in material_nodes:
         tagged_ids = {_fbp_shader_effect_id(node) for node in tagged_nodes}
         for stage in ("UV", "COLOR", "MASK"):
             for effect_id in _fbp_get_shader_stage_order(material, stage):
@@ -32098,8 +32253,29 @@ def _fbp_move_effect_ref(rig, token, direction, *, sync_items=False):
     return fbp_move_effect(rig, effect_id, direction, sync_items=sync_items)
 
 
+# Set to a dict while one refresh pass runs, so the stack order (which costs a
+# full instance-record discovery) is computed once per rig instead of once per
+# Mesh effect and stage material. No stack edits happen inside such a pass.
+_FBP_MIXED_TOKENS_MEMO = None
+
+
 def _fbp_mixed_effect_tokens(rig):
     """Return the one persisted Image / Mask / Mesh evaluation order."""
+    memo = _FBP_MIXED_TOKENS_MEMO
+    if memo is not None:
+        try:
+            key = rig.as_pointer()
+        except FBP_DATA_ERRORS:
+            key = None
+        if key is not None:
+            cached = memo.get(key)
+            if cached is None:
+                cached = memo[key] = tuple(_fbp_mixed_effect_tokens_uncached(rig))
+            return list(cached)
+    return _fbp_mixed_effect_tokens_uncached(rig)
+
+
+def _fbp_mixed_effect_tokens_uncached(rig):
     result = []
     for record in fbp_effect_instance_records_for_rig(
         rig, ensure=False, sync_storage=False

@@ -78,12 +78,19 @@ def _select_by_image_allowed(rig, by_image_with_rig):
 
 
 def _rig_wire_near_cursor(context, coord, radius):
-    """True when a visible rig wire passes within ``radius`` pixels of ``coord``."""
-    from bpy_extras.view3d_utils import location_3d_to_region_2d
+    """True when a visible rig wire passes within ``radius`` pixels of ``coord``.
+
+    Runs on every click, over every visible rig, so the wire edges are
+    projected and measured in bulk with NumPy.
+    """
+    import numpy as np
     from .builder import fbp_rig_wire_visible
 
     region = context.region
     region_data = context.region_data
+    width = float(region.width)
+    height = float(region.height)
+    perspective = np.array(region_data.perspective_matrix, dtype=np.float64)
     cx, cy = float(coord[0]), float(coord[1])
     limit = float(radius) * float(radius)
     for obj in tuple(getattr(context, "visible_objects", ()) or ()):
@@ -93,19 +100,35 @@ def _rig_wire_near_cursor(context, coord, radius):
             if bool(getattr(obj, "hide_select", False)):
                 continue
             mesh = obj.data
-            matrix = obj.matrix_world
-            points = [location_3d_to_region_2d(region, region_data, matrix @ vert.co) for vert in mesh.vertices]
-            for edge in mesh.edges:
-                a = points[edge.vertices[0]]
-                b = points[edge.vertices[1]]
-                if a is None or b is None:
-                    continue
-                dx, dy = b.x - a.x, b.y - a.y
-                length = dx * dx + dy * dy
-                t = 0.0 if length <= 1e-9 else max(0.0, min(1.0, ((cx - a.x) * dx + (cy - a.y) * dy) / length))
-                px, py = a.x + dx * t - cx, a.y + dy * t - cy
-                if px * px + py * py <= limit:
-                    return True
+            vertex_count = len(mesh.vertices)
+            edge_count = len(mesh.edges)
+            if not vertex_count or not edge_count:
+                continue
+            positions = np.empty(vertex_count * 3, dtype=np.float64)
+            mesh.vertices.foreach_get("co", positions)
+            edges = np.empty(edge_count * 2, dtype=np.int64)
+            mesh.edges.foreach_get("vertices", edges)
+            matrix = perspective @ np.array(obj.matrix_world, dtype=np.float64)
+            clip = np.c_[positions.reshape(-1, 3), np.ones(vertex_count)] @ matrix.T
+            w = clip[:, 3]
+            ahead = w > 1e-6
+            safe = np.where(ahead, w, 1.0)
+            x = (clip[:, 0] / safe + 1.0) * 0.5 * width
+            y = (clip[:, 1] / safe + 1.0) * 0.5 * height
+            edges = edges.reshape(-1, 2)
+            edges = edges[ahead[edges[:, 0]] & ahead[edges[:, 1]]]
+            if not len(edges):
+                continue
+            ax, ay = x[edges[:, 0]], y[edges[:, 0]]
+            dx, dy = x[edges[:, 1]] - ax, y[edges[:, 1]] - ay
+            length = dx * dx + dy * dy
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = np.where(length > 1e-9, ((cx - ax) * dx + (cy - ay) * dy) / length, 0.0)
+            t = np.clip(t, 0.0, 1.0)
+            px = ax + dx * t - cx
+            py = ay + dy * t - cy
+            if bool(np.any(px * px + py * py <= limit)):
+                return True
         except (*FBP_DATA_ERRORS, IndexError):
             continue
     return False

@@ -3332,6 +3332,7 @@ def _cycles_center_renderer(name, owned):
         "percentage": settings.resolution_percentage, "filepath": settings.filepath,
         "transparent": settings.film_transparent,
         "color_mode": settings.image_settings.color_mode,
+        "compositing": settings.use_compositing,
     }
     hidden_objects = [obj for obj in scene.objects if obj not in owned and not obj.hide_render]
     output = WORKDIR / f"{name.replace(' ', '_').lower()}.png"
@@ -3358,6 +3359,9 @@ def _cycles_center_renderer(name, owned):
         settings.filepath = str(output)
         settings.film_transparent = True
         settings.image_settings.color_mode = "RGBA"
+        # Earlier compositor tests leave artist nodes without a Group Output
+        # in the scene tree; with compositing on, Blender then writes nothing.
+        settings.use_compositing = False
         yield render_center
     finally:
         scene.camera = previous["camera"]
@@ -3367,6 +3371,7 @@ def _cycles_center_renderer(name, owned):
         settings.filepath = previous["filepath"]
         settings.film_transparent = previous["transparent"]
         settings.image_settings.color_mode = previous["color_mode"]
+        settings.use_compositing = previous["compositing"]
         for obj in hidden_objects:
             obj.hide_render = False
         for obj in reversed([*owned, camera]):
@@ -4975,6 +4980,145 @@ def test_effect_audit_followup_contract(_module):
     return results
 
 
+def test_composite_materials_skip_static_frames(_module):
+    """Scrubbing a plain mixed stack leaves composites alone; timing stays native.
+
+    Also pins the socket pairing used by the composite copy: Math nodes repeat
+    the "Value" input name and must still copy operand by operand.
+    """
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    builder = importlib.import_module(f"{PACKAGE}.builder")
+    scene = bpy.context.scene
+    folder = WORKDIR / "fbp_composite_sequence"
+    folder.mkdir(parents=True, exist_ok=True)
+    names = []
+    for index, color in enumerate(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0))):
+        name = f"comp_{index + 1:04d}.png"
+        names.append(name)
+        path = folder / name
+        if not path.is_file():
+            image = bpy.data.images.new(name, 16, 9, alpha=True)
+            image.generated_color = (*color, 1.0)
+            image.filepath_raw = str(path)
+            image.file_format = "PNG"
+            image.save()
+            bpy.data.images.remove(image)
+    previous_frame = scene.frame_current
+    scene.frame_set(scene.frame_start)
+    rig = builder.build_fbp_rig(bpy.context, "FBP Composite Skip", str(folder), names, (0.0, 0.0, 0.0))
+    owned = [rig, *rig.children_recursive]
+    refresh = geometry._fbp_refresh_geometry_source_materials
+    calls = []
+    try:
+        _flush_fbp_safe_tasks()
+        for effect_id in ("GAUSSIAN_BLUR", "SCULPT_WAVES"):
+            assert geometry.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+        _flush_fbp_safe_tasks()
+        base = geometry._fbp_plane_materials(rig)[0]
+        owner = geometry._fbp_effect_stack_owner_id(rig, ensure=False)
+        composites = [
+            material for material in bpy.data.materials
+            if material.get("fbp_effect_composite_owner_id", "") == owner
+        ]
+        assert composites, "a mixed stack must build composite materials"
+        assert not geometry._fbp_layer_material_frame_dependent(rig)
+
+        def offsets(material):
+            return {
+                node.name: int(node.image_user.frame_offset)
+                for node in material.node_tree.nodes
+                if node.type == "TEX_IMAGE" and node.image is not None and node.image.source == "SEQUENCE"
+            }
+
+        def counting(target_rig):
+            calls.append(target_rig)
+            return refresh(target_rig)
+
+        geometry._fbp_refresh_geometry_source_materials = counting
+        for frame in (scene.frame_start + 2, scene.frame_start + 5, scene.frame_start + 1):
+            scene.frame_set(frame)
+            source = offsets(base)
+            for material in composites:
+                for name, value in offsets(material).items():
+                    if name in source:
+                        assert value == source[name], (material.name, frame, value, source[name])
+        assert not calls, "plain stacks must not rescan composites on every frame"
+        assert geometry._FBP_COMPOSITE_MATERIAL_INDEX, "composite lookups must be indexed"
+
+        tree = bpy.data.node_groups.new("FBP Socket Pairing", "ShaderNodeTree")
+        try:
+            source_math = tree.nodes.new("ShaderNodeMath")
+            target_math = tree.nodes.new("ShaderNodeMath")
+            source_math.inputs[0].default_value = 0.25
+            source_math.inputs[1].default_value = 0.75
+            for target, source_socket in geometry._fbp_paired_sockets(source_math.inputs, target_math.inputs):
+                geometry._fbp_copy_socket_default(source_socket, target)
+            assert abs(target_math.inputs[0].default_value - 0.25) < 1e-6
+            assert abs(target_math.inputs[1].default_value - 0.75) < 1e-6
+        finally:
+            bpy.data.node_groups.remove(tree)
+    finally:
+        geometry._fbp_refresh_geometry_source_materials = refresh
+        scene.frame_set(previous_frame)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"composites": len(composites)}
+
+
+def test_rigless_gesture_select_dense_mesh(_module):
+    """Box and lasso pick a rig-less layer quickly even with a dense Mesh effect."""
+    geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    gesture = importlib.import_module(f"{PACKAGE}.rig_gesture_select")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Gesture Dense")
+    owned = [rig, *rig.children_recursive]
+    camera = bpy.data.objects.new("FBP Gesture Camera", bpy.data.cameras.new("FBP Gesture Camera"))
+    scene.collection.objects.link(camera)
+    camera.location = (0.0, -8.0, 0.0)
+    camera.rotation_euler = (math.pi / 2.0, 0.0, 0.0)
+    owned.append(camera)
+    try:
+        rig.fbp_rig_visible = False
+        assert geometry.fbp_add_effect(
+            rig, "GLASS", select_object_mask_helper=False, inherit_active_group=False,
+        )
+        bpy.context.view_layer.update()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        plane_eval = rig.fbp_plane_target.evaluated_get(depsgraph)
+        polygons = len(plane_eval.data.polygons)
+        camera_eval = camera.evaluated_get(depsgraph)
+        width, height = 800, 600
+        perspective = camera_eval.calc_matrix_camera(depsgraph, x=width, y=height) @ camera_eval.matrix_world.inverted()
+        region = types.SimpleNamespace(width=width, height=height)
+        region_data = types.SimpleNamespace(perspective_matrix=perspective)
+        started = time.perf_counter()
+        center = gesture.fbp_rigless_layers_in_gesture(
+            bpy.context, region, region_data, box=(330, 470, 230, 370), layers=[rig],
+        )
+        corner = gesture.fbp_rigless_layers_in_gesture(
+            bpy.context, region, region_data, box=(0, 30, 0, 30), layers=[rig],
+        )
+        lasso = gesture.fbp_rigless_layers_in_gesture(
+            bpy.context, region, region_data,
+            lasso=[(330, 230), (470, 230), (470, 370), (330, 370)], layers=[rig],
+        )
+        seconds = time.perf_counter() - started
+        assert center == [rig] and lasso == [rig] and corner == [], (center, corner, lasso)
+        assert seconds < 1.0, f"three gestures took {seconds:.2f} s on {polygons} faces"
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"polygons": polygons, "seconds": round(seconds, 3)}
+
+
 def test_color_key_merges_chroma_key(_module):
     """Color Key filters the layer color, and old Chroma Key files convert to it."""
     geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -5946,6 +6090,8 @@ def run_background():
             ("knit_crochet_stitches", test_knit_crochet_stitches),
             ("effect_audit_fixes_contract", test_effect_audit_fixes_contract),
             ("effect_audit_followup_contract", test_effect_audit_followup_contract),
+            ("composite_materials_skip_static_frames", test_composite_materials_skip_static_frames),
+            ("rigless_gesture_select_dense_mesh", test_rigless_gesture_select_dense_mesh),
             ("color_key_merges_chroma_key", test_color_key_merges_chroma_key),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),
@@ -5955,7 +6101,11 @@ def run_background():
             ("save_reopen", test_save_reopen),
             ("tiny_render", test_tiny_render),
         )
+        # FBP_TEST_ONLY="name1,name2" runs just those tests (local debugging).
+        only = {item.strip() for item in os.environ.get("FBP_TEST_ONLY", "").split(",") if item.strip()}
         for name, function in tests:
+            if only and name not in only:
+                continue
             record(name, lambda function=function: function(module))
     finish(module)
 

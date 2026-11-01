@@ -19,6 +19,13 @@ All notable public changes to Frame By Plane are documented here.
 - Image effects that sample the layer several times (Gaussian, Directional and Triangle Blur, Oil Paint, Edge Distance Mask, Tilt Shift, Rim, Edge Work and the other edge effects) no longer slow playback down. Their samples now follow the image sequence with Blender's own animation instead of being updated from Python on every frame, which cost about 25 ms per layer and frame for a blur.
 - New **Light Playback** in the Timeline's **Playback** popover, on by default. While the timeline plays, Mesh effects that took more than 4 ms to evaluate are paused in the viewport and come back as soon as playback stops. **All Mesh Effects** pauses every Mesh effect, **Off** plays everything at full cost. Renders, the effect's eye toggle and its settings do not change, and a file saved during playback opens with every effect shown.
 - During playback, layers without keyed or evolving effect settings skip the per-frame refresh of Mesh effect materials.
+- Scrubbing and stepping through frames is much lighter with Mesh effects on top of image effects: layers without keyed, driven or evolving settings no longer recopy their Mesh effect materials on every frame (about 10 ms per layer), and catch up once when the timeline stops. Their image sequence timing already follows the frame natively. With 8 such layers a frame change went from about 80 ms to about 8 ms of Python work.
+- Box and lasso select of layers without a rig no longer stall on layers with dense Mesh effects (Crystal, Broken Glass, reliefs): the gesture now samples all faces at once, about 60 times faster on an 8,000-face plane. Click selection measures the rig wires of all layers in one pass too.
+
+### Cleanup
+
+- Mesh effect materials copied the first input of nodes with repeated input names (Math, Mix) into the second one; they now copy input by input.
+- Removed unused compositor helpers and leftover code, and the 7.1.x audit, performance and test reports (their history is in Git and the release notes in `release-notes/`).
 
 ### Lattice puppet pins
 

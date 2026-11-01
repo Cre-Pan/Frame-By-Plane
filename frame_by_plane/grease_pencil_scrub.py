@@ -5874,7 +5874,6 @@ class FBP_OT_AddScrubBookmark(Operator):
         return getattr(context, "scene", None) is not None
 
     def invoke(self, context, _event):
-        target_frame = int(context.scene.frame_current) if int(self.frame) == _FRAME_NUMBER_MIN else int(self.frame)
         if not str(self.name or "").strip():
             self.name = _next_bookmark_default_label(context.scene)
         return context.window_manager.invoke_props_dialog(self, width=320)
