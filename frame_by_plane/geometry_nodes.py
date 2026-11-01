@@ -9692,6 +9692,80 @@ def _fbp_update_text_matrix_charset(node_group, rig):
     return changed
 
 
+# Values Frame By Plane last wrote to a mesh effect's modifier inputs, keyed by
+# (modifier pointer, rig property). An input that moved since was edited in
+# the Modifiers panel and goes back to the layer setting. Inputs whose value
+# is computed (quality per viewport/render, animated Evolution, Mesh Wiggle's
+# W) are left out: editing them there would be undone by the next update.
+_FBP_GEOMETRY_INPUT_WRITTEN = {}
+
+
+def _fbp_remember_geometry_input(rig, modifier, prop_name, value):
+    try:
+        key = (int(modifier.as_pointer()), str(prop_name))
+        raw = _fbp_cast_effect_value(prop_name, getattr(rig, prop_name))
+    except FBP_DATA_ERRORS:
+        return
+    if _fbp_effect_values_equal(raw, value):
+        _FBP_GEOMETRY_INPUT_WRITTEN[key] = tuple(value) if hasattr(value, "__len__") and not isinstance(value, str) else value
+    else:
+        _FBP_GEOMETRY_INPUT_WRITTEN.pop(key, None)
+
+
+def fbp_pull_geometry_modifier_edits(rig):
+    """Write mesh effect inputs edited in the Modifiers panel to the layer."""
+    if not rig or not _FBP_GEOMETRY_INPUT_WRITTEN:
+        return 0
+    pulled = 0
+    for effect_id in tuple(fbp_effect_ids_for_rig(rig)):
+        definition = fbp_effect_definition(effect_id)
+        if definition.get("kind") != "GEOMETRY" or bool(definition.get("custom", False)):
+            continue
+        modifier = fbp_find_effect_modifier(rig, effect_id)
+        node_group = getattr(modifier, "node_group", None) if modifier else None
+        if node_group is None:
+            continue
+        try:
+            pointer = int(modifier.as_pointer())
+        except FBP_DATA_ERRORS:
+            continue
+        inputs = None
+        for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
+            key = (pointer, prop_name)
+            if key not in _FBP_GEOMETRY_INPUT_WRITTEN:
+                continue
+            if inputs is None:
+                inputs = _fbp_interface_inputs(node_group)
+            identifier = str(_fbp_interface_socket_for_name(inputs, socket_name) or "")
+            current = _fbp_modifier_input_get(modifier, identifier) if identifier else None
+            if current is None:
+                continue
+            if hasattr(current, "__len__") and not isinstance(current, str):
+                current = tuple(current)
+            if _fbp_effect_values_equal(current, _FBP_GEOMETRY_INPUT_WRITTEN[key]):
+                continue
+            _FBP_GEOMETRY_INPUT_WRITTEN[key] = current
+            try:
+                rna = rig.bl_rna.properties.get(prop_name)
+                value = current
+                if rna is not None and rna.type == "BOOLEAN":
+                    value = bool(value)
+                elif rna is not None and rna.type == "INT":
+                    value = int(round(float(value)))
+                elif rna is not None and rna.type == "ENUM":
+                    continue
+                elif rna is not None and getattr(rna, "is_array", False):
+                    value = tuple(value)[:int(rna.array_length)]
+                else:
+                    value = float(value)
+                if not _fbp_effect_values_equal(getattr(rig, prop_name), value):
+                    setattr(rig, prop_name, value)
+                    pulled += 1
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f"Could not apply {prop_name} from its modifier", exc)
+    return pulled
+
+
 def fbp_update_geometry_effect(
     rig,
     effect_id,
@@ -9782,6 +9856,7 @@ def fbp_update_geometry_effect(
             value,
             interface_inputs,
         ) or updated
+        _fbp_remember_geometry_input(rig, modifier, prop_name, value)
 
     if definition.get("camera_aware"):
         updated = _fbp_bind_geometry_camera_input(

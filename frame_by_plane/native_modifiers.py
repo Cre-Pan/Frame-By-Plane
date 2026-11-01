@@ -153,32 +153,26 @@ def fbp_native_snapshot(rig):
 
 
 def fbp_native_hide_inputs(rig):
-    """Keep effect settings out of the native modifier rows.
+    """Hide the inputs of the internal mixed-stack stage rows.
 
-    Every Frame By Plane effect is edited from its Frame By Plane panel (or
-    the node editor): the rows only carry order, eye, camera and delete. The
-    inputs stay on the modifier, so the panel, drivers and keyframes still
-    reach them; Blender just stops drawing them a second time.
+    Stages only carry the material an image effect hands to the next mesh
+    effect; nothing in them is meant to be edited. Effect rows keep every
+    input: they are the effect's controls.
     """
     changed = False
-    seen = set()
     geo = _geo()
     plane = geo._fbp_plane(rig, repair=False)
-    modifiers = [modifier for _token, modifier in fbp_native_modifier_entries(rig)]
-    if plane is not None:
-        try:
-            modifiers.extend(geo._fbp_mixed_shader_stage_modifiers(plane))
-        except FBP_DATA_ERRORS:
-            pass
-    for modifier in modifiers:
+    if plane is None:
+        return False
+    try:
+        stages = tuple(geo._fbp_mixed_shader_stage_modifiers(plane))
+    except FBP_DATA_ERRORS:
+        return False
+    for modifier in stages:
         group = getattr(modifier, "node_group", None)
         if group is None:
             continue
         try:
-            pointer = int(group.as_pointer())
-            if pointer in seen:
-                continue
-            seen.add(pointer)
             for item in group.interface.items_tree:
                 if (
                     getattr(item, "item_type", "") == "SOCKET"
@@ -187,6 +181,23 @@ def fbp_native_hide_inputs(rig):
                     and not bool(getattr(item, "hide_in_modifier", True))
                 ):
                     item.hide_in_modifier = True
+                    changed = True
+        except FBP_DATA_ERRORS:
+            continue
+    # A short-lived build hid the effect rows' inputs too: show them again.
+    stage_pointers = {int(item.as_pointer()) for item in stages}
+    for _token, modifier in fbp_native_modifier_entries(rig):
+        if int(modifier.as_pointer()) in stage_pointers:
+            continue
+        group = getattr(modifier, "node_group", None)
+        try:
+            for item in (group.interface.items_tree if group is not None else ()):
+                if (
+                    getattr(item, "item_type", "") == "SOCKET"
+                    and getattr(item, "in_out", "") == "INPUT"
+                    and bool(getattr(item, "hide_in_modifier", False))
+                ):
+                    item.hide_in_modifier = False
                     changed = True
         except FBP_DATA_ERRORS:
             continue
@@ -586,7 +597,10 @@ def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
             continue
         try:
             from .effect_shells import fbp_shell_sync_values
+            from .geometry_nodes import fbp_pull_geometry_modifier_edits
             fbp_shell_sync_values(rig)
+            # Mesh effects: inputs edited in the Modifiers panel.
+            fbp_pull_geometry_modifier_edits(rig)
         except (ImportError, *FBP_DATA_ERRORS) as exc:
             fbp_warn("Could not sync an effect modifier with its layer", exc)
         if _SIGNATURES.get(_rig_key(rig)) == _plane_signature(obj):
