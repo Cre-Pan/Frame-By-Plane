@@ -48,6 +48,119 @@ def fbp_apply_creation_orientation(rig, scene):
         rig.fbp_is_vertical = True
     return True
 
+
+FBP_CAMERA_PLACEMENT_DEFAULT_DEPTH = 10.0
+
+
+class FBPLayerPlacement:
+    """Where newly imported layers are generated.
+
+    With a scene camera every layer is centred on the camera frame, faces the
+    camera and steps away from it along the view axis, whatever the camera's
+    height, rotation or parenting. The depth of the first layer is the 3D
+    cursor's distance along that axis, so a camera made 10 units from the
+    cursor gives exactly the classic layout. Without a camera the legacy
+    cursor + global axis layout is kept.
+    """
+
+    def __init__(self, scene, camera=None, anchor=None):
+        self.scene = scene
+        cursor = getattr(getattr(scene, "cursor", None), "location", None)
+        self.anchor = mathutils.Vector(anchor if anchor is not None else (cursor if cursor is not None else (0.0, 0.0, 0.0)))
+        self.camera = None
+        self.rotation = None
+        self.forward = None
+        self.origin = None
+        self.vertical = not fbp_scene_orientation_is_horizontal(scene)
+        if camera is not None and getattr(camera, "type", "") == 'CAMERA':
+            try:
+                self._bind_camera(camera)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, ZeroDivisionError) as exc:
+                _fbp_warn("Could not place new layers in front of the camera", exc)
+                self.camera = None
+
+    def _bind_camera(self, camera):
+        cam_loc, cam_rot, _cam_scale = camera.matrix_world.decompose()
+        cam_rot.normalize()
+        forward = cam_rot @ mathutils.Vector((0.0, 0.0, -1.0))
+        if forward.length < 1e-8:
+            return
+        forward.normalize()
+        data = camera.data
+        clip_start = max(1e-4, float(getattr(data, "clip_start", 0.1) or 0.1))
+        clip_end = max(clip_start * 2.0, float(getattr(data, "clip_end", 1000.0) or 1000.0))
+        depth = float((self.anchor - cam_loc).dot(forward))
+        if not (clip_start * 1.5 < depth < clip_end * 0.95):
+            depth = min(max(FBP_CAMERA_PLACEMENT_DEFAULT_DEPTH, clip_start * 2.0), clip_end * 0.5)
+
+        # Frame centre in camera space: honours lens shift and sensor fit.
+        frame = data.view_frame(scene=self.scene)
+        center_x = sum(v.x for v in frame) / 4.0
+        center_y = sum(v.y for v in frame) / 4.0
+        if getattr(data, "type", 'PERSP') == 'ORTHO':
+            local = mathutils.Vector((center_x, center_y, -depth))
+        else:
+            frame_z = abs(frame[0].z) if abs(frame[0].z) > 1e-8 else 1.0
+            local = mathutils.Vector((center_x, center_y, -frame_z)) * (depth / frame_z)
+        self.camera = camera
+        self.rotation = cam_rot
+        self.forward = forward
+        self.origin = cam_loc + cam_rot @ local
+        # The layer stands vertically when the camera looks mostly sideways.
+        self.vertical = abs(forward.z) < math.sqrt(0.5)
+
+    @property
+    def uses_camera(self):
+        return self.camera is not None
+
+    def location(self, offset=0.0):
+        """World location of a layer ``offset`` units behind the first one."""
+        offset = float(offset or 0.0)
+        if self.uses_camera:
+            return self.origin + self.forward * offset
+        location = self.anchor.copy()
+        if self.vertical:
+            location.y += offset
+        else:
+            location.z -= offset
+        return location
+
+    def orient(self, rig):
+        """Turn a freshly built, unparented rig towards the camera."""
+        if not rig or not self.uses_camera:
+            return False
+        try:
+            mode = str(getattr(rig, "rotation_mode", 'XYZ') or 'XYZ')
+            if mode == 'QUATERNION':
+                rig.rotation_quaternion = self.rotation.copy()
+            elif mode == 'AXIS_ANGLE':
+                axis, angle = self.rotation.to_axis_angle()
+                rig.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
+            else:
+                rig.rotation_euler = self.rotation.to_euler(mode)
+            rig.fbp_is_vertical = bool(self.vertical)
+            return True
+        except FBP_DATA_IO_ERRORS:
+            return False
+
+    def place(self, rig, offset=0.0):
+        """Move and orient an already built rig."""
+        if not rig:
+            return False
+        try:
+            rig.location = self.location(offset)
+        except FBP_DATA_IO_ERRORS:
+            return False
+        self.orient(rig)
+        return True
+
+
+def fbp_layer_placement(scene, camera=None, anchor=None):
+    """Return the placement for new layers; ``camera`` defaults to scene.camera."""
+    if camera is None:
+        camera = getattr(scene, "camera", None)
+    return FBPLayerPlacement(scene, camera, anchor)
+
 def camera_ratio_scale(context):
     """Return local XY scale matching the active render/camera ratio."""
     sc = context.scene if context else bpy.context.scene

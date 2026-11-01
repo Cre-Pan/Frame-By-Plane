@@ -797,7 +797,7 @@ def fbp_collect_mixed_folder_entries(base, *, separate_sequences=False, reverse_
 def fbp_build_project_folder(
     context, folder_path, parent_collection, cursor_loc, depth_counter,
     color_seed=0, depth=0, color_state=None, separate_sequences=False,
-    reverse_sequences=False, content_cache=None,
+    reverse_sequences=False, content_cache=None, placement=None,
 ):
     """Build one filesystem folder and its children as collection hierarchy.
 
@@ -844,14 +844,12 @@ def fbp_build_project_folder(
 
     generated = []
     local_variant = 0
+    if placement is None:
+        from .builder import fbp_layer_placement
+        placement = fbp_layer_placement(context.scene, None, cursor_loc)
 
     for layer_name, grouped_files, _is_sequence in grouped_layers:
-        rig_loc = cursor_loc.copy()
-        offset = context.scene.fbp_layer_offset * depth_counter[0]
-        if fbp_scene_orientation_is_horizontal(context.scene):
-            rig_loc.z -= offset
-        else:
-            rig_loc.y += offset
+        rig_loc = placement.location(context.scene.fbp_layer_offset * depth_counter[0])
         rig = build_fbp_rig(
             context,
             layer_name,
@@ -863,6 +861,7 @@ def fbp_build_project_folder(
             color_variant_index=base_variant + local_variant,
             follow_collection_color=follows_collection,
         )
+        placement.orient(rig)
         rig.fbp_depth_order = depth_counter[0]
         depth_counter[0] += 1
         local_variant += 1
@@ -877,6 +876,7 @@ def fbp_build_project_folder(
                 separate_sequences=separate_sequences,
                 reverse_sequences=reverse_sequences,
                 content_cache=content_cache,
+                placement=placement,
             )
         )
 
