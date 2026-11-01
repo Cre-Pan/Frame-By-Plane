@@ -3899,7 +3899,9 @@ class FBP_PT_CameraSettings(Panel):
         row = adaptive_row(setup, context)
         row.prop(sc, "fbp_gen_camera", text="Create Camera", toggle=True, icon='CAMERA_DATA')
         row.prop(sc, "fbp_cam_pivot", text="Cursor Pivot", toggle=True, icon='PIVOT_CURSOR')
-        setup.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row = setup.row(align=True)
+        row.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row.prop(sc, "fbp_fit_mode", text="")
         setup.prop(sc, "fbp_camera_fit_source_aspect", text="Use Source Aspect on Import", icon='IMAGE_DATA')
 
 
@@ -4491,22 +4493,16 @@ def draw_effects_ui(layout, context, *, force_view=None):
             "3D" if active_category == "3D" else "2D"
         ))
     )
-    stack_box = layout.box()
-    configure_layout(stack_box)
-    stack_header = section_header(
-        stack_box,
-        "Effects",
-        icon="MODIFIER",
-        count=len(visible_effects),
-    )
-    stack_header.menu("OBJECT_MT_modifier_add", text="", icon="ADD")
-    hint_row(
-        stack_box,
-        "Add, reorder and hide effects in Properties > Modifiers"
-        if visible_effects else "No effects. Add one from Add Modifier.",
-        icon="INFO",
-        disabled=True,
-    )
+    # The modifier rows below are the stack (add, reorder, hide, delete):
+    # this panel only needs to say what to click when nothing is open.
+    if not active_effect:
+        hint_row(
+            layout,
+            "Click an effect in the modifier list to edit it here"
+            if visible_effects else "Add an effect from Add Modifier > Image, Mask or Mesh",
+            icon="INFO",
+            disabled=True,
+        )
 
     if active_effect:
         source_rig = fbp_effect_source_rig(selected_rigs, active_effect)
@@ -4893,9 +4889,13 @@ class FBP_PT_Sequence(Panel):
 
         row = box.row(align=False)
         if len(selected_rigs) > 1:
-            row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row.operator_menu_enum("fbp.multi_fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         else:
-            row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row.operator_menu_enum("fbp.fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         row.operator("fbp.popup_transform", text="Transform", icon=ui_icon("sequence.transform"))
         row.operator("fbp.open_effects_masks", text="Effects & Masks", icon='SHADERFX')
         if mixed_backends:

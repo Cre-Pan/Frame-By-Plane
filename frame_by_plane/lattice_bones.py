@@ -427,6 +427,34 @@ def ensure_armature(rig, helper, plane):
     return armature
 
 
+def leave_edit_mode(armature, mode='POSE'):
+    """Commit the armature's Edit Mode (new bones get their pose bones). Return True when not editing."""
+    if armature is None or str(getattr(armature, "mode", "OBJECT")) != 'EDIT':
+        return True
+    context = bpy.context
+    view_layer = context.view_layer
+    previous_active = view_layer.objects.active
+    hidden = bool(armature.hide_get())
+    try:
+        if hidden:
+            armature.hide_set(False)
+        view_layer.objects.active = armature
+        with context.temp_override(active_object=armature, object=armature, edit_object=armature,
+                                   selected_objects=[armature], selected_editable_objects=[armature]):
+            bpy.ops.object.mode_set(mode=mode if mode in {'POSE', 'OBJECT'} else 'POSE')
+    except FBP_DATA_ERRORS:
+        pass
+    finally:
+        try:
+            if previous_active is not None and previous_active is not armature:
+                view_layer.objects.active = previous_active
+            if hidden:
+                armature.hide_set(True)
+        except FBP_DATA_ERRORS:
+            pass
+    return str(getattr(armature, "mode", "OBJECT")) != 'EDIT'
+
+
 @contextmanager
 def editing(armature):
     """Edit the armature's rest bones, then return to the mode it was in."""

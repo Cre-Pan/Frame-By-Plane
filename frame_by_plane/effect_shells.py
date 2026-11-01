@@ -10,9 +10,10 @@ like any other modifier, and the material does the actual shading in Eevee and
 Cycles.
 
 Every built-in image effect and mask gets a shell as soon as it is added, so
-Blender's Modifiers panel is the only effect stack. The Frame By Plane panel
-draws the active effect's extra controls (curves, ramps, images, Grease Pencil
-editing) and routes its plain settings to the same modifier inputs.
+Blender's Modifiers panel is the only effect stack, and the shell carries every
+setting of the effect panel: values the material reads, choices (dropdowns),
+settings Frame By Plane converts and the Animate section. Only curves, ramps,
+images and Grease Pencil editing stay in the Frame By Plane panel.
 """
 
 from __future__ import annotations
@@ -58,6 +59,23 @@ _SHELL_SOCKET_KEY = "fbp_shell_socket"
 # Attribute names are stored in 64-byte buffers, and the RNA path to a modifier
 # input contains the modifier name.
 _MAX_ATTRIBUTE_NAME = 63
+
+
+_OBJECT_RNA_CACHE = {}
+
+
+def _object_rna(prop_name):
+    """Object RNA property by name, cached (a lookup scans ~1300 properties).
+
+    Only hits are cached; the cache resets on (un)registration so a reload
+    never keeps stale RNA structs.
+    """
+    rna = _OBJECT_RNA_CACHE.get(prop_name)
+    if rna is None:
+        rna = bpy.types.Object.bl_rna.properties.get(prop_name)
+        if rna is not None:
+            _OBJECT_RNA_CACHE[prop_name] = rna
+    return rna
 
 
 def _geo():
@@ -135,12 +153,12 @@ def _shell_parameters(effect_id):
         return []
     definition = _geo().fbp_effect_definition(effect_id)
     result = []
-    properties = bpy.types.Object.bl_rna.properties
     for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
         if prop_name in _SHELL_DERIVED_PROPERTIES:
             continue
-        rna = properties.get(prop_name)
-        if rna is None or rna.type not in {"FLOAT", "INT", "BOOLEAN", "ENUM"}:
+        rna = _object_rna(prop_name)
+        # Choices are dropdowns on the layer: Frame By Plane converts them.
+        if rna is None or rna.type not in {"FLOAT", "INT", "BOOLEAN"}:
             continue
         if getattr(rna, "is_array", False) and not _is_color(rna):
             continue
@@ -229,28 +247,402 @@ def _build_shell_group(rig, effect_id, token):
     group["fbp_owned"] = True
     try:
         group.description = (
-            f"{label}: Frame By Plane effect. The work runs in Frame By Plane; "
-            "this modifier holds its order and visibility (and its settings, "
-            "when it shows any)."
+            f"{label}: Frame By Plane effect. Its settings are this modifier's "
+            "inputs; the image work runs in the layer material."
         )
     except FBP_DATA_ERRORS:
         pass
-    interface = group.interface
-    interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
-    interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
-    group_input = group.nodes.new("NodeGroupInput")
-    group_input.location = (-200.0, 0.0)
-    group_output = group.nodes.new("NodeGroupOutput")
-    group_output.location = (200.0, 0.0)
-    group.links.new(group_input.outputs["Geometry"], group_output.inputs["Geometry"])
-    mapping = []
-    for prop_name, socket_name, rna in _shell_parameters(effect_id):
-        socket = _new_input(interface, rna, socket_name)
-        mapping.append((prop_name, socket_name, socket.identifier, _kind(rna)))
-    group["fbp_shell_mapping"] = [
-        "\x1f".join(entry) for entry in mapping
-    ]
+    _populate_shell_group(group, effect_id)
     return group
+
+
+_SHELL_UI_KEY = "fbp_shell_ui"
+# 2: every panel control (choices, extra settings, Animate) is an input.
+_SHELL_UI_VERSION = 2
+_SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
+_SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
+_SHELL_LAYER_TYPES = {"FLOAT", "INT", "BOOLEAN", "ENUM"}
+# Animate section: (animation key suffix, input name), in panel order.
+_SHELL_ANIMATE = (
+    ("evolve", "Animate"),
+    ("seed", "Seed"),
+    ("step", "Stepped"),
+    ("speed", "Speed"),
+    ("unique", "Unique per Layer"),
+)
+
+
+def _shell_animate_properties(effect_id, definition):
+    """Return ``{rig_property: (suffix, label)}`` for an animatable effect."""
+    if not definition.get("evolve_property"):
+        return {}
+    geo = _geo()
+    result = {}
+    for suffix, label in _SHELL_ANIMATE:
+        if suffix == "speed":
+            prop_name = geo._fbp_effect_evolution_speed_property(effect_id, definition)
+        else:
+            prop_name = geo._fbp_animation_key(effect_id, suffix)
+        result[prop_name] = (suffix, label)
+    return result
+
+
+def _shell_layout_entries(effect_id):
+    """Every control of the effect panel that a modifier input can hold.
+
+    Returns ``[(prop, socket_name, rna, storage, label, animate, section)]``. Storage is
+    ``MATERIAL`` for values read by the material (``socket_name`` is the
+    effect node socket), ``RIG`` for layer settings Frame By Plane converts
+    (choices, sample counts, extra settings) and ``ANIM:<suffix>`` for the
+    Animate section of a repeatable effect.
+    """
+    geo = _geo()
+    definition = geo.fbp_effect_definition(effect_id) or {}
+    material = {prop: socket for prop, socket, _rna in _shell_parameters(effect_id)}
+    animate = _shell_animate_properties(effect_id, definition)
+    names = list((definition.get("property_map", {}) or {}).keys())
+    names.extend(definition.get("extra_properties", ()) or ())
+    names.extend(animate)
+    plain, animated = [], {}
+    for prop_name in dict.fromkeys(str(name or "") for name in names):
+        rna = _object_rna(prop_name)
+        if rna is None or rna.type not in _SHELL_LAYER_TYPES:
+            continue
+        if getattr(rna, "is_array", False) and not _is_color(rna):
+            continue
+        if rna.type == "ENUM" and (
+            not len(rna.enum_items) or bool(getattr(rna, "is_enum_flag", False))
+        ):
+            continue
+        if prop_name in material:
+            socket_name, storage = material[prop_name], "MATERIAL"
+        else:
+            socket_name, storage = "", "RIG"
+        if prop_name in animate:
+            suffix, label = animate[prop_name]
+            if storage == "RIG" and geo._fbp_effect_uses_multi_instances(effect_id):
+                storage = f"ANIM:{suffix}"
+            animated[suffix] = (prop_name, socket_name, rna, storage, label, True)
+            continue
+        label = geo._fbp_effect_property_label(definition, prop_name, None) or str(rna.name)
+        plain.append((prop_name, socket_name, rna, storage, label, False))
+    # Same sections as the Frame By Plane panel (Wave, Direction & Mix, ...).
+    section = {}
+    for title, _icon, group_names in geo._FBP_EFFECT_UI_GROUPS.get(effect_id, ()):
+        for name in group_names:
+            section.setdefault(name, title)
+    order = list(dict.fromkeys(section.values()))
+    plain.sort(key=lambda entry: (
+        order.index(section[entry[0]]) + 1 if entry[0] in section else 0
+    ))
+    plain = [entry + (section.get(entry[0], ""),) for entry in plain]
+    taken = {animated[suffix][4] for suffix in animated}
+    plain = [
+        entry[:4] + (f"Base {entry[4]}" if entry[4] in taken else entry[4],) + entry[5:]
+        for entry in plain
+    ]
+    plain.extend(
+        animated[suffix] + ("Animate",) for suffix, _label in _SHELL_ANIMATE if suffix in animated
+    )
+    return plain
+
+
+def _new_menu_input(group, rna, name, panel):
+    """A dropdown input with the choices of one enum setting."""
+    socket = group.interface.new_socket(
+        name=name, in_out="INPUT", socket_type="NodeSocketMenu", parent=panel
+    )
+    switch = group.nodes.new("GeometryNodeMenuSwitch")
+    switch.data_type = "INT"
+    switch["fbp_shell_usage_node"] = True
+    switch.hide = True
+    switch.enum_items.clear()
+    for item in rna.enum_items:
+        switch.enum_items.new(str(item.name))
+    for index, item_socket in enumerate(tuple(switch.inputs)[1:1 + len(rna.enum_items)]):
+        try:
+            item_socket.default_value = index
+        except FBP_DATA_ERRORS:
+            pass
+    try:
+        socket.description = str(rna.description or "")
+    except FBP_DATA_ERRORS:
+        pass
+    return socket, switch
+
+
+def _menu_name(rna, identifier):
+    for item in rna.enum_items:
+        if item.identifier == identifier:
+            return str(item.name)
+    return str(rna.enum_items[0].name) if len(rna.enum_items) else ""
+
+
+def _menu_identifier(rna, name):
+    for item in rna.enum_items:
+        if str(item.name) == str(name):
+            return item.identifier
+    return str(rna.enum_items[0].identifier) if len(rna.enum_items) else ""
+
+
+def _populate_shell_group(group, effect_id):
+    """(Re)build every input of one shell from the effect's panel controls.
+
+    The inputs carry the panel's names and order, choices are dropdowns and
+    an animatable effect ends with an Animate panel whose checkbox turns the
+    animation on. Blender greys out inputs that do not reach the output, and
+    the inputs only feed the material, so a tiny chain (sum them, store and
+    drop a throwaway attribute) marks every input as used.
+    """
+    interface = group.interface
+    nodes, links = group.nodes, group.links
+    for item in tuple(interface.items_tree):
+        if getattr(item, "item_type", "") == "PANEL":
+            continue
+        if getattr(item, "socket_type", "") == "NodeSocketGeometry":
+            continue
+        interface.remove(item)
+    for item in tuple(interface.items_tree):
+        if getattr(item, "item_type", "") == "PANEL":
+            interface.remove(item)
+    nodes.clear()
+    if not any(
+        getattr(item, "socket_type", "") == "NodeSocketGeometry" and item.in_out == "INPUT"
+        for item in interface.items_tree
+    ):
+        interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    if not any(
+        getattr(item, "socket_type", "") == "NodeSocketGeometry" and item.in_out == "OUTPUT"
+        for item in interface.items_tree
+    ):
+        interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    group_input = nodes.new("NodeGroupInput")
+    group_input.location = (-400.0, 0.0)
+    group_output = nodes.new("NodeGroupOutput")
+    group_output.location = (400.0, 0.0)
+    mapping, layer_mapping, used = [], [], []
+    panels = {}
+    for prop_name, socket_name, rna, storage, label, animate, section in _shell_layout_entries(effect_id):
+        panel = None
+        if section:
+            panel = panels.get(section)
+            if panel is None:
+                panel = panels[section] = interface.new_panel(section, default_closed=False)
+        if rna.type == "ENUM":
+            socket, switch = _new_menu_input(group, rna, label, panel)
+            used.append((socket.identifier, switch))
+            kind = "ENUM"
+        else:
+            socket = _new_input(interface, rna, label, panel)
+            used.append((socket.identifier, None))
+            kind = _kind(rna)
+        if animate and label == "Animate":
+            try:
+                socket.is_panel_toggle = True
+            except FBP_DATA_ERRORS:
+                pass
+        if storage == "MATERIAL":
+            mapping.append((prop_name, socket_name, socket.identifier, kind))
+        else:
+            layer_mapping.append((prop_name, storage, socket.identifier, kind))
+    group["fbp_shell_mapping"] = ["\x1f".join(entry) for entry in mapping]
+    group[_SHELL_LAYER_MAPPING_KEY] = ["\x1f".join(entry) for entry in layer_mapping]
+    geometry_in = group_input.outputs[0]
+    total = None
+    for index, (identifier, switch) in enumerate(used):
+        socket = next((out for out in group_input.outputs if out.identifier == identifier), None)
+        if socket is None:
+            continue
+        if switch is not None:
+            switch.location = (-200.0, -60.0 - 30.0 * index)
+            links.new(socket, switch.inputs[0])
+            socket = switch.outputs[0]
+        if total is None:
+            total = socket
+            continue
+        add = nodes.new("ShaderNodeMath")
+        add.operation = "ADD"
+        add.hide = True
+        add.location = (0.0, -60.0 - 30.0 * index)
+        links.new(total, add.inputs[0])
+        links.new(socket, add.inputs[1])
+        total = add.outputs[0]
+    if total is None:
+        links.new(geometry_in, group_output.inputs[0])
+    else:
+        store = nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = "FLOAT"
+        store.domain = "POINT"
+        store.inputs["Name"].default_value = _SHELL_USAGE_ATTRIBUTE
+        store.location = (0.0, 120.0)
+        drop = nodes.new("GeometryNodeRemoveAttribute")
+        drop.inputs["Name"].default_value = _SHELL_USAGE_ATTRIBUTE
+        drop.location = (200.0, 120.0)
+        links.new(geometry_in, store.inputs["Geometry"])
+        links.new(total, store.inputs["Value"])
+        links.new(store.outputs["Geometry"], drop.inputs["Geometry"])
+        links.new(drop.outputs["Geometry"], group_output.inputs[0])
+    group[_SHELL_UI_KEY] = _SHELL_UI_VERSION
+    return group
+
+
+def _shell_needs_rebuild(group):
+    try:
+        return group is not None and int(group.get(_SHELL_UI_KEY, 0) or 0) < _SHELL_UI_VERSION
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _shell_layer_mapping(group):
+    try:
+        raw = tuple(group.get(_SHELL_LAYER_MAPPING_KEY, ()) or ())
+    except FBP_DATA_ERRORS:
+        return ()
+    return tuple(
+        tuple(parts) for parts in (str(entry).split("\x1f") for entry in raw)
+        if len(parts) == 4
+    )
+
+
+def _layer_owner(rig, effect_id, instance_id, prop_name, storage):
+    """Return ``(owner, attribute)`` holding one layer setting."""
+    geo = _geo()
+    if storage.startswith("ANIM:"):
+        item = geo.fbp_effect_instance_animation_item(rig, effect_id, instance_id, ensure=False)
+        if item is not None:
+            return item, storage[5:]
+        return rig, prop_name
+    if instance_id and geo._fbp_effect_uses_multi_instances(effect_id):
+        channel = geo.fbp_effect_instance_channel(rig, effect_id, instance_id, prop_name, ensure=False)
+        if channel is not None:
+            return channel, geo._fbp_instance_channel_value_attr(channel)
+    return rig, prop_name
+
+
+def _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind):
+    """One layer setting as the value its modifier input holds."""
+    owner, attr = _layer_owner(rig, effect_id, instance_id, prop_name, storage)
+    try:
+        value = getattr(owner, attr)
+    except FBP_DATA_ERRORS:
+        return None
+    if kind == "ENUM":
+        return _menu_name(rna, str(value))
+    if kind == "COLOR":
+        return _color4(value)
+    if kind == "BOOLEAN":
+        return bool(value)
+    if kind == "INT":
+        return int(value)
+    return float(value)
+
+
+def _set_layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind, value):
+    """Write one modifier value to the layer, running its usual update."""
+    owner, attr = _layer_owner(rig, effect_id, instance_id, prop_name, storage)
+    if kind == "ENUM":
+        value = _menu_identifier(rna, value)
+    elif kind == "COLOR":
+        value = tuple(value)[:int(rna.array_length)]
+    elif kind == "BOOLEAN":
+        value = bool(value)
+    elif kind == "INT":
+        value = int(value)
+    else:
+        value = float(value)
+    try:
+        if _comparable(getattr(owner, attr)) == _comparable(value):
+            return False
+        setattr(owner, attr, value)
+        return True
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn(f"Could not apply {prop_name} from its modifier", exc)
+        return False
+
+
+def _remove_shell_attribute_nodes(rig, token):
+    geo = _geo()
+    effect_id, instance_id = geo._fbp_effect_ref_parts(token)
+    for node in _effect_nodes(rig, effect_id, instance_id):
+        tree = node.id_data
+        for attr_node in tuple(tree.nodes):
+            try:
+                if str(attr_node.get(_SHELL_ATTR_NODE_KEY, "") or "") == token:
+                    tree.nodes.remove(attr_node)
+            except FBP_DATA_ERRORS:
+                continue
+
+
+def _init_shell_values(rig, modifier, effect_id, instance_id, source=None):
+    """Fill a new or rebuilt shell from the material and the layer."""
+    group = modifier.node_group
+    parameters = {prop: rna for prop, _socket, rna in _shell_parameters(effect_id)}
+    for prop_name, socket_name, identifier, _kind_name in _shell_mapping(group):
+        rna = parameters.get(prop_name)
+        if rna is None:
+            continue
+        socket = source.inputs.get(socket_name) if source is not None else None
+        if socket is not None and not socket.is_linked:
+            value = socket.default_value
+        else:
+            value = getattr(rig, prop_name, 0.0)
+        _set_modifier_input(modifier, identifier, rna, value)
+    for prop_name, storage, identifier, kind in _shell_layer_mapping(group):
+        rna = _object_rna(prop_name)
+        value = _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind)
+        if value is None:
+            continue
+        try:
+            _geo()._fbp_modifier_input_set(modifier, identifier, _color4(value) if kind == "COLOR" else value)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn(f"Could not set shell input {identifier}", exc)
+    group[_SHELL_SYNCED_KEY] = _shell_snapshot(modifier)
+
+
+def _shell_snapshot(modifier):
+    group = modifier.node_group
+    identifiers = [entry[2] for entry in _shell_mapping(group)]
+    identifiers.extend(entry[2] for entry in _shell_layer_mapping(group))
+    return {identifier: _modifier_input(modifier, identifier) for identifier in identifiers}
+
+
+def _rebuild_shell(rig, token, modifier):
+    """Bring a shell saved by an older version up to the current inputs."""
+    geo = _geo()
+    effect_id, instance_id = geo._fbp_effect_ref_parts(token)
+    nodes = _effect_nodes(rig, effect_id, instance_id)
+    # Keep the values the material shows before its links are dropped.
+    source_values = {}
+    if nodes:
+        parameters = {prop: rna for prop, _socket, rna in _shell_parameters(effect_id)}
+        for prop_name, socket_name, identifier, _kind_name in _shell_mapping(modifier.node_group):
+            value = _modifier_input(modifier, identifier)
+            if value is not None and prop_name in parameters:
+                source_values[socket_name] = value
+    _remove_shell_attribute_nodes(rig, token)
+    _populate_shell_group(modifier.node_group, effect_id)
+    source = nodes[0] if nodes else None
+    if source is not None:
+        for socket_name, value in source_values.items():
+            socket = source.inputs.get(socket_name)
+            if socket is None:
+                continue
+            try:
+                if hasattr(value, "__len__"):
+                    value = tuple(value)[:len(tuple(socket.default_value))]
+                socket.default_value = value
+            except FBP_DATA_ERRORS:
+                pass
+    _init_shell_values(rig, modifier, effect_id, instance_id, source)
+    # Choices left the material links: let the layer write them again.
+    for prop_name, storage, _identifier, kind in _shell_layer_mapping(modifier.node_group):
+        if kind != "ENUM" or storage != "RIG":
+            continue
+        try:
+            setattr(rig, prop_name, getattr(rig, prop_name))
+        except FBP_DATA_ERRORS:
+            pass
+    return True
 
 
 def _shell_mapping(group):
@@ -482,6 +874,13 @@ def fbp_shell_maintain(rig):
             changed = True
         except FBP_DATA_ERRORS:
             continue
+    for token, modifier in fbp_shell_modifiers(rig):
+        # Files saved before every panel control became an input.
+        if _shell_needs_rebuild(modifier.node_group):
+            try:
+                changed = bool(_rebuild_shell(rig, token, modifier)) or changed
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn("Could not update the effect's modifier inputs", exc)
     if fbp_shell_modifiers(rig):
         changed = bool(fbp_shell_refresh_links(rig)) or changed
         changed = bool(fbp_shell_reposition(rig)) or changed
@@ -519,26 +918,13 @@ def fbp_shell_create(rig, effect_id, instance_id=""):
     modifier = plane.modifiers.new(str(definition.get("label", effect_id)), "NODES")
     modifier.node_group = group
     modifier.show_in_editmode = False
-    parameters = {prop: rna for prop, _socket, rna in _shell_parameters(effect_id)}
-    source = nodes[0] if nodes else None
-    for prop_name, socket_name, identifier, _attribute in _shell_mapping(group):
-        rna = parameters[prop_name]
-        if rna.type == "ENUM":
-            value = getattr(rig, prop_name, None)
-        else:
-            socket = source.inputs.get(socket_name)
-            value = socket.default_value if socket is not None and not socket.is_linked else getattr(rig, prop_name, 0.0)
-        _set_modifier_input(modifier, identifier, rna, value)
+    _init_shell_values(rig, modifier, effect_id, instance_id, nodes[0] if nodes else None)
     viewport, render = (
         geo.fbp_effect_visible_state(rig, effect_id, instance_id),
         geo.fbp_effect_render_visible_state(rig, effect_id, instance_id),
     )
     modifier.show_viewport = bool(viewport)
     modifier.show_render = bool(render)
-    group[_SHELL_SYNCED_KEY] = {
-        identifier: _modifier_input(modifier, identifier)
-        for _prop, _socket, identifier, _kind_name in _shell_mapping(group)
-    }
     fbp_shell_refresh_links(rig)
     fbp_shell_reposition(rig)
     plane.update_tag()
@@ -646,7 +1032,9 @@ _SHELL_SYNCED_KEY = "fbp_shell_synced"
 
 
 def _comparable(value):
-    if hasattr(value, "__len__") and not isinstance(value, str):
+    if isinstance(value, str):
+        return value
+    if hasattr(value, "__len__"):
         return tuple(round(float(v), 5) for v in tuple(value)[:4])
     try:
         return round(float(value), 5)
@@ -658,7 +1046,7 @@ def _socket_as_modifier_value(rna, socket):
     value = socket.default_value
     if _is_color(rna):
         return _color4(value)
-    if rna.type in {"ENUM", "INT"}:
+    if rna.type == "INT":
         return int(round(float(value)))
     if rna.type == "BOOLEAN":
         return bool(float(value) >= 0.5)
@@ -678,9 +1066,9 @@ def fbp_shell_sync_values(rig):
     moved = 0
     for token, modifier in fbp_shell_modifiers(rig):
         effect_id, instance_id = geo._fbp_effect_ref_parts(token)
-        nodes = _effect_nodes(rig, effect_id, instance_id)
-        if not nodes:
+        if _shell_needs_rebuild(modifier.node_group):
             continue
+        nodes = _effect_nodes(rig, effect_id, instance_id)
         parameters = {prop: rna for prop, _socket, rna in _shell_parameters(effect_id)}
         try:
             synced = dict(modifier.node_group.get(_SHELL_SYNCED_KEY, {}) or {})
@@ -688,7 +1076,9 @@ def fbp_shell_sync_values(rig):
             synced = {}
         to_layer = {}
         stored = {}
-        for prop_name, socket_name, identifier, _kind_name in _shell_mapping(modifier.node_group):
+        for prop_name, socket_name, identifier, _kind_name in (
+            _shell_mapping(modifier.node_group) if nodes else ()
+        ):
             rna = parameters.get(prop_name)
             socket = nodes[0].inputs.get(socket_name)
             if rna is None or socket is None:
@@ -706,14 +1096,11 @@ def fbp_shell_sync_values(rig):
                 except FBP_DATA_ERRORS:
                     material_value = None
                 if material_value is not None and _comparable(material_value) != last:
-                    if rna.type == "ENUM":
-                        material_value = rna.enum_items[
-                            max(0, min(int(material_value), len(rna.enum_items) - 1))
-                        ].identifier
                     _set_modifier_input(modifier, identifier, rna, material_value)
                     current = _modifier_input(modifier, identifier)
                     moved += 1
             stored[identifier] = current
+        moved += _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored)
         if to_layer:
             moved += len(to_layer)
             for node in nodes:
@@ -729,11 +1116,47 @@ def fbp_shell_sync_values(rig):
                     except FBP_DATA_ERRORS:
                         pass
             _write_layer_values(rig, effect_id, instance_id, to_layer, parameters)
+        for node in nodes:
+            # Samples or a gating input edited or keyed in the Modifiers
+            # panel: keep reading exactly the texture taps the values need.
+            try:
+                geo._fbp_sync_runtime_mutes(rig, effect_id, node)
+            except FBP_DATA_ERRORS:
+                pass
         if stored != synced:
             try:
                 modifier.node_group[_SHELL_SYNCED_KEY] = stored
             except FBP_DATA_ERRORS:
                 pass
+    return moved
+
+
+def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
+    """Two-way sync of the inputs that mirror layer settings (see above)."""
+    geo = _geo()
+    moved = 0
+    for prop_name, storage, identifier, kind in _shell_layer_mapping(modifier.node_group):
+        rna = _object_rna(prop_name)
+        if rna is None:
+            continue
+        current = _modifier_input(modifier, identifier)
+        if current is None:
+            continue
+        layer = _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind)
+        last = synced.get(identifier)
+        last = _comparable(last) if last is not None else None
+        if last is not None and _comparable(current) != last:
+            moved += bool(_set_layer_value(
+                rig, effect_id, instance_id, prop_name, storage, rna, kind, current
+            ))
+        elif layer is not None and _comparable(layer) != _comparable(current):
+            try:
+                geo._fbp_modifier_input_set(modifier, identifier, layer)
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f"Could not set shell input {identifier}", exc)
+            current = _modifier_input(modifier, identifier)
+            moved += 1
+        stored[identifier] = current
     return moved
 
 
@@ -836,13 +1259,12 @@ def fbp_shell_layout(layout, rig, effect_id, instance_id=""):
         return layout
     geo = _geo()
     handles, labels = {}, {}
-    properties = bpy.types.Object.bl_rna.properties
     for prop_name, socket_name, identifier, _kind in _shell_mapping(modifier.node_group):
         handle = geo._fbp_modifier_input_handle(modifier, identifier)
         if handle is None:
             continue
         handles[prop_name] = handle
-        rna = properties.get(prop_name)
+        rna = _object_rna(prop_name)
         labels[prop_name] = str(getattr(rna, "name", "") or socket_name)
     if not handles:
         return layout
@@ -854,8 +1276,10 @@ classes = ()
 
 
 def register():
+    _OBJECT_RNA_CACHE.clear()
     register_classes(classes)
 
 
 def unregister():
+    _OBJECT_RNA_CACHE.clear()
     unregister_classes(classes)

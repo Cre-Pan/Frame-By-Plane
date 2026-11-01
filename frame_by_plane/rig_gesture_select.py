@@ -106,44 +106,59 @@ def _project(points, perspective, width, height):
 
 
 def _plane_samples(plane_eval, matrix, perspective, width, height):
-    """World-projected pixels and UVs sampled over the evaluated plane."""
+    """World-projected pixels and UVs sampled over the evaluated plane.
+
+    Works on the mesh's loop triangles in bulk: Mesh effects (Broken Glass,
+    Crystal, remeshed reliefs) give planes thousands of faces, and walking them
+    one polygon at a time took seconds per gesture. Each triangle gets a
+    sample grid sized to its on-screen footprint.
+    """
     mesh = plane_eval.data
     uv_layer = mesh.uv_layers.get("UVMap") or mesh.uv_layers.active
     if uv_layer is None:
         return None, None
+    mesh.calc_loop_triangles()
+    count = len(mesh.loop_triangles)
+    if not count:
+        return None, None
+    loops = np.empty(count * 3, dtype=np.int64)
+    mesh.loop_triangles.foreach_get("loops", loops)
+    vertex_of_loop = np.empty(len(mesh.loops), dtype=np.int64)
+    mesh.loops.foreach_get("vertex_index", vertex_of_loop)
+    positions = np.empty(len(mesh.vertices) * 3, dtype=np.float64)
+    mesh.vertices.foreach_get("co", positions)
+    loop_uvs = np.empty(len(mesh.loops) * 2, dtype=np.float64)
+    uv_layer.data.foreach_get("uv", loop_uvs)
+    world = np.array(matrix, dtype=np.float64)
+    positions = positions.reshape(-1, 3)
+    positions_world = (np.c_[positions, np.ones(len(positions))] @ world.T)[:, :3]
+    corners = positions_world[vertex_of_loop[loops]].reshape(count, 3, 3)
+    corner_uvs = loop_uvs.reshape(-1, 2)[loops].reshape(count, 3, 2)
+
+    projected = _project(corners.reshape(-1, 3), perspective, width, height).reshape(count, 3, 2)
+    with np.errstate(invalid="ignore"):
+        span = np.nanmax(projected, axis=1) - np.nanmin(projected, axis=1)
+        size = np.nanmax(span, axis=1)
+    size = np.where(np.isfinite(size), size, 64.0)
+    steps_per_tri = np.clip((size / _SAMPLE_SPACING_PX).astype(np.int64), 2, _MAX_SAMPLES)
+
     pixels_out = []
     uvs_out = []
-    world = np.array(matrix, dtype=np.float64)
-    for polygon in mesh.polygons:
-        loops = list(polygon.loop_indices)
-        corners = np.array([tuple(mesh.vertices[mesh.loops[loop].vertex_index].co) for loop in loops])
-        corner_uvs = np.array([tuple(uv_layer.data[loop].uv) for loop in loops])
-        corners_world = np.c_[corners, np.ones(len(corners))] @ world.T
-        projected = _project(corners_world[:, :3], perspective, width, height)
-        span = np.nanmax(projected, axis=0) - np.nanmin(projected, axis=0) if np.isfinite(projected).any() else None
-        size = float(np.nanmax(span)) if span is not None and np.isfinite(span).all() else 64.0
-        count = int(max(4, min(_MAX_SAMPLES, size / _SAMPLE_SPACING_PX)))
-        steps = (np.arange(count) + 0.5) / count
-        s, t = np.meshgrid(steps, steps)
+    for steps in np.unique(steps_per_tri):
+        chosen = steps_per_tri == steps
+        grid = (np.arange(steps) + 0.5) / steps
+        s, t = np.meshgrid(grid, grid)
         s = s.ravel()
         t = t.ravel()
-        for tri in range(1, len(loops) - 1):
-            # Fold the square grid into the triangle (reflect s + t > 1).
-            fold = s + t > 1.0
-            a = np.where(fold, 1.0 - s, s)
-            b = np.where(fold, 1.0 - t, t)
-            c = 1.0 - a - b
-            local = (
-                np.outer(c, corners[0]) + np.outer(a, corners[tri]) + np.outer(b, corners[tri + 1])
-            )
-            uv = (
-                np.outer(c, corner_uvs[0]) + np.outer(a, corner_uvs[tri]) + np.outer(b, corner_uvs[tri + 1])
-            )
-            points = (np.c_[local, np.ones(len(local))] @ world.T)[:, :3]
-            pixels_out.append(_project(points, perspective, width, height))
-            uvs_out.append(uv)
-    if not pixels_out:
-        return None, None
+        # Fold the square grid into the triangle (reflect s + t > 1).
+        fold = s + t > 1.0
+        a = np.where(fold, 1.0 - s, s)
+        b = np.where(fold, 1.0 - t, t)
+        weights = np.stack((1.0 - a - b, a, b), axis=1)  # (samples, 3)
+        points = np.einsum("sk,tkd->tsd", weights, corners[chosen]).reshape(-1, 3)
+        uv = np.einsum("sk,tkd->tsd", weights, corner_uvs[chosen]).reshape(-1, 2)
+        pixels_out.append(_project(points, perspective, width, height))
+        uvs_out.append(uv)
     return np.vstack(pixels_out), np.vstack(uvs_out)
 
 
