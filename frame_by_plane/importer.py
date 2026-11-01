@@ -19,7 +19,7 @@ from .runtime import (
     fbp_warn,
 )
 from .materials import do_update_emission, do_update_opacity
-from .builder import build_fbp_rig, fbp_scene_orientation_is_horizontal
+from .builder import build_fbp_rig
 from .layers import (
     get_or_create_child_collection,
     set_collection_color_tag,
