@@ -13,7 +13,7 @@ from pathlib import Path
 from array import array
 import os
 import copy
-from collections import deque
+from collections import OrderedDict, deque
 import importlib
 import json
 import math
@@ -2362,12 +2362,16 @@ def _fbp_schedule_effect_quality_refresh(scene=None):
 @persistent
 def fbp_effect_playback_pre(scene, depsgraph=None):
     """Apply playback-specific quality contracts for all active effects."""
-    del depsgraph
+    playback_depsgraph = depsgraph
     global _FBP_EFFECT_PLAYBACK_ACTIVE
     _FBP_EFFECT_PLAYBACK_ACTIVE = True
     # Keyframes may have been added since the previous playback session. Build
     # one fresh property map now, then reuse it throughout playback.
     _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()
+    try:
+        fbp_suspend_heavy_effects_for_playback(scene, playback_depsgraph)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not pause heavy effects for playback", exc)
     _fbp_schedule_effect_quality_refresh(scene)
 
 
@@ -2377,7 +2381,154 @@ def fbp_effect_playback_post(scene, depsgraph=None):
     del depsgraph
     global _FBP_EFFECT_PLAYBACK_ACTIVE
     _FBP_EFFECT_PLAYBACK_ACTIVE = False
+    try:
+        fbp_restore_playback_suspended_effects()
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not restore effects paused for playback", exc)
     _fbp_schedule_effect_quality_refresh(scene)
+
+
+# Light Playback: Mesh effects whose last viewport evaluation took longer than
+# this are switched off in the viewport while the timeline plays. Render
+# visibility, stored effect visibility and the effect settings never change.
+FBP_PLAYBACK_LIGHT_THRESHOLD_MS = 4.0
+FBP_PLAYBACK_SUSPENDED_KEY = "fbp_playback_suspended_modifiers"
+
+
+def fbp_playback_light_mode(scene):
+    try:
+        mode = str(getattr(scene, "fbp_playback_light_mode", "HEAVY") or "HEAVY").upper()
+    except FBP_DATA_ERRORS:
+        mode = "HEAVY"
+    return mode if mode in {"OFF", "HEAVY", "ALL"} else "HEAVY"
+
+
+def _fbp_playback_suspend_candidates(plane, mode, depsgraph=None):
+    """Viewport-visible Mesh effect modifiers worth pausing on ``plane``."""
+    names = []
+    evaluated_modifiers = None
+    if mode == "HEAVY":
+        # Blender records the evaluation time on the evaluated copy only.
+        try:
+            evaluated_modifiers = plane.evaluated_get(depsgraph).modifiers if depsgraph else None
+        except FBP_DATA_ERRORS:
+            evaluated_modifiers = None
+    for modifier in tuple(getattr(plane, "modifiers", ()) or ()):
+        try:
+            if getattr(modifier, "type", "") != "NODES" or not bool(modifier.show_viewport):
+                continue
+            if not _fbp_geometry_effect_id_for_modifier(modifier):
+                continue
+            if mode == "HEAVY":
+                timed = evaluated_modifiers.get(modifier.name) if evaluated_modifiers is not None else None
+                cost_ms = float(getattr(timed or modifier, "execution_time", 0.0) or 0.0) * 1000.0
+                if cost_ms < FBP_PLAYBACK_LIGHT_THRESHOLD_MS:
+                    continue
+            names.append(str(modifier.name))
+        except FBP_DATA_ERRORS:
+            continue
+    return names
+
+
+def fbp_suspend_heavy_effects_for_playback(scene, depsgraph=None):
+    """Pause heavy Mesh effects in the viewport for the length of playback."""
+    mode = fbp_playback_light_mode(scene)
+    if mode == "OFF" or scene is None:
+        return 0
+    if depsgraph is None and mode == "HEAVY":
+        try:
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+        except FBP_DATA_ERRORS:
+            depsgraph = None
+    try:
+        from .layers import iter_scene_fbp_rigs
+        rigs = tuple(iter_scene_fbp_rigs(scene))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return 0
+    suspended = 0
+    for rig in rigs:
+        plane = _fbp_plane(rig, repair=False)
+        if plane is None:
+            continue
+        names = _fbp_playback_suspend_candidates(plane, mode, depsgraph)
+        if not names:
+            continue
+        try:
+            previous = [str(name) for name in plane.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()]
+            plane[FBP_PLAYBACK_SUSPENDED_KEY] = sorted(set(previous) | set(names))
+            for name in names:
+                modifier = plane.modifiers.get(name)
+                if modifier is not None:
+                    modifier.show_viewport = False
+                    suspended += 1
+        except FBP_DATA_ERRORS:
+            continue
+    return suspended
+
+
+def fbp_playback_suspended_modifier(plane, modifier_name):
+    try:
+        return str(modifier_name) in {
+            str(name) for name in plane.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()
+        }
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_forget_playback_suspended_modifier(plane, modifier_name):
+    """The user changed this effect's visibility: playback no longer owns it."""
+    try:
+        names = [str(name) for name in plane.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()]
+        if str(modifier_name) not in names:
+            return False
+        names.remove(str(modifier_name))
+        if names:
+            plane[FBP_PLAYBACK_SUSPENDED_KEY] = names
+        else:
+            del plane[FBP_PLAYBACK_SUSPENDED_KEY]
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_draw_playback_light_settings(self, context):
+    """Light Playback row in the Timeline's Playback popover."""
+    scene = getattr(context, "scene", None)
+    if scene is None or not hasattr(scene, "fbp_playback_light_mode"):
+        return
+    layout = self.layout
+    layout.separator()
+    layout.prop(scene, "fbp_playback_light_mode", text="Light Playback")
+
+
+def _fbp_playback_popover():
+    return getattr(bpy.types, "TIME_PT_playback", None)
+
+
+def fbp_restore_playback_suspended_effects():
+    """Show every effect paused by Light Playback again.
+
+    The paused modifier names live on the plane, so a file saved while the
+    timeline was playing is repaired on load as well.
+    """
+    restored = 0
+    for obj in tuple(getattr(bpy.data, "objects", ()) or ()):
+        try:
+            if FBP_PLAYBACK_SUSPENDED_KEY not in obj:
+                continue
+            names = [str(name) for name in obj.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()]
+            del obj[FBP_PLAYBACK_SUSPENDED_KEY]
+        except FBP_DATA_ERRORS:
+            continue
+        for name in names:
+            try:
+                modifier = obj.modifiers.get(name)
+                if modifier is not None and not bool(modifier.show_viewport):
+                    modifier.show_viewport = True
+                    restored += 1
+            except FBP_DATA_ERRORS:
+                continue
+    return restored
 
 def _fbp_effect_runtime_value(rig, effect_id, prop_name, value, scene=None, node=None):
     effect_id = fbp_normalize_effect_id(effect_id)
@@ -2563,6 +2714,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
             _fbp_effect_stat_add("rigs_scanned", len(rigs))
             _fbp_effect_stat_add("camera_binding_passes")
         _fbp_sync_scene_camera_bindings(scene, rigs)
+        deferred_composite_rigs = []
 
         for rig in rigs:
             try:
@@ -2704,7 +2856,22 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         scene=scene,
                     )
                 if geometry_source_sync or shader_source_sync:
-                    _fbp_refresh_geometry_source_materials(rig)
+                    # Composite materials mirror static socket values of the
+                    # layer material; sequence timing inside them is native
+                    # animation. A frame change only moves values that are
+                    # keyed, driven or written from Python (effect settings,
+                    # Evolve, procedural frames), so a plain stack skips the
+                    # rescan (several ms per layer) while scrubbing or playing.
+                    if (
+                        render_guard_active
+                        or has_animated_effects
+                        or evolve_enabled
+                        or procedural_frame_sync
+                        or _fbp_layer_material_frame_dependent(rig)
+                    ):
+                        _fbp_refresh_geometry_source_materials(rig)
+                    elif not _FBP_EFFECT_PLAYBACK_ACTIVE:
+                        deferred_composite_rigs.append(rig)
 
             except FBP_DATA_ERRORS:
                 _fbp_invalidate_effect_runtime_profile(rig)
@@ -2881,12 +3048,90 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
+        if deferred_composite_rigs:
+            # Settle the skipped composites once the timeline stops moving.
+            _fbp_schedule_composite_catchup(scene, deferred_composite_rigs)
     finally:
         _FBP_EVOLVE_HANDLER_ACTIVE = False
         if profile_started:
             _fbp_effect_handler_record(
                 (time.perf_counter() - profile_started) * 1000.0
             )
+
+
+_FBP_NATIVE_TIMING_PATHS = (
+    "image_user.frame_offset", "image_user.frame_start", "image_user.frame_duration",
+)
+
+
+def _fbp_layer_material_frame_dependent(rig):
+    """True when the layer material has keys or drivers, or is a color plane
+    whose frames are written from Python, so its values move with the frame."""
+    try:
+        if bool(getattr(rig, "fbp_is_color_plane", False)):
+            return True
+        for material in _fbp_plane_materials(rig):
+            for owner in (material, getattr(material, "node_tree", None)):
+                animation = getattr(owner, "animation_data", None) if owner is not None else None
+                if animation is None:
+                    continue
+                # Sequence timing (ImageUser offsets) is animated natively in
+                # the composites too; any other key or driver moves values.
+                for curve in tuple(animation.drivers) + tuple(fbp_action_fcurves(owner) or ()):
+                    if not str(getattr(curve, "data_path", "") or "").endswith(_FBP_NATIVE_TIMING_PATHS):
+                        return True
+    except FBP_DATA_ERRORS:
+        return True
+    return False
+
+
+def _fbp_schedule_composite_catchup(scene, rigs):
+    """Refresh composite materials skipped on frame changes, once, when idle."""
+    scene_key = fbp_obj_runtime_key(scene)
+    if scene_key is None:
+        return False
+    try:
+        scene_name = str(getattr(scene, "name_full", getattr(scene, "name", "")) or "")
+    except FBP_DATA_ERRORS:
+        scene_name = ""
+    rig_keys = tuple(
+        key for key in (fbp_obj_runtime_key(rig) for rig in rigs) if key is not None
+    )
+
+    def _publish():
+        if fbp_undo_guard_active() or fbp_render_mutation_blocked():
+            return 0.20
+        if _FBP_EFFECT_PLAYBACK_ACTIVE:
+            return None
+        if not fbp_depsgraph_quiet_for(0.15):
+            return 0.10
+        current_scene = fbp_find_id_by_runtime_key(
+            getattr(bpy.data, "scenes", ()), scene_key, scene_name
+        )
+        if current_scene is None:
+            return None
+        wanted = set(rig_keys)
+        try:
+            rigs_now = _fbp_scene_effect_runtime_rigs(current_scene)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return None
+        for rig in rigs_now:
+            try:
+                if fbp_obj_runtime_key(rig) in wanted:
+                    _fbp_refresh_geometry_source_materials(rig)
+            except FBP_DATA_ERRORS:
+                continue
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        return bool(schedule_once(
+            f"effects.composite_catchup:{scene_key}",
+            _publish,
+            first_interval=0.25,
+        ))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
 
 
 def _fbp_selected_rigs_fn():
@@ -4081,7 +4326,6 @@ def _fbp_apply_lattice_camera_flatten(rig, *, scene=None, force=False):
         points_u = max(2, int(data.points_u))
         points_v = max(2, int(data.points_v))
         points_w = max(1, int(data.points_w))
-        points = data.points
         min_x, max_x = float(minimum.x), float(maximum.x)
         min_y, max_y = float(minimum.y), float(maximum.y)
         center_z = float(center_local.z)
@@ -6924,6 +7168,41 @@ def _fbp_frame_stack_native_timing(material):
     return timing
 
 
+_FBP_FRAME_STACK_IMAGE_NAMES = {}
+
+
+def _fbp_frame_stack_find_image(tag, owner):
+    """Return the layer's generated Frame Stack image, remembering its name.
+
+    Scanning ``bpy.data.images`` on every frame change costs more than the
+    rest of the sync once a file holds many images.
+    """
+    key = (tag, owner)
+    name = _FBP_FRAME_STACK_IMAGE_NAMES.get(key)
+    if name is not None:
+        candidate = bpy.data.images.get(name)
+        try:
+            if (
+                candidate is not None
+                and bool(candidate.get(tag, False))
+                and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
+            ):
+                return candidate
+        except FBP_DATA_ERRORS:
+            pass
+        _FBP_FRAME_STACK_IMAGE_NAMES.pop(key, None)
+    for candidate in bpy.data.images:
+        if (
+            bool(candidate.get(tag, False))
+            and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
+        ):
+            if len(_FBP_FRAME_STACK_IMAGE_NAMES) >= 1024:
+                _FBP_FRAME_STACK_IMAGE_NAMES.clear()
+            _FBP_FRAME_STACK_IMAGE_NAMES[key] = candidate.name
+            return candidate
+    return None
+
+
 def _fbp_frame_stack_table_image(rig, timing):
     """Write the sequence timing table read by the Frame Stack group.
 
@@ -6940,15 +7219,8 @@ def _fbp_frame_stack_table_image(rig, timing):
     rows = max(1, -(-len(files) // width))
     owner = str(getattr(plane, "name", "") or "")
     name = f"FBP Frame Stack Timing • {owner}"
-    image = None
     try:
-        for candidate in bpy.data.images:
-            if (
-                bool(candidate.get("fbp_frame_stack_timing", False))
-                and str(candidate.get("fbp_effect_material_owner", "") or "") == owner
-            ):
-                image = candidate
-                break
+        image = _fbp_frame_stack_find_image("fbp_frame_stack_timing", owner)
         if image is None:
             image = bpy.data.images.new(name, width, rows, alpha=True, float_buffer=True, is_data=True)
             image.use_fake_user = False
@@ -6973,6 +7245,418 @@ def _fbp_frame_stack_table_image(rig, timing):
         fbp_warn("Could not write the Frame Stack timing table", exc)
         return None, 1
     return image, rows
+
+
+# Frame Stack light path: one small thumbnail per slice, packed into one
+# stack image. Thumbnails are decoded with OpenImageIO (no datablocks, so it
+# is safe from render handlers) and kept in a byte-budgeted cache, so a
+# drawing is read from disk once per session and size instead of once per
+# slice as a full-resolution float buffer.
+_FBP_FRAME_STACK_THUMBS = OrderedDict()
+_FBP_FRAME_STACK_THUMB_BYTES = [0]
+_FBP_FRAME_STACK_THUMB_BUDGET = 256 * 1024 * 1024
+_FBP_FRAME_STACK_PATHS_CACHE = {}
+_FBP_FRAME_STACK_CELLS_CACHE = {}
+_FBP_FRAME_STACK_CANVASES = {}
+_FBP_FRAME_STACK_IMAGE_STATE = {}
+_FBP_FRAME_STACK_OCIO = {}
+_FBP_FRAME_STACK_FAILED_PATHS = {}
+
+
+def _fbp_frame_stack_source_paths(material):
+    """Return ``(frame_number_base, paths)`` of a native sequence, cached."""
+    try:
+        key = (
+            int(material.as_pointer()),
+            str(material.get("fbp_native_source_sequence_json", "") or ""),
+            int(material.get("fbp_native_frame_number_base", 1) or 1),
+        )
+    except FBP_DATA_ERRORS:
+        return None
+    if key in _FBP_FRAME_STACK_PATHS_CACHE:
+        return _FBP_FRAME_STACK_PATHS_CACHE[key]
+    result = None
+    try:
+        from . import native_backend as _native
+        directory, files = _native._source_sequence_from_material(material)
+        if directory and files:
+            base = int(_native._material_frame_number_base(material))
+            result = (
+                base,
+                tuple(os.path.abspath(str(_native._media_path(directory, name))) for name in files),
+            )
+    except (ImportError, AttributeError, OSError, *FBP_DATA_ERRORS):
+        result = None
+    if len(_FBP_FRAME_STACK_PATHS_CACHE) >= 256:
+        _FBP_FRAME_STACK_PATHS_CACHE.clear()
+    _FBP_FRAME_STACK_PATHS_CACHE[key] = result
+    return result
+
+
+def _fbp_frame_stack_cell_size(width, height, detail):
+    """Thumbnail size that resolves the slice grid of ``detail`` twice over."""
+    width = max(1, int(width))
+    height = max(1, int(height))
+    root = math.sqrt(width / height)
+    base = 2.0 ** max(0, min(8, int(detail)))
+    segments_x = max(1, min(512, int(round(base * root))))
+    segments_y = max(1, min(512, int(round(base / root))))
+    return (
+        max(2, min(width, 2 * segments_x + 2)),
+        max(2, min(height, 2 * segments_y + 2)),
+    )
+
+
+_FBP_FRAME_STACK_SIZES = {}
+# Pixels of one stack image; larger stacks get smaller cells.
+_FBP_FRAME_STACK_PIXEL_BUDGET = 8 * 1024 * 1024
+
+
+def _fbp_frame_stack_source_size(path):
+    """Return the pixel size of a source file from its header, cached."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    key = (path, int(stat.st_mtime_ns), int(stat.st_size))
+    if key in _FBP_FRAME_STACK_SIZES:
+        return _FBP_FRAME_STACK_SIZES[key]
+    size = None
+    try:
+        import OpenImageIO as oiio
+        source = oiio.ImageInput.open(path)
+        if source:
+            try:
+                spec = source.spec()
+                if spec.width > 0 and spec.height > 0:
+                    size = (int(spec.width), int(spec.height))
+            finally:
+                source.close()
+    except Exception:  # OIIO raises its own error types.
+        size = None
+    if len(_FBP_FRAME_STACK_SIZES) >= 4096:
+        _FBP_FRAME_STACK_SIZES.clear()
+    _FBP_FRAME_STACK_SIZES[key] = size
+    return size
+
+
+def _fbp_frame_stack_ocio_config():
+    """Path of Blender's OCIO config, so thumbnails convert like Blender."""
+    if "config" not in _FBP_FRAME_STACK_OCIO:
+        path = ""
+        try:
+            candidate = os.path.join(
+                bpy.utils.resource_path("LOCAL"), "datafiles", "colormanagement", "config.ocio",
+            )
+            path = candidate if os.path.isfile(candidate) else ""
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            path = ""
+        _FBP_FRAME_STACK_OCIO["config"] = path
+    return _FBP_FRAME_STACK_OCIO["config"]
+
+
+def _fbp_frame_stack_ocio_convert(pixels, colorspace):
+    """Convert straight RGB(A) pixels to scene linear with Blender's OCIO."""
+    import numpy as np
+    import OpenImageIO as oiio
+    ocio = _fbp_frame_stack_ocio_config()
+    if not ocio:
+        raise ValueError("Blender colour configuration not found")
+    height, width = pixels.shape[0], pixels.shape[1]
+    buffer = oiio.ImageBuf(oiio.ImageSpec(width, height, 4, oiio.FLOAT))
+    buffer.set_pixels(oiio.ROI(0, width, 0, height, 0, 1, 0, 4), np.ascontiguousarray(pixels, dtype=np.float32))
+    linear = oiio.ImageBufAlgo.colorconvert(
+        buffer, str(colorspace), "scene_linear", unpremult=False, colorconfig=ocio,
+    )
+    if linear.has_error:
+        raise ValueError(linear.geterror())
+    return np.asarray(linear.get_pixels(oiio.FLOAT), dtype=np.float32).reshape(height, width, 4)
+
+
+def _fbp_frame_stack_byte_lut(colorspace):
+    """Per-channel tables from 8-bit codes to scene-linear RGB.
+
+    Loading the OCIO config costs tens of milliseconds per call, so each
+    colour space is converted once: one ramp per input channel, whose
+    outputs add up for the usual curve-then-matrix colour spaces.
+    """
+    key = ("lut", str(colorspace))
+    lut = _FBP_FRAME_STACK_OCIO.get(key)
+    if lut is None:
+        import numpy as np
+        ramp = np.zeros((3, 256, 4), dtype=np.float32)
+        codes = np.arange(256, dtype=np.float32) / 255.0
+        for channel in range(3):
+            ramp[channel, :, channel] = codes
+        ramp[..., 3] = 1.0
+        converted = _fbp_frame_stack_ocio_convert(ramp, colorspace)
+        black = converted[0, 0, :3].copy()
+        lut = tuple(
+            converted[channel, :, :3] - (black * (2.0 / 3.0)) for channel in range(3)
+        )
+        _FBP_FRAME_STACK_OCIO[key] = lut
+    return lut
+
+
+def _fbp_frame_stack_convert_float(pixels, colorspace):
+    """Bring a float thumbnail to scene linear; linear sources pass through."""
+    try:
+        role = _FBP_FRAME_STACK_OCIO.get("scene_linear")
+        if role is None:
+            import OpenImageIO as oiio
+            ocio = _fbp_frame_stack_ocio_config()
+            role = str(oiio.ColorConfig(ocio).getColorSpaceNameByRole("scene_linear") or "") if ocio else ""
+            _FBP_FRAME_STACK_OCIO["scene_linear"] = role
+    except Exception:  # OIIO raises its own error types.
+        role = ""
+    if str(colorspace) in {role, "Linear Rec.709", "scene_linear"}:
+        return pixels
+    return _fbp_frame_stack_ocio_convert(pixels, colorspace)
+
+
+def _fbp_frame_stack_thumbnail(path, width, height, colorspace="sRGB", is_data=False):
+    """Return ``(pixels, width, height, key)`` for one source file.
+
+    ``pixels`` is a bottom-up float32 RGBA array in scene linear holding
+    exactly what the Geometry Image Texture node returns for the full
+    frame, so the stack image (alpha mode Premultiplied, read as stored)
+    matches the Repeat Zone path.
+    ``colorspace`` is the source image's colour space; data images are not
+    converted. Returns ``None`` when the file cannot be read.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    file_key = (path, int(stat.st_mtime_ns), int(stat.st_size))
+    if _FBP_FRAME_STACK_FAILED_PATHS.get(path) == file_key:
+        return None
+    key = (*file_key, int(width), int(height), str(colorspace or ""), bool(is_data))
+    cached = _FBP_FRAME_STACK_THUMBS.get(key)
+    if cached is not None:
+        _FBP_FRAME_STACK_THUMBS.move_to_end(key)
+        return cached
+    try:
+        import numpy as np
+        import OpenImageIO as oiio
+        config = oiio.ImageSpec()
+        # Keep straight alpha as stored, like Blender reads a PNG.
+        config.attribute("oiio:UnassociatedAlpha", 1)
+        source = oiio.ImageBuf(path, 0, 0, config)
+        spec = source.spec()
+        if source.has_error or spec.width < 1 or spec.height < 1:
+            raise ValueError(source.geterror() or "unreadable image")
+        roi = oiio.ROI(0, width, 0, height, 0, 1, 0, max(1, int(spec.nchannels)))
+        small = oiio.ImageBufAlgo.resize(source, filtername="box", roi=roi)
+        if small.has_error:
+            raise ValueError(small.geterror())
+        # Float files (EXR) arrive premultiplied, the others straight.
+        is_float = str(spec.format).lower() in {"float", "half", "double"}
+        pixels = np.asarray(small.get_pixels(oiio.FLOAT), dtype=np.float32)
+        pixels = pixels.reshape(height, width, -1)
+        channels = pixels.shape[2]
+        rgba = np.ones((height, width, 4), dtype=np.float32)
+        if channels >= 3:
+            rgba[..., :3] = pixels[..., :3]
+            if channels >= 4:
+                rgba[..., 3] = pixels[..., 3]
+        else:
+            rgba[..., :3] = pixels[..., :1]
+            if channels == 2:
+                rgba[..., 3] = pixels[..., 1]
+        if not is_float:
+            # Quantize like the byte buffer Blender would hold.
+            rgba = np.rint(np.clip(rgba, 0.0, 1.0) * 255.0) * (1.0 / 255.0)
+        if not is_data and colorspace:
+            if is_float:
+                rgba = _fbp_frame_stack_convert_float(rgba, colorspace)
+            else:
+                lut = _fbp_frame_stack_byte_lut(colorspace)
+                codes = np.rint(rgba[..., :3] * 255.0).astype(np.intp)
+                rgb = lut[0][codes[..., 0]] + lut[1][codes[..., 1]] + lut[2][codes[..., 2]]
+                rgba = np.concatenate([rgb.astype(np.float32), rgba[..., 3:4]], axis=-1)
+        rgba = np.array(rgba[::-1], dtype=np.float32)
+        if not is_float:
+            # Match what the Geometry Image Texture node returns for a
+            # straight byte image: Blender premultiplies it on conversion and
+            # the node premultiplies once more, so soft edges keep the look
+            # the Repeat Zone path always had.
+            rgba[..., :3] *= rgba[..., 3:4] * rgba[..., 3:4]
+        data = np.ascontiguousarray(rgba)
+    except Exception as exc:  # OIIO raises its own error types.
+        if not _FBP_FRAME_STACK_FAILED_PATHS:
+            fbp_warn("Frame Stack could not read a thumbnail; using full frames", exc)
+        if len(_FBP_FRAME_STACK_FAILED_PATHS) > 4096:
+            _FBP_FRAME_STACK_FAILED_PATHS.clear()
+        _FBP_FRAME_STACK_FAILED_PATHS[path] = file_key
+        return None
+    result = (data, width, height, key)
+    _FBP_FRAME_STACK_THUMBS[key] = result
+    _FBP_FRAME_STACK_THUMB_BYTES[0] += int(data.nbytes)
+    while _FBP_FRAME_STACK_THUMB_BYTES[0] > _FBP_FRAME_STACK_THUMB_BUDGET and len(_FBP_FRAME_STACK_THUMBS) > 1:
+        _old_key, old = _FBP_FRAME_STACK_THUMBS.popitem(last=False)
+        _FBP_FRAME_STACK_THUMB_BYTES[0] -= int(old[0].nbytes)
+    return result
+
+
+def _fbp_frame_stack_slice_positions(position, cycle, loop, step, count):
+    """Playback position of every slice, or ``None`` where it stays empty.
+
+    Mirrors the Repeat Zone path: looping layers wrap around the cycle,
+    otherwise positions before the first or past the last frame are empty.
+    """
+    result = []
+    for index in range(count):
+        q = int(position) - index * int(step)
+        if loop and cycle > 0:
+            q %= cycle
+        if q < 0 or (cycle > 0 and q >= cycle):
+            result.append(None)
+        else:
+            result.append(q)
+    return result
+
+
+def _fbp_frame_stack_prepare_cells_image(image, owner, width, height):
+    """Create the float stack image or bring its size in line.
+
+    The image is float and scene linear on purpose: once Geometry Nodes has
+    sampled a byte image it carries a float buffer too, and later pixel
+    writes land in that buffer without any colour conversion.
+    """
+    if image is not None and not bool(image.is_float):
+        # A byte image from an earlier build. Removing image datablocks from
+        # here is unsafe, so untag it and leave it to orphan cleanup.
+        try:
+            image["fbp_frame_stack_cells"] = False
+            image.name = f"{image.name} (retired)"
+        except FBP_DATA_ERRORS:
+            pass
+        image = None
+    if image is None:
+        image = bpy.data.images.new(
+            f"FBP Frame Stack Cells • {owner}", width, height,
+            alpha=True, float_buffer=True,
+        )
+        image.use_fake_user = False
+        image["fbp_frame_stack_cells"] = True
+        image["fbp_owned"] = True
+        image["fbp_effect_material_owner"] = owner
+    elif tuple(image.size) != (width, height):
+        image.scale(width, height)
+    _fbp_set_attr_if_changed(image, "alpha_mode", "PREMUL")
+    return image
+
+
+def _fbp_frame_stack_cells_image(rig, modifier, node_group, interface_inputs, material, timing, position):
+    """Write one thumbnail per slice into the layer's stack image.
+
+    Returns ``(image, columns, rows, cells, cell_width, cell_height)`` or
+    ``None`` when the light path is unavailable (no OpenImageIO, unreadable
+    files), in which case the group keeps decoding full frames.
+    """
+    plane = _fbp_plane(rig)
+    paths = _fbp_frame_stack_source_paths(material) if material is not None else None
+    if not plane or not paths or not timing:
+        return None
+    base, files = paths
+
+    def socket_value(name, default):
+        identifier = _fbp_interface_input_identifier(node_group, name)
+        value = _fbp_modifier_input_get(modifier, identifier, None) if identifier else None
+        return default if value is None else value
+
+    try:
+        count = max(1, min(512, int(socket_value("Slices", 1))))
+        step = int(socket_value("Frame Step", 1))
+        detail = max(0, min(8, int(socket_value("Detail", 5))))
+    except (TypeError, ValueError):
+        return None
+    cycle = len(timing["files"])
+    loop = timing["loop_mode"] in {"REPEAT", "PINGPONG"}
+    slots = []
+    for q in _fbp_frame_stack_slice_positions(position, cycle, loop, step, count):
+        if q is None or not timing["visible"][q]:
+            slots.append(None)
+            continue
+        index = int(timing["files"][q]) - int(base)
+        if index < 0 or index >= len(files):
+            slots.append(None)
+            continue
+        slots.append(files[index])
+    reference = next((path for path in slots if path is not None), None)
+    if reference is None:
+        reference = files[0] if files else None
+    source_size = _fbp_frame_stack_source_size(reference) if reference else None
+    if source_size is None:
+        return None
+    cell_w, cell_h = _fbp_frame_stack_cell_size(source_size[0], source_size[1], detail)
+    overflow = (count * cell_w * cell_h) / float(_FBP_FRAME_STACK_PIXEL_BUDGET)
+    if overflow > 1.0:
+        shrink = 1.0 / math.sqrt(overflow)
+        cell_w = max(2, int(cell_w * shrink))
+        cell_h = max(2, int(cell_h * shrink))
+    _src_material, source_node = _fbp_material_image_node(rig)
+    source_image = getattr(source_node, "image", None) if source_node else None
+    try:
+        settings = source_image.colorspace_settings if source_image else None
+        colorspace = str(settings.name) if settings else "sRGB"
+        is_data = bool(getattr(settings, "is_data", False)) if settings else False
+    except FBP_DATA_ERRORS:
+        colorspace, is_data = "sRGB", False
+    thumbs = {}
+    for path in slots:
+        if path is None or path in thumbs:
+            continue
+        thumb = _fbp_frame_stack_thumbnail(path, cell_w, cell_h, colorspace, is_data)
+        if thumb is None:
+            return None
+        thumbs[path] = thumb
+    columns = max(1, int(math.ceil(math.sqrt(count))))
+    rows = max(1, -(-count // columns))
+    width, height = columns * cell_w, rows * cell_h
+
+    owner = str(getattr(plane, "name", "") or "")
+    try:
+        image = _fbp_frame_stack_find_image("fbp_frame_stack_cells", owner)
+        state = (width, height)
+        key = int(image.as_pointer()) if image is not None else 0
+        if image is None or _FBP_FRAME_STACK_IMAGE_STATE.get(key) != state:
+            # Reading is_float or size acquires the image buffer, which costs
+            # more than the rest of a playback frame: check only on changes.
+            image = _fbp_frame_stack_prepare_cells_image(image, owner, width, height)
+            key = int(image.as_pointer())
+            if len(_FBP_FRAME_STACK_IMAGE_STATE) >= 256:
+                _FBP_FRAME_STACK_IMAGE_STATE.clear()
+            _FBP_FRAME_STACK_IMAGE_STATE[key] = state
+        signature = (
+            tuple(slots), columns, rows, cell_w, cell_h,
+            tuple(sorted(thumb[3] for thumb in thumbs.values())),
+        )
+        if _FBP_FRAME_STACK_CELLS_CACHE.get(key) != signature:
+            import numpy as np
+            canvas = _FBP_FRAME_STACK_CANVASES.get(key)
+            if canvas is None or canvas.shape != (height, width, 4):
+                canvas = np.zeros((height, width, 4), dtype=np.float32)
+                if len(_FBP_FRAME_STACK_CANVASES) >= 64:
+                    _FBP_FRAME_STACK_CANVASES.clear()
+                _FBP_FRAME_STACK_CANVASES[key] = canvas
+            for index, path in enumerate(slots):
+                column, row = index % columns, index // columns
+                target = canvas[row * cell_h:(row + 1) * cell_h, column * cell_w:(column + 1) * cell_w]
+                if path is None:
+                    target.fill(0.0)
+                else:
+                    target[...] = thumbs[path][0]
+            image.pixels.foreach_set(canvas.ravel())
+            image.update()
+            if len(_FBP_FRAME_STACK_CELLS_CACHE) >= 256:
+                _FBP_FRAME_STACK_CELLS_CACHE.clear()
+            _FBP_FRAME_STACK_CELLS_CACHE[key] = signature
+    except (ImportError, *FBP_DATA_ERRORS) as exc:
+        fbp_warn("Could not write the Frame Stack cells", exc)
+        return None
+    return image, columns, rows, count, cell_w, cell_h
 
 
 def _fbp_sync_frame_stack_timing(rig, modifier, scene=None):
@@ -7016,7 +7700,6 @@ def _fbp_sync_frame_stack_timing(rig, modifier, scene=None):
         position = fbp_native_playback_position(timing, timeline_frame)
         cycle = len(timing["files"])
         loop = timing["loop_mode"] in {"REPEAT", "PINGPONG"}
-        table_image, table_rows = _fbp_frame_stack_table_image(rig, timing)
     elif source_kind == "MOVIE" and src_user is not None:
         try:
             cycle = max(1, int(getattr(source_image, "frame_duration", 0) or 0))
@@ -7033,8 +7716,52 @@ def _fbp_sync_frame_stack_timing(rig, modifier, scene=None):
     else:
         position, cycle, loop = 0, 1, False
 
+    cells = None
+    if timing and "Use Stack Image" in interface_inputs:
+        cells = _fbp_frame_stack_cells_image(
+            rig, modifier, node_group, interface_inputs, material, timing, position,
+        )
+    use_cells = cells is not None
+    if timing and not use_cells:
+        # Only the Repeat Zone path reads the timing table.
+        table_image, table_rows = _fbp_frame_stack_table_image(rig, timing)
     use_table = table_image is not None
     changed = False
+    cells_node = None
+    try:
+        cells_node = next(
+            (node for node in node_group.nodes if bool(node.get("fbp_frame_stack_cells_node", False))),
+            None,
+        )
+    except FBP_DATA_ERRORS:
+        cells_node = None
+    if cells_node is not None:
+        image_input = _fbp_node_socket(getattr(cells_node, "inputs", ()), "Image")
+        target = cells[0] if use_cells else None
+        try:
+            if image_input is not None and getattr(image_input, "default_value", None) is not target:
+                image_input.default_value = target
+                changed = True
+        except FBP_DATA_ERRORS:
+            use_cells = False
+    else:
+        use_cells = False
+    if use_cells:
+        _image, columns, rows, cell_count, cell_w, cell_h = cells
+        for socket_name, value in (
+            ("Stack Columns", int(columns)),
+            ("Stack Rows", int(rows)),
+            ("Stack Cells", int(cell_count)),
+            ("Cell Width", int(cell_w)),
+            ("Cell Height", int(cell_h)),
+        ):
+            changed = _fbp_set_modifier_input(
+                modifier, node_group, socket_name, value, interface_inputs,
+            ) or changed
+    if "Use Stack Image" in interface_inputs:
+        changed = _fbp_set_modifier_input(
+            modifier, node_group, "Use Stack Image", bool(use_cells), interface_inputs,
+        ) or changed
     table_node = None
     try:
         table_node = next(
@@ -7074,6 +7801,9 @@ def _fbp_sync_frame_stack_timing(rig, modifier, scene=None):
 
 def fbp_sync_frame_stack_scene(scene):
     """Rebuild Frame Stack timing for every layer, e.g. after loading a file."""
+    # Generated pixels are not saved: write every stack image again.
+    _FBP_FRAME_STACK_CELLS_CACHE.clear()
+    _FBP_FRAME_STACK_IMAGE_STATE.clear()
     try:
         from .layers import iter_scene_fbp_rigs
         rigs = tuple(iter_scene_fbp_rigs(scene))
@@ -8204,6 +8934,74 @@ def _fbp_geometry_composite_shader_tokens(rig, boundary_token):
     )
 
 
+def _fbp_paired_sockets(source_sockets, target_sockets):
+    """Yield ``(target, source)`` socket pairs that carry a default value.
+
+    A node copy has the same sockets in the same order, so they pair by
+    index. Name lookup is only the fallback: Math and Mix nodes repeat socket
+    names (both Math operands are "Value"), and matching by name copied the
+    first operand into the second.
+    """
+    try:
+        source_list = tuple(source_sockets)
+        target_list = tuple(target_sockets)
+    except FBP_DATA_ERRORS:
+        return
+    same_layout = len(source_list) == len(target_list)
+    for index, target in enumerate(target_list):
+        if not hasattr(target, "default_value"):
+            continue
+        source = source_list[index] if same_layout else None
+        if source is None or getattr(source, "identifier", None) != getattr(target, "identifier", None):
+            source = _fbp_node_socket(source_sockets, str(getattr(target, "name", "") or ""))
+        if source is None or not hasattr(source, "default_value"):
+            continue
+        yield target, source
+
+
+# (owner id, boundary token) -> material name. Each hit is re-validated, so a
+# stale entry (rename, Undo, file load) only costs one fallback scan.
+_FBP_COMPOSITE_MATERIAL_INDEX = {}
+
+
+def _fbp_composite_material_matches(material, owner_id, boundary_token):
+    try:
+        return (
+            str(material.get("fbp_effect_composite_owner_id", "") or "") == owner_id
+            and str(material.get("fbp_effect_composite_boundary", "") or "")
+            == boundary_token
+            and not bool(material.get("fbp_orphan_candidate", False))
+        )
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _fbp_find_composite_material(owner_id, boundary_token):
+    """The live composite material for one stack boundary, or ``None``.
+
+    Frame changes refresh every composite of every layer, so scanning all of
+    ``bpy.data.materials`` per boundary grew with the square of the layer
+    count. A small name index answers the common case directly.
+    """
+    key = (str(owner_id or ""), str(boundary_token or ""))
+    name = _FBP_COMPOSITE_MATERIAL_INDEX.get(key)
+    if name:
+        material = bpy.data.materials.get(name)
+        if material is not None and _fbp_composite_material_matches(material, *key):
+            return material
+        _FBP_COMPOSITE_MATERIAL_INDEX.pop(key, None)
+    for material in tuple(bpy.data.materials):
+        if _fbp_composite_material_matches(material, *key):
+            if len(_FBP_COMPOSITE_MATERIAL_INDEX) > 4096:
+                _FBP_COMPOSITE_MATERIAL_INDEX.clear()
+            try:
+                _FBP_COMPOSITE_MATERIAL_INDEX[key] = str(material.name)
+            except FBP_DATA_ERRORS:
+                pass
+            return material
+    return None
+
+
 def _fbp_geometry_composite_material(
     rig,
     effect_id,
@@ -8244,19 +9042,7 @@ def _fbp_geometry_composite_material(
             str(uv_attribute_type or "GEOMETRY"),
         )
     )
-    existing = None
-    for material in tuple(bpy.data.materials):
-        try:
-            if (
-                str(material.get("fbp_effect_composite_owner_id", "") or "") == owner_id
-                and str(material.get("fbp_effect_composite_boundary", "") or "")
-                == boundary_token
-                and not bool(material.get("fbp_orphan_candidate", False))
-            ):
-                existing = material
-                break
-        except FBP_DATA_ERRORS:
-            continue
+    existing = _fbp_find_composite_material(owner_id, boundary_token)
 
     if existing is not None:
         try:
@@ -8282,33 +9068,21 @@ def _fbp_geometry_composite_material(
                     source_node is None
                     or getattr(source_node, "bl_idname", "")
                     != getattr(node, "bl_idname", "")
+                    # Effect group nodes are synced below, by stack token.
+                    or _fbp_shader_effect_id(node)
                 ):
                     continue
                 try:
                     if hasattr(node, "image") and node.image != source_node.image:
                         node.image = source_node.image
-                    for target_input in getattr(node, "inputs", ()):
-                        source_input = _fbp_node_socket(
-                            getattr(source_node, "inputs", ()),
-                            str(getattr(target_input, "name", "") or ""),
-                        )
-                        if (
-                            source_input is None
-                            or not hasattr(target_input, "default_value")
-                        ):
-                            continue
-                        _fbp_copy_socket_default(source_input, target_input)
-                    for target_output in getattr(node, "outputs", ()):
-                        source_output = _fbp_node_socket(
-                            getattr(source_node, "outputs", ()),
-                            str(getattr(target_output, "name", "") or ""),
-                        )
-                        if (
-                            source_output is None
-                            or not hasattr(target_output, "default_value")
-                        ):
-                            continue
-                        _fbp_copy_socket_default(source_output, target_output)
+                    for target_socket, source_socket in _fbp_paired_sockets(
+                        getattr(source_node, "inputs", ()), getattr(node, "inputs", ())
+                    ):
+                        _fbp_copy_socket_default(source_socket, target_socket)
+                    for target_socket, source_socket in _fbp_paired_sockets(
+                        getattr(source_node, "outputs", ()), getattr(node, "outputs", ())
+                    ):
+                        _fbp_copy_socket_default(source_socket, target_socket)
                     source_ramp = getattr(source_node, "color_ramp", None)
                     target_ramp = getattr(node, "color_ramp", None)
                     if source_ramp is not None and target_ramp is not None:
@@ -8712,6 +9486,17 @@ def _fbp_apply_geometry_material_composites(
 
 def _fbp_refresh_geometry_source_materials(rig):
     """Refresh every Geometry Nodes material input after stack/node changes."""
+    global _FBP_MIXED_TOKENS_MEMO
+    if _FBP_MIXED_TOKENS_MEMO is not None:
+        return _fbp_refresh_geometry_source_materials_pass(rig)
+    _FBP_MIXED_TOKENS_MEMO = {}
+    try:
+        return _fbp_refresh_geometry_source_materials_pass(rig)
+    finally:
+        _FBP_MIXED_TOKENS_MEMO = None
+
+
+def _fbp_refresh_geometry_source_materials_pass(rig):
     plane = _fbp_plane(rig, repair=False)
     if plane is None:
         return False
@@ -8720,6 +9505,9 @@ def _fbp_refresh_geometry_source_materials(rig):
         modifiers = tuple(plane.modifiers)
     except FBP_DATA_ERRORS:
         return False
+    # Ensure every instance id before the first composite reads the stack
+    # order, which is memoised for the rest of this pass.
+    targets = []
     for modifier in modifiers:
         effect_id = _fbp_geometry_effect_id_for_modifier(modifier)
         node_group = getattr(modifier, "node_group", None)
@@ -8731,6 +9519,8 @@ def _fbp_refresh_geometry_source_materials(rig):
             )
             if _fbp_effect_uses_multi_instances(effect_id) else ""
         )
+        targets.append((modifier, effect_id, instance_id))
+    for modifier, effect_id, instance_id in targets:
         changed = _fbp_apply_geometry_material_composites(
             rig, modifier, effect_id, instance_id
         ) or changed
@@ -9047,6 +9837,85 @@ def _fbp_update_text_matrix_charset(node_group, rig):
     return changed
 
 
+# Values Frame By Plane last wrote to a mesh effect's modifier inputs, keyed by
+# (modifier pointer, rig property). An input that moved since was edited in
+# the Modifiers panel and goes back to the layer setting. Inputs whose value
+# is computed (quality per viewport/render, animated Evolution, Mesh Wiggle's
+# W) are left out: editing them there would be undone by the next update.
+_FBP_GEOMETRY_INPUT_WRITTEN = {}
+
+
+def _fbp_remember_geometry_input(rig, modifier, prop_name, value):
+    try:
+        key = (int(modifier.as_pointer()), str(prop_name))
+        raw = _fbp_cast_effect_value(prop_name, getattr(rig, prop_name))
+    except FBP_DATA_ERRORS:
+        return
+    if _fbp_effect_values_equal(raw, value):
+        _FBP_GEOMETRY_INPUT_WRITTEN[key] = tuple(value) if hasattr(value, "__len__") and not isinstance(value, str) else value
+    else:
+        _FBP_GEOMETRY_INPUT_WRITTEN.pop(key, None)
+
+
+def fbp_pull_geometry_modifier_edits(rig):
+    """Write mesh effect inputs edited in the Modifiers panel to the layer."""
+    if not rig:
+        return 0
+    pulled = 0
+    for effect_id in tuple(fbp_effect_ids_for_rig(rig)):
+        definition = fbp_effect_definition(effect_id)
+        if definition.get("kind") != "GEOMETRY" or bool(definition.get("custom", False)):
+            continue
+        modifier = fbp_find_effect_modifier(rig, effect_id)
+        node_group = getattr(modifier, "node_group", None) if modifier else None
+        if node_group is None:
+            continue
+        try:
+            pointer = int(modifier.as_pointer())
+        except FBP_DATA_ERRORS:
+            continue
+        try:
+            from .effect_shells import fbp_sync_geometry_panel_inputs
+            pulled += fbp_sync_geometry_panel_inputs(rig, effect_id, modifier)
+        except ImportError:
+            pass
+        inputs = None
+        for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
+            key = (pointer, prop_name)
+            if key not in _FBP_GEOMETRY_INPUT_WRITTEN:
+                continue
+            if inputs is None:
+                inputs = _fbp_interface_inputs(node_group)
+            identifier = str(_fbp_interface_socket_for_name(inputs, socket_name) or "")
+            current = _fbp_modifier_input_get(modifier, identifier) if identifier else None
+            if current is None:
+                continue
+            if hasattr(current, "__len__") and not isinstance(current, str):
+                current = tuple(current)
+            if _fbp_effect_values_equal(current, _FBP_GEOMETRY_INPUT_WRITTEN[key]):
+                continue
+            _FBP_GEOMETRY_INPUT_WRITTEN[key] = current
+            try:
+                rna = rig.bl_rna.properties.get(prop_name)
+                value = current
+                if rna is not None and rna.type == "BOOLEAN":
+                    value = bool(value)
+                elif rna is not None and rna.type == "INT":
+                    value = int(round(float(value)))
+                elif rna is not None and rna.type == "ENUM":
+                    continue
+                elif rna is not None and getattr(rna, "is_array", False):
+                    value = tuple(value)[:int(rna.array_length)]
+                else:
+                    value = float(value)
+                if not _fbp_effect_values_equal(getattr(rig, prop_name), value):
+                    setattr(rig, prop_name, value)
+                    pulled += 1
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn(f"Could not apply {prop_name} from its modifier", exc)
+    return pulled
+
+
 def fbp_update_geometry_effect(
     rig,
     effect_id,
@@ -9073,6 +9942,13 @@ def fbp_update_geometry_effect(
     node_group = _fbp_ensure_geometry_effect_group(rig, effect_id, modifier)
     if not node_group:
         return False
+    if not bool(definition.get("custom", False)):
+        try:
+            # The rest of the panel (Animate, quality, shading) as inputs.
+            from .effect_shells import fbp_extend_geometry_group
+            fbp_extend_geometry_group(node_group, effect_id)
+        except ImportError:
+            pass
 
     requested = None if property_names is None else {
         str(name) for name in property_names if str(name or "")
@@ -9137,6 +10013,7 @@ def fbp_update_geometry_effect(
             value,
             interface_inputs,
         ) or updated
+        _fbp_remember_geometry_input(rig, modifier, prop_name, value)
 
     if definition.get("camera_aware"):
         updated = _fbp_bind_geometry_camera_input(
@@ -11670,6 +12547,154 @@ def _fbp_copy_shader_image_user(source_node, target_node):
     return changed
 
 
+_FBP_PRIVATE_OFFSET_ANIM_KEY = "fbp_private_offset_anim_signature"
+
+
+def _fbp_frame_offset_curve(source_node):
+    """Return the F-Curve that animates the native source ImageUser offset."""
+    try:
+        tree = getattr(source_node, "id_data", None)
+        user = getattr(source_node, "image_user", None)
+        if tree is None or user is None:
+            return None
+        return fbp_find_action_fcurve(tree, user.path_from_id("frame_offset"))
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _fbp_frame_offset_curve_signature(curve):
+    """Cheap identity of a timing curve: key count plus packed key data."""
+    if curve is None:
+        return ""
+    try:
+        points = curve.keyframe_points
+        count = len(points)
+        coords = array("f", [0.0]) * (2 * count)
+        if count:
+            points.foreach_get("co", coords)
+        modes = array("i", [0]) * count
+        if count:
+            points.foreach_get("interpolation", modes)
+        return "%d:%x:%x" % (count, hash(coords.tobytes()), hash(modes.tobytes()))
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _fbp_private_offset_paths(image_nodes):
+    paths = []
+    for image_node in image_nodes:
+        try:
+            paths.append(image_node.image_user.path_from_id("frame_offset"))
+        except FBP_DATA_ERRORS:
+            continue
+    return paths
+
+
+def _fbp_clear_private_offset_animation(node_group, image_nodes):
+    removed = 0
+    for path in _fbp_private_offset_paths(image_nodes):
+        removed += fbp_remove_action_fcurves(node_group, path)
+    try:
+        if _FBP_PRIVATE_OFFSET_ANIM_KEY in node_group:
+            del node_group[_FBP_PRIVATE_OFFSET_ANIM_KEY]
+    except FBP_DATA_ERRORS:
+        pass
+    return bool(removed)
+
+
+def _fbp_mirror_private_offset_animation(source_node, source_curve, signature, node_group, image_nodes):
+    """Give every private image sample the source timing curve.
+
+    Blender then evaluates the sequence frame of each blur/edge sample
+    natively during playback. Copying ``ImageUser.frame_offset`` from Python
+    on every frame cost about a millisecond per sample and re-tagged the
+    shader, which was the main source of playback lag for image effects.
+    """
+    try:
+        animation_data = node_group.animation_data
+        action = getattr(animation_data, "action", None) if animation_data else None
+        if action is not None and int(getattr(action, "users", 1) or 1) > 1:
+            # Copied stacks share the Action of the group they came from;
+            # each layer needs its own timing.
+            slot = getattr(animation_data, "action_slot", None)
+            slot_identifier = str(getattr(slot, "identifier", "") or "")
+            animation_data.action = action.copy()
+            if getattr(animation_data, "action_slot", None) is None and slot_identifier:
+                for candidate in animation_data.action.slots:
+                    if candidate.identifier == slot_identifier:
+                        animation_data.action_slot = candidate
+                        break
+        source_points = source_curve.keyframe_points
+        count = len(source_points)
+        if not count:
+            return False
+        # Bulk-copy the keys: long holds produce hundreds of them, and one
+        # keyframe_insert plus an RNA write per key and per sample took seconds.
+        coords = array("f", [0.0]) * (2 * count)
+        left = array("f", [0.0]) * (2 * count)
+        right = array("f", [0.0]) * (2 * count)
+        modes = array("i", [0]) * count
+        source_points.foreach_get("co", coords)
+        source_points.foreach_get("handle_left", left)
+        source_points.foreach_get("handle_right", right)
+        source_points.foreach_get("interpolation", modes)
+        current = int(getattr(source_node.image_user, "frame_offset", 0) or 0)
+        for image_node in image_nodes:
+            user = getattr(image_node, "image_user", None)
+            if user is None:
+                continue
+            path = user.path_from_id("frame_offset")
+            fbp_remove_action_fcurves(node_group, path)
+            # One real insert creates the F-Curve in the group's action slot.
+            user.frame_offset = int(round(float(coords[1])))
+            node_group.keyframe_insert(data_path=path, frame=float(coords[0]))
+            curve = fbp_find_action_fcurve(node_group, path)
+            if curve is None:
+                continue
+            points = curve.keyframe_points
+            if count > len(points):
+                points.add(count - len(points))
+            points.foreach_set("co", coords)
+            points.foreach_set("handle_left", left)
+            points.foreach_set("handle_right", right)
+            points.foreach_set("interpolation", modes)
+            try:
+                curve.update()
+            except FBP_DATA_ERRORS:
+                pass
+            user.frame_offset = current
+        node_group[_FBP_PRIVATE_OFFSET_ANIM_KEY] = str(signature)
+        return True
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not give image samples the sequence timing", exc)
+        return False
+
+
+def _fbp_sync_private_offset_animation(source_node, node_group, image_nodes):
+    """Return ``(animated, changed)`` after matching the private timing curves."""
+    if source_node is None or node_group is None:
+        return False, False
+    try:
+        source_kind = str(getattr(getattr(source_node, "image", None), "source", "") or "").upper()
+    except FBP_DATA_ERRORS:
+        source_kind = ""
+    curve = _fbp_frame_offset_curve(source_node) if source_kind in {"SEQUENCE", "MOVIE"} else None
+    signature = _fbp_frame_offset_curve_signature(curve) if curve is not None else ""
+    try:
+        stored = str(node_group.get(_FBP_PRIVATE_OFFSET_ANIM_KEY, "") or "")
+    except FBP_DATA_ERRORS:
+        stored = ""
+    if not signature:
+        if stored:
+            return False, _fbp_clear_private_offset_animation(node_group, image_nodes)
+        return False, False
+    if stored == signature:
+        return True, False
+    return _fbp_mirror_private_offset_animation(
+        source_node, curve, signature, node_group, image_nodes
+    ), True
+
+
 def _fbp_sync_private_shader_source(material, node_group):
     """Synchronize private image samples with a bounded validation cache.
 
@@ -11692,8 +12717,17 @@ def _fbp_sync_private_shader_source(material, node_group):
     except FBP_DATA_ERRORS:
         image_key = None
     image_user = getattr(source_node, "image_user", None) if source_node else None
+    # Sequence timing normally lives in an F-Curve on frame_offset. The private
+    # samples get the same curve, so the per-frame offset leaves the signature
+    # and playback no longer rewrites every sample through Python.
+    offset_animated, offset_changed = _fbp_sync_private_offset_animation(
+        source_node, node_group, image_nodes
+    )
     user_signature = []
     for attr in ("frame_duration", "frame_start", "frame_offset", "use_cyclic", "use_auto_refresh"):
+        if attr == "frame_offset" and offset_animated:
+            user_signature.append("ANIMATED")
+            continue
         try:
             user_signature.append(getattr(image_user, attr))
         except FBP_DATA_ERRORS:
@@ -11710,10 +12744,13 @@ def _fbp_sync_private_shader_source(material, node_group):
         source_signature = (image_key, tuple(user_signature), len(image_nodes))
     now = time.monotonic()
     cached = _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.get(group_key) if group_key is not None else None
-    if cached and cached[0] == source_signature and now - float(cached[1]) < 2.0:
+    if (
+        not offset_changed
+        and cached and cached[0] == source_signature and now - float(cached[1]) < 2.0
+    ):
         return bool(source_image), False
 
-    changed = False
+    changed = offset_changed
     for image_node in image_nodes:
         try:
             if getattr(image_node, "image", None) is not source_image:
@@ -14241,13 +15278,9 @@ def _fbp_copy_shader_instance_inputs(source_node, target_node):
     if source_node is None or target_node is None:
         return False
     changed = False
-    for target in getattr(target_node, "inputs", ()):
-        source = _fbp_node_socket(
-            getattr(source_node, "inputs", ()),
-            str(getattr(target, "name", "") or ""),
-        )
-        if source is None or not hasattr(target, "default_value"):
-            continue
+    for target, source in _fbp_paired_sockets(
+        getattr(source_node, "inputs", ()), getattr(target_node, "inputs", ())
+    ):
         try:
             changed = _fbp_copy_socket_default(source, target) or changed
         except FBP_DATA_ERRORS:
@@ -16324,8 +17357,23 @@ def fbp_effect_ids_for_rig(rig, *, refresh_custom=False):
         effect_id for effect_id in FBP_3D_EFFECT_MENU_ORDER
         if fbp_effect_definition(effect_id).get("kind") == "BASE"
     )
+    # Scan the plane materials once. Shader rows of the base menu order are
+    # active exactly when a tagged node exists, which fbp_effect_is_active
+    # would otherwise find by rescanning every material node once per row.
+    material_nodes = [
+        (material, _fbp_shader_effect_nodes(material))
+        for material in _fbp_plane_materials(rig)
+    ]
+    shader_ids_present = {
+        _fbp_shader_effect_id(node)
+        for _material, tagged_nodes in material_nodes
+        for node in tagged_nodes
+    }
     for effect_id in base_effect_order:
-        if fbp_effect_is_active(rig, effect_id):
+        if fbp_effect_definition(effect_id).get("kind") == "SHADER":
+            if fbp_normalize_effect_id(effect_id) in shader_ids_present:
+                append_once(effect_id)
+        elif fbp_effect_is_active(rig, effect_id):
             append_once(effect_id)
 
     try:
@@ -16334,8 +17382,7 @@ def fbp_effect_ids_for_rig(rig, *, refresh_custom=False):
     except FBP_DATA_ERRORS:
         pass
 
-    for material in _fbp_plane_materials(rig):
-        tagged_nodes = _fbp_shader_effect_nodes(material)
+    for material, tagged_nodes in material_nodes:
         tagged_ids = {_fbp_shader_effect_id(node) for node in tagged_nodes}
         for stage in ("UV", "COLOR", "MASK"):
             for effect_id in _fbp_get_shader_stage_order(material, stage):
@@ -19999,6 +21046,11 @@ def fbp_effect_visible_state(rig, effect_id, instance_id=""):
         modifier = profile.get("geometry_modifiers", {}).get(effect_id)
         if modifier is None:
             modifier = fbp_find_effect_modifier(rig, effect_id)
+        if modifier is not None and not bool(getattr(modifier, "show_viewport", True)):
+            # Paused by Light Playback only: the effect is still switched on.
+            plane = _fbp_plane(rig, repair=False)
+            if plane is not None and fbp_playback_suspended_modifier(plane, modifier.name):
+                return True
         return bool(modifier and getattr(modifier, "show_viewport", True))
     instance_id = str(instance_id or "")
     nodes = (
@@ -20057,6 +21109,9 @@ def fbp_set_effect_visible(rig, effect_id, visible, instance_id="", *, refresh_m
         if not modifier:
             return stored_changed
         changed = stored_changed
+        plane = _fbp_plane(rig, repair=False)
+        if plane is not None:
+            fbp_forget_playback_suspended_modifier(plane, getattr(modifier, "name", ""))
         if bool(getattr(modifier, "show_viewport", True)) != visible:
             modifier.show_viewport = visible
             changed = True
@@ -20566,6 +21621,12 @@ def fbp_effect_render_guard_pre(scene=None, rigs=None):
                         _fbp_modifier_input_set(modifier, identifier, render_value)
                 except FBP_DATA_ERRORS:
                     continue
+            if effect_id == FBP_EFFECT_FRAME_STACK:
+                # Render Slices and Detail change the stack image layout.
+                try:
+                    _fbp_sync_frame_stack_timing(rig, modifier, scene=scene)
+                except FBP_DATA_ERRORS:
+                    pass
         if local_mask_target_ids:
             for material in _fbp_plane_materials(rig):
                 _fbp_rebuild_mask_target_batch(material, local_mask_target_ids)
@@ -20643,6 +21704,9 @@ def fbp_effect_render_guard_post(backup):
                     current = _fbp_modifier_input_get(modifier, identifier)
                     if current != value:
                         _fbp_modifier_input_set(modifier, identifier, value)
+                if effect_id == FBP_EFFECT_FRAME_STACK:
+                    # Lay the stack image out again for the viewport Slices.
+                    _fbp_sync_frame_stack_timing(rig, modifier)
         except RuntimeError:
             retry.append(item)
         except (AttributeError, ReferenceError, TypeError, ValueError):
@@ -21542,13 +22606,16 @@ def _fbp_draw_effect_property(layout, rig, definition, prop_name, labels=None):
     label = _fbp_effect_property_label(definition, prop_name, labels)
     prop_type, _subtype, _array_length = _fbp_effect_rna_metadata(rig, prop_name)
     is_bool = prop_type == "BOOLEAN"
+    if is_bool:
+        # On/off options read as checkboxes, like Blender's own modifiers,
+        # instead of full-width blue toggle bars.
+        layout.prop(rig, prop_name, text=label)
+        return True
     kwargs = {
         "text": label,
         "icon": _fbp_effect_property_icon(prop_name, label),
     }
-    if is_bool:
-        kwargs["toggle"] = True
-    elif _fbp_effect_property_uses_slider(rig, prop_name, label):
+    if _fbp_effect_property_uses_slider(rig, prop_name, label):
         kwargs["slider"] = True
     layout.prop(rig, prop_name, **kwargs)
     return True
@@ -21965,15 +23032,14 @@ def fbp_effect_settings_ui_issues():
 FBP_EFFECT_SETTINGS_UI_ISSUES = fbp_effect_settings_ui_issues()
 
 
-def _fbp_effect_control_hidden_properties(rig, effect_id):
-    """Properties represented by the active viewport helper instead of sliders."""
-    if not bool(getattr(rig, "fbp_effect_controls_enabled", True)):
-        return frozenset()
-    try:
-        from .effect_controls import effect_control_driven_properties
-        return effect_control_driven_properties(effect_id)
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        return frozenset()
+def _fbp_effect_control_hidden_properties(_rig, _effect_id):
+    """Properties hidden from the panel while a viewport helper drives them.
+
+    None any more: the panel always carries every control the effect needs
+    (Swirl's centre, radius and angle, Pixelate's offsets, ...). The viewport
+    helper edits the same values, so both stay in sync.
+    """
+    return frozenset()
 
 
 def _fbp_draw_registered_effect_properties(layout, rig, effect_id, definition, labels=None, skip=()):
@@ -22007,9 +23073,11 @@ def _fbp_draw_registered_effect_properties(layout, rig, effect_id, definition, l
             str(effect_id or "effect").lower(),
             "".join(character if character.isalnum() else "_" for character in title.lower()),
         )
+        # Every group starts open: the panel shows all of the effect's
+        # controls (Swirl's Radius and Angle used to hide in a closed fold).
         body = _fbp_draw_native_foldout(
             layout, panel_id, title, icon,
-            default_closed=visible_group_index > 0,
+            default_closed=False,
         )
         if body is not None:
             _fbp_draw_compact_effect_properties(body, rig, definition, visible, labels)
@@ -22082,9 +23150,11 @@ def _fbp_draw_effect_instance_properties(
             instance_id[-8:] or "instance",
             "".join(character if character.isalnum() else "_" for character in title.lower()),
         )
+        # Every group starts open: the panel shows all of the effect's
+        # controls (Swirl's Radius and Angle used to hide in a closed fold).
         body = _fbp_draw_native_foldout(
             layout, panel_id, title, icon,
-            default_closed=visible_group_index > 0,
+            default_closed=False,
         )
         if body is not None:
             _draw(body, names)
@@ -22153,6 +23223,24 @@ def _fbp_draw_toggle_foldout(layout, panel_id, owner, prop_name, title, *, defau
     if body is not None:
         body.active = enabled
     return body
+
+
+def _fbp_draw_mesh_wiggle_animate(layout, rig):
+    """Animate section for Mesh Wiggle, built from its own timing controls."""
+    try:
+        header, body = layout.panel("fbp_effect_animation", default_closed=False)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        header, body = layout.row(align=True), layout.column(align=False)
+    header.label(text="Animate")
+    if body is None:
+        return
+    seed_row = body.row(align=True)
+    seed_row.prop(rig, "fbp_mesh_wiggle_seed", text="Seed")
+    seed_row.prop(rig, "fbp_mesh_wiggle_hold", text="Stepped")
+    speed_row = body.row(align=False)
+    speed_split = speed_row.split(factor=0.5, align=False)
+    speed_split.prop(rig, "fbp_mesh_wiggle_speed", text="Speed")
+    speed_split.prop(rig, "fbp_mesh_wiggle_unique_seed", text="Unique per Layer")
 
 
 def _fbp_draw_icon_toggle(layout, rig, prop_name, *, icon_on, icon_off=None):
@@ -23064,10 +24152,27 @@ def fbp_draw_effect_settings(
                 gp_mask_header_canvas = gp_canvas
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
-    header_left.label(
-        text=settings_label,
-        **({"icon_value": settings_icon_value} if settings_icon_value else {"icon": settings_icon}),
-    )
+    family_id = fbp_effect_family_id(effect_id)
+    family = fbp_effect_family_definition(family_id) if family_id else {}
+    if family and gp_mask_header_canvas is None:
+        # Sub-effects: the family name with its variant dropdown right next
+        # to it, at the top of the effect panel.
+        # The title itself is the dropdown, so it survives narrow sidebars.
+        variant_menu = header_left.row(align=True)
+        variant_menu.context_string_set(_FBP_VARIANT_CONTEXT_KEY, effect_id)
+        variant_menu.menu(
+            "FBP_MT_effect_family_variants",
+            text=(
+                f"{str(family.get('label', 'Effect') or 'Effect')}: "
+                f"{fbp_effect_variant_label(effect_id)}"
+            ),
+            **({"icon_value": settings_icon_value} if settings_icon_value else {"icon": settings_icon}),
+        )
+    else:
+        header_left.label(
+            text=settings_label,
+            **({"icon_value": settings_icon_value} if settings_icon_value else {"icon": settings_icon}),
+        )
     if present_count is None:
         present_count = selected_count
 
@@ -23139,18 +24244,7 @@ def fbp_draw_effect_settings(
     reset.effect_id = effect_id
     reset.instance_id = instance_id
 
-    family_id = fbp_effect_family_id(effect_id)
-    if family_id:
-        family = fbp_effect_family_definition(family_id)
-        variant = box.row(align=False)
-        variant.menu(
-            "FBP_MT_effect_family_variants",
-            text=(
-                f"{str(family.get('label', 'Effect') or 'Effect')}: "
-                f"{fbp_effect_variant_label(effect_id)}"
-            ),
-            icon="DOWNARROW_HLT",
-        )
+    if family:
         active_family_members = [
             variant_id for variant_id, _label in tuple(family.get("variants", ()) or ())
             if fbp_effect_is_active(rig, variant_id)
@@ -23182,12 +24276,17 @@ def fbp_draw_effect_settings(
                     icon="INFO",
                     disabled=True,
                 )
-            controls = box.row(align=True)
-            controls.enabled = not duplicate_controls
-            controls.prop(
+            # A light checkbox row: the gizmo is a helper, not the effect's
+            # main setting, so it no longer fills the panel with a blue bar.
+            controls_row = box.row(align=False)
+            controls_row.enabled = not duplicate_controls
+            controls_split = controls_row.split(factor=0.6, align=False)
+            controls_split.prop(
                 rig, "fbp_effect_controls_enabled", text="Viewport Control",
-                toggle=True, icon="EMPTY_ARROWS",
             )
+            controls = controls_split.row(align=True)
+            controls.alignment = 'RIGHT'
+            controls.active = bool(getattr(rig, "fbp_effect_controls_enabled", True))
             if effect_id == FBP_EFFECT_GRADIENT_LIGHT:
                 controls.operator(
                     "fbp.gradient_light_controller",
@@ -23381,24 +24480,15 @@ def fbp_draw_effect_settings(
             box, rig, definition,
             (
                 "fbp_mesh_wiggle_strength",
-                "fbp_mesh_wiggle_speed",
-                "fbp_mesh_wiggle_hold",
                 "fbp_mesh_wiggle_w",
-            ),
-            labels,
-        )
-
-        _fbp_draw_effect_section(box, "Noise", "RNDCURVE", separator=True)
-        _fbp_draw_compact_effect_properties(
-            box, rig, definition,
-            (
                 "fbp_mesh_wiggle_noise_scale",
                 "fbp_mesh_wiggle_detail",
-                "fbp_mesh_wiggle_seed",
-                "fbp_mesh_wiggle_unique_seed",
             ),
             labels,
         )
+        # Mesh Wiggle always moves: its own Speed, Stepped and Seed are the
+        # Animate section, drawn last like every other animatable effect.
+        _fbp_draw_mesh_wiggle_animate(box, rig)
         detail = int(getattr(rig, "fbp_mesh_wiggle_subdivisions", 0) or 0)
         if detail >= 5:
             warning = box.row(align=False)
@@ -23814,7 +24904,11 @@ def fbp_draw_effect_settings(
             row = target.row(align=True)
             row.enabled = lattice_ready
             row.scale_y = 1.2
-            add = row.operator("fbp.add_lattice_bones", text="Add Bones", icon="BONE_DATA")
+            drawing = FBP_OT_AddLatticeBones.fbp_is_running(rig_name)
+            add = row.operator(
+                "fbp.add_lattice_bones", text="Done Drawing" if drawing else "Add Bones",
+                icon="CHECKMARK" if drawing else "BONE_DATA", depress=drawing,
+            )
             add.rig_name = rig_name
             row.prop(rig, "fbp_lattice_bones_ik", text="IK", toggle=True)
             if not bone_count:
@@ -23837,7 +24931,11 @@ def fbp_draw_effect_settings(
             row.enabled = lattice_ready
             row.scale_y = 1.2
             row.prop(rig, "fbp_lattice_pin_kind", text="")
-            add = row.operator("fbp.add_lattice_pins", text="Add Pins", icon="PINNED")
+            placing = FBP_OT_AddLatticePins.fbp_is_running(rig_name)
+            add = row.operator(
+                "fbp.add_lattice_pins", text="Done Placing" if placing else "Add Pins",
+                icon="CHECKMARK" if placing else "PINNED", depress=placing,
+            )
             add.rig_name = rig_name
             if not pins:
                 _hint(target, "Click on the layer to place pins")
@@ -24132,6 +25230,7 @@ def fbp_draw_effect_settings(
                 "fbp_noise_mask_threshold",
                 "fbp_noise_mask_softness",
                 "fbp_noise_mask_factor",
+                "fbp_noise_mask_seed",
                 "fbp_noise_mask_invert",
             ),
             labels,
@@ -24141,7 +25240,7 @@ def fbp_draw_effect_settings(
         # the registry-driven fallback. Every other effect automatically exposes
         # its property_map, including newly added variants.
         if effect_id not in _FBP_CONTEXTUAL_EFFECT_SETTINGS:
-            skip = list(("fbp_felt_seed",) if effect_id == FBP_EFFECT_FELT_FUZZ else ())
+            skip = []
             explicit_evolve_speed = str(definition.get("evolve_speed_property", "") or "")
             if explicit_evolve_speed:
                 skip.append(explicit_evolve_speed)
@@ -24159,6 +25258,14 @@ def fbp_draw_effect_settings(
                     box, rig, effect_id, definition, labels, skip=tuple(skip)
                 )
             )
+            if effect_id == FBP_EFFECT_GRADIENT_LIGHT:
+                # Softness and Shadow Color live outside the shader socket map
+                # but are part of the look: keep them in the panel.
+                _fbp_draw_compact_effect_properties(
+                    box, rig, definition,
+                    ("fbp_gradient_softness", "fbp_gradient_shadow_color"),
+                    labels,
+                )
             if drawn == 0:
                 missing = box.row(align=False)
                 missing.alert = True
@@ -24467,7 +25574,7 @@ def fbp_draw_effect_settings(
     if effect_id == FBP_EFFECT_GAUSSIAN_BLUR:
         gaussian_properties = (
             "fbp_gaussian_blur_radius_x", "fbp_gaussian_blur_radius_y",
-            "fbp_gaussian_blur_factor",
+            "fbp_gaussian_blur_samples", "fbp_gaussian_blur_factor",
         )
         if instance_id and _fbp_effect_uses_multi_instances(effect_id):
             _fbp_draw_effect_instance_properties(
@@ -24486,6 +25593,7 @@ def fbp_draw_effect_settings(
             tuple(name for name in (
                 "fbp_directional_blur_angle",
                 "fbp_directional_blur_distance",
+                "fbp_directional_blur_samples",
                 "fbp_directional_blur_factor",
             ) if name not in hidden),
             labels,
@@ -25018,7 +26126,10 @@ def fbp_draw_effect_settings(
             warning = box.row()
             warning.alert = True
             warning.label(text="High pixel sampling may slow interaction", icon="ERROR")
-    if definition.get("evolve_property"):
+    if definition.get("evolve_property") and not (
+        effect_id == FBP_EFFECT_MESH_WIGGLE
+        and not bool(getattr(rig, _fbp_animation_key(effect_id, "evolve"), False))
+    ):
         instance_animation = (
             fbp_effect_instance_animation_item(
                 rig, effect_id, instance_id, ensure=False
@@ -25030,41 +26141,43 @@ def fbp_draw_effect_settings(
         section_gap(box)
         animation_body = None
         if instance_id and instance_animation is None:
-            _fbp_draw_effect_section(box, "Animation", "TIME")
+            _fbp_draw_effect_section(box, "Animate", "TIME")
             warning = box.row(align=False)
             warning.enabled = False
             warning.label(text="Instance animation is initializing", icon="FILE_REFRESH")
         else:
+            # Always the last section of an animatable effect: the checkbox
+            # turns Animate on/off, Seed and Stepped are visible right away.
             animation_body = _fbp_draw_toggle_foldout(
                 box, "fbp_effect_animation", animation_owner,
                 "evolve" if instance_animation is not None else _fbp_animation_key(effect_id, "evolve"),
-                "Animation",
+                "Animate",
+                default_closed=False,
             )
         if animation_body is not None:
-            animation = animation_body.row(align=True)
-            animation.prop(
-                animation_owner,
-                "speed" if instance_animation is not None else _fbp_effect_evolution_speed_property(effect_id, definition),
-                text="Speed",
-            )
-            animation.prop(
-                animation_owner,
-                "step" if instance_animation is not None else _fbp_animation_key(effect_id, "step"),
-                text="Stepped",
-            )
+            per_instance = instance_animation is not None
             seed_row = animation_body.row(align=True)
             seed_row.prop(
                 animation_owner,
-                "seed" if instance_animation is not None else _fbp_animation_key(effect_id, "seed"),
+                "seed" if per_instance else _fbp_animation_key(effect_id, "seed"),
                 text="Seed",
-                icon="RNDCURVE",
             )
             seed_row.prop(
                 animation_owner,
-                "unique" if instance_animation is not None else _fbp_animation_key(effect_id, "unique"),
+                "step" if per_instance else _fbp_animation_key(effect_id, "step"),
+                text="Stepped",
+            )
+            speed_row = animation_body.row(align=False)
+            speed_split = speed_row.split(factor=0.5, align=False)
+            speed_split.prop(
+                animation_owner,
+                "speed" if per_instance else _fbp_effect_evolution_speed_property(effect_id, definition),
+                text="Speed",
+            )
+            speed_split.prop(
+                animation_owner,
+                "unique" if per_instance else _fbp_animation_key(effect_id, "unique"),
                 text="Unique per Layer",
-                toggle=True,
-                icon="DUPLICATE",
             )
             if instance_animation is not None:
                 hint = animation_body.row(align=False)
@@ -26101,14 +27214,40 @@ def _fbp_draw_family_variant_operator(layout, rigs, source_effect_id, target_eff
         fbp_effect_is_active(target_rig, target_effect_id)
         for target_rig in rigs
     )
-    row.enabled = supported and not already_target_everywhere
+    current = target_effect_id == source_effect_id
+    row.enabled = supported and (current or not already_target_everywhere)
     op = row.operator(
         "fbp.set_effect_family_variant",
         text=str(label),
-        depress=target_effect_id == source_effect_id,
+        icon="CHECKMARK" if current else "BLANK1",
+        depress=current,
     )
     op.source_effect_id = source_effect_id
     op.target_effect_id = target_effect_id
+
+
+_FBP_VARIANT_CONTEXT_KEY = "fbp_variant_effect"
+
+
+def _fbp_variant_menu_effect(context, rig):
+    """Effect whose variant dropdown opened the menu.
+
+    The settings panel stores it on the dropdown's layout; without it the
+    active Modifiers row decides, and only then the legacy active stack item.
+    """
+    try:
+        effect_id = context.fbp_variant_effect
+    except AttributeError:
+        effect_id = ""
+    effect_id = fbp_normalize_effect_id(effect_id or "")
+    if effect_id:
+        return effect_id
+    try:
+        from .ui import _fbp_native_active_effect
+        native_effect, _instance = _fbp_native_active_effect(rig)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        native_effect = ""
+    return fbp_normalize_effect_id(native_effect or fbp_active_effect_id(rig))
 
 
 class FBP_MT_DuotoneVariants(Menu):
@@ -26121,7 +27260,7 @@ class FBP_MT_DuotoneVariants(Menu):
         if not rigs:
             layout.label(text="Select a Frame By Plane layer", icon="INFO")
             return
-        effect_id = fbp_active_effect_id(rigs[0])
+        effect_id = _fbp_variant_menu_effect(context, rigs[0])
         _fbp_draw_family_variant_operator(
             layout, rigs, effect_id, FBP_EFFECT_DUOTONE, "Duotone"
         )
@@ -26140,20 +27279,16 @@ class FBP_MT_EffectFamilyVariants(Menu):
         if not rigs:
             layout.label(text="Select a Frame By Plane layer", icon="INFO")
             return
-        effect_id = fbp_active_effect_id(rigs[0])
+        effect_id = _fbp_variant_menu_effect(context, rigs[0])
         family_id = fbp_effect_family_id(effect_id)
         family = fbp_effect_family_definition(family_id)
         variants = tuple(family.get("variants", ()) or ())
         if not variants:
             layout.label(text="This effect has no variants", icon="INFO")
             return
+        layout.label(text=str(family.get("label", "Variant") or "Variant"))
+        layout.separator(type="LINE")
         for target_effect_id, label in variants:
-            if family_id == "COLORIZE" and target_effect_id == FBP_EFFECT_FALSE_COLOR:
-                continue
-            if family_id == "COLORIZE" and target_effect_id == FBP_EFFECT_DUOTONE:
-                row = layout.row(align=False)
-                row.menu("FBP_MT_duotone_variants", text="Duotone")
-                continue
             _fbp_draw_family_variant_operator(
                 layout, rigs, effect_id, target_effect_id, label
             )
@@ -31276,8 +32411,29 @@ def _fbp_move_effect_ref(rig, token, direction, *, sync_items=False):
     return fbp_move_effect(rig, effect_id, direction, sync_items=sync_items)
 
 
+# Set to a dict while one refresh pass runs, so the stack order (which costs a
+# full instance-record discovery) is computed once per rig instead of once per
+# Mesh effect and stage material. No stack edits happen inside such a pass.
+_FBP_MIXED_TOKENS_MEMO = None
+
+
 def _fbp_mixed_effect_tokens(rig):
     """Return the one persisted Image / Mask / Mesh evaluation order."""
+    memo = _FBP_MIXED_TOKENS_MEMO
+    if memo is not None:
+        try:
+            key = rig.as_pointer()
+        except FBP_DATA_ERRORS:
+            key = None
+        if key is not None:
+            cached = memo.get(key)
+            if cached is None:
+                cached = memo[key] = tuple(_fbp_mixed_effect_tokens_uncached(rig))
+            return list(cached)
+    return _fbp_mixed_effect_tokens_uncached(rig)
+
+
+def _fbp_mixed_effect_tokens_uncached(rig):
     result = []
     for record in fbp_effect_instance_records_for_rig(
         rig, ensure=False, sync_storage=False
@@ -31651,6 +32807,9 @@ def _fbp_sync_mixed_effect_pipeline(rig):
                     _fbp_effect_stack_owner_id(rig, ensure=True)
                 )
                 modifier.node_group = private_group
+                # Internal plumbing: one folded row instead of a full panel
+                # between the user's effects in the Modifiers list.
+                modifier.show_expanded = False
                 stage_by_token[token] = modifier
                 changed = True
             except FBP_DATA_ERRORS as exc:
@@ -34520,29 +35679,122 @@ def _fbp_click_rest_point(context, plane, region, region_3d, coord):
     return rest
 
 
+# Regions drawn over the 3D View (sidebar, toolbar, headers, asset shelf):
+# a click there belongs to the interface, never to the layer under it.
+_FBP_VIEW3D_OVERLAP_REGIONS = frozenset({
+    'UI', 'TOOLS', 'HEADER', 'TOOL_HEADER', 'FOOTER', 'HUD',
+    'ASSET_SHELF', 'ASSET_SHELF_HEADER', 'NAVIGATION_BAR', 'TOOL_PROPS',
+})
+
+
 def _fbp_view3d_under_mouse(context, event):
-    """Return (area, region, region_3d) of the 3D View under the mouse, or Nones."""
+    """Return (area, region, region_3d) of the 3D View under the mouse.
+
+    Over a 3D View's sidebar, toolbar or header the area comes back without a
+    region, so the click reaches the interface instead of placing a handle.
+    In Quad View the region under the mouse brings its own view.
+    """
     screen = getattr(getattr(context, "window", None), "screen", None)
     if screen is None:
         return None, None, None
     x, y = int(event.mouse_x), int(event.mouse_y)
+
+    def inside(item):
+        return item.x <= x < item.x + item.width and item.y <= y < item.y + item.height
+
     for area in screen.areas:
-        if area.type != 'VIEW_3D':
-            continue
-        if not (area.x <= x < area.x + area.width and area.y <= y < area.y + area.height):
+        if area.type != 'VIEW_3D' or not inside(area):
             continue
         for region in area.regions:
-            if region.type == 'WINDOW' and region.x <= x < region.x + region.width and region.y <= y < region.y + region.height:
-                space = area.spaces.active
-                return area, region, getattr(space, "region_3d", None)
-        return None, None, None
+            if region.type in _FBP_VIEW3D_OVERLAP_REGIONS and region.width > 1 and region.height > 1 and inside(region):
+                return area, None, None
+        for region in area.regions:
+            if region.type == 'WINDOW' and inside(region):
+                region_3d = getattr(region, "data", None)
+                if not isinstance(region_3d, bpy.types.RegionView3D):
+                    region_3d = getattr(area.spaces.active, "region_3d", None)
+                return area, region, region_3d
+        return area, None, None
     return None, None, None
 
 
-class FBP_OT_AddLatticePins(Operator):
+def _fbp_point_on_layer(plane, world_point, margin=0.02):
+    """True when a world point on the plane's surface lies inside the layer rectangle."""
+    try:
+        local = plane.matrix_world.inverted_safe() @ Vector(world_point)
+        xs = [vertex.co.x for vertex in plane.data.vertices]
+        ys = [vertex.co.y for vertex in plane.data.vertices]
+        pad_x = (max(xs) - min(xs)) * margin
+        pad_y = (max(ys) - min(ys)) * margin
+        return min(xs) - pad_x <= local.x <= max(xs) + pad_x and min(ys) - pad_y <= local.y <= max(ys) + pad_y
+    except (ValueError,) + FBP_DATA_ERRORS:
+        return True
+
+
+class _FBPLatticeClickModal:
+    """Shared behaviour of the click-to-place Lattice tools (pins, bones).
+
+    Only one of them runs at a time: pressing its button again ends it, and
+    starting another one ends the previous one. A failed click is reported and
+    never leaves the tool stuck, so Enter, Esc and Right Click always finish.
+    """
+
+    _fbp_active_token = None
+    _fbp_active_key = None
+
+    @classmethod
+    def fbp_is_running(cls, rig_name=""):
+        key = _FBPLatticeClickModal._fbp_active_key
+        return bool(
+            _FBPLatticeClickModal._fbp_active_token is not None and key is not None
+            and key[0] == cls.__name__ and (not rig_name or key[1] == rig_name)
+        )
+
+    def _fbp_claim(self):
+        """Start this tool; return False when the call only ended a running one."""
+        if type(self).fbp_is_running(str(self.rig_name or "")):
+            _FBPLatticeClickModal._fbp_active_token = None
+            _FBPLatticeClickModal._fbp_active_key = None
+            _fbp_tag_view3d_redraw()
+            return False
+        token = object()
+        _FBPLatticeClickModal._fbp_active_token = token
+        _FBPLatticeClickModal._fbp_active_key = (type(self).__name__, str(self.rig_name or ""))
+        self._fbp_token = token
+        return True
+
+    def _fbp_superseded(self):
+        return getattr(self, "_fbp_token", None) is not _FBPLatticeClickModal._fbp_active_token
+
+    def _fbp_release(self):
+        if not self._fbp_superseded():
+            _FBPLatticeClickModal._fbp_active_token = None
+            _FBPLatticeClickModal._fbp_active_key = None
+        self._fbp_token = None
+
+    def cancel(self, context):
+        # Blender drops modal handlers on file load or window close.
+        self._fbp_release()
+        try:
+            context.workspace.status_text_set(None)
+        except FBP_DATA_ERRORS:
+            pass
+        restore_modal_cursor(context)
+
+
+def _fbp_tag_view3d_redraw():
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                area.tag_redraw()
+    except FBP_DATA_ERRORS:
+        pass
+
+
+class FBP_OT_AddLatticePins(_FBPLatticeClickModal, Operator):
     bl_idname = "fbp.add_lattice_pins"
     bl_label = "Add Puppet Pins"
-    bl_description = "Click on the layer in the 3D View to place puppet pins; Ctrl+Click removes the nearest pin. Enter, Esc or Right Click finishes in Pose Mode. Move (G) or rotate (R) a pin to bend the drawing around it, and keyframe it like any bone"
+    bl_description = "Click on the layer in the 3D View to place puppet pins; Ctrl+Click removes the nearest pin. Enter, Esc, Right Click or this button again finishes in Pose Mode. Move (G) or rotate (R) a pin to bend the drawing around it, and keyframe it like any bone"
     bl_options = {'REGISTER', 'UNDO'}
 
     rig_name: StringProperty(description='Name of the generated Frame By Plane rig that owns the layer, helper, mask or action target.', options={'HIDDEN'})
@@ -34572,12 +35824,20 @@ class FBP_OT_AddLatticePins(Operator):
         rig = bpy.data.objects.get(str(self.rig_name or ""))
         if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
             return {'CANCELLED'}
+        if type(self).fbp_is_running(str(self.rig_name or "")):
+            self._fbp_claim()
+            return {'CANCELLED'}
         rig, helper, plane = _fbp_lattice_pins_target(self)
         if helper is None:
             return {'CANCELLED'}
         screen = getattr(getattr(context, "window", None), "screen", None)
         if screen is None or not any(area.type == 'VIEW_3D' for area in screen.areas):
             self.report({'ERROR'}, "Open a 3D View to place pins")
+            return {'CANCELLED'}
+        # Bones left in Edit Mode would keep new pins from getting pose bones.
+        from .lattice_bones import bones_object, leave_edit_mode
+        if not leave_edit_mode(bones_object(rig)):
+            self.report({'ERROR'}, "Press Done on the bones before adding pins")
             return {'CANCELLED'}
         if not rig_pins(rig) and needs_denser_cage(helper):
             # Pins bend the drawing through the cage: give them enough points.
@@ -34592,22 +35852,24 @@ class FBP_OT_AddLatticePins(Operator):
                 return {'CANCELLED'}
             self.report({'INFO'}, f"Cage refined to {points_u} × {points_v} points for puppet pins")
         fbp_set_rna_property_silent(rig, "fbp_lattice_show_cage", False)
+        self._fbp_claim()
         self._status(context)
         try:
             context.window.cursor_modal_set('CROSSHAIR')
         except FBP_DATA_ERRORS:
             pass
         context.window_manager.modal_handler_add(self)
+        _fbp_tag_view3d_redraw()
         return {'RUNNING_MODAL'}
 
     def _finish(self, context):
+        self._fbp_release()
         try:
             context.workspace.status_text_set(None)
         except FBP_DATA_ERRORS:
             pass
         restore_modal_cursor(context)
-        for area in getattr(getattr(context, "screen", None), "areas", ()) or ():
-            area.tag_redraw()
+        _fbp_tag_view3d_redraw()
         return {'FINISHED'}
 
     def _add(self, context, region, region_3d, coord):
@@ -34623,7 +35885,13 @@ class FBP_OT_AddLatticePins(Operator):
         rest = hit[1] if hit is not None else None
         if rest is None:
             rest = ray_plane_point(plane, origin, direction)
-        if rest is None:
+        if rest is None or not _fbp_point_on_layer(plane, rest):
+            self.report({'WARNING'}, "Click on the layer to place a pin")
+            return False
+        # A click on an existing pin picks it instead of stacking a second pin on it.
+        nearest = self._nearest_pin(context, rig, region, region_3d, coord, 12.0)
+        if nearest is not None:
+            select_pins(context, rig, [nearest])
             return False
         existing = rig_pins(rig)
         current = blended_location(rig, helper, existing, rest)
@@ -34637,13 +35905,13 @@ class FBP_OT_AddLatticePins(Operator):
         _fbp_invalidate_live_lattice_cache()
         return True
 
-    def _remove_nearest(self, context, region, region_3d, coord):
+    @staticmethod
+    def _nearest_pin(context, rig, region, region_3d, coord, pixels):
+        """The puppet pin drawn within ``pixels`` (UI scaled) of a click, or None."""
         from bpy_extras import view3d_utils
-        from .lattice_pins import pin_world, puppet_pins, remove_pin
-        rig = bpy.data.objects.get(str(self.rig_name or ""))
-        helper = _fbp_lattice_object(rig) if rig is not None else None
+        from .lattice_pins import pin_world, puppet_pins
         best = None
-        limit = 24.0 * float(getattr(context.preferences.system, "ui_scale", 1.0) or 1.0)
+        limit = pixels * float(getattr(context.preferences.system, "ui_scale", 1.0) or 1.0)
         for pin in puppet_pins(rig):
             # A pin added by the previous click may not be evaluated yet.
             world = pin_world(rig, pin).translation
@@ -34653,11 +35921,20 @@ class FBP_OT_AddLatticePins(Operator):
             distance = (point - Vector(coord)).length
             if distance <= limit and (best is None or distance < best[0]):
                 best = (distance, pin)
-        if best is None:
+        return best[1] if best is not None else None
+
+    def _remove_nearest(self, context, region, region_3d, coord):
+        from .lattice_pins import remove_pin
+        rig = bpy.data.objects.get(str(self.rig_name or ""))
+        helper = _fbp_lattice_object(rig) if rig is not None else None
+        pin = self._nearest_pin(context, rig, region, region_3d, coord, 24.0)
+        if pin is None:
             return False
-        return remove_pin(rig, helper, best[1])
+        return remove_pin(rig, helper, pin)
 
     def modal(self, context, event):
+        if self._fbp_superseded():
+            return self._finish(context)
         if event.type in {'RET', 'NUMPAD_ENTER', 'ESC'} and event.value == 'PRESS':
             return self._finish(context)
         area, region, region_3d = _fbp_view3d_under_mouse(context, event)
@@ -34672,7 +35949,7 @@ class FBP_OT_AddLatticePins(Operator):
                     self._remove_nearest(context, region, region_3d, coord)
                 else:
                     self._add(context, region, region_3d, coord)
-            except FBP_DATA_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001 - a failed click must never leave the tool stuck
                 self.report({'ERROR'}, f"Could not place the pin: {exc}")
             self._status(context)
             area.tag_redraw()
@@ -34757,7 +36034,7 @@ def _fbp_select_only(context, obj, mode=None):
         return False
 
 
-class FBP_OT_AddLatticeBones(Operator):
+class FBP_OT_AddLatticeBones(_FBPLatticeClickModal, Operator):
     bl_idname = "fbp.add_lattice_bones"
     bl_label = "Add Bones"
     bl_description = "Click joints on the layer to draw a chain of bones: shoulder, elbow, hand. Right Click ends the chain (start the next one on a joint to branch from it), Ctrl+Click removes the last bone, Enter finishes in Pose Mode. Chains get an IK handle at their end"
@@ -34783,6 +36060,9 @@ class FBP_OT_AddLatticeBones(Operator):
         rig = bpy.data.objects.get(str(self.rig_name or ""))
         if not _fbp_lattice_exit_edit(context, _fbp_lattice_object(rig) if rig is not None else None):
             return {'CANCELLED'}
+        if type(self).fbp_is_running(str(self.rig_name or "")):
+            self._fbp_claim()
+            return {'CANCELLED'}
         rig, helper, plane = _fbp_lattice_pins_target(self)
         if helper is None:
             return {'CANCELLED'}
@@ -34805,12 +36085,14 @@ class FBP_OT_AddLatticeBones(Operator):
         self._parent = ""
         self._chain = []
         self._chains = []
+        self._fbp_claim()
         self._status(context)
         try:
             context.window.cursor_modal_set('CROSSHAIR')
         except FBP_DATA_ERRORS:
             pass
         context.window_manager.modal_handler_add(self)
+        _fbp_tag_view3d_redraw()
         return {'RUNNING_MODAL'}
 
     def _armature(self):
@@ -34872,8 +36154,23 @@ class FBP_OT_AddLatticeBones(Operator):
         self._joint = local
         self._parent = name
 
+    def _fbp_safe_finish(self, context):
+        try:
+            return self._finish(context)
+        except Exception as exc:  # noqa: BLE001 - the tool must end even if the bones could not be finished
+            self._fbp_release()
+            restore_modal_cursor(context)
+            try:
+                context.workspace.status_text_set(None)
+            except FBP_DATA_ERRORS:
+                pass
+            self.report({'ERROR'}, f"Could not finish the bones: {exc}")
+            return {'CANCELLED'}
+
     def _finish(self, context):
         from .lattice_bones import add_ik_target, bind, bones_object, deform_bones, handle_size, remove_bones, setup_pose_constraints
+        self._fbp_release()
+        _fbp_tag_view3d_redraw()
         self._end_chain()
         try:
             context.workspace.status_text_set(None)
@@ -34909,14 +36206,16 @@ class FBP_OT_AddLatticeBones(Operator):
         return {'FINISHED'}
 
     def modal(self, context, event):
+        if self._fbp_superseded():
+            return self._fbp_safe_finish(context)
         if event.type in {'RET', 'NUMPAD_ENTER', 'ESC'} and event.value == 'PRESS':
-            return self._finish(context)
+            return self._fbp_safe_finish(context)
         area, region, region_3d = _fbp_view3d_under_mouse(context, event)
         if event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
-            if area is None:
+            if area is None or region is None:
                 return {'PASS_THROUGH'}
             if self._joint is None:
-                return self._finish(context)
+                return self._fbp_safe_finish(context)
             self._end_chain()
             self._status(context)
             area.tag_redraw()
@@ -34925,7 +36224,7 @@ class FBP_OT_AddLatticeBones(Operator):
             coord = (event.mouse_x - region.x, event.mouse_y - region.y)
             try:
                 self._click(context, region, region_3d, coord, bool(event.ctrl))
-            except FBP_DATA_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001 - a failed click must never leave the tool stuck
                 self.report({'ERROR'}, f"Could not add the bone: {exc}")
             self._status(context)
             area.tag_redraw()
@@ -35583,6 +36882,13 @@ def register():
                 module_suffix="geometry_nodes",
             ):
                 raise RuntimeError("Could not register the effect playback-stop handler")
+            popover = _fbp_playback_popover()
+            if popover is not None:
+                try:
+                    popover.remove(fbp_draw_playback_light_settings)
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    pass
+                popover.append(fbp_draw_playback_light_settings)
             try:
                 from .safe_tasks import schedule_once
                 schedule_once(
@@ -35606,6 +36912,16 @@ def unregister():
     unregister_clipping_matrix_driver_namespace()
     _FBP_EFFECT_PLAYBACK_ACTIVE = False
     _FBP_SELECTED_RIGS_FN = None
+    try:
+        fbp_restore_playback_suspended_effects()
+    except FBP_DATA_ERRORS:
+        pass
+    popover = _fbp_playback_popover()
+    if popover is not None:
+        try:
+            popover.remove(fbp_draw_playback_light_settings)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
     fbp_clear_effect_runtime_caches()
     _fbp_remove_object_context_menu_entry()
     _fbp_remove_evolve_handlers()

@@ -656,39 +656,6 @@ def fbp_compositor_source_specs(scene, mode=None):
     return tuple(specs)
 
 
-def _source_rigs_for_item(scene, item, rigs=None):
-    rigs = tuple(rigs if rigs is not None else _scene_fbp_rigs(scene))
-    kind = str(getattr(item, "source_kind", 'MANUAL') or 'MANUAL').upper()
-    key = str(getattr(item, "source_key", "") or "")
-    if kind == 'TAG':
-        return tuple(
-            rig for rig in rigs
-            if str(getattr(rig, "fbp_color_tag", 'NONE') or 'NONE').upper() == key
-        )
-    if kind == 'LAYER':
-        return tuple(
-            rig for rig in rigs
-            if str(getattr(rig, "fbp_compositor_source_id", "") or "") == key
-        )
-    if kind in {'GROUP', 'COLLECTION'}:
-        collection = _collection_by_source_id(scene, key)
-        if collection is None:
-            return ()
-        parent_map = _collection_parent_map(scene)
-        if kind == 'GROUP':
-            return tuple(
-                rig for rig in rigs
-                if _collection_is_descendant(
-                    _primary_collection(rig), collection, scene, parent_map
-                )
-            )
-        return tuple(
-            rig for rig in rigs
-            if (_physical_fbp_collection(rig, scene) == collection)
-        )
-    return ()
-
-
 def _source_rig_index(scene, rigs, parent_map=None):
     """Index all automatic source memberships once for shadow synchronization."""
     parent_map = parent_map if parent_map is not None else _collection_parent_map(scene)
@@ -3253,37 +3220,6 @@ def fbp_auto_compositor_layers(scene):
     else:
         scene.fbp_compositor_layer_index = 0
     return added
-
-
-def fbp_compositor_assignment_count(scene, layer_id):
-    item = _item_by_id(scene, layer_id)
-    if item is not None and _is_folder_item(item):
-        return sum(
-            fbp_compositor_assignment_count(scene, child.layer_id)
-            for child in scene.fbp_compositor_layers
-            if str(getattr(child, "parent_folder_id", "") or "") == item.layer_id
-        )
-    if item is not None and str(
-        getattr(item, "source_kind", 'MANUAL') or 'MANUAL'
-    ) != 'MANUAL':
-        source_rigs = _source_rigs_for_item(scene, item)
-        if source_rigs:
-            return len(source_rigs)
-        if str(getattr(item, "source_kind", "") or "") == 'COLLECTION':
-            collection = _collection_by_source_id(
-                scene, str(getattr(item, "source_key", "") or "")
-            )
-            if collection is not None:
-                return sum(
-                    1 for obj in _objects_for_layer_source(collection, item.layer_id)
-                    if bool(getattr(obj, "is_fbp_control", False))
-                    or bool(getattr(obj, "is_fbp_plane", False))
-                )
-        return 0
-    return sum(
-        1 for collection in fbp_compositor_group_collections(scene)
-        if str(getattr(collection, "fbp_compositor_layer_id", "") or "") == layer_id
-    )
 
 
 def _update_transparency(scene, _context):

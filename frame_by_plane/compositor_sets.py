@@ -285,38 +285,6 @@ def _queue_scene_property_sync(scene, *, first_interval=0.05):
     return bool(accepted)
 
 
-def _iter_compositor_nodes(tree, visited=None):
-    """Iterate visible compositor nodes without entering FBP controller internals.
-
-    Output and Stack rebuilds clear their owned child node trees.  Eagerly
-    materializing those internal nodes and then rebuilding the controller leaves
-    Python wrappers pointing at freed C nodes; Blender 5.2 can hard-crash before
-    Python gets a chance to raise ``ReferenceError``.  Controller instances are
-    yielded, but their implementation trees are deliberately treated as opaque.
-    """
-    if tree is None:
-        return
-    visited = visited if visited is not None else set()
-    try:
-        tree_key = int(tree.as_pointer())
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        tree_key = id(tree)
-    if tree_key in visited:
-        return
-    visited.add(tree_key)
-    for node in tuple(getattr(tree, 'nodes', ())):
-        try:
-            role = _node_role_without_idprops(node)
-            yield node
-            if role in {ROLE_SET, ROLE_OUTPUT, ROLE_STACK}:
-                continue
-            child = getattr(node, 'node_tree', None)
-            if child is not None and getattr(child, 'bl_idname', '') == 'CompositorNodeTree':
-                yield from _iter_compositor_nodes(child, visited)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            continue
-
-
 _FBP_NODE_ROLE_BY_IDNAME = {
     "FBPCompositorLayerSetNode": ROLE_SET,
     "FBPCompositorOutputNode": ROLE_OUTPUT,

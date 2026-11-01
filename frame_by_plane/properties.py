@@ -872,6 +872,12 @@ class FBP_AddonPreferences(AddonPreferences):
         default=True,
         update=update_shortcut_preferences_cb,
     )
+    shortcut_delete_layer: BoolProperty(
+        name="Delete Layer",
+        description="Use X and Delete for Frame By Plane-aware deletion in Object Mode, removing rig and plane together; ordinary objects still use Blender Delete",
+        default=True,
+        update=update_shortcut_preferences_cb,
+    )
     shortcut_group_layers: BoolProperty(
         name="Move Layers to/from Collections",
         description=f"Use {primary_shortcut_label('G')} to group selected layers and {primary_shortcut_label('G', shift=True)} to ungroup them",
@@ -2143,6 +2149,8 @@ class FBP_AddonPreferences(AddonPreferences):
                         )
                 row = _row(body)
                 row.prop(self, 'shortcut_duplicate_layer', text='Shift+D · Duplicate', toggle=True, icon='DUPLICATE')
+                row.prop(self, 'shortcut_delete_layer', text='X · Delete', toggle=True, icon='TRASH')
+                row = _row(body)
                 row.prop(self, 'shortcut_group_layers', text=f"{primary_shortcut_label('G')} · Collection", toggle=True, icon='OUTLINER_COLLECTION')
                 row = _row(body)
                 row.prop(self, 'shortcut_click_through_alpha', text='Click · Through Transparency', toggle=True, icon='RESTRICT_SELECT_OFF')
@@ -4514,6 +4522,20 @@ def register_properties():
         camera_width_get, camera_width_set, camera_height_get, camera_height_set,
         FBP_CameraFormatPreset,
     )
+    _FBP_SCENE_RNA.fbp_playback_light_mode = EnumProperty(
+        name="Light Playback",
+        description=(
+            "Pause Mesh effects in the viewport while the timeline plays, so playback keeps its frame rate. "
+            "They come back when playback stops. Renders and saved settings never change"
+        ),
+        items=(
+            ("OFF", "Off", "Play every effect at full cost"),
+            ("HEAVY", "Heavy Effects", "Pause Mesh effects that took more than 4 ms to evaluate"),
+            ("ALL", "All Mesh Effects", "Pause every Mesh effect while playing"),
+        ),
+        default="HEAVY",
+        options=set(),
+    )
     _FBP_SCENE_RNA.fbp_camera_aspect = StringProperty(
         name="Aspect Ratio", description="Output shape, landscape by default. Use Swap Dimensions for portrait. Keeps the longest pixel dimension; accounts for non-square pixels",
         get=camera_aspect_get, set=camera_aspect_set, options=set())
@@ -4917,6 +4939,13 @@ def register_properties():
     _FBP_SCENE_RNA.fbp_cam_pivot    = BoolProperty(name="Pivot on Camera", description="Move the 3D cursor to the camera pivot when creating a camera setup", default=True)
     _FBP_SCENE_RNA.fbp_layer_offset = FloatProperty(name="Space Between Layers", description="Distance between generated layers; imported top-level collections use a larger gap", default=0.5, min=0.001, soft_max=5.0, unit='LENGTH')
     _FBP_SCENE_RNA.fbp_auto_scale   = BoolProperty(name="Auto-Scale (Fit to Cam)", description="Scale generated planes to the camera frame using the image aspect ratio", default=False)
+    from .builder import FBP_FIT_MODE_ITEMS
+    _FBP_SCENE_RNA.fbp_fit_mode = EnumProperty(
+        name="Fit Mode",
+        description="How Fit and Fit to Camera size a layer to the camera frame",
+        items=FBP_FIT_MODE_ITEMS,
+        default='CONTAIN',
+    )
     _FBP_SCENE_RNA.fbp_camera_fit_source_aspect = BoolProperty(
         name="Camera Uses Source Aspect",
         description="When generating a Frame By Plane camera, match the output resolution to the first generated layer source aspect instead of a fixed preset",
