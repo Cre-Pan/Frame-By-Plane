@@ -4542,6 +4542,27 @@ def test_frame_stack_samples_earlier_frames(_module):
         rig = build("FBP Frame Stack Test", folder, names, 1, "NONE")
         # Frame 4 (yellow) is the plane; slices behind show frames 3, 2 and 1.
         assert slices(rig, start + 3) == {-0.1: blue, -0.2: green, -0.3: red}, slices(rig, start + 3)
+        # Sequences take the light path: thumbnails in one stack image, no
+        # full-resolution frame decoded per slice.
+        modifier = next(
+            modifier for modifier in geometry._fbp_plane(rig).modifiers
+            if modifier.name.startswith("FBP • Frame Stack")
+        )
+
+        def light_path():
+            identifier = geometry._fbp_interface_input_identifier(modifier.node_group, "Use Stack Image")
+            return bool(geometry._fbp_modifier_input_get(modifier, identifier))
+
+        assert light_path()
+        # Without thumbnails the Repeat Zone path gives the same slices.
+        cells_image = geometry._fbp_frame_stack_cells_image
+        geometry._fbp_frame_stack_cells_image = lambda *args, **kwargs: None
+        try:
+            scene.frame_set(start)
+            assert slices(rig, start + 3) == {-0.1: blue, -0.2: green, -0.3: red}, slices(rig, start + 3)
+            assert not light_path()
+        finally:
+            geometry._fbp_frame_stack_cells_image = cells_image
         # One Shot: nothing played before the first frame, so those slices stay empty.
         assert slices(rig, start + 1) == {-0.1: red}, slices(rig, start + 1)
 
