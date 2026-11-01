@@ -61,6 +61,23 @@ _SHELL_SOCKET_KEY = "fbp_shell_socket"
 _MAX_ATTRIBUTE_NAME = 63
 
 
+_OBJECT_RNA_CACHE = {}
+
+
+def _object_rna(prop_name):
+    """Object RNA property by name, cached (a lookup scans ~1300 properties).
+
+    Only hits are cached; the cache resets on (un)registration so a reload
+    never keeps stale RNA structs.
+    """
+    rna = _OBJECT_RNA_CACHE.get(prop_name)
+    if rna is None:
+        rna = bpy.types.Object.bl_rna.properties.get(prop_name)
+        if rna is not None:
+            _OBJECT_RNA_CACHE[prop_name] = rna
+    return rna
+
+
 def _geo():
     from . import geometry_nodes
     return geometry_nodes
@@ -136,11 +153,10 @@ def _shell_parameters(effect_id):
         return []
     definition = _geo().fbp_effect_definition(effect_id)
     result = []
-    properties = bpy.types.Object.bl_rna.properties
     for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
         if prop_name in _SHELL_DERIVED_PROPERTIES:
             continue
-        rna = properties.get(prop_name)
+        rna = _object_rna(prop_name)
         # Choices are dropdowns on the layer: Frame By Plane converts them.
         if rna is None or rna.type not in {"FLOAT", "INT", "BOOLEAN"}:
             continue
@@ -287,10 +303,9 @@ def _shell_layout_entries(effect_id):
     names = list((definition.get("property_map", {}) or {}).keys())
     names.extend(definition.get("extra_properties", ()) or ())
     names.extend(animate)
-    properties = bpy.types.Object.bl_rna.properties
     plain, animated = [], {}
     for prop_name in dict.fromkeys(str(name or "") for name in names):
-        rna = properties.get(prop_name)
+        rna = _object_rna(prop_name)
         if rna is None or rna.type not in _SHELL_LAYER_TYPES:
             continue
         if getattr(rna, "is_array", False) and not _is_color(rna):
@@ -572,9 +587,8 @@ def _init_shell_values(rig, modifier, effect_id, instance_id, source=None):
         else:
             value = getattr(rig, prop_name, 0.0)
         _set_modifier_input(modifier, identifier, rna, value)
-    properties = bpy.types.Object.bl_rna.properties
     for prop_name, storage, identifier, kind in _shell_layer_mapping(group):
-        rna = properties.get(prop_name)
+        rna = _object_rna(prop_name)
         value = _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind)
         if value is None:
             continue
@@ -621,7 +635,6 @@ def _rebuild_shell(rig, token, modifier):
                 pass
     _init_shell_values(rig, modifier, effect_id, instance_id, source)
     # Choices left the material links: let the layer write them again.
-    properties = bpy.types.Object.bl_rna.properties
     for prop_name, storage, _identifier, kind in _shell_layer_mapping(modifier.node_group):
         if kind != "ENUM" or storage != "RIG":
             continue
@@ -1103,6 +1116,13 @@ def fbp_shell_sync_values(rig):
                     except FBP_DATA_ERRORS:
                         pass
             _write_layer_values(rig, effect_id, instance_id, to_layer, parameters)
+        for node in nodes:
+            # Samples or a gating input edited or keyed in the Modifiers
+            # panel: keep reading exactly the texture taps the values need.
+            try:
+                geo._fbp_sync_runtime_mutes(rig, effect_id, node)
+            except FBP_DATA_ERRORS:
+                pass
         if stored != synced:
             try:
                 modifier.node_group[_SHELL_SYNCED_KEY] = stored
@@ -1114,10 +1134,9 @@ def fbp_shell_sync_values(rig):
 def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
     """Two-way sync of the inputs that mirror layer settings (see above)."""
     geo = _geo()
-    properties = bpy.types.Object.bl_rna.properties
     moved = 0
     for prop_name, storage, identifier, kind in _shell_layer_mapping(modifier.node_group):
-        rna = properties.get(prop_name)
+        rna = _object_rna(prop_name)
         if rna is None:
             continue
         current = _modifier_input(modifier, identifier)
@@ -1240,13 +1259,12 @@ def fbp_shell_layout(layout, rig, effect_id, instance_id=""):
         return layout
     geo = _geo()
     handles, labels = {}, {}
-    properties = bpy.types.Object.bl_rna.properties
     for prop_name, socket_name, identifier, _kind in _shell_mapping(modifier.node_group):
         handle = geo._fbp_modifier_input_handle(modifier, identifier)
         if handle is None:
             continue
         handles[prop_name] = handle
-        rna = properties.get(prop_name)
+        rna = _object_rna(prop_name)
         labels[prop_name] = str(getattr(rna, "name", "") or socket_name)
     if not handles:
         return layout
@@ -1258,8 +1276,10 @@ classes = ()
 
 
 def register():
+    _OBJECT_RNA_CACHE.clear()
     register_classes(classes)
 
 
 def unregister():
+    _OBJECT_RNA_CACHE.clear()
     unregister_classes(classes)
