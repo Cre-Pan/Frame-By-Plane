@@ -58,6 +58,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- Fixed a Blender crash (access violation in `image_acquire_ibuf` during the Eevee viewport sync) that could happen in Material Preview right after inserting a keyframe or moving a layer with a Grease Pencil Mask or Shape Mask. Old mask buffers were deleted while a cached viewport shader still pointed at them; they are now emptied instead of deleted, and Blender discards them on the next save.
 - Halftone: Color Mode and Use Source Color had no effect, so BW Light, BW Dark and a custom Ink Color all rendered the source colors. They now work, and files saved with the old Halftone are updated when opened.
 - Slice Shift: every band moved by the same Shift, which only slid the whole image sideways and left Bands with no visible effect. Neighbouring bands now move in opposite directions; files saved with the old Slice Shift are updated when opened.
 - Grain no longer writes negative colors in dark areas.

@@ -46,6 +46,8 @@ from .runtime import (
     fbp_set_rna_property_silent,
     fbp_warn,
     fbp_warn_once,
+    fbp_release_orphan_image,
+    fbp_mark_image_in_use,
     fbp_capture_runtime_targets as _gp_capture_runtime_targets
 )
 from .layers import (
@@ -4326,10 +4328,10 @@ def _prune_gp_mask_retired_images(now=None, *, remove_orphans=False):
     """Prune retired GP-mask bookkeeping without losing live orphan IDs.
 
     Cache clears and reloads may discard entries only when their Image no
-    longer exists.  The raster/publish path may additionally remove old,
-    zero-user generated buffers from ``bpy.data.images`` before dropping the
-    corresponding timestamp.  Keeping the two operations coupled prevents an
-    untracked Image leak while remaining safe during Undo/load handlers.
+    longer exists.  The raster/publish path may additionally release the
+    pixels of old, zero-user generated buffers.  Image IDs are never deleted
+    at runtime (Eevee may still hold their pointers); entries leave the table
+    only when it overflows, and Blender drops the empty orphans on reload.
     """
     if not _GP_MASK_IMAGE_RETIRED_AT:
         return 0
@@ -4369,12 +4371,17 @@ def _prune_gp_mask_retired_images(now=None, *, remove_orphans=False):
             removable = False
         if not removable:
             continue
-        try:
-            bpy.data.images.remove(image)
-        except FBP_DATA_ERRORS:
+        # Never delete the Image ID here: a cached Eevee GPU material or an
+        # Undo step may still hold its raw pointer, and removing it crashed
+        # Blender 5.2 inside image_acquire_ibuf on the next viewport sync
+        # (typically right after an auto-keyed transform re-rasterized the
+        # mask). Free the pixels instead; the empty orphan is dropped by
+        # Blender on save/reload and stays reusable at the same resolution.
+        if not fbp_release_orphan_image(image):
             continue
-        _GP_MASK_IMAGE_RETIRED_AT.pop(name, None)
-        removed += 1
+        if must_reduce_table:
+            _GP_MASK_IMAGE_RETIRED_AT.pop(name, None)
+            removed += 1
     return removed
 
 
@@ -4453,6 +4460,7 @@ def _publish_mask_image(canvas, image, previous_image=None):
         canvas.fbp_gp_mask_image = image
         canvas[KEY_MASK_IMAGE_NAME] = image.name
         image["fbp_orphan_candidate"] = False
+        fbp_mark_image_in_use(image)
     except FBP_DATA_ERRORS:
         return False
     if previous_image is not None and not _same_datablock(previous_image, image):
