@@ -415,12 +415,11 @@ def _fbp_wrap_uv(value, mode):
     return None
 
 
-def fbp_rig_alpha_visible_at_uv(rig, u, v, scene=None):
-    """True/False when a click at UV (u, v) lands on solid pixels of the
-    shown frame (faint pixels and scattered specks do not count).
+def fbp_rig_shown_alpha(rig, scene=None):
+    """``(visible, union, extend_mode)`` for the frame the layer shows now.
 
-    Returns ``None`` when the alpha cannot be read, so callers can fall back
-    to treating the plane as solid.
+    ``visible`` is False when the layer shows nothing on this frame; ``union``
+    is ``None`` when the alpha cannot be read.
     """
     try:
         from .native_backend import fbp_native_source_path_at_frame
@@ -428,13 +427,25 @@ def fbp_rig_alpha_visible_at_uv(rig, u, v, scene=None):
         path, visible = fbp_native_source_path_at_frame(rig, int(scene.frame_current)) if scene else ("", True)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         path, visible = "", True
+    mode = str(getattr(rig, "fbp_extend_mode", "MIRROR") or "MIRROR").upper()
+    if not visible:
+        return False, None, mode
+    frame_path = path if path and os.path.isfile(path) else None
+    return True, fbp_rig_alpha_union(rig, frame_path=frame_path), mode
+
+
+def fbp_rig_alpha_visible_at_uv(rig, u, v, scene=None):
+    """True/False when a click at UV (u, v) lands on solid pixels of the
+    shown frame (faint pixels and scattered specks do not count).
+
+    Returns ``None`` when the alpha cannot be read, so callers can fall back
+    to treating the plane as solid.
+    """
+    visible, union, mode = fbp_rig_shown_alpha(rig, scene)
     if not visible:
         return False
-    frame_path = path if path and os.path.isfile(path) else None
-    union = fbp_rig_alpha_union(rig, frame_path=frame_path)
     if union is None:
         return None
-    mode = str(getattr(rig, "fbp_extend_mode", "MIRROR") or "MIRROR").upper()
     u = _fbp_wrap_uv(float(u), mode)
     v = _fbp_wrap_uv(float(v), mode)
     if u is None or v is None:

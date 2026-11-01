@@ -190,6 +190,7 @@ EXACT_TOOLTIPS = {
     "fbp.reset_crop": "Reset the crop of the selected layers.",
     "fbp.crop_alpha": "Crop the selected layers to their visible pixels.",
     "fbp.select_through_alpha": "Select a layer by its visible pixels, clicking through transparency.",
+    "fbp.gesture_select": "Box or lasso select that also selects layers without a visible rig by their solid pixels.",
     "fbp.reset_extend": "Reset the border extension of the selected layers.",
     "fbp.popup_crop": "Crop the selected layers.",
     "fbp.popup_extend": "Extend the borders of the selected layers.",
