@@ -152,10 +152,55 @@ def fbp_native_snapshot(rig):
     return snapshot
 
 
+def fbp_native_hide_inputs(rig):
+    """Keep effect settings out of the native modifier rows.
+
+    Every Frame By Plane effect is edited from its Frame By Plane panel (or
+    the node editor): the rows only carry order, eye, camera and delete. The
+    inputs stay on the modifier, so the panel, drivers and keyframes still
+    reach them; Blender just stops drawing them a second time.
+    """
+    changed = False
+    seen = set()
+    geo = _geo()
+    plane = geo._fbp_plane(rig, repair=False)
+    modifiers = [modifier for _token, modifier in fbp_native_modifier_entries(rig)]
+    if plane is not None:
+        try:
+            modifiers.extend(geo._fbp_mixed_shader_stage_modifiers(plane))
+        except FBP_DATA_ERRORS:
+            pass
+    for modifier in modifiers:
+        group = getattr(modifier, "node_group", None)
+        if group is None:
+            continue
+        try:
+            pointer = int(group.as_pointer())
+            if pointer in seen:
+                continue
+            seen.add(pointer)
+            for item in group.interface.items_tree:
+                if (
+                    getattr(item, "item_type", "") == "SOCKET"
+                    and getattr(item, "in_out", "") == "INPUT"
+                    and getattr(item, "socket_type", "") != "NodeSocketGeometry"
+                    and not bool(getattr(item, "hide_in_modifier", True))
+                ):
+                    item.hide_in_modifier = True
+                    changed = True
+        except FBP_DATA_ERRORS:
+            continue
+    return changed
+
+
 def fbp_native_remember(rig):
     key = _rig_key(rig)
     if not key:
         return
+    try:
+        fbp_native_hide_inputs(rig)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not hide effect inputs in the Modifiers panel", exc)
     _SNAPSHOTS[key] = fbp_native_snapshot(rig)
     try:
         from .effect_shells import fbp_shell_modifiers
@@ -276,6 +321,15 @@ def fbp_sync_native_modifiers(rig):
             geo._fbp_mixed_shader_stage_token(item) for item in plane.modifiers
         )
         previous_shells = set(_SHELL_SNAPSHOTS.get(key, ()))
+        applied = _applied_image_modifier(plane)
+        if applied and any(
+            token not in shells and token in persisted_set and _is_shader(geo, token)
+            for token in previous_shells
+        ):
+            # Apply on an image-effect row would just drop the effect: the
+            # row carries no geometry. Undo it and open Apply Effects instead.
+            _redirect_apply_to_bake(rig.name)
+            return report
         for token in previous:
             if token in represented:
                 continue
@@ -360,6 +414,72 @@ def fbp_sync_native_modifiers(rig):
         _SYNCING = False
         fbp_native_remember(rig)
     return report
+
+
+_HANDLED_APPLY = set()
+
+
+def _applied_image_modifier(plane):
+    """Name of the modifier the last operator applied on ``plane``, if any."""
+    try:
+        operators = bpy.context.window_manager.operators
+        last = operators[-1] if len(operators) else None
+    except (AttributeError, IndexError, *FBP_DATA_ERRORS):
+        return ""
+    if last is None or str(getattr(last, "bl_idname", "")) != "OBJECT_OT_modifier_apply":
+        return ""
+    try:
+        pointer = int(last.as_pointer())
+    except FBP_DATA_ERRORS:
+        return ""
+    if pointer in _HANDLED_APPLY:
+        return ""
+    _HANDLED_APPLY.add(pointer)
+    try:
+        return str(last.properties.modifier or "") or "?"
+    except (AttributeError, *FBP_DATA_ERRORS):
+        return "?"
+
+
+def _redirect_apply_to_bake(rig_name):
+    def _run():
+        context = bpy.context
+        window = getattr(context, "window", None) or next(
+            iter(getattr(context.window_manager, "windows", ()) or ()), None
+        )
+        if window is None:
+            return None
+        try:
+            with context.temp_override(window=window):
+                bpy.ops.ed.undo()
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not undo Apply on an image effect", exc)
+            return None
+        rig = bpy.data.objects.get(rig_name)
+        if rig is None:
+            return None
+        try:
+            area = next(
+                (item for item in window.screen.areas if item.type in {"PROPERTIES", "VIEW_3D"}),
+                None,
+            )
+            override = {"window": window}
+            if area is not None:
+                override["area"] = area
+                override["region"] = next(
+                    (region for region in area.regions if region.type == "WINDOW"), None
+                )
+            with context.temp_override(**override):
+                bpy.ops.fbp.apply_image_effects("INVOKE_DEFAULT", rig_name=rig_name)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not open Apply Effects", exc)
+        return None
+
+    try:
+        from .safe_tasks import schedule_once
+        schedule_once("native_modifiers.apply_redirect", _run, first_interval=0.0)
+    except (ImportError, *FBP_DATA_ERRORS):
+        bpy.app.timers.register(_run, first_interval=0.0)
 
 
 def _mirror_stack_flags(geo, rig):
@@ -762,9 +882,17 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
             str((geo.fbp_effect_definition(token) or {}).get("category", "") or "")
             for token in view_ids
         }
+        # Hidden legacy effects (Chroma Key) and effects the Mesh menu already
+        # lists (Motion, Track to Camera) do not belong in this menu.
+        mesh_ids = {
+            str(token).upper()
+            for _title, _icon, tokens in geo.FBP_MESH_EFFECT_MENU_SECTIONS for token in tokens
+        }
         missing = tuple(
             effect_id for effect_id in only
             if effect_id not in placed and not geo.fbp_effect_family_id(effect_id)
+            and effect_id not in mesh_ids
+            and not bool((geo.fbp_effect_definition(effect_id) or {}).get("hidden", False))
             and str((geo.fbp_effect_definition(effect_id) or {}).get("category", "") or "") in categories
         )
         first = next((index for index, (_t, tokens) in enumerate(kept) if tokens), None)
@@ -831,6 +959,11 @@ class FBP_OT_AddEffectModifier(bpy.types.Operator):
                     instance_id = geo._fbp_effect_ref_instance_id(token) if token else ""
                     effect_shells.fbp_shell_create(rig, effect_id, instance_id)
                 fbp_native_remember(rig)
+        for rig in rigs:
+            try:
+                fbp_native_hide_inputs(rig)
+            except FBP_DATA_ERRORS as exc:
+                fbp_warn("Could not hide effect inputs in the Modifiers panel", exc)
         return {"FINISHED"}
 
 

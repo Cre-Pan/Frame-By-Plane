@@ -19,6 +19,9 @@ All notable public changes to Frame By Plane are documented here.
 - Effects with sub-effects (Warp, Colorize, Pixelate & Mosaic, Edge, Stylize, Posterize, Directional Blur) are one entry in **Add Modifier > Image**. Once added, the title of the effect panel is a dropdown that switches between its variants (Sine wave, Swirl, Bulge / Pinch, Ripple, Lens...). The dropdown always switches the effect whose panel it belongs to; it could switch the wrong one before.
 - Effect panels show every control: Swirl, Pixelate and the other effects with a viewport control no longer hide the values that control edits, setting groups start open, and Gaussian and Directional Blur gain **Samples**, Gradient Light **Softness** and **Shadow Color**, Felt Fuzz and Noise Mask their **Seed**.
 - **Animate** is the last section of every animatable effect, open by default: its checkbox turns it on and off, with **Seed** and **Stepped** first, then Speed and Unique per Layer. Mesh Wiggle's own Speed, Stepped and Seed now form its Animate section instead of appearing twice.
+- **Add Modifier > Image** has even columns of about ten entries: Gobo Shadows and Emission sit in Light, and Motion, Track to Camera (Mesh menu) and the retired Chroma Key no longer pile up under Canvas. The Mask menu uses three columns.
+- Effects are edited only from their Frame By Plane panel: the modifier rows no longer repeat the effect's settings as greyed-out fields.
+- **Apply** (or Ctrl+A) on an image-effect modifier row opens **Apply Effects** instead of silently removing the effect.
 - Lighter panels: no repeated Effects box in the Modifiers tab (a hint shows what to click when no effect is open), on/off options are checkboxes instead of full-width blue bars, Viewport Control is a checkbox row, and the internal mixed-stack rows (FBP • Input Material...) are created folded.
 
 ### Playback speed
