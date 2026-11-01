@@ -242,10 +242,29 @@ def _build_shell_group(rig, effect_id, token):
 
 _SHELL_UI_KEY = "fbp_shell_ui"
 # 2: every panel control (choices, extra settings, Animate) is an input.
-_SHELL_UI_VERSION = 2
+# 3: variant, input, preview, mask operation, viewport control and sources.
+_SHELL_UI_VERSION = 3
 _SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
+_SHELL_USAGE_NODE_KEY = "fbp_shell_usage_node"
 _SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
 _SHELL_LAYER_TYPES = {"FLOAT", "INT", "BOOLEAN", "ENUM"}
+# Object, material, image and file settings the panel shows (sources of a
+# matte, a side material): the modifier holds them as data-block or file
+# inputs. Helper objects Frame By Plane creates itself are left out.
+_SHELL_DATA_PROPERTIES = {
+    "fbp_alpha_matte_source",
+    "fbp_luma_matte_source",
+    "fbp_luma_matte_image",
+    "fbp_luma_matte_path",
+    "fbp_clipping_mask_source",
+    "fbp_imported_mask_path",
+    "fbp_thickness_side_material",
+}
+_SHELL_DATA_SOCKETS = {
+    "Object": ("NodeSocketObject", "OBJECT"),
+    "Material": ("NodeSocketMaterial", "MATERIAL"),
+    "Image": ("NodeSocketImage", "IMAGE"),
+}
 # Animate section: (animation key suffix, input name), in panel order.
 _SHELL_ANIMATE = (
     ("evolve", "Animate"),
@@ -256,9 +275,145 @@ _SHELL_ANIMATE = (
 )
 
 
+class _Choice:
+    __slots__ = ("identifier", "name")
+
+    def __init__(self, identifier, name):
+        self.identifier = str(identifier)
+        self.name = str(name)
+
+
+class _VirtualSetting:
+    """RNA-like description of a panel control that is not a layer property.
+
+    The variant dropdown, Input, Preview and the mask operation are buttons in
+    the Frame By Plane panel; in the modifier they are dropdowns, read and
+    written through the same functions those buttons call.
+    """
+
+    is_array = False
+    subtype = "NONE"
+    hard_min = 0
+    hard_max = 1
+
+    def __init__(self, key, label, choices, description=""):
+        self.identifier = key
+        self.name = label
+        self.type = "ENUM"
+        self.enum_items = tuple(_Choice(identifier, name) for identifier, name in choices)
+        self.default = self.enum_items[0].identifier if self.enum_items else ""
+        self.description = description
+
+
+def _virtual_settings(effect_id, definition):
+    """Return the panel's button rows as ``[(key, setting)]`` for one effect."""
+    geo = _geo()
+    result = []
+    try:
+        from .effects_registry import fbp_effect_family_definition, fbp_effect_variant_label
+        family = fbp_effect_family_definition(effect_id)
+    except ImportError:
+        family = {}
+    variants = tuple(family.get("variants", ()) or ())
+    if len(variants) > 1:
+        result.append(("@VARIANT", _VirtualSetting(
+            "@VARIANT", str(family.get("label", "Variant") or "Variant"),
+            [(variant_id, fbp_effect_variant_label(variant_id)) for variant_id, _label in variants],
+            "Switch to another variant of this effect",
+        )))
+    if definition.get("supports_input_source"):
+        result.append(("@SOURCE", _VirtualSetting(
+            "@SOURCE", "Input",
+            (("PREVIOUS", "Previous Effects"), ("ORIGINAL", "Original Material"), ("FINAL", "Final Material")),
+            "Which image feeds this effect",
+        )))
+    debug_modes = () if effect_id in getattr(geo, "GP_MASK_EFFECT_IDS", ()) else tuple(
+        definition.get("debug_modes", ()) or ()
+    )
+    if debug_modes:
+        result.append(("@DEBUG", _VirtualSetting(
+            "@DEBUG", "Preview", debug_modes, "Show the result or a diagnostic view",
+        )))
+    if str(definition.get("stage", "") or "") == "MASK":
+        result.append(("@MASKOP", _VirtualSetting(
+            "@MASKOP", "Stack Operation",
+            [(item[0], item[1]) for item in geo.FBP_MASK_STACK_OPERATIONS],
+            "How this mask combines with the masks above it",
+        )))
+    actions = _effect_actions(effect_id, definition)
+    if actions:
+        result.append(("@ACTION", _VirtualSetting(
+            "@ACTION", "Actions",
+            [("NONE", "Choose…")] + [(key, label) for key, label, _op, _kwargs in actions],
+            "Run an action on this effect",
+        )))
+    return result
+
+
+def _effect_actions(effect_id, definition):
+    """Buttons of the effect panel as ``(key, label, operator, kwargs)``."""
+    if bool(definition.get("custom", False)):
+        return ()
+    actions = [
+        ("RESET", "Reset to Defaults", "fbp.reset_active_effect", {"effect_id": effect_id}),
+        ("PRESETS", "Presets…", "fbp.open_effect_presets", {"effect_id": effect_id}),
+    ]
+    if definition.get("kind") in {"SHADER", "MASK", "GEOMETRY"}:
+        # Color ramps and curves are edited in the node tree.
+        label = (
+            "Edit Ramp in Node Editor" if definition.get("color_ramp_role")
+            else "Edit Curves in Node Editor" if effect_id == "CURVES"
+            else "Open in Node Editor"
+        )
+        actions.append(("NODES", label, "fbp.open_effect_nodes", {"effect_id": effect_id}))
+    if _has_viewport_control(effect_id):
+        actions.append(("SELECT_CONTROL", "Select Viewport Control", "fbp.select_effect_control", {"effect_id": effect_id}))
+        actions.append(("RESET_CONTROL", "Reset Viewport Control", "fbp.reset_effect_control", {"effect_id": effect_id}))
+    if effect_id == "CROP":
+        actions.append(("CROP_ALPHA", "Crop Alpha", "fbp.crop_alpha", {}))
+        actions.append(("RESET_CROP", "Reset Crop", "fbp.reset_crop", {}))
+    if effect_id == "SHADOW":
+        actions.append(("FIT_SHADOW", "Fit Shadow Canvas", "fbp.fit_shadow_canvas", {}))
+    return tuple(actions)
+
+
+def _run_action(rig, effect_id, definition, key):
+    """Run one panel button for the layer, with a Properties editor context."""
+    action = next((item for item in _effect_actions(effect_id, definition) if item[0] == key), None)
+    if action is None:
+        return False
+    _key, _label, idname, kwargs = action
+    module, _dot, name = idname.partition(".")
+    operator = getattr(getattr(bpy.ops, module), name)
+    window = next(iter(bpy.context.window_manager.windows), None)
+    if window is None:
+        return False
+    area = next((item for item in window.screen.areas if item.type == "PROPERTIES"), None) or next(
+        (item for item in window.screen.areas if item.type == "VIEW_3D"), None
+    )
+    region = next((item for item in area.regions if item.type == "WINDOW"), None) if area else None
+    override = {"window": window, "screen": window.screen, "active_object": rig, "object": rig,
+                "selected_objects": [rig], "selected_editable_objects": [rig]}
+    if area is not None:
+        override.update(area=area, region=region)
+    with bpy.context.temp_override(**override):
+        mode = "INVOKE_DEFAULT" if key in {"PRESETS", "NODES"} else "EXEC_DEFAULT"
+        operator(mode, **kwargs)
+    return True
+
+
+def _has_viewport_control(effect_id):
+    try:
+        from .effect_controls import CONTROL_SPECS
+        return bool(CONTROL_SPECS.get(str(effect_id).upper()))
+    except (ImportError, AttributeError):
+        return False
+
+
 def _shell_animate_properties(effect_id, definition):
     """Return ``{rig_property: (suffix, label)}`` for an animatable effect."""
-    if not definition.get("evolve_property"):
+    # Mesh Wiggle always moves: its own Speed, Stepped and Seed are inputs.
+    if not definition.get("evolve_property") or str(effect_id).upper() == "MESH_WIGGLE":
         return {}
     geo = _geo()
     result = {}
@@ -271,14 +426,35 @@ def _shell_animate_properties(effect_id, definition):
     return result
 
 
-def _shell_layout_entries(effect_id):
+def _input_kind(rna):
+    """Modifier input kind for one setting, or "" when it cannot be one."""
+    if rna is None:
+        return ""
+    if rna.type == "POINTER":
+        fixed = getattr(getattr(rna, "fixed_type", None), "identifier", "")
+        return _SHELL_DATA_SOCKETS.get(fixed, ("", ""))[1]
+    if rna.type == "STRING":
+        return "STRING"
+    if rna.type not in _SHELL_LAYER_TYPES:
+        return ""
+    if getattr(rna, "is_array", False) and not _is_color(rna):
+        return ""
+    if rna.type == "ENUM" and (
+        not len(rna.enum_items) or bool(getattr(rna, "is_enum_flag", False))
+    ):
+        return ""
+    return "ENUM" if rna.type == "ENUM" else _kind(rna)
+
+
+def _shell_layout_entries(effect_id, skip=()):
     """Every control of the effect panel that a modifier input can hold.
 
-    Returns ``[(prop, socket_name, rna, storage, label, animate, section)]``. Storage is
-    ``MATERIAL`` for values read by the material (``socket_name`` is the
-    effect node socket), ``RIG`` for layer settings Frame By Plane converts
-    (choices, sample counts, extra settings) and ``ANIM:<suffix>`` for the
-    Animate section of a repeatable effect.
+    Returns ``[(prop, socket_name, rna, storage, label, animate, section)]``.
+    Storage is ``MATERIAL`` for values read by the material (``socket_name``
+    is the effect node socket), ``RIG`` for layer settings Frame By Plane
+    converts (choices, sample counts, extra settings), ``ANIM:<suffix>`` for
+    the Animate section of a repeatable effect and ``VIRTUAL`` for the
+    panel's button rows. ``skip`` lists settings that already are inputs.
     """
     geo = _geo()
     definition = geo.fbp_effect_definition(effect_id) or {}
@@ -287,17 +463,24 @@ def _shell_layout_entries(effect_id):
     names = list((definition.get("property_map", {}) or {}).keys())
     names.extend(definition.get("extra_properties", ()) or ())
     names.extend(animate)
+    if _has_viewport_control(effect_id):
+        names.insert(0, "fbp_effect_controls_enabled")
     properties = bpy.types.Object.bl_rna.properties
     plain, animated = [], {}
+    trailing = []
+    for key, setting in _virtual_settings(effect_id, definition):
+        entry = (key, "", setting, "VIRTUAL", setting.name, False)
+        (trailing if key == "@ACTION" else plain).append(entry)
+    skip = set(skip or ())
     for prop_name in dict.fromkeys(str(name or "") for name in names):
+        if prop_name in skip:
+            continue
         rna = properties.get(prop_name)
-        if rna is None or rna.type not in _SHELL_LAYER_TYPES:
+        if rna is None:
             continue
-        if getattr(rna, "is_array", False) and not _is_color(rna):
+        if rna.type in {"POINTER", "STRING"} and prop_name not in _SHELL_DATA_PROPERTIES:
             continue
-        if rna.type == "ENUM" and (
-            not len(rna.enum_items) or bool(getattr(rna, "is_enum_flag", False))
-        ):
+        if not _input_kind(rna):
             continue
         if prop_name in material:
             socket_name, storage = material[prop_name], "MATERIAL"
@@ -309,7 +492,10 @@ def _shell_layout_entries(effect_id):
                 storage = f"ANIM:{suffix}"
             animated[suffix] = (prop_name, socket_name, rna, storage, label, True)
             continue
-        label = geo._fbp_effect_property_label(definition, prop_name, None) or str(rna.name)
+        if prop_name == "fbp_effect_controls_enabled":
+            label = "Viewport Control"
+        else:
+            label = geo._fbp_effect_property_label(definition, prop_name, None) or str(rna.name)
         plain.append((prop_name, socket_name, rna, storage, label, False))
     # Same sections as the Frame By Plane panel (Wave, Direction & Mix, ...).
     section = {}
@@ -329,6 +515,7 @@ def _shell_layout_entries(effect_id):
     plain.extend(
         animated[suffix] + ("Animate",) for suffix, _label in _SHELL_ANIMATE if suffix in animated
     )
+    plain.extend(entry + ("",) for entry in trailing)
     return plain
 
 
@@ -339,7 +526,7 @@ def _new_menu_input(group, rna, name, panel):
     )
     switch = group.nodes.new("GeometryNodeMenuSwitch")
     switch.data_type = "INT"
-    switch["fbp_shell_usage_node"] = True
+    switch[_SHELL_USAGE_NODE_KEY] = True
     switch.hide = True
     switch.enum_items.clear()
     for item in rna.enum_items:
@@ -356,6 +543,47 @@ def _new_menu_input(group, rna, name, panel):
     return socket, switch
 
 
+def _new_data_input(group, rna, name, panel, kind):
+    """An object, material, image or file input, plus a node that reads it."""
+    if kind == "STRING":
+        socket = group.interface.new_socket(
+            name=name, in_out="INPUT", socket_type="NodeSocketString", parent=panel
+        )
+        try:
+            if str(getattr(rna, "subtype", "") or "") in {"FILE_PATH", "DIR_PATH"}:
+                socket.subtype = "FILE_PATH"
+        except FBP_DATA_ERRORS:
+            pass
+        reader = group.nodes.new("FunctionNodeStringLength")
+    else:
+        socket_type = {value[1]: value[0] for value in _SHELL_DATA_SOCKETS.values()}[kind]
+        socket = group.interface.new_socket(
+            name=name, in_out="INPUT", socket_type=socket_type, parent=panel
+        )
+        reader = group.nodes.new({
+            "OBJECT": "GeometryNodeObjectInfo",
+            "MATERIAL": "GeometryNodeMaterialSelection",
+            "IMAGE": "GeometryNodeImageInfo",
+        }[kind])
+    reader[_SHELL_USAGE_NODE_KEY] = True
+    reader.hide = True
+    try:
+        socket.description = str(rna.description or "")
+    except FBP_DATA_ERRORS:
+        pass
+    return socket, reader
+
+
+def _data_reader_output(reader):
+    """A number output of the node that reads a data-block or file input."""
+    for name in ("Length", "Width", "Selection"):
+        if name in reader.outputs:
+            return reader.outputs[name]
+    if "Scale" in reader.outputs:
+        return reader.outputs["Scale"]
+    return reader.outputs[0]
+
+
 def _menu_name(rna, identifier):
     for item in rna.enum_items:
         if item.identifier == identifier:
@@ -370,17 +598,119 @@ def _menu_identifier(rna, name):
     return str(rna.enum_items[0].identifier) if len(rna.enum_items) else ""
 
 
-def _populate_shell_group(group, effect_id):
-    """(Re)build every input of one shell from the effect's panel controls.
-
-    The inputs carry the panel's names and order, choices are dropdowns and
-    an animatable effect ends with an Animate panel whose checkbox turns the
-    animation on. Blender greys out inputs that do not reach the output, and
-    the inputs only feed the material, so a tiny chain (sum them, store and
-    drop a throwaway attribute) marks every input as used.
-    """
+def _add_inputs(group, entries):
+    """Create one input (in its section) per entry; return mapping and readers."""
     interface = group.interface
+    mapping, layer_mapping, used, menus = [], [], [], []
+    panels = {}
+    for prop_name, socket_name, rna, storage, label, animate, section in entries:
+        panel = None
+        if section:
+            panel = panels.get(section)
+            if panel is None:
+                panel = panels[section] = interface.new_panel(section, default_closed=False)
+        kind = _input_kind(rna) if storage != "VIRTUAL" else "ENUM"
+        if kind == "ENUM":
+            socket, reader = _new_menu_input(group, rna, label, panel)
+            menus.append((socket, rna))
+        elif kind in {"OBJECT", "MATERIAL", "IMAGE", "STRING"}:
+            socket, reader = _new_data_input(group, rna, label, panel, kind)
+        else:
+            socket, reader = _new_input(interface, rna, label, panel), None
+        used.append((socket.identifier, reader))
+        if animate and label == "Animate":
+            try:
+                socket.is_panel_toggle = True
+            except FBP_DATA_ERRORS:
+                pass
+        if storage == "MATERIAL":
+            mapping.append((prop_name, socket_name, socket.identifier, kind))
+        else:
+            layer_mapping.append((prop_name, storage, socket.identifier, kind))
+    group["fbp_menu_defaults"] = [
+        f"{socket.identifier}\x1f{_menu_name(rna, str(rna.default))}" for socket, rna in menus
+    ]
+    return mapping, layer_mapping, used
+
+
+def _wire_usage(group, used, geometry_source, group_output):
+    """Mark inputs as used: sum them into a throwaway attribute on the way out.
+
+    Blender greys out modifier inputs that do not reach the output, and these
+    inputs only feed the material or the layer. The chain stores their sum
+    and drops it again, so the geometry is unchanged.
+    """
     nodes, links = group.nodes, group.links
+    group_input = next((node for node in nodes if node.bl_idname == "NodeGroupInput"), None)
+    total = None
+    for index, (identifier, reader) in enumerate(used):
+        socket = next((out for out in group_input.outputs if out.identifier == identifier), None)
+        if socket is None:
+            continue
+        if reader is not None:
+            reader.location = (-200.0, -60.0 - 30.0 * index)
+            links.new(socket, reader.inputs[0])
+            socket = (
+                reader.outputs[0] if reader.bl_idname == "GeometryNodeMenuSwitch"
+                else _data_reader_output(reader)
+            )
+        if total is None:
+            total = socket
+            continue
+        add = nodes.new("ShaderNodeMath")
+        add.operation = "ADD"
+        add[_SHELL_USAGE_NODE_KEY] = True
+        add.hide = True
+        add.location = (0.0, -60.0 - 30.0 * index)
+        links.new(total, add.inputs[0])
+        links.new(socket, add.inputs[1])
+        total = add.outputs[0]
+    # Menu inputs know their choices once linked to their switch.
+    items = {item.identifier: item for item in group.interface.items_tree if getattr(item, "item_type", "") == "SOCKET"}
+    for entry in tuple(group.get("fbp_menu_defaults", ()) or ()):
+        identifier, _sep, name = str(entry).partition("\x1f")
+        item = items.get(identifier)
+        try:
+            if item is not None and name:
+                item.default_value = name
+        except FBP_DATA_ERRORS:
+            pass
+    target = group_output.inputs[0]
+    if total is None:
+        links.new(geometry_source, target)
+        return
+    store = nodes.new("GeometryNodeStoreNamedAttribute")
+    store[_SHELL_USAGE_NODE_KEY] = True
+    store.data_type = "FLOAT"
+    # Instance domain: plain meshes have none, so nothing is ever allocated.
+    store.domain = "INSTANCE"
+    store.inputs["Name"].default_value = _SHELL_USAGE_ATTRIBUTE
+    store.location = (group_output.location.x - 360.0, group_output.location.y + 160.0)
+    drop = nodes.new("GeometryNodeRemoveAttribute")
+    drop[_SHELL_USAGE_NODE_KEY] = True
+    drop.inputs["Name"].default_value = _SHELL_USAGE_ATTRIBUTE
+    drop.location = (group_output.location.x - 180.0, group_output.location.y + 160.0)
+    # Without instances nothing was stored: keep "attribute does not exist"
+    # out of the modifier.
+    for node in (store, drop):
+        try:
+            node.warning_propagation = "NONE"
+        except FBP_DATA_ERRORS:
+            pass
+    try:
+        drop.inputs["Pattern Mode"].default_value = "Wildcard"
+    except (KeyError, *FBP_DATA_ERRORS):
+        pass
+    links.new(geometry_source, store.inputs["Geometry"])
+    links.new(total, store.inputs["Value"])
+    links.new(store.outputs["Geometry"], drop.inputs["Geometry"])
+    links.new(drop.outputs["Geometry"], target)
+
+
+def _populate_shell_group(group, effect_id):
+    """(Re)build every input of one shell from the effect's panel controls."""
+    interface = group.interface
+    nodes = group.nodes
     for item in tuple(interface.items_tree):
         if getattr(item, "item_type", "") == "PANEL":
             continue
@@ -405,70 +735,97 @@ def _populate_shell_group(group, effect_id):
     group_input.location = (-400.0, 0.0)
     group_output = nodes.new("NodeGroupOutput")
     group_output.location = (400.0, 0.0)
-    mapping, layer_mapping, used = [], [], []
-    panels = {}
-    for prop_name, socket_name, rna, storage, label, animate, section in _shell_layout_entries(effect_id):
-        panel = None
-        if section:
-            panel = panels.get(section)
-            if panel is None:
-                panel = panels[section] = interface.new_panel(section, default_closed=False)
-        if rna.type == "ENUM":
-            socket, switch = _new_menu_input(group, rna, label, panel)
-            used.append((socket.identifier, switch))
-            kind = "ENUM"
-        else:
-            socket = _new_input(interface, rna, label, panel)
-            used.append((socket.identifier, None))
-            kind = _kind(rna)
-        if animate and label == "Animate":
-            try:
-                socket.is_panel_toggle = True
-            except FBP_DATA_ERRORS:
-                pass
-        if storage == "MATERIAL":
-            mapping.append((prop_name, socket_name, socket.identifier, kind))
-        else:
-            layer_mapping.append((prop_name, storage, socket.identifier, kind))
+    mapping, layer_mapping, used = _add_inputs(group, _shell_layout_entries(effect_id))
     group["fbp_shell_mapping"] = ["\x1f".join(entry) for entry in mapping]
     group[_SHELL_LAYER_MAPPING_KEY] = ["\x1f".join(entry) for entry in layer_mapping]
-    geometry_in = group_input.outputs[0]
-    total = None
-    for index, (identifier, switch) in enumerate(used):
-        socket = next((out for out in group_input.outputs if out.identifier == identifier), None)
-        if socket is None:
-            continue
-        if switch is not None:
-            switch.location = (-200.0, -60.0 - 30.0 * index)
-            links.new(socket, switch.inputs[0])
-            socket = switch.outputs[0]
-        if total is None:
-            total = socket
-            continue
-        add = nodes.new("ShaderNodeMath")
-        add.operation = "ADD"
-        add.hide = True
-        add.location = (0.0, -60.0 - 30.0 * index)
-        links.new(total, add.inputs[0])
-        links.new(socket, add.inputs[1])
-        total = add.outputs[0]
-    if total is None:
-        links.new(geometry_in, group_output.inputs[0])
-    else:
-        store = nodes.new("GeometryNodeStoreNamedAttribute")
-        store.data_type = "FLOAT"
-        store.domain = "POINT"
-        store.inputs["Name"].default_value = _SHELL_USAGE_ATTRIBUTE
-        store.location = (0.0, 120.0)
-        drop = nodes.new("GeometryNodeRemoveAttribute")
-        drop.inputs["Name"].default_value = _SHELL_USAGE_ATTRIBUTE
-        drop.location = (200.0, 120.0)
-        links.new(geometry_in, store.inputs["Geometry"])
-        links.new(total, store.inputs["Value"])
-        links.new(store.outputs["Geometry"], drop.inputs["Geometry"])
-        links.new(drop.outputs["Geometry"], group_output.inputs[0])
+    _wire_usage(group, used, group_input.outputs[0], group_output)
     group[_SHELL_UI_KEY] = _SHELL_UI_VERSION
     return group
+
+
+_GEOMETRY_INPUTS_KEY = "fbp_panel_inputs"
+
+
+def fbp_extend_geometry_group(group, effect_id):
+    """Give a mesh effect's node group the panel controls it lacks.
+
+    Mesh effects already take their main settings as modifier inputs. This
+    adds the rest of the panel (Animate, quality for playback and render,
+    shading, choices) as extra inputs in their own sections, synced with the
+    layer like an image effect's. Idempotent: a group extended by this
+    version is left alone.
+    """
+    if group is None:
+        return False
+    marker = f"{_SHELL_UI_VERSION}:{effect_id}"
+    try:
+        if str(group.get(_GEOMETRY_INPUTS_KEY, "") or "") == marker:
+            return False
+        if getattr(group, "library", None) is not None:
+            return False
+    except FBP_DATA_ERRORS:
+        return False
+    geo = _geo()
+    definition = geo.fbp_effect_definition(effect_id) or {}
+    try:
+        interface = group.interface
+        nodes, links = group.nodes, group.links
+        # Drop what an earlier version added.
+        added = set(str(name) for name in (group.get("fbp_panel_input_ids", ()) or ()))
+        for item in tuple(interface.items_tree):
+            if getattr(item, "item_type", "") == "SOCKET" and item.identifier in added:
+                interface.remove(item)
+        for item in tuple(interface.items_tree):
+            if getattr(item, "item_type", "") == "PANEL" and bool(
+                str(getattr(item, "description", "") or "") == "fbp_panel_inputs"
+            ):
+                interface.remove(item)
+        group_output = next(
+            (node for node in nodes if node.bl_idname == "NodeGroupOutput" and node.is_active_output),
+            None,
+        ) or next((node for node in nodes if node.bl_idname == "NodeGroupOutput"), None)
+        group_input = next((node for node in nodes if node.bl_idname == "NodeGroupInput"), None)
+        if group_output is None or group_input is None:
+            return False
+        source = None
+        for node in tuple(nodes):
+            if node.get(_SHELL_USAGE_NODE_KEY):
+                if node.bl_idname == "GeometryNodeStoreNamedAttribute" and node.inputs["Geometry"].is_linked:
+                    source = node.inputs["Geometry"].links[0].from_socket
+                nodes.remove(node)
+        target = group_output.inputs[0]
+        if source is None:
+            if not target.is_linked:
+                return False
+            source = target.links[0].from_socket
+        mapped_sockets = set((definition.get("property_map", {}) or {}).keys())
+        entries = _shell_layout_entries(effect_id, skip=mapped_sockets)
+        entries = [entry[:3] + ("RIG" if entry[3] == "MATERIAL" else entry[3],) + entry[4:] for entry in entries]
+        before = {item.identifier for item in interface.items_tree if getattr(item, "item_type", "") == "SOCKET"}
+        panels_before = {
+            int(item.as_pointer()) for item in interface.items_tree if getattr(item, "item_type", "") == "PANEL"
+        }
+        _mapping, layer_mapping, used = _add_inputs(group, entries)
+        for item in interface.items_tree:
+            if getattr(item, "item_type", "") == "PANEL" and int(item.as_pointer()) not in panels_before:
+                try:
+                    item.description = "fbp_panel_inputs"
+                except FBP_DATA_ERRORS:
+                    pass
+        group["fbp_panel_input_ids"] = [
+            item.identifier for item in interface.items_tree
+            if getattr(item, "item_type", "") == "SOCKET" and item.identifier not in before
+        ]
+        group[_SHELL_LAYER_MAPPING_KEY] = ["\x1f".join(entry) for entry in layer_mapping]
+        if used:
+            _wire_usage(group, used, source, group_output)
+        elif not target.is_linked:
+            links.new(source, target)
+        group[_GEOMETRY_INPUTS_KEY] = marker
+        return True
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not add the effect's panel settings to its modifier", exc)
+        return False
 
 
 def _shell_needs_rebuild(group):
@@ -504,8 +861,59 @@ def _layer_owner(rig, effect_id, instance_id, prop_name, storage):
     return rig, prop_name
 
 
+def _layer_rna(effect_id, prop_name):
+    """RNA (or virtual setting) behind one layer-mapped modifier input."""
+    if str(prop_name).startswith("@"):
+        definition = _geo().fbp_effect_definition(effect_id) or {}
+        return dict(_virtual_settings(effect_id, definition)).get(prop_name)
+    return bpy.types.Object.bl_rna.properties.get(prop_name)
+
+
+def _virtual_value(rig, effect_id, instance_id, key):
+    geo = _geo()
+    if key == "@VARIANT":
+        return effect_id
+    if key == "@SOURCE":
+        return geo.fbp_effect_input_source(rig, effect_id, instance_id)
+    if key == "@DEBUG":
+        return geo.fbp_effect_debug_mode(rig, effect_id)
+    if key == "@MASKOP":
+        return geo.fbp_mask_stack_operation(rig, effect_id)
+    if key == "@ACTION":
+        return "NONE"
+    return None
+
+
+def _run_virtual(rig_name, effect_id, instance_id, key, value):
+    """Apply a dropdown change outside the depsgraph update that saw it."""
+    geo = _geo()
+    rig = bpy.data.objects.get(rig_name)
+    if rig is None or not geo.fbp_effect_is_active(rig, effect_id):
+        return None
+    try:
+        if key == "@VARIANT":
+            if value != effect_id and not geo.fbp_effect_is_active(rig, value):
+                if geo.fbp_switch_effect_family_variant(rig, effect_id, value):
+                    geo.fbp_sync_effect_items(rig, [rig])
+        elif key == "@SOURCE":
+            geo.fbp_set_effect_input_source(rig, effect_id, value, instance_id=instance_id)
+        elif key == "@DEBUG":
+            geo.fbp_set_effect_debug_mode(rig, effect_id, value)
+        elif key == "@MASKOP":
+            from .mask_stack import fbp_set_mask_stack_operation
+            fbp_set_mask_stack_operation(rig, effect_id, value, rebuild=True)
+        elif key == "@ACTION" and value != "NONE":
+            _run_action(rig, effect_id, geo.fbp_effect_definition(effect_id) or {}, value)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn(f"Could not apply {key[1:].title()} from the modifier", exc)
+    return None
+
+
 def _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind):
     """One layer setting as the value its modifier input holds."""
+    if storage == "VIRTUAL":
+        value = _virtual_value(rig, effect_id, instance_id, prop_name)
+        return None if value is None else _menu_name(rna, str(value))
     owner, attr = _layer_owner(rig, effect_id, instance_id, prop_name, storage)
     try:
         value = getattr(owner, attr)
@@ -513,6 +921,10 @@ def _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind):
         return None
     if kind == "ENUM":
         return _menu_name(rna, str(value))
+    if kind in {"OBJECT", "MATERIAL", "IMAGE"}:
+        return value
+    if kind == "STRING":
+        return str(value or "")
     if kind == "COLOR":
         return _color4(value)
     if kind == "BOOLEAN":
@@ -524,9 +936,24 @@ def _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind):
 
 def _set_layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind, value):
     """Write one modifier value to the layer, running its usual update."""
+    if storage == "VIRTUAL":
+        identifier = _menu_identifier(rna, value)
+        if str(_virtual_value(rig, effect_id, instance_id, prop_name)) == identifier:
+            return False
+        from .safe_tasks import schedule_once
+        schedule_once(
+            f"effect_shells.virtual.{rig.name}.{effect_id}.{prop_name}",
+            lambda name=rig.name: _run_virtual(name, effect_id, instance_id, prop_name, identifier),
+            first_interval=0.0,
+        )
+        return True
     owner, attr = _layer_owner(rig, effect_id, instance_id, prop_name, storage)
     if kind == "ENUM":
         value = _menu_identifier(rna, value)
+    elif kind in {"OBJECT", "MATERIAL", "IMAGE"}:
+        pass
+    elif kind == "STRING":
+        value = str(value or "")
     elif kind == "COLOR":
         value = tuple(value)[:int(rna.array_length)]
     elif kind == "BOOLEAN":
@@ -572,11 +999,12 @@ def _init_shell_values(rig, modifier, effect_id, instance_id, source=None):
         else:
             value = getattr(rig, prop_name, 0.0)
         _set_modifier_input(modifier, identifier, rna, value)
-    properties = bpy.types.Object.bl_rna.properties
     for prop_name, storage, identifier, kind in _shell_layer_mapping(group):
-        rna = properties.get(prop_name)
+        rna = _layer_rna(effect_id, prop_name)
+        if rna is None:
+            continue
         value = _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind)
-        if value is None:
+        if value is None and kind not in _DATA_KINDS:
             continue
         try:
             _geo()._fbp_modifier_input_set(modifier, identifier, _color4(value) if kind == "COLOR" else value)
@@ -589,7 +1017,7 @@ def _shell_snapshot(modifier):
     group = modifier.node_group
     identifiers = [entry[2] for entry in _shell_mapping(group)]
     identifiers.extend(entry[2] for entry in _shell_layer_mapping(group))
-    return {identifier: _modifier_input(modifier, identifier) for identifier in identifiers}
+    return {identifier: _storable(_modifier_input(modifier, identifier)) for identifier in identifiers}
 
 
 def _rebuild_shell(rig, token, modifier):
@@ -1018,8 +1446,23 @@ def _write_layer_values(rig, effect_id, instance_id, values, parameters):
 _SHELL_SYNCED_KEY = "fbp_shell_synced"
 
 
+_DATA_KINDS = {"OBJECT", "MATERIAL", "IMAGE"}
+_ID_PREFIX = "\x00ID:"
+
+
+def _storable(value):
+    """A value the sync snapshot (an ID property) can hold."""
+    if value is None or isinstance(value, bpy.types.ID):
+        return _ID_PREFIX + (getattr(value, "name_full", "") if value is not None else "")
+    return value
+
+
 def _comparable(value):
+    if value is None or isinstance(value, bpy.types.ID):
+        return ("ID", getattr(value, "name_full", "") if value is not None else "")
     if isinstance(value, str):
+        if value.startswith(_ID_PREFIX):
+            return ("ID", value[len(_ID_PREFIX):])
         return value
     if hasattr(value, "__len__"):
         return tuple(round(float(v), 5) for v in tuple(value)[:4])
@@ -1114,14 +1557,15 @@ def fbp_shell_sync_values(rig):
 def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
     """Two-way sync of the inputs that mirror layer settings (see above)."""
     geo = _geo()
-    properties = bpy.types.Object.bl_rna.properties
     moved = 0
     for prop_name, storage, identifier, kind in _shell_layer_mapping(modifier.node_group):
-        rna = properties.get(prop_name)
+        rna = _layer_rna(effect_id, prop_name)
         if rna is None:
             continue
+        if _geo()._fbp_modifier_input_handle(modifier, identifier) is None:
+            continue
         current = _modifier_input(modifier, identifier)
-        if current is None:
+        if current is None and kind not in _DATA_KINDS:
             continue
         layer = _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind)
         last = synced.get(identifier)
@@ -1130,14 +1574,14 @@ def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
             moved += bool(_set_layer_value(
                 rig, effect_id, instance_id, prop_name, storage, rna, kind, current
             ))
-        elif layer is not None and _comparable(layer) != _comparable(current):
+        elif (layer is not None or kind in _DATA_KINDS) and _comparable(layer) != _comparable(current):
             try:
                 geo._fbp_modifier_input_set(modifier, identifier, layer)
             except FBP_DATA_ERRORS as exc:
                 fbp_warn(f"Could not set shell input {identifier}", exc)
             current = _modifier_input(modifier, identifier)
             moved += 1
-        stored[identifier] = current
+        stored[identifier] = _storable(current)
     return moved
 
 
@@ -1263,3 +1707,21 @@ def register():
 
 def unregister():
     unregister_classes(classes)
+
+
+_GEOMETRY_SYNCED = {}
+
+
+def fbp_sync_geometry_panel_inputs(rig, effect_id, modifier):
+    """Two-way sync of the panel settings added to a mesh effect's group."""
+    if modifier is None or modifier.node_group is None:
+        return 0
+    try:
+        key = int(modifier.as_pointer())
+    except FBP_DATA_ERRORS:
+        return 0
+    synced = _GEOMETRY_SYNCED.get(key, {})
+    stored = {}
+    moved = _sync_layer_inputs(rig, modifier, effect_id, "", synced, stored)
+    _GEOMETRY_SYNCED[key] = stored
+    return moved
