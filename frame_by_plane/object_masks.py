@@ -38,6 +38,9 @@ from .runtime import (
     fbp_set_rna_property_silent,
     fbp_undo_guard_active,
     fbp_warn,
+    FBP_IMAGE_BUFFER_RELEASED_KEY,
+    fbp_mark_image_in_use,
+    fbp_release_orphan_image,
     fbp_add_transform_driver_variable as _add_transform_driver_variable
 )
 from .transactions import FBPTransaction
@@ -1572,7 +1575,10 @@ def _rollback_created_object_mask(owner, shape, helper, mesh):
             and bool(image.get(KEY_IS_MASK_IMAGE, False))
             and getattr(image, "users", 0) == 0
         ):
-            bpy.data.images.remove(image)
+            # Retire instead of deleting: a viewport shader may already hold
+            # this Image pointer (see fbp_release_orphan_image).
+            _retire_object_mask_image(image)
+            fbp_release_orphan_image(image)
     except FBP_DATA_IO_ERRORS:
         pass
     return True
@@ -2092,6 +2098,7 @@ def _activate_object_mask_image(image):
     try:
         image_name = str(image.name)
         image["fbp_orphan_candidate"] = False
+        fbp_mark_image_in_use(image)
         if KEY_IMAGE_RETIRE_SESSION in image:
             del image[KEY_IMAGE_RETIRE_SESSION]
         _forget_object_mask_image_retirement(image_name)
@@ -2262,7 +2269,7 @@ def _object_mask_image_is_retired_candidate(image):
 
 
 def _purge_retired_object_mask_images(*, now=None):
-    """Remove expired zero-user Shape Mask buffers after the Eevee grace period.
+    """Release expired zero-user Shape Mask buffers after the Eevee grace period.
 
     Helpers publish images by name while shader nodes hold the actual user
     reference. Deleting immediately can race viewport workers, so removal is
@@ -2301,9 +2308,13 @@ def _purge_retired_object_mask_images(*, now=None):
             if not bool(image.get("fbp_orphan_candidate", False)):
                 _forget_object_mask_image_retirement(image_name)
                 continue
-            bpy.data.images.remove(image)
-            _forget_object_mask_image_retirement(image_name)
-            removed += 1
+            if bool(image.get(FBP_IMAGE_BUFFER_RELEASED_KEY, False)):
+                continue
+            # Keep the ID: cached Eevee GPU materials and Undo steps may still
+            # point at it, and deleting it crashes Blender 5.2 in
+            # image_acquire_ibuf. Releasing pixels keeps it valid and reusable.
+            if fbp_release_orphan_image(image):
+                removed += 1
         except FBP_DATA_ERRORS:
             continue
     return removed

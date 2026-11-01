@@ -43,7 +43,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Operator
 
-from .runtime import FBP_DATA_ERRORS, fbp_warn
+from .runtime import FBP_DATA_ERRORS, fbp_release_orphan_image, fbp_warn
 from .user_storage import fbp_project_assets_dir, fbp_user_data_dir
 
 
@@ -97,7 +97,7 @@ def _file_image_size(image):
     try:
         return int(probe.size[0]), int(probe.size[1])
     finally:
-        bpy.data.images.remove(probe)
+        fbp_release_orphan_image(probe)
 
 
 def _input_source(node, names):
@@ -596,10 +596,11 @@ def _bake_frames(context, rig, plane, materials, width, height, frame_list, dire
             except FBP_DATA_ERRORS:
                 pass
         for image in (bake_image, output_image):
-            try:
-                bpy.data.images.remove(image)
-            except FBP_DATA_ERRORS:
-                pass
+            # The bake routes these images through the layer material, so a
+            # Material Preview viewport may have compiled a shader that still
+            # lists them. Free their pixels but keep the IDs (Blender drops
+            # zero-user orphans on save), as deleting them can crash Eevee.
+            fbp_release_orphan_image(image)
         try:
             for key, value in saved_cycles.items():
                 setattr(cycles, key, value)
