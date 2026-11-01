@@ -12068,6 +12068,15 @@ def _fbp_set_shader_node_values(
         except FBP_DATA_ERRORS:
             continue
 
+    gates = _FBP_GATED_EFFECT_NODES.get(effect_id)
+    if gates and (full_update or bool(requested & _fbp_gate_properties(definition, gates))):
+        changed = _fbp_sync_gated_node_mutes(rig, node, gates) or changed
+
+    if _fbp_definition_samples_property(definition) and (
+        full_update or bool(requested & {_fbp_definition_samples_property(definition)})
+    ):
+        changed = _fbp_sync_sample_tap_mutes(rig, effect_id, node, definition) or changed
+
     debug_socket_name = str(definition.get("debug_socket", "") or "")
     if full_update and debug_socket_name:
         debug_socket = _fbp_node_socket(getattr(node, "inputs", ()), debug_socket_name)
@@ -13346,6 +13355,253 @@ def _fbp_set_group_input_value(node, socket_name, value):
         return True
     except FBP_DATA_ERRORS:
         return False
+
+
+_FBP_SAMPLE_TAP_THRESHOLD_KEY = "fbp_sample_tap_threshold"
+_FBP_SAMPLE_TAPS_INDEXED_KEY = "fbp_sample_taps_indexed"
+_FBP_SAMPLE_TAP_STATE_KEY = "fbp_sample_tap_state"
+
+
+def _fbp_definition_samples_property(definition):
+    """Return the RNA property driving a blur group's ``Samples`` socket."""
+    for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
+        if str(socket_name) == "Samples":
+            return str(prop_name)
+    return ""
+
+
+def _fbp_index_sample_taps(node_tree):
+    """Tag every image tap gated by ``Samples`` with its enabling threshold.
+
+    Blur groups gate each tap with ``Samples > index + 0.5`` and multiply the
+    tap by that weight. The GPU still fetched the texture of disabled taps.
+    Tagging the Image Texture node of each tap lets the runtime mute exactly the
+    taps whose weight is zero, so the result is identical and fetches scale
+    with Samples. Works on generated and prebundled groups alike.
+    """
+    try:
+        if bool(node_tree.get(_FBP_SAMPLE_TAPS_INDEXED_KEY, False)):
+            return
+    except FBP_DATA_ERRORS:
+        return
+    def upstream(socket):
+        # Follow one input link, skipping layout reroutes.
+        for _guard in range(16):
+            if not socket.is_linked:
+                return None
+            link = socket.links[0]
+            node = link.from_node
+            if getattr(node, "type", "") != "REROUTE":
+                return link.from_socket
+            socket = node.inputs[0]
+        return None
+
+    def downstream(socket, depth=0):
+        for link in socket.links:
+            node = link.to_node
+            if getattr(node, "type", "") == "REROUTE":
+                if depth < 16:
+                    yield from downstream(node.outputs[0], depth + 1)
+                continue
+            yield node
+
+    tagged = 0
+    try:
+        for gate in node_tree.nodes:
+            if getattr(gate, "type", "") != "MATH" or getattr(gate, "operation", "") != "GREATER_THAN":
+                continue
+            source = upstream(gate.inputs[0])
+            if source is None:
+                continue
+            if getattr(source.node, "type", "") != "GROUP_INPUT" or source.name != "Samples":
+                continue
+            threshold = float(gate.inputs[1].default_value)
+            for weight in downstream(gate.outputs[0]):
+                if getattr(weight, "type", "") != "MATH" or weight.operation != "MULTIPLY":
+                    continue
+                for scale in downstream(weight.outputs[0]):
+                    if getattr(scale, "type", "") != "VECT_MATH" or scale.operation != "SCALE":
+                        continue
+                    premultiplied = upstream(scale.inputs[0])
+                    if premultiplied is None:
+                        continue
+                    image_socket = upstream(premultiplied.node.inputs[0])
+                    image = image_socket.node if image_socket is not None else None
+                    if getattr(image, "type", "") != "TEX_IMAGE":
+                        continue
+                    image[_FBP_SAMPLE_TAP_THRESHOLD_KEY] = threshold
+                    tagged += 1
+        node_tree[_FBP_SAMPLE_TAPS_INDEXED_KEY] = True
+        node_tree["fbp_sample_tap_count"] = tagged
+    except FBP_DATA_ERRORS:
+        return
+
+
+def _fbp_samples_property_is_animated(rig, effect_id, prop_name):
+    try:
+        profile = _fbp_effect_runtime_profile(rig)
+    except FBP_DATA_ERRORS:
+        return True
+    if prop_name in (profile.get("animated_effect_properties", {}) or {}).get(effect_id, ()):
+        return True
+    for channel in profile.get("animated_instance_channels", ()) or ():
+        try:
+            channel_effect, _instance, channel_prop = _fbp_effect_instance_channel_identity(channel)
+        except FBP_DATA_ERRORS:
+            continue
+        if channel_effect == effect_id and channel_prop == prop_name:
+            return True
+    return False
+
+
+def _fbp_samples_link_is_dynamic(socket, plane):
+    """True when a linked ``Samples`` socket can change without a Python update.
+
+    A Modifiers-panel shell feeds the socket through an Object Attribute node;
+    Frame By Plane mirrors its value into ``default_value`` on every edit, so
+    the socket is only dynamic when that modifier input is animated or driven.
+    Any other link (a user's own node) is treated as dynamic.
+    """
+    if not bool(getattr(socket, "is_linked", False)):
+        return False
+    try:
+        source = socket.links[0].from_node
+        if getattr(source, "type", "") != "ATTRIBUTE" or not source.get("fbp_shell_attribute"):
+            return True
+        path = str(getattr(source, "attribute_name", "") or "")
+        owners = (plane,) if (path and plane is not None) else ()
+        for owner in owners:
+            animation_data = getattr(owner, "animation_data", None)
+            if animation_data is None:
+                continue
+            curves = tuple(fbp_action_fcurves(owner) or ()) + tuple(animation_data.drivers or ())
+            if any(str(getattr(curve, "data_path", "") or "") == path for curve in curves):
+                return True
+        return False
+    except FBP_DATA_ERRORS:
+        return True
+
+
+# Texture nodes whose result an effect multiplies by one of its own inputs:
+# while that input is exactly zero (and not keyed or driven) the nodes are
+# muted, so the GPU skips them and the picture stays the same.
+_FBP_GATED_EFFECT_NODES = {
+    "RISO_PRINT": (
+        ("Use Ink 3", ("Riso Ink 3 Source", "Riso Ink 3 Screen Phase", "Riso Ink 3 Dot Jitter", "Riso Ink 3 Grain")),
+        ("Halftone", tuple(f"Riso Ink {ink} {part}" for ink in (1, 2, 3) for part in ("Screen Phase", "Dot Jitter"))),
+        ("Grain", tuple(f"Riso Ink {ink} Grain" for ink in (1, 2, 3))),
+    ),
+}
+
+
+def _fbp_gate_properties(definition, gates):
+    sockets = {socket_name for socket_name, _prefixes in gates}
+    return {
+        str(prop_name)
+        for prop_name, socket_name in (definition.get("property_map", {}) or {}).items()
+        if str(socket_name) in sockets
+    }
+
+
+def _fbp_sync_gated_node_mutes(rig, node, gates):
+    """Mute the texture nodes of ``gates`` whose controlling input is zero."""
+    node_tree = getattr(node, "node_tree", None)
+    if node_tree is None:
+        return False
+    plane = _fbp_plane(rig, repair=False)
+    closed = []
+    state_parts = []
+    for socket_name, prefixes in gates:
+        socket = _fbp_node_socket(getattr(node, "inputs", ()), socket_name)
+        if socket is None:
+            continue
+        try:
+            is_zero = (
+                not _fbp_samples_link_is_dynamic(socket, plane)
+                and float(socket.default_value) == 0.0
+            )
+        except FBP_DATA_ERRORS:
+            is_zero = False
+        state_parts.append("1" if is_zero else "0")
+        if is_zero:
+            closed.extend(prefixes)
+    state = "".join(state_parts)
+    try:
+        if str(node_tree.get("fbp_gated_node_state", "")) == state:
+            return False
+        node_tree["fbp_gated_node_state"] = state
+    except FBP_DATA_ERRORS:
+        pass
+    closed = tuple(closed)
+    every = tuple(prefix for _socket_name, prefixes in gates for prefix in prefixes)
+    changed = False
+    try:
+        for target in node_tree.nodes:
+            name = str(getattr(target, "name", "") or "")
+            if not name.startswith(every) or not str(getattr(target, "type", "")).startswith("TEX_"):
+                continue
+            mute = bool(closed) and name.startswith(closed)
+            if bool(target.mute) != mute:
+                target.mute = mute
+                changed = True
+    except FBP_DATA_ERRORS:
+        return changed
+    return changed
+
+
+def _fbp_sync_runtime_mutes(rig, effect_id, node):
+    """Re-evaluate every value-driven mute of one effect node (shell edits)."""
+    changed = False
+    gates = _FBP_GATED_EFFECT_NODES.get(fbp_normalize_effect_id(effect_id))
+    if gates:
+        changed = _fbp_sync_gated_node_mutes(rig, node, gates) or changed
+    if _fbp_node_socket(getattr(node, "inputs", ()), "Samples") is not None:
+        changed = _fbp_sync_sample_tap_mutes(rig, effect_id, node) or changed
+    return changed
+
+
+def _fbp_sync_sample_tap_mutes(rig, effect_id, node, definition=None):
+    """Mute the image taps that the current ``Samples`` value already weights to zero."""
+    node_tree = getattr(node, "node_tree", None)
+    socket = _fbp_node_socket(getattr(node, "inputs", ()), "Samples")
+    if node_tree is None or socket is None:
+        return False
+    definition = definition or fbp_effect_definition(effect_id)
+    prop_name = _fbp_definition_samples_property(definition)
+    _fbp_index_sample_taps(node_tree)
+    # A shared group or animated/linked Samples needs every tap available.
+    keep_all = (
+        _fbp_samples_link_is_dynamic(socket, _fbp_plane(rig, repair=False))
+        or not bool(definition.get("private_group", False))
+        or (prop_name and _fbp_samples_property_is_animated(rig, effect_id, prop_name))
+    )
+    try:
+        samples = float(socket.default_value)
+    except FBP_DATA_ERRORS:
+        keep_all = True
+        samples = 0.0
+    state = "ALL" if keep_all else f"{samples:g}"
+    try:
+        if str(node_tree.get(_FBP_SAMPLE_TAP_STATE_KEY, "")) == state:
+            return False
+        node_tree[_FBP_SAMPLE_TAP_STATE_KEY] = state
+    except FBP_DATA_ERRORS:
+        pass
+    changed = False
+    try:
+        for image in node_tree.nodes:
+            if getattr(image, "type", "") != "TEX_IMAGE":
+                continue
+            threshold = image.get(_FBP_SAMPLE_TAP_THRESHOLD_KEY)
+            if threshold is None:
+                continue
+            mute = (not keep_all) and not (samples > float(threshold))
+            if bool(image.mute) != mute:
+                image.mute = mute
+                changed = True
+    except FBP_DATA_ERRORS:
+        return changed
+    return changed
 
 
 def _fbp_sync_clipping_source_effect_inputs(rig, source_rig, node):

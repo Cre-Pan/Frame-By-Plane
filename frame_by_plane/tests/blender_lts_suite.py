@@ -5169,6 +5169,111 @@ def test_composite_materials_skip_static_frames(_module):
     return {"composites": len(composites)}
 
 
+def test_blur_samples_skip_disabled_taps(_module):
+    """Blurs fetch only the taps Samples enables, with an identical image.
+
+    Taps above Samples already weigh zero; their Image Texture nodes are muted
+    so the GPU stops reading them. Animated or keyed Samples keeps every tap.
+    """
+    _skip_unless_cycles_render()
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    shells = importlib.import_module(f"{PACKAGE}.effect_shells")
+    dirty = importlib.import_module(f"{PACKAGE}.fbp_dirty")
+    builder = importlib.import_module(f"{PACKAGE}.builder")
+    path = WORKDIR / "fbp_blur_taps_fixture.png"
+    if not path.is_file():
+        image = bpy.data.images.new("FBP Blur Taps Fixture", 32, 24, alpha=True)
+        try:
+            pixels = []
+            for y in range(24):
+                for x in range(32):
+                    on = (x // 3 + y // 3) % 2
+                    pixels.extend((0.9 if on else 0.1, 0.2, 0.1 if on else 0.8, 1.0))
+            image.pixels[:] = pixels
+            image.filepath_raw = str(path)
+            image.file_format = "PNG"
+            image.save()
+        finally:
+            bpy.data.images.remove(image)
+    rig = builder.build_fbp_rig(
+        bpy.context, "FBP Blur Taps", str(path.parent), [path.name],
+        (0.0, 0.0, 0.0), target_collection=bpy.context.scene.collection,
+    )
+    owned = [rig, *rig.children_recursive]
+    results = {}
+
+    def taps(effect_id):
+        tree = geo._fbp_find_shader_effect_nodes_for_rig(rig, effect_id)[0].node_tree
+        images = [node for node in tree.nodes if node.type == "TEX_IMAGE" and "fbp_sample_tap_threshold" in node]
+        return tree, images
+
+    with _cycles_center_renderer("FBP Blur Taps Camera", owned) as render_center:
+        for effect_id, prefix, radius_props, total in (
+            ("GAUSSIAN_BLUR", "fbp_gaussian_blur", ("radius_x", "radius_y"), 25),
+            ("TRIANGLE_BLUR", "fbp_triangle_blur", ("radius",), 21),
+        ):
+            assert geo.fbp_add_effect(rig, effect_id, select_object_mask_helper=False, inherit_active_group=False)
+            for prop in radius_props:
+                setattr(rig, f"{prefix}_{prop}", 2.0)
+            for samples in (5, 17, 25):
+                setattr(rig, f"{prefix}_samples", samples)
+                dirty.flush_dirty()
+                tree, images = taps(effect_id)
+                assert len(images) == total, (effect_id, len(images))
+                muted = sum(1 for node in images if node.mute)
+                assert muted == max(0, total - samples), (effect_id, samples, muted)
+                fast = render_center()
+                for node in images:
+                    node.mute = False
+                full = render_center()
+                assert all(abs(a - b) < 1e-6 for a, b in zip(fast, full)), (effect_id, samples, fast, full)
+                tree.pop("fbp_sample_tap_state", None)
+                geo._fbp_sync_sample_tap_mutes(rig, effect_id, geo._fbp_find_shader_effect_nodes_for_rig(rig, effect_id)[0])
+                results[f"{effect_id}:{samples}"] = muted
+            setattr(rig, f"{prefix}_samples", 5)
+            dirty.flush_dirty()
+            geo.fbp_remove_effect(rig, effect_id)
+
+        # Triangle Samples keyed in the Modifiers panel: every tap stays live.
+        assert geo.fbp_add_effect(rig, "TRIANGLE_BLUR", select_object_mask_helper=False, inherit_active_group=False)
+        rig.fbp_triangle_blur_samples = 5
+        dirty.flush_dirty()
+        _tree, images = taps("TRIANGLE_BLUR")
+        assert any(node.mute for node in images)
+        node = geo._fbp_find_shader_effect_nodes_for_rig(rig, "TRIANGLE_BLUR")[0]
+        attribute = node.inputs["Samples"].links[0].from_node
+        plane = geo._fbp_plane(rig)
+        plane.keyframe_insert(attribute.attribute_name, frame=1)
+        shells.fbp_shell_sync_values(rig)
+        assert not any(node.mute for node in images), "keyed Samples must keep every tap"
+        results["triangle_keyed_muted"] = 0
+        geo.fbp_remove_effect(rig, "TRIANGLE_BLUR")
+
+        # Riso Print: the third ink, the halftone dots and the grain are
+        # skipped while their input is zero.
+        assert geo.fbp_add_effect(rig, "RISO_PRINT", select_object_mask_helper=False, inherit_active_group=False)
+        for use_ink_3, halftone, grain, expected in (
+            (False, 0.6, 0.35, 4), (True, 0.6, 0.35, 0), (False, 0.0, 0.0, 10),
+        ):
+            rig.fbp_riso_use_ink_3 = use_ink_3
+            rig.fbp_riso_halftone = halftone
+            rig.fbp_riso_grain = grain
+            dirty.flush_dirty()
+            shells.fbp_shell_sync_values(rig)
+            node = geo._fbp_find_shader_effect_nodes_for_rig(rig, "RISO_PRINT")[0]
+            muted = [item for item in node.node_tree.nodes if item.mute]
+            assert len(muted) == expected, (use_ink_3, halftone, grain, [item.name for item in muted])
+            fast = render_center()
+            for item in muted:
+                item.mute = False
+            full = render_center()
+            assert all(abs(a - b) < 1e-6 for a, b in zip(fast, full)), (use_ink_3, halftone, grain, fast, full)
+            node.node_tree.pop("fbp_gated_node_state", None)
+            geo._fbp_sync_runtime_mutes(rig, "RISO_PRINT", node)
+            results[f"riso:{int(use_ink_3)},{halftone},{grain}"] = len(muted)
+    return results
+
+
 def test_rigless_gesture_select_dense_mesh(_module):
     """Box and lasso pick a rig-less layer quickly even with a dense Mesh effect."""
     geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -6192,6 +6297,7 @@ def run_background():
             ("effect_audit_followup_contract", test_effect_audit_followup_contract),
             ("composite_materials_skip_static_frames", test_composite_materials_skip_static_frames),
             ("rigless_gesture_select_dense_mesh", test_rigless_gesture_select_dense_mesh),
+            ("blur_samples_skip_disabled_taps", test_blur_samples_skip_disabled_taps),
             ("color_key_merges_chroma_key", test_color_key_merges_chroma_key),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),
