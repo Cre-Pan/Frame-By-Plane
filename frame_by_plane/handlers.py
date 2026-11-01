@@ -1245,6 +1245,12 @@ def fbp_deferred_load_post_rebuild():
         fbp_clear_effect_runtime_caches()
     except FBP_DATA_ERRORS:
         pass
+    try:
+        # A file saved during playback keeps Light Playback's paused effects.
+        from .geometry_nodes import fbp_restore_playback_suspended_effects
+        fbp_restore_playback_suspended_effects()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     fbp_runtime_set("fbp_pause_managed_timers", False)
     fbp_runtime_set("fbp_managed_timers_resume_after", time.monotonic() + 0.20)
 

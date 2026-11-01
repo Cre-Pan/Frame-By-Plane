@@ -2362,12 +2362,16 @@ def _fbp_schedule_effect_quality_refresh(scene=None):
 @persistent
 def fbp_effect_playback_pre(scene, depsgraph=None):
     """Apply playback-specific quality contracts for all active effects."""
-    del depsgraph
+    playback_depsgraph = depsgraph
     global _FBP_EFFECT_PLAYBACK_ACTIVE
     _FBP_EFFECT_PLAYBACK_ACTIVE = True
     # Keyframes may have been added since the previous playback session. Build
     # one fresh property map now, then reuse it throughout playback.
     _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()
+    try:
+        fbp_suspend_heavy_effects_for_playback(scene, playback_depsgraph)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not pause heavy effects for playback", exc)
     _fbp_schedule_effect_quality_refresh(scene)
 
 
@@ -2377,7 +2381,154 @@ def fbp_effect_playback_post(scene, depsgraph=None):
     del depsgraph
     global _FBP_EFFECT_PLAYBACK_ACTIVE
     _FBP_EFFECT_PLAYBACK_ACTIVE = False
+    try:
+        fbp_restore_playback_suspended_effects()
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not restore effects paused for playback", exc)
     _fbp_schedule_effect_quality_refresh(scene)
+
+
+# Light Playback: Mesh effects whose last viewport evaluation took longer than
+# this are switched off in the viewport while the timeline plays. Render
+# visibility, stored effect visibility and the effect settings never change.
+FBP_PLAYBACK_LIGHT_THRESHOLD_MS = 4.0
+FBP_PLAYBACK_SUSPENDED_KEY = "fbp_playback_suspended_modifiers"
+
+
+def fbp_playback_light_mode(scene):
+    try:
+        mode = str(getattr(scene, "fbp_playback_light_mode", "HEAVY") or "HEAVY").upper()
+    except FBP_DATA_ERRORS:
+        mode = "HEAVY"
+    return mode if mode in {"OFF", "HEAVY", "ALL"} else "HEAVY"
+
+
+def _fbp_playback_suspend_candidates(plane, mode, depsgraph=None):
+    """Viewport-visible Mesh effect modifiers worth pausing on ``plane``."""
+    names = []
+    evaluated_modifiers = None
+    if mode == "HEAVY":
+        # Blender records the evaluation time on the evaluated copy only.
+        try:
+            evaluated_modifiers = plane.evaluated_get(depsgraph).modifiers if depsgraph else None
+        except FBP_DATA_ERRORS:
+            evaluated_modifiers = None
+    for modifier in tuple(getattr(plane, "modifiers", ()) or ()):
+        try:
+            if getattr(modifier, "type", "") != "NODES" or not bool(modifier.show_viewport):
+                continue
+            if not _fbp_geometry_effect_id_for_modifier(modifier):
+                continue
+            if mode == "HEAVY":
+                timed = evaluated_modifiers.get(modifier.name) if evaluated_modifiers is not None else None
+                cost_ms = float(getattr(timed or modifier, "execution_time", 0.0) or 0.0) * 1000.0
+                if cost_ms < FBP_PLAYBACK_LIGHT_THRESHOLD_MS:
+                    continue
+            names.append(str(modifier.name))
+        except FBP_DATA_ERRORS:
+            continue
+    return names
+
+
+def fbp_suspend_heavy_effects_for_playback(scene, depsgraph=None):
+    """Pause heavy Mesh effects in the viewport for the length of playback."""
+    mode = fbp_playback_light_mode(scene)
+    if mode == "OFF" or scene is None:
+        return 0
+    if depsgraph is None and mode == "HEAVY":
+        try:
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+        except FBP_DATA_ERRORS:
+            depsgraph = None
+    try:
+        from .layers import iter_scene_fbp_rigs
+        rigs = tuple(iter_scene_fbp_rigs(scene))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return 0
+    suspended = 0
+    for rig in rigs:
+        plane = _fbp_plane(rig, repair=False)
+        if plane is None:
+            continue
+        names = _fbp_playback_suspend_candidates(plane, mode, depsgraph)
+        if not names:
+            continue
+        try:
+            previous = [str(name) for name in plane.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()]
+            plane[FBP_PLAYBACK_SUSPENDED_KEY] = sorted(set(previous) | set(names))
+            for name in names:
+                modifier = plane.modifiers.get(name)
+                if modifier is not None:
+                    modifier.show_viewport = False
+                    suspended += 1
+        except FBP_DATA_ERRORS:
+            continue
+    return suspended
+
+
+def fbp_playback_suspended_modifier(plane, modifier_name):
+    try:
+        return str(modifier_name) in {
+            str(name) for name in plane.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()
+        }
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_forget_playback_suspended_modifier(plane, modifier_name):
+    """The user changed this effect's visibility: playback no longer owns it."""
+    try:
+        names = [str(name) for name in plane.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()]
+        if str(modifier_name) not in names:
+            return False
+        names.remove(str(modifier_name))
+        if names:
+            plane[FBP_PLAYBACK_SUSPENDED_KEY] = names
+        else:
+            del plane[FBP_PLAYBACK_SUSPENDED_KEY]
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_draw_playback_light_settings(self, context):
+    """Light Playback row in the Timeline's Playback popover."""
+    scene = getattr(context, "scene", None)
+    if scene is None or not hasattr(scene, "fbp_playback_light_mode"):
+        return
+    layout = self.layout
+    layout.separator()
+    layout.prop(scene, "fbp_playback_light_mode", text="Light Playback")
+
+
+def _fbp_playback_popover():
+    return getattr(bpy.types, "TIME_PT_playback", None)
+
+
+def fbp_restore_playback_suspended_effects():
+    """Show every effect paused by Light Playback again.
+
+    The paused modifier names live on the plane, so a file saved while the
+    timeline was playing is repaired on load as well.
+    """
+    restored = 0
+    for obj in tuple(getattr(bpy.data, "objects", ()) or ()):
+        try:
+            if FBP_PLAYBACK_SUSPENDED_KEY not in obj:
+                continue
+            names = [str(name) for name in obj.get(FBP_PLAYBACK_SUSPENDED_KEY, ()) or ()]
+            del obj[FBP_PLAYBACK_SUSPENDED_KEY]
+        except FBP_DATA_ERRORS:
+            continue
+        for name in names:
+            try:
+                modifier = obj.modifiers.get(name)
+                if modifier is not None and not bool(modifier.show_viewport):
+                    modifier.show_viewport = True
+                    restored += 1
+            except FBP_DATA_ERRORS:
+                continue
+    return restored
 
 def _fbp_effect_runtime_value(rig, effect_id, prop_name, value, scene=None, node=None):
     effect_id = fbp_normalize_effect_id(effect_id)
@@ -2703,7 +2854,15 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         target_nodes=runtime_profile.get("frame_shader_targets", ()),
                         scene=scene,
                     )
-                if geometry_source_sync or shader_source_sync:
+                if (geometry_source_sync or shader_source_sync) and not (
+                    # Composite materials mirror static socket values of the
+                    # layer material; sequence timing inside them is native
+                    # animation. While playing, only Python-driven values
+                    # (keyed effect settings, Evolve, procedural frames) can
+                    # change, so a plain stack skips the ~2 ms rescan per layer.
+                    _FBP_EFFECT_PLAYBACK_ACTIVE
+                    and not (has_animated_effects or evolve_enabled or procedural_frame_sync)
+                ):
                     _fbp_refresh_geometry_source_materials(rig)
 
             except FBP_DATA_ERRORS:
@@ -12156,6 +12315,154 @@ def _fbp_copy_shader_image_user(source_node, target_node):
     return changed
 
 
+_FBP_PRIVATE_OFFSET_ANIM_KEY = "fbp_private_offset_anim_signature"
+
+
+def _fbp_frame_offset_curve(source_node):
+    """Return the F-Curve that animates the native source ImageUser offset."""
+    try:
+        tree = getattr(source_node, "id_data", None)
+        user = getattr(source_node, "image_user", None)
+        if tree is None or user is None:
+            return None
+        return fbp_find_action_fcurve(tree, user.path_from_id("frame_offset"))
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _fbp_frame_offset_curve_signature(curve):
+    """Cheap identity of a timing curve: key count plus packed key data."""
+    if curve is None:
+        return ""
+    try:
+        points = curve.keyframe_points
+        count = len(points)
+        coords = array("f", [0.0]) * (2 * count)
+        if count:
+            points.foreach_get("co", coords)
+        modes = array("i", [0]) * count
+        if count:
+            points.foreach_get("interpolation", modes)
+        return "%d:%x:%x" % (count, hash(coords.tobytes()), hash(modes.tobytes()))
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def _fbp_private_offset_paths(image_nodes):
+    paths = []
+    for image_node in image_nodes:
+        try:
+            paths.append(image_node.image_user.path_from_id("frame_offset"))
+        except FBP_DATA_ERRORS:
+            continue
+    return paths
+
+
+def _fbp_clear_private_offset_animation(node_group, image_nodes):
+    removed = 0
+    for path in _fbp_private_offset_paths(image_nodes):
+        removed += fbp_remove_action_fcurves(node_group, path)
+    try:
+        if _FBP_PRIVATE_OFFSET_ANIM_KEY in node_group:
+            del node_group[_FBP_PRIVATE_OFFSET_ANIM_KEY]
+    except FBP_DATA_ERRORS:
+        pass
+    return bool(removed)
+
+
+def _fbp_mirror_private_offset_animation(source_node, source_curve, signature, node_group, image_nodes):
+    """Give every private image sample the source timing curve.
+
+    Blender then evaluates the sequence frame of each blur/edge sample
+    natively during playback. Copying ``ImageUser.frame_offset`` from Python
+    on every frame cost about a millisecond per sample and re-tagged the
+    shader, which was the main source of playback lag for image effects.
+    """
+    try:
+        animation_data = node_group.animation_data
+        action = getattr(animation_data, "action", None) if animation_data else None
+        if action is not None and int(getattr(action, "users", 1) or 1) > 1:
+            # Copied stacks share the Action of the group they came from;
+            # each layer needs its own timing.
+            slot = getattr(animation_data, "action_slot", None)
+            slot_identifier = str(getattr(slot, "identifier", "") or "")
+            animation_data.action = action.copy()
+            if getattr(animation_data, "action_slot", None) is None and slot_identifier:
+                for candidate in animation_data.action.slots:
+                    if candidate.identifier == slot_identifier:
+                        animation_data.action_slot = candidate
+                        break
+        source_points = source_curve.keyframe_points
+        count = len(source_points)
+        if not count:
+            return False
+        # Bulk-copy the keys: long holds produce hundreds of them, and one
+        # keyframe_insert plus an RNA write per key and per sample took seconds.
+        coords = array("f", [0.0]) * (2 * count)
+        left = array("f", [0.0]) * (2 * count)
+        right = array("f", [0.0]) * (2 * count)
+        modes = array("i", [0]) * count
+        source_points.foreach_get("co", coords)
+        source_points.foreach_get("handle_left", left)
+        source_points.foreach_get("handle_right", right)
+        source_points.foreach_get("interpolation", modes)
+        current = int(getattr(source_node.image_user, "frame_offset", 0) or 0)
+        for image_node in image_nodes:
+            user = getattr(image_node, "image_user", None)
+            if user is None:
+                continue
+            path = user.path_from_id("frame_offset")
+            fbp_remove_action_fcurves(node_group, path)
+            # One real insert creates the F-Curve in the group's action slot.
+            user.frame_offset = int(round(float(coords[1])))
+            node_group.keyframe_insert(data_path=path, frame=float(coords[0]))
+            curve = fbp_find_action_fcurve(node_group, path)
+            if curve is None:
+                continue
+            points = curve.keyframe_points
+            if count > len(points):
+                points.add(count - len(points))
+            points.foreach_set("co", coords)
+            points.foreach_set("handle_left", left)
+            points.foreach_set("handle_right", right)
+            points.foreach_set("interpolation", modes)
+            try:
+                curve.update()
+            except FBP_DATA_ERRORS:
+                pass
+            user.frame_offset = current
+        node_group[_FBP_PRIVATE_OFFSET_ANIM_KEY] = str(signature)
+        return True
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not give image samples the sequence timing", exc)
+        return False
+
+
+def _fbp_sync_private_offset_animation(source_node, node_group, image_nodes):
+    """Return ``(animated, changed)`` after matching the private timing curves."""
+    if source_node is None or node_group is None:
+        return False, False
+    try:
+        source_kind = str(getattr(getattr(source_node, "image", None), "source", "") or "").upper()
+    except FBP_DATA_ERRORS:
+        source_kind = ""
+    curve = _fbp_frame_offset_curve(source_node) if source_kind in {"SEQUENCE", "MOVIE"} else None
+    signature = _fbp_frame_offset_curve_signature(curve) if curve is not None else ""
+    try:
+        stored = str(node_group.get(_FBP_PRIVATE_OFFSET_ANIM_KEY, "") or "")
+    except FBP_DATA_ERRORS:
+        stored = ""
+    if not signature:
+        if stored:
+            return False, _fbp_clear_private_offset_animation(node_group, image_nodes)
+        return False, False
+    if stored == signature:
+        return True, False
+    return _fbp_mirror_private_offset_animation(
+        source_node, curve, signature, node_group, image_nodes
+    ), True
+
+
 def _fbp_sync_private_shader_source(material, node_group):
     """Synchronize private image samples with a bounded validation cache.
 
@@ -12178,8 +12485,17 @@ def _fbp_sync_private_shader_source(material, node_group):
     except FBP_DATA_ERRORS:
         image_key = None
     image_user = getattr(source_node, "image_user", None) if source_node else None
+    # Sequence timing normally lives in an F-Curve on frame_offset. The private
+    # samples get the same curve, so the per-frame offset leaves the signature
+    # and playback no longer rewrites every sample through Python.
+    offset_animated, offset_changed = _fbp_sync_private_offset_animation(
+        source_node, node_group, image_nodes
+    )
     user_signature = []
     for attr in ("frame_duration", "frame_start", "frame_offset", "use_cyclic", "use_auto_refresh"):
+        if attr == "frame_offset" and offset_animated:
+            user_signature.append("ANIMATED")
+            continue
         try:
             user_signature.append(getattr(image_user, attr))
         except FBP_DATA_ERRORS:
@@ -12196,10 +12512,13 @@ def _fbp_sync_private_shader_source(material, node_group):
         source_signature = (image_key, tuple(user_signature), len(image_nodes))
     now = time.monotonic()
     cached = _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.get(group_key) if group_key is not None else None
-    if cached and cached[0] == source_signature and now - float(cached[1]) < 2.0:
+    if (
+        not offset_changed
+        and cached and cached[0] == source_signature and now - float(cached[1]) < 2.0
+    ):
         return bool(source_image), False
 
-    changed = False
+    changed = offset_changed
     for image_node in image_nodes:
         try:
             if getattr(image_node, "image", None) is not source_image:
@@ -20485,6 +20804,11 @@ def fbp_effect_visible_state(rig, effect_id, instance_id=""):
         modifier = profile.get("geometry_modifiers", {}).get(effect_id)
         if modifier is None:
             modifier = fbp_find_effect_modifier(rig, effect_id)
+        if modifier is not None and not bool(getattr(modifier, "show_viewport", True)):
+            # Paused by Light Playback only: the effect is still switched on.
+            plane = _fbp_plane(rig, repair=False)
+            if plane is not None and fbp_playback_suspended_modifier(plane, modifier.name):
+                return True
         return bool(modifier and getattr(modifier, "show_viewport", True))
     instance_id = str(instance_id or "")
     nodes = (
@@ -20543,6 +20867,9 @@ def fbp_set_effect_visible(rig, effect_id, visible, instance_id="", *, refresh_m
         if not modifier:
             return stored_changed
         changed = stored_changed
+        plane = _fbp_plane(rig, repair=False)
+        if plane is not None:
+            fbp_forget_playback_suspended_modifier(plane, getattr(modifier, "name", ""))
         if bool(getattr(modifier, "show_viewport", True)) != visible:
             modifier.show_viewport = visible
             changed = True
@@ -36078,6 +36405,13 @@ def register():
                 module_suffix="geometry_nodes",
             ):
                 raise RuntimeError("Could not register the effect playback-stop handler")
+            popover = _fbp_playback_popover()
+            if popover is not None:
+                try:
+                    popover.remove(fbp_draw_playback_light_settings)
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    pass
+                popover.append(fbp_draw_playback_light_settings)
             try:
                 from .safe_tasks import schedule_once
                 schedule_once(
@@ -36101,6 +36435,16 @@ def unregister():
     unregister_clipping_matrix_driver_namespace()
     _FBP_EFFECT_PLAYBACK_ACTIVE = False
     _FBP_SELECTED_RIGS_FN = None
+    try:
+        fbp_restore_playback_suspended_effects()
+    except FBP_DATA_ERRORS:
+        pass
+    popover = _fbp_playback_popover()
+    if popover is not None:
+        try:
+            popover.remove(fbp_draw_playback_light_settings)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
     fbp_clear_effect_runtime_caches()
     _fbp_remove_object_context_menu_entry()
     _fbp_remove_evolve_handlers()
