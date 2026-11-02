@@ -9859,7 +9859,7 @@ def _fbp_remember_geometry_input(rig, modifier, prop_name, value):
 
 def fbp_pull_geometry_modifier_edits(rig):
     """Write mesh effect inputs edited in the Modifiers panel to the layer."""
-    if not rig or not _FBP_GEOMETRY_INPUT_WRITTEN:
+    if not rig:
         return 0
     pulled = 0
     for effect_id in tuple(fbp_effect_ids_for_rig(rig)):
@@ -9874,6 +9874,11 @@ def fbp_pull_geometry_modifier_edits(rig):
             pointer = int(modifier.as_pointer())
         except FBP_DATA_ERRORS:
             continue
+        try:
+            from .effect_shells import fbp_sync_geometry_panel_inputs
+            pulled += fbp_sync_geometry_panel_inputs(rig, effect_id, modifier)
+        except ImportError:
+            pass
         inputs = None
         for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
             key = (pointer, prop_name)
@@ -9937,6 +9942,13 @@ def fbp_update_geometry_effect(
     node_group = _fbp_ensure_geometry_effect_group(rig, effect_id, modifier)
     if not node_group:
         return False
+    if not bool(definition.get("custom", False)):
+        try:
+            # The rest of the panel (Animate, quality, shading) as inputs.
+            from .effect_shells import fbp_extend_geometry_group
+            fbp_extend_geometry_group(node_group, effect_id)
+        except ImportError:
+            pass
 
     requested = None if property_names is None else {
         str(name) for name in property_names if str(name or "")
