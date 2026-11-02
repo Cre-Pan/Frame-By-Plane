@@ -2732,9 +2732,18 @@ def fbp_layer_depth_value_from_cache(rig, depth_cache=None):
 def _safe_layer_obj(layer_item):
     try:
         obj = layer_item.obj
-        if obj and object_in_scene(obj):
+        if not obj:
+            return None
+        # ``layer_item.obj`` already resolved the object through
+        # ``bpy.data.objects``; only Scene membership is left to check.
+        # These getters run for every drawn Layers row and column.
+        context = bpy.context
+        scene = context.scene if context else None
+        if not scene:
             return obj
-    except ReferenceError:
+        if scene.objects.get(obj.name) == obj:
+            return obj
+    except FBP_DATA_ERRORS:
         pass
     return None
 

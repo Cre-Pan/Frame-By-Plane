@@ -78,11 +78,16 @@ def _scene_signature(scene):
         except (TypeError, ValueError):
             pass
     try:
-        layer_sig = []
-        for item in getattr(scene, "fbp_layers", ()) or ():
-            rig = getattr(item, "obj", None)
-            layer_sig.append((_pointer_key(rig), _name_key(rig)))
-        signature = (object_count, len(layer_sig), tuple(layer_sig))
+        # The stored name and runtime token of each row identify its rig
+        # (``FBP_LayerItem.obj`` resolves exactly these two values). Reading
+        # them directly avoids resolving every rig through Python on each
+        # viewport redraw; renames and deletions still change the signature
+        # or make the cached names fail to resolve, which forces a rescan.
+        layer_sig = tuple(
+            (str(item.obj_runtime_key or ""), str(item.obj_name or ""))
+            for item in getattr(scene, "fbp_layers", ()) or ()
+        )
+        signature = (object_count, len(layer_sig), layer_sig)
     except FBP_DATA_ERRORS:
         signature = (-1, -1, ())
     if scene_key[0]:

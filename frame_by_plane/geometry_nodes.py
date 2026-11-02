@@ -13396,12 +13396,24 @@ def _fbp_index_sample_taps(node_tree):
             return
     except FBP_DATA_ERRORS:
         return
+    # ``NodeSocket.links`` scans every link of the tree on each access, which
+    # made this pass quadratic in the size of large groups (Riso Print,
+    # blurs). Index the links once by socket instead.
+    links_to = {}
+    links_from = {}
+    try:
+        for link in node_tree.links:
+            links_to.setdefault(link.to_socket.as_pointer(), link)
+            links_from.setdefault(link.from_socket.as_pointer(), []).append(link)
+    except FBP_DATA_ERRORS:
+        return
+
     def upstream(socket):
         # Follow one input link, skipping layout reroutes.
         for _guard in range(16):
-            if not socket.is_linked:
+            link = links_to.get(socket.as_pointer())
+            if link is None:
                 return None
-            link = socket.links[0]
             node = link.from_node
             if getattr(node, "type", "") != "REROUTE":
                 return link.from_socket
@@ -13409,7 +13421,7 @@ def _fbp_index_sample_taps(node_tree):
         return None
 
     def downstream(socket, depth=0):
-        for link in socket.links:
+        for link in links_from.get(socket.as_pointer(), ()):
             node = link.to_node
             if getattr(node, "type", "") == "REROUTE":
                 if depth < 16:

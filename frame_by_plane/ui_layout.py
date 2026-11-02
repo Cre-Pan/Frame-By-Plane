@@ -43,7 +43,7 @@ from .core import (
     pending_collection_is_open,
 )
 from .ui_icons import ui_icon, ui_icon_kwargs, ui_label_icon_kwargs
-from .interface_preferences import fbp_draw_uilist_header
+from .interface_preferences import fbp_draw_uilist_header, fbp_template_list
 from .ui_style import (
     adaptive_row,
     configure_layout,
@@ -1718,7 +1718,8 @@ def draw_layer_tree_uilist(layout, context, *, min_rows=10, list_type='ALL'):
         list_cls = "FBP_UL_LayerTreePlanesList"
     elif mode == 'GP':
         list_cls = "FBP_UL_GreasePencilLayerList"
-    layout.template_list(
+    fbp_template_list(
+        layout,
         list_cls,
         "",
         sc,
@@ -1770,7 +1771,8 @@ def draw_pending_setup_grouped(layout, context):
     )
 
     list_row = list_box.row(align=False)
-    list_row.template_list(
+    fbp_template_list(
+        list_row,
         'FBP_UL_PendingTreeList',
         '',
         sc,

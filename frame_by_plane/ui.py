@@ -84,7 +84,7 @@ from .ui_icons import (
     ui_label_icon_kwargs,
     ui_icon_value,
 )
-from .interface_preferences import UILIST_COLUMN_DEFINITIONS, clear_interface_preferences_cache, fbp_get_addon_preferences, fbp_draw_uilist_header, fbp_draw_uilist_profile_preview, fbp_clear_uilist_drag_preview, fbp_set_uilist_drag_preview, fbp_uilist_column_icon_kwargs, fbp_set_uilist_profile_order, fbp_set_uilist_profile_visibility, fbp_uilist_icon_flags, fbp_uilist_icon_order, fbp_uilist_label_alignment, fbp_uilist_fixed_row_layouts, fbp_uilist_row_layouts, fbp_uilist_profile_definition, fbp_uilist_profile_columns, fbp_uilist_is_spacer, fbp_draw_uilist_spacer, fbp_uilist_visible_columns
+from .interface_preferences import UILIST_COLUMN_DEFINITIONS, clear_interface_preferences_cache, fbp_get_addon_preferences, fbp_draw_uilist_header, fbp_draw_uilist_profile_preview, fbp_clear_uilist_drag_preview, fbp_set_uilist_drag_preview, fbp_uilist_column_icon_kwargs, fbp_set_uilist_profile_order, fbp_set_uilist_profile_visibility, fbp_uilist_icon_flags, fbp_uilist_icon_order, fbp_uilist_label_alignment, fbp_uilist_fixed_row_layouts, fbp_uilist_row_layouts, fbp_uilist_profile_definition, fbp_uilist_profile_columns, fbp_uilist_is_spacer, fbp_draw_uilist_spacer, fbp_uilist_visible_columns, fbp_template_list, fbp_uilist_pass_memo
 from .ui_style import FBP_UI_LIST_MIN_ROWS, adaptive_row, configure_layout, empty_state, hint_row, is_compact, list_rows, section_gap, section_header, selection_status
 
 
@@ -1512,6 +1512,14 @@ def _fbp_collection_snapshot_icon(item):
     )
 
 
+def _fbp_pass_layer_filter_active(context):
+    """Layer filter state, read once per list draw pass (see fbp_template_list)."""
+    scene = getattr(context, "scene", None)
+    return fbp_uilist_pass_memo(
+        ("layer_filter_is_active",), lambda: layer_filter_is_active(scene)
+    )
+
+
 class FBP_UL_LayerTreeList(UIList):
     """True Blender UIList tree for the Layers panel.
 
@@ -1574,7 +1582,7 @@ class FBP_UL_LayerTreeList(UIList):
                 return
 
             drag_cell = zones["left"].row(align=True)
-            drag_cell.enabled = not layer_filter_is_active(context.scene)
+            drag_cell.enabled = not _fbp_pass_layer_filter_active(context)
             drag = drag_cell.operator(
                 'fbp.drag_layer_collection', text='', icon='GRIP_V', emboss=False,
             )
@@ -1685,7 +1693,7 @@ class FBP_UL_LayerTreeList(UIList):
             owner = gp_canvas_owner(canvas)
 
             drag_cell = zones["left"].row(align=True)
-            drag_cell.enabled = not layer_filter_is_active(context.scene)
+            drag_cell.enabled = not _fbp_pass_layer_filter_active(context)
             drag = drag_cell.operator(
                 'fbp.drag_layer_tree', text='', icon='GRIP_V', emboss=False,
             )
@@ -1791,7 +1799,7 @@ class FBP_UL_LayerTreeList(UIList):
             return
 
         drag_cell = zones["left"].row(align=True)
-        drag_cell.enabled = not layer_filter_is_active(context.scene)
+        drag_cell.enabled = not _fbp_pass_layer_filter_active(context)
         drag = drag_cell.operator(
             'fbp.drag_layer_tree', text='', icon='GRIP_V', emboss=False,
         )
@@ -1802,13 +1810,20 @@ class FBP_UL_LayerTreeList(UIList):
         for _ in range(depth):
             zones["left"].label(text='', icon=ui_icon('generic.blank'))
 
+        # ``rig_locked`` is a Python getter (layer lookup + scene check);
+        # read it once per row instead of once per column.
+        try:
+            rig_locked = bool(layer_item.rig_locked)
+        except FBP_DATA_IO_ERRORS:
+            rig_locked = None
         try:
             content_enabled = (
                 bool(getattr(rig, 'fbp_is_visible', True))
-                and not bool(layer_item.rig_locked)
+                and not bool(rig_locked if rig_locked is not None else layer_item.rig_locked)
             )
         except FBP_DATA_IO_ERRORS:
             content_enabled = True
+        rig_locked = bool(rig_locked)
 
         for key in row_order:
             if not flags.get(key, False):
@@ -1893,7 +1908,7 @@ class FBP_UL_LayerTreeList(UIList):
             elif key == 'lock':
                 lock_icon = (
                     ui_icon('layer.lock_on')
-                    if layer_item.rig_locked else ui_icon('layer.lock_off')
+                    if rig_locked else ui_icon('layer.lock_off')
                 )
                 target.prop(
                     layer_item, 'rig_locked', text='',
@@ -1901,10 +1916,10 @@ class FBP_UL_LayerTreeList(UIList):
                 )
             elif key == 'select':
                 select_cell = target.row(align=True)
-                select_cell.enabled = not layer_item.rig_locked
+                select_cell.enabled = not rig_locked
                 select_cell.prop(
                     layer_item, 'selected', text='',
-                    icon=fbp_select_rig_icon(layer_item.rig_locked, rig.select_get()),
+                    icon=fbp_select_rig_icon(rig_locked, rig.select_get()),
                     icon_only=True, emboss=False,
                 )
 
@@ -1975,7 +1990,7 @@ class FBP_UL_GreasePencilLayerList(UIList):
                 or ''
             )
             grip_cell = zones["left"].row(align=True)
-            grip_cell.enabled = bool(coll_name) and not layer_filter_is_active(context.scene)
+            grip_cell.enabled = bool(coll_name) and not _fbp_pass_layer_filter_active(context)
             if not coll_name:
                 grip_cell.label(text='', icon='GRIP_V')
                 row.label(
@@ -2105,7 +2120,7 @@ class FBP_UL_GreasePencilLayerList(UIList):
         selected = bool(canvas.select_get())
         owner = gp_canvas_owner(canvas)
         grip_cell = zones["left"].row(align=True)
-        grip_cell.enabled = not layer_filter_is_active(context.scene)
+        grip_cell.enabled = not _fbp_pass_layer_filter_active(context)
         drag = grip_cell.operator('fbp.drag_layer_tree', text='', icon='GRIP_V', emboss=False)
         drag.tree_index = index
         drag.rig_name = canvas.name
@@ -3554,7 +3569,8 @@ class FBP_PT_OutputCompositor(Panel):
                 content, context, "COMPOSITOR_LAYERS"
             )
             list_row = list_box.row(align=False)
-            list_row.template_list(
+            fbp_template_list(
+                list_row,
                 "FBP_UL_CompositorLayers",
                 "",
                 sc,
@@ -3656,7 +3672,8 @@ class FBP_PT_OutputCompositor(Panel):
                     settings, context, "COMPOSITOR_EFFECTS"
                 )
                 effects_row = list_box.row(align=False)
-                effects_row.template_list(
+                fbp_template_list(
+                    effects_row,
                     "FBP_UL_CompositorEffects",
                     "",
                     item,
@@ -4977,7 +4994,7 @@ class FBP_PT_Sequence(Panel):
                     can_remove = frame_count > 1 or bool(getattr(rig, "fbp_is_color_plane", False))
 
                     row = box.row(align=False)
-                    row.template_list("FBP_UL_ImageList", "",
+                    fbp_template_list(row, "FBP_UL_ImageList", "",
                                       rig, "fbp_images",
                                       rig, "fbp_images_index", rows=14)
                     col = row.column(align=False)
