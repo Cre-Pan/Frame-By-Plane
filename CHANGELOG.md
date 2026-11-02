@@ -36,6 +36,10 @@ All notable public changes to Frame By Plane are documented here.
 - **Riso Print** skips the work of what is switched off: with two inks (the default) the third ink's sample, screen and grain are no longer computed, Halftone at zero skips the dot screens and Grain at zero skips the grain noise. Same picture; keyed or driven values keep everything live.
 - Editing the layer or its effects with image effects in the Modifiers panel is lighter: syncing the effect modifier rows with the layer went from about 3 ms to about 0.5 ms per update, by caching Blender's property lookups.
 - Box and lasso select of layers without a rig no longer stall on layers with dense Mesh effects (Crystal, Broken Glass, reliefs): the gesture now samples all faces at once, about 60 times faster on an 8,000-face plane. Click selection measures the rig wires of all layers in one pass too.
+- The Layers list redraws about 1.8 times faster: its rows used to read the list preferences (icons, column order, visible columns, alignment, panel width) again for every row and column, and now read them once per redraw. Each row also reads its lock state once. With 60 layers the Layers panel went from about 5.2 ms to about 3.4 ms of Python per redraw.
+- The viewport overlay that draws effect handles no longer rebuilds a list of every scene object on each redraw: with 60 layers it took about 0.7 ms per redraw and now about 3 µs. The Solo badge counts the soloed layers in one read.
+- Moving a layer, or editing an effect from the Frame By Plane panel, no longer runs the Modifiers panel sync for every update (about 0.9 ms with 60 layers): only updates that change a plane's modifiers do. Edits in the Modifiers panel sync as before.
+- Adding a blur or Riso Print indexes its image samples in one pass over the node links instead of searching all links for each socket.
 
 ### Cleanup
 

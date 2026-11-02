@@ -315,9 +315,8 @@ def _normalized_profile_keys(raw_value, defaults):
 def fbp_uilist_icon_order(context=None, profile_id="LAYER_PLANES"):
     if not _UILIST_PASS_DEPTH:
         return _fbp_uilist_icon_order_uncached(context, profile_id)
-    return fbp_uilist_pass_memo(
-        ("fbp_uilist_icon_order", str(profile_id or "").upper()), lambda: _fbp_uilist_icon_order_uncached(context, profile_id)
-    )
+    key = ("fbp_uilist_icon_order", str(profile_id or "").upper())
+    return fbp_uilist_pass_memo(key, lambda: _fbp_uilist_icon_order_uncached(context, profile_id))
 
 
 def _fbp_uilist_icon_order_uncached(context=None, profile_id="LAYER_PLANES"):
@@ -404,9 +403,8 @@ def fbp_uilist_column_icon_kwargs(column_key, *, active=True, profile_id=""):
 def fbp_uilist_label_alignment(context=None):
     if not _UILIST_PASS_DEPTH:
         return _fbp_uilist_label_alignment_uncached(context)
-    return fbp_uilist_pass_memo(
-        ("fbp_uilist_label_alignment", 0), lambda: _fbp_uilist_label_alignment_uncached(context)
-    )
+    key = ("fbp_uilist_label_alignment", 0)
+    return fbp_uilist_pass_memo(key, lambda: _fbp_uilist_label_alignment_uncached(context))
 
 
 def _fbp_uilist_label_alignment_uncached(context=None):
@@ -418,9 +416,8 @@ def _fbp_uilist_label_alignment_uncached(context=None):
 def _fbp_uilist_available_units(context):
     if not _UILIST_PASS_DEPTH:
         return _fbp_uilist_available_units_uncached(context)
-    return fbp_uilist_pass_memo(
-        ("_fbp_uilist_available_units", _fbp_region_pass_key(context)), lambda: _fbp_uilist_available_units_uncached(context)
-    )
+    key = ("_fbp_uilist_available_units", _fbp_region_pass_key(context))
+    return fbp_uilist_pass_memo(key, lambda: _fbp_uilist_available_units_uncached(context))
 
 
 def _fbp_uilist_available_units_uncached(context):
@@ -716,9 +713,8 @@ def fbp_filter_uilist_items(
 def fbp_uilist_visible_columns(context=None, profile_id="LAYER_PLANES"):
     if not _UILIST_PASS_DEPTH:
         return _fbp_uilist_visible_columns_uncached(context, profile_id)
-    return fbp_uilist_pass_memo(
-        ("fbp_uilist_visible_columns", str(profile_id or "").upper()), lambda: _fbp_uilist_visible_columns_uncached(context, profile_id)
-    )
+    key = ("fbp_uilist_visible_columns", str(profile_id or "").upper())
+    return fbp_uilist_pass_memo(key, lambda: _fbp_uilist_visible_columns_uncached(context, profile_id))
 
 
 def _fbp_uilist_visible_columns_uncached(context=None, profile_id="LAYER_PLANES"):
@@ -873,9 +869,8 @@ def fbp_get_addon_preferences(context=None):
 def fbp_uilist_icon_flags(context=None, profile_id=None):
     if not _UILIST_PASS_DEPTH:
         return _fbp_uilist_icon_flags_uncached(context, profile_id)
-    return fbp_uilist_pass_memo(
-        ("fbp_uilist_icon_flags", str(profile_id or "").upper()), lambda: _fbp_uilist_icon_flags_uncached(context, profile_id)
-    )
+    key = ("fbp_uilist_icon_flags", str(profile_id or "").upper())
+    return fbp_uilist_pass_memo(key, lambda: _fbp_uilist_icon_flags_uncached(context, profile_id))
 
 
 def _fbp_uilist_icon_flags_uncached(context=None, profile_id=None):

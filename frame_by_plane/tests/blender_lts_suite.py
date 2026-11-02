@@ -5169,6 +5169,73 @@ def test_composite_materials_skip_static_frames(_module):
     return {"composites": len(composites)}
 
 
+def test_ui_draw_pass_contract(_module):
+    """Per-row preference reads are shared inside one list draw, never outside.
+
+    ``fbp_template_list`` memoizes icon flags, column order and visible columns
+    for the rows of one ``template_list``. Outside a pass every helper must read
+    the live preferences, so a preference edit shows on the next redraw.
+    """
+    prefs_mod = importlib.import_module(f"{PACKAGE}.interface_preferences")
+    calls = []
+
+    def counting(key):
+        calls.append(key)
+        return len(calls)
+
+    assert not prefs_mod.fbp_uilist_pass_active()
+    assert prefs_mod.fbp_uilist_pass_memo(("k",), lambda: counting("k")) == 1
+    assert prefs_mod.fbp_uilist_pass_memo(("k",), lambda: counting("k")) == 2
+    prefs_mod.fbp_uilist_pass_begin()
+    try:
+        assert prefs_mod.fbp_uilist_pass_active()
+        first = prefs_mod.fbp_uilist_pass_memo(("k",), lambda: counting("k"))
+        assert prefs_mod.fbp_uilist_pass_memo(("k",), lambda: counting("k")) == first
+        prefs_mod.fbp_uilist_pass_begin()
+        prefs_mod.fbp_uilist_pass_end()
+        # A nested pass keeps the outer memo alive.
+        assert prefs_mod.fbp_uilist_pass_memo(("k",), lambda: counting("k")) == first
+        for profile in ("LAYER_PLANES", "LAYER_GP"):
+            assert prefs_mod.fbp_uilist_icon_flags(bpy.context, profile) == (
+                prefs_mod._fbp_uilist_icon_flags_uncached(bpy.context, profile)
+            )
+            assert prefs_mod.fbp_uilist_icon_order(bpy.context, profile) == (
+                prefs_mod._fbp_uilist_icon_order_uncached(bpy.context, profile)
+            )
+            assert prefs_mod.fbp_uilist_visible_columns(bpy.context, profile) == (
+                prefs_mod._fbp_uilist_visible_columns_uncached(bpy.context, profile)
+            )
+    finally:
+        prefs_mod.fbp_uilist_pass_end()
+    assert not prefs_mod.fbp_uilist_pass_active()
+    assert prefs_mod.fbp_uilist_pass_memo(("k",), lambda: counting("k")) == len(calls)
+
+    # Solo badge count follows the rows exactly.
+    solo = importlib.import_module(f"{PACKAGE}.solo_overlay")
+    rigs = [_effect_stack_fixture_rig(f"FBP Draw Pass {index}") for index in range(3)]
+    try:
+        scene = bpy.context.scene
+        layers = list(scene.fbp_layers)
+        expected = sum(1 for item in layers if bool(item.solo))
+        assert solo.solo_layer_count(scene) == expected
+        if layers:
+            layers[0].solo = True
+            try:
+                assert solo.solo_layer_count(scene) == sum(1 for item in scene.fbp_layers if bool(item.solo))
+            finally:
+                layers[0].solo = False
+        # The handle overlay scene list is the live object list.
+        controls = importlib.import_module(f"{PACKAGE}.effect_controls")
+        assert controls._context_scene_objects(bpy.context) == tuple(scene.objects)
+    finally:
+        for rig in rigs:
+            for obj in [*rig.children_recursive, rig]:
+                try:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                except (ReferenceError, RuntimeError):
+                    pass
+
+
 def test_blur_samples_skip_disabled_taps(_module):
     """Blurs fetch only the taps Samples enables, with an identical image.
 
@@ -6298,6 +6365,7 @@ def run_background():
             ("composite_materials_skip_static_frames", test_composite_materials_skip_static_frames),
             ("rigless_gesture_select_dense_mesh", test_rigless_gesture_select_dense_mesh),
             ("blur_samples_skip_disabled_taps", test_blur_samples_skip_disabled_taps),
+            ("ui_draw_pass_contract", test_ui_draw_pass_contract),
             ("color_key_merges_chroma_key", test_color_key_merges_chroma_key),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),
