@@ -5604,6 +5604,7 @@ class FBP_MT_ObjectLayerResetContext(Menu):
         layout.operator("fbp.reset_layer_transform", text="Rotation", icon="DRIVER_ROTATIONAL_DIFFERENCE").mode = 'ROTATION'
         layout.operator("fbp.reset_layer_transform", text="Scale", icon="FULLSCREEN_EXIT").mode = 'SCALE'
         layout.operator("fbp.reset_layer_transform", text="Anchor Point", icon="PIVOT_CURSOR").mode = 'ANCHOR'
+        layout.operator("fbp.reset_layer_transform", text="Box Orientation", icon="ORIENTATION_LOCAL").mode = 'ORIENTATION'
         layout.separator()
         layout.operator("fbp.reset_layer_transform", text="All", icon="FILE_REFRESH").mode = 'ALL'
 

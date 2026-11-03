@@ -575,7 +575,8 @@ FBP_RESET_LAYER_ITEMS = (
     ('ROTATION', "Rotation", "Undo every rotation; the layer keeps its vertical or horizontal orientation"),
     ('SCALE', "Scale", "Return to the scale the layer was created with"),
     ('ANCHOR', "Anchor Point", "Put the transform box anchor point back on the layer origin"),
-    ('ALL', "All", "Reset position, rotation, scale and anchor point"),
+    ('ORIENTATION', "Box Orientation", "Turn the transform box back in line with the layer; the layer stays where it is"),
+    ('ALL', "All", "Reset position, rotation, scale, anchor point and box orientation"),
 )
 
 
@@ -601,6 +602,12 @@ def fbp_reset_layer_transform(rig, mode):
     """Reset one part of a layer rig's transform. Returns True when something changed."""
     mode = str(mode or 'ALL').upper()
     changed = False
+    if mode in {'ORIENTATION', 'ALL'}:
+        try:
+            from .layer_cage import reset_box_orientation
+            changed = bool(reset_box_orientation(rig)) or changed
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
     if mode in {'POSITION', 'ALL'}:
         rig.location = (0.0, 0.0, 0.0)
         changed = True
@@ -658,7 +665,7 @@ class FBP_OT_ResetLayerTransform(Operator):
             _auto_key = None
         for rig in rigs:
             fbp_reset_layer_transform(rig, self.mode)
-            if _auto_key is not None and self.mode != 'ANCHOR':
+            if _auto_key is not None and self.mode not in {'ANCHOR'}:
                 _auto_key(rig)
         for area in getattr(context.screen, "areas", ()) or ():
             if area.type == 'VIEW_3D':

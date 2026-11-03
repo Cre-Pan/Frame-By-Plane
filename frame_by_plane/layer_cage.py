@@ -367,7 +367,10 @@ _TARGET_RADIUS_PX = 2.2
 # Corners and edges, counter-clockwise from bottom left, as (x, y) signs.
 _CORNER_SIGNS = ((-1, -1), (1, -1), (1, 1), (-1, 1))
 _EDGE_SIGNS = ((0, -1), (1, 0), (0, 1), (-1, 0))
-PARTS = ("MOVE", "C0", "C1", "C2", "C3", "E0", "E1", "E2", "E3", "ROTATE", "ANCHOR")
+# ORIENT: the square below the bottom edge turns the box (the rig) while
+# the layer itself stays put, so later scaling follows the new direction.
+PARTS = ("MOVE", "C0", "C1", "C2", "C3", "E0", "E1", "E2", "E3", "ROTATE", "ANCHOR", "ORIENT")
+_ORIENT_HALF_PX = 3.6
 
 # Layers showing their anchor (clicked on the knob), by rig name.
 _ANCHOR_MODE = set()
@@ -428,6 +431,9 @@ def _box_frame(rig, center, size, region, region_data):
     if per_unit is None:
         return None
     knob = top + axis_y * (_ROTATE_OFFSET_PX / per_unit)
+    bottom = edges[0]
+    bottom_unit = _pixels_per_unit(region, region_data, bottom, axis_y) or per_unit
+    orient = bottom - axis_y * (_ROTATE_OFFSET_PX / bottom_unit)
     anchor_local = layer_anchor_local(rig)
     anchor = (world @ anchor_local) if anchor_local is not None else world.translation.copy()
     # The anchor sits on the layer: drop it on the box plane.
@@ -443,6 +449,7 @@ def _box_frame(rig, center, size, region, region_data):
     return {
         "axis_x": axis_x, "axis_y": axis_y, "normal": normal,
         "corners": corners, "edges": edges, "top": top, "knob": knob,
+        "bottom": bottom, "orient": orient, "s_orient": screen(orient),
         "anchor": anchor, "targets": targets, "center": point(0, 0),
         "s_corners": [screen(value) for value in corners],
         "s_edges": [screen(value) for value in edges],
@@ -484,6 +491,8 @@ def _hit_part(frame, location, scale, rig_name):
         return "ANCHOR"
     if near(frame["s_knob"]):
         return "ROTATE"
+    if near(frame.get("s_orient")):
+        return "ORIENT"
     for index, screen_point in enumerate(frame["s_corners"]):
         if near(screen_point):
             return f"C{index}"
@@ -615,6 +624,14 @@ def _ring(center, axis_x, axis_y, outer, inner, segments=24):
     return triangles
 
 
+def _square(center, axis_x, axis_y, half):
+    a = center + (-axis_x - axis_y) * half
+    b = center + (axis_x - axis_y) * half
+    c = center + (axis_x + axis_y) * half
+    d = center + (-axis_x + axis_y) * half
+    return [tuple(point) for point in (a, b, c, a, c, d)]
+
+
 def _cross(center, axis_x, axis_y, half, width):
     triangles = []
     for direction in ((axis_x + axis_y).normalized(), (axis_x - axis_y).normalized()):
@@ -634,7 +651,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
     __slots__ = (
         "fbp_rig_name", "fbp_center", "fbp_size", "fbp_active", "fbp_part",
         "fbp_initial", "fbp_press", "fbp_start", "fbp_anchor_preview", "fbp_snap",
-        "fbp_hover",
+        "fbp_hover", "fbp_children",
     )
 
     def setup(self):
@@ -649,6 +666,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
         self.fbp_hover = ""
+        self.fbp_children = None
         self.use_draw_scale = False
         # Keep drawing while dragged, so the box follows the layer.
         self.use_draw_modal = True
@@ -740,6 +758,15 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             knob_color = accent if active_part == "ROTATE" or showing else white
             dot(frame["knob"], knob_color, _ROTATE_RADIUS_PX)
 
+        # The orientation square on its stem below the bottom edge.
+        if not modal or active_part == "ORIENT":
+            lines.append(([frame["bottom"], frame["orient"]], white, 0.8, 1.0))
+            u = unit(frame["orient"])
+            if u is not None:
+                square_color = accent if active_part == "ORIENT" else white
+                fills.append((_square(frame["orient"], axis_x, axis_y, (_ORIENT_HALF_PX + 1.2) * u), (0.0, 0.0, 0.0), 0.5))
+                fills.append((_square(frame["orient"], axis_x, axis_y, _ORIENT_HALF_PX * u), square_color, 1.0))
+
         # The anchor: a small cross, a ring around it once shown, and the
         # snap targets with guides while it is dragged.
         anchor = frame["anchor"]
@@ -818,7 +845,9 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_press = (event.mouse_region_x, event.mouse_region_y)
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
-        if part == "ROTATE":
+        if part in {"ROTATE", "ORIENT"}:
+            if part == "ORIENT":
+                self.fbp_children = _children_inverses(rig)
             self.fbp_start = self._screen_angle(context, event, frame)
             if self.fbp_start is None:
                 return {"CANCELLED"}
@@ -844,7 +873,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             return {"RUNNING_MODAL"}
         part = self.fbp_part
         try:
-            if part == "ROTATE":
+            if part in {"ROTATE", "ORIENT"}:
                 self._rotate(context, event, tweak, rig)
             elif part == "ANCHOR":
                 self._drag_anchor(context, event, rig)
@@ -945,6 +974,10 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         pivot = frame["anchor"]
         turn = Matrix.Translation(pivot) @ Matrix.Rotation(delta, 4, normal) @ Matrix.Translation(-pivot)
         self._apply(rig, turn @ initial)
+        if self.fbp_part == "ORIENT":
+            _keep_children(rig, initial, self.fbp_children)
+            context.area.header_text_set(f"Rotate Box: {math.degrees(delta):.1f}° (the layer stays)   Ctrl: 15° steps")
+            return
         context.area.header_text_set(f"Rotate Layer: {math.degrees(delta):.1f}°   Ctrl: 15° steps")
 
     def _drag_anchor(self, context, event, rig):
@@ -985,6 +1018,8 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             if cancel:
                 if part != "ANCHOR":
                     rig.matrix_world = initial
+                if part == "ORIENT":
+                    _restore_children(self.fbp_children)
             elif part == "ANCHOR":
                 preview = self.fbp_anchor_preview
                 if preview is not None:
@@ -996,11 +1031,74 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                         _undo_push("Move Layer Anchor")
             elif rig.matrix_world != initial:
                 _auto_key(rig)
-                _undo_push({"MOVE": "Move Layer", "ROTATE": "Rotate Layer"}.get(part, "Scale Layer"))
+                _undo_push({"MOVE": "Move Layer", "ROTATE": "Rotate Layer", "ORIENT": "Rotate Layer Box"}.get(part, "Scale Layer"))
         self.fbp_part = ""
+        self.fbp_children = None
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
         context.area.tag_redraw()
+
+
+def _basis_world(rig):
+    """The rig's world matrix from its own channels, valid right after an edit."""
+    parent = getattr(rig, "parent", None)
+    if parent is None:
+        return rig.matrix_basis.copy()
+    return parent.matrix_world @ rig.matrix_parent_inverse @ rig.matrix_basis
+
+
+def _children_inverses(rig):
+    return [(child.name, child.matrix_parent_inverse.copy()) for child in rig.children]
+
+
+def _keep_children(rig, initial, inverses):
+    """Keep the rig's children where they were while the rig turns: the plane,
+    its lattice and controls stay in place and only the box changes direction."""
+    if not inverses:
+        return
+    keep = _basis_world(rig).inverted_safe() @ initial
+    for name, inverse in inverses:
+        child = bpy.data.objects.get(name)
+        if child is not None:
+            child.matrix_parent_inverse = keep @ inverse
+
+
+def _restore_children(inverses):
+    for name, inverse in inverses or ():
+        child = bpy.data.objects.get(name)
+        if child is not None:
+            child.matrix_parent_inverse = inverse
+
+
+def box_orientation_offset(rig):
+    """Angle (radians) between the box and the layer's plane, around the rig Z."""
+    import math
+
+    plane = getattr(rig, "fbp_plane_target", None)
+    if plane is None:
+        return 0.0
+    relation = (plane.matrix_parent_inverse @ plane.matrix_basis).to_3x3()
+    axis = relation @ Vector((1.0, 0.0, 0.0))
+    if axis.xy.length <= 1.0e-9:
+        return 0.0
+    return math.atan2(axis.y, axis.x)
+
+
+def reset_box_orientation(rig):
+    """Turn the box back in line with the layer, which stays where it is."""
+    angle = box_orientation_offset(rig)
+    if abs(angle) <= 1.0e-7:
+        return False
+    initial = _basis_world(rig)
+    inverses = _children_inverses(rig)
+    pivot = initial.translation.copy()
+    normal = (initial.to_3x3() @ Vector((0.0, 0.0, 1.0)))
+    if normal.length <= 1.0e-9:
+        return False
+    turn = Matrix.Translation(pivot) @ Matrix.Rotation(angle, 4, normal.normalized()) @ Matrix.Translation(-pivot)
+    rig.matrix_world = turn @ initial
+    _keep_children(rig, initial, inverses)
+    return True
 
 
 def _undo_push(message):
