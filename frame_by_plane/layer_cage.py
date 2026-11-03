@@ -371,6 +371,10 @@ _EDGE_SIGNS = ((0, -1), (1, 0), (0, 1), (-1, 0))
 # the layer itself stays put, so later scaling follows the new direction.
 PARTS = ("MOVE", "C0", "C1", "C2", "C3", "E0", "E1", "E2", "E3", "ROTATE", "ANCHOR", "ORIENT")
 _ORIENT_HALF_PX = 3.6
+# Side handle bars: share of the side, longest length and thickness (px).
+_EDGE_BAR_FRACTION = 0.4
+_EDGE_BAR_MAX_PX = 90.0
+_EDGE_BAR_WIDTH_PX = 3.0
 
 # Layers showing their anchor (clicked on the knob), by rig name.
 _ANCHOR_MODE = set()
@@ -728,9 +732,6 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         for index in range(4):
             outline.extend((corners[index], corners[(index + 1) % 4]))
         lines.append((outline, white, 0.9 if is_active else 0.6, 1.0))
-        if active_part.startswith("E"):
-            index = int(active_part[1])
-            lines.append(([corners[index], corners[(index + 1) % 4]], accent, 1.0, 2.0))
 
         def dot(point, color, radius, alpha=1.0):
             u = unit(point)
@@ -747,10 +748,23 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 part = f"C{index}"
                 if not modal or part == active_part:
                     dot(point, accent if part == active_part else white, _MARK_RADIUS_PX)
+            # Side handles: a short thick bar in the middle of each side, as
+            # in the Grease Pencil deform box. Only the bar thickens on hover.
             for index, point in enumerate(frame["edges"]):
                 part = f"E{index}"
-                if not modal or part == active_part:
-                    dot(point, accent if part == active_part else white, _MARK_RADIUS_PX)
+                if modal and part != active_part:
+                    continue
+                along = corners[(index + 1) % 4] - corners[index]
+                length = along.length
+                u = unit(point)
+                if length <= 1.0e-9 or u is None:
+                    continue
+                half = min(length * _EDGE_BAR_FRACTION, _EDGE_BAR_MAX_PX * u) * 0.5
+                along = along / length
+                bar = [point - along * half, point + along * half]
+                width = _EDGE_BAR_WIDTH_PX + (1.5 if part == active_part else 0.0)
+                lines.append((bar, (0.0, 0.0, 0.0), 0.5, width + 2.0))
+                lines.append((bar, white, 1.0, width))
 
         # The knob on its stem above the top edge.
         if not modal or active_part == "ROTATE":
