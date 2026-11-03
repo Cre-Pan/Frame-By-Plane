@@ -1372,8 +1372,16 @@ def iter_fbp_rigs_in_collection(collection, recursive=True):
 def get_layer_item_for_rig(context, rig):
     if not rig:
         return None
+    try:
+        rig_name = str(rig.name)
+    except FBP_DATA_ERRORS:
+        return None
     for item in context.scene.fbp_layers:
         try:
+            # ``item.obj`` is a name lookup in bpy.data; only the row that
+            # stores this name can resolve to ``rig``.
+            if str(item.obj_name or "") != rig_name:
+                continue
             if item.obj == rig:
                 return item
         except ReferenceError:

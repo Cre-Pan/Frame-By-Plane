@@ -22,6 +22,7 @@ from .runtime import (
     fbp_normalize_obj_runtime_token,
     fbp_registration_busy,
 )
+from .fbp_index import ObjectNameLookup
 from .layers import (
     object_in_scene,
     is_fbp_layer_object,
@@ -357,13 +358,14 @@ def fbp_scene_fallback_candidates(scene):
 
     result = []
     seen = set()
+    lookup = ObjectNameLookup(scene)
 
     def add(obj):
         if not obj:
             return
         try:
             key = int(obj.as_pointer())
-            if key in seen or not object_in_scene(obj, scene):
+            if key in seen or not lookup.in_scene(obj):
                 return
             seen.add(key)
             result.append(obj)
@@ -382,7 +384,7 @@ def fbp_scene_fallback_candidates(scene):
 
     for item in list(getattr(scene, "fbp_layers", ()) or ()):
         try:
-            rig = getattr(item, "obj", None)
+            rig = lookup.layer_item_obj(item)
             add(rig)
             add(getattr(rig, "fbp_plane_target", None) if rig else None)
         except FBP_DATA_ERRORS:
@@ -390,9 +392,9 @@ def fbp_scene_fallback_candidates(scene):
 
     links = _fbp_get_known_links(scene)
     for rig_name, plane_names in links.items():
-        add(bpy.data.objects.get(str(rig_name)))
+        add(lookup.data_get(str(rig_name)))
         for plane_name in list(plane_names or ()):
-            add(bpy.data.objects.get(str(plane_name)))
+            add(lookup.data_get(str(plane_name)))
 
     root = getattr(scene, "collection", None)
 
@@ -2058,22 +2060,25 @@ def fbp_known_links_have_deleted_rig(scene):
     if not links:
         return False
     identities = _fbp_get_known_link_identities(scene)
+    # This runs on every depsgraph update; resolve all names in one pass
+    # instead of two linear ``get`` scans per remembered layer.
+    lookup = ObjectNameLookup(scene)
     for rig_name in list(links.keys()):
         record = identities.get(rig_name, {})
         expected = _fbp_normalize_identity(record.get("rig_key")) if isinstance(record, dict) else None
-        rig = bpy.data.objects.get(rig_name)
+        rig = lookup.data_get(rig_name)
         try:
             if (
                 not rig
                 or not getattr(rig, "is_fbp_control", False)
-                or not object_in_scene(rig, scene)
+                or not lookup.in_scene(rig)
                 or (expected is not None and not _fbp_identity_matches(rig, expected))
             ):
                 plane_names = tuple(links.get(rig_name, ()) or ())
                 if plane_names:
                     quarantined = True
                     for plane_name in plane_names:
-                        plane = bpy.data.objects.get(str(plane_name))
+                        plane = lookup.data_get(str(plane_name))
                         if plane is not None and not bool(plane.get(FBP_ORPHAN_QUARANTINE_KEY, False)):
                             quarantined = False
                             break

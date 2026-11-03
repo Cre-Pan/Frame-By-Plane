@@ -208,6 +208,25 @@ def scheduled_task_pending(name):
     return pending
 
 
+def scheduled_payload_pending(name):
+    """Return True when ``name`` already waits with a live payload.
+
+    Frame handlers that queue the same deferred sync on every frame can skip
+    rebuilding an identical closure (and its RNA capture audit) while one is
+    still queued for this module generation. A reschedule never postpones the
+    queued due time and these handlers always ask for the same delay, so
+    skipping it leaves the timing unchanged.
+    """
+    key = normalize_task_key(name)
+    if not key or key not in _SCHEDULED_KEYS:
+        return False
+    if _SCHEDULED_TASK_EPOCHS.get(key) != _TASK_EPOCH:
+        return False
+    if not callable(_SCHEDULED_CALLBACKS.get(key)):
+        return False
+    return bool(task_is_scheduled(key))
+
+
 def scheduled_dispatcher_callback():
     """Expose the single Blender timer callback for lifecycle diagnostics."""
     return scheduler_dispatcher_callback()
@@ -235,6 +254,7 @@ __all__ = (
     "register",
     "schedule_once",
     "scheduled_dispatcher_callback",
+    "scheduled_payload_pending",
     "scheduled_task_count",
     "scheduled_task_pending",
     "unregister",

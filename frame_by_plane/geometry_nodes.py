@@ -2726,7 +2726,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 # every alpha-aware and Evolve-capable effect on every frame.
                 runtime_profile = _fbp_effect_runtime_profile(rig)
                 active_effect_ids = runtime_profile.get("active_ids", frozenset())
-                if not active_effect_ids:
+                if not active_effect_ids or runtime_profile.get("frame_idle", False):
                     continue
                 geometry_source_sync = bool(runtime_profile.get("geometry_source_sync", False))
                 shader_source_sync = bool(
@@ -17259,7 +17259,7 @@ def _fbp_store_runtime_effect_ids(rig, effect_ids):
     return normalized
 
 
-def _fbp_runtime_effect_ids(rig):
+def _fbp_runtime_effect_ids(rig, key=None):
     """Return the current effect stack for per-frame hot paths.
 
     ``Object.fbp_effects`` is a ``SKIP_SAVE`` UI mirror, so it is empty after a
@@ -17268,8 +17268,10 @@ def _fbp_runtime_effect_ids(rig):
     until the Effects panel happened to rebuild it. On a cache miss, inspect
     only the current effect modifiers/material nodes once, then keep the result
     in the bounded runtime cache. No schema conversion or asset rebuild occurs.
+    ``key`` lets a caller that already built the cache key skip rebuilding it.
     """
-    key = _fbp_effect_ids_cache_key(rig)
+    if key is None:
+        key = _fbp_effect_ids_cache_key(rig)
     if not key or not key[0]:
         return ()
     cached = _FBP_EFFECT_IDS_CACHE.get(key)
@@ -17317,13 +17319,18 @@ def _fbp_scene_effect_runtime_rigs(scene):
                 <= _FBP_EFFECT_SCENE_CACHE_SECONDS
             ):
                 names = tuple(cached.get("rig_names", ()) or ())
-                resolved = tuple(
-                    rig for name in names
-                    for rig in (scene.objects.get(name),)
-                    if rig is not None
-                )
-                if len(resolved) == len(names):
-                    return resolved
+                # ``scene.objects.get`` walks the scene's object view for
+                # every name, which made this per-frame lookup quadratic in
+                # the layer count. One pass over the view resolves them all.
+                wanted = frozenset(names)
+                found = {}
+                if wanted:
+                    for obj in scene.objects:
+                        obj_name = obj.name
+                        if obj_name in wanted:
+                            found[obj_name] = obj
+                if len(found) == len(names):
+                    return tuple(found[name] for name in names)
                 _FBP_EFFECT_SCENE_RIG_CACHE.pop(scene_key, None)
         except FBP_DATA_ERRORS:
             pass
@@ -17371,7 +17378,7 @@ def _fbp_effect_runtime_profile(rig):
             "shader_nodes_by_instance": {}, "frame_geometry_modifiers": (),
             "frame_shader_targets": (),
         }
-    effect_ids = tuple(_fbp_runtime_effect_ids(rig))
+    effect_ids = tuple(_fbp_runtime_effect_ids(rig, key))
     active_ids = frozenset(effect_ids)
     plane = _fbp_plane(rig)
     try:
@@ -17594,6 +17601,22 @@ def _fbp_effect_runtime_profile(rig):
         "shader_nodes_by_instance": shader_nodes_by_instance,
         "frame_geometry_modifiers": tuple(frame_geometry_modifiers),
         "frame_shader_targets": tuple(frame_shader_targets),
+        # A stack with nothing that moves per frame: no source sync, no keyed
+        # or driven setting, no Evolve-capable or procedural effect and no
+        # live Lattice. The frame handler skips such layers outright. Evolve
+        # toggles stay covered because ``evolve_pairs`` lists every
+        # Evolve-capable effect whether or not Evolve is on.
+        "frame_idle": not (
+            geometry_source_sync
+            or shader_source_sync
+            or animated_effect_properties
+            or animated_instance_channels
+            or instance_animation_pairs
+            or instance_speed_fcurve_pairs
+            or evolve_pairs
+            or procedural_frame_effects
+            or FBP_EFFECT_LATTICE in active_ids
+        ),
     }
     if len(_FBP_EFFECT_RUNTIME_PROFILE_CACHE) >= 512 and key not in _FBP_EFFECT_RUNTIME_PROFILE_CACHE:
         _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()

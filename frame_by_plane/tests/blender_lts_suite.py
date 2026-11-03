@@ -5236,6 +5236,83 @@ def test_ui_draw_pass_contract(_module):
                     pass
 
 
+def test_frame_path_lookup_contract(_module):
+    """Per-frame and per-update shortcuts give the same answers as the long way.
+
+    ``ObjectNameLookup`` replaces many linear ``get`` scans with one pass, the
+    frame handler skips stacks with nothing that moves per frame, and the frame
+    handlers skip rebuilding a deferred task that is already queued.
+    """
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    index_mod = importlib.import_module(f"{PACKAGE}.fbp_index")
+    layers_mod = importlib.import_module(f"{PACKAGE}.layers")
+    safe_tasks = importlib.import_module(f"{PACKAGE}.safe_tasks")
+    scene = bpy.context.scene
+    static_rig = _effect_stack_fixture_rig("FBP Frame Path Static")
+    moving_rig = _effect_stack_fixture_rig("FBP Frame Path Moving")
+    loose = bpy.data.objects.new("FBP Frame Path Loose", None)
+    try:
+        assert geo.fbp_add_effect(
+            static_rig, "GAUSSIAN_BLUR",
+            select_object_mask_helper=False, inherit_active_group=False,
+        )
+        evolve_shader = next(
+            effect_id for effect_id, _prop in geo.FBP_EVOLVE_EFFECT_PROPERTIES
+            if str(geo.fbp_effect_definition(effect_id).get("kind", "")).upper() == "SHADER"
+        )
+        assert geo.fbp_add_effect(
+            moving_rig, evolve_shader,
+            select_object_mask_helper=False, inherit_active_group=False,
+        )
+        bpy.context.view_layer.update()
+
+        lookup = index_mod.ObjectNameLookup(scene)
+        names = [obj.name for obj in bpy.data.objects] + ["FBP Frame Path Missing"]
+        for name in names:
+            assert lookup.data_get(name) == bpy.data.objects.get(name), name
+            assert lookup.scene_get(name) == scene.objects.get(name), name
+        for obj in bpy.data.objects:
+            assert lookup.in_scene(obj) == layers_mod.object_in_scene(obj, scene), obj.name
+        assert not lookup.in_scene(loose)
+        for item in scene.fbp_layers:
+            assert lookup.layer_item_obj(item) == item.obj, item.obj_name
+        resolved = index_mod._resolve_cached_names(scene, (static_rig.name, moving_rig.name))
+        assert resolved == (static_rig, moving_rig)
+        assert index_mod._resolve_cached_names(scene, (static_rig.name, "FBP Frame Path Missing")) == ()
+        # The second call answers from the cached names (one-pass resolve).
+        assert tuple(geo._fbp_scene_effect_runtime_rigs(scene)) == tuple(
+            geo._fbp_scene_effect_runtime_rigs(scene)
+        )
+        assert static_rig in geo._fbp_scene_effect_runtime_rigs(scene)
+
+        geo._fbp_invalidate_effect_runtime_profile()
+        assert geo._fbp_effect_runtime_profile(static_rig).get("frame_idle") is True
+        assert geo._fbp_effect_runtime_profile(moving_rig).get("frame_idle") is False
+        # A keyed setting moves per frame, so the stack is no longer idle.
+        static_rig.keyframe_insert("fbp_gaussian_blur_radius_x", frame=1)
+        assert geo._fbp_effect_runtime_profile(static_rig).get("frame_idle") is False
+
+        task_name = "tests.frame_path_payload"
+        safe_tasks.cancel_scheduled_prefixes(task_name)
+        assert not safe_tasks.scheduled_payload_pending(task_name)
+        if safe_tasks.schedule_once(task_name, lambda: None, first_interval=30.0):
+            assert safe_tasks.scheduled_payload_pending(task_name) == safe_tasks.scheduled_task_pending(task_name)
+        safe_tasks.cancel_scheduled_prefixes(task_name)
+        assert not safe_tasks.scheduled_payload_pending(task_name)
+    finally:
+        geo._fbp_invalidate_effect_runtime_profile()
+        try:
+            bpy.data.objects.remove(loose, do_unlink=True)
+        except (ReferenceError, RuntimeError):
+            pass
+        for rig in (static_rig, moving_rig):
+            for obj in [*rig.children_recursive, rig]:
+                try:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                except (ReferenceError, RuntimeError):
+                    pass
+
+
 def test_blur_samples_skip_disabled_taps(_module):
     """Blurs fetch only the taps Samples enables, with an identical image.
 
@@ -6366,6 +6443,7 @@ def run_background():
             ("rigless_gesture_select_dense_mesh", test_rigless_gesture_select_dense_mesh),
             ("blur_samples_skip_disabled_taps", test_blur_samples_skip_disabled_taps),
             ("ui_draw_pass_contract", test_ui_draw_pass_contract),
+            ("frame_path_lookup_contract", test_frame_path_lookup_contract),
             ("color_key_merges_chroma_key", test_color_key_merges_chroma_key),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),

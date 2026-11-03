@@ -40,6 +40,8 @@ All notable public changes to Frame By Plane are documented here.
 - The viewport overlay that draws effect handles no longer rebuilds a list of every scene object on each redraw: with 60 layers it took about 0.7 ms per redraw and now about 3 µs. The Solo badge counts the soloed layers in one read.
 - Moving a layer, or editing an effect from the Frame By Plane panel, no longer runs the Modifiers panel sync for every update (about 0.9 ms with 60 layers): only updates that change a plane's modifiers do. Edits in the Modifiers panel sync as before.
 - Adding a blur or Riso Print indexes its image samples in one pass over the node links instead of searching all links for each socket.
+- Each frame of playback or scrubbing costs about half the Python it did: layers whose effects have nothing that changes per frame (no keyed or driven setting, no Evolve-capable or procedural effect, no image sequence sync, no live Lattice) are skipped outright, the layers with effects are found in one pass over the scene, and the Motion and Grease Pencil frame handlers no longer queue the same deferred update again on every frame. With 60 layers a frame went from about 1.4 ms to about 0.7 ms.
+- Selecting or changing anything with many layers is lighter. Blender looks up objects by name one object at a time, so checks that looked up every layer by name grew with layers times objects; the check for deleted layers that runs on every scene update, the background safety scan and the layer index now resolve all names in one pass. With 150 layers the deleted-layer check went from about 9 ms to about 3.5 ms per update.
 
 ### Cleanup
 

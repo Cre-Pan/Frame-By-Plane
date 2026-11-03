@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from .runtime import FBP_DATA_ERRORS, fbp_obj_runtime_key
+from .runtime import FBP_DATA_ERRORS, fbp_obj_matches_runtime_token, fbp_obj_runtime_key
 
 
 _SCENE_RIG_CACHE = globals().get("_SCENE_RIG_CACHE", {})
@@ -164,14 +164,99 @@ def object_in_scene(obj, scene):
         return False
 
 
-def _resolve_cached_names(scene, names):
-    resolved = []
-    objects = getattr(scene, "objects", None) if scene else None
-    if objects is None:
-        return ()
-    for name in tuple(names or ()):
+class ObjectNameLookup:
+    """Resolve many Objects by name with one pass per collection.
+
+    In Blender 5.2 ``scene.objects.get`` and ``bpy.data.objects.get`` compare
+    names one Object at a time, so a loop that looks up every layer by name
+    grows with layers x objects. This lookup walks each collection once, the
+    first time it is needed, and keeps the first Object per name, which is the
+    one ``get`` returns. Build it inside one call and drop it afterwards: it
+    holds Blender references and must never outlive an Undo step.
+    """
+
+    __slots__ = ("scene", "_scene_map", "_data_map")
+
+    def __init__(self, scene=None):
+        self.scene = scene
+        self._scene_map = None
+        self._data_map = None
+
+    @staticmethod
+    def _first_by_name(collection):
+        mapping = {}
+        if collection is None:
+            return mapping
+        for obj in collection:
+            try:
+                mapping.setdefault(obj.name, obj)
+            except FBP_DATA_ERRORS:
+                continue
+        return mapping
+
+    def scene_get(self, name):
+        if self._scene_map is None:
+            try:
+                objects = getattr(self.scene, "objects", None) if self.scene else None
+                self._scene_map = self._first_by_name(objects)
+            except FBP_DATA_ERRORS:
+                self._scene_map = {}
+        return self._scene_map.get(str(name or ""))
+
+    def data_get(self, name):
+        if self._data_map is None:
+            try:
+                import bpy
+                self._data_map = self._first_by_name(bpy.data.objects)
+            except (ImportError, *FBP_DATA_ERRORS):
+                self._data_map = {}
+        return self._data_map.get(str(name or ""))
+
+    def in_scene(self, obj):
+        """Same answer as ``layers.object_in_scene(obj, self.scene)``."""
+        if obj is None:
+            return False
         try:
-            rig = objects.get(str(name))
+            name = str(obj.name)
+        except FBP_DATA_ERRORS:
+            return False
+        if self.data_get(name) != obj:
+            return False
+        if self.scene is None:
+            return True
+        return self.scene_get(name) == obj
+
+    def layer_item_obj(self, item):
+        """Same answer as ``FBP_LayerItem.obj`` without a linear name lookup."""
+        try:
+            name = str(getattr(item, "obj_name", "") or "")
+            runtime_key = str(getattr(item, "obj_runtime_key", "") or "")
+        except FBP_DATA_ERRORS:
+            return None
+        candidate = self.data_get(name) if name else None
+        if not candidate:
+            return None
+        try:
+            if bool(getattr(candidate, "is_fbp_control", False)) and (
+                not runtime_key or fbp_obj_matches_runtime_token(candidate, runtime_key)
+            ):
+                return candidate
+        except FBP_DATA_ERRORS:
+            return None
+        return None
+
+
+def _resolve_cached_names(scene, names):
+    if scene is None or getattr(scene, "objects", None) is None:
+        return ()
+    names = tuple(str(name) for name in (names or ()))
+    if not names:
+        return ()
+    lookup = ObjectNameLookup(scene)
+    resolved = []
+    for name in names:
+        try:
+            rig = lookup.scene_get(name)
             if rig is not None and is_fbp_rig(rig):
                 resolved.append(rig)
             else:
