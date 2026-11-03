@@ -28,11 +28,15 @@ FOLLOW_CONSTRAINT = "FBP Follow Plane"
 LATTICE_FOLLOW_MODIFIER = "FBP • Follow Lattice"
 # Plane name, stored so lookups survive a constraint whose target was cleared.
 KEY_FOLLOW_PLANE = "fbp_follow_plane"
+# Plane-space size a handle mesh was built at: the overlay draws the knob at a
+# fixed size on screen from it (see handle_overlay.handle_screen_scale).
+KEY_HANDLE_NOMINAL_SIZE = "fbp_effect_control_nominal_size"
 
 # Handles are white like Blender's own gizmos; a selected handle takes the
-# theme's gizmo yellow (``handle_selected_color``), with this as the fallback.
+# theme's Active Object outline colour (``handle_selected_color``), with the
+# default theme's as the fallback.
 HANDLE_COLOR = (0.96, 0.96, 0.96, 1.0)
-HANDLE_SELECTED_COLOR = (0.96, 0.945, 0.3, 1.0)
+HANDLE_SELECTED_COLOR = (1.0, 0.627, 0.157, 1.0)
 # Diffuse colour of the shared handle material (Solid shading, Material colour).
 HANDLE_MATERIAL_COLOR = (0.96, 0.96, 0.96, 0.9)
 HANDLE_OUTLINE_COLOR = (0.0, 0.0, 0.0, 0.45)
@@ -47,7 +51,6 @@ _ARROW_HALF_ANGLE = math.radians(40.0)
 # Face parts of a handle mesh, stored in the ``PART_ATTRIBUTE`` face attribute.
 PART_ATTRIBUTE = "fbp_handle_part"
 PART_HANDLE = 0
-PART_SWATCH = 1
 PART_STOP_RING = 2
 
 
@@ -145,10 +148,9 @@ def append_arrow_geometry(verts, faces, start, end, thickness, head_length):
 class HandleShape:
     """Faces tagged by part, plus loose edges that the overlay draws as guides.
 
-    Parts: ``PART_HANDLE`` is the accent fill, ``PART_SWATCH`` is filled with
-    the colour the control stands for (a gradient stop) and ``PART_STOP_RING``
-    is the light ring around a swatch. Loose edges are thin guide lines (the
-    line between gradient stops, dashed radius circles).
+    Parts: ``PART_HANDLE`` is the accent fill and ``PART_STOP_RING`` a light
+    ring (a hollow stop). Loose edges are thin guide lines (a gradient's base
+    line, dashed radius circles).
     """
 
     __slots__ = ("verts", "faces", "edges", "parts")
@@ -249,63 +251,37 @@ def ellipse_points(cx, cy, rx, ry, segments=72):
 
 
 def bounds_handle_geometry(size, role):
-    """Return a thin side bar or an L corner for Crop/Extend-style bounds.
+    """A small dot on a corner or edge of a Crop/Extend-style frame.
 
-    Corners open towards the inside of the rectangle, so they read as the
-    corners of the frame they edit.
+    Grease Pencil's transform box style: the frame itself is a thin line the
+    overlay draws between the corner handles, and the dots mark where to
+    grab. ``role`` is kept for the callers; every role is the same dot.
     """
-    role = str(role or "").upper()
+    del role
     size = max(float(size), 1.0e-6)
-    thickness = max(size * 0.24, 0.002)
-    side_length = max(size * 2.2, thickness * 3.0)
-    corner_length = max(size * 1.3, thickness * 3.0)
-    verts = []
-    faces = []
-
-    if role in {"TOP", "BOTTOM"}:
-        append_rect_geometry(verts, faces, 0.0, 0.0, side_length, thickness)
-    elif role in {"LEFT", "RIGHT"}:
-        append_rect_geometry(verts, faces, 0.0, 0.0, thickness, side_length)
-    else:
-        sx = -1.0 if "RIGHT" in role else 1.0
-        sy = -1.0 if "TOP" in role else 1.0
-        half = thickness * 0.5
-        # Two arms sharing the corner square, without overlapping faces.
-        append_polygon_geometry(verts, faces, [
-            (-sx * half, -sy * half),
-            (sx * corner_length, -sy * half),
-            (sx * corner_length, sy * half),
-            (sx * half, sy * half),
-            (sx * half, sy * corner_length),
-            (-sx * half, sy * corner_length),
-        ] if sx * sy > 0 else [
-            (-sx * half, -sy * half),
-            (-sx * half, sy * corner_length),
-            (sx * half, sy * corner_length),
-            (sx * half, sy * half),
-            (sx * corner_length, sy * half),
-            (sx * corner_length, -sy * half),
-        ])
+    verts, faces = [], []
+    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.3, segments=20)
     return verts, faces
 
 
 def point_handle_geometry(size, *, with_angle=False):
-    """Ring with a centre dot; a tick on +X shows the rotation when it matters."""
+    """Thin hollow ring with a small centre dot, like Grease Pencil's grid
+    points; a tick on +X shows the rotation when it matters."""
     size = max(float(size), 1.0e-6)
-    outer = size * 0.5
-    thickness = size * 0.18
+    outer = size * 0.42
+    thickness = size * 0.11
     verts, faces = [], []
     append_ring_geometry(verts, faces, 0.0, 0.0, outer, outer - thickness)
-    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.12)
+    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.08)
     if with_angle:
-        append_rect_geometry(verts, faces, outer + size * 0.25, 0.0, size * 0.5, thickness)
+        append_rect_geometry(verts, faces, outer + size * 0.22, 0.0, size * 0.44, thickness)
     return verts, faces
 
 
 def offset_handle_geometry(size, *, with_angle=False):
-    """A small cross: the offset of a grid or a shadow."""
+    """A small thin cross, like Grease Pencil's pivot: the offset of a grid or a shadow."""
     size = max(float(size), 1.0e-6)
-    thickness = size * 0.18
+    thickness = size * 0.11
     arm = size * 0.55
     verts, faces = [], []
     append_rect_geometry(verts, faces, 0.0, 0.0, arm * 2.0, thickness)
@@ -320,11 +296,11 @@ def offset_handle_geometry(size, *, with_angle=False):
 
 
 def angle_handle_geometry(size):
-    """A dot with a line arrow on +X; rotating the handle sets the angle."""
+    """A dot with a thin line arrow on +X; rotating the handle sets the angle."""
     size = max(float(size), 1.0e-6)
-    thickness = size * 0.16
+    thickness = size * 0.11
     verts, faces = [], []
-    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.2)
+    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.16)
     append_arrow_geometry(verts, faces, size * 0.26, size * 1.8, thickness, size * 0.5)
     return verts, faces
 
@@ -338,9 +314,9 @@ def direction_handle_geometry(size, length=1.0):
     """
     size = max(float(size), 1.0e-6)
     length = max(float(length), 1.0e-6)
-    thickness = size * 0.16
+    thickness = size * 0.11
     shape = HandleShape()
-    shape.disc(0.0, 0.0, size * 0.2)
+    shape.disc(0.0, 0.0, size * 0.16)
     shape.polygon(open_arrow_points(0.0, max(length, size * 0.9), thickness, size * 0.5))
     return shape.map_xy(lambda x, y: (x / length, y))
 
@@ -349,10 +325,10 @@ def vector_handle_geometry(size):
     """Two crossed line arrows on +Z, readable from any view, on a small ring."""
     size = max(float(size), 1.0e-6)
     length = size * 2.0
-    thickness = size * 0.16
+    thickness = size * 0.11
     verts, faces = [], []
     # The ring keeps the handle visible when the arrow points at the viewer.
-    append_ring_geometry(verts, faces, 0.0, 0.0, size * 0.45, size * 0.45 - size * 0.18)
+    append_ring_geometry(verts, faces, 0.0, 0.0, size * 0.42, size * 0.42 - size * 0.11)
     outline = open_arrow_points(0.0, length, thickness, size * 0.5)
     for axis in (0, 1):
         start = len(verts)
@@ -364,23 +340,12 @@ def vector_handle_geometry(size):
     return verts, faces
 
 
-def gradient_stop_geometry(size):
-    """A colour stop: a swatch disc inside a light ring (Figma-style)."""
-    size = max(float(size), 1.0e-6)
-    outer = size * 0.62
-    ring = size * 0.16
-    shape = HandleShape()
-    shape.ring(0.0, 0.0, outer, outer - ring, part=PART_STOP_RING, segments=32)
-    shape.disc(0.0, 0.0, outer - ring, part=PART_SWATCH, segments=32)
-    return shape
-
-
 def range_bar_geometry(size):
     """IN/OUT boundary of a band: a hollow stop on the guide line."""
     size = max(float(size), 1.0e-6)
-    outer = size * 0.5
+    outer = size * 0.42
     shape = HandleShape()
-    shape.ring(0.0, 0.0, outer, outer - size * 0.16, part=PART_STOP_RING, segments=32)
+    shape.ring(0.0, 0.0, outer, outer - size * 0.11, part=PART_STOP_RING, segments=32)
     return shape
 
 
@@ -400,9 +365,11 @@ def range_center_geometry(size, reference, *, scale_x=1.0, radii=(), radial_angl
         shape.polyline([(0.0, 0.0), (reference * 0.5, 0.0)])
     else:
         shape.polyline([(-reference * 0.5, 0.0), (reference * 0.5, 0.0)])
-    grip = size * 0.32
+    # A small dot on the line, like the dots on Grease Pencil's box edges.
+    grip = size * 0.2
     shape.polygon([
-        (-grip / scale_x, 0.0), (0.0, -grip), (grip / scale_x, 0.0), (0.0, grip),
+        (math.cos(math.tau * i / 16) * grip / scale_x, math.sin(math.tau * i / 16) * grip)
+        for i in range(16)
     ])
     if radii:
         dash = float(dash or size * 0.45)
@@ -428,8 +395,7 @@ def radius_handle_geometry(size, radii, center=(0.0, 0.0), dash=None):
     """
     size = max(float(size), 1.0e-6)
     shape = HandleShape()
-    shape.ring(0.0, 0.0, size * 0.36, size * 0.36 - size * 0.14, part=PART_STOP_RING, segments=24)
-    shape.disc(0.0, 0.0, size * 0.36 - size * 0.14, segments=24)
+    shape.disc(0.0, 0.0, size * 0.3, segments=24)
     dash = float(dash or size * 0.45)
     for rx, ry in radii or ():
         if rx <= 1.0e-6 or ry <= 1.0e-6:
@@ -442,10 +408,11 @@ def radius_handle_geometry(size, radii, center=(0.0, 0.0), dash=None):
 
 
 def handle_selected_color(context=None):
-    """The theme's gizmo yellow, so selected handles match Blender's gizmos."""
+    """The theme's Active Object outline colour, so a selected handle reads
+    like a selected object and follows the user's theme."""
     try:
         theme = (context or bpy.context).preferences.themes[0]
-        return (*tuple(theme.user_interface.gizmo_primary)[:3], 1.0)
+        return (*tuple(theme.view_3d.object_active)[:3], 1.0)
     except (AttributeError, IndexError) + _DATA_ERRORS:
         return HANDLE_SELECTED_COLOR
 
@@ -691,7 +658,6 @@ __all__ = [
     "GUIDE_OUTLINE_COLOR",
     "PART_ATTRIBUTE",
     "PART_HANDLE",
-    "PART_SWATCH",
     "PART_STOP_RING",
     "HandleShape",
     "dashed_pieces",
@@ -713,7 +679,6 @@ __all__ = [
     "vector_handle_geometry",
     "range_bar_geometry",
     "range_center_geometry",
-    "gradient_stop_geometry",
     "radius_handle_geometry",
     "ensure_viewport_handle_material",
     "follow_constraint",

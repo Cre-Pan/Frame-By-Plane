@@ -902,6 +902,11 @@ class FBP_AddonPreferences(AddonPreferences):
         description="New layers show their controller wire; off keeps it hidden and you select layers by clicking their visible pixels",
         default=False,
     )
+    show_layer_cage: BoolProperty(
+        name="Transform Box on Selected Layers",
+        description="Selected layers show a box: drag inside to move, edges and corners to scale, the top handle to rotate. Unselected layers show nothing",
+        default=True,
+    )
     rig_select_by_image: BoolProperty(
         name="Rig Layers: Click Image Too",
         description="Layers that show their rig can also be selected by clicking their visible pixels; off selects them only from the rig wire",
@@ -2164,6 +2169,8 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'rig_show_on_new_layers', text='Use Rig on New Layers', toggle=True, icon='MOD_MESHDEFORM')
                 row.prop(self, 'rig_select_by_image', text='Rig Layers: Click Image Too', toggle=True, icon='IMAGE_DATA')
+                row = _row(body)
+                row.prop(self, 'show_layer_cage', text='Transform Box on Selected Layers', toggle=True, icon='SELECT_SET')
                 row = _row(body)
                 row.prop(self, 'shortcut_gp_alt_s_guard', text=f"{alt_shortcut_label('S')} · GP Radius", toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row = _row(body)
