@@ -180,7 +180,6 @@ def fbp_handle_under_cursor(context, coord, radius):
     what the click picks. Returns the closest handle within ``radius`` pixels
     (inside its filled shape counts as 0), or ``None``.
     """
-    from bpy_extras.view3d_utils import location_3d_to_region_2d
     from .handle_overlay import _visible_handles, handle_screen_scale
 
     region = context.region
@@ -201,49 +200,87 @@ def fbp_handle_under_cursor(context, coord, radius):
     best = None
     from .handle_overlay import handle_mesh
 
+    import numpy as np
+
+    width_half = region.width / 2.0
+    height_half = region.height / 2.0
+    perspective = np.array(region_data.perspective_matrix, dtype=np.float64)
+    reach = float(radius) + 1.0
+
+    def project(world):
+        """``location_3d_to_region_2d`` for an (N, 3) array: (xy, valid)."""
+        clip = world @ perspective[:, :3].T + perspective[:, 3]
+        w = clip[:, 3]
+        valid = w > 0.0
+        safe = np.where(valid, w, 1.0)
+        xy = np.empty((len(world), 2), dtype=np.float64)
+        xy[:, 0] = width_half + width_half * (clip[:, 0] / safe)
+        xy[:, 1] = height_half + height_half * (clip[:, 1] / safe)
+        return xy, valid
+
     for handle in handles:
         try:
             matrix, topology = handle_mesh(handle, depsgraph)
         except (*FBP_DATA_ERRORS, IndexError):
             continue
         try:
-            points = [matrix @ vertex for vertex in topology["vertices"]]
+            local = topology.get("vertices_array")
+            if local is None:
+                local = np.array([tuple(vertex) for vertex in topology["vertices"]], dtype=np.float64).reshape(-1, 3)
+                topology["vertices_array"] = local
+            if not len(local):
+                continue
+            world_matrix = np.array(matrix, dtype=np.float64)
+            world = local @ world_matrix[:3, :3].T + world_matrix[:3, 3]
             if _is_gradient_line(handle):
                 # A gradient's base line drags the whole gradient. It is a
                 # loose edge along local X, drawn at its real size; the dots
                 # on it win when both are in reach.
+                line_xy, line_valid = project(world)
                 for a, b in topology["loose_x"]:
-                    start = location_3d_to_region_2d(region, region_data, points[a])
-                    end = location_3d_to_region_2d(region, region_data, points[b])
-                    if start is None or end is None:
+                    if not (line_valid[a] and line_valid[b]):
                         continue
-                    distance = _point_segment_distance_sq(point[0], point[1], start.x, start.y, end.x, end.y) + _LINE_PICK_PENALTY_SQ
+                    distance = _point_segment_distance_sq(
+                        point[0], point[1], line_xy[a, 0], line_xy[a, 1], line_xy[b, 0], line_xy[b, 1],
+                    ) + _LINE_PICK_PENALTY_SQ
                     if distance <= limit + _LINE_PICK_PENALTY_SQ and (best is None or distance < best[0]):
                         best = (distance, handle)
+            triangles = topology["triangles"]
+            if not triangles:
+                continue
             # Picked where it is drawn: knobs keep one size on screen.
             fixed = handle_screen_scale(handle, region, region_data, ui_scale)
             if fixed is not None:
                 anchor, factor = fixed
-                points = [anchor + (point - anchor) * factor for point in points]
-            # Only the filled faces are picked; guide circles and lines
-            # (most of a radius handle's vertices) need no projection.
+                anchor = np.array(tuple(anchor), dtype=np.float64)
+                world = anchor + (world - anchor) * float(factor)
+            screen, valid = project(world)
+            # Only the filled faces are picked, so only their corners count;
+            # a cursor away from all of them skips the triangle tests.
             used = topology.get("triangle_vertices")
             if used is None:
-                used = sorted({index for _part, indices in topology["triangles"] for index in indices})
-            projected = {
-                index: location_3d_to_region_2d(region, region_data, points[index])
-                for index in used
-            }
-            for _part, indices in topology["triangles"]:
-                corners = [projected[index] for index in indices]
-                if any(corner is None for corner in corners):
+                used = sorted({index for _part, indices in triangles for index in indices})
+            used = np.asarray(used, dtype=np.intp)
+            corners_ok = used[valid[used]]
+            if not len(corners_ok):
+                continue
+            box = screen[corners_ok]
+            if (
+                point[0] < box[:, 0].min() - reach or point[0] > box[:, 0].max() + reach
+                or point[1] < box[:, 1].min() - reach or point[1] > box[:, 1].max() + reach
+            ):
+                continue
+            screen, valid = screen.tolist(), valid.tolist()
+            for _part, indices in triangles:
+                if not all(valid[index] for index in indices):
                     continue
+                corners = [screen[index] for index in indices]
                 distance = _screen_distance_to_triangle_sq(point, *corners)
                 if distance <= limit and (best is None or distance < best[0]):
                     best = (distance, handle)
                     if distance == 0.0:
                         break
-        except (*FBP_DATA_ERRORS, IndexError):
+        except (*FBP_DATA_ERRORS, IndexError, ValueError):
             pass
     return None if best is None else best[1]
 
