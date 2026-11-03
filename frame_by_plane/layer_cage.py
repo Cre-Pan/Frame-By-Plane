@@ -856,6 +856,9 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         part = self.fbp_hover
         if rig is None or frame is None or not part:
             return {"CANCELLED"}
+        if part == "MOVE" and event.alt and _alt_orbits(context):
+            # With Emulate 3 Button Mouse, Alt + drag orbits the view.
+            return {"CANCELLED"}
         self.fbp_part = part
         self.fbp_initial = rig.matrix_world.copy()
         self.fbp_press = (event.mouse_region_x, event.mouse_region_y)
@@ -1063,6 +1066,13 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         context.area.tag_redraw()
 
 
+def _alt_orbits(context):
+    try:
+        return bool(context.preferences.inputs.use_mouse_emulate_3_button)
+    except FBP_DATA_ERRORS:
+        return False
+
+
 def _basis_world(rig):
     """The rig's world matrix from its own channels, valid right after an edit."""
     parent = getattr(rig, "parent", None)
@@ -1115,7 +1125,9 @@ def reset_box_orientation(rig):
         return False
     initial = _basis_world(rig)
     inverses = _children_inverses(rig)
-    pivot = initial.translation.copy()
+    # Turn around the box anchor, so it stays on the same spot of the layer.
+    anchor_local = layer_anchor_local(rig)
+    pivot = (initial @ anchor_local) if anchor_local is not None else initial.translation.copy()
     normal = (initial.to_3x3() @ Vector((0.0, 0.0, 1.0)))
     if normal.length <= 1.0e-9:
         return False

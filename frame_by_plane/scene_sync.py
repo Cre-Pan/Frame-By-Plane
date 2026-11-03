@@ -1882,6 +1882,12 @@ def fbp_repair_default_duplicate_rig(rig, context=None):
         except Exception:
             source_basis = None
         new_plane.parent = rig
+        try:
+            # The transform box can turn the rig while the plane stays: that
+            # offset lives in the parent inverse, so the copy keeps it too.
+            new_plane.matrix_parent_inverse = source_plane.matrix_parent_inverse.copy()
+        except Exception:
+            pass
         if source_basis is not None:
             new_plane.matrix_basis = source_basis
         else:

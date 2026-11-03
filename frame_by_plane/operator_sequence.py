@@ -572,7 +572,7 @@ class FBP_OT_Transform(Operator):
 
 FBP_RESET_LAYER_ITEMS = (
     ('POSITION', "Position", "Move the layer back to the world origin (or its parent's origin)"),
-    ('ROTATION', "Rotation", "Undo every rotation; the layer keeps its vertical or horizontal orientation"),
+    ('ROTATION', "Rotation", "Undo every rotation, the box's included; the layer keeps its vertical or horizontal orientation"),
     ('SCALE', "Scale", "Return to the scale the layer was created with"),
     ('ANCHOR', "Anchor Point", "Put the transform box anchor point back on the layer origin"),
     ('ORIENTATION', "Box Orientation", "Turn the transform box back in line with the layer; the layer stays where it is"),
@@ -602,7 +602,8 @@ def fbp_reset_layer_transform(rig, mode):
     """Reset one part of a layer rig's transform. Returns True when something changed."""
     mode = str(mode or 'ALL').upper()
     changed = False
-    if mode in {'ORIENTATION', 'ALL'}:
+    # Rotation is the layer's own turn: the box goes back in line with it first.
+    if mode in {'ORIENTATION', 'ROTATION', 'ALL'}:
         try:
             from .layer_cage import reset_box_orientation
             changed = bool(reset_box_orientation(rig)) or changed
