@@ -1148,10 +1148,15 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
 
     @classmethod
     def setup_keymap(cls, keyconfig):
-        # Drag only: a plain click goes on to the selection operators.
-        return keyconfig.keymaps.new(
-            name="Generic Gizmo Maybe Drag", space_type="EMPTY", region_type="WINDOW",
+        # Drag only: a plain click goes on to the selection operators. The
+        # built-in drag keymaps leave Alt out, but the box uses Alt for
+        # symmetric scaling, so this one takes a drag with any modifier.
+        keymap = keyconfig.keymaps.new(
+            name="FBP Layer Box Drag", space_type="EMPTY", region_type="WINDOW",
         )
+        if not any(item.idname == "gizmogroup.gizmo_tweak" for item in keymap.keymap_items):
+            keymap.keymap_items.new("gizmogroup.gizmo_tweak", "LEFTMOUSE", "CLICK_DRAG", any=True)
+        return keymap
 
     def setup(self, context):
         self.boxes = {}
