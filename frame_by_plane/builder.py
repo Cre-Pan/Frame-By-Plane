@@ -1305,6 +1305,13 @@ def apply_fit_to_camera(context, rig, cam, mode=None, align=False):
     """
     if not rig or not cam or getattr(cam, "type", "") != 'CAMERA':
         return False
+    if align:
+        # A box turned apart from its layer would tilt the fitted image.
+        try:
+            from .layer_cage import reset_box_orientation
+            reset_box_orientation(rig)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
     scene = context.scene if context else bpy.context.scene
     mode = mode if mode in FBP_FIT_MODES else fbp_scene_fit_mode(scene)
     is_ortho = getattr(cam.data, 'type', '') == 'ORTHO'
