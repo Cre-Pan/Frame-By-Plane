@@ -544,7 +544,9 @@ def _plane_hit(region, region_data, coord, point, normal):
 def set_layer_anchor(rig, world_point):
     """Move the layer's origin to ``world_point`` without moving anything.
 
-    The plane and every other child keep their place, Child Of constraints
+    Every child keeps its place through its parent inverse (its own keys stay
+    valid, and effects keep reading the plane's origin as the image centre),
+    Child Of constraints
     that follow the rig are compensated, and location keys shift with the
     origin so an animated layer keeps its path.
     """
@@ -553,13 +555,17 @@ def set_layer_anchor(rig, world_point):
     local.z = 0.0
     if local.length <= 1.0e-7:
         return False
-    children = {child: child.matrix_world.copy() for child in rig.children}
     before = rig.location.copy()
     rig.matrix_world = world @ Matrix.Translation(local)
     delta = rig.location - before
-    for child, matrix in children.items():
-        child.matrix_world = matrix
     shift = Matrix.Translation(-local)
+    for child in rig.children:
+        if child.parent_type == "OBJECT":
+            # Through the parent inverse, so the child's own keys stay valid.
+            child.matrix_parent_inverse = shift @ child.matrix_parent_inverse
+        else:
+            matrix = child.matrix_world.copy()
+            child.matrix_world = matrix
     for obj in bpy.data.objects:
         if obj == rig or obj.parent == rig:
             continue
