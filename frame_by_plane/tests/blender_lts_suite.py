@@ -3151,19 +3151,19 @@ def test_lattice_types_contract(_module):
             assert ops.lattice_point_handles(rig_name=rig.name, action="ADD") == {"FINISHED"}
             handles = pins_module.rig_pins(rig, kinds=(pins_module.KIND_POINT,))
             assert len(handles) == len(helper.data.points)
-            # Minimal handles: filled shapes in the shared accent, always in front,
-            # resized by Handle Size without moving or rebinding anything.
+            # Minimal handles: thin shapes in Grease Pencil's deform-box grey,
+            # always in front, resized by Handle Size without moving or rebinding anything.
             armature = bones_module.bones_object(rig)
             assert armature.show_in_front
-            # Cage corners are L brackets, every other point is a dot.
+            # Cage corners are larger rings, every other point is a small ring.
             shapes = {h.custom_shape[bones_module.SHAPE_KEY] for h in handles}
             assert shapes == {"POINT", "GRID_CORNER"}, shapes
             assert sum(h.custom_shape[bones_module.SHAPE_KEY] == "GRID_CORNER" for h in handles) == 4
             first = [h for h in handles if h.custom_shape[bones_module.SHAPE_KEY] == "POINT"][0]
-            assert len(first.custom_shape.data.polygons) == 1
+            assert len(first.custom_shape.data.polygons) > 1
             assert first.color.palette == 'CUSTOM'
             normal = tuple(first.color.custom.normal)
-            assert normal[0] > 0.9 and normal[2] < 0.2, normal
+            assert normal[0] > 0.8 and abs(normal[0] - normal[2]) < 0.05, normal
             base_scale = float(first.custom_shape_scale_xyz[0])
             assert abs(base_scale - bones_module.handle_size(plane, "POINT", rig)) < 1.0e-6
             bind_before = str(helper.get(pins_module.BIND_SIGNATURE_KEY, ""))

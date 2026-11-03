@@ -43,13 +43,13 @@ from .runtime import (
 )
 from .viewport_handles import (
     HANDLE_COLOR,
+    KEY_HANDLE_NOMINAL_SIZE,
     angle_handle_geometry,
     attach_to_plane,
     attached_plane,
     bounds_handle_geometry,
     direction_handle_geometry,
     ensure_viewport_handle_material,
-    gradient_stop_geometry,
     is_attached_to,
     offset_handle_geometry,
     point_handle_geometry,
@@ -845,15 +845,16 @@ def _control_mesh_signature(rig, mode, role, spec=None, control=None):
     parameters = _control_mesh_parameters(rig, mode, role, spec, control)
     for key in sorted(parameters):
         extra += f":{key}={_format_parameter(parameters[key])}"
-    return f"fbp_handle_v5:{mode}:{role}:{size:.6f}{extra}"
+    return f"fbp_handle_v10:{mode}:{role}:{size:.6f}{extra}"
 
 
 def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
     """Return the flat, plane-local mesh of one control.
 
-    Shapes are thin and single-coloured: bars and L corners for bounds, a ring
-    for centres, a cross for offsets, line arrows for angles, colour stops for
-    gradients and a knob with a dashed circle for radii.
+    Shapes are thin and single-coloured, as in Grease Pencil's deform box:
+    dots for bounds and for the ends of a gradient line, a hollow ring for
+    centres, a thin cross for offsets, line arrows for angles and a knob with
+    a dashed circle for radii.
     """
     mode = str(mode or "").upper()
     role = str(role or "").upper()
@@ -871,7 +872,9 @@ def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
             radial_angle=parameters.get("angle", 0.0),
         )
     if mode in {"GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE"}:
-        return gradient_stop_geometry(size)
+        # The ends of the gradient's base line: plain dots. The colours are
+        # drawn beside the line by handle_overlay's stop gizmos.
+        return bounds_handle_geometry(size, role)
     if mode == "TILT_RANGE":
         return range_bar_geometry(size)
     if mode == "RADIUS":
@@ -953,6 +956,8 @@ def _ensure_control_handle_mesh(control, rig, mode, role, spec=None):
         elif mesh.materials[0] is not mat:
             mesh.materials[0] = mat
         control[KEY_CONTROL_MESH_SIGNATURE] = signature
+        # The overlay draws the knob at a fixed size on screen, from this.
+        control[KEY_HANDLE_NOMINAL_SIZE] = float(_control_display_size(rig, mode, role))
         return True
     except (ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not rebuild viewport handle mesh", exc)

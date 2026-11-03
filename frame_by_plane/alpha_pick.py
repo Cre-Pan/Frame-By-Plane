@@ -4,7 +4,9 @@ Frame By Plane image planes are not selectable themselves; a layer is picked
 through its control rig. This operator runs before Blender's click select in
 Object Mode: it walks the view ray through the scene, skips planes whose
 pixel under the cursor is transparent and selects the layer of the first
-visible pixel. Layers that show their rig wire are skipped (picked from the
+visible pixel. Viewport handles (Crop, Gradient, Shape Mask...) are drawn on
+top of everything, so a click on one selects that handle before anything
+else. Layers that show their rig wire are skipped (picked from the
 wire) unless the "Rig Layers: Click Image Too" preference is on. Anything else
 (no plane hit, a click on a rig wire, a regular object in front, a locked
 layer) is passed through to Blender's own selection untouched.
@@ -134,6 +136,116 @@ def _rig_wire_near_cursor(context, coord, radius):
     return False
 
 
+def _point_segment_distance_sq(px, py, ax, ay, bx, by):
+    dx, dy = bx - ax, by - ay
+    length = dx * dx + dy * dy
+    t = 0.0 if length <= 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length))
+    ex, ey = ax + dx * t - px, ay + dy * t - py
+    return ex * ex + ey * ey
+
+
+def _screen_distance_to_triangle_sq(point, a, b, c):
+    """0 inside the 2D triangle ``abc``, else the squared distance to its edges."""
+    px, py = point
+    d1 = (px - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (py - b[1])
+    d2 = (px - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (py - c[1])
+    d3 = (px - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (py - a[1])
+    negative = d1 < 0.0 or d2 < 0.0 or d3 < 0.0
+    positive = d1 > 0.0 or d2 > 0.0 or d3 > 0.0
+    if not (negative and positive):
+        return 0.0
+    return min(
+        _point_segment_distance_sq(px, py, a[0], a[1], b[0], b[1]),
+        _point_segment_distance_sq(px, py, b[0], b[1], c[0], c[1]),
+        _point_segment_distance_sq(px, py, c[0], c[1], a[0], a[1]),
+    )
+
+
+_LINE_PICK_PENALTY_SQ = 4.0
+
+
+def _is_gradient_line(handle):
+    try:
+        from .effect_controls import KEY_MODE
+        return str(handle.get(KEY_MODE, "") or "").upper() == "RANGE_CENTER"
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+
+
+def fbp_handle_under_cursor(context, coord, radius):
+    """The viewport handle (Crop, Gradient, Shape Mask...) under ``coord``.
+
+    Handles are drawn on top of everything, so they win over any plane or
+    rig, wherever they sit in depth: what the user sees under the cursor is
+    what the click picks. Returns the closest handle within ``radius`` pixels
+    (inside its filled shape counts as 0), or ``None``.
+    """
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+    from .handle_overlay import _visible_handles, handle_screen_scale
+
+    region = context.region
+    region_data = context.region_data
+    handles = [
+        handle for handle in _visible_handles(context)
+        if not bool(getattr(handle, "hide_select", False))
+    ]
+    if not handles:
+        return None
+    depsgraph = context.evaluated_depsgraph_get()
+    try:
+        ui_scale = float(context.preferences.system.ui_scale) or 1.0
+    except (AttributeError, TypeError, ValueError):
+        ui_scale = 1.0
+    limit = float(radius) * float(radius)
+    point = (float(coord[0]), float(coord[1]))
+    best = None
+    for handle in handles:
+        try:
+            evaluated = handle.evaluated_get(depsgraph)
+            mesh = evaluated.to_mesh()
+        except (*FBP_DATA_ERRORS, IndexError):
+            continue
+        try:
+            matrix = evaluated.matrix_world
+            points = [matrix @ vertex.co for vertex in mesh.vertices]
+            if _is_gradient_line(handle):
+                # A gradient's base line drags the whole gradient. It is a
+                # loose edge along local X, drawn at its real size; the dots
+                # on it win when both are in reach.
+                for edge in mesh.edges:
+                    a, b = edge.vertices
+                    if not edge.is_loose or abs(mesh.vertices[a].co.y) > 1.0e-6 or abs(mesh.vertices[b].co.y) > 1.0e-6:
+                        continue
+                    start = location_3d_to_region_2d(region, region_data, points[a])
+                    end = location_3d_to_region_2d(region, region_data, points[b])
+                    if start is None or end is None:
+                        continue
+                    distance = _point_segment_distance_sq(point[0], point[1], start.x, start.y, end.x, end.y) + _LINE_PICK_PENALTY_SQ
+                    if distance <= limit + _LINE_PICK_PENALTY_SQ and (best is None or distance < best[0]):
+                        best = (distance, handle)
+            # Picked where it is drawn: knobs keep one size on screen.
+            fixed = handle_screen_scale(handle, region, region_data, ui_scale)
+            if fixed is not None:
+                anchor, factor = fixed
+                points = [anchor + (point - anchor) * factor for point in points]
+            projected = [location_3d_to_region_2d(region, region_data, point) for point in points]
+            mesh.calc_loop_triangles()
+            for tri in mesh.loop_triangles:
+                corners = [projected[index] for index in tri.vertices]
+                if any(corner is None for corner in corners):
+                    continue
+                distance = _screen_distance_to_triangle_sq(point, *corners)
+                if distance <= limit and (best is None or distance < best[0]):
+                    best = (distance, handle)
+                    if distance == 0.0:
+                        break
+        except (*FBP_DATA_ERRORS, IndexError):
+            pass
+        finally:
+            evaluated.to_mesh_clear()
+    return None if best is None else best[1]
+
+
 def fbp_pick_layer_through_alpha(context, origin, direction, *, by_image_with_rig=False):
     """Return ``(rig, hit_fbp_plane)`` for a world ray.
 
@@ -222,6 +334,14 @@ def _by_image_with_rig():
         return False
 
 
+def _layer_box_part_at(context, coord):
+    try:
+        from .layer_cage import layer_box_part_at
+        return layer_box_part_at(context, coord)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return None
+
+
 class FBP_OT_SelectThroughAlpha(Operator):
     """Select a layer by its visible pixels, clicking through transparency."""
 
@@ -245,6 +365,21 @@ class FBP_OT_SelectThroughAlpha(Operator):
         region_data = context.region_data
         coord = (event.mouse_region_x, event.mouse_region_y)
         try:
+            # Handles are drawn on top of everything, so they come first: a
+            # click on a Crop or Gradient handle never picks the plane behind.
+            handle = fbp_handle_under_cursor(context, coord, 4.0 * _ui_scale(context))
+            if handle is not None:
+                return self._select(context, handle)
+            # A click on the transform box's knob, dots or edges stays on
+            # the box (the knob shows the anchor); only the inside lets a
+            # click through to the layers behind.
+            box = _layer_box_part_at(context, coord)
+            if box is not None and box[1] != "MOVE":
+                if box[1] == "ROTATE":
+                    from .layer_cage import toggle_anchor_mode
+                    toggle_anchor_mode(box[0])
+                    context.area.tag_redraw()
+                return {'FINISHED'}
             # A click on (or right next to) a visible rig wire stays Blender's.
             if _rig_wire_near_cursor(context, coord, 8.0 * _ui_scale(context)):
                 return {'PASS_THROUGH'}
@@ -259,6 +394,9 @@ class FBP_OT_SelectThroughAlpha(Operator):
             # selectable themselves, so Blender's own click select already
             # sees through them to rig wires and regular objects behind.
             return {'PASS_THROUGH'}
+        return self._select(context, rig)
+
+    def _select(self, context, rig):
         view_layer = context.view_layer
         if self.toggle:
             if rig.select_get() and view_layer.objects.active == rig:

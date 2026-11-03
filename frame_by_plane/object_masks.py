@@ -957,7 +957,7 @@ def _object_mask_bounds_handles_need_repair(helper, owner=None):
     for role, handle in by_role.items():
         mesh = getattr(handle, "data", None)
         size = _object_mask_handle_size(owner, role)
-        mesh_signature = f"shape_mask_bounds_v3:{role}:{size:.6f}"
+        mesh_signature = f"shape_mask_bounds_v6:{role}:{size:.6f}"
         try:
             if not is_attached_to(handle, plane):
                 return True
@@ -1001,13 +1001,13 @@ def _object_mask_bounds_handles_need_repair(helper, owner=None):
 
 
 def _configure_object_mask_handle(handle, helper, owner, role):
-    from .viewport_handles import bounds_handle_geometry, ensure_viewport_handle_material
+    from .viewport_handles import KEY_HANDLE_NOMINAL_SIZE, bounds_handle_geometry, ensure_viewport_handle_material
 
     role = str(role or "").upper()
     shape = object_mask_controller_shape(helper)
     owner_id = ensure_object_mask_owner_id(owner)
     size = _object_mask_handle_size(owner, role)
-    signature = f"shape_mask_bounds_v3:{role}:{size:.6f}"
+    signature = f"shape_mask_bounds_v6:{role}:{size:.6f}"
     changed = False
     mesh = getattr(handle, "data", None)
     plane = getattr(owner, "fbp_plane_target", None)
@@ -1020,6 +1020,8 @@ def _configure_object_mask_handle(handle, helper, owner, role):
             (KEY_SHAPE, shape),
             (KEY_OWNER_ID, owner_id),
             (KEY_OWNER_NAME, owner.name),
+            # The overlay draws the dot at a fixed size on screen from this.
+            (KEY_HANDLE_NOMINAL_SIZE, float(size)),
         ):
             changed = _set_object_mask_id_property(handle, key, value) or changed
         if plane is not None and not is_attached_to(handle, plane):
