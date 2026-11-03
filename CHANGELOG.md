@@ -44,6 +44,10 @@ All notable public changes to Frame By Plane are documented here.
 - Each frame of playback or scrubbing costs about half the Python it did: layers whose effects have nothing that changes per frame (no keyed or driven setting, no Evolve-capable or procedural effect, no image sequence sync, no live Lattice) are skipped outright, the layers with effects are found in one pass over the scene, and the Motion and Grease Pencil frame handlers no longer queue the same deferred update again on every frame. With 60 layers a frame went from about 1.4 ms to about 0.7 ms.
 - Selecting or changing anything with many layers is lighter. Blender looks up objects by name one object at a time, so checks that looked up every layer by name grew with layers times objects; the check for deleted layers that runs on every scene update, the background safety scan and the layer index now resolve all names in one pass. With 150 layers the deleted-layer check went from about 9 ms to about 3.5 ms per update.
 
+### Stability
+
+- Fixed a Blender crash (`EXCEPTION_ACCESS_VIOLATION`) that could hit when an effect was added or edited while another add-on watched scene updates (seen with Doodle Music). The Modifiers panel sync wrote layer settings from inside Blender's scene-update callback, and their updates could rebuild data that the next add-on's callback was still reading. The callback now only notes which layers changed, and the sync runs right after.
+
 ### Cleanup
 
 - Mesh effect materials copied the first input of nodes with repeated input names (Math, Mix) into the second one; they now copy input by input.
