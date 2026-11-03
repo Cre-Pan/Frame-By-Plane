@@ -36567,6 +36567,11 @@ class FBP_OT_LatticeBonesAction(Operator):
         if self.action == 'POSE':
             if not _fbp_select_only(context, armature, "POSE"):
                 return {'CANCELLED'}
+            try:
+                from .effect_controls import ensure_posed_layer_controls
+                ensure_posed_layer_controls(context, rig)
+            except (ImportError,) + FBP_DATA_ERRORS:
+                pass
         elif self.action == 'EDIT':
             if not _fbp_select_only(context, armature, "EDIT"):
                 return {'CANCELLED'}

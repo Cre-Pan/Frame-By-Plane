@@ -2664,7 +2664,8 @@ class FBP_OT_ToggleLayerPoseMode(Operator):
                 return {"PASS_THROUGH"}
             if bool(getattr(active, "is_fbp_control", False)):
                 rig = active
-            elif bool(getattr(active, "is_fbp_plane", False)):
+            elif bool(getattr(active, "is_fbp_plane", False)) or _is_layer_handle(active):
+                # A selected Crop, Gradient or Shape Mask handle poses its layer too.
                 from .layers import fbp_resolve_rig_from_any_object
                 rig = fbp_resolve_rig_from_any_object(active, context)
             else:
@@ -2702,6 +2703,13 @@ class FBP_OT_ToggleLayerPoseMode(Operator):
         armature[_POSE_RETURN_KEY] = str(getattr(active, "name", "") or "")
         if not select_pins(context, rig, []):
             return {"CANCELLED"}
+        # Every effect handle (Crop, Gradient, Shape Mask...) shows up with
+        # the Lattice handles, ready to drag without selecting it first.
+        try:
+            from .effect_controls import ensure_posed_layer_controls
+            ensure_posed_layer_controls(context, rig)
+        except (ImportError, *FBP_DATA_ERRORS) as exc:
+            fbp_warn("Could not show the layer's effect handles in Pose Mode", exc)
         fbp_focus_lattice_ui(context, rig)
         return {"FINISHED"}
 
@@ -2724,7 +2732,25 @@ class FBP_OT_ToggleLayerPoseMode(Operator):
             view_layer.objects.active = target
         except FBP_DATA_ERRORS:
             pass
+        # Back to the usual rule: only the active effect's handles show.
+        try:
+            from .effect_controls import sync_global_controller_visibility
+            sync_global_controller_visibility(context)
+        except (ImportError, *FBP_DATA_ERRORS):
+            pass
         return {"FINISHED"}
+
+
+def _is_layer_handle(obj):
+    """True for an effect or Shape Mask handle, which belongs to one layer."""
+    try:
+        from .effect_controls import is_effect_control
+        if is_effect_control(obj):
+            return True
+        from .object_masks import is_object_mask_bounds_handle, is_object_mask_helper
+        return bool(is_object_mask_bounds_handle(obj) or is_object_mask_helper(obj))
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
 
 
 def _layer_pose_auto_lattice_enabled(context=None):

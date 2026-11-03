@@ -2719,6 +2719,17 @@ def sync_external_circle_mask_targets(scene=None, *, depsgraph=None, render_safe
         scene=scene, depsgraph=depsgraph, render_safe=render_safe
     )
 
+def _owner_is_posed(owner):
+    """True while the layer's Controls armature is in Pose Mode."""
+    if owner is None:
+        return False
+    try:
+        from .lattice_bones import posed_layer_rigs
+        return owner in posed_layer_rigs()
+    except (ImportError,) + FBP_DATA_ERRORS:
+        return False
+
+
 def sync_object_mask_helper_visibility(helper, *, owner=None):
     if not is_object_mask_helper(helper):
         return False
@@ -2741,6 +2752,7 @@ def sync_object_mask_helper_visibility(helper, *, owner=None):
             or helper.select_get()
             or handle_selected
             or edit_mode
+            or _owner_is_posed(owner)
         )
         should_hide = not (show_preference and selected)
         # Hiding the object while Blender owns an Edit Mesh can invalidate the
