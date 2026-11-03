@@ -413,11 +413,38 @@ def _ui_scale(context):
         return 1.0
 
 
+_FRAME_CACHE = {}
+
+
 def _box_frame(rig, center, size, region, region_data):
-    """World and screen points of a layer's box, or None off screen."""
+    """World and screen points of a layer's box, or None off screen.
+
+    The box is drawn on every redraw and hit-tested on every mouse move with
+    the same layer and view, so the last results are kept per layer, view
+    and region size. The returned dict is shared: callers only read it.
+    """
+    world = rig.matrix_world
+    anchor_local = layer_anchor_local(rig)
+    key = (
+        rig.as_pointer(), tuple(map(tuple, world)), tuple(center), tuple(size),
+        None if anchor_local is None else tuple(anchor_local),
+        tuple(map(tuple, region_data.perspective_matrix)), region.width, region.height,
+    )
+    try:
+        return _FRAME_CACHE[key]
+    except KeyError:
+        pass
+    frame = _build_box_frame(world, center, size, region, region_data, anchor_local)
+    if len(_FRAME_CACHE) >= 64:
+        _FRAME_CACHE.clear()
+    _FRAME_CACHE[key] = frame
+    return frame
+
+
+def _build_box_frame(world, center, size, region, region_data, anchor_local):
     from bpy_extras.view3d_utils import location_3d_to_region_2d
 
-    world = rig.matrix_world
+    world = world.copy()
     axis_x = (world.to_3x3() @ Vector((1.0, 0.0, 0.0)))
     axis_y = (world.to_3x3() @ Vector((0.0, 1.0, 0.0)))
     if axis_x.length <= 1.0e-9 or axis_y.length <= 1.0e-9:
@@ -439,7 +466,6 @@ def _box_frame(rig, center, size, region, region_data):
     bottom = edges[0]
     bottom_unit = _pixels_per_unit(region, region_data, bottom, axis_y) or per_unit
     orient = bottom - axis_y * (_ROTATE_OFFSET_PX / bottom_unit)
-    anchor_local = layer_anchor_local(rig)
     anchor = (world @ anchor_local) if anchor_local is not None else world.translation.copy()
     # The anchor sits on the layer: drop it on the box plane.
     normal = axis_x.cross(axis_y)
@@ -594,28 +620,48 @@ _SHADERS = {}
 
 
 def _shaders():
+    """Per-vertex colour shaders: each draw sends one batch for its fills
+    and one per line width, in drawing order, so blending is unchanged."""
     import gpu
 
     if not _SHADERS:
-        _SHADERS["fill"] = gpu.shader.from_builtin("UNIFORM_COLOR")
-        _SHADERS["line"] = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+        _SHADERS["fill"] = gpu.shader.from_builtin("FLAT_COLOR")
+        _SHADERS["line"] = gpu.shader.from_builtin("POLYLINE_FLAT_COLOR")
     return _SHADERS["fill"], _SHADERS["line"]
 
 
-def _circle(center, axis_x, axis_y, radius, segments=24):
-    import math
+_UNIT_CIRCLES = {}
 
+
+def _unit_circle(segments):
+    table = _UNIT_CIRCLES.get(segments)
+    if table is None:
+        import math
+
+        table = tuple(
+            (math.cos(math.tau * index / segments), math.sin(math.tau * index / segments))
+            for index in range(segments)
+        )
+        _UNIT_CIRCLES[segments] = table
+    return table
+
+
+def _circle(center, axis_x, axis_y, radius, segments=24):
+    cx, cy, cz = center
+    xx, xy, xz = axis_x
+    yx, yy, yz = axis_y
     return [
-        center + (axis_x * math.cos(math.tau * index / segments) + axis_y * math.sin(math.tau * index / segments)) * radius
-        for index in range(segments)
+        (cx + (xx * c + yx * s) * radius, cy + (xy * c + yy * s) * radius, cz + (xz * c + yz * s) * radius)
+        for c, s in _unit_circle(segments)
     ]
 
 
 def _disc(center, axis_x, axis_y, radius, segments=24):
     ring = _circle(center, axis_x, axis_y, radius, segments)
+    middle = tuple(center)
     triangles = []
     for index in range(segments):
-        triangles.extend((center, ring[index], ring[(index + 1) % segments]))
+        triangles.extend((middle, ring[index], ring[(index + 1) % segments]))
     return triangles
 
 
@@ -642,8 +688,17 @@ def _cross(center, axis_x, axis_y, half, width):
     for direction in ((axis_x + axis_y).normalized(), (axis_x - axis_y).normalized()):
         side = direction.cross(axis_x.cross(axis_y)).normalized() * width
         a, b = center - direction * half, center + direction * half
-        triangles.extend((a - side, b - side, b + side, a - side, b + side, a + side))
+        triangles.extend(tuple(point) for point in (a - side, b - side, b + side, a - side, b + side, a + side))
     return triangles
+
+
+def _colored(parts):
+    """Join ``(points, rgb, alpha)`` parts into one position and colour list."""
+    positions, colors = [], []
+    for points, rgb, alpha in parts:
+        positions.extend(points)
+        colors.extend(((*rgb, alpha),) * len(points))
+    return positions, colors
 
 
 _RNA_GET = bpy.types.bpy_struct.__getattribute__
@@ -816,16 +871,23 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         try:
             line_shader.bind()
             line_shader.uniform_float("viewportSize", (region.width, region.height))
+            # One batch per run of lines with the same width, in order.
+            runs = []
             for segments, color, alpha, width in lines:
                 if not segments:
                     continue
+                if runs and runs[-1][0] == width:
+                    runs[-1][1].append((segments, color, alpha))
+                else:
+                    runs.append((width, [(segments, color, alpha)]))
+            for width, parts in runs:
+                positions, colors = _colored([([tuple(point) for point in segments], color, alpha) for segments, color, alpha in parts])
                 line_shader.uniform_float("lineWidth", width * scale)
-                line_shader.uniform_float("color", (*color, alpha))
-                batch_for_shader(line_shader, "LINES", {"pos": [tuple(point) for point in segments]}).draw(line_shader)
-            fill_shader.bind()
-            for triangles, color, alpha in fills:
-                fill_shader.uniform_float("color", (*color, alpha))
-                batch_for_shader(fill_shader, "TRIS", {"pos": [tuple(point) for point in triangles]}).draw(fill_shader)
+                batch_for_shader(line_shader, "LINES", {"pos": positions, "color": colors}).draw(line_shader)
+            if fills:
+                positions, colors = _colored(fills)
+                fill_shader.bind()
+                batch_for_shader(fill_shader, "TRIS", {"pos": positions, "color": colors}).draw(fill_shader)
         finally:
             gpu.state.blend_set("NONE")
 
