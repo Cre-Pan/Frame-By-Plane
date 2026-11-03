@@ -355,8 +355,8 @@ class FBP_GGT_cursor_probe(bpy.types.GizmoGroup):
 # the middle of the edges.
 
 _ROTATE_OFFSET_PX = 18.0
-_ROTATE_RADIUS_PX = 4.0
-_MARK_RADIUS_PX = 3.0
+_ROTATE_RADIUS_PX = 5.0
+_MARK_RADIUS_PX = 3.8
 _CROSS_HALF_PX = 5.0
 _ANCHOR_RING_PX = 7.0
 _PICK_DOT_PX = 8.0
@@ -370,7 +370,7 @@ _EDGE_SIGNS = ((0, -1), (1, 0), (0, 1), (-1, 0))
 # ORIENT: the square below the bottom edge turns the box (the rig) while
 # the layer itself stays put, so later scaling follows the new direction.
 PARTS = ("MOVE", "C0", "C1", "C2", "C3", "E0", "E1", "E2", "E3", "ROTATE", "ANCHOR", "ORIENT")
-_ORIENT_HALF_PX = 3.6
+_ORIENT_HALF_PX = 4.5
 # Side handle bars: share of the side, longest length and thickness (px).
 _EDGE_BAR_FRACTION = 0.4
 _EDGE_BAR_MAX_PX = 90.0
@@ -764,7 +764,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 bar = [point - along * half, point + along * half]
                 width = _EDGE_BAR_WIDTH_PX + (1.5 if part == active_part else 0.0)
                 lines.append((bar, (0.0, 0.0, 0.0), 0.5, width + 2.0))
-                lines.append((bar, white, 1.0, width))
+                lines.append((bar, accent if part == active_part else white, 1.0, width))
 
         # The knob on its stem above the top edge.
         if not modal or active_part == "ROTATE":
