@@ -170,7 +170,7 @@ def fbp_handle_under_cursor(context, coord, radius):
     (inside its filled shape counts as 0), or ``None``.
     """
     from bpy_extras.view3d_utils import location_3d_to_region_2d
-    from .handle_overlay import _visible_handles
+    from .handle_overlay import _visible_handles, handle_screen_scale
 
     region = context.region
     region_data = context.region_data
@@ -181,6 +181,10 @@ def fbp_handle_under_cursor(context, coord, radius):
     if not handles:
         return None
     depsgraph = context.evaluated_depsgraph_get()
+    try:
+        ui_scale = float(context.preferences.system.ui_scale) or 1.0
+    except (AttributeError, TypeError, ValueError):
+        ui_scale = 1.0
     limit = float(radius) * float(radius)
     point = (float(coord[0]), float(coord[1]))
     best = None
@@ -192,10 +196,13 @@ def fbp_handle_under_cursor(context, coord, radius):
             continue
         try:
             matrix = evaluated.matrix_world
-            projected = [
-                location_3d_to_region_2d(region, region_data, matrix @ vertex.co)
-                for vertex in mesh.vertices
-            ]
+            points = [matrix @ vertex.co for vertex in mesh.vertices]
+            # Picked where it is drawn: knobs keep one size on screen.
+            fixed = handle_screen_scale(handle, region, region_data, ui_scale)
+            if fixed is not None:
+                anchor, factor = fixed
+                points = [anchor + (point - anchor) * factor for point in points]
+            projected = [location_3d_to_region_2d(region, region_data, point) for point in points]
             mesh.calc_loop_triangles()
             for tri in mesh.loop_triangles:
                 corners = [projected[index] for index in tri.vertices]

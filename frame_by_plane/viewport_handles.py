@@ -28,6 +28,9 @@ FOLLOW_CONSTRAINT = "FBP Follow Plane"
 LATTICE_FOLLOW_MODIFIER = "FBP • Follow Lattice"
 # Plane name, stored so lookups survive a constraint whose target was cleared.
 KEY_FOLLOW_PLANE = "fbp_follow_plane"
+# Plane-space size a handle mesh was built at: the overlay draws the knob at a
+# fixed size on screen from it (see handle_overlay.handle_screen_scale).
+KEY_HANDLE_NOMINAL_SIZE = "fbp_effect_control_nominal_size"
 
 # Handles are white like Blender's own gizmos; a selected handle takes the
 # theme's gizmo yellow (``handle_selected_color``), with this as the fallback.
@@ -258,27 +261,28 @@ def bounds_handle_geometry(size, role):
     del role
     size = max(float(size), 1.0e-6)
     verts, faces = [], []
-    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.36, segments=20)
+    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.3, segments=20)
     return verts, faces
 
 
 def point_handle_geometry(size, *, with_angle=False):
-    """Ring with a centre dot; a tick on +X shows the rotation when it matters."""
+    """Thin hollow ring with a small centre dot, like Grease Pencil's grid
+    points; a tick on +X shows the rotation when it matters."""
     size = max(float(size), 1.0e-6)
-    outer = size * 0.5
-    thickness = size * 0.18
+    outer = size * 0.42
+    thickness = size * 0.11
     verts, faces = [], []
     append_ring_geometry(verts, faces, 0.0, 0.0, outer, outer - thickness)
-    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.12)
+    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.08)
     if with_angle:
-        append_rect_geometry(verts, faces, outer + size * 0.25, 0.0, size * 0.5, thickness)
+        append_rect_geometry(verts, faces, outer + size * 0.22, 0.0, size * 0.44, thickness)
     return verts, faces
 
 
 def offset_handle_geometry(size, *, with_angle=False):
-    """A small cross: the offset of a grid or a shadow."""
+    """A small thin cross, like Grease Pencil's pivot: the offset of a grid or a shadow."""
     size = max(float(size), 1.0e-6)
-    thickness = size * 0.18
+    thickness = size * 0.11
     arm = size * 0.55
     verts, faces = [], []
     append_rect_geometry(verts, faces, 0.0, 0.0, arm * 2.0, thickness)
@@ -293,11 +297,11 @@ def offset_handle_geometry(size, *, with_angle=False):
 
 
 def angle_handle_geometry(size):
-    """A dot with a line arrow on +X; rotating the handle sets the angle."""
+    """A dot with a thin line arrow on +X; rotating the handle sets the angle."""
     size = max(float(size), 1.0e-6)
-    thickness = size * 0.16
+    thickness = size * 0.11
     verts, faces = [], []
-    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.2)
+    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.16)
     append_arrow_geometry(verts, faces, size * 0.26, size * 1.8, thickness, size * 0.5)
     return verts, faces
 
@@ -311,9 +315,9 @@ def direction_handle_geometry(size, length=1.0):
     """
     size = max(float(size), 1.0e-6)
     length = max(float(length), 1.0e-6)
-    thickness = size * 0.16
+    thickness = size * 0.11
     shape = HandleShape()
-    shape.disc(0.0, 0.0, size * 0.2)
+    shape.disc(0.0, 0.0, size * 0.16)
     shape.polygon(open_arrow_points(0.0, max(length, size * 0.9), thickness, size * 0.5))
     return shape.map_xy(lambda x, y: (x / length, y))
 
@@ -322,10 +326,10 @@ def vector_handle_geometry(size):
     """Two crossed line arrows on +Z, readable from any view, on a small ring."""
     size = max(float(size), 1.0e-6)
     length = size * 2.0
-    thickness = size * 0.16
+    thickness = size * 0.11
     verts, faces = [], []
     # The ring keeps the handle visible when the arrow points at the viewer.
-    append_ring_geometry(verts, faces, 0.0, 0.0, size * 0.45, size * 0.45 - size * 0.18)
+    append_ring_geometry(verts, faces, 0.0, 0.0, size * 0.42, size * 0.42 - size * 0.11)
     outline = open_arrow_points(0.0, length, thickness, size * 0.5)
     for axis in (0, 1):
         start = len(verts)
@@ -338,10 +342,10 @@ def vector_handle_geometry(size):
 
 
 def gradient_stop_geometry(size):
-    """A colour stop: a swatch disc inside a light ring (Figma-style)."""
+    """A colour stop: a swatch disc inside a thin light ring."""
     size = max(float(size), 1.0e-6)
-    outer = size * 0.62
-    ring = size * 0.16
+    outer = size * 0.5
+    ring = size * 0.11
     shape = HandleShape()
     shape.ring(0.0, 0.0, outer, outer - ring, part=PART_STOP_RING, segments=32)
     shape.disc(0.0, 0.0, outer - ring, part=PART_SWATCH, segments=32)
@@ -351,9 +355,9 @@ def gradient_stop_geometry(size):
 def range_bar_geometry(size):
     """IN/OUT boundary of a band: a hollow stop on the guide line."""
     size = max(float(size), 1.0e-6)
-    outer = size * 0.5
+    outer = size * 0.42
     shape = HandleShape()
-    shape.ring(0.0, 0.0, outer, outer - size * 0.16, part=PART_STOP_RING, segments=32)
+    shape.ring(0.0, 0.0, outer, outer - size * 0.11, part=PART_STOP_RING, segments=32)
     return shape
 
 
@@ -373,9 +377,11 @@ def range_center_geometry(size, reference, *, scale_x=1.0, radii=(), radial_angl
         shape.polyline([(0.0, 0.0), (reference * 0.5, 0.0)])
     else:
         shape.polyline([(-reference * 0.5, 0.0), (reference * 0.5, 0.0)])
-    grip = size * 0.32
+    # A small dot on the line, like the dots on Grease Pencil's box edges.
+    grip = size * 0.2
     shape.polygon([
-        (-grip / scale_x, 0.0), (0.0, -grip), (grip / scale_x, 0.0), (0.0, grip),
+        (math.cos(math.tau * i / 16) * grip / scale_x, math.sin(math.tau * i / 16) * grip)
+        for i in range(16)
     ])
     if radii:
         dash = float(dash or size * 0.45)
@@ -401,8 +407,7 @@ def radius_handle_geometry(size, radii, center=(0.0, 0.0), dash=None):
     """
     size = max(float(size), 1.0e-6)
     shape = HandleShape()
-    shape.ring(0.0, 0.0, size * 0.36, size * 0.36 - size * 0.14, part=PART_STOP_RING, segments=24)
-    shape.disc(0.0, 0.0, size * 0.36 - size * 0.14, segments=24)
+    shape.disc(0.0, 0.0, size * 0.3, segments=24)
     dash = float(dash or size * 0.45)
     for rx, ry in radii or ():
         if rx <= 1.0e-6 or ry <= 1.0e-6:

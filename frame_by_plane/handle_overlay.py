@@ -158,12 +158,62 @@ def _lattice_guides(context):
     return segments
 
 
+def _handle_hover_color(context):
+    """The handle under the cursor: halfway to the selected gizmo yellow."""
+    selected = handle_selected_color(context)
+    return (*(0.5 * (white + accent) for white, accent in zip(HANDLE_COLOR[:3], selected[:3])), 1.0)
+
+
 def _swatch_color(obj):
     try:
         from .effect_controls import control_swatch_color
         return control_swatch_color(obj)
     except (ImportError, AttributeError):
         return None
+
+
+# Effect handles keep one size on screen, as Blender's gizmos do: the mesh is
+# built at a plane-relative size and drawn scaled about its origin so that
+# size reads as this many pixels. Guides (radius circles, gradient lines)
+# keep their real size. Direction arrows are not scaled: their length is the
+# effect distance.
+HANDLE_SCREEN_SIZE_PX = 15.0
+_UNSCALED_MODES = {"DIRECTION"}
+
+
+def handle_screen_scale(obj, region, region_data, ui_scale=1.0):
+    """``(anchor, factor)`` that brings ``obj``'s knob to its screen size, or None."""
+    try:
+        from .effect_controls import KEY_MODE
+        from .viewport_handles import KEY_HANDLE_NOMINAL_SIZE, LATTICE_FOLLOW_MODIFIER
+    except ImportError:
+        return None
+    try:
+        nominal = float(obj.get(KEY_HANDLE_NOMINAL_SIZE, 0.0) or 0.0)
+        if nominal <= 0.0 or str(obj.get(KEY_MODE, "") or "").upper() in _UNSCALED_MODES:
+            return None
+        modifier = obj.modifiers.get(LATTICE_FOLLOW_MODIFIER)
+        if modifier is not None and modifier.show_viewport and modifier.object is not None:
+            # A deformed handle no longer sits on its origin.
+            return None
+        matrix = obj.matrix_world
+        anchor = matrix.translation.copy()
+        world = nominal * matrix.col[1].xyz.length
+        right = region_data.view_matrix.inverted().col[0].xyz.normalized()
+        start = location_3d_to_region_2d(region, region_data, anchor)
+        end = location_3d_to_region_2d(region, region_data, anchor + right * world)
+    except (*FBP_DATA_ERRORS, ZeroDivisionError):
+        return None
+    if start is None or end is None:
+        return None
+    pixels = (end - start).length
+    if pixels <= 1.0e-6:
+        return None
+    return anchor, HANDLE_SCREEN_SIZE_PX * float(ui_scale) / pixels
+
+
+def _scaled(points, anchor, factor):
+    return [anchor + (point - anchor) * factor for point in points]
 
 
 def _handle_geometry(obj, depsgraph):
@@ -270,12 +320,23 @@ def _draw_handles():
     for _solid, dashed in mask_guides:
         guides.extend(dashed)
     selected_color = handle_selected_color(context)
+    hover_color = _handle_hover_color(context)
+    try:
+        from .layer_cage import hovered_handle_name
+        hovered = hovered_handle_name(region)
+    except ImportError:
+        hovered = ""
     shapes = []
     frames = {}
     for obj in handles:
         try:
             triangles, rim, handle_guides = _handle_geometry(obj, depsgraph)
+            fixed = handle_screen_scale(obj, region, context.region_data, scale)
+            if fixed is not None:
+                triangles = {part: _scaled(points, *fixed) for part, points in triangles.items()}
+                rim = _scaled(rim, *fixed)
             selected = bool(obj.select_get())
+            hover = bool(hovered) and not selected and obj.name == hovered
         except FBP_DATA_ERRORS:
             continue
         guides.extend(handle_guides)
@@ -287,16 +348,17 @@ def _draw_handles():
             center = _triangles_center(triangles)
             if bounds[1] in _BOUNDS_CORNERS and center is not None:
                 frame["corners"][bounds[1]] = center
-            elif not selected:
+            elif not selected and not hover:
                 # Edge dots appear when the cursor comes near the frame.
                 frame["sides"].append((triangles, rim, center))
                 continue
         fills = []
-        accent = selected_color if selected else HANDLE_COLOR
+        accent = selected_color if selected else hover_color if hover else HANDLE_COLOR
         if PART_HANDLE in triangles:
             fills.append((triangles[PART_HANDLE], accent))
         if PART_STOP_RING in triangles:
-            fills.append((triangles[PART_STOP_RING], selected_color if selected else STOP_RING_COLOR))
+            ring = selected_color if selected else hover_color if hover else STOP_RING_COLOR
+            fills.append((triangles[PART_STOP_RING], ring))
         if PART_SWATCH in triangles:
             swatch = _swatch_color(obj)
             if swatch is not None:
@@ -432,12 +494,14 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
     )
 
     def setup(self):
-        self.fbp_rim = self.new_custom_shape("TRIS", _ring_triangles(1.12, 0.95))
-        self.fbp_ring = self.new_custom_shape("TRIS", _ring_triangles(1.0, 0.72))
-        self.fbp_disc = self.new_custom_shape("TRIS", _disc_triangles(0.74))
+        # Same proportions as the IN/OUT stop meshes (gradient_stop_geometry).
+        self.fbp_rim = self.new_custom_shape("TRIS", _ring_triangles(1.1, 0.95))
+        self.fbp_ring = self.new_custom_shape("TRIS", _ring_triangles(1.0, 0.78))
+        self.fbp_disc = self.new_custom_shape("TRIS", _disc_triangles(0.8))
         self.fbp_swatch = (1.0, 1.0, 1.0)
         self.fbp_initial = None
-        self.use_draw_scale = False
+        # A fixed size on screen, like the IN/OUT stops (see draw_prepare).
+        self.use_draw_scale = True
 
     def _draw_part(self, shape, color, alpha=1.0):
         self.color = color
@@ -548,6 +612,10 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
                 element = elements[index]
                 t = (float(element.position) - first) / span if abs(span) > 1.0e-9 else 0.5
                 stops.append((rig.name, index, start, end, start.lerp(end, t), basis, radius, _display_color(element.color)))
+        try:
+            gizmo_size = max(float(context.preferences.view.gizmo_size), 1.0)
+        except FBP_DATA_ERRORS:
+            gizmo_size = 75.0
         gizmos = self.gizmos
         while len(gizmos) > len(stops):
             gizmos.remove(gizmos[-1])
@@ -561,11 +629,11 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
             gizmo.fbp_start = tuple(start)
             gizmo.fbp_end = tuple(end)
             gizmo.fbp_swatch = color[:3]
-            # Sized in world units like the handle meshes: scale_basis only
-            # applies with use_draw_scale, so the radius goes in the matrix.
-            gizmo.matrix_basis = (
-                Matrix.Translation(location) @ basis.to_4x4() @ Matrix.Scale(radius, 4)
-            )
+            del radius
+            gizmo.matrix_basis = Matrix.Translation(location) @ basis.to_4x4()
+            # Blender multiplies a scaled gizmo by the Gizmo Size preference
+            # (and the UI scale), so this gives HANDLE_SCREEN_SIZE_PX / 2.
+            gizmo.scale_basis = HANDLE_SCREEN_SIZE_PX * 0.5 / gizmo_size
 
 
 _GIZMO_CLASSES = (FBP_GT_gradient_stop, FBP_GGT_gradient_stops)

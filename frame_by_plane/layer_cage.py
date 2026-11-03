@@ -292,6 +292,33 @@ def _cursor_moved(region, xy):
             pass
 
 
+_HOVER = {"region": 0, "name": ""}
+
+
+def hovered_handle_name(region):
+    """Name of the viewport handle under the cursor in ``region``, or ""."""
+    return _HOVER["name"] if _HOVER["region"] == _region_key(region) else ""
+
+
+def _update_hover(context, xy):
+    """Track the handle under the cursor; redraw only when it changes."""
+    name = ""
+    try:
+        from .alpha_pick import fbp_handle_under_cursor
+        scale = float(context.preferences.system.ui_scale) or 1.0
+        handle = fbp_handle_under_cursor(context, xy, 4.0 * scale)
+        name = str(handle.name) if handle is not None else ""
+    except (ImportError, *FBP_DATA_ERRORS):
+        name = ""
+    region_key = _region_key(context.region)
+    if (_HOVER["region"], _HOVER["name"]) != (region_key, name):
+        _HOVER["region"], _HOVER["name"] = region_key, name
+        try:
+            context.region.tag_redraw()
+        except FBP_DATA_ERRORS:
+            pass
+
+
 class FBP_GT_cursor_probe(bpy.types.Gizmo):
     """Invisible gizmo that only watches the cursor; it never takes a click."""
 
@@ -305,6 +332,8 @@ class FBP_GT_cursor_probe(bpy.types.Gizmo):
             _cursor_moved(context.region, location)
         except FBP_DATA_ERRORS:
             pass
+        # Handles light up under the cursor, as Blender's gizmos do.
+        _update_hover(context, location)
         return -1
 
 
@@ -335,6 +364,7 @@ class FBP_GGT_cursor_probe(bpy.types.GizmoGroup):
         if _proximity_wanted(context):
             return True
         _ZONES.clear()
+        _HOVER["name"] = ""
         return False
 
     def setup(self, context):
