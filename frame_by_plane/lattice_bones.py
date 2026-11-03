@@ -58,14 +58,10 @@ _AREA_STEP = 0.2
 # Bump when a shape changes: shapes saved in older files are rebuilt in place.
 SHAPE_VERSION = 5
 SHAPE_VERSION_KEY = "fbp_lattice_handle_shape_version"
-# The same white and gizmo yellow as the effect handles (viewport_handles):
-# white, yellow when selected. The shape tells the kinds apart.
-# (normal, selected, active)
-HANDLE_COLORS = (
-    (0.96, 0.96, 0.96),
-    (0.96, 0.945, 0.3),
-    (0.96, 0.945, 0.3),
-)
+# The same colours as the effect handles (viewport_handles): white, and the
+# theme's Active Object outline colour when selected. The shape tells the
+# kinds apart.
+HANDLE_NORMAL_COLOR = (0.96, 0.96, 0.96)
 HANDLE_WIRE_WIDTH = 2.0
 # Size of each kind relative to the layer's base handle size (half a point).
 _KIND_SCALE = {
@@ -310,10 +306,41 @@ def handle_size(plane, kind="", rig=None):
     return max(0.002, size)
 
 
-def _apply_color(color):
+def handle_accent_color():
+    """The selected handle colour: the theme's Active Object outline."""
+    from .viewport_handles import handle_selected_color
+    return tuple(handle_selected_color()[:3])
+
+
+def _apply_color(color, accent=None):
+    accent = tuple(accent or handle_accent_color())
     color.palette = 'CUSTOM'
-    color.custom.normal, color.custom.select, color.custom.active = HANDLE_COLORS
+    color.custom.normal = HANDLE_NORMAL_COLOR
+    color.custom.select = accent
+    color.custom.active = accent
     color.custom.show_colored_constraints = False
+
+
+def refresh_theme_colors():
+    """Recolour every Lattice handle whose selected colour no longer matches
+    the theme (after a theme change, or a file saved with another theme)."""
+    accent = handle_accent_color()
+    changed = False
+    for armature in tuple(bpy.data.objects):
+        try:
+            if not is_bones_object(armature) or armature.pose is None:
+                continue
+            for pose_bone in armature.pose.bones:
+                for color in (pose_bone.color, pose_bone.bone.color):
+                    if color.palette != 'CUSTOM':
+                        continue
+                    if all(abs(a - b) < 1.0e-4 for a, b in zip(color.custom.select, accent)):
+                        continue
+                    _apply_color(color, accent)
+                    changed = True
+        except FBP_DATA_ERRORS:
+            continue
+    return changed
 
 
 def pin_area(plane, size, stiffness):

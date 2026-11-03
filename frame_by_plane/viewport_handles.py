@@ -33,9 +33,10 @@ KEY_FOLLOW_PLANE = "fbp_follow_plane"
 KEY_HANDLE_NOMINAL_SIZE = "fbp_effect_control_nominal_size"
 
 # Handles are white like Blender's own gizmos; a selected handle takes the
-# theme's gizmo yellow (``handle_selected_color``), with this as the fallback.
+# theme's Active Object outline colour (``handle_selected_color``), with the
+# default theme's as the fallback.
 HANDLE_COLOR = (0.96, 0.96, 0.96, 1.0)
-HANDLE_SELECTED_COLOR = (0.96, 0.945, 0.3, 1.0)
+HANDLE_SELECTED_COLOR = (1.0, 0.627, 0.157, 1.0)
 # Diffuse colour of the shared handle material (Solid shading, Material colour).
 HANDLE_MATERIAL_COLOR = (0.96, 0.96, 0.96, 0.9)
 HANDLE_OUTLINE_COLOR = (0.0, 0.0, 0.0, 0.45)
@@ -407,10 +408,11 @@ def radius_handle_geometry(size, radii, center=(0.0, 0.0), dash=None):
 
 
 def handle_selected_color(context=None):
-    """The theme's gizmo yellow, so selected handles match Blender's gizmos."""
+    """The theme's Active Object outline colour, so a selected handle reads
+    like a selected object and follows the user's theme."""
     try:
         theme = (context or bpy.context).preferences.themes[0]
-        return (*tuple(theme.user_interface.gizmo_primary)[:3], 1.0)
+        return (*tuple(theme.view_3d.object_active)[:3], 1.0)
     except (AttributeError, IndexError) + _DATA_ERRORS:
         return HANDLE_SELECTED_COLOR
 

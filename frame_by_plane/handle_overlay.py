@@ -240,7 +240,7 @@ def _hovered_lattice_triangles(hovered):
         pose_bone = armature.pose.bones.get(bone_name) if armature is not None else None
         if pose_bone is None:
             return []
-        # A selected handle already shows the selection yellow in Pose Mode.
+        # A selected handle already shows the selection colour in Pose Mode.
         if str(armature.mode) == "POSE" and bool(getattr(pose_bone, "select", False)):
             return []
         return _lattice_shape_triangles(armature, pose_bone)
@@ -249,7 +249,7 @@ def _hovered_lattice_triangles(hovered):
 
 
 def _handle_hover_color(context):
-    """The handle under the cursor: most of the way to the selected gizmo yellow."""
+    """The handle under the cursor: most of the way to the selected colour."""
     selected = handle_selected_color(context)
     return (*(0.3 * white + 0.7 * accent for white, accent in zip(HANDLE_COLOR[:3], selected[:3])), 1.0)
 
@@ -371,6 +371,28 @@ def _draw_lines(shader, segments, width, color):
     batch_for_shader(shader, "LINES", {"pos": segments}).draw(shader)
 
 
+_THEME_ACCENT = {"value": None}
+
+
+def _follow_theme(context):
+    """Recolour the Lattice handles once the theme's accent changes."""
+    accent = tuple(round(value, 4) for value in handle_selected_color(context)[:3])
+    if _THEME_ACCENT["value"] == accent:
+        return
+    _THEME_ACCENT["value"] = accent
+
+    def refresh():
+        try:
+            from .lattice_bones import refresh_theme_colors
+            refresh_theme_colors()
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
+        return None
+
+    # Drawing must not edit data: recolour right after this redraw.
+    bpy.app.timers.register(refresh, first_interval=0.0)
+
+
 def _draw_handles():
     context = bpy.context
     space = getattr(context, "space_data", None)
@@ -382,16 +404,18 @@ def _draw_handles():
             return
     except FBP_DATA_ERRORS:
         return
+    _follow_theme(context)
     handles = _visible_handles(context)
     mask_guides = _mask_guides(context)
     lattice_guides = _lattice_guides(context)
+    plane_guides, plane_hover_guides = _color_plane_guides(context)
     try:
         from .layer_cage import hovered_handle_name
         hovered = hovered_handle_name(region)
     except ImportError:
         hovered = ""
     hovered_bone = _hovered_lattice_triangles(hovered)
-    if not handles and not mask_guides and not lattice_guides and not hovered_bone:
+    if not handles and not mask_guides and not lattice_guides and not hovered_bone and not plane_guides and not plane_hover_guides:
         return
     try:
         depsgraph = context.evaluated_depsgraph_get()
@@ -402,7 +426,7 @@ def _draw_handles():
         scale = float(context.preferences.system.ui_scale) or 1.0
     except FBP_DATA_ERRORS:
         scale = 1.0
-    guides = list(lattice_guides)
+    guides = list(lattice_guides) + plane_guides
     for solid, _dashed in mask_guides:
         guides.extend(solid)
     for _solid, dashed in mask_guides:
@@ -412,7 +436,7 @@ def _draw_handles():
     shapes = []
     if hovered_bone:
         shapes.append(([(hovered_bone, hover_color)], []))
-    hover_guides = []
+    hover_guides = list(plane_hover_guides)
     frames = {}
     for obj in handles:
         try:
@@ -510,7 +534,7 @@ _STOP_EPSILON = 0.001
 _STOP_OFFSET = 2.6          # Circle centre above the line, in circle radii.
 _STOP_CLICK_PX = 4.0        # Less movement than this is a click.
 _STOP_MIN_SPAN = 0.02       # The end stops never meet (fraction of the line).
-_GRADIENT_EFFECTS = ("GRADIENT_LIGHT", "GRADIENT_MASK")
+_GRADIENT_EFFECTS = ("GRADIENT_LIGHT", "GRADIENT_MASK", "COLOR_PLANE")
 
 
 def _evaluated_center(obj, depsgraph):
@@ -530,6 +554,11 @@ def _gradient_stop_targets(context, effects=_GRADIENT_EFFECTS):
         depsgraph = context.evaluated_depsgraph_get()
     except FBP_DATA_ERRORS:
         return
+    if "COLOR_PLANE" in effects:
+        # Gradient Color Planes have no handle objects: their line comes
+        # from the material's mapping.
+        for rig, _frame, _radial, start, end, normal in color_plane_gradient_targets(context):
+            yield rig, COLOR_PLANE_ID, None, None, start, end, normal
     for control in controls.iter_visible_effect_controls(context):
         try:
             effect_id = str(control.get(controls.KEY_EFFECT_ID, "") or "")
@@ -558,6 +587,14 @@ def _gradient_stops(rig, effect_id, in_control, out_control):
     moves that end), or the Color Ramp index of a stop in between.
     """
     from . import effect_controls as controls
+    if effect_id == "COLOR_PLANE":
+        # The line runs from the ramp's 0 to its 1: every stop sits at its
+        # own position, and each one, the end ones too, slides on its own.
+        elements = tuple(getattr(color_plane_ramp(rig), "elements", ()) or ())
+        return [
+            (index, float(element.position), controls._display_color(element.color))
+            for index, element in enumerate(elements)
+        ]
     if effect_id == "GRADIENT_MASK":
         return [
             ("IN", 0.0, controls.control_swatch_color(in_control) or (1.0, 1.0, 1.0, 1.0)),
@@ -671,8 +708,11 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
 
     def _ramp_element(self):
         try:
-            from .effect_controls import gradient_light_ramp
-            ramp = gradient_light_ramp(self._rig())
+            if self.fbp_effect_id == COLOR_PLANE_ID:
+                ramp = color_plane_ramp(self._rig())
+            else:
+                from .effect_controls import gradient_light_ramp
+                ramp = gradient_light_ramp(self._rig())
             return ramp, ramp.elements[int(self.fbp_key)]
         except (ImportError, IndexError, TypeError, ValueError) + FBP_DATA_ERRORS:
             return None, None
@@ -746,11 +786,17 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
             return
         elements = ramp.elements
         index = int(self.fbp_key)
-        first, last = float(elements[0].position), float(elements[-1].position)
+        if self.fbp_effect_id == COLOR_PLANE_ID:
+            # A Color Plane's line spans the whole ramp, 0 to 1, so every
+            # stop moves, the end ones included.
+            position = t
+        else:
+            first, last = float(elements[0].position), float(elements[-1].position)
+            position = first + t * (last - first)
         # Stay between the neighbours: Blender keeps ramp stops sorted.
-        low = float(elements[index - 1].position) + _STOP_EPSILON
-        high = float(elements[index + 1].position) - _STOP_EPSILON
-        position = max(low, min(high, first + t * (last - first)))
+        low = float(elements[index - 1].position) + _STOP_EPSILON if index > 0 else 0.0
+        high = float(elements[index + 1].position) - _STOP_EPSILON if index < len(elements) - 1 else 1.0
+        position = max(low, min(high, position))
         if abs(float(element.position) - position) > 1.0e-6:
             element.position = position
 
@@ -811,9 +857,10 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
             index = -1
         else:
             index = int(self.fbp_key)
+        source = "COLOR_PLANE" if self.fbp_effect_id == COLOR_PLANE_ID else "GRADIENT_LIGHT"
         try:
             with context.temp_override(window=context.window, area=context.area, region=context.region):
-                bpy.ops.fbp.gradient_stop_color("INVOKE_DEFAULT", rig_name=rig.name, index=index)
+                bpy.ops.fbp.gradient_stop_color("INVOKE_DEFAULT", rig_name=rig.name, index=index, source=source)
         except (RuntimeError, TypeError, AttributeError):
             pass
 
@@ -826,20 +873,23 @@ def _undo_push(message):
 
 
 class FBP_OT_gradient_stop_color(bpy.types.Operator):
-    """Change the colour of a Gradient Light stop"""
+    """Change the colour of a gradient stop"""
 
     bl_idname = "fbp.gradient_stop_color"
     bl_label = "Gradient Stop Color"
-    bl_description = "Change the colour of this Gradient Light stop"
+    bl_description = "Change the colour of this gradient stop"
     bl_options = {"REGISTER", "UNDO"}
 
     rig_name: bpy.props.StringProperty(options={"HIDDEN"})
     index: bpy.props.IntProperty(default=0, options={"HIDDEN"})
+    source: bpy.props.StringProperty(default="GRADIENT_LIGHT", options={"HIDDEN"})
 
     def _target(self, context):
         """``(owner, property)`` that holds the stop's colour."""
         del context
         rig = bpy.data.objects.get(self.rig_name or "")
+        if self.source == "COLOR_PLANE":
+            return _color_plane_stop_target(rig, self.index)
         try:
             from .effect_controls import gradient_light_ramp
             ramp = gradient_light_ramp(rig)
@@ -872,6 +922,368 @@ class FBP_OT_gradient_stop_color(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# --- Color Plane gradients --------------------------------------------------
+#
+# A Gradient Color Plane has no handle objects: its line, end dots and stops
+# are all gizmos. The shader works in the plane's UVs: the ramp runs from 0
+# to 1 along Gradient Rotation, centred on 0.5 + Offset, over Scale (linear),
+# or from 1 at the centre to 0 on an ellipse of radius Scale / 2 (radial).
+# The line goes from the ramp's 0 to its 1; dragging its ends rewrites
+# Offset, Rotation and Scale, keeping the Scale X/Y ratio.
+
+COLOR_PLANE_ID = "COLOR_PLANE"
+
+
+def _is_gradient_color_plane(rig):
+    try:
+        return bool(
+            getattr(rig, "fbp_is_color_plane", False)
+            and str(getattr(rig, "fbp_color_plane_mode", "") or "") == "GRADIENT"
+        )
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def color_plane_ramp(rig):
+    try:
+        from .materials import find_fbp_gradient_ramp_node, get_fbp_gradient_material_from_rig
+        node = find_fbp_gradient_ramp_node(get_fbp_gradient_material_from_rig(rig))
+        return getattr(node, "color_ramp", None)
+    except (ImportError,) + FBP_DATA_ERRORS:
+        return None
+
+
+def _color_plane_frame(rig):
+    """``(plane, min_x, min_y, width, height)``: how UVs sit on the plane."""
+    plane = getattr(rig, "fbp_plane_target", None)
+    vertices = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
+    if plane is None or not vertices:
+        return None
+    xs = [float(vertex.co.x) for vertex in vertices]
+    ys = [float(vertex.co.y) for vertex in vertices]
+    width, height = max(xs) - min(xs), max(ys) - min(ys)
+    if width <= 1.0e-9 or height <= 1.0e-9:
+        return None
+    return plane, min(xs), min(ys), width, height
+
+
+def _uv_to_world(frame, uv):
+    plane, min_x, min_y, width, height = frame
+    return plane.matrix_world @ Vector((min_x + uv[0] * width, min_y + uv[1] * height, 0.0))
+
+
+def _world_to_uv(frame, world):
+    plane, min_x, min_y, width, height = frame
+    local = plane.matrix_world.inverted_safe() @ world
+    return Vector(((local.x - min_x) / width, (local.y - min_y) / height))
+
+
+def color_plane_endpoints(rig):
+    """``(radial, uv_0, uv_1)``: where the ramp's 0 and 1 sit, in UVs."""
+    radial = str(getattr(rig, "fbp_gradient_mode", "LINEAR") or "LINEAR") == "CENTER"
+    centre = Vector((0.5 + float(rig.fbp_gradient_offset_x), 0.5 + float(rig.fbp_gradient_offset_y)))
+    angle = math.radians(float(rig.fbp_gradient_rotation))
+    scale_x = max(0.001, float(rig.fbp_gradient_scale_x))
+    scale_y = max(0.001, float(rig.fbp_gradient_scale_y))
+    if radial:
+        edge = centre + Vector((0.5 * scale_x * math.cos(angle), -0.5 * scale_y * math.sin(angle)))
+        return True, edge, centre
+    # fac = 0.5 + d . (uv - centre), d = (cos a / Sx, -sin a / Sy).
+    d = Vector((math.cos(angle) / scale_x, -math.sin(angle) / scale_y))
+    span = d / max(d.length_squared, 1.0e-12)
+    return False, centre - span * 0.5, centre + span * 0.5
+
+
+def apply_color_plane_endpoints(rig, uv_0, uv_1):
+    """Rewrite Offset, Rotation and Scale so the ramp runs from ``uv_0`` to ``uv_1``."""
+    radial = str(getattr(rig, "fbp_gradient_mode", "LINEAR") or "LINEAR") == "CENTER"
+    ratio = max(0.001, float(rig.fbp_gradient_scale_y)) / max(0.001, float(rig.fbp_gradient_scale_x))
+    if radial:
+        centre = Vector(uv_1)
+        v = Vector(uv_0) - centre
+        if v.length <= 1.0e-6:
+            return False
+        angle = math.atan2(-v.y / ratio, v.x)
+        scale_x = 2.0 * math.hypot(v.x, v.y / ratio)
+    else:
+        span = Vector(uv_1) - Vector(uv_0)
+        if span.length <= 1.0e-6:
+            return False
+        d = span / span.length_squared
+        angle = math.atan2(-d.y * ratio, d.x)
+        scale_x = 1.0 / max(math.hypot(d.x, d.y * ratio), 1.0e-9)
+        centre = (Vector(uv_0) + Vector(uv_1)) * 0.5
+    values = {
+        "fbp_gradient_rotation": math.degrees(angle),
+        "fbp_gradient_scale_x": max(0.001, scale_x),
+        "fbp_gradient_scale_y": max(0.001, scale_x * ratio),
+    }
+    offset = (float(centre.x) - 0.5, float(centre.y) - 0.5)
+    controller = getattr(rig, "fbp_gradient_controller", None)
+    frame = _color_plane_frame(rig)
+    if controller is not None and frame is not None:
+        # The offset is driven by the Gradient Controller: move it instead.
+        controller.location.x = offset[0] * frame[3]
+        controller.location.y = offset[1] * frame[4]
+    else:
+        values["fbp_gradient_offset_x"] = offset[0]
+        values["fbp_gradient_offset_y"] = offset[1]
+    for name, value in values.items():
+        if abs(float(getattr(rig, name)) - value) > 1.0e-7:
+            setattr(rig, name, value)
+    return True
+
+
+def _color_plane_stop_target(rig, index):
+    """``(owner, property)`` of a Color Plane stop's colour. The ramp is the
+    source of truth: a material rebuild restores it, From/To only seed it."""
+    ramp = color_plane_ramp(rig)
+    try:
+        return ramp.elements[index], "color"
+    except (IndexError, TypeError, AttributeError) + FBP_DATA_ERRORS:
+        return None, ""
+
+
+def color_plane_gradient_targets(context):
+    """Yield ``(rig, frame, radial, world_0, world_1, normal)`` for each
+    selected Gradient Color Plane."""
+    for rig in tuple(getattr(context, "selected_objects", ()) or ()):
+        if not _is_gradient_color_plane(rig):
+            continue
+        try:
+            plane = getattr(rig, "fbp_plane_target", None)
+            if plane is None or not plane.visible_get() or color_plane_ramp(rig) is None:
+                continue
+            frame = _color_plane_frame(rig)
+            if frame is None:
+                continue
+            radial, uv_0, uv_1 = color_plane_endpoints(rig)
+            world_0, world_1 = _uv_to_world(frame, uv_0), _uv_to_world(frame, uv_1)
+            normal = plane.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
+        except (ZeroDivisionError,) + FBP_DATA_ERRORS:
+            continue
+        if (world_1 - world_0).length <= 1.0e-6 or normal.length <= 1.0e-9:
+            continue
+        yield rig, frame, radial, world_0, world_1, normal.normalized()
+
+
+def color_plane_gradient_shown(context, rig):
+    return any(item[0] == rig for item in color_plane_gradient_targets(context))
+
+
+_CP_DOT_RADIUS = 0.42      # End dots, in HANDLE_SCREEN_SIZE_PX units.
+
+
+class FBP_GT_color_plane_grip(bpy.types.Gizmo):
+    """A Color Plane gradient's end dot ("0"/"1") or its line ("LINE")."""
+
+    bl_idname = "FBP_GT_color_plane_grip"
+    __slots__ = (
+        "fbp_rig_name", "fbp_kind", "fbp_a", "fbp_b", "fbp_dot", "fbp_dot_rim",
+        "fbp_initial", "fbp_press", "fbp_moved", "fbp_hit",
+    )
+
+    def setup(self):
+        self.fbp_dot = self.new_custom_shape("TRIS", _disc_triangles(1.0))
+        self.fbp_dot_rim = self.new_custom_shape("TRIS", _disc_triangles(1.35))
+        self.fbp_kind = ""
+        self.fbp_initial = None
+        self.fbp_press = None
+        self.fbp_moved = False
+        self.use_draw_scale = True
+
+    def draw(self, context):
+        if self.fbp_kind == "LINE":
+            return  # The overlay draws the line.
+        active = self.is_highlight or self.is_modal
+        color = _handle_hover_color(context)[:3] if active else HANDLE_COLOR[:3]
+        for shape, tint, alpha in ((self.fbp_dot_rim, (0.0, 0.0, 0.0), 0.45), (self.fbp_dot, color, 1.0)):
+            self.color = tint
+            self.color_highlight = tint
+            self.alpha = alpha
+            self.alpha_highlight = alpha
+            self.draw_custom_shape(shape)
+
+    def test_select(self, context, location):
+        region, view = context.region, context.region_data
+        try:
+            scale = float(context.preferences.system.ui_scale) or 1.0
+        except FBP_DATA_ERRORS:
+            scale = 1.0
+        a = location_3d_to_region_2d(region, view, Vector(self.fbp_a))
+        if a is None:
+            return -1
+        mouse = Vector(location)
+        dot = _DRAG_DOT_PX * scale
+        if self.fbp_kind != "LINE":
+            hit = (mouse - a).length <= dot
+        else:
+            b = location_3d_to_region_2d(region, view, Vector(self.fbp_b))
+            hit = False
+            if b is not None and (b - a).length_squared > 1.0e-6:
+                axis = b - a
+                t = (mouse - a).dot(axis) / axis.length_squared
+                hit = (
+                    0.0 <= t <= 1.0
+                    and (mouse - a).length > dot and (mouse - b).length > dot
+                    and (mouse - (a + axis * t)).length <= _DRAG_LINE_PX * scale
+                )
+        if hit:
+            try:
+                from .layer_cage import set_hovered_handle
+                set_hovered_handle(context, f"{COLOR_PLANE_ID}:{self.fbp_rig_name}:{self.fbp_kind}")
+            except ImportError:
+                pass
+        return 0 if hit else -1
+
+    def invoke(self, context, event):
+        rig = bpy.data.objects.get(self.fbp_rig_name or "")
+        frame = _color_plane_frame(rig) if rig is not None else None
+        if frame is None:
+            return {"CANCELLED"}
+        self.fbp_press = (event.mouse_region_x, event.mouse_region_y)
+        self.fbp_moved = False
+        normal = (frame[0].matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+        hit = _plane_hit(context.region, context.region_data, self.fbp_press, frame[0].matrix_world.translation, normal)
+        if hit is None:
+            return {"CANCELLED"}
+        _radial, uv_0, uv_1 = color_plane_endpoints(rig)
+        controller = getattr(rig, "fbp_gradient_controller", None)
+        self.fbp_hit = tuple(_world_to_uv(frame, hit))
+        self.fbp_initial = {
+            "uv": (tuple(uv_0), tuple(uv_1)),
+            "props": {
+                name: float(getattr(rig, name)) for name in (
+                    "fbp_gradient_rotation", "fbp_gradient_scale_x", "fbp_gradient_scale_y",
+                    "fbp_gradient_offset_x", "fbp_gradient_offset_y",
+                )
+            },
+            "controller": tuple(controller.location) if controller is not None else None,
+            "normal": tuple(normal),
+        }
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event, tweak):
+        del tweak
+        if not self.fbp_moved:
+            dx = event.mouse_region_x - self.fbp_press[0]
+            dy = event.mouse_region_y - self.fbp_press[1]
+            if dx * dx + dy * dy < _STOP_CLICK_PX * _STOP_CLICK_PX:
+                return {"RUNNING_MODAL"}
+            self.fbp_moved = True
+        rig = bpy.data.objects.get(self.fbp_rig_name or "")
+        frame = _color_plane_frame(rig) if rig is not None else None
+        if frame is None:
+            return {"RUNNING_MODAL"}
+        hit = _plane_hit(
+            context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
+            frame[0].matrix_world.translation, Vector(self.fbp_initial["normal"]),
+        )
+        if hit is None:
+            return {"RUNNING_MODAL"}
+        delta = _world_to_uv(frame, hit) - Vector(self.fbp_hit)
+        uv_0, uv_1 = (Vector(value) for value in self.fbp_initial["uv"])
+        radial = str(getattr(rig, "fbp_gradient_mode", "LINEAR") or "LINEAR") == "CENTER"
+        if self.fbp_kind == "LINE" or (radial and self.fbp_kind == "1"):
+            # The line, or a radial gradient's centre, moves the whole gradient.
+            uv_0, uv_1 = uv_0 + delta, uv_1 + delta
+        elif self.fbp_kind == "0":
+            uv_0 = uv_0 + delta
+        else:
+            uv_1 = uv_1 + delta
+        _apply_color_plane(rig, uv_0, uv_1)
+        context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
+
+    def exit(self, context, cancel):
+        rig = bpy.data.objects.get(self.fbp_rig_name or "")
+        if cancel and rig is not None and self.fbp_initial is not None:
+            for name, value in self.fbp_initial["props"].items():
+                if abs(float(getattr(rig, name)) - value) > 1.0e-9:
+                    setattr(rig, name, value)
+            controller = getattr(rig, "fbp_gradient_controller", None)
+            if controller is not None and self.fbp_initial["controller"] is not None:
+                controller.location = self.fbp_initial["controller"]
+        elif self.fbp_moved:
+            _undo_push("Move Gradient")
+        elif rig is not None:
+            # A click on the line or a dot selects the plane, nothing else.
+            for obj in tuple(context.selected_objects):
+                if obj != rig:
+                    obj.select_set(False)
+            rig.select_set(True)
+            context.view_layer.objects.active = rig
+            _undo_push("Select")
+        context.area.tag_redraw()
+
+
+def _apply_color_plane(rig, uv_0, uv_1):
+    try:
+        apply_color_plane_endpoints(rig, uv_0, uv_1)
+    except (ZeroDivisionError,) + FBP_DATA_ERRORS:
+        pass
+
+
+class FBP_GGT_color_plane_gradient(bpy.types.GizmoGroup):
+    bl_idname = "FBP_GGT_color_plane_gradient"
+    bl_label = "Frame By Plane Color Plane Gradient"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"3D", "PERSISTENT"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+        return next(color_plane_gradient_targets(context), None) is not None
+
+    def setup(self, context):
+        self.draw_prepare(context)
+
+    def draw_prepare(self, context):
+        grips = []
+        for rig, _frame, radial, world_0, world_1, _normal in color_plane_gradient_targets(context):
+            grips.append((rig.name, "LINE", world_0, world_1))
+            grips.append((rig.name, "0", world_0, world_0))
+            grips.append((rig.name, "1", world_1, world_1))
+        try:
+            gizmo_size = max(float(context.preferences.view.gizmo_size), 1.0)
+        except FBP_DATA_ERRORS:
+            gizmo_size = 75.0
+        gizmos = self.gizmos
+        while len(gizmos) > len(grips):
+            gizmos.remove(gizmos[-1])
+        while len(gizmos) < len(grips):
+            gizmos.new(FBP_GT_color_plane_grip.bl_idname)
+        for gizmo, (rig_name, kind, a, b) in zip(gizmos, grips):
+            if gizmo.is_modal:
+                continue
+            gizmo.fbp_rig_name = rig_name
+            gizmo.fbp_kind = kind
+            gizmo.fbp_a = tuple(a)
+            gizmo.fbp_b = tuple(b)
+            view_rotation = context.region_data.view_rotation.to_matrix().to_4x4()
+            gizmo.matrix_basis = Matrix.Translation(a) @ view_rotation
+            gizmo.scale_basis = HANDLE_SCREEN_SIZE_PX * _CP_DOT_RADIUS * 0.5 / gizmo_size
+
+
+def _color_plane_guides(context):
+    """``(normal, hovered)`` line segments of the selected Gradient Color Planes."""
+    try:
+        from .layer_cage import hovered_handle_name
+        hovered = hovered_handle_name(context.region)
+    except ImportError:
+        hovered = ""
+    normal, lit = [], []
+    for rig, _frame, _radial, world_0, world_1, _normal in color_plane_gradient_targets(context):
+        target = lit if hovered == f"{COLOR_PLANE_ID}:{rig.name}:LINE" else normal
+        target.extend((world_0, world_1))
+    return normal, lit
+
+
 # --- Gradient base line ----------------------------------------------------
 #
 # The end dots and the line itself are dragged directly, whatever the active
@@ -880,7 +1292,7 @@ class FBP_OT_gradient_stop_color(bpy.types.Operator):
 
 _DRAG_DOT_PX = 7.0
 _DRAG_LINE_PX = 4.0
-_LINE_EFFECTS = _GRADIENT_EFFECTS + ("TILT_SHIFT",)
+_LINE_EFFECTS = ("GRADIENT_LIGHT", "GRADIENT_MASK", "TILT_SHIFT")
 
 
 def _line_segment(rig, effect_id, in_control, out_control, start, end):
@@ -1170,6 +1582,7 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
 _GIZMO_CLASSES = (
     FBP_GT_gradient_stop, FBP_OT_gradient_stop_color, FBP_GGT_gradient_stops,
     FBP_GT_gradient_drag, FBP_GGT_gradient_lines,
+    FBP_GT_color_plane_grip, FBP_GGT_color_plane_gradient,
 )
 
 

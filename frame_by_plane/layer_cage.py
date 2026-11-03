@@ -26,6 +26,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from .runtime import FBP_DATA_ERRORS
+from .viewport_handles import handle_selected_color
 
 
 _MAX_CAGES = 32
@@ -100,6 +101,16 @@ def _rigs_with_handles(context):
         except FBP_DATA_ERRORS:
             continue
     return pointers
+
+
+def _shows_color_plane_gradient(context, rig):
+    """True while a Gradient Color Plane shows its gradient line and dots,
+    which sit on the box's side handles by default."""
+    try:
+        from .handle_overlay import color_plane_gradient_shown
+        return color_plane_gradient_shown(context, rig)
+    except ImportError:
+        return False
 
 
 def _shows_lattice_handles(rig):
@@ -472,7 +483,6 @@ class FBP_GT_layer_rotate(bpy.types.Gizmo):
             self.draw_custom_shape(shape, matrix=matrix)
 
     def draw(self, context):
-        del context
         color = tuple(self.fbp_color)
         # Like Grease Pencil's box: a pivot cross in the middle, the knob on
         # top, and dots on the corners and edges only while the cursor is
@@ -485,7 +495,7 @@ class FBP_GT_layer_rotate(bpy.types.Gizmo):
             for matrix in self.fbp_marks:
                 self._draw_shape(self.fbp_dot_rim, (0.0, 0.0, 0.0), 0.5, matrix)
                 self._draw_shape(self.fbp_dot, color, 1.0, matrix)
-        knob = (1.0, 0.85, 0.3) if (self.is_highlight or self.is_modal) else color
+        knob = handle_selected_color(context)[:3] if (self.is_highlight or self.is_modal) else color
         self._draw_shape(self.fbp_stem, color, 0.8)
         self._draw_shape(self.fbp_rim, (0.0, 0.0, 0.0), 0.5)
         self._draw_shape(self.fbp_disc, knob, 1.0)
@@ -663,7 +673,11 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
             cage.matrix_offset = _unflatten(binding.get())
             try:
                 plane = rig.fbp_plane_target
-                draw_only = (plane is not None and plane.as_pointer() in with_handles) or _shows_lattice_handles(rig)
+                draw_only = (
+                    (plane is not None and plane.as_pointer() in with_handles)
+                    or _shows_lattice_handles(rig)
+                    or _shows_color_plane_gradient(context, rig)
+                )
             except FBP_DATA_ERRORS:
                 draw_only = False
             # Effect handles (Crop, Gradient, Lattice Corner Pin and Grid...)
