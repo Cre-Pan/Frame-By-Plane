@@ -356,6 +356,7 @@ class FBP_GGT_cursor_probe(bpy.types.GizmoGroup):
 
 _ROTATE_OFFSET_PX = 18.0
 _ROTATE_RADIUS_PX = 5.0
+_ROTATE_DEADZONE_PX = 12.0
 _MARK_RADIUS_PX = 3.8
 _CROSS_HALF_PX = 5.0
 _ANCHOR_RING_PX = 7.0
@@ -655,7 +656,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
     __slots__ = (
         "fbp_rig_name", "fbp_center", "fbp_size", "fbp_active", "fbp_part",
         "fbp_initial", "fbp_press", "fbp_start", "fbp_anchor_preview", "fbp_snap",
-        "fbp_hover", "fbp_children",
+        "fbp_hover", "fbp_children", "fbp_turn",
     )
 
     def setup(self):
@@ -671,6 +672,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_snap = -1
         self.fbp_hover = ""
         self.fbp_children = None
+        self.fbp_turn = None
         self.use_draw_scale = False
         # Keep drawing while dragged, so the box follows the layer.
         self.use_draw_modal = True
@@ -865,6 +867,8 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             self.fbp_start = self._screen_angle(context, event, frame)
             if self.fbp_start is None:
                 return {"CANCELLED"}
+            # Pivot (screen and world), last cursor angle and the turn so far.
+            self.fbp_turn = [frame["s_anchor"].copy(), frame["anchor"].copy(), self.fbp_start, 0.0]
         else:
             hit = _plane_hit(context.region, context.region_data, self.fbp_press, frame["corners"][0], frame["normal"])
             if hit is None:
@@ -967,15 +971,21 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
     def _rotate(self, context, event, tweak, rig):
         import math
 
-        frame = self._frame(context, rig)
-        if frame is None:
+        turn_state = self.fbp_turn
+        if not turn_state:
             return
-        # The anchor does not move while rotating, so its screen point holds.
-        angle = self._screen_angle(context, event, frame)
-        if angle is None:
+        pivot_screen, pivot, last, total = turn_state
+        offset = Vector((event.mouse_region_x - pivot_screen.x, event.mouse_region_y - pivot_screen.y))
+        # Near the pivot the angle swings wildly with each pixel: hold it.
+        if offset.length < _ROTATE_DEADZONE_PX * _ui_scale(context):
             return
-        delta = angle - self.fbp_start
-        delta = math.atan2(math.sin(delta), math.cos(delta))
+        angle = math.atan2(offset.y, offset.x)
+        # Add up the change since the last move, so the turn never jumps by
+        # a full circle and can go past 180 degrees.
+        step_angle = angle - last
+        total += math.atan2(math.sin(step_angle), math.cos(step_angle))
+        turn_state[2], turn_state[3] = angle, total
+        delta = total
         if "SNAP" in tweak or event.ctrl:
             step = math.radians(15.0)
             delta = round(delta / step) * step
@@ -985,7 +995,6 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         # Counter-clockwise on screen, whichever side of the plane faces us.
         if normal.dot(view) < 0.0:
             delta = -delta
-        pivot = frame["anchor"]
         turn = Matrix.Translation(pivot) @ Matrix.Rotation(delta, 4, normal) @ Matrix.Translation(-pivot)
         self._apply(rig, turn @ initial)
         if self.fbp_part == "ORIENT":
@@ -1048,6 +1057,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 _undo_push({"MOVE": "Move Layer", "ROTATE": "Rotate Layer", "ORIENT": "Rotate Layer Box"}.get(part, "Scale Layer"))
         self.fbp_part = ""
         self.fbp_children = None
+        self.fbp_turn = None
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
         context.area.tag_redraw()
