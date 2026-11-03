@@ -570,6 +570,101 @@ class FBP_OT_Transform(Operator):
                 rig.scale = base_vec
         return {'FINISHED'}
 
+FBP_RESET_LAYER_ITEMS = (
+    ('POSITION', "Position", "Move the layer back to the world origin (or its parent's origin)"),
+    ('ROTATION', "Rotation", "Undo every rotation; the layer keeps its vertical or horizontal orientation"),
+    ('SCALE', "Scale", "Return to the scale the layer was created with"),
+    ('ANCHOR', "Anchor Point", "Put the transform box anchor point back on the layer origin"),
+    ('ALL', "All", "Reset position, rotation, scale and anchor point"),
+)
+
+
+def fbp_layer_rest_rotation(rig):
+    """Return the rest Euler rotation of a layer: its creation orientation."""
+    if bool(getattr(rig, "fbp_is_vertical", False)):
+        return (math.radians(90.0), 0.0, 0.0)
+    return (0.0, 0.0, 0.0)
+
+
+def fbp_layer_rest_scale(rig):
+    """Return the creation scale recorded on the layer (aspect for color planes)."""
+    try:
+        base = tuple(float(value) for value in getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0)))
+    except (TypeError, ValueError):
+        base = (1.0, 1.0, 1.0)
+    if len(base) != 3 or any(abs(value) < 1e-6 for value in base):
+        return (1.0, 1.0, 1.0)
+    return base
+
+
+def fbp_reset_layer_transform(rig, mode):
+    """Reset one part of a layer rig's transform. Returns True when something changed."""
+    mode = str(mode or 'ALL').upper()
+    changed = False
+    if mode in {'POSITION', 'ALL'}:
+        rig.location = (0.0, 0.0, 0.0)
+        changed = True
+    if mode in {'ROTATION', 'ALL'}:
+        euler = mathutils.Euler(fbp_layer_rest_rotation(rig), 'XYZ')
+        if rig.rotation_mode == 'QUATERNION':
+            rig.rotation_quaternion = euler.to_quaternion()
+        elif rig.rotation_mode == 'AXIS_ANGLE':
+            axis, angle = euler.to_quaternion().to_axis_angle()
+            rig.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
+        else:
+            rig.rotation_euler = euler.to_matrix().to_euler(rig.rotation_mode)
+        changed = True
+    if mode in {'SCALE', 'ALL'}:
+        rig.scale = fbp_layer_rest_scale(rig)
+        changed = True
+    if mode in {'ANCHOR', 'ALL'}:
+        try:
+            from .layer_cage import ANCHOR_KEY
+            if ANCHOR_KEY in rig:
+                del rig[ANCHOR_KEY]
+                changed = True
+        except (ImportError, KeyError, TypeError, RuntimeError):
+            pass
+    return changed
+
+
+class FBP_OT_ResetLayerTransform(Operator):
+    bl_idname = "fbp.reset_layer_transform"
+    bl_label = "Reset Layer"
+    bl_description = "Reset the position, rotation or scale of the selected Frame By Plane layers"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: EnumProperty(name="Reset", items=FBP_RESET_LAYER_ITEMS, default='ALL')
+
+    @classmethod
+    def description(cls, context, properties):
+        for token, _label, text in FBP_RESET_LAYER_ITEMS:
+            if token == properties.mode:
+                return text
+        return cls.bl_description
+
+    @classmethod
+    def poll(cls, context):
+        return bool(get_selected_rigs(context))
+
+    def execute(self, context):
+        rigs = list(get_selected_rigs(context) or ())
+        if not rigs:
+            self.report({'WARNING'}, "Select a Frame By Plane layer first")
+            return {'CANCELLED'}
+        try:
+            from .layer_cage import _auto_key
+        except ImportError:
+            _auto_key = None
+        for rig in rigs:
+            fbp_reset_layer_transform(rig, self.mode)
+            if _auto_key is not None and self.mode != 'ANCHOR':
+                _auto_key(rig)
+        for area in getattr(context.screen, "areas", ()) or ():
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
 class FBP_OT_PopupTransform(Operator):
     bl_idname = "fbp.popup_transform"
     bl_label = "Transform Layer"
