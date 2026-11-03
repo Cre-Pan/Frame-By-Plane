@@ -2993,6 +2993,75 @@ def test_lattice_pins_contract(_module):
     return {"grid": [points_u, points_v]}
 
 
+def test_pose_mode_shows_effect_handles(_module):
+    """In Pose Mode a layer shows every effect handle, Crop included, unselected."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    controls_module = importlib.import_module(f"{PACKAGE}.effect_controls")
+    bones_module = importlib.import_module(f"{PACKAGE}.lattice_bones")
+    rig = _effect_stack_fixture_rig("FBP Pose Handles", width=32)
+    other = _effect_stack_fixture_rig("FBP Pose Handles Other", width=32)
+    owned = [rig, *rig.children_recursive, other, *other.children_recursive]
+    registered = [cls for cls in geo.classes if not hasattr(bpy.types, cls.__name__)]
+    for cls in registered:
+        bpy.utils.register_class(cls)
+
+    def shown(layer):
+        _flush_fbp_safe_tasks()
+        controls_module.sync_global_controller_visibility(bpy.context)
+        return sorted(
+            f"{control.get(controls_module.KEY_EFFECT_ID)}:{control.get(controls_module.KEY_ROLE)}"
+            for control in controls_module.rig_effect_controls(layer)
+            if controls_module.is_effect_control(control) and control.visible_get()
+        )
+
+    try:
+        for layer in (rig, other):
+            for obj in bpy.context.view_layer.objects:
+                obj.select_set(False)
+            layer.select_set(True)
+            bpy.context.view_layer.objects.active = layer
+            with bpy.context.temp_override(active_object=layer, object=layer, selected_objects=[layer]):
+                for effect_id in ("CROP", "SWIRL", "LATTICE"):
+                    assert bpy.ops.fbp.add_effect(effect_id=effect_id) == {"FINISHED"}, effect_id
+                    _flush_fbp_safe_tasks()
+                assert bpy.ops.fbp.lattice_point_handles(rig_name=layer.name, action="ADD") == {"FINISHED"}
+            _flush_fbp_safe_tasks()
+        # Object Mode, layer selected, Lattice active: no Crop or Swirl handle.
+        assert not shown(rig), shown(rig)
+        armature = bones_module.bones_object(rig)
+        assert geo._fbp_select_only(bpy.context, armature, "POSE")
+        assert bones_module.posed_layer_rigs(bpy.context) == [rig]
+        controls_module.ensure_posed_layer_controls(bpy.context, rig)
+        handles = shown(rig)
+        assert any(item.startswith("CROP:") for item in handles), handles
+        assert any(item.startswith("SWIRL:") for item in handles), handles
+        assert armature.mode == "POSE" and bpy.context.view_layer.objects.active == armature
+        # Only the posed layer shows its handles.
+        assert not shown(other), shown(other)
+        assert geo._fbp_select_only(bpy.context, rig)
+        assert not bones_module.posed_layer_rigs(bpy.context)
+        assert not shown(rig), shown(rig)
+    finally:
+        if bpy.context.mode != "OBJECT" and bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode="OBJECT")
+        for layer in (rig, other):
+            try:
+                owned.extend(obj for obj in layer.children_recursive if obj not in owned)
+            except ReferenceError:
+                pass
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+        for cls in reversed(registered):
+            try:
+                bpy.utils.unregister_class(cls)
+            except RuntimeError:
+                pass
+    return {"handles": len(handles)}
+
+
 def test_lattice_pin_names_contract(_module):
     """Add Pin survives renamed pins, stale pin data and controls left in Edit Mode."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -6515,6 +6584,7 @@ def run_background():
             ("lattice_poses_contract", test_lattice_poses_contract),
             ("lattice_pins_contract", test_lattice_pins_contract),
             ("lattice_pin_names_contract", test_lattice_pin_names_contract),
+            ("pose_mode_shows_effect_handles", test_pose_mode_shows_effect_handles),
             ("lattice_types_contract", test_lattice_types_contract),
             ("effect_operator_cleanup_contract", test_effect_operator_cleanup_contract),
             ("effect_stack_copy_preset_fidelity", test_effect_stack_copy_preset_fidelity),

@@ -1535,6 +1535,9 @@ class FBP_GT_gradient_drag(bpy.types.Gizmo):
                     _sync_control(control)
         elif self.fbp_moved:
             _undo_push("Move Gradient" if self.fbp_kind == "LINE" else "Move Gradient End")
+        elif context.mode == "POSE":
+            # Selecting the handle would take the layer out of Pose Mode.
+            pass
         else:
             # A plain click selects the handle, as before the line was draggable.
             control = self._moved_control()
@@ -1566,7 +1569,8 @@ class FBP_GGT_gradient_lines(bpy.types.GizmoGroup):
     @classmethod
     def poll(cls, context):
         try:
-            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+            # Pose Mode too: a posed layer shows its gradient handles.
+            if context.mode not in {"OBJECT", "POSE"} or not context.space_data.overlay.show_overlays:
                 return False
         except FBP_DATA_ERRORS:
             return False
@@ -1607,7 +1611,8 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
     @classmethod
     def poll(cls, context):
         try:
-            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+            # Pose Mode too: a posed layer shows its gradient handles.
+            if context.mode not in {"OBJECT", "POSE"} or not context.space_data.overlay.show_overlays:
                 return False
         except FBP_DATA_ERRORS:
             return False
