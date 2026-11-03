@@ -1,0 +1,539 @@
+"""Transform cage around the selected layers, in the style of Blender's
+Grease Pencil transform box.
+
+Only selected layers show it, so a layer without a rig wire still shows how
+much of the scene it covers, and unselected layers stay clean. The cage is
+Blender's own 2D cage gizmo laid on the image plane:
+
+* drag inside the box to move the layer;
+* drag an edge to stretch it, a corner to scale it (Shift keeps proportions,
+  Alt scales from the centre, as in Blender);
+* drag the round handle above the box to rotate it around its centre
+  (Ctrl snaps to 15 degrees).
+
+A plain click is never taken by the cage: it goes on to Blender and to
+Select Through Transparency, so clicking a layer behind still works. A layer
+that shows effect handles (Crop, Gradient, Shape Mask...) keeps a draw-only
+cage, so those handles stay the ones that receive the drag.
+"""
+
+from __future__ import annotations
+
+import bpy
+from mathutils import Matrix, Vector
+
+from .runtime import FBP_DATA_ERRORS
+
+
+_MAX_CAGES = 32
+_ACTIVE_COLOR = (1.0, 0.63, 0.16)
+_SELECTED_COLOR = (0.93, 0.34, 0.0)
+
+
+def _theme_colors(context):
+    try:
+        theme = context.preferences.themes[0].view_3d
+        return tuple(theme.object_active)[:3], tuple(theme.object_selected)[:3]
+    except (*FBP_DATA_ERRORS, IndexError):
+        return _ACTIVE_COLOR, _SELECTED_COLOR
+
+
+def cage_enabled(context=None):
+    try:
+        from .interface_preferences import fbp_get_addon_preferences
+        preferences = fbp_get_addon_preferences()
+        return bool(getattr(preferences, "show_layer_cage", True)) if preferences else True
+    except (ImportError, *FBP_DATA_ERRORS):
+        return True
+
+
+def _cage_layers(context):
+    """Selected, visible, selectable layers (rigs with an image plane)."""
+    layers = []
+    for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+        try:
+            if not bool(getattr(obj, "is_fbp_control", False)):
+                continue
+            if getattr(obj, "fbp_plane_target", None) is None:
+                continue
+            if bool(getattr(obj, "hide_select", False)) or not obj.visible_get():
+                continue
+        except FBP_DATA_ERRORS:
+            continue
+        layers.append(obj)
+        if len(layers) >= _MAX_CAGES:
+            break
+    return layers
+
+
+def layer_cage_rect(rig, depsgraph=None):
+    """``(center, size)`` of the layer's visible plane in rig space (XY).
+
+    Uses the evaluated plane, so Crop, Extend and mesh effects are included.
+    """
+    plane = getattr(rig, "fbp_plane_target", None)
+    if plane is None:
+        return None
+    try:
+        source = plane.evaluated_get(depsgraph) if depsgraph is not None else plane
+        relation = rig.matrix_world.inverted_safe() @ source.matrix_world
+        corners = [relation @ Vector(corner) for corner in source.bound_box]
+    except (*FBP_DATA_ERRORS, IndexError):
+        return None
+    xs = [corner.x for corner in corners]
+    ys = [corner.y for corner in corners]
+    size = Vector((max(xs) - min(xs), max(ys) - min(ys)))
+    if size.x <= 1.0e-6 or size.y <= 1.0e-6:
+        return None
+    center = Vector(((max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5, 0.0))
+    return center, size
+
+
+def _rigs_with_handles(context):
+    """Pointers of the layers that currently show effect handles."""
+    try:
+        from .handle_overlay import _visible_handles
+        from .viewport_handles import attached_plane
+    except ImportError:
+        return set()
+    pointers = set()
+    for handle in _visible_handles(context):
+        try:
+            plane = attached_plane(handle)
+            if plane is not None:
+                pointers.add(plane.as_pointer())
+        except FBP_DATA_ERRORS:
+            continue
+    return pointers
+
+
+def _flatten(matrix):
+    """Column-major floats, the layout gizmo matrix targets use."""
+    return [matrix[row][column] for column in range(4) for row in range(4)]
+
+
+def _unflatten(values):
+    values = list(values)
+    return Matrix([[values[column * 4 + row] for column in range(4)] for row in range(4)])
+
+
+def _rigid_basis(matrix_world):
+    location, rotation, _scale = matrix_world.decompose()
+    return Matrix.Translation(location) @ rotation.to_matrix().to_4x4()
+
+
+class _CageBinding:
+    """Maps the cage's offset matrix to the rig's world transform.
+
+    The gizmo's basis is the rig's world location and rotation; the offset
+    matrix maps the unit cage to the plane rectangle, scaled by the rig's
+    scale. The cage writes a new offset matrix while it drags and the rig's
+    world matrix follows: ``basis @ offset @ unit_to_rig^-1``.
+    """
+
+    def __init__(self, rig_name):
+        self.rig_name = rig_name
+        self.basis = Matrix.Identity(4)
+        self.unit = Matrix.Identity(4)
+
+    def rig(self):
+        return bpy.data.objects.get(self.rig_name)
+
+    def refresh(self, rig, center, size):
+        self.basis = _rigid_basis(rig.matrix_world)
+        self.unit = Matrix.Translation(center) @ Matrix.Diagonal((size.x, size.y, 1.0, 1.0))
+
+    def get(self):
+        rig = self.rig()
+        if rig is None:
+            return _flatten(Matrix.Identity(4))
+        try:
+            relative = self.basis.inverted_safe() @ rig.matrix_world
+        except FBP_DATA_ERRORS:
+            return _flatten(Matrix.Identity(4))
+        return _flatten(relative @ self.unit)
+
+    def set(self, values):
+        rig = self.rig()
+        if rig is None:
+            return
+        try:
+            world = self.basis @ _unflatten(values) @ self.unit.inverted_safe()
+            before = (rig.location.copy(), _rotation_copy(rig), rig.scale.copy())
+            rig.matrix_world = world
+            _restore_locked(rig, before)
+            _auto_key(rig)
+        except FBP_DATA_ERRORS:
+            return
+
+
+def _rotation_copy(rig):
+    mode = str(getattr(rig, "rotation_mode", "XYZ") or "XYZ")
+    if mode == "QUATERNION":
+        return rig.rotation_quaternion.copy()
+    if mode == "AXIS_ANGLE":
+        return tuple(rig.rotation_axis_angle)
+    return rig.rotation_euler.copy()
+
+
+def _restore_locked(rig, before):
+    location, rotation, scale = before
+    for axis in range(3):
+        if rig.lock_location[axis]:
+            rig.location[axis] = location[axis]
+        if rig.lock_scale[axis]:
+            rig.scale[axis] = scale[axis]
+    if any(rig.lock_rotation):
+        mode = str(getattr(rig, "rotation_mode", "XYZ") or "XYZ")
+        if mode == "QUATERNION":
+            rig.rotation_quaternion = rotation
+        elif mode == "AXIS_ANGLE":
+            rig.rotation_axis_angle = rotation
+        else:
+            for axis in range(3):
+                if rig.lock_rotation[axis]:
+                    rig.rotation_euler[axis] = rotation[axis]
+
+
+def _auto_key(rig):
+    try:
+        scene = bpy.context.scene
+        if not bool(scene.tool_settings.use_keyframe_insert_auto):
+            return
+        frame = scene.frame_current
+        for path in ("location", "rotation_euler", "scale"):
+            if path == "rotation_euler" and rig.rotation_mode in {"QUATERNION", "AXIS_ANGLE"}:
+                path = "rotation_quaternion" if rig.rotation_mode == "QUATERNION" else "rotation_axis_angle"
+            rig.keyframe_insert(path, frame=frame, group="Object Transforms")
+    except FBP_DATA_ERRORS:
+        return
+
+
+_ROTATE_OFFSET_PX = 22.0
+_ROTATE_RADIUS_PX = 5.0
+
+
+def _pixels_per_unit(region, region_data, origin, direction):
+    """Screen pixels covered by one world unit along ``direction`` at ``origin``."""
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+
+    start = location_3d_to_region_2d(region, region_data, origin)
+    end = location_3d_to_region_2d(region, region_data, origin + direction)
+    if start is None or end is None:
+        return None
+    length = (end - start).length
+    return length if length > 1.0e-6 else None
+
+
+_MARK_HALF_PX = 4.0
+
+
+def _square_triangles(half):
+    return [
+        (-half, -half, 0.0), (half, -half, 0.0), (half, half, 0.0),
+        (-half, -half, 0.0), (half, half, 0.0), (-half, half, 0.0),
+    ]
+
+
+def _stem_triangles(bottom, top, half_width=0.6):
+    return [
+        (-half_width, bottom, 0.0), (half_width, bottom, 0.0), (half_width, top, 0.0),
+        (-half_width, bottom, 0.0), (half_width, top, 0.0), (-half_width, top, 0.0),
+    ]
+
+
+class FBP_GT_layer_rotate(bpy.types.Gizmo):
+    """Round handle above the transform box: drag it to rotate the layer.
+
+    The layer turns around the box centre, about its own normal; Ctrl snaps
+    to 15 degree steps, Esc or right click cancels.
+    """
+
+    bl_idname = "FBP_GT_layer_rotate"
+    __slots__ = (
+        "fbp_rim", "fbp_disc", "fbp_stem", "fbp_rig_name", "fbp_center",
+        "fbp_initial", "fbp_start_angle", "fbp_color", "fbp_square", "fbp_square_rim",
+        "fbp_marks",
+    )
+
+    def setup(self):
+        from .handle_overlay import _disc_triangles, _ring_triangles
+
+        radius = _ROTATE_RADIUS_PX
+        self.fbp_rim = self.new_custom_shape("TRIS", _ring_triangles(radius + 1.4, radius - 0.2))
+        self.fbp_disc = self.new_custom_shape("TRIS", _disc_triangles(radius))
+        self.fbp_stem = self.new_custom_shape("TRIS", _stem_triangles(-_ROTATE_OFFSET_PX, -radius))
+        half = _MARK_HALF_PX
+        self.fbp_square = self.new_custom_shape("TRIS", _square_triangles(half))
+        self.fbp_square_rim = self.new_custom_shape("TRIS", _square_triangles(half + 1.2))
+        self.fbp_marks = ()
+        self.fbp_rig_name = ""
+        self.fbp_center = (0.0, 0.0, 0.0)
+        self.fbp_initial = None
+        self.fbp_start_angle = 0.0
+        self.fbp_color = (1.0, 1.0, 1.0)
+        self.use_draw_scale = False
+
+    def _draw_part(self, shape, color, alpha=1.0, select_id=None):
+        self.color = color
+        self.color_highlight = color
+        self.alpha = alpha
+        self.alpha_highlight = alpha
+        if select_id is None:
+            self.draw_custom_shape(shape)
+        else:
+            self.draw_custom_shape(shape, select_id=select_id)
+
+    def draw(self, context):
+        del context
+        # Square marks on the corners and edge midpoints of the box, always
+        # visible like Grease Pencil's transform box (the cage itself only
+        # shows its handles on hover). They are drawn, never picked: the cage
+        # under them takes the drag.
+        for matrix in self.fbp_marks:
+            self.color = (0.0, 0.0, 0.0)
+            self.alpha = 0.5
+            self.draw_custom_shape(self.fbp_square_rim, matrix=matrix)
+            self.color = tuple(self.fbp_color)
+            self.alpha = 1.0
+            self.draw_custom_shape(self.fbp_square, matrix=matrix)
+        active = self.is_highlight or self.is_modal
+        color = (1.0, 1.0, 1.0) if active else tuple(self.fbp_color)
+        self._draw_part(self.fbp_stem, color, 0.9)
+        self._draw_part(self.fbp_rim, (0.0, 0.0, 0.0), 0.5)
+        self._draw_part(self.fbp_disc, color)
+
+    def draw_select(self, context, select_id):
+        del context
+        self.draw_custom_shape(self.fbp_rim, select_id=select_id)
+        self.draw_custom_shape(self.fbp_disc, select_id=select_id)
+
+    def _rig(self):
+        return bpy.data.objects.get(self.fbp_rig_name or "")
+
+    def _screen_angle(self, context, event):
+        import math
+        from bpy_extras.view3d_utils import location_3d_to_region_2d
+
+        center = location_3d_to_region_2d(context.region, context.region_data, Vector(self.fbp_center))
+        if center is None:
+            return None
+        return math.atan2(event.mouse_region_y - center.y, event.mouse_region_x - center.x)
+
+    def invoke(self, context, event):
+        rig = self._rig()
+        angle = self._screen_angle(context, event)
+        if rig is None or angle is None:
+            return {"CANCELLED"}
+        self.fbp_initial = rig.matrix_world.copy()
+        self.fbp_start_angle = angle
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event, tweak):
+        import math
+
+        rig = self._rig()
+        angle = self._screen_angle(context, event)
+        if rig is None or angle is None or self.fbp_initial is None:
+            return {"RUNNING_MODAL"}
+        delta = angle - self.fbp_start_angle
+        delta = math.atan2(math.sin(delta), math.cos(delta))
+        if "SNAP" in tweak or event.ctrl:
+            step = math.radians(15.0)
+            delta = round(delta / step) * step
+        initial = self.fbp_initial
+        normal = (initial.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+        view = context.region_data.view_matrix.inverted().to_3x3() @ Vector((0.0, 0.0, 1.0))
+        # Counter-clockwise on screen, whichever side of the plane faces us.
+        if normal.dot(view) < 0.0:
+            delta = -delta
+        center = Vector(self.fbp_center)
+        turn = Matrix.Translation(center) @ Matrix.Rotation(delta, 4, normal) @ Matrix.Translation(-center)
+        before = (rig.location.copy(), _rotation_copy(rig), rig.scale.copy())
+        try:
+            rig.matrix_world = turn @ initial
+            _restore_locked(rig, before)
+        except FBP_DATA_ERRORS:
+            return {"RUNNING_MODAL"}
+        context.area.header_text_set(f"Rotate Layer: {math.degrees(delta):.1f}\u00b0")
+        context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
+
+    def exit(self, context, cancel):
+        rig = self._rig()
+        try:
+            context.area.header_text_set(None)
+        except FBP_DATA_ERRORS:
+            pass
+        if rig is not None and self.fbp_initial is not None:
+            if cancel:
+                rig.matrix_world = self.fbp_initial
+            else:
+                _auto_key(rig)
+                try:
+                    bpy.ops.ed.undo_push(message="Rotate Layer")
+                except RuntimeError:
+                    pass
+        self.fbp_initial = None
+        context.area.tag_redraw()
+
+
+class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
+    bl_idname = "FBP_GGT_layer_cage"
+    bl_label = "Frame By Plane Layer Cage"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"3D", "PERSISTENT"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            if context.mode != "OBJECT":
+                return False
+            space = context.space_data
+            if not space.overlay.show_overlays or not space.show_gizmo:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+        if not cage_enabled(context):
+            return False
+        return bool(_cage_layers(context))
+
+    @classmethod
+    def setup_keymap(cls, keyconfig):
+        # Drag only: a plain click goes on to the selection operators.
+        return keyconfig.keymaps.new(
+            name="Generic Gizmo Maybe Drag", space_type="EMPTY", region_type="WINDOW",
+        )
+
+    def setup(self, context):
+        self.bindings = {}
+        self.draw_prepare(context)
+
+    def _new_cage(self, binding):
+        gizmo = self.gizmos.new("GIZMO_GT_cage_2d")
+        gizmo.draw_style = "BOX_TRANSFORM"
+        # Rotation has its own handle (FBP_GT_layer_rotate): the cage's
+        # built-in one cannot be picked in a 3D gizmo group.
+        gizmo.transform = {"TRANSLATE", "SCALE"}
+        gizmo.draw_options = set()
+        gizmo.dimensions = (1.0, 1.0)
+        gizmo.use_draw_modal = True
+        gizmo.use_draw_hover = False
+        gizmo.use_undo = True
+        gizmo.target_set_handler("matrix", get=binding.get, set=binding.set)
+        return gizmo
+
+    def _new_rotator(self, rig_name):
+        gizmo = self.gizmos.new(FBP_GT_layer_rotate.bl_idname)
+        gizmo.fbp_rig_name = rig_name
+        return gizmo
+
+    def _remove(self, gizmo):
+        try:
+            self.gizmos.remove(gizmo)
+        except FBP_DATA_ERRORS:
+            pass
+
+    def draw_prepare(self, context):
+        bindings = getattr(self, "bindings", None)
+        if bindings is None:
+            bindings = self.bindings = {}
+        layers = _cage_layers(context)
+        try:
+            depsgraph = context.evaluated_depsgraph_get()
+        except FBP_DATA_ERRORS:
+            depsgraph = None
+        names = {rig.name for rig in layers}
+        for name, (_binding, cage, rotator) in tuple(bindings.items()):
+            if name not in names and not cage.is_modal and not rotator.is_modal:
+                del bindings[name]
+                self._remove(cage)
+                self._remove(rotator)
+        active_color, selected_color = _theme_colors(context)
+        active = getattr(context, "active_object", None)
+        with_handles = _rigs_with_handles(context) if layers else set()
+        region = getattr(context, "region", None)
+        region_data = getattr(context, "region_data", None)
+        for rig in layers:
+            entry = bindings.get(rig.name)
+            if entry is None:
+                binding = _CageBinding(rig.name)
+                entry = bindings[rig.name] = (binding, self._new_cage(binding), self._new_rotator(rig.name))
+            binding, cage, rotator = entry
+            if cage.is_modal or rotator.is_modal:
+                continue
+            rect = layer_cage_rect(rig, depsgraph)
+            if rect is None:
+                cage.hide = rotator.hide = True
+                continue
+            center, size = rect
+            binding.refresh(rig, center, size)
+            cage.hide = False
+            cage.matrix_basis = binding.basis
+            cage.matrix_offset = _unflatten(binding.get())
+            try:
+                plane = rig.fbp_plane_target
+                draw_only = plane is not None and plane.as_pointer() in with_handles
+            except FBP_DATA_ERRORS:
+                draw_only = False
+            # Effect handles sit on the same edges: they keep the drag.
+            cage.hide_select = draw_only
+            color = active_color if rig == active else selected_color
+            cage.color = color
+            cage.alpha = 0.9
+            cage.color_highlight = (1.0, 1.0, 1.0)
+            cage.alpha_highlight = 1.0
+            cage.line_width = 1.0
+            self._place_rotator(rotator, rig, center, size, region, region_data, draw_only, color)
+
+    @staticmethod
+    def _place_rotator(rotator, rig, center, size, region, region_data, draw_only, color):
+        rotator.hide = True
+        if draw_only or region is None or region_data is None:
+            return
+        try:
+            world = rig.matrix_world
+            rotation = world.to_quaternion().to_matrix().to_4x4()
+            up = (world.to_3x3() @ Vector((0.0, 1.0, 0.0))).normalized()
+            top = world @ Vector((center.x, center.y + size.y * 0.5, center.z))
+            per_unit = _pixels_per_unit(region, region_data, top, up)
+            if per_unit is None:
+                return
+            unit = 1.0 / per_unit
+            location = top + up * (_ROTATE_OFFSET_PX * unit)
+            rotator.matrix_basis = Matrix.Translation(location) @ rotation @ Matrix.Scale(unit, 4)
+            rotator.fbp_center = tuple(world @ center)
+            marks = []
+            hx, hy = size.x * 0.5, size.y * 0.5
+            for dx, dy in ((-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)):
+                point = world @ Vector((center.x + dx * hx, center.y + dy * hy, center.z))
+                scale = _pixels_per_unit(region, region_data, point, up)
+                if scale is not None:
+                    marks.append(Matrix.Translation(point) @ rotation @ Matrix.Scale(1.0 / scale, 4))
+            rotator.fbp_marks = tuple(marks)
+            rotator.fbp_color = tuple(color)[:3]
+            rotator.hide = False
+        except FBP_DATA_ERRORS:
+            return
+
+
+_CLASSES = (FBP_GT_layer_rotate, FBP_GGT_layer_cage)
+
+
+def register():
+    if bpy.app.background:
+        return
+    for cls in _CLASSES:
+        try:
+            bpy.utils.register_class(cls)
+        except ValueError:
+            pass
+
+
+def unregister():
+    for cls in reversed(_CLASSES):
+        try:
+            bpy.utils.unregister_class(cls)
+        except (ValueError, RuntimeError):
+            pass

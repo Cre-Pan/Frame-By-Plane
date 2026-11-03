@@ -4,6 +4,11 @@ All notable public changes to Frame By Plane are documented here.
 
 ## [8.2.0] - Unreleased
 
+### Layer selection and transform box
+
+- Selected layers show a **transform box** in the style of Blender's Grease Pencil box: drag inside to move the layer, an edge to stretch it, a corner to scale it, and the round handle above the box to rotate it around its centre (Ctrl snaps to 15 degrees). Unselected layers show nothing, so a layer without a rig wire still shows what it covers once selected. Moves are undoable and auto-keyed when Auto Keying is on. A plain click still goes to selection, and a layer that shows effect handles (Crop, Gradient...) keeps them on its edges instead of the box handles. Preferences > **Transform Box on Selected Layers** turns it off.
+- Clicking a viewport handle (Crop, Expand, Gradient, Shape Mask...) now always picks the handle. Before, a handle drawn over another layer selected that layer instead, so handles covered by a layer in front could not be clicked.
+
 ### Effects
 
 - **Broken Glass** is rebuilt as a shatter tool. It cuts the layer into triangles, either **Impact** (rings and spokes around an impact point, small slivers near it and long shards towards the border) or **Shards** (an even jittered grid), and one **Shatter** slider breaks them apart: at zero the layer is whole, then the pieces open outwards from the impact point (**Spread**) and shrink (**Gap**), fly out (**Explode**), come forward (**Depth**), drop (**Fall**) and tumble (**Spin**). **Pieces**, **Irregularity**, **Thickness** and **Seed** shape the cut, and the impact point has a viewport handle. The pieces keep showing the layer image and the image effects below; **Glass Surface** switches them to the refractive glass material. New presets: Cracked, Shattered, Falling Shards and Glass Pane. Saved files update on open.
