@@ -336,6 +336,14 @@ def _by_image_with_rig():
         return False
 
 
+def _layer_box_part_at(context, coord):
+    try:
+        from .layer_cage import layer_box_part_at
+        return layer_box_part_at(context, coord)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return None
+
+
 class FBP_OT_SelectThroughAlpha(Operator):
     """Select a layer by its visible pixels, clicking through transparency."""
 
@@ -364,6 +372,16 @@ class FBP_OT_SelectThroughAlpha(Operator):
             handle = fbp_handle_under_cursor(context, coord, 4.0 * _ui_scale(context))
             if handle is not None:
                 return self._select(context, handle)
+            # A click on the transform box's knob, dots or edges stays on
+            # the box (the knob shows the anchor); only the inside lets a
+            # click through to the layers behind.
+            box = _layer_box_part_at(context, coord)
+            if box is not None and box[1] != "MOVE":
+                if box[1] == "ROTATE":
+                    from .layer_cage import toggle_anchor_mode
+                    toggle_anchor_mode(box[0])
+                    context.area.tag_redraw()
+                return {'FINISHED'}
             # A click on (or right next to) a visible rig wire stays Blender's.
             if _rig_wire_near_cursor(context, coord, 8.0 * _ui_scale(context)):
                 return {'PASS_THROUGH'}
