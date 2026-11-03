@@ -23,6 +23,7 @@ cursor comes near; the knob on top and the pivot cross stay visible.
 from __future__ import annotations
 
 import bpy
+import gpu
 from mathutils import Matrix, Vector
 
 from .runtime import FBP_DATA_ERRORS
@@ -165,6 +166,7 @@ class _CageBinding:
         self.rig_name = rig_name
         self.basis = Matrix.Identity(4)
         self.unit = Matrix.Identity(4)
+        self.style = None
 
     def rig(self):
         return bpy.data.objects.get(self.rig_name)
@@ -437,6 +439,15 @@ def _stem_triangles(bottom, top, half_width=0.6):
     ]
 
 
+# Python gizmos route every attribute through ``Gizmo.__getattribute__`` /
+# ``__setattr__``, which first look the name up among the gizmo's operator-
+# style ``properties`` (a path lookup per access). The base Gizmo RNA values
+# (hide, matrices, is_modal) and our own slots are never there, so the redraw
+# loop reads and writes them directly.
+_RNA_SET = bpy.types.bpy_struct.__setattr__
+_RNA_GET = bpy.types.bpy_struct.__getattribute__
+
+
 class FBP_GT_layer_rotate(bpy.types.Gizmo):
     """Round handle above the transform box: drag it to rotate the layer.
 
@@ -472,33 +483,45 @@ class FBP_GT_layer_rotate(bpy.types.Gizmo):
         self.fbp_color = (1.0, 1.0, 1.0)
         self.use_draw_scale = False
 
-    def _draw_shape(self, shape, color, alpha, matrix=None):
-        self.color = color
-        self.color_highlight = color
-        self.alpha = alpha
-        self.alpha_highlight = alpha
-        if matrix is None:
-            self.draw_custom_shape(shape)
-        else:
-            self.draw_custom_shape(shape, matrix=matrix)
+    @staticmethod
+    def _draw_shape(shape, color, alpha, matrix):
+        # Same as Gizmo.draw_custom_shape with color == color_highlight, but
+        # without its per-shape property writes and reads: every attribute
+        # of a Python gizmo goes through a slow RNA path lookup.
+        batch, shader = shape
+        shader.uniform_float("color", (*color, alpha))
+        use_blend = alpha < 1.0
+        if use_blend:
+            gpu.state.blend_set("ALPHA")
+        with gpu.matrix.push_pop():
+            gpu.matrix.multiply_matrix(matrix)
+            batch.draw(shader)
+        if use_blend:
+            gpu.state.blend_set("NONE")
 
     def draw(self, context):
-        color = tuple(self.fbp_color)
+        draw_shape = self._draw_shape
+        get = _RNA_GET
+        color = tuple(get(self, "fbp_color"))
+        world = get(self, "matrix_world")
+        modal = bool(get(self, "is_modal"))
         # Like Grease Pencil's box: a pivot cross in the middle, the knob on
         # top, and dots on the corners and edges only while the cursor is
         # near. The dots are drawn, never picked: the cage under them takes
         # the drag.
-        if self.fbp_center_matrix is not None:
-            self._draw_shape(self.fbp_cross_rim, (0.0, 0.0, 0.0), 0.45, self.fbp_center_matrix)
-            self._draw_shape(self.fbp_cross, color, 0.9, self.fbp_center_matrix)
-        if self.fbp_near and not self.is_modal:
-            for matrix in self.fbp_marks:
-                self._draw_shape(self.fbp_dot_rim, (0.0, 0.0, 0.0), 0.5, matrix)
-                self._draw_shape(self.fbp_dot, color, 1.0, matrix)
-        knob = handle_selected_color(context)[:3] if (self.is_highlight or self.is_modal) else color
-        self._draw_shape(self.fbp_stem, color, 0.8)
-        self._draw_shape(self.fbp_rim, (0.0, 0.0, 0.0), 0.5)
-        self._draw_shape(self.fbp_disc, knob, 1.0)
+        center_matrix = get(self, "fbp_center_matrix")
+        if center_matrix is not None:
+            draw_shape(get(self, "fbp_cross_rim"), (0.0, 0.0, 0.0), 0.45, center_matrix)
+            draw_shape(get(self, "fbp_cross"), color, 0.9, center_matrix)
+        if get(self, "fbp_near") and not modal:
+            dot_rim, dot = get(self, "fbp_dot_rim"), get(self, "fbp_dot")
+            for matrix in get(self, "fbp_marks"):
+                draw_shape(dot_rim, (0.0, 0.0, 0.0), 0.5, matrix)
+                draw_shape(dot, color, 1.0, matrix)
+        knob = handle_selected_color(context)[:3] if (modal or get(self, "is_highlight")) else color
+        draw_shape(get(self, "fbp_stem"), color, 0.8, world)
+        draw_shape(get(self, "fbp_rim"), (0.0, 0.0, 0.0), 0.5, world)
+        draw_shape(get(self, "fbp_disc"), knob, 1.0, world)
 
     def draw_select(self, context, select_id):
         del context
@@ -660,17 +683,17 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
                 rotator = self._new_rotator(rig.name)
                 entry = bindings[rig.name] = (binding, self._new_cage(binding), rotator)
             binding, cage, rotator = entry
-            if cage.is_modal or rotator.is_modal:
+            if _RNA_GET(cage, "is_modal") or _RNA_GET(rotator, "is_modal"):
                 continue
             rect = layer_cage_rect(rig, depsgraph)
             if rect is None:
-                cage.hide = rotator.hide = True
+                _RNA_SET(cage, "hide", True)
+                _RNA_SET(rotator, "hide", True)
                 continue
             center, size = rect
             binding.refresh(rig, center, size)
-            cage.hide = False
-            cage.matrix_basis = binding.basis
-            cage.matrix_offset = _unflatten(binding.get())
+            _RNA_SET(cage, "matrix_basis", binding.basis)
+            _RNA_SET(cage, "matrix_offset", _unflatten(binding.get()))
             try:
                 plane = rig.fbp_plane_target
                 draw_only = (
@@ -682,23 +705,28 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
                 draw_only = False
             # Effect handles (Crop, Gradient, Lattice Corner Pin and Grid...)
             # take over: they sit on the same edges and draw their own frame.
-            cage.hide = draw_only
+            _RNA_SET(cage, "hide", bool(draw_only))
             # Thin white lines as in Grease Pencil; other selected layers
             # are a dimmer grey so the active one stands out.
             color = _ACTIVE_COLOR if rig == active else _SELECTED_COLOR
-            cage.color = color
-            cage.alpha = 0.9 if rig == active else 0.6
-            cage.color_highlight = (1.0, 1.0, 1.0)
-            cage.alpha_highlight = 1.0
-            cage.line_width = 1.0
+            style = (tuple(color), 0.9 if rig == active else 0.6)
+            if binding.style != style:
+                # Gizmo property writes are slow; the style changes only when
+                # the active layer does.
+                cage.color = style[0]
+                cage.alpha = style[1]
+                cage.color_highlight = (1.0, 1.0, 1.0)
+                cage.alpha_highlight = 1.0
+                cage.line_width = 1.0
+                binding.style = style
             self._place_rotator(rotator, rig, center, size, region, region_data, draw_only, color)
 
     @staticmethod
     def _place_rotator(rotator, rig, center, size, region, region_data, draw_only, color):
         from bpy_extras.view3d_utils import location_3d_to_region_2d
 
-        rotator.hide = True
         if draw_only or region is None or region_data is None:
+            _RNA_SET(rotator, "hide", True)
             return
         try:
             world = rig.matrix_world
@@ -707,32 +735,42 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
             top = world @ Vector((center.x, center.y + size.y * 0.5, center.z))
             per_unit = _pixels_per_unit(region, region_data, top, up)
             if per_unit is None:
+                _RNA_SET(rotator, "hide", True)
                 return
             unit = 1.0 / per_unit
             location = top + up * (_ROTATE_OFFSET_PX * unit)
-            rotator.matrix_basis = Matrix.Translation(location) @ rotation @ Matrix.Scale(unit, 4)
-            rotator.fbp_center = tuple(world @ center)
+            basis = Matrix.Translation(location) @ rotation @ Matrix.Scale(unit, 4)
             middle = world @ center
             middle_scale = _pixels_per_unit(region, region_data, middle, up)
-            rotator.fbp_center_matrix = (
+            center_matrix = (
                 Matrix.Translation(middle) @ rotation @ Matrix.Scale(1.0 / middle_scale, 4)
                 if middle_scale else None
             )
-            marks = []
+            points = []
             screen = []
             hx, hy = size.x * 0.5, size.y * 0.5
             for dx, dy in ((-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)):
                 point = world @ Vector((center.x + dx * hx, center.y + dy * hy, center.z))
-                scale = _pixels_per_unit(region, region_data, point, up)
-                if scale is not None:
-                    marks.append(Matrix.Translation(point) @ rotation @ Matrix.Scale(1.0 / scale, 4))
+                points.append(point)
                 screen.append(location_3d_to_region_2d(region, region_data, point))
             screen.append(location_3d_to_region_2d(region, region_data, location))
-            rotator.fbp_near = proximity_near(("cage", rig.name), region, screen)
-            rotator.fbp_marks = tuple(marks)
-            rotator.fbp_color = tuple(color)[:3]
-            rotator.hide = False
+            near = proximity_near(("cage", rig.name), region, screen)
+            marks = []
+            if near:
+                # The dots only show while the cursor is near the box.
+                for point in points:
+                    scale = _pixels_per_unit(region, region_data, point, up)
+                    if scale is not None:
+                        marks.append(Matrix.Translation(point) @ rotation @ Matrix.Scale(1.0 / scale, 4))
+            _RNA_SET(rotator, "matrix_basis", basis)
+            _RNA_SET(rotator, "fbp_center", tuple(middle))
+            _RNA_SET(rotator, "fbp_center_matrix", center_matrix)
+            _RNA_SET(rotator, "fbp_near", near)
+            _RNA_SET(rotator, "fbp_marks", tuple(marks))
+            _RNA_SET(rotator, "fbp_color", tuple(color)[:3])
+            _RNA_SET(rotator, "hide", False)
         except FBP_DATA_ERRORS:
+            _RNA_SET(rotator, "hide", True)
             return
 
 

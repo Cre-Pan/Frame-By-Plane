@@ -195,7 +195,8 @@ def _visible_lattice_handles(context):
         return
     for armature in tuple(getattr(context, "visible_objects", ()) or ()):
         try:
-            if not is_bones_object(armature):
+            # Cheap type test first: this runs on every cursor move.
+            if armature.type != "ARMATURE" or not is_bones_object(armature):
                 continue
             for pose_bone in armature.pose.bones:
                 if not pose_bone.bone.hide and pose_bone.custom_shape is not None:
@@ -298,36 +299,117 @@ def _scaled(points, anchor, factor):
     return [anchor + (point - anchor) * factor for point in points]
 
 
-def _handle_geometry(obj, depsgraph):
-    """World-space triangles per part, rim segments and guide segments of one handle."""
+# Local-space topology of each handle mesh, keyed by the mesh and a digest of
+# its coordinates and face parts. Handles are redrawn on every viewport redraw
+# and picked on every cursor move; building a temporary evaluated mesh for
+# each of them every time cost about 0.3 ms per handle. Only plain meshes are
+# cached: a handle with an active modifier (Lattice Follow) or shape keys is
+# read from its evaluated mesh as before.
+_MESH_CACHE = {}
+_MESH_CACHE_LIMIT = 256
+
+
+def _mesh_topology(mesh):
+    """Local vertices, triangles with their part, rim, guide and loose X edges."""
+    vertices = [vertex.co.copy() for vertex in mesh.vertices]
+    parts = None
+    attribute = mesh.attributes.get(PART_ATTRIBUTE)
+    if attribute is not None and attribute.domain == "FACE" and len(attribute.data) == len(mesh.polygons):
+        parts = [0] * len(mesh.polygons)
+        attribute.data.foreach_get("value", parts)
+    mesh.calc_loop_triangles()
+    triangles = [
+        (parts[tri.polygon_index] if parts else PART_HANDLE, tuple(tri.vertices))
+        for tri in mesh.loop_triangles
+    ]
+    edge_users = {}
+    for polygon in mesh.polygons:
+        for key in polygon.edge_keys:
+            edge_users[key] = edge_users.get(key, 0) + 1
+    rim = tuple(key for key, users in edge_users.items() if users == 1)
+    guides = tuple(
+        tuple(edge.vertices)
+        for edge in mesh.edges
+        if tuple(sorted(edge.vertices)) not in edge_users
+    )
+    loose_x = tuple(
+        tuple(edge.vertices)
+        for edge in mesh.edges
+        if edge.is_loose
+        and abs(vertices[edge.vertices[0]].y) <= 1.0e-6
+        and abs(vertices[edge.vertices[1]].y) <= 1.0e-6
+    )
+    return {
+        "vertices": vertices,
+        "triangles": triangles,
+        "triangle_vertices": tuple(sorted({index for _part, indices in triangles for index in indices})),
+        "rim": rim,
+        "guides": guides,
+        "loose_x": loose_x,
+    }
+
+
+def _mesh_digest(mesh):
+    from array import array
+
+    coords = array("f", [0.0]) * (len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", coords)
+    digest = [len(mesh.vertices), len(mesh.edges), len(mesh.polygons), hash(coords.tobytes())]
+    attribute = mesh.attributes.get(PART_ATTRIBUTE)
+    if attribute is not None and attribute.domain == "FACE":
+        values = array("i", [0]) * len(attribute.data)
+        attribute.data.foreach_get("value", values)
+        digest.append(hash(values.tobytes()))
+    return tuple(digest)
+
+
+def _plain_mesh(obj):
+    """The handle's own mesh when nothing deforms it, else None."""
+    mesh = getattr(obj, "data", None)
+    if mesh is None or getattr(obj, "type", "") != "MESH":
+        return None
+    if getattr(mesh, "shape_keys", None) is not None:
+        return None
+    if obj.parent is not None and obj.parent_type in {"LATTICE", "ARMATURE"}:
+        return None
+    for modifier in obj.modifiers:
+        if modifier.show_viewport:
+            return None
+    return mesh
+
+
+def handle_mesh(obj, depsgraph):
+    """``(matrix_world, topology)`` of a handle as the viewport shows it."""
     evaluated = obj.evaluated_get(depsgraph)
-    mesh = evaluated.to_mesh()
+    matrix = evaluated.matrix_world.copy()
+    mesh = _plain_mesh(obj)
+    if mesh is not None:
+        key = (int(getattr(mesh, "session_uid", 0) or 0) or mesh.as_pointer(), mesh.name_full)
+        digest = _mesh_digest(mesh)
+        cached = _MESH_CACHE.get(key)
+        if cached is not None and cached[0] == digest:
+            return matrix, cached[1]
+        topology = _mesh_topology(mesh)
+        if len(_MESH_CACHE) >= _MESH_CACHE_LIMIT:
+            _MESH_CACHE.clear()
+        _MESH_CACHE[key] = (digest, topology)
+        return matrix, topology
+    evaluated_mesh = evaluated.to_mesh()
     try:
-        matrix = evaluated.matrix_world
-        points = [matrix @ vertex.co for vertex in mesh.vertices]
-        parts = None
-        attribute = mesh.attributes.get(PART_ATTRIBUTE)
-        if attribute is not None and attribute.domain == "FACE" and len(attribute.data) == len(mesh.polygons):
-            parts = [0] * len(mesh.polygons)
-            attribute.data.foreach_get("value", parts)
-        mesh.calc_loop_triangles()
-        triangles = {}
-        for tri in mesh.loop_triangles:
-            part = parts[tri.polygon_index] if parts else PART_HANDLE
-            triangles.setdefault(part, []).extend(points[index] for index in tri.vertices)
-        edge_users = {}
-        for polygon in mesh.polygons:
-            for key in polygon.edge_keys:
-                edge_users[key] = edge_users.get(key, 0) + 1
-        rim = [points[index] for key, users in edge_users.items() if users == 1 for index in key]
-        guides = [
-            points[index]
-            for edge in mesh.edges
-            if tuple(sorted(edge.vertices)) not in edge_users
-            for index in edge.vertices
-        ]
+        return matrix, _mesh_topology(evaluated_mesh)
     finally:
         evaluated.to_mesh_clear()
+
+
+def _handle_geometry(obj, depsgraph):
+    """World-space triangles per part, rim segments and guide segments of one handle."""
+    matrix, topology = handle_mesh(obj, depsgraph)
+    points = [matrix @ vertex for vertex in topology["vertices"]]
+    triangles = {}
+    for part, indices in topology["triangles"]:
+        triangles.setdefault(part, []).extend(points[index] for index in indices)
+    rim = [points[index] for key in topology["rim"] for index in key]
+    guides = [points[index] for edge in topology["guides"] for index in edge]
     return triangles, rim, guides
 
 

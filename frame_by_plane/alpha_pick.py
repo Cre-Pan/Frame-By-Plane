@@ -199,23 +199,20 @@ def fbp_handle_under_cursor(context, coord, radius):
     limit = float(radius) * float(radius)
     point = (float(coord[0]), float(coord[1]))
     best = None
+    from .handle_overlay import handle_mesh
+
     for handle in handles:
         try:
-            evaluated = handle.evaluated_get(depsgraph)
-            mesh = evaluated.to_mesh()
+            matrix, topology = handle_mesh(handle, depsgraph)
         except (*FBP_DATA_ERRORS, IndexError):
             continue
         try:
-            matrix = evaluated.matrix_world
-            points = [matrix @ vertex.co for vertex in mesh.vertices]
+            points = [matrix @ vertex for vertex in topology["vertices"]]
             if _is_gradient_line(handle):
                 # A gradient's base line drags the whole gradient. It is a
                 # loose edge along local X, drawn at its real size; the dots
                 # on it win when both are in reach.
-                for edge in mesh.edges:
-                    a, b = edge.vertices
-                    if not edge.is_loose or abs(mesh.vertices[a].co.y) > 1.0e-6 or abs(mesh.vertices[b].co.y) > 1.0e-6:
-                        continue
+                for a, b in topology["loose_x"]:
                     start = location_3d_to_region_2d(region, region_data, points[a])
                     end = location_3d_to_region_2d(region, region_data, points[b])
                     if start is None or end is None:
@@ -228,10 +225,17 @@ def fbp_handle_under_cursor(context, coord, radius):
             if fixed is not None:
                 anchor, factor = fixed
                 points = [anchor + (point - anchor) * factor for point in points]
-            projected = [location_3d_to_region_2d(region, region_data, point) for point in points]
-            mesh.calc_loop_triangles()
-            for tri in mesh.loop_triangles:
-                corners = [projected[index] for index in tri.vertices]
+            # Only the filled faces are picked; guide circles and lines
+            # (most of a radius handle's vertices) need no projection.
+            used = topology.get("triangle_vertices")
+            if used is None:
+                used = sorted({index for _part, indices in topology["triangles"] for index in indices})
+            projected = {
+                index: location_3d_to_region_2d(region, region_data, points[index])
+                for index in used
+            }
+            for _part, indices in topology["triangles"]:
+                corners = [projected[index] for index in indices]
                 if any(corner is None for corner in corners):
                     continue
                 distance = _screen_distance_to_triangle_sq(point, *corners)
@@ -241,8 +245,6 @@ def fbp_handle_under_cursor(context, coord, radius):
                         break
         except (*FBP_DATA_ERRORS, IndexError):
             pass
-        finally:
-            evaluated.to_mesh_clear()
     return None if best is None else best[1]
 
 
