@@ -647,6 +647,9 @@ def _cross(center, axis_x, axis_y, half, width):
     return triangles
 
 
+_RNA_GET = bpy.types.bpy_struct.__getattribute__
+
+
 class FBP_GT_layer_box(bpy.types.Gizmo):
     """A selected layer's transform box: move, scale, rotate, anchor."""
 
@@ -693,17 +696,30 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         import gpu
         from gpu_extras.batch import batch_for_shader
 
-        rig = self._rig()
-        frame = self._frame(context, rig)
-        if frame is None:
+        # Python gizmos route each attribute through a slow lookup among
+        # their operator-style properties: read everything once, directly.
+        get = _RNA_GET
+        rig_name = get(self, "fbp_rig_name")
+        rig = bpy.data.objects.get(rig_name or "")
+        if rig is None:
             return
         region, region_data = context.region, context.region_data
+        try:
+            frame = _box_frame(rig, Vector(get(self, "fbp_center")), Vector(get(self, "fbp_size")), region, region_data)
+        except FBP_DATA_ERRORS:
+            frame = None
+        if frame is None:
+            return
         scale = _ui_scale(context)
         accent = handle_selected_color(context)[:3]
-        white = _ACTIVE_COLOR if self.fbp_active else _SELECTED_COLOR
-        modal = bool(self.is_modal)
-        hovered = self.fbp_hover if self.is_highlight else ""
-        active_part = self.fbp_part if modal else hovered
+        is_active = get(self, "fbp_active")
+        white = _ACTIVE_COLOR if is_active else _SELECTED_COLOR
+        modal = bool(get(self, "is_modal"))
+        hovered = get(self, "fbp_hover") if get(self, "is_highlight") else ""
+        active_part = get(self, "fbp_part") if modal else hovered
+        anchor_preview = get(self, "fbp_anchor_preview")
+        snap_index = get(self, "fbp_snap")
+        showing = anchor_mode(rig_name)
         axis_x, axis_y = frame["axis_x"], frame["axis_y"]
 
         def unit(point):
@@ -716,7 +732,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         outline = []
         for index in range(4):
             outline.extend((corners[index], corners[(index + 1) % 4]))
-        lines.append((outline, white, 0.9 if self.fbp_active else 0.6, 1.0))
+        lines.append((outline, white, 0.9 if is_active else 0.6, 1.0))
         if active_part.startswith("E"):
             index = int(active_part[1])
             lines.append(([corners[index], corners[(index + 1) % 4]], accent, 1.0, 2.0))
@@ -730,7 +746,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
 
         # Corner and edge dots: near the cursor, or while one is dragged.
         screen_points = [*frame["s_corners"], *frame["s_edges"], frame["s_knob"]]
-        near = proximity_near(("cage", self.fbp_rig_name), region, screen_points)
+        near = proximity_near(("cage", rig_name), region, screen_points)
         if (near and not modal) or active_part[:1] in {"C", "E"}:
             for index, point in enumerate(corners):
                 part = f"C{index}"
@@ -744,15 +760,14 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         # The knob on its stem above the top edge.
         if not modal or active_part == "ROTATE":
             lines.append(([frame["top"], frame["knob"]], white, 0.8, 1.0))
-            knob_color = accent if active_part == "ROTATE" or anchor_mode(self.fbp_rig_name) else white
+            knob_color = accent if active_part == "ROTATE" or showing else white
             dot(frame["knob"], knob_color, _ROTATE_RADIUS_PX)
 
         # The anchor: a small cross, a ring around it once shown, and the
         # snap targets with guides while it is dragged.
         anchor = frame["anchor"]
-        showing = anchor_mode(self.fbp_rig_name)
-        if active_part == "ANCHOR" and self.fbp_anchor_preview is not None:
-            anchor = Vector(self.fbp_anchor_preview)
+        if active_part == "ANCHOR" and anchor_preview is not None:
+            anchor = Vector(anchor_preview)
         u = unit(anchor)
         if u is not None:
             cross_color = accent if (showing or active_part in {"ROTATE", "ANCHOR"}) else white
@@ -772,7 +787,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 ]
                 lines.append((guides, accent, 0.45, 1.0))
             for index, point in enumerate(targets):
-                snapped = modal and active_part == "ANCHOR" and index == self.fbp_snap
+                snapped = modal and active_part == "ANCHOR" and index == snap_index
                 dot(point, accent if snapped else white, _TARGET_RADIUS_PX * (1.6 if snapped else 1.0), 0.9)
 
         fill_shader, line_shader = _shaders()
@@ -795,11 +810,22 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             gpu.state.blend_set("NONE")
 
     def test_select(self, context, location):
-        frame = self._frame(context)
+        get = _RNA_GET
+        rig_name = get(self, "fbp_rig_name")
+        rig = bpy.data.objects.get(rig_name or "")
+        if rig is None:
+            return -1
+        try:
+            frame = _box_frame(
+                rig, Vector(get(self, "fbp_center")), Vector(get(self, "fbp_size")),
+                context.region, context.region_data,
+            )
+        except FBP_DATA_ERRORS:
+            frame = None
         if frame is None:
             return -1
-        part = _hit_part(frame, location, _ui_scale(context), self.fbp_rig_name)
-        self.fbp_hover = part or ""
+        part = _hit_part(frame, location, _ui_scale(context), rig_name)
+        bpy.types.bpy_struct.__setattr__(self, "fbp_hover", part or "")
         return PARTS.index(part) if part is not None else -1
 
     # --- Interaction --------------------------------------------------------
