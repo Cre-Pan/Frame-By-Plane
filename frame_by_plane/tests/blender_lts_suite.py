@@ -6141,6 +6141,67 @@ def test_performance_profile_contract(module):
     }
 
 
+def test_layer_box_animated_orientation_guard(_module):
+    """Turning the box alone must not break a layer whose transform is keyed,
+    and Reset leaves locked channels alone."""
+    import math
+    from mathutils import Matrix
+
+    cage = importlib.import_module(f"{PACKAGE}.layer_cage")
+    sequence = importlib.import_module(f"{PACKAGE}.operator_sequence")
+    rig = _effect_stack_fixture_rig("FBP Box Orientation Guard")
+    owned = [rig, *rig.children_recursive]
+    scene = bpy.context.scene
+    frame = scene.frame_current
+    auto_key = scene.tool_settings.use_keyframe_insert_auto
+    try:
+        plane = rig.fbp_plane_target
+        assert not cage.transform_animated(rig)
+        # Turn the box 30 degrees while the drawing stays (the ORIENT drag).
+        initial = cage._basis_world(rig)
+        inverses = cage._children_inverses(rig)
+        rig.matrix_world = Matrix.Rotation(math.radians(30.0), 4, initial.col[2].xyz.normalized()) @ initial
+        cage._keep_children(rig, initial, inverses)
+        bpy.context.view_layer.update()
+        assert abs(math.degrees(cage.box_orientation_offset(rig)) + 30.0) < 1.0e-3, cage.box_orientation_offset(rig)
+
+        scene.tool_settings.use_keyframe_insert_auto = False
+        rig.keyframe_insert("rotation_euler", frame=frame)
+        assert cage.transform_animated(rig), "a keyed rotation counts without Auto Keying"
+        scene.tool_settings.use_keyframe_insert_auto = True
+        assert not cage.transform_animated(rig), "keys only on this frame are rewritten by Auto Keying"
+        rig.keyframe_insert("rotation_euler", frame=frame + 10)
+        assert cage.transform_animated(rig), "keys on other frames are not"
+        plane_before = plane.matrix_world.copy()
+        assert not cage.reset_box_orientation(rig)
+        bpy.context.view_layer.update()
+        assert plane.matrix_world == plane_before
+
+        rig.animation_data_clear()
+        assert not cage.transform_animated(rig)
+        rig.lock_rotation[2] = True
+        assert not cage.reset_box_orientation(rig), "a locked rotation stays"
+        rig.lock_rotation[2] = False
+        assert cage.reset_box_orientation(rig)
+        assert abs(cage.box_orientation_offset(rig)) < 1.0e-5
+
+        rig.location = (1.0, 2.0, 3.0)
+        rig.lock_location[1] = True
+        assert sequence.fbp_reset_layer_transform(rig, 'POSITION')
+        assert tuple(rig.location) == (0.0, 2.0, 0.0), tuple(rig.location)
+        assert not sequence.fbp_reset_layer_transform(rig, 'POSITION'), "nothing left to reset"
+        rig.lock_location[1] = False
+    finally:
+        scene.tool_settings.use_keyframe_insert_auto = auto_key
+        scene.frame_set(frame)
+        for obj in owned:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return "keyed layers keep their box orientation; Reset honours locks"
+
+
 def test_icon_runtime_contract(_module):
     icons = importlib.import_module(f"{PACKAGE}.ui_icons")
     icons.unregister_custom_icons()
@@ -6548,6 +6609,7 @@ def run_background():
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
             ("icon_runtime_contract", test_icon_runtime_contract),
+            ("layer_box_animated_orientation_guard", test_layer_box_animated_orientation_guard),
             ("save_reopen", test_save_reopen),
             ("tiny_render", test_tiny_render),
         )

@@ -548,6 +548,9 @@ def layer_box_part_at(context, location):
     region, region_data = getattr(context, "region", None), getattr(context, "region_data", None)
     if region is None or region_data is None or not cage_enabled(context):
         return None
+    if not _gizmos_shown(context):
+        # The box is not drawn: it must not take the click either.
+        return None
     scale = _ui_scale(context)
     try:
         layers = _cage_layers(context)
@@ -570,6 +573,14 @@ def layer_box_part_at(context, location):
         if part is not None:
             return rig.name, part
     return None
+
+
+def _gizmos_shown(context):
+    try:
+        space = context.space_data
+        return bool(space.overlay.show_overlays and space.show_gizmo)
+    except FBP_DATA_ERRORS:
+        return False
 
 
 def _plane_hit(region, region_data, coord, point, normal):
@@ -928,6 +939,9 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_snap = -1
         if part in {"ROTATE", "ORIENT"}:
             if part == "ORIENT":
+                if transform_animated(rig):
+                    _notify(context, ORIENT_ANIMATED_MESSAGE)
+                    return {"CANCELLED"}
                 self.fbp_children = _children_inverses(rig)
             self.fbp_start = self._screen_angle(context, event, frame)
             if self.fbp_start is None:
@@ -1166,6 +1180,63 @@ def _restore_children(inverses):
             child.matrix_parent_inverse = inverse
 
 
+ORIENT_ANIMATED_MESSAGE = (
+    "The box of an animated layer cannot turn on its own: "
+    "its keyframes would turn the drawing at the other frames"
+)
+_TRANSFORM_PATHS = {
+    "location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale",
+    "delta_location", "delta_rotation_euler", "delta_rotation_quaternion", "delta_scale",
+}
+
+
+def transform_animated(rig):
+    """True when keyframes, drivers or NLA strips set the rig's transform.
+
+    Turning the box alone moves the rig and compensates in its children's
+    parent inverse, which no keyframe holds: on another frame the keys put
+    the rig back and the drawing would turn by the same angle. Only keys on
+    the current frame, which Auto Keying rewrites, are safe.
+    """
+    animation = getattr(rig, "animation_data", None)
+    if animation is None:
+        return False
+    try:
+        for driver in animation.drivers:
+            if driver.data_path in _TRANSFORM_PATHS:
+                return True
+        for track in animation.nla_tracks:
+            if not track.mute and len(track.strips):
+                return True
+        from .runtime import fbp_action_fcurves
+
+        curves = fbp_action_fcurves(rig)
+        if not curves:
+            return False
+        scene = bpy.context.scene
+        frame = float(scene.frame_current)
+        auto_key = bool(scene.tool_settings.use_keyframe_insert_auto)
+        for curve in curves:
+            if curve.data_path not in _TRANSFORM_PATHS or curve.mute:
+                continue
+            if not auto_key or curve.data_path.startswith("delta_"):
+                return True
+            if any(abs(point.co.x - frame) > 1.0e-4 for point in curve.keyframe_points):
+                return True
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+    return False
+
+
+def _notify(context, message):
+    try:
+        def draw(menu, _context):
+            menu.layout.label(text=message, icon="INFO")
+        context.window_manager.popup_menu(draw, title="Rotate Layer Box", icon="ORIENTATION_LOCAL")
+    except FBP_DATA_ERRORS:
+        pass
+
+
 def box_orientation_offset(rig):
     """Angle (radians) between the box and the layer's plane, around the rig Z."""
     import math
@@ -1183,7 +1254,7 @@ def box_orientation_offset(rig):
 def reset_box_orientation(rig):
     """Turn the box back in line with the layer, which stays where it is."""
     angle = box_orientation_offset(rig)
-    if abs(angle) <= 1.0e-7:
+    if abs(angle) <= 1.0e-7 or transform_animated(rig) or any(rig.lock_rotation):
         return False
     initial = _basis_world(rig)
     inverses = _children_inverses(rig)
@@ -1218,12 +1289,9 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
         try:
             if context.mode != "OBJECT":
                 return False
-            space = context.space_data
-            if not space.overlay.show_overlays or not space.show_gizmo:
-                return False
         except FBP_DATA_ERRORS:
             return False
-        if not cage_enabled(context):
+        if not _gizmos_shown(context) or not cage_enabled(context):
             return False
         if _cage_layers(context):
             return True

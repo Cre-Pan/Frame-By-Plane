@@ -28,6 +28,9 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet 
 
 ### 🛠️ Fixes in 8.2.1
 
+- Transform box: on a layer whose position or rotation is keyframed, the square below the box (and Reset > Box Orientation) no longer turns the box, because the keys would have turned the drawing on every other frame. A message explains why.
+- Transform box and handles: with Gizmos or Overlays hidden, clicks no longer land on the invisible box or handles; a click on the box knob, dots or edges no longer adds an empty Undo step.
+- Reset Position, Rotation and Scale leave locked channels alone, as Blender's own Clear does, and only auto-key a layer they changed.
 - Gaussian, Directional and Triangle Blur skip the samples above their Samples setting: same picture, about a third fewer image reads at the default. Riso Print skips the third ink, the dot screens and the grain while they are off. Syncing effect modifier rows with the layer is about six times lighter.
 - Scrubbing and stepping frames with Mesh effects over image effects is about ten times lighter; box and lasso select of layers without a rig no longer stall on dense Mesh effects.
 - Mesh effect materials copy Math and Mix node inputs one by one instead of repeating the first value.
