@@ -308,8 +308,16 @@ def _update_hover(context, xy):
         scale = float(context.preferences.system.ui_scale) or 1.0
         handle = fbp_handle_under_cursor(context, xy, 4.0 * scale)
         name = str(handle.name) if handle is not None else ""
+        if not name:
+            from .handle_overlay import lattice_handle_under_cursor
+            name = lattice_handle_under_cursor(context, xy, 4.0 * scale)
     except (ImportError, *FBP_DATA_ERRORS):
         name = ""
+    set_hovered_handle(context, name)
+
+
+def set_hovered_handle(context, name):
+    """Light up the handle called ``name`` (or none); redraw when it changes."""
     region_key = _region_key(context.region)
     if (_HOVER["region"], _HOVER["name"]) != (region_key, name):
         _HOVER["region"], _HOVER["name"] = region_key, name
@@ -341,6 +349,12 @@ def _proximity_wanted(context):
     if _cage_layers(context):
         return True
     try:
+        from .handle_overlay import _visible_lattice_handles
+        if next(_visible_lattice_handles(context), None) is not None:
+            return True
+    except ImportError:
+        pass
+    try:
         from .handle_overlay import _visible_handles
         return bool(_visible_handles(context))
     except ImportError:
@@ -357,7 +371,8 @@ class FBP_GGT_cursor_probe(bpy.types.GizmoGroup):
     @classmethod
     def poll(cls, context):
         try:
-            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+            # Pose Mode too: Lattice handles are edited there.
+            if context.mode not in {"OBJECT", "POSE"} or not context.space_data.overlay.show_overlays:
                 return False
         except FBP_DATA_ERRORS:
             return False

@@ -56,15 +56,15 @@ _AREA_KINDS = {"PIN", "BEND"}
 PIN_AREA_DEFAULT = 2.6
 _AREA_STEP = 0.2
 # Bump when a shape changes: shapes saved in older files are rebuilt in place.
-SHAPE_VERSION = 4
+SHAPE_VERSION = 5
 SHAPE_VERSION_KEY = "fbp_lattice_handle_shape_version"
-# Light handles like the effect controls (Crop, Extend...) and Grease
-# Pencil's deform box; selected ones take the gizmo yellow. The shape tells
-# the kinds apart. (normal, selected, active)
+# The same white and gizmo yellow as the effect handles (viewport_handles):
+# white, yellow when selected. The shape tells the kinds apart.
+# (normal, selected, active)
 HANDLE_COLORS = (
-    (0.86, 0.86, 0.86),
-    (1.0, 0.86, 0.3),
-    (1.0, 1.0, 1.0),
+    (0.96, 0.96, 0.96),
+    (0.96, 0.945, 0.3),
+    (0.96, 0.945, 0.3),
 )
 HANDLE_WIRE_WIDTH = 2.0
 # Size of each kind relative to the layer's base handle size (half a point).

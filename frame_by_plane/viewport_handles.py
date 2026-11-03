@@ -50,7 +50,6 @@ _ARROW_HALF_ANGLE = math.radians(40.0)
 # Face parts of a handle mesh, stored in the ``PART_ATTRIBUTE`` face attribute.
 PART_ATTRIBUTE = "fbp_handle_part"
 PART_HANDLE = 0
-PART_SWATCH = 1
 PART_STOP_RING = 2
 
 
@@ -148,10 +147,9 @@ def append_arrow_geometry(verts, faces, start, end, thickness, head_length):
 class HandleShape:
     """Faces tagged by part, plus loose edges that the overlay draws as guides.
 
-    Parts: ``PART_HANDLE`` is the accent fill, ``PART_SWATCH`` is filled with
-    the colour the control stands for (a gradient stop) and ``PART_STOP_RING``
-    is the light ring around a swatch. Loose edges are thin guide lines (the
-    line between gradient stops, dashed radius circles).
+    Parts: ``PART_HANDLE`` is the accent fill and ``PART_STOP_RING`` a light
+    ring (a hollow stop). Loose edges are thin guide lines (a gradient's base
+    line, dashed radius circles).
     """
 
     __slots__ = ("verts", "faces", "edges", "parts")
@@ -339,17 +337,6 @@ def vector_handle_geometry(size):
         )
         faces.append(tuple(range(start, start + len(outline))))
     return verts, faces
-
-
-def gradient_stop_geometry(size):
-    """A colour stop: a swatch disc inside a thin light ring."""
-    size = max(float(size), 1.0e-6)
-    outer = size * 0.5
-    ring = size * 0.11
-    shape = HandleShape()
-    shape.ring(0.0, 0.0, outer, outer - ring, part=PART_STOP_RING, segments=32)
-    shape.disc(0.0, 0.0, outer - ring, part=PART_SWATCH, segments=32)
-    return shape
 
 
 def range_bar_geometry(size):
@@ -669,7 +656,6 @@ __all__ = [
     "GUIDE_OUTLINE_COLOR",
     "PART_ATTRIBUTE",
     "PART_HANDLE",
-    "PART_SWATCH",
     "PART_STOP_RING",
     "HandleShape",
     "dashed_pieces",
@@ -691,7 +677,6 @@ __all__ = [
     "vector_handle_geometry",
     "range_bar_geometry",
     "range_center_geometry",
-    "gradient_stop_geometry",
     "radius_handle_geometry",
     "ensure_viewport_handle_material",
     "follow_constraint",

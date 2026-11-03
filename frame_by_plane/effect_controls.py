@@ -50,7 +50,6 @@ from .viewport_handles import (
     bounds_handle_geometry,
     direction_handle_geometry,
     ensure_viewport_handle_material,
-    gradient_stop_geometry,
     is_attached_to,
     offset_handle_geometry,
     point_handle_geometry,
@@ -846,16 +845,16 @@ def _control_mesh_signature(rig, mode, role, spec=None, control=None):
     parameters = _control_mesh_parameters(rig, mode, role, spec, control)
     for key in sorted(parameters):
         extra += f":{key}={_format_parameter(parameters[key])}"
-    return f"fbp_handle_v9:{mode}:{role}:{size:.6f}{extra}"
+    return f"fbp_handle_v10:{mode}:{role}:{size:.6f}{extra}"
 
 
 def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
     """Return the flat, plane-local mesh of one control.
 
     Shapes are thin and single-coloured, as in Grease Pencil's deform box:
-    dots for bounds, a hollow ring for centres, a thin cross for offsets,
-    line arrows for angles, colour stops and a dot on the line for gradients
-    and a knob with a dashed circle for radii.
+    dots for bounds and for the ends of a gradient line, a hollow ring for
+    centres, a thin cross for offsets, line arrows for angles and a knob with
+    a dashed circle for radii.
     """
     mode = str(mode or "").upper()
     role = str(role or "").upper()
@@ -873,7 +872,9 @@ def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
             radial_angle=parameters.get("angle", 0.0),
         )
     if mode in {"GRADIENT_RANGE", "GRADIENT_LIGHT_RANGE"}:
-        return gradient_stop_geometry(size)
+        # The ends of the gradient's base line: plain dots. The colours are
+        # drawn beside the line by handle_overlay's stop gizmos.
+        return bounds_handle_geometry(size, role)
     if mode == "TILT_RANGE":
         return range_bar_geometry(size)
     if mode == "RADIUS":

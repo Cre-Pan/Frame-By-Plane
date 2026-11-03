@@ -161,6 +161,17 @@ def _screen_distance_to_triangle_sq(point, a, b, c):
     )
 
 
+_LINE_PICK_PENALTY_SQ = 4.0
+
+
+def _is_gradient_line(handle):
+    try:
+        from .effect_controls import KEY_MODE
+        return str(handle.get(KEY_MODE, "") or "").upper() == "RANGE_CENTER"
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+
+
 def fbp_handle_under_cursor(context, coord, radius):
     """The viewport handle (Crop, Gradient, Shape Mask...) under ``coord``.
 
@@ -197,6 +208,21 @@ def fbp_handle_under_cursor(context, coord, radius):
         try:
             matrix = evaluated.matrix_world
             points = [matrix @ vertex.co for vertex in mesh.vertices]
+            if _is_gradient_line(handle):
+                # A gradient's base line drags the whole gradient. It is a
+                # loose edge along local X, drawn at its real size; the dots
+                # on it win when both are in reach.
+                for edge in mesh.edges:
+                    a, b = edge.vertices
+                    if not edge.is_loose or abs(mesh.vertices[a].co.y) > 1.0e-6 or abs(mesh.vertices[b].co.y) > 1.0e-6:
+                        continue
+                    start = location_3d_to_region_2d(region, region_data, points[a])
+                    end = location_3d_to_region_2d(region, region_data, points[b])
+                    if start is None or end is None:
+                        continue
+                    distance = _point_segment_distance_sq(point[0], point[1], start.x, start.y, end.x, end.y) + _LINE_PICK_PENALTY_SQ
+                    if distance <= limit + _LINE_PICK_PENALTY_SQ and (best is None or distance < best[0]):
+                        best = (distance, handle)
             # Picked where it is drawn: knobs keep one size on screen.
             fixed = handle_screen_scale(handle, region, region_data, ui_scale)
             if fixed is not None:
