@@ -2644,22 +2644,47 @@ def _simplified_linear_key_values(key_frames, value_at):
     return dict(simplified)
 
 
+_TIMING_TABLES = {}
+
+
+def _timing_table(file_count, durations, loop_mode):
+    """``(order, cumulative ends, cycle length)`` for one timing, memoised.
+
+    Rebuilding the order for every timeline frame made baking a sequence's
+    offset curve cost rows x frames; the table is built once per timing.
+    """
+    raw = tuple(durations or ())[:file_count]
+    key = (file_count, raw, loop_mode)
+    table = _TIMING_TABLES.get(key)
+    if table is None:
+        order, seq_durations = _timing_order_for_mode(file_count, list(raw), loop_mode)
+        cumulative = []
+        acc = 0
+        for duration in seq_durations:
+            acc += max(1, int(duration))
+            cumulative.append(acc)
+        table = (tuple(order), tuple(cumulative), max(1, sum(seq_durations)))
+        if len(_TIMING_TABLES) >= 256:
+            _TIMING_TABLES.clear()
+        _TIMING_TABLES[key] = table
+    return table
+
+
 def _source_index_at_elapsed(elapsed, file_count, durations, loop_mode):
+    from bisect import bisect_right
+
     file_count = max(1, int(file_count or 1))
     if file_count <= 1:
         return 0
-    order, seq_durations = _timing_order_for_mode(file_count, durations, loop_mode)
-    cycle_total = max(1, sum(seq_durations))
     loop_mode = str(loop_mode or 'NONE')
+    order, cumulative, cycle_total = _timing_table(file_count, durations, loop_mode)
     if loop_mode in {'REPEAT', 'PINGPONG'}:
         local = int(max(0, elapsed)) % cycle_total
     else:
         local = int(max(0, min(elapsed, cycle_total - 1)))
-    acc = 0
-    for src, dur in zip(order, seq_durations, strict=True):
-        acc += max(1, int(dur))
-        if local < acc:
-            return max(0, min(file_count - 1, int(src)))
+    position = bisect_right(cumulative, local)
+    if position < len(order):
+        return max(0, min(file_count - 1, int(order[position])))
     return max(0, min(file_count - 1, int(order[-1] if order else 0)))
 
 
@@ -2707,6 +2732,44 @@ def _timing_transition_elapsed_values(file_count, durations, loop_mode, elapsed_
                 break
             yield elapsed
         cycle_start += cycle_total
+
+
+def _insert_linear_keys(id_data, data_path, key_values, set_key):
+    """Key ``{frame: value}`` on ``data_path`` of ``id_data``.
+
+    The first key goes through ``set_key`` (``keyframe_insert``), which
+    creates the action, slot and F-Curve the usual way. The rest are added to
+    that F-Curve in one block instead of one ``keyframe_insert`` each, which
+    took most of a sequence rebuild on long timelines. Callers set the
+    interpolation afterwards, as before.
+    """
+    items = sorted((int(frame), value) for frame, value in key_values.items())
+    if not items:
+        return
+    set_key(*items[0])
+    if len(items) == 1:
+        return
+    curve = None
+    if data_path:
+        matches = [
+            fcurve for fcurve in (fbp_action_fcurves(id_data) or ())
+            if fcurve.data_path == data_path
+        ]
+        if len(matches) == 1 and len(matches[0].keyframe_points) == 1:
+            curve = matches[0]
+    if curve is None:
+        for frame, value in items[1:]:
+            set_key(frame, value)
+        return
+    points = curve.keyframe_points
+    points.add(len(items) - 1)
+    flat = []
+    for frame, value in items:
+        flat.extend((float(frame), float(value)))
+    points.foreach_set("co", flat)
+    points.foreach_set("handle_left", flat)
+    points.foreach_set("handle_right", flat)
+    curve.update()
 
 
 def _install_frame_offset_keyframes(tex_node, *, file_count=1, frame_start=1, durations=None, loop_mode='NONE', frame_number_base=1, source_indices=None, image_user_start=None, hold_start=None, hold_end=None, scene=None):
@@ -2792,10 +2855,9 @@ def _install_frame_offset_keyframes(tex_node, *, file_count=1, frame_start=1, du
                 key_frames.add(timeline_frame)
 
         key_values = _simplified_linear_key_values(key_frames, offset_at)
-        for timeline_frame, value in key_values.items():
-            set_key(timeline_frame, value)
-
         tree = getattr(tex_node, "id_data", None)
+        _insert_linear_keys(tree, data_path, key_values, set_key)
+
         if data_path:
             for fcurve in fbp_action_fcurves(tree) or ():
                 if fcurve.data_path == data_path:
