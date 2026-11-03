@@ -209,6 +209,17 @@ try:
     finally:
         scrub._scrub_header_available = available
 
+    # The Timeline Playback popover rows: Light Playback and the image cache.
+    try:
+        geo = importlib.import_module(addon.__name__ + ".geometry_nodes")
+        cache = importlib.import_module(addon.__name__ + ".playback_cache")
+        layout = StubLayout()
+        cache.fbp_draw_playback_cache(layout, bpy.context)
+        geo.fbp_draw_playback_light_settings(_PanelProxy(object), bpy.context)
+        drawn += 2
+    except (TypeError, AttributeError) as exc:
+        failures.append(f"Playback popover: {exc}\n{traceback.format_exc()}")
+
     assert drawn > 5, drawn
     assert not failures, "\n".join(failures)
     print(f"FBPTEST ui_draw_sweep: PASS ({drawn} draws)")

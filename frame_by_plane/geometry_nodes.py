@@ -2499,6 +2499,11 @@ def fbp_draw_playback_light_settings(self, context):
     layout = self.layout
     layout.separator()
     layout.prop(scene, "fbp_playback_light_mode", text="Light Playback")
+    try:
+        from .playback_cache import fbp_draw_playback_cache
+        fbp_draw_playback_cache(layout, context)
+    except ImportError:
+        pass
 
 
 def _fbp_playback_popover():

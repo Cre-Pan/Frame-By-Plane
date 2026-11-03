@@ -5313,6 +5313,103 @@ def test_frame_path_lookup_contract(_module):
                     pass
 
 
+def test_playback_cache_contract(_module):
+    """The Playback popover's cache check counts the frames a sequence shows.
+
+    Every distinct sequence frame in the playback range needs its decoded
+    pixels in Blender's Memory Cache; when they do not fit, playback slows down
+    from the frame where the cache is full. Raise Image Cache sets the limit to
+    fit, capped by the computer's memory.
+    """
+    cache = importlib.import_module(f"{PACKAGE}.playback_cache")
+    builder = importlib.import_module(f"{PACKAGE}.builder")
+    scene = bpy.context.scene
+    folder = WORKDIR / "fbp_playback_cache_sequence_1024"
+    folder.mkdir(parents=True, exist_ok=True)
+    names = []
+    for index in range(1, 5):
+        path = folder / f"cache_{index:04d}.png"
+        names.append(path.name)
+        if path.is_file():
+            continue
+        image = bpy.data.images.new("FBP Cache Fixture", width=1024, height=512, alpha=True)
+        try:
+            image.generated_color = (0.1 * index, 0.3, 0.6, 1.0)
+            image.filepath_raw = str(path)
+            image.file_format = "PNG"
+            image.save()
+        finally:
+            bpy.data.images.remove(image)
+    preferences = bpy.context.preferences.system
+    original_limit = int(preferences.memory_cache_limit)
+    original_range = (scene.frame_start, scene.frame_end, scene.use_preview_range)
+    rig = builder.build_fbp_rig(
+        bpy.context, "FBP Playback Cache", str(folder), names,
+        (0.0, 0.0, 0.0), target_collection=scene.collection,
+    )
+    try:
+        scene.use_preview_range = False
+        scene.frame_start, scene.frame_end = 1, 40
+        bpy.context.view_layer.update()
+        plan = cache.fbp_playback_frame_plan(scene)
+        sequence_images = [
+            image for image in bpy.data.images
+            if image.source == "SEQUENCE" and image.name in plan
+        ]
+        assert sequence_images, plan
+        frames = plan[sequence_images[0].name]
+        # Four files: the range shows each of them, and nothing else.
+        assert 1 <= len(frames) <= len(names), frames
+        # Before the viewport decodes a frame Blender reports no size; the
+        # estimate then reads it from the PNG header.
+        assert cache._png_header_size(sequence_images[0])[:2] == (1024, 512)
+
+        estimate = cache.fbp_playback_cache_estimate(scene, use_cache=False)
+        assert estimate["images"] >= 1 and estimate["frames"] >= len(frames)
+        assert estimate["needed_mb"] >= 1
+
+        preferences.memory_cache_limit = 0
+        assert cache.fbp_playback_cache_estimate(scene, use_cache=False)["fits"]
+        preferences.memory_cache_limit = 1
+        small = cache.fbp_playback_cache_estimate(scene, use_cache=False)
+        assert small["needed_mb"] > 1, small
+        assert not small["fits"]
+        assert small["target_mb"] > 1
+
+        class Recorder:
+            def __init__(self, calls):
+                self.calls = calls
+                self.alert = False
+            def row(self, **_kwargs):
+                return Recorder(self.calls)
+            column = row
+            def separator(self, **_kwargs):
+                pass
+            def label(self, **kwargs):
+                self.calls.append(("label", kwargs.get("text", ""), self.alert))
+            def operator(self, identifier, **kwargs):
+                self.calls.append(("operator", identifier, kwargs.get("text", "")))
+
+        calls = []
+        cache.fbp_draw_playback_cache(Recorder(calls), bpy.context)
+        operators = [call[1] for call in calls if call[0] == "operator"]
+        assert operators == ["fbp.playback_cache_raise", "fbp.playback_preload"], calls
+        assert any(call[0] == "label" and call[2] for call in calls), calls
+        assert bpy.ops.fbp.playback_cache_raise() == {"FINISHED"}
+        assert int(preferences.memory_cache_limit) == small["target_mb"]
+        assert cache.fbp_playback_cache_estimate(scene, use_cache=False)["fits"]
+        ram = cache.fbp_physical_memory_mb()
+        assert ram == 0 or ram >= 256
+    finally:
+        preferences.memory_cache_limit = original_limit
+        scene.frame_start, scene.frame_end, scene.use_preview_range = original_range
+        for obj in [*rig.children_recursive, rig]:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+
+
 def test_blur_samples_skip_disabled_taps(_module):
     """Blurs fetch only the taps Samples enables, with an identical image.
 
@@ -6444,6 +6541,7 @@ def run_background():
             ("blur_samples_skip_disabled_taps", test_blur_samples_skip_disabled_taps),
             ("ui_draw_pass_contract", test_ui_draw_pass_contract),
             ("frame_path_lookup_contract", test_frame_path_lookup_contract),
+            ("playback_cache_contract", test_playback_cache_contract),
             ("color_key_merges_chroma_key", test_color_key_merges_chroma_key),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
             ("toon_boom_contract", test_toon_boom_contract),

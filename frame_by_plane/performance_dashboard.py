@@ -887,6 +887,28 @@ def build_performance_report(scene):
                 ),
             )
         )
+    try:
+        from .playback_cache import fbp_playback_cache_estimate
+        cache = fbp_playback_cache_estimate(scene, use_cache=False)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        cache = {}
+    if cache.get("images") and not cache.get("fits", True):
+        guidance.append(
+            _guidance(
+                "WARNING",
+                "PLAYBACK_CACHE",
+                (
+                    f"The image sequences in the playback range need about "
+                    f"{format_memory(int(cache['needed_mb']) * 1024 * 1024)} of image cache; "
+                    f"the Memory Cache Limit is {format_memory(int(cache['limit_mb']) * 1024 * 1024)}."
+                ),
+                action=(
+                    "Playback slows down from the frame where the cache is full. "
+                    "Use Raise Image Cache in the Timeline's Playback popover, "
+                    "then Preload Frames."
+                ),
+            )
+        )
     if total_observed_ms >= 100.0:
         guidance.append(
             _guidance(
