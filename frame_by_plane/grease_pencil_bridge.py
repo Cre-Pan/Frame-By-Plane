@@ -69,7 +69,12 @@ from .identifiers import (
     stable_id,
 )
 from .ownership import tag_managed
-from .safe_tasks import cancel_scheduled_prefixes, schedule_once, scheduled_task_pending
+from .safe_tasks import (
+    cancel_scheduled_prefixes,
+    schedule_once,
+    scheduled_payload_pending,
+    scheduled_task_pending,
+)
 from .gp_runtime_state import GP_TASK_PREFIXES, clear_runtime_collections
 from .registration import (
     append_handler_once,
@@ -8566,6 +8571,10 @@ def fbp_gp_frame_change(scene, _depsgraph=None):
     scene_pointer = _canvas_pointer(scene)
     if not scene_pointer:
         return
+    task_name = f"grease_pencil.frame_publish:{scene_pointer}"
+    if scheduled_payload_pending(task_name):
+        # The queued publish reads the scene again when it runs.
+        return
 
     def _publish():
         if fbp_undo_guard_active() or fbp_render_mutation_blocked():
@@ -8578,7 +8587,7 @@ def fbp_gp_frame_change(scene, _depsgraph=None):
         return None
 
     schedule_once(
-        f"grease_pencil.frame_publish:{scene_pointer}",
+        task_name,
         _publish,
         first_interval=0.03,
     )

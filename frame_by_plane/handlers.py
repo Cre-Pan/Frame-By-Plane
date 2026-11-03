@@ -964,7 +964,12 @@ def fbp_deferred_active_layer_ui_sync():
     changed = False
     if rig is not None:
         try:
+            rig_name = str(getattr(rig, "name", "") or "")
             for index, item in enumerate(tuple(getattr(scene, "fbp_layers", ()) or ())):
+                # ``item.obj`` looks the stored name up in bpy.data, so only
+                # resolve the row that can match: the one carrying this name.
+                if str(getattr(item, "obj_name", "") or "") != rig_name:
+                    continue
                 if getattr(item, "obj", None) is rig:
                     if int(getattr(scene, "fbp_layer_stack_index", -1)) != index:
                         scene.fbp_layer_stack_index = index

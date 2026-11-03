@@ -2499,6 +2499,11 @@ def fbp_draw_playback_light_settings(self, context):
     layout = self.layout
     layout.separator()
     layout.prop(scene, "fbp_playback_light_mode", text="Light Playback")
+    try:
+        from .playback_cache import fbp_draw_playback_cache
+        fbp_draw_playback_cache(layout, context)
+    except ImportError:
+        pass
 
 
 def _fbp_playback_popover():
@@ -2726,7 +2731,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 # every alpha-aware and Evolve-capable effect on every frame.
                 runtime_profile = _fbp_effect_runtime_profile(rig)
                 active_effect_ids = runtime_profile.get("active_ids", frozenset())
-                if not active_effect_ids:
+                if not active_effect_ids or runtime_profile.get("frame_idle", False):
                     continue
                 geometry_source_sync = bool(runtime_profile.get("geometry_source_sync", False))
                 shader_source_sync = bool(
@@ -9859,7 +9864,7 @@ def _fbp_remember_geometry_input(rig, modifier, prop_name, value):
 
 def fbp_pull_geometry_modifier_edits(rig):
     """Write mesh effect inputs edited in the Modifiers panel to the layer."""
-    if not rig or not _FBP_GEOMETRY_INPUT_WRITTEN:
+    if not rig:
         return 0
     pulled = 0
     for effect_id in tuple(fbp_effect_ids_for_rig(rig)):
@@ -9874,6 +9879,11 @@ def fbp_pull_geometry_modifier_edits(rig):
             pointer = int(modifier.as_pointer())
         except FBP_DATA_ERRORS:
             continue
+        try:
+            from .effect_shells import fbp_sync_geometry_panel_inputs
+            pulled += fbp_sync_geometry_panel_inputs(rig, effect_id, modifier)
+        except ImportError:
+            pass
         inputs = None
         for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
             key = (pointer, prop_name)
@@ -9937,6 +9947,13 @@ def fbp_update_geometry_effect(
     node_group = _fbp_ensure_geometry_effect_group(rig, effect_id, modifier)
     if not node_group:
         return False
+    if not bool(definition.get("custom", False)):
+        try:
+            # The rest of the panel (Animate, quality, shading) as inputs.
+            from .effect_shells import fbp_extend_geometry_group
+            fbp_extend_geometry_group(node_group, effect_id)
+        except ImportError:
+            pass
 
     requested = None if property_names is None else {
         str(name) for name in property_names if str(name or "")
@@ -13384,12 +13401,24 @@ def _fbp_index_sample_taps(node_tree):
             return
     except FBP_DATA_ERRORS:
         return
+    # ``NodeSocket.links`` scans every link of the tree on each access, which
+    # made this pass quadratic in the size of large groups (Riso Print,
+    # blurs). Index the links once by socket instead.
+    links_to = {}
+    links_from = {}
+    try:
+        for link in node_tree.links:
+            links_to.setdefault(link.to_socket.as_pointer(), link)
+            links_from.setdefault(link.from_socket.as_pointer(), []).append(link)
+    except FBP_DATA_ERRORS:
+        return
+
     def upstream(socket):
         # Follow one input link, skipping layout reroutes.
         for _guard in range(16):
-            if not socket.is_linked:
+            link = links_to.get(socket.as_pointer())
+            if link is None:
                 return None
-            link = socket.links[0]
             node = link.from_node
             if getattr(node, "type", "") != "REROUTE":
                 return link.from_socket
@@ -13397,7 +13426,7 @@ def _fbp_index_sample_taps(node_tree):
         return None
 
     def downstream(socket, depth=0):
-        for link in socket.links:
+        for link in links_from.get(socket.as_pointer(), ()):
             node = link.to_node
             if getattr(node, "type", "") == "REROUTE":
                 if depth < 16:
@@ -17235,7 +17264,7 @@ def _fbp_store_runtime_effect_ids(rig, effect_ids):
     return normalized
 
 
-def _fbp_runtime_effect_ids(rig):
+def _fbp_runtime_effect_ids(rig, key=None):
     """Return the current effect stack for per-frame hot paths.
 
     ``Object.fbp_effects`` is a ``SKIP_SAVE`` UI mirror, so it is empty after a
@@ -17244,8 +17273,10 @@ def _fbp_runtime_effect_ids(rig):
     until the Effects panel happened to rebuild it. On a cache miss, inspect
     only the current effect modifiers/material nodes once, then keep the result
     in the bounded runtime cache. No schema conversion or asset rebuild occurs.
+    ``key`` lets a caller that already built the cache key skip rebuilding it.
     """
-    key = _fbp_effect_ids_cache_key(rig)
+    if key is None:
+        key = _fbp_effect_ids_cache_key(rig)
     if not key or not key[0]:
         return ()
     cached = _FBP_EFFECT_IDS_CACHE.get(key)
@@ -17293,13 +17324,18 @@ def _fbp_scene_effect_runtime_rigs(scene):
                 <= _FBP_EFFECT_SCENE_CACHE_SECONDS
             ):
                 names = tuple(cached.get("rig_names", ()) or ())
-                resolved = tuple(
-                    rig for name in names
-                    for rig in (scene.objects.get(name),)
-                    if rig is not None
-                )
-                if len(resolved) == len(names):
-                    return resolved
+                # ``scene.objects.get`` walks the scene's object view for
+                # every name, which made this per-frame lookup quadratic in
+                # the layer count. One pass over the view resolves them all.
+                wanted = frozenset(names)
+                found = {}
+                if wanted:
+                    for obj in scene.objects:
+                        obj_name = obj.name
+                        if obj_name in wanted:
+                            found[obj_name] = obj
+                if len(found) == len(names):
+                    return tuple(found[name] for name in names)
                 _FBP_EFFECT_SCENE_RIG_CACHE.pop(scene_key, None)
         except FBP_DATA_ERRORS:
             pass
@@ -17347,7 +17383,7 @@ def _fbp_effect_runtime_profile(rig):
             "shader_nodes_by_instance": {}, "frame_geometry_modifiers": (),
             "frame_shader_targets": (),
         }
-    effect_ids = tuple(_fbp_runtime_effect_ids(rig))
+    effect_ids = tuple(_fbp_runtime_effect_ids(rig, key))
     active_ids = frozenset(effect_ids)
     plane = _fbp_plane(rig)
     try:
@@ -17570,6 +17606,22 @@ def _fbp_effect_runtime_profile(rig):
         "shader_nodes_by_instance": shader_nodes_by_instance,
         "frame_geometry_modifiers": tuple(frame_geometry_modifiers),
         "frame_shader_targets": tuple(frame_shader_targets),
+        # A stack with nothing that moves per frame: no source sync, no keyed
+        # or driven setting, no Evolve-capable or procedural effect and no
+        # live Lattice. The frame handler skips such layers outright. Evolve
+        # toggles stay covered because ``evolve_pairs`` lists every
+        # Evolve-capable effect whether or not Evolve is on.
+        "frame_idle": not (
+            geometry_source_sync
+            or shader_source_sync
+            or animated_effect_properties
+            or animated_instance_channels
+            or instance_animation_pairs
+            or instance_speed_fcurve_pairs
+            or evolve_pairs
+            or procedural_frame_effects
+            or FBP_EFFECT_LATTICE in active_ids
+        ),
     }
     if len(_FBP_EFFECT_RUNTIME_PROFILE_CACHE) >= 512 and key not in _FBP_EFFECT_RUNTIME_PROFILE_CACHE:
         _FBP_EFFECT_RUNTIME_PROFILE_CACHE.clear()

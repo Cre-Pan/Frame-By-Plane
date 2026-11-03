@@ -1044,6 +1044,10 @@ def fbp_obj_matches_runtime_token(obj, token):
 
 
 def fbp_is_silent_property_update(obj):
+    # Hot path: every layer-row getter asks this. Nothing is silent most of
+    # the time, so skip resolving the runtime key of ``obj``.
+    if not _FBP_SILENT_OBJECT_POINTERS:
+        return False
     key = fbp_obj_runtime_key(obj)
     return bool(key is not None and _FBP_SILENT_OBJECT_POINTERS.get(key, 0) > 0)
 

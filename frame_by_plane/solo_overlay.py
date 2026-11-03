@@ -130,7 +130,12 @@ def solo_layer_count(scene):
         return 0
     count = 0
     try:
-        count += sum(1 for item in getattr(scene, "fbp_layers", ()) or () if bool(getattr(item, "solo", False)))
+        layers = getattr(scene, "fbp_layers", None)
+        if layers:
+            # One native read for every row; this runs on each viewport redraw.
+            flags = [False] * len(layers)
+            layers.foreach_get("solo", flags)
+            count += sum(1 for flag in flags if flag)
     except FBP_DATA_ERRORS:
         pass
     try:

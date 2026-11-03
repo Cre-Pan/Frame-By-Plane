@@ -588,6 +588,10 @@ def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
         obj = getattr(update, "id", None)
         if not isinstance(obj, bpy.types.Object):
             continue
+        # Modifier input edits and stack changes tag geometry; a plain move
+        # or a material edit does not, so it has nothing to sync here.
+        if not bool(getattr(update, "is_updated_geometry", True)):
+            continue
         obj = getattr(obj, "original", obj)
         if not bool(getattr(obj, "is_fbp_plane", False)):
             continue

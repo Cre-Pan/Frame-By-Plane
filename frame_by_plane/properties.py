@@ -471,8 +471,15 @@ def _call_core(name, *args, default=None):
         return default
 
 
+_FBP_LAYERS_MODULE = None
+
+
 def _fbp_layers_func(name):
-    from . import layers
+    global _FBP_LAYERS_MODULE
+    layers = _FBP_LAYERS_MODULE
+    if layers is None:
+        from . import layers
+        _FBP_LAYERS_MODULE = layers
     return getattr(layers, name)
 
 

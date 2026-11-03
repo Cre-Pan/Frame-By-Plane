@@ -4206,6 +4206,14 @@ def _fbp_motion_frame_change(scene, _depsgraph=None):
         scene_key = fbp_obj_runtime_key(scene)
         if scene_key is None:
             return
+        task_name = f"motion.viewport_frame_sync.{scene_key}"
+        try:
+            from .safe_tasks import scheduled_payload_pending
+            if scheduled_payload_pending(task_name):
+                # The queued sync resolves the scene again when it runs.
+                return
+        except ImportError:
+            pass
         try:
             scene_name = str(getattr(scene, "name_full", getattr(scene, "name", "")) or "")
         except FBP_DATA_ERRORS:
@@ -4232,7 +4240,7 @@ def _fbp_motion_frame_change(scene, _depsgraph=None):
         try:
             from .safe_tasks import schedule_once
             schedule_once(
-                f"motion.viewport_frame_sync.{scene_key}",
+                task_name,
                 _sync,
                 first_interval=0.05,
             )

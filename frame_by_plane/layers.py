@@ -1372,8 +1372,16 @@ def iter_fbp_rigs_in_collection(collection, recursive=True):
 def get_layer_item_for_rig(context, rig):
     if not rig:
         return None
+    try:
+        rig_name = str(rig.name)
+    except FBP_DATA_ERRORS:
+        return None
     for item in context.scene.fbp_layers:
         try:
+            # ``item.obj`` is a name lookup in bpy.data; only the row that
+            # stores this name can resolve to ``rig``.
+            if str(item.obj_name or "") != rig_name:
+                continue
             if item.obj == rig:
                 return item
         except ReferenceError:
@@ -2732,9 +2740,18 @@ def fbp_layer_depth_value_from_cache(rig, depth_cache=None):
 def _safe_layer_obj(layer_item):
     try:
         obj = layer_item.obj
-        if obj and object_in_scene(obj):
+        if not obj:
+            return None
+        # ``layer_item.obj`` already resolved the object through
+        # ``bpy.data.objects``; only Scene membership is left to check.
+        # These getters run for every drawn Layers row and column.
+        context = bpy.context
+        scene = context.scene if context else None
+        if not scene:
             return obj
-    except ReferenceError:
+        if scene.objects.get(obj.name) == obj:
+            return obj
+    except FBP_DATA_ERRORS:
         pass
     return None
 
