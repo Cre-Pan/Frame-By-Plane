@@ -102,6 +102,30 @@ def _rigs_with_handles(context):
     return pointers
 
 
+def _shows_lattice_handles(rig):
+    """True while the layer's Lattice shows Corner Pin or Grid point handles.
+
+    Those draw their own Perspective quad or Grid lines on the layer's edges,
+    so the transform box steps aside as it does for Crop.
+    """
+    try:
+        from .lattice_bones import bones_object
+        from .lattice_corner_pin import CORNER_ROLE_KEY
+        from .lattice_pins import PIN_POINT_KEY
+    except ImportError:
+        return False
+    try:
+        armature = bones_object(rig)
+        if armature is None or not armature.visible_get():
+            return False
+        return any(
+            not bone.bone.hide and (bone.get(CORNER_ROLE_KEY) or bone.get(PIN_POINT_KEY) is not None)
+            for bone in armature.pose.bones
+        )
+    except FBP_DATA_ERRORS:
+        return False
+
+
 def _flatten(matrix):
     """Column-major floats, the layout gizmo matrix targets use."""
     return [matrix[row][column] for column in range(4) for row in range(4)]
@@ -594,11 +618,11 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
             cage.matrix_offset = _unflatten(binding.get())
             try:
                 plane = rig.fbp_plane_target
-                draw_only = plane is not None and plane.as_pointer() in with_handles
+                draw_only = (plane is not None and plane.as_pointer() in with_handles) or _shows_lattice_handles(rig)
             except FBP_DATA_ERRORS:
                 draw_only = False
-            # Effect handles (Crop, Gradient...) take over: they sit on the
-            # same edges and Crop draws its own frame.
+            # Effect handles (Crop, Gradient, Lattice Corner Pin and Grid...)
+            # take over: they sit on the same edges and draw their own frame.
             cage.hide = draw_only
             # Thin white lines as in Grease Pencil; other selected layers
             # are a dimmer grey so the active one stands out.

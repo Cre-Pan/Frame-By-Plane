@@ -39,8 +39,9 @@ HANDLE_KEY = "fbp_lattice_handle"
 SHAPE_KEY = "fbp_lattice_handle_shape"
 
 # Handle shapes: meshes drawn flat on the drawing, in bone space (X, Y). Faces
-# draw filled, so strokes are thin polygons like the effect controls: dots for
-# points, thick L brackets for corners, a dashed circle for a pin's area.
+# draw filled, so strokes are thin polygons. As in Grease Pencil's deform box:
+# small rings for grid points, an X for Corner Pin corners, a dashed circle for
+# a pin's area.
 _SHAPES = {
     "PIN": "FBP Handle • Pin",
     "BEND": "FBP Handle • Bend",
@@ -55,13 +56,14 @@ _AREA_KINDS = {"PIN", "BEND"}
 PIN_AREA_DEFAULT = 2.6
 _AREA_STEP = 0.2
 # Bump when a shape changes: shapes saved in older files are rebuilt in place.
-SHAPE_VERSION = 3
+SHAPE_VERSION = 4
 SHAPE_VERSION_KEY = "fbp_lattice_handle_shape_version"
-# One accent for every handle, shared with the effect controls (Crop, Extend
-# and the others); the shape tells the kinds apart. (normal, selected, active)
+# Light handles like the effect controls (Crop, Extend...) and Grease
+# Pencil's deform box; selected ones take the gizmo yellow. The shape tells
+# the kinds apart. (normal, selected, active)
 HANDLE_COLORS = (
-    (1.0, 0.55, 0.05),
-    (1.0, 0.86, 0.6),
+    (0.86, 0.86, 0.86),
+    (1.0, 0.86, 0.3),
     (1.0, 1.0, 1.0),
 )
 HANDLE_WIRE_WIDTH = 2.0
@@ -210,14 +212,6 @@ def _shape_object(kind, area=None):
         for index in range(0, count, 2):
             band(radius, width, segments=2, start=index * step, sweep=step, closed=False)
 
-    def bracket(arm, thickness):
-        """A thick L whose outer corner sits on the handle, opening to +X/+Y."""
-        half = thickness * 0.5
-        polygon((
-            (-half, -half), (arm, -half), (arm, half),
-            (half, half), (half, arm), (-half, arm),
-        ))
-
     if kind == "PIN":
         # Puppet pin: a dot in a ring, its area as a dashed circle.
         polygon(ring_points(0.45, 20))
@@ -236,9 +230,21 @@ def _shape_object(kind, area=None):
         ))
         dashes(_area_ratio(area if area is not None else PIN_AREA_DEFAULT), 0.12)
     elif kind == "POINT":
-        polygon(ring_points(1.0, 20))
-    elif kind in {"GRID_CORNER", "CORNER"}:
-        bracket(2.4, 0.6)
+        # Grid point: a small ring, like the Grid mode of Grease Pencil.
+        band(0.8, 0.34, segments=20)
+    elif kind == "GRID_CORNER":
+        band(1.0, 0.4, segments=24)
+    elif kind == "CORNER":
+        # Corner Pin corner: an X, like the Perspective mode.
+        for angle in (math.radians(45.0), math.radians(135.0)):
+            c, s_ = math.cos(angle), math.sin(angle)
+            # Counter-clockwise, so the face points at the viewer.
+            polygon((
+                (-1.5 * c + 0.2 * s_, -1.5 * s_ - 0.2 * c),
+                (1.5 * c + 0.2 * s_, 1.5 * s_ - 0.2 * c),
+                (1.5 * c - 0.2 * s_, 1.5 * s_ + 0.2 * c),
+                (-1.5 * c - 0.2 * s_, -1.5 * s_ + 0.2 * c),
+            ))
     else:  # IK: a ring with a cross, the hand's target.
         band(1.0, 0.18)
         for angle in (0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi):

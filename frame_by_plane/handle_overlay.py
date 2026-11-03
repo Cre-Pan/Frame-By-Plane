@@ -75,6 +75,89 @@ def _mask_guides(context):
         return []
 
 
+def _ring_radius(world, pose_bone):
+    """World radius of a Grid point's ring: its shape's outer edge, as drawn."""
+    try:
+        from .lattice_bones import SHAPE_KEY
+        kind = str(pose_bone.custom_shape[SHAPE_KEY]) if pose_bone.custom_shape is not None else ""
+    except (ImportError, KeyError, *FBP_DATA_ERRORS):
+        return 0.0
+    outer = {"POINT": 0.97, "GRID_CORNER": 1.2}.get(kind, 0.0)
+    try:
+        scale = float(pose_bone.custom_shape_scale_xyz[0])
+        if pose_bone.use_custom_shape_bone_size:
+            scale *= float(pose_bone.bone.length)
+        return outer * scale * float(world.to_scale()[0])
+    except FBP_DATA_ERRORS:
+        return 0.0
+
+
+def _lattice_guides(context):
+    """Thin lines between Lattice handles, as in Grease Pencil's deform box.
+
+    Corner Pin: the quad through its four corners (Perspective mode). Point
+    handles: dashed lines along the grid rows and columns (Grid mode).
+    """
+    try:
+        from .lattice_bones import is_bones_object
+        from .lattice_corner_pin import CORNER_ROLE_KEY
+        from .lattice_pins import PIN_GRID_KEY, PIN_POINT_KEY
+        from .viewport_handles import dashed_pieces
+    except ImportError:
+        return []
+    segments = []
+    for armature in tuple(getattr(context, "visible_objects", ()) or ()):
+        if not is_bones_object(armature):
+            continue
+        try:
+            world = armature.matrix_world
+            corners, points, grid = {}, {}, None
+            for bone in armature.pose.bones:
+                if bone.bone.hide:
+                    continue
+                role = str(bone.get(CORNER_ROLE_KEY, "") or "")
+                if role:
+                    corners[role] = world @ bone.head
+                    continue
+                index = bone.get(PIN_POINT_KEY)
+                if index is not None and bone.get(PIN_GRID_KEY):
+                    points[int(index)] = (world @ bone.head, _ring_radius(world, bone))
+                    grid = str(bone.get(PIN_GRID_KEY))
+        except (*FBP_DATA_ERRORS, IndexError):
+            continue
+        quad = [corners.get(role) for role in ("BL", "BR", "TR", "TL")]
+        if all(point is not None for point in quad):
+            for index in range(4):
+                segments.extend((quad[index], quad[(index + 1) % 4]))
+        if grid and points:
+            try:
+                count_u, count_v = (int(value) for value in grid.split("x"))
+            except ValueError:
+                continue
+            lines = []
+            for v in range(count_v):
+                lines.append([points.get(v * count_u + u) for u in range(count_u)])
+            for u in range(count_u):
+                lines.append([points.get(v * count_u + u) for v in range(count_v)])
+            for line in lines:
+                for first, second in zip(line, line[1:]):
+                    if first is None or second is None:
+                        continue
+                    # Stop at the rings, so no line runs over a handle.
+                    full = (second[0] - first[0]).length
+                    if full <= first[1] + second[1] + 1.0e-9:
+                        continue
+                    direction = (second[0] - first[0]) / full
+                    start = first[0] + direction * first[1]
+                    end = second[0] - direction * second[1]
+                    length = (end - start).length
+                    # Dashes in a 2D frame along the segment, then back to 3D.
+                    dash = length / 9.0
+                    for piece in dashed_pieces([(0.0, 0.0), (length, 0.0)], dash, dash * 0.8):
+                        segments.extend((start + direction * piece[0][0], start + direction * piece[-1][0]))
+    return segments
+
+
 def _swatch_color(obj):
     try:
         from .effect_controls import control_swatch_color
@@ -169,7 +252,8 @@ def _draw_handles():
         return
     handles = _visible_handles(context)
     mask_guides = _mask_guides(context)
-    if not handles and not mask_guides:
+    lattice_guides = _lattice_guides(context)
+    if not handles and not mask_guides and not lattice_guides:
         return
     try:
         depsgraph = context.evaluated_depsgraph_get()
@@ -180,7 +264,7 @@ def _draw_handles():
         scale = float(context.preferences.system.ui_scale) or 1.0
     except FBP_DATA_ERRORS:
         scale = 1.0
-    guides = []
+    guides = list(lattice_guides)
     for solid, _dashed in mask_guides:
         guides.extend(solid)
     for _solid, dashed in mask_guides:
