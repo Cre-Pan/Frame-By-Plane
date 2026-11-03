@@ -11,9 +11,9 @@ Python gizmo per layer, laid on the image plane:
   proportions of a corner drag;
 * drag the round knob above the box to rotate the layer around its anchor
   (Ctrl snaps to 15 degrees);
-* click the knob to show the anchor (the rig origin), then drag it: it snaps
-  to the centre, the corners and the middle of the edges, and the layer
-  stays where it is.
+* click the knob to show the anchor, then drag it: it snaps to the centre,
+  the corners and the middle of the edges. The anchor is stored on the layer
+  and only the box uses it: the rig origin does not move.
 
 A plain click inside the box goes on to Select Through Transparency, so
 clicking a layer behind still works; a click on a dot, an edge or the knob
@@ -349,9 +349,10 @@ class FBP_GGT_cursor_probe(bpy.types.GizmoGroup):
 # dots, the knob and the anchor follow the layer while it moves.
 #
 # Parts: MOVE (inside the box), C0..C3 (corners), E0..E3 (edges), ROTATE (the
-# knob above the top edge) and ANCHOR (the rig origin, which the layer turns
-# and scales around). A click on the knob shows the anchor, which can then be
-# dragged; it snaps to the centre, the corners and the middle of the edges.
+# knob above the top edge) and ANCHOR (the point the knob turns the layer
+# around: the rig origin until it is moved). A click on the knob shows the
+# anchor, which can then be dragged; it snaps to the centre, the corners and
+# the middle of the edges.
 
 _ROTATE_OFFSET_PX = 18.0
 _ROTATE_RADIUS_PX = 4.0
@@ -452,8 +453,9 @@ def _build_box_frame(world, center, size, region, region_data):
     if per_unit is None:
         return None
     knob = top + axis_y * (_ROTATE_OFFSET_PX / per_unit)
-    anchor = world.translation.copy()
-    # The anchor sits on the layer: drop the rig origin on the box plane.
+    anchor_local = layer_anchor_local(rig)
+    anchor = (world @ anchor_local) if anchor_local is not None else world.translation.copy()
+    # The anchor sits on the layer: drop it on the box plane.
     normal = axis_x.cross(axis_y)
     if normal.length > 1.0e-9:
         normal.normalize()
@@ -566,62 +568,37 @@ def _plane_hit(region, region_data, coord, point, normal):
     return origin + direction * ((point - origin).dot(normal) / denominator)
 
 
-def set_layer_anchor(rig, world_point):
-    """Move the layer's origin to ``world_point`` without moving anything.
-
-    The plane and every other child keep their place, Child Of constraints
-    that follow the rig are compensated, and location keys shift with the
-    origin so an animated layer keeps its path.
-    """
-    world = rig.matrix_world.copy()
-    local = world.inverted_safe() @ Vector(world_point)
-    local.z = 0.0
-    if local.length <= 1.0e-7:
-        return False
-    children = {child: child.matrix_world.copy() for child in rig.children}
-    before = rig.location.copy()
-    rig.matrix_world = world @ Matrix.Translation(local)
-    delta = rig.location - before
-    for child, matrix in children.items():
-        child.matrix_world = matrix
-    shift = Matrix.Translation(-local)
-    for obj in bpy.data.objects:
-        if obj == rig or obj.parent == rig:
-            continue
-        for constraint in getattr(obj, "constraints", ()):
-            if constraint.type == "CHILD_OF" and getattr(constraint, "target", None) == rig:
-                constraint.inverse_matrix = shift @ constraint.inverse_matrix
-    action = getattr(getattr(rig, "animation_data", None), "action", None)
-    fcurves = _action_fcurves(rig, action)
-    for fcurve in fcurves:
-        if fcurve.data_path != "location" or not 0 <= fcurve.array_index < 3:
-            continue
-        offset = float(delta[fcurve.array_index])
-        for key in fcurve.keyframe_points:
-            key.co.y += offset
-            key.handle_left.y += offset
-            key.handle_right.y += offset
-        fcurve.update()
-    return True
+ANCHOR_KEY = "fbp_box_anchor"
 
 
-def _action_fcurves(rig, action):
-    if action is None:
-        return ()
-    fcurves = getattr(action, "fcurves", None)
-    if fcurves is not None:
-        return tuple(fcurves)
-    # Layered actions (Blender 4.4+): the rig's slot channelbag.
+def layer_anchor_local(rig):
+    """The box anchor in rig space, or None for the rig origin."""
     try:
-        slot = rig.animation_data.action_slot
-        for layer in action.layers:
-            for strip in layer.strips:
-                bag = strip.channelbag(slot)
-                if bag is not None:
-                    return tuple(bag.fcurves)
-    except (AttributeError, TypeError) + FBP_DATA_ERRORS:
-        pass
-    return ()
+        value = rig.get(ANCHOR_KEY)
+        if value is None or len(value) < 2:
+            return None
+        return Vector((float(value[0]), float(value[1]), 0.0))
+    except (TypeError, ValueError) + FBP_DATA_ERRORS:
+        return None
+
+
+def set_layer_anchor(rig, world_point):
+    """Store the anchor the box rotates around, in rig space.
+
+    Only the box uses it: the rig origin, the hierarchy and the effects stay
+    as they are, so Blender draws no dashed parent line.
+    """
+    local = rig.matrix_world.inverted_safe() @ Vector(world_point)
+    if local.xy.length <= 1.0e-7:
+        if ANCHOR_KEY in rig:
+            del rig[ANCHOR_KEY]
+            return True
+        return False
+    current = layer_anchor_local(rig)
+    if current is not None and (current.xy - local.xy).length <= 1.0e-7:
+        return False
+    rig[ANCHOR_KEY] = (float(local.x), float(local.y))
+    return True
 
 
 _SHADERS = {}

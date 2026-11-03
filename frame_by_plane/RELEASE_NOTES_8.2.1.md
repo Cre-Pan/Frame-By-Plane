@@ -1,13 +1,14 @@
-# 🎞️ Frame By Plane — 8.2.0
+# 🎞️ Frame By Plane — 8.2.1
 
-Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet rig (Grid, Corner Pin, Bones and Pins), redraws every viewport control in one minimal style, gives every effect its own icon, makes Frame Stack follow image sequence playback, merges Chroma Key into Color Key, extends Riso Print, reorganizes the Z Pie and fixes several effects. Everything from 8.0.1 and 8.0.0 is listed below.
+Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet rig (Grid, Corner Pin, Bones and Pins), redraws every viewport control in one minimal style, gives every effect its own icon, makes Frame Stack follow image sequence playback, merges Chroma Key into Color Key, extends Riso Print, reorganizes the Z Pie and fixes several effects. Everything from 8.0.1 and 8.0.0 is listed below.
 
-## 🆕 New in 8.2.0
+## 🆕 New in 8.2.1
 
 - 🌀 **Lattice types:** the Lattice panel opens on a **Type** menu (**Grid**, **Corner Pin**, **Bones**, **Pins**, **Camera**). The types stack on the same cage, and all handles and bones of a layer live in one Controls armature, posed and keyed in Pose Mode.
 - 📌 **Puppet Pins:** click on the layer to place pins, move or rotate them and the drawing bends around them while the other pins hold. **Bend** pins only rotate or scale their area, and **Stiff Area** keeps a region rigid. Pins use native Hooks with weights that follow the drawing.
 - 🦴 **Bones:** click joints on the layer to build chains, with an IK handle at the end of each chain. A native Armature deforms the cage, so it keys, saves and renders like any rig.
 - ◰ **Corner Pin:** four corner handles map the layer onto any quad with true perspective. **Grid** gains **Point Handles** you can move and key without entering Edit Mode.
+- 🔲 **Transform box and anchor point:** selected layers show a Grease Pencil style box: drag inside to move, edges and corners to scale (**Alt** symmetric, **Shift** proportional) and the knob to rotate. Click the knob to show the **anchor point** and drag it: it snaps to the centre, the corners and the middle of the edges, and the knob turns the layer around it.
 - 🎯 **Minimal viewport controls:** the handles of Crop, Extend, Shape Masks and every effect with viewport controls are thin, single-colour shapes, always drawn in front in every shading mode, with no relationship lines. They follow a tilted layer and bend with the Lattice deformation. Gradients get Figma-style colour stops you can slide, arrows have an open V head, and Swirl, Bulge / Pinch, Ripple, Vignette, radial gradients and Shape Mask feathers show their reach as a dashed line.
 - 🧩 **Effects in Blender's Modifiers panel:** mesh effects are in **Add Modifier > Mesh**, and with a layer selected Properties > Modifiers shows its plane, so drag and drop, the eye and camera toggles and delete work natively. Every image effect gets a **Mask** subpanel. Preview: **Image Effects as Modifiers** for a first set of image effects and masks (Preferences > Advanced > LTS Feature Scope).
 - 💥 **Broken Glass** is a shatter tool: it cuts the layer into triangles (**Impact** or **Shards**) and one **Shatter** slider breaks them apart, with Spread, Gap, Explode, Depth, Fall and Spin, and presets.
@@ -23,7 +24,7 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.0 turns the Lattice into a puppet 
 - 👆 **Rig hidden, click the image:** new layers hide their controller wire. Click an image's solid pixels to select its layer; clicks on transparent, faint (under 15% opacity) or scattered pixels reach the layer behind, also on rotated, scaled or distant planes and through orthographic views and cameras. **Use Rig** (Rig Shape popup) brings the wire back per layer, and layers that use it are picked from the wire only, unless **Rig Layers: Click Image Too** is on. Preferences > Shortcuts holds both options plus **Use Rig on New Layers**. Layers without a rig draw nothing and skip all outline work, and Follow Frame outlines wait until playback stops, so playback stays light. Box and lasso select (tools, B and Ctrl+right-drag) pick rig-less layers by their solid pixels too, with the usual Set, Extend, Subtract and Intersect modes.
 - 🔷 **Rig shapes:** the Shape menu now lists Alpha Outline, Rectangle, Polygon (3 to 50 sides) and Circle, plus Custom. Diamond, Hexagon and Octagon rigs open as Polygons.
 
-### 🛠️ Fixes in 8.2.0
+### 🛠️ Fixes in 8.2.1
 
 - Gaussian, Directional and Triangle Blur skip the samples above their Samples setting: same picture, about a third fewer image reads at the default. Riso Print skips the third ink, the dot screens and the grain while they are off. Syncing effect modifier rows with the layer is about six times lighter.
 - Scrubbing and stepping frames with Mesh effects over image effects is about ten times lighter; box and lasso select of layers without a rig no longer stall on dense Mesh effects.
@@ -154,11 +155,11 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.2.0-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.2.0-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.2.0-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.2.0-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.2.0-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.2.1-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.2.1-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.2.1-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.2.1-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.2.1-linux_x64.zip` |
 
 Install the ZIP through **Edit > Preferences > Get Extensions > Install from Disk**. Do not install GitHub's automatically generated Source code ZIP.
 
