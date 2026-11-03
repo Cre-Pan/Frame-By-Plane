@@ -416,22 +416,24 @@ def _box_frame(rig, center, size, region, region_data):
     and region size. The returned dict is shared: callers only read it.
     """
     world = rig.matrix_world
+    anchor_local = layer_anchor_local(rig)
     key = (
         rig.as_pointer(), tuple(map(tuple, world)), tuple(center), tuple(size),
+        None if anchor_local is None else tuple(anchor_local),
         tuple(map(tuple, region_data.perspective_matrix)), region.width, region.height,
     )
     try:
         return _FRAME_CACHE[key]
     except KeyError:
         pass
-    frame = _build_box_frame(world, center, size, region, region_data)
+    frame = _build_box_frame(world, center, size, region, region_data, anchor_local)
     if len(_FRAME_CACHE) >= 64:
         _FRAME_CACHE.clear()
     _FRAME_CACHE[key] = frame
     return frame
 
 
-def _build_box_frame(world, center, size, region, region_data):
+def _build_box_frame(world, center, size, region, region_data, anchor_local):
     from bpy_extras.view3d_utils import location_3d_to_region_2d
 
     world = world.copy()
@@ -453,7 +455,6 @@ def _build_box_frame(world, center, size, region, region_data):
     if per_unit is None:
         return None
     knob = top + axis_y * (_ROTATE_OFFSET_PX / per_unit)
-    anchor_local = layer_anchor_local(rig)
     anchor = (world @ anchor_local) if anchor_local is not None else world.translation.copy()
     # The anchor sits on the layer: drop it on the box plane.
     normal = axis_x.cross(axis_y)
