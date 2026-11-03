@@ -116,6 +116,38 @@ def _handle_geometry(obj, depsgraph):
     return triangles, rim, guides
 
 
+_BOUNDS_CORNERS = ("TOP_LEFT", "TOP_RIGHT", "BOTTOM_RIGHT", "BOTTOM_LEFT")
+
+
+def _bounds_role(obj):
+    """``(frame key, role)`` of a Crop/Extend or Shape Mask bounds handle."""
+    try:
+        from .effect_controls import KEY_EFFECT_ID, KEY_MODE, KEY_ROLE
+        mode = str(obj.get(KEY_MODE, "") or "").upper()
+        if mode == "CROP_EXTEND":
+            from .viewport_handles import attached_plane
+            role = str(obj.get(KEY_ROLE, "") or "").upper()
+            owner = attached_plane(obj)
+            return (("CROP", getattr(owner, "name", ""), str(obj.get(KEY_EFFECT_ID, "") or "")), role)
+        from .object_masks import KEY_HANDLE_HELPER_NAME, KEY_HANDLE_ROLE, is_object_mask_bounds_handle
+        if is_object_mask_bounds_handle(obj):
+            role = str(obj.get(KEY_HANDLE_ROLE, "") or "").upper()
+            return (("MASK", str(obj.get(KEY_HANDLE_HELPER_NAME, "") or "")), role)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return None
+    return None
+
+
+def _triangles_center(triangles):
+    points = [point for part in triangles.values() for point in part]
+    if not points:
+        return None
+    total = Vector((0.0, 0.0, 0.0))
+    for point in points:
+        total += point
+    return total / len(points)
+
+
 def _draw_lines(shader, segments, width, color):
     if not segments:
         return
@@ -155,6 +187,7 @@ def _draw_handles():
         guides.extend(dashed)
     selected_color = handle_selected_color(context)
     shapes = []
+    frames = {}
     for obj in handles:
         try:
             triangles, rim, handle_guides = _handle_geometry(obj, depsgraph)
@@ -164,6 +197,16 @@ def _draw_handles():
         guides.extend(handle_guides)
         if not triangles:
             continue
+        bounds = _bounds_role(obj)
+        if bounds is not None:
+            frame = frames.setdefault(bounds[0], {"corners": {}, "sides": []})
+            center = _triangles_center(triangles)
+            if bounds[1] in _BOUNDS_CORNERS and center is not None:
+                frame["corners"][bounds[1]] = center
+            elif not selected:
+                # Edge dots appear when the cursor comes near the frame.
+                frame["sides"].append((triangles, rim, center))
+                continue
         fills = []
         accent = selected_color if selected else HANDLE_COLOR
         if PART_HANDLE in triangles:
@@ -175,6 +218,25 @@ def _draw_handles():
             if swatch is not None:
                 fills.append((triangles[PART_SWATCH], swatch))
         shapes.append((fills, rim))
+    for key, frame in frames.items():
+        corners = [frame["corners"].get(role) for role in _BOUNDS_CORNERS]
+        if all(corner is not None for corner in corners):
+            # The frame is a thin line between the corner dots.
+            for index in range(4):
+                guides.extend((corners[index], corners[(index + 1) % 4]))
+        try:
+            from .layer_cage import proximity_near
+            screen = [
+                location_3d_to_region_2d(region, context.region_data, point)
+                for point in [*frame["corners"].values(), *(center for _t, _r, center in frame["sides"])]
+                if point is not None
+            ]
+            near = proximity_near(("bounds", key), region, screen)
+        except (ImportError, *FBP_DATA_ERRORS):
+            near = True
+        if near:
+            for triangles, rim, _center in frame["sides"]:
+                shapes.append(([(triangles[part], HANDLE_COLOR) for part in triangles], rim))
     if not shapes and not guides:
         return
     gpu.state.blend_set("ALPHA")

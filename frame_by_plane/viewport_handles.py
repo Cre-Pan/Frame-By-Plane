@@ -249,43 +249,16 @@ def ellipse_points(cx, cy, rx, ry, segments=72):
 
 
 def bounds_handle_geometry(size, role):
-    """Return a thin side bar or an L corner for Crop/Extend-style bounds.
+    """A small dot on a corner or edge of a Crop/Extend-style frame.
 
-    Corners open towards the inside of the rectangle, so they read as the
-    corners of the frame they edit.
+    Grease Pencil's transform box style: the frame itself is a thin line the
+    overlay draws between the corner handles, and the dots mark where to
+    grab. ``role`` is kept for the callers; every role is the same dot.
     """
-    role = str(role or "").upper()
+    del role
     size = max(float(size), 1.0e-6)
-    thickness = max(size * 0.24, 0.002)
-    side_length = max(size * 2.2, thickness * 3.0)
-    corner_length = max(size * 1.3, thickness * 3.0)
-    verts = []
-    faces = []
-
-    if role in {"TOP", "BOTTOM"}:
-        append_rect_geometry(verts, faces, 0.0, 0.0, side_length, thickness)
-    elif role in {"LEFT", "RIGHT"}:
-        append_rect_geometry(verts, faces, 0.0, 0.0, thickness, side_length)
-    else:
-        sx = -1.0 if "RIGHT" in role else 1.0
-        sy = -1.0 if "TOP" in role else 1.0
-        half = thickness * 0.5
-        # Two arms sharing the corner square, without overlapping faces.
-        append_polygon_geometry(verts, faces, [
-            (-sx * half, -sy * half),
-            (sx * corner_length, -sy * half),
-            (sx * corner_length, sy * half),
-            (sx * half, sy * half),
-            (sx * half, sy * corner_length),
-            (-sx * half, sy * corner_length),
-        ] if sx * sy > 0 else [
-            (-sx * half, -sy * half),
-            (-sx * half, sy * corner_length),
-            (sx * half, sy * corner_length),
-            (sx * half, sy * half),
-            (sx * corner_length, sy * half),
-            (sx * corner_length, -sy * half),
-        ])
+    verts, faces = [], []
+    append_disc_geometry(verts, faces, 0.0, 0.0, size * 0.36, segments=20)
     return verts, faces
 
 

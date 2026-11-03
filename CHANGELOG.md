@@ -6,7 +6,8 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Layer selection and transform box
 
-- Selected layers show a **transform box** in the style of Blender's Grease Pencil box: drag inside to move the layer, an edge to stretch it, a corner to scale it, and the round handle above the box to rotate it around its centre (Ctrl snaps to 15 degrees). Unselected layers show nothing, so a layer without a rig wire still shows what it covers once selected. Moves are undoable and auto-keyed when Auto Keying is on. A plain click still goes to selection, and a layer that shows effect handles (Crop, Gradient...) keeps them on its edges instead of the box handles. Preferences > **Transform Box on Selected Layers** turns it off.
+- Selected layers show a **transform box** in the style of the new Grease Pencil deform box: a thin white frame with a pivot cross and a rotation knob on top. Drag inside to move the layer, an edge to stretch it, a corner to scale it, and the knob to rotate it around its centre (Ctrl snaps to 15 degrees). The corner and edge dots appear when the cursor comes near. Unselected layers show nothing, so a layer without a rig wire still shows what it covers once selected. Moves are undoable and auto-keyed when Auto Keying is on. A plain click still goes to selection, and a layer that shows effect handles (Crop, Gradient...) shows those instead of the box. Preferences > **Transform Box on Selected Layers** turns it off.
+- **Crop**, **Expand** and **Shape Mask** handles use the same style: a thin frame between corner dots, with the edge dots appearing as the cursor comes near.
 - Clicking a viewport handle (Crop, Expand, Gradient, Shape Mask...) now always picks the handle. Before, a handle drawn over another layer selected that layer instead, so handles covered by a layer in front could not be clicked.
 
 ### Effects

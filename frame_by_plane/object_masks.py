@@ -957,7 +957,7 @@ def _object_mask_bounds_handles_need_repair(helper, owner=None):
     for role, handle in by_role.items():
         mesh = getattr(handle, "data", None)
         size = _object_mask_handle_size(owner, role)
-        mesh_signature = f"shape_mask_bounds_v3:{role}:{size:.6f}"
+        mesh_signature = f"shape_mask_bounds_v5:{role}:{size:.6f}"
         try:
             if not is_attached_to(handle, plane):
                 return True
@@ -1007,7 +1007,7 @@ def _configure_object_mask_handle(handle, helper, owner, role):
     shape = object_mask_controller_shape(helper)
     owner_id = ensure_object_mask_owner_id(owner)
     size = _object_mask_handle_size(owner, role)
-    signature = f"shape_mask_bounds_v3:{role}:{size:.6f}"
+    signature = f"shape_mask_bounds_v5:{role}:{size:.6f}"
     changed = False
     mesh = getattr(handle, "data", None)
     plane = getattr(owner, "fbp_plane_target", None)

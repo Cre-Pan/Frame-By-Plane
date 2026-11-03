@@ -845,13 +845,13 @@ def _control_mesh_signature(rig, mode, role, spec=None, control=None):
     parameters = _control_mesh_parameters(rig, mode, role, spec, control)
     for key in sorted(parameters):
         extra += f":{key}={_format_parameter(parameters[key])}"
-    return f"fbp_handle_v5:{mode}:{role}:{size:.6f}{extra}"
+    return f"fbp_handle_v7:{mode}:{role}:{size:.6f}{extra}"
 
 
 def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
     """Return the flat, plane-local mesh of one control.
 
-    Shapes are thin and single-coloured: bars and L corners for bounds, a ring
+    Shapes are thin and single-coloured: dots for bounds, a ring
     for centres, a cross for offsets, line arrows for angles, colour stops for
     gradients and a knob with a dashed circle for radii.
     """

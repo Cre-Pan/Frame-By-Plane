@@ -13,8 +13,11 @@ Blender's own 2D cage gizmo laid on the image plane:
 
 A plain click is never taken by the cage: it goes on to Blender and to
 Select Through Transparency, so clicking a layer behind still works. A layer
-that shows effect handles (Crop, Gradient, Shape Mask...) keeps a draw-only
-cage, so those handles stay the ones that receive the drag.
+that shows effect handles (Crop, Gradient, Shape Mask...) shows those instead
+of the box, so they stay the ones that receive the drag.
+
+As in Grease Pencil's box, the edge and corner dots appear only when the
+cursor comes near; the knob on top and the pivot cross stay visible.
 """
 
 from __future__ import annotations
@@ -26,16 +29,8 @@ from .runtime import FBP_DATA_ERRORS
 
 
 _MAX_CAGES = 32
-_ACTIVE_COLOR = (1.0, 0.63, 0.16)
-_SELECTED_COLOR = (0.93, 0.34, 0.0)
-
-
-def _theme_colors(context):
-    try:
-        theme = context.preferences.themes[0].view_3d
-        return tuple(theme.object_active)[:3], tuple(theme.object_selected)[:3]
-    except (*FBP_DATA_ERRORS, IndexError):
-        return _ACTIVE_COLOR, _SELECTED_COLOR
+_ACTIVE_COLOR = (1.0, 1.0, 1.0)
+_SELECTED_COLOR = (0.72, 0.72, 0.72)
 
 
 def cage_enabled(context=None):
@@ -209,8 +204,122 @@ def _auto_key(rig):
         return
 
 
-_ROTATE_OFFSET_PX = 22.0
-_ROTATE_RADIUS_PX = 5.0
+# --- Cursor proximity -------------------------------------------------------
+#
+# Like Grease Pencil's transform box, secondary handles (edge squares, the
+# rotation knob, the side handles of Crop) appear only when the cursor comes
+# near. Drawing code registers screen-space zones; an invisible probe gizmo
+# sees every mouse move in the viewport and asks for a redraw only when the
+# cursor enters or leaves a zone.
+
+PROXIMITY_MARGIN_PX = 48.0
+_CURSOR = {"region": 0, "xy": None}
+_ZONES = {}
+
+
+def _region_key(region):
+    try:
+        return int(region.as_pointer())
+    except FBP_DATA_ERRORS:
+        return 0
+
+
+def _zone_near(rect, xy, margin):
+    if xy is None or rect is None:
+        return False
+    min_x, min_y, max_x, max_y = rect
+    x, y = xy
+    return (min_x - margin) <= x <= (max_x + margin) and (min_y - margin) <= y <= (max_y + margin)
+
+
+def proximity_near(key, region, points, margin=PROXIMITY_MARGIN_PX):
+    """True when the cursor is within ``margin`` px of the screen ``points``.
+
+    Also records the zone, so the probe redraws the view when the cursor
+    crosses its border.
+    """
+    points = [point for point in points if point is not None]
+    region_key = _region_key(region)
+    if not points or not region_key:
+        return False
+    rect = (
+        min(point[0] for point in points), min(point[1] for point in points),
+        max(point[0] for point in points), max(point[1] for point in points),
+    )
+    xy = _CURSOR["xy"] if _CURSOR["region"] == region_key else None
+    near = _zone_near(rect, xy, margin)
+    _ZONES[(region_key, key)] = (rect, margin, near)
+    return near
+
+
+def _cursor_moved(region, xy):
+    region_key = _region_key(region)
+    _CURSOR["region"] = region_key
+    _CURSOR["xy"] = (float(xy[0]), float(xy[1]))
+    changed = False
+    for (zone_region, _key), (rect, margin, near) in tuple(_ZONES.items()):
+        if zone_region == region_key and _zone_near(rect, _CURSOR["xy"], margin) != near:
+            changed = True
+            break
+    if changed:
+        try:
+            region.tag_redraw()
+        except FBP_DATA_ERRORS:
+            pass
+
+
+class FBP_GT_cursor_probe(bpy.types.Gizmo):
+    """Invisible gizmo that only watches the cursor; it never takes a click."""
+
+    bl_idname = "FBP_GT_cursor_probe"
+
+    def draw(self, context):
+        del context
+
+    def test_select(self, context, location):
+        try:
+            _cursor_moved(context.region, location)
+        except FBP_DATA_ERRORS:
+            pass
+        return -1
+
+
+def _proximity_wanted(context):
+    if _cage_layers(context):
+        return True
+    try:
+        from .handle_overlay import _visible_handles
+        return bool(_visible_handles(context))
+    except ImportError:
+        return False
+
+
+class FBP_GGT_cursor_probe(bpy.types.GizmoGroup):
+    bl_idname = "FBP_GGT_cursor_probe"
+    bl_label = "Frame By Plane Cursor Probe"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"3D", "PERSISTENT"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+        if _proximity_wanted(context):
+            return True
+        _ZONES.clear()
+        return False
+
+    def setup(self, context):
+        del context
+        self.gizmos.new(FBP_GT_cursor_probe.bl_idname)
+
+
+_ROTATE_OFFSET_PX = 18.0
+_ROTATE_RADIUS_PX = 3.5
 
 
 def _pixels_per_unit(region, region_data, origin, direction):
@@ -225,14 +334,20 @@ def _pixels_per_unit(region, region_data, origin, direction):
     return length if length > 1.0e-6 else None
 
 
-_MARK_HALF_PX = 4.0
+_MARK_RADIUS_PX = 3.0
+_CROSS_HALF_PX = 5.0
 
 
-def _square_triangles(half):
-    return [
-        (-half, -half, 0.0), (half, -half, 0.0), (half, half, 0.0),
-        (-half, -half, 0.0), (half, half, 0.0), (-half, half, 0.0),
-    ]
+def _cross_triangles(half, width=0.6):
+    """A small X, the pivot marker at the centre of Grease Pencil's box."""
+    import math
+
+    triangles = []
+    for angle in (math.radians(45.0), math.radians(-45.0)):
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        for x, y in ((-half, -width), (half, -width), (half, width), (-half, -width), (half, width), (-half, width)):
+            triangles.append((x * cos_a - y * sin_a, x * sin_a + y * cos_a, 0.0))
+    return triangles
 
 
 def _stem_triangles(bottom, top, half_width=0.6):
@@ -252,8 +367,8 @@ class FBP_GT_layer_rotate(bpy.types.Gizmo):
     bl_idname = "FBP_GT_layer_rotate"
     __slots__ = (
         "fbp_rim", "fbp_disc", "fbp_stem", "fbp_rig_name", "fbp_center",
-        "fbp_initial", "fbp_start_angle", "fbp_color", "fbp_square", "fbp_square_rim",
-        "fbp_marks",
+        "fbp_initial", "fbp_start_angle", "fbp_color", "fbp_dot", "fbp_dot_rim",
+        "fbp_cross", "fbp_cross_rim", "fbp_center_matrix", "fbp_marks", "fbp_near",
     )
 
     def setup(self):
@@ -263,10 +378,13 @@ class FBP_GT_layer_rotate(bpy.types.Gizmo):
         self.fbp_rim = self.new_custom_shape("TRIS", _ring_triangles(radius + 1.4, radius - 0.2))
         self.fbp_disc = self.new_custom_shape("TRIS", _disc_triangles(radius))
         self.fbp_stem = self.new_custom_shape("TRIS", _stem_triangles(-_ROTATE_OFFSET_PX, -radius))
-        half = _MARK_HALF_PX
-        self.fbp_square = self.new_custom_shape("TRIS", _square_triangles(half))
-        self.fbp_square_rim = self.new_custom_shape("TRIS", _square_triangles(half + 1.2))
+        self.fbp_dot = self.new_custom_shape("TRIS", _disc_triangles(_MARK_RADIUS_PX))
+        self.fbp_dot_rim = self.new_custom_shape("TRIS", _disc_triangles(_MARK_RADIUS_PX + 1.2))
+        self.fbp_cross = self.new_custom_shape("TRIS", _cross_triangles(_CROSS_HALF_PX))
+        self.fbp_cross_rim = self.new_custom_shape("TRIS", _cross_triangles(_CROSS_HALF_PX + 0.8, 1.4))
+        self.fbp_center_matrix = None
         self.fbp_marks = ()
+        self.fbp_near = False
         self.fbp_rig_name = ""
         self.fbp_center = (0.0, 0.0, 0.0)
         self.fbp_initial = None
@@ -274,34 +392,34 @@ class FBP_GT_layer_rotate(bpy.types.Gizmo):
         self.fbp_color = (1.0, 1.0, 1.0)
         self.use_draw_scale = False
 
-    def _draw_part(self, shape, color, alpha=1.0, select_id=None):
+    def _draw_shape(self, shape, color, alpha, matrix=None):
         self.color = color
         self.color_highlight = color
         self.alpha = alpha
         self.alpha_highlight = alpha
-        if select_id is None:
+        if matrix is None:
             self.draw_custom_shape(shape)
         else:
-            self.draw_custom_shape(shape, select_id=select_id)
+            self.draw_custom_shape(shape, matrix=matrix)
 
     def draw(self, context):
         del context
-        # Square marks on the corners and edge midpoints of the box, always
-        # visible like Grease Pencil's transform box (the cage itself only
-        # shows its handles on hover). They are drawn, never picked: the cage
-        # under them takes the drag.
-        for matrix in self.fbp_marks:
-            self.color = (0.0, 0.0, 0.0)
-            self.alpha = 0.5
-            self.draw_custom_shape(self.fbp_square_rim, matrix=matrix)
-            self.color = tuple(self.fbp_color)
-            self.alpha = 1.0
-            self.draw_custom_shape(self.fbp_square, matrix=matrix)
-        active = self.is_highlight or self.is_modal
-        color = (1.0, 1.0, 1.0) if active else tuple(self.fbp_color)
-        self._draw_part(self.fbp_stem, color, 0.9)
-        self._draw_part(self.fbp_rim, (0.0, 0.0, 0.0), 0.5)
-        self._draw_part(self.fbp_disc, color)
+        color = tuple(self.fbp_color)
+        # Like Grease Pencil's box: a pivot cross in the middle, the knob on
+        # top, and dots on the corners and edges only while the cursor is
+        # near. The dots are drawn, never picked: the cage under them takes
+        # the drag.
+        if self.fbp_center_matrix is not None:
+            self._draw_shape(self.fbp_cross_rim, (0.0, 0.0, 0.0), 0.45, self.fbp_center_matrix)
+            self._draw_shape(self.fbp_cross, color, 0.9, self.fbp_center_matrix)
+        if self.fbp_near and not self.is_modal:
+            for matrix in self.fbp_marks:
+                self._draw_shape(self.fbp_dot_rim, (0.0, 0.0, 0.0), 0.5, matrix)
+                self._draw_shape(self.fbp_dot, color, 1.0, matrix)
+        knob = (1.0, 0.85, 0.3) if (self.is_highlight or self.is_modal) else color
+        self._draw_shape(self.fbp_stem, color, 0.8)
+        self._draw_shape(self.fbp_rim, (0.0, 0.0, 0.0), 0.5)
+        self._draw_shape(self.fbp_disc, knob, 1.0)
 
     def draw_select(self, context, select_id):
         del context
@@ -450,7 +568,6 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
                 del bindings[name]
                 self._remove(cage)
                 self._remove(rotator)
-        active_color, selected_color = _theme_colors(context)
         active = getattr(context, "active_object", None)
         with_handles = _rigs_with_handles(context) if layers else set()
         region = getattr(context, "region", None)
@@ -459,7 +576,10 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
             entry = bindings.get(rig.name)
             if entry is None:
                 binding = _CageBinding(rig.name)
-                entry = bindings[rig.name] = (binding, self._new_cage(binding), self._new_rotator(rig.name))
+                # Created first so it draws last: Blender draws a group's
+                # gizmos in reverse order, and the squares go over the lines.
+                rotator = self._new_rotator(rig.name)
+                entry = bindings[rig.name] = (binding, self._new_cage(binding), rotator)
             binding, cage, rotator = entry
             if cage.is_modal or rotator.is_modal:
                 continue
@@ -477,11 +597,14 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
                 draw_only = plane is not None and plane.as_pointer() in with_handles
             except FBP_DATA_ERRORS:
                 draw_only = False
-            # Effect handles sit on the same edges: they keep the drag.
-            cage.hide_select = draw_only
-            color = active_color if rig == active else selected_color
+            # Effect handles (Crop, Gradient...) take over: they sit on the
+            # same edges and Crop draws its own frame.
+            cage.hide = draw_only
+            # Thin white lines as in Grease Pencil; other selected layers
+            # are a dimmer grey so the active one stands out.
+            color = _ACTIVE_COLOR if rig == active else _SELECTED_COLOR
             cage.color = color
-            cage.alpha = 0.9
+            cage.alpha = 0.9 if rig == active else 0.6
             cage.color_highlight = (1.0, 1.0, 1.0)
             cage.alpha_highlight = 1.0
             cage.line_width = 1.0
@@ -489,6 +612,8 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
 
     @staticmethod
     def _place_rotator(rotator, rig, center, size, region, region_data, draw_only, color):
+        from bpy_extras.view3d_utils import location_3d_to_region_2d
+
         rotator.hide = True
         if draw_only or region is None or region_data is None:
             return
@@ -504,13 +629,23 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
             location = top + up * (_ROTATE_OFFSET_PX * unit)
             rotator.matrix_basis = Matrix.Translation(location) @ rotation @ Matrix.Scale(unit, 4)
             rotator.fbp_center = tuple(world @ center)
+            middle = world @ center
+            middle_scale = _pixels_per_unit(region, region_data, middle, up)
+            rotator.fbp_center_matrix = (
+                Matrix.Translation(middle) @ rotation @ Matrix.Scale(1.0 / middle_scale, 4)
+                if middle_scale else None
+            )
             marks = []
+            screen = []
             hx, hy = size.x * 0.5, size.y * 0.5
             for dx, dy in ((-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)):
                 point = world @ Vector((center.x + dx * hx, center.y + dy * hy, center.z))
                 scale = _pixels_per_unit(region, region_data, point, up)
                 if scale is not None:
                     marks.append(Matrix.Translation(point) @ rotation @ Matrix.Scale(1.0 / scale, 4))
+                screen.append(location_3d_to_region_2d(region, region_data, point))
+            screen.append(location_3d_to_region_2d(region, region_data, location))
+            rotator.fbp_near = proximity_near(("cage", rig.name), region, screen)
             rotator.fbp_marks = tuple(marks)
             rotator.fbp_color = tuple(color)[:3]
             rotator.hide = False
@@ -518,7 +653,7 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
             return
 
 
-_CLASSES = (FBP_GT_layer_rotate, FBP_GGT_layer_cage)
+_CLASSES = (FBP_GT_cursor_probe, FBP_GGT_cursor_probe, FBP_GT_layer_rotate, FBP_GGT_layer_cage)
 
 
 def register():
