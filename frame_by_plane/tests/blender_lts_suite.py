@@ -6329,6 +6329,40 @@ def test_layer_box_animated_orientation_guard(_module):
     return "keyed layers keep their box orientation; Reset honours locks"
 
 
+def test_gizmo_fit_keeps_dragged_gizmo(_module):
+    """Gradient gizmo groups never free the gizmo that is being dragged."""
+    overlay = importlib.import_module(f"{PACKAGE}.handle_overlay")
+
+    class FakeGizmo:
+        def __init__(self):
+            self.is_modal = False
+            self.hide = False
+
+    class FakeGizmos(list):
+        def new(self, _idname):
+            gizmo = FakeGizmo()
+            self.append(gizmo)
+            return gizmo
+
+        def remove(self, gizmo):
+            assert not gizmo.is_modal, "a dragged gizmo was freed"
+            list.remove(self, gizmo)
+
+    gizmos = FakeGizmos()
+    overlay._fit_gizmos(gizmos, 3, "X")
+    assert len(gizmos) == 3 and not any(g.hide for g in gizmos)
+    dragged = gizmos[2]
+    dragged.is_modal = True
+    # The dragged end dot meets the other end: its line has no grips left.
+    overlay._fit_gizmos(gizmos, 0, "X")
+    assert dragged in gizmos and not dragged.hide
+    assert all(g.hide for g in gizmos if g is not dragged)
+    dragged.is_modal = False
+    overlay._fit_gizmos(gizmos, 1, "X")
+    assert len(gizmos) == 1 and not gizmos[0].hide
+    return "dragged gizmo kept, spares hidden then trimmed"
+
+
 def test_icon_runtime_contract(_module):
     icons = importlib.import_module(f"{PACKAGE}.ui_icons")
     icons.unregister_custom_icons()
@@ -6736,6 +6770,7 @@ def run_background():
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
+            ("gizmo_fit_keeps_dragged_gizmo", test_gizmo_fit_keeps_dragged_gizmo),
             ("icon_runtime_contract", test_icon_runtime_contract),
             ("layer_box_animated_orientation_guard", test_layer_box_animated_orientation_guard),
             ("save_reopen", test_save_reopen),

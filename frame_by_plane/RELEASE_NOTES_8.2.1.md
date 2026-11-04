@@ -35,6 +35,7 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet 
 - Transform popup: Reset Rotation no longer lays a vertical layer flat, and Reset Rotation / Reset Scale now leave locked channels alone and turn the box back with the layer, like right-click > Layer > Reset.
 - Playback and scrubbing with image effects (blurs, Edge, Emboss...) on image sequences: the per-frame check of the effects' image samples is about 40% lighter.
 - Effect modifiers no longer rewrite their sync state on every geometry update of the layer when the effect has a colour or vector setting.
+- Gradient and Color Plane handles: a handle being dragged is never removed mid-drag (for example when an end dot is dropped on the other end), which could crash Blender.
 - Gaussian, Directional and Triangle Blur skip the samples above their Samples setting: same picture, about a third fewer image reads at the default. Riso Print skips the third ink, the dot screens and the grain while they are off. Syncing effect modifier rows with the layer is about six times lighter.
 - Scrubbing and stepping frames with Mesh effects over image effects is about ten times lighter; box and lasso select of layers without a rig no longer stall on dense Mesh effects.
 - Mesh effect materials copy Math and Mix node inputs one by one instead of repeating the first value.
