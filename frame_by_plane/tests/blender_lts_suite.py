@@ -4923,6 +4923,32 @@ def test_playback_light_and_native_sample_timing(_module):
             geometry._fbp_copy_shader_image_user = original_copy
         # Timing is native animation now; Python no longer rewrites samples.
         assert calls["count"] == 0, calls
+
+        # Between validations a frame change resolves no sample node at all.
+        resolves = {"count": 0}
+        original_resolve = geometry._fbp_matrix_source_image_nodes
+
+        def counting_resolve(group):
+            resolves["count"] += 1
+            return original_resolve(group)
+
+        geometry._fbp_matrix_source_image_nodes = counting_resolve
+        try:
+            for frame in range(scene.frame_start, scene.frame_start + 8):
+                scene.frame_set(frame)
+        finally:
+            geometry._fbp_matrix_source_image_nodes = original_resolve
+        assert resolves["count"] <= 2, resolves
+        # A timing edit still reaches the samples on the very next frame.
+        source_curve = geometry._fbp_frame_offset_curve(source)
+        assert source_curve is not None
+        source_curve.keyframe_points.insert(scene.frame_start + 40, 3.0)
+        scene.frame_set(scene.frame_start + 2)
+        for group, node in samples:
+            sample_curve = geometry.fbp_find_action_fcurve(group, node.image_user.path_from_id("frame_offset"))
+            assert sample_curve is not None and len(sample_curve.keyframe_points) == len(source_curve.keyframe_points), (
+                node.name, len(sample_curve.keyframe_points) if sample_curve else None, len(source_curve.keyframe_points),
+            )
         assert all(geometry.fbp_find_action_fcurve(group, node.image_user.path_from_id("frame_offset")) is not None
                    for group, node in samples)
 
@@ -5557,6 +5583,17 @@ def test_blur_samples_skip_disabled_taps(_module):
         shells.fbp_shell_sync_values(rig)
         assert not any(node.mute for node in images), "keyed Samples must keep every tap"
         results["triangle_keyed_muted"] = 0
+        # The saved sync snapshot reads back colours as IDPropertyArray; an
+        # unchanged snapshot must compare equal so it is not rewritten on
+        # every geometry update of the plane.
+        snapshot_group = bpy.data.node_groups.new("FBP Snapshot Probe", "GeometryNodeTree")
+        try:
+            snapshot = {"color": (1.0, 0.5, 0.25, 1.0), "amount": 0.3, "mode": 2, "image": "\x00ID:Probe"}
+            snapshot_group["probe"] = snapshot
+            assert shells._same_snapshot(snapshot, dict(snapshot_group["probe"]))
+            assert not shells._same_snapshot({**snapshot, "amount": 0.4}, dict(snapshot_group["probe"]))
+        finally:
+            bpy.data.node_groups.remove(snapshot_group)
         geo.fbp_remove_effect(rig, "TRIANGLE_BLUR")
 
         # Riso Print: the third ink, the halftone dots and the grain are
@@ -6260,6 +6297,27 @@ def test_layer_box_animated_orientation_guard(_module):
         assert tuple(rig.location) == (0.0, 2.0, 0.0), tuple(rig.location)
         assert not sequence.fbp_reset_layer_transform(rig, 'POSITION'), "nothing left to reset"
         rig.lock_location[1] = False
+
+        # The Transform popup's Reset Rotation / Reset Scale are the same
+        # reset: a vertical layer stays vertical and locked channels stay.
+        rig.fbp_is_vertical = True
+        rig.rotation_euler = (math.radians(70.0), 0.2, 0.4)
+        rig.lock_rotation[1] = True
+        with bpy.context.temp_override(selected_objects=[rig], active_object=rig, object=rig):
+            # Operators are not registered in background runs: call execute.
+            assert sequence.FBP_OT_Transform.execute(types.SimpleNamespace(mode='RESET_ROT'), bpy.context) == {'FINISHED'}
+        assert rig.fbp_is_vertical, "Reset Rotation must not lay a vertical layer flat"
+        assert abs(rig.rotation_euler[0] - math.radians(90.0)) < 1.0e-5, tuple(rig.rotation_euler)
+        assert abs(rig.rotation_euler[1] - 0.2) < 1.0e-6 and abs(rig.rotation_euler[2]) < 1.0e-6, tuple(rig.rotation_euler)
+        rig.lock_rotation[1] = False
+        rig.scale = (2.0, 3.0, 4.0)
+        rig.lock_scale[0] = True
+        with bpy.context.temp_override(selected_objects=[rig], active_object=rig, object=rig):
+            # Operators are not registered in background runs: call execute.
+            assert sequence.FBP_OT_Transform.execute(types.SimpleNamespace(mode='RESET_SCALE'), bpy.context) == {'FINISHED'}
+        rest = sequence.fbp_layer_rest_scale(rig)
+        assert abs(rig.scale[0] - 2.0) < 1.0e-6 and all(abs(rig.scale[i] - rest[i]) < 1.0e-6 for i in (1, 2)), tuple(rig.scale)
+        rig.lock_scale[0] = False
     finally:
         scene.tool_settings.use_keyframe_insert_auto = auto_key
         scene.frame_set(frame)

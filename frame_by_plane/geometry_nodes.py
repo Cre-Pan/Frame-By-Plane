@@ -12709,6 +12709,37 @@ def _fbp_sync_private_offset_animation(source_node, node_group, image_nodes):
     ), True
 
 
+def _fbp_private_source_quick_signature(source_node, image_key, image_user, node_group):
+    """Identity of everything a private sample copies, without its nodes.
+
+    None when the timing curve and the samples' stored copy of it differ, so
+    the caller runs the full validation that mirrors the new curve.
+    """
+    try:
+        source_kind = str(getattr(getattr(source_node, "image", None), "source", "") or "").upper()
+        curve = _fbp_frame_offset_curve(source_node) if source_kind in {"SEQUENCE", "MOVIE"} else None
+        curve_signature = _fbp_frame_offset_curve_signature(curve) if curve is not None else ""
+        if curve_signature is None:
+            return None
+        stored = str(node_group.get(_FBP_PRIVATE_OFFSET_ANIM_KEY, "") or "")
+        if stored != curve_signature:
+            return None
+        user = tuple(
+            "ANIMATED" if attr == "frame_offset" and curve_signature else getattr(image_user, attr, None)
+            for attr in ("frame_duration", "frame_start", "frame_offset", "use_cyclic", "use_auto_refresh")
+        )
+        return (
+            image_key,
+            curve_signature,
+            str(getattr(source_node, "projection", "FLAT") or "FLAT"),
+            float(getattr(source_node, "projection_blend", 0.0) or 0.0),
+            user,
+            len(node_group.nodes),
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
 def _fbp_sync_private_shader_source(material, node_group):
     """Synchronize private image samples with a bounded validation cache.
 
@@ -12717,8 +12748,7 @@ def _fbp_sync_private_shader_source(material, node_group):
     periodically so external node edits still self-heal without imposing nine
     image-node comparisons per frame and per layer.
     """
-    image_nodes = _fbp_matrix_source_image_nodes(node_group)
-    if not image_nodes:
+    if not node_group:
         return False, False
     source_node = _fbp_shader_image_node(material)
     source_image = getattr(source_node, "image", None) if source_node else None
@@ -12731,6 +12761,22 @@ def _fbp_sync_private_shader_source(material, node_group):
     except FBP_DATA_ERRORS:
         image_key = None
     image_user = getattr(source_node, "image_user", None) if source_node else None
+    now = time.monotonic()
+    # Fast path for playback: with native sample timing nothing changes from
+    # frame to frame, and resolving every private sample node by name (about
+    # 25 lookups per blur) was most of this handler's cost. The quick
+    # signature reads only the source node, the timing curve and the group's
+    # node count; a full validation still runs at least every 2 seconds.
+    cached = _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.get(group_key) if group_key is not None else None
+    if cached and len(cached) > 2 and now - float(cached[1]) < 2.0:
+        quick = _fbp_private_source_quick_signature(
+            source_node, image_key, image_user, node_group
+        )
+        if quick is not None and quick == cached[2]:
+            return bool(source_image), False
+    image_nodes = _fbp_matrix_source_image_nodes(node_group)
+    if not image_nodes:
+        return False, False
     # Sequence timing normally lives in an F-Curve on frame_offset. The private
     # samples get the same curve, so the per-frame offset leaves the signature
     # and playback no longer rewrites every sample through Python.
@@ -12756,8 +12802,6 @@ def _fbp_sync_private_shader_source(material, node_group):
         )
     except FBP_DATA_ERRORS:
         source_signature = (image_key, tuple(user_signature), len(image_nodes))
-    now = time.monotonic()
-    cached = _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.get(group_key) if group_key is not None else None
     if (
         not offset_changed
         and cached and cached[0] == source_signature and now - float(cached[1]) < 2.0
@@ -12802,7 +12846,11 @@ def _fbp_sync_private_shader_source(material, node_group):
     if group_key is not None:
         if len(_FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE) >= 512 and group_key not in _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE:
             _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.clear()
-        _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE[group_key] = (source_signature, now)
+        _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE[group_key] = (
+            source_signature,
+            now,
+            _fbp_private_source_quick_signature(source_node, image_key, image_user, node_group),
+        )
     if changed:
         try:
             node_group.update_tag()

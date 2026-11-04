@@ -1486,6 +1486,18 @@ def _comparable(value):
         return None
 
 
+def _same_snapshot(stored, synced):
+    """True when the new sync snapshot equals the one already saved.
+
+    The saved snapshot comes back from the ID property with vectors and
+    colours as ``IDPropertyArray``, which never equals a tuple: a plain ``!=``
+    rewrote the snapshot on every sync, on every geometry update of the plane.
+    """
+    if stored.keys() != synced.keys():
+        return False
+    return all(_comparable(stored[key]) == _comparable(synced[key]) for key in stored)
+
+
 def _socket_as_modifier_value(rna, socket):
     value = socket.default_value
     if _is_color(rna):
@@ -1567,7 +1579,7 @@ def fbp_shell_sync_values(rig):
                 geo._fbp_sync_runtime_mutes(rig, effect_id, node)
             except FBP_DATA_ERRORS:
                 pass
-        if stored != synced:
+        if not _same_snapshot(stored, synced):
             try:
                 modifier.node_group[_SHELL_SYNCED_KEY] = stored
             except FBP_DATA_ERRORS:

@@ -562,12 +562,17 @@ class FBP_OT_Transform(Operator):
                 bbox_world = [rig.matrix_world @ mathutils.Vector(c) for c in fbp_object_local_bounds(rig)]
                 min_z = min(v.z for v in bbox_world)
                 rig.location.z -= min_z
-            elif self.mode == 'RESET_ROT':
-                rig.rotation_euler = (0.0, 0.0, 0.0)
-                rig.fbp_is_vertical = False
-            elif self.mode == 'RESET_SCALE':
-                base_vec = getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0))
-                rig.scale = base_vec
+            elif self.mode in {'RESET_ROT', 'RESET_SCALE'}:
+                # Same reset as right-click > Layer > Reset: a vertical layer
+                # stays vertical, locked channels stay and the box turns back
+                # with the layer. This used to lay vertical layers flat.
+                part = 'ROTATION' if self.mode == 'RESET_ROT' else 'SCALE'
+                if fbp_reset_layer_transform(rig, part):
+                    try:
+                        from .layer_cage import _auto_key
+                        _auto_key(rig)
+                    except ImportError:
+                        pass
         return {'FINISHED'}
 
 FBP_RESET_LAYER_ITEMS = (
