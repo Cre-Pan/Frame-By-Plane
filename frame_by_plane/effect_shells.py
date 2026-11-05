@@ -613,11 +613,11 @@ def _menu_identifier(rna, name):
     return str(rna.enum_items[0].identifier) if len(rna.enum_items) else ""
 
 
-def _add_inputs(group, entries):
+def _add_inputs(group, entries, panels=None):
     """Create one input (in its section) per entry; return mapping and readers."""
     interface = group.interface
     mapping, layer_mapping, used, menus = [], [], [], []
-    panels = {}
+    panels = {} if panels is None else panels
     for prop_name, socket_name, rna, storage, label, animate, section in entries:
         panel = None
         if section:
@@ -761,6 +761,83 @@ def _populate_shell_group(group, effect_id):
 _GEOMETRY_INPUTS_KEY = "fbp_panel_inputs"
 
 
+def _describe_mapped_choices(interface, definition):
+    """Name the choices of a mesh effect's numbered inputs.
+
+    Some mesh effects read a choice (Pattern, Mode, ...) as a number input.
+    The modifier shows it as a plain number, so its tooltip lists what each
+    number means and its range stops at the last choice.
+    """
+    sockets = {
+        str(item.name): item for item in interface.items_tree
+        if getattr(item, "item_type", "") == "SOCKET" and getattr(item, "in_out", "") == "INPUT"
+    }
+    for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
+        rna = _object_rna(prop_name)
+        item = sockets.get(str(socket_name))
+        if rna is None or item is None or rna.type != "ENUM" or getattr(rna, "is_enum_flag", False):
+            continue
+        socket_type = getattr(item, "socket_type", "")
+        if socket_type == "NodeSocketFloat" and str(getattr(item, "description", "") or ""):
+            # A described number input maps the choice its own way (-1/+1).
+            continue
+        if socket_type not in {"NodeSocketInt", "NodeSocketFloat"}:
+            continue
+        try:
+            choices = tuple(rna.enum_items)
+            item.description = ", ".join(f"{index} {choice.name}" for index, choice in enumerate(choices))
+            item.min_value = 0
+            item.max_value = max(0, len(choices) - 1)
+        except FBP_DATA_ERRORS:
+            pass
+
+
+def _section_native_inputs(interface, effect_id, definition, entries):
+    """Put a mesh effect's own inputs in the sections of its panel.
+
+    The modifier then reads like the Frame By Plane panel (Quality, Depth,
+    Optics, ...) instead of one long list. Sockets keep their identifiers,
+    so values, keyframes and drivers are untouched. Returns the sections by
+    title for the panel settings added after them.
+    """
+    geo = _geo()
+    section_of = {}
+    order = []
+    for title, _icon, names in geo._FBP_EFFECT_UI_GROUPS.get(effect_id, ()):
+        order.append(title)
+        for name in names:
+            section_of.setdefault(name, title)
+    sockets = {
+        str(item.name): item for item in interface.items_tree
+        if getattr(item, "item_type", "") == "SOCKET"
+        and getattr(item, "in_out", "") == "INPUT"
+        and getattr(item, "parent", None) is not None
+        and not str(getattr(item.parent, "name", "") or "")
+    }
+    moves = []
+    for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
+        item = sockets.get(str(socket_name))
+        title = section_of.get(prop_name)
+        if item is not None and title and getattr(item, "socket_type", "") != "NodeSocketGeometry":
+            moves.append((title, item))
+    titles = set(title for title, _item in moves) | set(entry[6] for entry in entries if entry[6])
+    panels = {}
+    for title in [title for title in dict.fromkeys(order) if title in titles]:
+        panel = interface.new_panel(title, default_closed=False)
+        try:
+            panel.description = "fbp_panel_inputs"
+        except FBP_DATA_ERRORS:
+            pass
+        panels[title] = panel
+    for title, item in moves:
+        panel = panels[title]
+        try:
+            interface.move_to_parent(item, panel, len(panel.interface_items))
+        except FBP_DATA_ERRORS:
+            pass
+    return panels
+
+
 def fbp_extend_geometry_group(group, effect_id):
     """Give a mesh effect's node group the panel controls it lacks.
 
@@ -813,6 +890,7 @@ def fbp_extend_geometry_group(group, effect_id):
             if not target.is_linked:
                 return False
             source = target.links[0].from_socket
+        _describe_mapped_choices(interface, definition)
         mapped_sockets = set((definition.get("property_map", {}) or {}).keys())
         entries = _shell_layout_entries(effect_id, skip=mapped_sockets)
         entries = [entry[:3] + ("RIG" if entry[3] == "MATERIAL" else entry[3],) + entry[4:] for entry in entries]
@@ -820,7 +898,8 @@ def fbp_extend_geometry_group(group, effect_id):
         panels_before = {
             int(item.as_pointer()) for item in interface.items_tree if getattr(item, "item_type", "") == "PANEL"
         }
-        _mapping, layer_mapping, used = _add_inputs(group, entries)
+        panels = _section_native_inputs(interface, effect_id, definition, entries)
+        _mapping, layer_mapping, used = _add_inputs(group, entries, panels)
         for item in interface.items_tree:
             if getattr(item, "item_type", "") == "PANEL" and int(item.as_pointer()) not in panels_before:
                 try:

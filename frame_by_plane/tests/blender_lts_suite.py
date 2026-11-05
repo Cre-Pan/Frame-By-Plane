@@ -6363,6 +6363,78 @@ def test_gizmo_fit_keeps_dragged_gizmo(_module):
     return "dragged gizmo kept, spares hidden then trimmed"
 
 
+def test_effect_panel_sections_and_hints(_module):
+    """Auto sections match whole words; heavy effects explain what helps."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    groups = geo._FBP_EFFECT_UI_GROUPS
+
+    def section_of(effect_id, prop_name):
+        for title, _icon, names in groups.get(effect_id, ()):
+            if prop_name in names:
+                return title
+        return ""
+
+    # "triangle" holds "angle" and "directional" holds "direction".
+    assert section_of("TRIANGLE_MASK", "fbp_triangle_mask_feather") == "Alpha / Mask"
+    assert section_of("DIRECTIONAL_BLUR", "fbp_directional_blur_samples") == "Quality"
+    assert section_of("GAUSSIAN_BLUR", "fbp_gaussian_blur_samples") == "Quality"
+    # "wind" holds "w"; "matte" in the effect name is not a source.
+    assert section_of("WIND_BENDER", "fbp_wind_pin_strength") == "Pinning"
+    assert section_of("ALPHA_MATTE", "fbp_alpha_matte_factor") == "Alpha / Mask"
+    # A lone mix factor joins the main section.
+    assert section_of("WHITE_BALANCE", "fbp_white_balance_factor") == "Color / Tone"
+    assert geo._fbp_auto_effect_ui_section("fbp_wind_strength", "Strength", {"wind"})[0] == "Shape / Mix"
+    assert geo._fbp_auto_effect_ui_section("fbp_grain_w", "Animate (W)")[0] == "Motion / Random"
+
+    blur = geo.fbp_effect_performance_hint("GAUSSIAN_BLUR")
+    assert "Samples" in blur and "renders keep" not in blur, blur
+    crystal = geo.fbp_effect_performance_hint("CRYSTAL")
+    assert "Playback Subdivision" in crystal and "renders keep" in crystal, crystal
+    assert geo.fbp_effect_performance_hint("FELT_FUZZ").startswith("Very heavy")
+
+    rig = types.SimpleNamespace(fbp_text_matrix_viewport_rows=0, fbp_text_matrix_render_rows=12)
+    assert geo._fbp_auto_rows_label(rig, "fbp_text_matrix_viewport_rows") == "Rows (Auto)"
+    assert geo._fbp_auto_rows_label(rig, "fbp_text_matrix_render_rows") == "Rows"
+    return "sections, hints and auto rows"
+
+
+def test_mesh_effect_modifier_sections(_module):
+    """A mesh effect's modifier groups its inputs and names its choices."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Modifier Sections")
+    owned = [rig, *rig.children_recursive]
+    try:
+        assert geo.fbp_add_effect(rig, "CRYSTAL", select_object_mask_helper=False, inherit_active_group=False)
+        _flush_fbp_safe_tasks()
+        modifier = next(
+            modifier
+            for obj in (rig, *rig.children_recursive)
+            for modifier in getattr(obj, "modifiers", ())
+            if modifier.type == "NODES" and modifier.node_group
+            and "Texture Type" in geo._fbp_interface_inputs(modifier.node_group)
+        )
+        interface = modifier.node_group.interface
+        sockets = {
+            item.name: item for item in interface.items_tree
+            if item.item_type == "SOCKET" and item.in_out == "INPUT"
+        }
+        texture = sockets["Texture Type"]
+        assert texture.parent.name == "Procedural Surface", texture.parent.name
+        assert sockets["Subdivision"].parent.name == "Quality"
+        assert sockets["Playback Subdivision"].parent.name == "Quality"
+        assert texture.description.startswith("0 Voronoi, 1 Fractal Noise"), texture.description
+        assert texture.max_value == 3
+        rig.fbp_crystal_texture_type = "WAVE"
+        importlib.import_module(f"{PACKAGE}.fbp_dirty").flush_dirty()
+        _flush_fbp_safe_tasks()
+        assert int(geo._fbp_modifier_input_get(modifier, texture.identifier)) == 2
+    finally:
+        for obj in owned:
+            if obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
+    return "sections and choices on the Crystal modifier"
+
+
 def test_icon_runtime_contract(_module):
     icons = importlib.import_module(f"{PACKAGE}.ui_icons")
     icons.unregister_custom_icons()
@@ -6771,6 +6843,8 @@ def run_background():
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
             ("gizmo_fit_keeps_dragged_gizmo", test_gizmo_fit_keeps_dragged_gizmo),
+            ("effect_panel_sections_and_hints", test_effect_panel_sections_and_hints),
+            ("mesh_effect_modifier_sections", test_mesh_effect_modifier_sections),
             ("icon_runtime_contract", test_icon_runtime_contract),
             ("layer_box_animated_orientation_guard", test_layer_box_animated_orientation_guard),
             ("save_reopen", test_save_reopen),
