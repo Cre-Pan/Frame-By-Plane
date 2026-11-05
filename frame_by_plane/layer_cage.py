@@ -355,8 +355,9 @@ class FBP_GGT_cursor_probe(bpy.types.GizmoGroup):
 # the middle of the edges.
 
 _ROTATE_OFFSET_PX = 18.0
-_ROTATE_RADIUS_PX = 4.0
-_MARK_RADIUS_PX = 3.0
+_ROTATE_RADIUS_PX = 5.0
+_ROTATE_DEADZONE_PX = 12.0
+_MARK_RADIUS_PX = 3.8
 _CROSS_HALF_PX = 5.0
 _ANCHOR_RING_PX = 7.0
 _PICK_DOT_PX = 8.0
@@ -367,7 +368,14 @@ _TARGET_RADIUS_PX = 2.2
 # Corners and edges, counter-clockwise from bottom left, as (x, y) signs.
 _CORNER_SIGNS = ((-1, -1), (1, -1), (1, 1), (-1, 1))
 _EDGE_SIGNS = ((0, -1), (1, 0), (0, 1), (-1, 0))
-PARTS = ("MOVE", "C0", "C1", "C2", "C3", "E0", "E1", "E2", "E3", "ROTATE", "ANCHOR")
+# ORIENT: the square below the bottom edge turns the box (the rig) while
+# the layer itself stays put, so later scaling follows the new direction.
+PARTS = ("MOVE", "C0", "C1", "C2", "C3", "E0", "E1", "E2", "E3", "ROTATE", "ANCHOR", "ORIENT")
+_ORIENT_HALF_PX = 4.5
+# Side handle bars: share of the side, longest length and thickness (px).
+_EDGE_BAR_FRACTION = 0.4
+_EDGE_BAR_MAX_PX = 90.0
+_EDGE_BAR_WIDTH_PX = 3.0
 
 # Layers showing their anchor (clicked on the knob), by rig name.
 _ANCHOR_MODE = set()
@@ -455,6 +463,9 @@ def _build_box_frame(world, center, size, region, region_data, anchor_local):
     if per_unit is None:
         return None
     knob = top + axis_y * (_ROTATE_OFFSET_PX / per_unit)
+    bottom = edges[0]
+    bottom_unit = _pixels_per_unit(region, region_data, bottom, axis_y) or per_unit
+    orient = bottom - axis_y * (_ROTATE_OFFSET_PX / bottom_unit)
     anchor = (world @ anchor_local) if anchor_local is not None else world.translation.copy()
     # The anchor sits on the layer: drop it on the box plane.
     normal = axis_x.cross(axis_y)
@@ -469,6 +480,7 @@ def _build_box_frame(world, center, size, region, region_data, anchor_local):
     return {
         "axis_x": axis_x, "axis_y": axis_y, "normal": normal,
         "corners": corners, "edges": edges, "top": top, "knob": knob,
+        "bottom": bottom, "orient": orient, "s_orient": screen(orient),
         "anchor": anchor, "targets": targets, "center": point(0, 0),
         "s_corners": [screen(value) for value in corners],
         "s_edges": [screen(value) for value in edges],
@@ -510,6 +522,8 @@ def _hit_part(frame, location, scale, rig_name):
         return "ANCHOR"
     if near(frame["s_knob"]):
         return "ROTATE"
+    if near(frame.get("s_orient")):
+        return "ORIENT"
     for index, screen_point in enumerate(frame["s_corners"]):
         if near(screen_point):
             return f"C{index}"
@@ -534,6 +548,9 @@ def layer_box_part_at(context, location):
     region, region_data = getattr(context, "region", None), getattr(context, "region_data", None)
     if region is None or region_data is None or not cage_enabled(context):
         return None
+    if not _gizmos_shown(context):
+        # The box is not drawn: it must not take the click either.
+        return None
     scale = _ui_scale(context)
     try:
         layers = _cage_layers(context)
@@ -556,6 +573,14 @@ def layer_box_part_at(context, location):
         if part is not None:
             return rig.name, part
     return None
+
+
+def _gizmos_shown(context):
+    try:
+        space = context.space_data
+        return bool(space.overlay.show_overlays and space.show_gizmo)
+    except FBP_DATA_ERRORS:
+        return False
 
 
 def _plane_hit(region, region_data, coord, point, normal):
@@ -661,6 +686,14 @@ def _ring(center, axis_x, axis_y, outer, inner, segments=24):
     return triangles
 
 
+def _square(center, axis_x, axis_y, half):
+    a = center + (-axis_x - axis_y) * half
+    b = center + (axis_x - axis_y) * half
+    c = center + (axis_x + axis_y) * half
+    d = center + (-axis_x + axis_y) * half
+    return [tuple(point) for point in (a, b, c, a, c, d)]
+
+
 def _cross(center, axis_x, axis_y, half, width):
     triangles = []
     for direction in ((axis_x + axis_y).normalized(), (axis_x - axis_y).normalized()):
@@ -689,7 +722,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
     __slots__ = (
         "fbp_rig_name", "fbp_center", "fbp_size", "fbp_active", "fbp_part",
         "fbp_initial", "fbp_press", "fbp_start", "fbp_anchor_preview", "fbp_snap",
-        "fbp_hover",
+        "fbp_hover", "fbp_children", "fbp_turn",
     )
 
     def setup(self):
@@ -704,6 +737,8 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
         self.fbp_hover = ""
+        self.fbp_children = None
+        self.fbp_turn = None
         self.use_draw_scale = False
         # Keep drawing while dragged, so the box follows the layer.
         self.use_draw_modal = True
@@ -765,9 +800,6 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         for index in range(4):
             outline.extend((corners[index], corners[(index + 1) % 4]))
         lines.append((outline, white, 0.9 if is_active else 0.6, 1.0))
-        if active_part.startswith("E"):
-            index = int(active_part[1])
-            lines.append(([corners[index], corners[(index + 1) % 4]], accent, 1.0, 2.0))
 
         def dot(point, color, radius, alpha=1.0):
             u = unit(point)
@@ -784,16 +816,38 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 part = f"C{index}"
                 if not modal or part == active_part:
                     dot(point, accent if part == active_part else white, _MARK_RADIUS_PX)
+            # Side handles: a short thick bar in the middle of each side, as
+            # in the Grease Pencil deform box. Only the bar thickens on hover.
             for index, point in enumerate(frame["edges"]):
                 part = f"E{index}"
-                if not modal or part == active_part:
-                    dot(point, accent if part == active_part else white, _MARK_RADIUS_PX)
+                if modal and part != active_part:
+                    continue
+                along = corners[(index + 1) % 4] - corners[index]
+                length = along.length
+                u = unit(point)
+                if length <= 1.0e-9 or u is None:
+                    continue
+                half = min(length * _EDGE_BAR_FRACTION, _EDGE_BAR_MAX_PX * u) * 0.5
+                along = along / length
+                bar = [point - along * half, point + along * half]
+                width = _EDGE_BAR_WIDTH_PX + (1.5 if part == active_part else 0.0)
+                lines.append((bar, (0.0, 0.0, 0.0), 0.5, width + 2.0))
+                lines.append((bar, accent if part == active_part else white, 1.0, width))
 
         # The knob on its stem above the top edge.
         if not modal or active_part == "ROTATE":
             lines.append(([frame["top"], frame["knob"]], white, 0.8, 1.0))
             knob_color = accent if active_part == "ROTATE" or showing else white
             dot(frame["knob"], knob_color, _ROTATE_RADIUS_PX)
+
+        # The orientation square on its stem below the bottom edge.
+        if not modal or active_part == "ORIENT":
+            lines.append(([frame["bottom"], frame["orient"]], white, 0.8, 1.0))
+            u = unit(frame["orient"])
+            if u is not None:
+                square_color = accent if active_part == "ORIENT" else white
+                fills.append((_square(frame["orient"], axis_x, axis_y, (_ORIENT_HALF_PX + 1.2) * u), (0.0, 0.0, 0.0), 0.5))
+                fills.append((_square(frame["orient"], axis_x, axis_y, _ORIENT_HALF_PX * u), square_color, 1.0))
 
         # The anchor: a small cross, a ring around it once shown, and the
         # snap targets with guides while it is dragged.
@@ -875,15 +929,25 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         part = self.fbp_hover
         if rig is None or frame is None or not part:
             return {"CANCELLED"}
+        if part == "MOVE" and event.alt and _alt_orbits(context):
+            # With Emulate 3 Button Mouse, Alt + drag orbits the view.
+            return {"CANCELLED"}
         self.fbp_part = part
         self.fbp_initial = rig.matrix_world.copy()
         self.fbp_press = (event.mouse_region_x, event.mouse_region_y)
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
-        if part == "ROTATE":
+        if part in {"ROTATE", "ORIENT"}:
+            if part == "ORIENT":
+                if transform_animated(rig):
+                    _notify(context, ORIENT_ANIMATED_MESSAGE)
+                    return {"CANCELLED"}
+                self.fbp_children = _children_inverses(rig)
             self.fbp_start = self._screen_angle(context, event, frame)
             if self.fbp_start is None:
                 return {"CANCELLED"}
+            # Pivot (screen and world), last cursor angle and the turn so far.
+            self.fbp_turn = [frame["s_anchor"].copy(), frame["anchor"].copy(), self.fbp_start, 0.0]
         else:
             hit = _plane_hit(context.region, context.region_data, self.fbp_press, frame["corners"][0], frame["normal"])
             if hit is None:
@@ -906,7 +970,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             return {"RUNNING_MODAL"}
         part = self.fbp_part
         try:
-            if part == "ROTATE":
+            if part in {"ROTATE", "ORIENT"}:
                 self._rotate(context, event, tweak, rig)
             elif part == "ANCHOR":
                 self._drag_anchor(context, event, rig)
@@ -986,15 +1050,21 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
     def _rotate(self, context, event, tweak, rig):
         import math
 
-        frame = self._frame(context, rig)
-        if frame is None:
+        turn_state = self.fbp_turn
+        if not turn_state:
             return
-        # The anchor does not move while rotating, so its screen point holds.
-        angle = self._screen_angle(context, event, frame)
-        if angle is None:
+        pivot_screen, pivot, last, total = turn_state
+        offset = Vector((event.mouse_region_x - pivot_screen.x, event.mouse_region_y - pivot_screen.y))
+        # Near the pivot the angle swings wildly with each pixel: hold it.
+        if offset.length < _ROTATE_DEADZONE_PX * _ui_scale(context):
             return
-        delta = angle - self.fbp_start
-        delta = math.atan2(math.sin(delta), math.cos(delta))
+        angle = math.atan2(offset.y, offset.x)
+        # Add up the change since the last move, so the turn never jumps by
+        # a full circle and can go past 180 degrees.
+        step_angle = angle - last
+        total += math.atan2(math.sin(step_angle), math.cos(step_angle))
+        turn_state[2], turn_state[3] = angle, total
+        delta = total
         if "SNAP" in tweak or event.ctrl:
             step = math.radians(15.0)
             delta = round(delta / step) * step
@@ -1004,9 +1074,12 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         # Counter-clockwise on screen, whichever side of the plane faces us.
         if normal.dot(view) < 0.0:
             delta = -delta
-        pivot = frame["anchor"]
         turn = Matrix.Translation(pivot) @ Matrix.Rotation(delta, 4, normal) @ Matrix.Translation(-pivot)
         self._apply(rig, turn @ initial)
+        if self.fbp_part == "ORIENT":
+            _keep_children(rig, initial, self.fbp_children)
+            context.area.header_text_set(f"Rotate Box: {math.degrees(delta):.1f}° (the layer stays)   Ctrl: 15° steps")
+            return
         context.area.header_text_set(f"Rotate Layer: {math.degrees(delta):.1f}°   Ctrl: 15° steps")
 
     def _drag_anchor(self, context, event, rig):
@@ -1047,6 +1120,8 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             if cancel:
                 if part != "ANCHOR":
                     rig.matrix_world = initial
+                if part == "ORIENT":
+                    _restore_children(self.fbp_children)
             elif part == "ANCHOR":
                 preview = self.fbp_anchor_preview
                 if preview is not None:
@@ -1058,11 +1133,141 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                         _undo_push("Move Layer Anchor")
             elif rig.matrix_world != initial:
                 _auto_key(rig)
-                _undo_push({"MOVE": "Move Layer", "ROTATE": "Rotate Layer"}.get(part, "Scale Layer"))
+                _undo_push({"MOVE": "Move Layer", "ROTATE": "Rotate Layer", "ORIENT": "Rotate Layer Box"}.get(part, "Scale Layer"))
         self.fbp_part = ""
+        self.fbp_children = None
+        self.fbp_turn = None
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
         context.area.tag_redraw()
+
+
+def _alt_orbits(context):
+    try:
+        return bool(context.preferences.inputs.use_mouse_emulate_3_button)
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _basis_world(rig):
+    """The rig's world matrix from its own channels, valid right after an edit."""
+    parent = getattr(rig, "parent", None)
+    if parent is None:
+        return rig.matrix_basis.copy()
+    return parent.matrix_world @ rig.matrix_parent_inverse @ rig.matrix_basis
+
+
+def _children_inverses(rig):
+    return [(child.name, child.matrix_parent_inverse.copy()) for child in rig.children]
+
+
+def _keep_children(rig, initial, inverses):
+    """Keep the rig's children where they were while the rig turns: the plane,
+    its lattice and controls stay in place and only the box changes direction."""
+    if not inverses:
+        return
+    keep = _basis_world(rig).inverted_safe() @ initial
+    for name, inverse in inverses:
+        child = bpy.data.objects.get(name)
+        if child is not None:
+            child.matrix_parent_inverse = keep @ inverse
+
+
+def _restore_children(inverses):
+    for name, inverse in inverses or ():
+        child = bpy.data.objects.get(name)
+        if child is not None:
+            child.matrix_parent_inverse = inverse
+
+
+ORIENT_ANIMATED_MESSAGE = (
+    "The box of an animated layer cannot turn on its own: "
+    "its keyframes would turn the drawing at the other frames"
+)
+_TRANSFORM_PATHS = {
+    "location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale",
+    "delta_location", "delta_rotation_euler", "delta_rotation_quaternion", "delta_scale",
+}
+
+
+def transform_animated(rig):
+    """True when keyframes, drivers or NLA strips set the rig's transform.
+
+    Turning the box alone moves the rig and compensates in its children's
+    parent inverse, which no keyframe holds: on another frame the keys put
+    the rig back and the drawing would turn by the same angle. Only keys on
+    the current frame, which Auto Keying rewrites, are safe.
+    """
+    animation = getattr(rig, "animation_data", None)
+    if animation is None:
+        return False
+    try:
+        for driver in animation.drivers:
+            if driver.data_path in _TRANSFORM_PATHS:
+                return True
+        for track in animation.nla_tracks:
+            if not track.mute and len(track.strips):
+                return True
+        from .runtime import fbp_action_fcurves
+
+        curves = fbp_action_fcurves(rig)
+        if not curves:
+            return False
+        scene = bpy.context.scene
+        frame = float(scene.frame_current)
+        auto_key = bool(scene.tool_settings.use_keyframe_insert_auto)
+        for curve in curves:
+            if curve.data_path not in _TRANSFORM_PATHS or curve.mute:
+                continue
+            if not auto_key or curve.data_path.startswith("delta_"):
+                return True
+            if any(abs(point.co.x - frame) > 1.0e-4 for point in curve.keyframe_points):
+                return True
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+    return False
+
+
+def _notify(context, message):
+    try:
+        def draw(menu, _context):
+            menu.layout.label(text=message, icon="INFO")
+        context.window_manager.popup_menu(draw, title="Rotate Layer Box", icon="ORIENTATION_LOCAL")
+    except FBP_DATA_ERRORS:
+        pass
+
+
+def box_orientation_offset(rig):
+    """Angle (radians) between the box and the layer's plane, around the rig Z."""
+    import math
+
+    plane = getattr(rig, "fbp_plane_target", None)
+    if plane is None:
+        return 0.0
+    relation = (plane.matrix_parent_inverse @ plane.matrix_basis).to_3x3()
+    axis = relation @ Vector((1.0, 0.0, 0.0))
+    if axis.xy.length <= 1.0e-9:
+        return 0.0
+    return math.atan2(axis.y, axis.x)
+
+
+def reset_box_orientation(rig):
+    """Turn the box back in line with the layer, which stays where it is."""
+    angle = box_orientation_offset(rig)
+    if abs(angle) <= 1.0e-7 or transform_animated(rig) or any(rig.lock_rotation):
+        return False
+    initial = _basis_world(rig)
+    inverses = _children_inverses(rig)
+    # Turn around the box anchor, so it stays on the same spot of the layer.
+    anchor_local = layer_anchor_local(rig)
+    pivot = (initial @ anchor_local) if anchor_local is not None else initial.translation.copy()
+    normal = (initial.to_3x3() @ Vector((0.0, 0.0, 1.0)))
+    if normal.length <= 1.0e-9:
+        return False
+    turn = Matrix.Translation(pivot) @ Matrix.Rotation(angle, 4, normal.normalized()) @ Matrix.Translation(-pivot)
+    rig.matrix_world = turn @ initial
+    _keep_children(rig, initial, inverses)
+    return True
 
 
 def _undo_push(message):
@@ -1084,12 +1289,9 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
         try:
             if context.mode != "OBJECT":
                 return False
-            space = context.space_data
-            if not space.overlay.show_overlays or not space.show_gizmo:
-                return False
         except FBP_DATA_ERRORS:
             return False
-        if not cage_enabled(context):
+        if not _gizmos_shown(context) or not cage_enabled(context):
             return False
         if _cage_layers(context):
             return True
@@ -1098,10 +1300,15 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
 
     @classmethod
     def setup_keymap(cls, keyconfig):
-        # Drag only: a plain click goes on to the selection operators.
-        return keyconfig.keymaps.new(
-            name="Generic Gizmo Maybe Drag", space_type="EMPTY", region_type="WINDOW",
+        # Drag only: a plain click goes on to the selection operators. The
+        # built-in drag keymaps leave Alt out, but the box uses Alt for
+        # symmetric scaling, so this one takes a drag with any modifier.
+        keymap = keyconfig.keymaps.new(
+            name="FBP Layer Box Drag", space_type="EMPTY", region_type="WINDOW",
         )
+        if not any(item.idname == "gizmogroup.gizmo_tweak" for item in keymap.keymap_items):
+            keymap.keymap_items.new("gizmogroup.gizmo_tweak", "LEFTMOUSE", "CLICK_DRAG", any=True)
+        return keymap
 
     def setup(self, context):
         self.boxes = {}

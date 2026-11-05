@@ -701,6 +701,28 @@ def _gradient_stops(rig, effect_id, in_control, out_control):
     return stops
 
 
+def _fit_gizmos(gizmos, count, idname):
+    """Give a gizmo group exactly ``count`` usable gizmos.
+
+    A gizmo being dragged is never removed: Blender's modal handler still
+    points at it, and freeing it mid-drag (an end dot dropped on the other
+    end, a layer deselected by a script) crashes Blender. Spare gizmos are
+    hidden until the drag ends and the next redraw trims them.
+    """
+    while len(gizmos) < count:
+        gizmos.new(idname)
+    if any(gizmo.is_modal for gizmo in gizmos):
+        for index, gizmo in enumerate(gizmos):
+            if not gizmo.is_modal:
+                gizmo.hide = index >= count
+        return
+    while len(gizmos) > count:
+        gizmos.remove(gizmos[-1])
+    for gizmo in gizmos:
+        if gizmo.hide:
+            gizmo.hide = False
+
+
 def _ring_triangles(outer, inner, segments=32, center=(0.0, 0.0)):
     cx, cy = center
     triangles = []
@@ -1336,10 +1358,7 @@ class FBP_GGT_color_plane_gradient(bpy.types.GizmoGroup):
         except FBP_DATA_ERRORS:
             gizmo_size = 75.0
         gizmos = self.gizmos
-        while len(gizmos) > len(grips):
-            gizmos.remove(gizmos[-1])
-        while len(gizmos) < len(grips):
-            gizmos.new(FBP_GT_color_plane_grip.bl_idname)
+        _fit_gizmos(gizmos, len(grips), FBP_GT_color_plane_grip.bl_idname)
         for gizmo, (rig_name, kind, a, b) in zip(gizmos, grips):
             if gizmo.is_modal:
                 continue
@@ -1587,10 +1606,7 @@ class FBP_GGT_gradient_lines(bpy.types.GizmoGroup):
             grips.append((rig.name, effect_id, "IN", start, start))
             grips.append((rig.name, effect_id, "OUT", end, end))
         gizmos = self.gizmos
-        while len(gizmos) > len(grips):
-            gizmos.remove(gizmos[-1])
-        while len(gizmos) < len(grips):
-            gizmos.new(FBP_GT_gradient_drag.bl_idname)
+        _fit_gizmos(gizmos, len(grips), FBP_GT_gradient_drag.bl_idname)
         for gizmo, (rig_name, effect_id, kind, a, b) in zip(gizmos, grips):
             if gizmo.is_modal:
                 continue
@@ -1647,10 +1663,7 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
         except FBP_DATA_ERRORS:
             gizmo_size = 75.0
         gizmos = self.gizmos
-        while len(gizmos) > len(stops):
-            gizmos.remove(gizmos[-1])
-        while len(gizmos) < len(stops):
-            gizmos.new(FBP_GT_gradient_stop.bl_idname)
+        _fit_gizmos(gizmos, len(stops), FBP_GT_gradient_stop.bl_idname)
         for gizmo, (rig_name, effect_id, key, start, end, location, basis, color) in zip(gizmos, stops):
             if gizmo.is_modal:
                 continue

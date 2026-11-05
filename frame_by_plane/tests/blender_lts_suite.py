@@ -4923,6 +4923,32 @@ def test_playback_light_and_native_sample_timing(_module):
             geometry._fbp_copy_shader_image_user = original_copy
         # Timing is native animation now; Python no longer rewrites samples.
         assert calls["count"] == 0, calls
+
+        # Between validations a frame change resolves no sample node at all.
+        resolves = {"count": 0}
+        original_resolve = geometry._fbp_matrix_source_image_nodes
+
+        def counting_resolve(group):
+            resolves["count"] += 1
+            return original_resolve(group)
+
+        geometry._fbp_matrix_source_image_nodes = counting_resolve
+        try:
+            for frame in range(scene.frame_start, scene.frame_start + 8):
+                scene.frame_set(frame)
+        finally:
+            geometry._fbp_matrix_source_image_nodes = original_resolve
+        assert resolves["count"] <= 2, resolves
+        # A timing edit still reaches the samples on the very next frame.
+        source_curve = geometry._fbp_frame_offset_curve(source)
+        assert source_curve is not None
+        source_curve.keyframe_points.insert(scene.frame_start + 40, 3.0)
+        scene.frame_set(scene.frame_start + 2)
+        for group, node in samples:
+            sample_curve = geometry.fbp_find_action_fcurve(group, node.image_user.path_from_id("frame_offset"))
+            assert sample_curve is not None and len(sample_curve.keyframe_points) == len(source_curve.keyframe_points), (
+                node.name, len(sample_curve.keyframe_points) if sample_curve else None, len(source_curve.keyframe_points),
+            )
         assert all(geometry.fbp_find_action_fcurve(group, node.image_user.path_from_id("frame_offset")) is not None
                    for group, node in samples)
 
@@ -5557,6 +5583,17 @@ def test_blur_samples_skip_disabled_taps(_module):
         shells.fbp_shell_sync_values(rig)
         assert not any(node.mute for node in images), "keyed Samples must keep every tap"
         results["triangle_keyed_muted"] = 0
+        # The saved sync snapshot reads back colours as IDPropertyArray; an
+        # unchanged snapshot must compare equal so it is not rewritten on
+        # every geometry update of the plane.
+        snapshot_group = bpy.data.node_groups.new("FBP Snapshot Probe", "GeometryNodeTree")
+        try:
+            snapshot = {"color": (1.0, 0.5, 0.25, 1.0), "amount": 0.3, "mode": 2, "image": "\x00ID:Probe"}
+            snapshot_group["probe"] = snapshot
+            assert shells._same_snapshot(snapshot, dict(snapshot_group["probe"]))
+            assert not shells._same_snapshot({**snapshot, "amount": 0.4}, dict(snapshot_group["probe"]))
+        finally:
+            bpy.data.node_groups.remove(snapshot_group)
         geo.fbp_remove_effect(rig, "TRIANGLE_BLUR")
 
         # Riso Print: the third ink, the halftone dots and the grain are
@@ -6210,6 +6247,194 @@ def test_performance_profile_contract(module):
     }
 
 
+def test_layer_box_animated_orientation_guard(_module):
+    """Turning the box alone must not break a layer whose transform is keyed,
+    and Reset leaves locked channels alone."""
+    import math
+    from mathutils import Matrix
+
+    cage = importlib.import_module(f"{PACKAGE}.layer_cage")
+    sequence = importlib.import_module(f"{PACKAGE}.operator_sequence")
+    rig = _effect_stack_fixture_rig("FBP Box Orientation Guard")
+    owned = [rig, *rig.children_recursive]
+    scene = bpy.context.scene
+    frame = scene.frame_current
+    auto_key = scene.tool_settings.use_keyframe_insert_auto
+    try:
+        plane = rig.fbp_plane_target
+        assert not cage.transform_animated(rig)
+        # Turn the box 30 degrees while the drawing stays (the ORIENT drag).
+        initial = cage._basis_world(rig)
+        inverses = cage._children_inverses(rig)
+        rig.matrix_world = Matrix.Rotation(math.radians(30.0), 4, initial.col[2].xyz.normalized()) @ initial
+        cage._keep_children(rig, initial, inverses)
+        bpy.context.view_layer.update()
+        assert abs(math.degrees(cage.box_orientation_offset(rig)) + 30.0) < 1.0e-3, cage.box_orientation_offset(rig)
+
+        scene.tool_settings.use_keyframe_insert_auto = False
+        rig.keyframe_insert("rotation_euler", frame=frame)
+        assert cage.transform_animated(rig), "a keyed rotation counts without Auto Keying"
+        scene.tool_settings.use_keyframe_insert_auto = True
+        assert not cage.transform_animated(rig), "keys only on this frame are rewritten by Auto Keying"
+        rig.keyframe_insert("rotation_euler", frame=frame + 10)
+        assert cage.transform_animated(rig), "keys on other frames are not"
+        plane_before = plane.matrix_world.copy()
+        assert not cage.reset_box_orientation(rig)
+        bpy.context.view_layer.update()
+        assert plane.matrix_world == plane_before
+
+        rig.animation_data_clear()
+        assert not cage.transform_animated(rig)
+        rig.lock_rotation[2] = True
+        assert not cage.reset_box_orientation(rig), "a locked rotation stays"
+        rig.lock_rotation[2] = False
+        assert cage.reset_box_orientation(rig)
+        assert abs(cage.box_orientation_offset(rig)) < 1.0e-5
+
+        rig.location = (1.0, 2.0, 3.0)
+        rig.lock_location[1] = True
+        assert sequence.fbp_reset_layer_transform(rig, 'POSITION')
+        assert tuple(rig.location) == (0.0, 2.0, 0.0), tuple(rig.location)
+        assert not sequence.fbp_reset_layer_transform(rig, 'POSITION'), "nothing left to reset"
+        rig.lock_location[1] = False
+
+        # The Transform popup's Reset Rotation / Reset Scale are the same
+        # reset: a vertical layer stays vertical and locked channels stay.
+        rig.fbp_is_vertical = True
+        rig.rotation_euler = (math.radians(70.0), 0.2, 0.4)
+        rig.lock_rotation[1] = True
+        with bpy.context.temp_override(selected_objects=[rig], active_object=rig, object=rig):
+            # Operators are not registered in background runs: call execute.
+            assert sequence.FBP_OT_Transform.execute(types.SimpleNamespace(mode='RESET_ROT'), bpy.context) == {'FINISHED'}
+        assert rig.fbp_is_vertical, "Reset Rotation must not lay a vertical layer flat"
+        assert abs(rig.rotation_euler[0] - math.radians(90.0)) < 1.0e-5, tuple(rig.rotation_euler)
+        assert abs(rig.rotation_euler[1] - 0.2) < 1.0e-6 and abs(rig.rotation_euler[2]) < 1.0e-6, tuple(rig.rotation_euler)
+        rig.lock_rotation[1] = False
+        rig.scale = (2.0, 3.0, 4.0)
+        rig.lock_scale[0] = True
+        with bpy.context.temp_override(selected_objects=[rig], active_object=rig, object=rig):
+            # Operators are not registered in background runs: call execute.
+            assert sequence.FBP_OT_Transform.execute(types.SimpleNamespace(mode='RESET_SCALE'), bpy.context) == {'FINISHED'}
+        rest = sequence.fbp_layer_rest_scale(rig)
+        assert abs(rig.scale[0] - 2.0) < 1.0e-6 and all(abs(rig.scale[i] - rest[i]) < 1.0e-6 for i in (1, 2)), tuple(rig.scale)
+        rig.lock_scale[0] = False
+    finally:
+        scene.tool_settings.use_keyframe_insert_auto = auto_key
+        scene.frame_set(frame)
+        for obj in owned:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return "keyed layers keep their box orientation; Reset honours locks"
+
+
+def test_gizmo_fit_keeps_dragged_gizmo(_module):
+    """Gradient gizmo groups never free the gizmo that is being dragged."""
+    overlay = importlib.import_module(f"{PACKAGE}.handle_overlay")
+
+    class FakeGizmo:
+        def __init__(self):
+            self.is_modal = False
+            self.hide = False
+
+    class FakeGizmos(list):
+        def new(self, _idname):
+            gizmo = FakeGizmo()
+            self.append(gizmo)
+            return gizmo
+
+        def remove(self, gizmo):
+            assert not gizmo.is_modal, "a dragged gizmo was freed"
+            list.remove(self, gizmo)
+
+    gizmos = FakeGizmos()
+    overlay._fit_gizmos(gizmos, 3, "X")
+    assert len(gizmos) == 3 and not any(g.hide for g in gizmos)
+    dragged = gizmos[2]
+    dragged.is_modal = True
+    # The dragged end dot meets the other end: its line has no grips left.
+    overlay._fit_gizmos(gizmos, 0, "X")
+    assert dragged in gizmos and not dragged.hide
+    assert all(g.hide for g in gizmos if g is not dragged)
+    dragged.is_modal = False
+    overlay._fit_gizmos(gizmos, 1, "X")
+    assert len(gizmos) == 1 and not gizmos[0].hide
+    return "dragged gizmo kept, spares hidden then trimmed"
+
+
+def test_effect_panel_sections_and_hints(_module):
+    """Auto sections match whole words; heavy effects explain what helps."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    groups = geo._FBP_EFFECT_UI_GROUPS
+
+    def section_of(effect_id, prop_name):
+        for title, _icon, names in groups.get(effect_id, ()):
+            if prop_name in names:
+                return title
+        return ""
+
+    # "triangle" holds "angle" and "directional" holds "direction".
+    assert section_of("TRIANGLE_MASK", "fbp_triangle_mask_feather") == "Alpha / Mask"
+    assert section_of("DIRECTIONAL_BLUR", "fbp_directional_blur_samples") == "Quality"
+    assert section_of("GAUSSIAN_BLUR", "fbp_gaussian_blur_samples") == "Quality"
+    # "wind" holds "w"; "matte" in the effect name is not a source.
+    assert section_of("WIND_BENDER", "fbp_wind_pin_strength") == "Pinning"
+    assert section_of("ALPHA_MATTE", "fbp_alpha_matte_factor") == "Alpha / Mask"
+    # A lone mix factor joins the main section.
+    assert section_of("WHITE_BALANCE", "fbp_white_balance_factor") == "Color / Tone"
+    assert geo._fbp_auto_effect_ui_section("fbp_wind_strength", "Strength", {"wind"})[0] == "Shape / Mix"
+    assert geo._fbp_auto_effect_ui_section("fbp_grain_w", "Animate (W)")[0] == "Motion / Random"
+
+    blur = geo.fbp_effect_performance_hint("GAUSSIAN_BLUR")
+    assert "Samples" in blur and "renders keep" not in blur, blur
+    crystal = geo.fbp_effect_performance_hint("CRYSTAL")
+    assert "Playback Subdivision" in crystal and "renders keep" in crystal, crystal
+    assert geo.fbp_effect_performance_hint("FELT_FUZZ").startswith("Very heavy")
+
+    rig = types.SimpleNamespace(fbp_text_matrix_viewport_rows=0, fbp_text_matrix_render_rows=12)
+    assert geo._fbp_auto_rows_label(rig, "fbp_text_matrix_viewport_rows") == "Rows (Auto)"
+    assert geo._fbp_auto_rows_label(rig, "fbp_text_matrix_render_rows") == "Rows"
+    return "sections, hints and auto rows"
+
+
+def test_mesh_effect_modifier_sections(_module):
+    """A mesh effect's modifier groups its inputs and names its choices."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    rig = _effect_stack_fixture_rig("FBP Modifier Sections")
+    owned = [rig, *rig.children_recursive]
+    try:
+        assert geo.fbp_add_effect(rig, "CRYSTAL", select_object_mask_helper=False, inherit_active_group=False)
+        _flush_fbp_safe_tasks()
+        modifier = next(
+            modifier
+            for obj in (rig, *rig.children_recursive)
+            for modifier in getattr(obj, "modifiers", ())
+            if modifier.type == "NODES" and modifier.node_group
+            and "Texture Type" in geo._fbp_interface_inputs(modifier.node_group)
+        )
+        interface = modifier.node_group.interface
+        sockets = {
+            item.name: item for item in interface.items_tree
+            if item.item_type == "SOCKET" and item.in_out == "INPUT"
+        }
+        texture = sockets["Texture Type"]
+        assert texture.parent.name == "Procedural Surface", texture.parent.name
+        assert sockets["Subdivision"].parent.name == "Quality"
+        assert sockets["Playback Subdivision"].parent.name == "Quality"
+        assert texture.description.startswith("0 Voronoi, 1 Fractal Noise"), texture.description
+        assert texture.max_value == 3
+        rig.fbp_crystal_texture_type = "WAVE"
+        importlib.import_module(f"{PACKAGE}.fbp_dirty").flush_dirty()
+        _flush_fbp_safe_tasks()
+        assert int(geo._fbp_modifier_input_get(modifier, texture.identifier)) == 2
+    finally:
+        for obj in owned:
+            if obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
+    return "sections and choices on the Crystal modifier"
+
+
 def test_icon_runtime_contract(_module):
     icons = importlib.import_module(f"{PACKAGE}.ui_icons")
     icons.unregister_custom_icons()
@@ -6617,7 +6842,11 @@ def run_background():
             ("toon_boom_contract", test_toon_boom_contract),
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
+            ("gizmo_fit_keeps_dragged_gizmo", test_gizmo_fit_keeps_dragged_gizmo),
+            ("effect_panel_sections_and_hints", test_effect_panel_sections_and_hints),
+            ("mesh_effect_modifier_sections", test_mesh_effect_modifier_sections),
             ("icon_runtime_contract", test_icon_runtime_contract),
+            ("layer_box_animated_orientation_guard", test_layer_box_animated_orientation_guard),
             ("save_reopen", test_save_reopen),
             ("tiny_render", test_tiny_render),
         )

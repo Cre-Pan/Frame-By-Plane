@@ -5594,6 +5594,21 @@ class FBP_MT_ObjectMaskContext(Menu):
             layout.label(text="Mask helper controls unavailable", icon="ERROR")
 
 
+class FBP_MT_ObjectLayerResetContext(Menu):
+    bl_idname = "FBP_MT_object_layer_reset_context"
+    bl_label = "Reset"
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        layout.operator("fbp.reset_layer_transform", text="Position", icon="ORIENTATION_GLOBAL").mode = 'POSITION'
+        layout.operator("fbp.reset_layer_transform", text="Rotation", icon="DRIVER_ROTATIONAL_DIFFERENCE").mode = 'ROTATION'
+        layout.operator("fbp.reset_layer_transform", text="Scale", icon="FULLSCREEN_EXIT").mode = 'SCALE'
+        layout.operator("fbp.reset_layer_transform", text="Anchor Point", icon="PIVOT_CURSOR").mode = 'ANCHOR'
+        layout.operator("fbp.reset_layer_transform", text="Box Orientation", icon="ORIENTATION_LOCAL").mode = 'ORIENTATION'
+        layout.separator()
+        layout.operator("fbp.reset_layer_transform", text="All", icon="FILE_REFRESH").mode = 'ALL'
+
+
 class FBP_MT_ObjectLayerContext(Menu):
     bl_idname = "FBP_MT_object_layer_context"
     bl_label = "Layer"
@@ -5610,6 +5625,13 @@ class FBP_MT_ObjectLayerContext(Menu):
             )
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             drawing_gp_canvases = ()
+
+        if rigs:
+            layout.menu(FBP_MT_ObjectLayerResetContext.bl_idname, text="Reset", icon="FILE_REFRESH")
+            layout.operator_menu_enum("fbp.fit_camera", "mode", text="Fit to Camera", icon="VIEW_CAMERA")
+            layout.operator("fbp.transform", text="Horizontal / Vertical", icon="RENDER_SWAP_DIMENSIONS").mode = 'TOGGLE_ROT'
+            layout.operator("fbp.transform", text="Place on Ground", icon="GRID").mode = 'TO_GROUND'
+            layout.separator()
 
         group_targets = tuple(rigs) + drawing_gp_canvases
         if group_targets:
@@ -6572,6 +6594,7 @@ ui_classes = (
     FBP_PT_LatticeControlsBone,
     FBP_MT_FrameByPlaneAdd,
     FBP_MT_ObjectMaskContext,
+    FBP_MT_ObjectLayerResetContext,
     FBP_MT_ObjectLayerContext,
     FBP_OT_SetSelectedLayerTag,
     FBP_MT_ObjectLayerTags,

@@ -17,6 +17,7 @@ from collections import OrderedDict, deque
 import importlib
 import json
 import math
+import re
 import time
 import tempfile
 import uuid
@@ -12709,6 +12710,37 @@ def _fbp_sync_private_offset_animation(source_node, node_group, image_nodes):
     ), True
 
 
+def _fbp_private_source_quick_signature(source_node, image_key, image_user, node_group):
+    """Identity of everything a private sample copies, without its nodes.
+
+    None when the timing curve and the samples' stored copy of it differ, so
+    the caller runs the full validation that mirrors the new curve.
+    """
+    try:
+        source_kind = str(getattr(getattr(source_node, "image", None), "source", "") or "").upper()
+        curve = _fbp_frame_offset_curve(source_node) if source_kind in {"SEQUENCE", "MOVIE"} else None
+        curve_signature = _fbp_frame_offset_curve_signature(curve) if curve is not None else ""
+        if curve_signature is None:
+            return None
+        stored = str(node_group.get(_FBP_PRIVATE_OFFSET_ANIM_KEY, "") or "")
+        if stored != curve_signature:
+            return None
+        user = tuple(
+            "ANIMATED" if attr == "frame_offset" and curve_signature else getattr(image_user, attr, None)
+            for attr in ("frame_duration", "frame_start", "frame_offset", "use_cyclic", "use_auto_refresh")
+        )
+        return (
+            image_key,
+            curve_signature,
+            str(getattr(source_node, "projection", "FLAT") or "FLAT"),
+            float(getattr(source_node, "projection_blend", 0.0) or 0.0),
+            user,
+            len(node_group.nodes),
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
 def _fbp_sync_private_shader_source(material, node_group):
     """Synchronize private image samples with a bounded validation cache.
 
@@ -12717,8 +12749,7 @@ def _fbp_sync_private_shader_source(material, node_group):
     periodically so external node edits still self-heal without imposing nine
     image-node comparisons per frame and per layer.
     """
-    image_nodes = _fbp_matrix_source_image_nodes(node_group)
-    if not image_nodes:
+    if not node_group:
         return False, False
     source_node = _fbp_shader_image_node(material)
     source_image = getattr(source_node, "image", None) if source_node else None
@@ -12731,6 +12762,22 @@ def _fbp_sync_private_shader_source(material, node_group):
     except FBP_DATA_ERRORS:
         image_key = None
     image_user = getattr(source_node, "image_user", None) if source_node else None
+    now = time.monotonic()
+    # Fast path for playback: with native sample timing nothing changes from
+    # frame to frame, and resolving every private sample node by name (about
+    # 25 lookups per blur) was most of this handler's cost. The quick
+    # signature reads only the source node, the timing curve and the group's
+    # node count; a full validation still runs at least every 2 seconds.
+    cached = _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.get(group_key) if group_key is not None else None
+    if cached and len(cached) > 2 and now - float(cached[1]) < 2.0:
+        quick = _fbp_private_source_quick_signature(
+            source_node, image_key, image_user, node_group
+        )
+        if quick is not None and quick == cached[2]:
+            return bool(source_image), False
+    image_nodes = _fbp_matrix_source_image_nodes(node_group)
+    if not image_nodes:
+        return False, False
     # Sequence timing normally lives in an F-Curve on frame_offset. The private
     # samples get the same curve, so the per-frame offset leaves the signature
     # and playback no longer rewrites every sample through Python.
@@ -12756,8 +12803,6 @@ def _fbp_sync_private_shader_source(material, node_group):
         )
     except FBP_DATA_ERRORS:
         source_signature = (image_key, tuple(user_signature), len(image_nodes))
-    now = time.monotonic()
-    cached = _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.get(group_key) if group_key is not None else None
     if (
         not offset_changed
         and cached and cached[0] == source_signature and now - float(cached[1]) < 2.0
@@ -12802,7 +12847,11 @@ def _fbp_sync_private_shader_source(material, node_group):
     if group_key is not None:
         if len(_FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE) >= 512 and group_key not in _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE:
             _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.clear()
-        _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE[group_key] = (source_signature, now)
+        _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE[group_key] = (
+            source_signature,
+            now,
+            _fbp_private_source_quick_signature(source_node, image_key, image_user, node_group),
+        )
     if changed:
         try:
             node_group.update_tag()
@@ -13377,6 +13426,45 @@ def _fbp_set_group_input_value(node, socket_name, value):
 _FBP_SAMPLE_TAP_THRESHOLD_KEY = "fbp_sample_tap_threshold"
 _FBP_SAMPLE_TAPS_INDEXED_KEY = "fbp_sample_taps_indexed"
 _FBP_SAMPLE_TAP_STATE_KEY = "fbp_sample_tap_state"
+
+
+def _fbp_auto_rows_label(rig, prop_name):
+    """``Rows`` label that says when zero means automatic rows."""
+    try:
+        return "Rows (Auto)" if int(getattr(rig, prop_name, 0) or 0) <= 0 else "Rows"
+    except (AttributeError, ReferenceError, TypeError, ValueError):
+        return "Rows"
+
+
+def fbp_effect_performance_hint(effect_id, definition=None):
+    """Tooltip of a heavy effect: what it costs and which settings help."""
+    definition = definition if definition is not None else (fbp_effect_definition(effect_id) or {})
+    performance = str(definition.get("performance", "") or "").upper()
+    lead = (
+        "Very heavy effect: expect slow viewport playback"
+        if performance == "VERY_HEAVY"
+        else "Heavy effect: may slow viewport playback"
+    )
+    names = []
+    keeps_render = False
+    samples = _fbp_definition_samples_property(definition)
+    if samples:
+        names.append(samples)
+    for contract in tuple(definition.get("quality_contracts", ()) or ()):
+        for key in ("viewport_property", "playback_property"):
+            name = str((contract or {}).get(key, "") or "")
+            if name:
+                names.append(name)
+        keeps_render = keeps_render or bool((contract or {}).get("render_property"))
+    labels = []
+    for name in dict.fromkeys(names):
+        label = str(_fbp_effect_property_label(definition, name, None) or "")
+        if label and label not in labels:
+            labels.append(label)
+    if labels:
+        tail = "; renders keep their own quality" if keeps_render else ""
+        return f"{lead}. Lower {', '.join(labels)} for a faster preview{tail}"
+    return f"{lead}. Hide it in the viewport while animating to keep playback smooth"
 
 
 def _fbp_definition_samples_property(definition):
@@ -23179,48 +23267,78 @@ _FBP_EFFECT_UI_GROUPS = {
 }
 
 
-def _fbp_auto_effect_ui_section(prop_name, label):
-    """Choose a compact settings section for registry-driven effect UIs."""
-    probe = f"{prop_name} {label}".lower()
-    if any(word in probe for word in (
+_FBP_AUTO_UI_SECTIONS = (
+    # (title, icon, words or phrases). Matched as whole words, first wins.
+    ("Source / UV", "UV", (
         "source", "matte", "path", "image", "texture", "camera projection",
-        "follow source", "uv offset", "uv scale", "uv rotation",
-    )):
-        return "Source / UV", "UV"
-    if any(word in probe for word in (
+        "follow source", "uv",
+    )),
+    ("Transform", "ORIENTATION_GLOBAL", (
         "center", "offset", "rotation", "angle", "direction", "position",
         "scale x", "scale y", "tracking", "face away",
-    )):
-        return "Transform", "ORIENTATION_GLOBAL"
-    if any(word in probe for word in (
-        "grid", "cell", "pixel", "row", "column", "spacing", "sample",
-        "subdivision", "resolution", "density", "viewport", "playback", "render",
-        "quality", "loops", "cage", "interpolation",
-    )):
-        return "Grid / Quality", "MESH_GRID"
-    if any(word in probe for word in (
+    )),
+    ("Grid", "MESH_GRID", (
+        "grid", "cell", "pixel", "row", "column", "spacing", "cage", "loop",
+    )),
+    ("Quality", "MOD_SUBSURF", (
+        "sample", "subdivision", "resolution", "density", "viewport", "playback",
+        "render", "quality", "interpolation", "iteration",
+    )),
+    ("Color / Tone", "COLOR", (
         "color", "hue", "saturation", "brightness", "contrast", "tone",
         "foreground", "background", "paper", "ink", "tint", "balance",
-        "temperature", "value", "gamma", "light", "shadow",
-    )):
-        return "Color / Tone", "COLOR"
-    if any(word in probe for word in (
-        "alpha", "mask", "threshold", "tolerance", "softness", "feather",
-        "invert", "key", "despill", "clip", "transparent",
-    )):
-        return "Alpha / Mask", "IMAGE_ALPHA"
-    if any(word in probe for word in (
-        "seed", "random", "variation", "noise", "detail", "roughness",
-        "phase", "speed", "step", "hold", "animate", "flicker", "turbulence",
-        "gust", "w",
-    )):
-        return "Motion / Random", "RNDCURVE"
-    if any(word in probe for word in (
+        "temperature", "value", "gamma", "tolerance", "light", "shadow", "highlight",
+        "midtone", "midpoint", "desaturation", "red", "green", "blue",
+    )),
+    ("Alpha / Mask", "IMAGE_ALPHA", (
+        "alpha", "mask", "threshold", "softness", "feather",
+        "invert", "key", "despill", "clip", "transparent", "channel",
+    )),
+    ("Pinning", "PINNED", ("pin",)),
+    ("Pattern", "TEXTURE", (
+        "pattern", "scale", "detail", "roughness", "randomness", "distortion",
+        "shape", "size", "sharpness",
+    )),
+    ("Motion / Random", "RNDCURVE", (
+        "seed", "random", "variation", "noise", "phase", "speed", "stepped",
+        "hold", "animate", "flicker", "turbulence", "gust", "w", "evolution",
+        "wiggle", "wave", "motion",
+    )),
+    ("Shape / Mix", "MODIFIER", (
         "width", "height", "radius", "amount", "strength", "factor",
         "intensity", "opacity", "distance", "blur", "falloff", "zoom",
-        "thickness", "extrude", "mode", "array", "length",
-    )):
-        return "Shape / Mix", "MODIFIER"
+        "thickness", "extrude", "mode", "array", "length", "influence",
+        "smoothness", "top", "left", "right", "bottom",
+    )),
+)
+
+
+def _fbp_auto_ui_words(text):
+    """Lower-case words of ``text`` with a plural ``s`` dropped."""
+    words = []
+    for word in re.findall(r"[a-z0-9]+", str(text or "").lower()):
+        if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        words.append(word)
+    return words
+
+
+def _fbp_auto_effect_ui_section(prop_name, label, effect_words=()):
+    """Choose a compact settings section for registry-driven effect UIs.
+
+    Words are matched whole, from the label and the property name without
+    the effect's own name, so "Triangle Mask" is not a rotation setting and
+    "Wind" is not the "W" of a noise.
+    """
+    skip = {"fbp", *(effect_words or ())}
+    words = _fbp_auto_ui_words(label) + [
+        word for word in _fbp_auto_ui_words(prop_name) if word not in skip
+    ]
+    probe = f" {' '.join(words)} "
+    for title, icon, keys in _FBP_AUTO_UI_SECTIONS:
+        for key in keys:
+            if f" {' '.join(_fbp_auto_ui_words(key))} " in probe:
+                return title, icon
     return "Settings", "OPTIONS"
 
 
@@ -23243,14 +23361,32 @@ def _fbp_build_auto_effect_ui_groups():
             continue
         buckets = []
         bucket_index = {}
+        effect_words = set(_fbp_auto_ui_words(effect_id.replace("_", " "))) | set(
+            _fbp_auto_ui_words(definition.get("label", ""))
+        )
+        is_mask = str(definition.get("category", "") or "").upper() == "MASK"
         for prop_name in property_names:
             label = _fbp_effect_property_label(definition, prop_name, None)
-            title, icon = _fbp_auto_effect_ui_section(prop_name, label)
+            title, icon = _fbp_auto_effect_ui_section(prop_name, label, effect_words)
+            if is_mask and title in {"Shape / Mix", "Settings"}:
+                # A mask's mix and inversion belong with its edge settings.
+                title, icon = "Alpha / Mask", "IMAGE_ALPHA"
             key = (title, icon)
             if key not in bucket_index:
                 bucket_index[key] = len(buckets)
                 buckets.append([title, icon, []])
             buckets[bucket_index[key]][2].append(prop_name)
+        # A lone mix factor belongs to the effect's main section, not to a
+        # section of its own.
+        if len(buckets) > 1:
+            for bucket in tuple(buckets[1:]):
+                labels = {
+                    str(_fbp_effect_property_label(definition, name, None) or "").lower()
+                    for name in bucket[2]
+                }
+                if labels and labels <= {"factor", "mix"}:
+                    buckets[0][2].extend(bucket[2])
+                    buckets.remove(bucket)
         _FBP_EFFECT_UI_GROUPS[effect_id] = tuple(
             (title, icon, tuple(names)) for title, icon, names in buckets if names
         )
@@ -24487,14 +24623,19 @@ def fbp_draw_effect_settings(
         )
         duplicate_op.effect_id = effect_id
 
-    if str(definition.get("performance", "")).upper() in {"HEAVY", "VERY_HEAVY"}:
+    performance = str(definition.get("performance", "")).upper()
+    if performance in {"HEAVY", "VERY_HEAVY"}:
+        # A cost note, not an error: only the heaviest effects are red.
         warning = header_right.row(align=True)
-        warning.alert = True
+        warning.alert = performance == "VERY_HEAVY"
         op = warning.operator(
-            "fbp.effect_header_warning", text="", icon="ERROR", emboss=False
+            "fbp.effect_header_warning",
+            text="",
+            icon="ERROR" if performance == "VERY_HEAVY" else "TIME",
+            emboss=False,
         )
         op.effect_id = effect_id
-        op.message = "Heavy effect: may reduce viewport playback performance"
+        op.message = fbp_effect_performance_hint(effect_id, definition)
     if effect_id in GP_MASK_EFFECT_IDS and gp_mask_header_canvas is not None:
         try:
             from .grease_pencil_bridge import gp_mask_is_being_edited
@@ -26246,7 +26387,7 @@ def fbp_draw_effect_settings(
         viewport = box.row(align=True)
         viewport.label(text="View", icon="HIDE_OFF")
         viewport.prop(rig, "fbp_text_matrix_viewport_columns", text="Columns", slider=True)
-        viewport.prop(rig, "fbp_text_matrix_viewport_rows", text="Rows", slider=True)
+        viewport.prop(rig, "fbp_text_matrix_viewport_rows", text=_fbp_auto_rows_label(rig, "fbp_text_matrix_viewport_rows"), slider=True)
 
         playback_body = _fbp_draw_toggle_foldout(
             box, "fbp_effect_text_matrix_playback", rig,
@@ -26256,12 +26397,12 @@ def fbp_draw_effect_settings(
             playback_grid = playback_body.row(align=True)
             playback_grid.label(text="Play", icon="PLAY")
             playback_grid.prop(rig, "fbp_text_matrix_playback_columns", text="Columns", slider=True)
-            playback_grid.prop(rig, "fbp_text_matrix_playback_rows", text="Rows", slider=True)
+            playback_grid.prop(rig, "fbp_text_matrix_playback_rows", text=_fbp_auto_rows_label(rig, "fbp_text_matrix_playback_rows"), slider=True)
 
         render = box.row(align=True)
         render.label(text="Render", icon="RESTRICT_RENDER_OFF")
         render.prop(rig, "fbp_text_matrix_render_columns", text="Columns", slider=True)
-        render.prop(rig, "fbp_text_matrix_render_rows", text="Rows", slider=True)
+        render.prop(rig, "fbp_text_matrix_render_rows", text=_fbp_auto_rows_label(rig, "fbp_text_matrix_render_rows"), slider=True)
 
         _fbp_draw_effect_section(box, "Glyphs", "OUTLINER_OB_FONT", separator=True)
         _fbp_draw_compact_effect_properties(

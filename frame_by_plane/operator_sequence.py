@@ -562,12 +562,144 @@ class FBP_OT_Transform(Operator):
                 bbox_world = [rig.matrix_world @ mathutils.Vector(c) for c in fbp_object_local_bounds(rig)]
                 min_z = min(v.z for v in bbox_world)
                 rig.location.z -= min_z
-            elif self.mode == 'RESET_ROT':
-                rig.rotation_euler = (0.0, 0.0, 0.0)
-                rig.fbp_is_vertical = False
-            elif self.mode == 'RESET_SCALE':
-                base_vec = getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0))
-                rig.scale = base_vec
+            elif self.mode in {'RESET_ROT', 'RESET_SCALE'}:
+                # Same reset as right-click > Layer > Reset: a vertical layer
+                # stays vertical, locked channels stay and the box turns back
+                # with the layer. This used to lay vertical layers flat.
+                part = 'ROTATION' if self.mode == 'RESET_ROT' else 'SCALE'
+                if fbp_reset_layer_transform(rig, part):
+                    try:
+                        from .layer_cage import _auto_key
+                        _auto_key(rig)
+                    except ImportError:
+                        pass
+        return {'FINISHED'}
+
+FBP_RESET_LAYER_ITEMS = (
+    ('POSITION', "Position", "Move the layer back to the world origin (or its parent's origin)"),
+    ('ROTATION', "Rotation", "Undo every rotation, the box's included; the layer keeps its vertical or horizontal orientation"),
+    ('SCALE', "Scale", "Return to the scale the layer was created with"),
+    ('ANCHOR', "Anchor Point", "Put the transform box anchor point back on the layer origin"),
+    ('ORIENTATION', "Box Orientation", "Turn the transform box back in line with the layer; the layer stays where it is"),
+    ('ALL', "All", "Reset position, rotation, scale, anchor point and box orientation"),
+)
+
+
+def fbp_layer_rest_rotation(rig):
+    """Return the rest Euler rotation of a layer: its creation orientation."""
+    if bool(getattr(rig, "fbp_is_vertical", False)):
+        return (math.radians(90.0), 0.0, 0.0)
+    return (0.0, 0.0, 0.0)
+
+
+def fbp_layer_rest_scale(rig):
+    """Return the creation scale recorded on the layer (aspect for color planes)."""
+    try:
+        base = tuple(float(value) for value in getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0)))
+    except (TypeError, ValueError):
+        base = (1.0, 1.0, 1.0)
+    if len(base) != 3 or any(abs(value) < 1e-6 for value in base):
+        return (1.0, 1.0, 1.0)
+    return base
+
+
+def fbp_reset_layer_transform(rig, mode):
+    """Reset one part of a layer rig's transform. Returns True when something changed."""
+    mode = str(mode or 'ALL').upper()
+    changed = False
+    # Rotation is the layer's own turn: the box goes back in line with it first.
+    if mode in {'ORIENTATION', 'ROTATION', 'ALL'}:
+        try:
+            from .layer_cage import reset_box_orientation
+            changed = bool(reset_box_orientation(rig)) or changed
+        except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
+    # Locked channels stay, as with Blender's own Clear Location/Rotation/Scale.
+    if mode in {'POSITION', 'ALL'}:
+        for axis in range(3):
+            if not rig.lock_location[axis] and rig.location[axis] != 0.0:
+                rig.location[axis] = 0.0
+                changed = True
+    if mode in {'ROTATION', 'ALL'}:
+        euler = mathutils.Euler(fbp_layer_rest_rotation(rig), 'XYZ')
+        locked = tuple(bool(value) for value in rig.lock_rotation)
+        if rig.rotation_mode == 'QUATERNION':
+            if not any(locked):
+                rig.rotation_quaternion = euler.to_quaternion()
+                changed = True
+        elif rig.rotation_mode == 'AXIS_ANGLE':
+            if not any(locked):
+                axis, angle = euler.to_quaternion().to_axis_angle()
+                rig.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
+                changed = True
+        else:
+            rest = euler.to_matrix().to_euler(rig.rotation_mode)
+            for axis in range(3):
+                if not locked[axis] and rig.rotation_euler[axis] != rest[axis]:
+                    rig.rotation_euler[axis] = rest[axis]
+                    changed = True
+    if mode in {'SCALE', 'ALL'}:
+        rest = fbp_layer_rest_scale(rig)
+        for axis in range(3):
+            if not rig.lock_scale[axis] and rig.scale[axis] != rest[axis]:
+                rig.scale[axis] = rest[axis]
+                changed = True
+    if mode in {'ANCHOR', 'ALL'}:
+        try:
+            from .layer_cage import ANCHOR_KEY
+            if ANCHOR_KEY in rig:
+                del rig[ANCHOR_KEY]
+                changed = True
+        except (ImportError, KeyError, TypeError, RuntimeError):
+            pass
+    return changed
+
+
+class FBP_OT_ResetLayerTransform(Operator):
+    bl_idname = "fbp.reset_layer_transform"
+    bl_label = "Reset Layer"
+    bl_description = "Reset the position, rotation or scale of the selected Frame By Plane layers"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: EnumProperty(name="Reset", items=FBP_RESET_LAYER_ITEMS, default='ALL')
+
+    @classmethod
+    def description(cls, context, properties):
+        for token, _label, text in FBP_RESET_LAYER_ITEMS:
+            if token == properties.mode:
+                return text
+        return cls.bl_description
+
+    @classmethod
+    def poll(cls, context):
+        return bool(get_selected_rigs(context))
+
+    def execute(self, context):
+        rigs = list(get_selected_rigs(context) or ())
+        if not rigs:
+            self.report({'WARNING'}, "Select a Frame By Plane layer first")
+            return {'CANCELLED'}
+        try:
+            from .layer_cage import _auto_key
+        except ImportError:
+            _auto_key = None
+        animated_box = False
+        for rig in rigs:
+            changed = fbp_reset_layer_transform(rig, self.mode)
+            if self.mode in {'ORIENTATION', 'ROTATION', 'ALL'}:
+                try:
+                    from .layer_cage import box_orientation_offset, transform_animated
+                    if abs(box_orientation_offset(rig)) > 1.0e-7 and transform_animated(rig):
+                        animated_box = True
+                except (ImportError, RuntimeError, TypeError, ValueError, AttributeError):
+                    pass
+            if changed and _auto_key is not None and self.mode not in {'ANCHOR'}:
+                _auto_key(rig)
+        if animated_box:
+            self.report({'WARNING'}, "The box of an animated layer keeps its orientation: its keyframes would turn the drawing")
+        for area in getattr(context.screen, "areas", ()) or ():
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
         return {'FINISHED'}
 
 class FBP_OT_PopupTransform(Operator):

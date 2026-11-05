@@ -184,6 +184,12 @@ def fbp_handle_under_cursor(context, coord, radius):
 
     region = context.region
     region_data = context.region_data
+    try:
+        if not bool(context.space_data.overlay.show_overlays):
+            # Handles are an overlay: hidden with the overlays, never picked.
+            return None
+    except FBP_DATA_ERRORS:
+        return None
     handles = [
         handle for handle in _visible_handles(context)
         if not bool(getattr(handle, "hide_select", False))
@@ -418,7 +424,9 @@ class FBP_OT_SelectThroughAlpha(Operator):
                     from .layer_cage import toggle_anchor_mode
                     toggle_anchor_mode(box[0])
                     context.area.tag_redraw()
-                return {'FINISHED'}
+                # Nothing in the file changed: no empty Undo step. Cancelled
+                # still ends the click here, so Blender does not deselect.
+                return {'CANCELLED'}
             # A click on (or right next to) a visible rig wire stays Blender's.
             if _rig_wire_near_cursor(context, coord, 8.0 * _ui_scale(context)):
                 return {'PASS_THROUGH'}
