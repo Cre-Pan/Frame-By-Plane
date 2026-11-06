@@ -261,8 +261,8 @@ _SHELL_UI_KEY = "fbp_shell_ui"
 # 2: every panel control (choices, extra settings, Animate) is an input.
 # 3: variant, input, preview, mask operation, viewport control and sources.
 # 4: Actions is the first input, with the Lattice cage and handle actions.
-# 5: Actions are two rows of buttons (Tools, Effect).
-_SHELL_UI_VERSION = 5
+# 6: Action button rows rest with no button pressed.
+_SHELL_UI_VERSION = 6
 _SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
 _SHELL_USAGE_NODE_KEY = "fbp_shell_usage_node"
 _SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
@@ -578,9 +578,13 @@ def _new_menu_input(group, rna, name, panel):
     switch[_SHELL_USAGE_NODE_KEY] = True
     switch.hide = True
     switch.enum_items.clear()
-    for item in rna.enum_items:
+    choices = tuple(rna.enum_items)
+    if rna.identifier in _ACTION_KEYS:
+        # No resting button: the input rests on a value with no item.
+        choices = tuple(item for item in choices if item.identifier != "NONE")
+    for item in choices:
         switch.enum_items.new(str(item.name))
-    for index, item_socket in enumerate(tuple(switch.inputs)[1:1 + len(rna.enum_items)]):
+    for index, item_socket in enumerate(tuple(switch.inputs)[1:1 + len(choices)]):
         try:
             item_socket.default_value = index
         except FBP_DATA_ERRORS:
@@ -1074,6 +1078,8 @@ def _run_virtual(rig_name, effect_id, instance_id, key, value):
 def _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind):
     """One layer setting as the value its modifier input holds."""
     if storage == "VIRTUAL":
+        if prop_name in _ACTION_KEYS:
+            return ""
         value = _virtual_value(rig, effect_id, instance_id, prop_name)
         return None if value is None else _menu_name(rna, str(value))
     owner, attr = _layer_owner(rig, effect_id, instance_id, prop_name, storage)
@@ -1169,7 +1175,10 @@ def _init_shell_values(rig, modifier, effect_id, instance_id, source=None):
         if value is None and kind not in _DATA_KINDS:
             continue
         try:
-            _geo()._fbp_modifier_input_set(modifier, identifier, _color4(value) if kind == "COLOR" else value)
+            if prop_name in _ACTION_KEYS:
+                _rest_action_input(modifier, identifier)
+            else:
+                _geo()._fbp_modifier_input_set(modifier, identifier, _color4(value) if kind == "COLOR" else value)
         except FBP_DATA_ERRORS as exc:
             fbp_warn(f"Could not set shell input {identifier}", exc)
     group[_SHELL_SYNCED_KEY] = _shell_snapshot(modifier)
@@ -1178,8 +1187,13 @@ def _init_shell_values(rig, modifier, effect_id, instance_id, source=None):
 def _shell_snapshot(modifier):
     group = modifier.node_group
     identifiers = [entry[2] for entry in _shell_mapping(group)]
-    identifiers.extend(entry[2] for entry in _shell_layer_mapping(group))
-    return {identifier: _storable(_modifier_input(modifier, identifier)) for identifier in identifiers}
+    identifiers.extend(entry[2] for entry in _shell_layer_mapping(group) if entry[0] not in _ACTION_KEYS)
+    snapshot = {identifier: _storable(_modifier_input(modifier, identifier)) for identifier in identifiers}
+    snapshot.update(
+        (entry[2], _action_input(modifier, entry[2]))
+        for entry in _shell_layer_mapping(group) if entry[0] in _ACTION_KEYS
+    )
+    return snapshot
 
 
 def _rebuild_shell(rig, token, modifier):
@@ -1751,7 +1765,10 @@ def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
             continue
         if _geo()._fbp_modifier_input_handle(modifier, identifier) is None:
             continue
-        current = _modifier_input(modifier, identifier)
+        current = (
+            _action_input(modifier, identifier) if prop_name in _ACTION_KEYS
+            else _modifier_input(modifier, identifier)
+        )
         if current is None and kind not in _DATA_KINDS:
             continue
         layer = _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind)
@@ -1763,13 +1780,52 @@ def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
             ))
         elif (layer is not None or kind in _DATA_KINDS) and _comparable(layer) != _comparable(current):
             try:
-                geo._fbp_modifier_input_set(modifier, identifier, layer)
+                if prop_name in _ACTION_KEYS:
+                    _rest_action_input(modifier, identifier)
+                else:
+                    geo._fbp_modifier_input_set(modifier, identifier, layer)
             except FBP_DATA_ERRORS as exc:
                 fbp_warn(f"Could not set shell input {identifier}", exc)
-            current = _modifier_input(modifier, identifier)
+            current = (
+                _action_input(modifier, identifier) if prop_name in _ACTION_KEYS
+                else _modifier_input(modifier, identifier)
+            )
             moved += 1
         stored[identifier] = _storable(current)
     return moved
+
+
+def _action_input(modifier, identifier):
+    """The pressed button of a button row, or "" when none is.
+
+    Reads the stored number: reading ``value`` while it names no item makes
+    Blender print a warning every time.
+    """
+    handle = _geo()._fbp_modifier_input_handle(modifier, identifier)
+    if handle is None:
+        return None
+    try:
+        number = int(handle.get("value", -1))
+        items = handle.bl_rna.properties["value"].enum_items
+    except FBP_DATA_ERRORS:
+        return None
+    return next((str(item.name) for item in items if int(item.value) == number), "")
+
+
+def _rest_action_input(modifier, identifier):
+    """Put a button row back to no pressed button after it ran its action.
+
+    The menu value is stored as a number; one that names no item draws every
+    button unpressed.
+    """
+    handle = _geo()._fbp_modifier_input_handle(modifier, identifier)
+    if handle is None:
+        return
+    try:
+        used = {int(item.value) for item in handle.bl_rna.properties["value"].enum_items}
+    except FBP_DATA_ERRORS:
+        used = set()
+    handle["value"] = next(number for number in range(len(used) + 1) if number not in used)
 
 
 def fbp_shell_ensure(rig):
