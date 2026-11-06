@@ -134,6 +134,49 @@ try:
     assert settled != started, (started, settled)
     tutorial._update_progress(bpy.context, state)
     assert tutorial._progress_signature(state) == settled
+
+    # Motion: animations start only after a change, end on their own, and the
+    # card's final layout never depends on where an animation currently is.
+    motion_module = importlib.import_module(f"{PACKAGE_NAME}.tutorial_motion")
+    clock = [10.0]
+    motion = motion_module.Motion(clock=lambda: clock[0])
+    assert motion.value("progress", 0.25, 0.5) == 0.25 and not motion.busy()
+    assert motion.value("progress", 1.0, 0.5) == 0.25 and motion.busy()
+    clock[0] += 0.25
+    assert 0.25 < motion.value("progress", 1.0, 0.5) < 1.0
+    clock[0] += 0.5
+    assert motion.value("progress", 1.0, 0.5) == 1.0 and not motion.busy()
+    motion.trigger("content", 0.3)
+    assert motion.phase("content") == 0.0 and motion.busy()
+    clock[0] += 0.31
+    assert motion.phase("content") is None and not motion.busy()
+    motion.wake(0.1)
+    assert motion.busy()
+    clock[0] += 0.2
+    assert not motion.busy()
+    for ease in (motion_module.ease_out_cubic, motion_module.ease_in_out_cubic, motion_module.ease_out_back):
+        assert abs(ease(0.0)) < 1e-9 and abs(ease(1.0) - 1.0) < 1e-9
+
+    state = tutorial.TutorialState()
+    state.motion.clock = lambda: clock[0]
+    region = _Region(1600, 900)
+    tutorial._sync_motion(state)
+    assert not state.motion.busy(), "the first frame must not animate"
+    state.enter_route(bpy.context, "IMAGE")
+    tutorial._sync_motion(state)
+    assert state.motion.running("content") and state.motion.running("attention")
+    final = tutorial._compute_hud(bpy.context, region, state)
+    state.motion.snap("height", 0.0)
+    gliding = tutorial._compute_hud(bpy.context, region, state, animated=True)
+    assert gliding["height"] < final["height"], "height glides when animated"
+    assert abs((gliding["y"] + gliding["height"]) - (final["y"] + final["height"])) < 0.01, "top edge stays put"
+    assert tutorial._compute_hud(bpy.context, region, state)["height"] == final["height"]
+    first = state.active_task
+    state.manual_completed.add(first.key)
+    tutorial._sync_motion(state)
+    assert state.motion.running("done"), "a confirmed step flashes"
+    clock[0] += 5.0
+    assert not state.motion.busy(), "every animation ends by itself"
     print("FBPTEST live_tutorial: PASS")
 except Exception:
     traceback.print_exc()
