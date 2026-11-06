@@ -63,6 +63,10 @@ All notable public changes to Frame By Plane are documented here.
 - The transform box and the effect handles draw and react to the mouse with less work. The box keeps its outline and dots from the last redraw while neither the layer nor the view changes, so hovering does not recompute them, and sends its dots and lines to the GPU in two or three batches instead of one per dot: with 6 selected layers each box draws in about 0.35 ms instead of 0.6 ms. Effect handle shapes are cached until the handle mesh changes instead of being rebuilt from the evaluated mesh on every redraw and mouse move (about 80 µs per handle instead of 340 µs). Finding the handle under the cursor projects the handle points in one step and skips handles far from the cursor, so with 6 effect handles a mouse move costs about 0.9 ms instead of 2.6 ms. Handles and the box look and behave the same, pixel for pixel.
 - Extending the timeline with image sequence layers no longer stalls on the next frame change. Each sequence rebuilds its timing to cover the new range, and that rebuild looked up the playback order again for every timeline frame and added its keys one by one. Now the order is worked out once per sequence and the keys go in as one block: with 6 sequences of 120 drawings and a 400-frame timeline the rebuild went from about 1.8 s to about 0.3 s, and the check that runs when a file opens from about 160 ms to about 50 ms. The baked timing is the same key for key.
 
+### Stability
+
+- Fixed a Blender crash (`EXCEPTION_ACCESS_VIOLATION`) that could hit when an effect was added or edited while another add-on watched scene updates (seen with Doodle Music). The Modifiers panel sync wrote layer settings from inside Blender's scene-update callback, and their updates could rebuild data that the next add-on's callback was still reading. The callback now only notes which layers changed, and the sync runs right after.
+
 ### Cleanup
 
 - Mesh effect materials copied the first input of nodes with repeated input names (Math, Mix) into the second one; they now copy input by input.
