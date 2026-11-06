@@ -2721,6 +2721,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
             _fbp_effect_stat_add("camera_binding_passes")
         _fbp_sync_scene_camera_bindings(scene, rigs)
         deferred_composite_rigs = []
+        global _FBP_COMPOSITE_REFRESH_PENDING
+        _FBP_COMPOSITE_REFRESH_PENDING = {}
 
         for rig in rigs:
             try:
@@ -2868,11 +2870,15 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     # keyed, driven or written from Python (effect settings,
                     # Evolve, procedural frames), so a plain stack skips the
                     # rescan (several ms per layer) while scrubbing or playing.
+                    # Evolve and procedural frames of Mesh effects write
+                    # modifier inputs, never the layer material, and shader
+                    # writes below queue their own refresh, so only keyed or
+                    # driven materials (and renders) refresh here. Queued
+                    # refreshes run once per layer after every write of the
+                    # frame, so the composites never lag one frame behind.
                     if (
                         render_guard_active
                         or has_animated_effects
-                        or evolve_enabled
-                        or procedural_frame_sync
                         or _fbp_layer_material_frame_dependent(rig)
                     ):
                         _fbp_refresh_geometry_source_materials(rig)
@@ -2892,7 +2898,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     effect_id, instance_id, _prop_name = _fbp_effect_instance_channel_identity(channel)
                     if effect_id not in active_effect_ids or not instance_id:
                         continue
-                    _fbp_apply_effect_instance_channel(rig, channel, scene=scene)
+                    if _fbp_apply_effect_instance_channel(rig, channel, scene=scene):
+                        _fbp_refresh_geometry_source_materials(rig)
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
@@ -2981,6 +2988,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                         scene=scene,
                         sync_alpha=False,
                         property_names=property_names,
+                        refresh_composites=False,
                     )
                     updated_effect_ids.add(effect_id)
                     if profile_enabled:
@@ -3012,6 +3020,7 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                             scene=scene,
                             sync_alpha=False,
                             property_names=property_names,
+                            refresh_composites=False,
                         )
                     else:
                         if profile_enabled:
@@ -3054,10 +3063,13 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
+        _fbp_flush_composite_refreshes()
         if deferred_composite_rigs:
             # Settle the skipped composites once the timeline stops moving.
             _fbp_schedule_composite_catchup(scene, deferred_composite_rigs)
     finally:
+        if _FBP_COMPOSITE_REFRESH_PENDING is not None:
+            _fbp_flush_composite_refreshes()
         _FBP_EVOLVE_HANDLER_ACTIVE = False
         if profile_started:
             _fbp_effect_handler_record(
@@ -9490,9 +9502,31 @@ def _fbp_apply_geometry_material_composites(
     return changed
 
 
+# While a frame change runs, refresh requests are queued here (runtime key ->
+# rig) and run once per layer at the end, instead of once per changed effect.
+_FBP_COMPOSITE_REFRESH_PENDING = None
+
+
+def _fbp_flush_composite_refreshes():
+    global _FBP_COMPOSITE_REFRESH_PENDING
+    pending = _FBP_COMPOSITE_REFRESH_PENDING
+    _FBP_COMPOSITE_REFRESH_PENDING = None
+    for rig in (pending or {}).values():
+        try:
+            _fbp_refresh_geometry_source_materials(rig)
+        except FBP_DATA_ERRORS:
+            continue
+
+
 def _fbp_refresh_geometry_source_materials(rig):
     """Refresh every Geometry Nodes material input after stack/node changes."""
     global _FBP_MIXED_TOKENS_MEMO
+    pending = _FBP_COMPOSITE_REFRESH_PENDING
+    if pending is not None:
+        key = fbp_obj_runtime_key(rig)
+        if key is not None:
+            pending[key] = rig
+            return False
     if _FBP_MIXED_TOKENS_MEMO is not None:
         return _fbp_refresh_geometry_source_materials_pass(rig)
     _FBP_MIXED_TOKENS_MEMO = {}
@@ -9930,12 +9964,15 @@ def fbp_update_geometry_effect(
     *,
     sync_alpha=True,
     property_names=None,
+    refresh_composites=True,
 ):
     """Push effect values into one Geometry Nodes modifier.
 
     ``property_names`` limits interactive RNA callbacks to the sockets that
     actually changed. Full updates are still used after asset repair, file load,
-    frame evaluation and explicit stack rebuilds.
+    frame evaluation and explicit stack rebuilds. Frame changes that only move
+    Evolve or procedural inputs pass ``refresh_composites=False``: those values
+    never reach the materials, so the boundary composites stay as they are.
     """
     effect_id = fbp_normalize_effect_id(effect_id)
     definition = fbp_effect_definition(effect_id)
@@ -10202,18 +10239,19 @@ def fbp_update_geometry_effect(
     # This runs after the native material has been updated, so Text Matrix,
     # Image Solids, Fiber, Paper, Glass, Crystal and Felt all consume the exact
     # cumulative Image/Mask result below their Mesh row.
-    updated = _fbp_apply_geometry_material_composites(
-        rig,
-        modifier,
-        effect_id,
-        (
-            _fbp_geometry_modifier_instance_id(
-                rig, modifier, effect_id, ensure=True
-            )
-            if _fbp_effect_uses_multi_instances(effect_id)
-            else ""
-        ),
-    ) or updated
+    if refresh_composites or node_group is not previous_group:
+        updated = _fbp_apply_geometry_material_composites(
+            rig,
+            modifier,
+            effect_id,
+            (
+                _fbp_geometry_modifier_instance_id(
+                    rig, modifier, effect_id, ensure=True
+                )
+                if _fbp_effect_uses_multi_instances(effect_id)
+                else ""
+            ),
+        ) or updated
 
     alpha_changed = False
     if (definition.get("alpha_aware") or definition.get("image_aware")) and sync_alpha:

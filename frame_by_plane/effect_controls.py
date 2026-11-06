@@ -2785,14 +2785,55 @@ def _iter_all_effect_controls(context=None):
         _LAST_CONTROL_EMPTY_SCAN_TIME = now
 
 
+# One redraw asks for the visible handles several times (overlay draw, hover,
+# gradient stops). The answer only changes with a depsgraph update (selection,
+# hide, new handles) or a new frame, so it is kept for that state and at most
+# half a second, and rebuilt otherwise.
+_VISIBLE_CONTROLS_CACHE = {"key": None, "controls": ()}
+
+
+def _visible_controls_key(context):
+    try:
+        from . import runtime as _runtime
+        scene = getattr(context, "scene", None) if context is not None else None
+        view_layer = getattr(context, "view_layer", None) if context is not None else None
+        return (
+            float(getattr(_runtime, "_FBP_LAST_DEPSGRAPH_ACTIVITY", 0.0) or 0.0),
+            int(time.monotonic() * 2.0),
+            fbp_obj_runtime_key(scene),
+            str(getattr(view_layer, "name", "") or ""),
+            int(getattr(scene, "frame_current", 0) or 0),
+            len(_CONTROL_NAMES),
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
 def iter_visible_effect_controls(context=None):
     """Visible handle meshes, for the always-in-front overlay."""
-    for control in _iter_all_effect_controls(context):
-        try:
-            if control.type == "MESH" and control.visible_get():
-                yield control
-        except FBP_DATA_ERRORS:
+    key = _visible_controls_key(context or getattr(bpy, "context", None))
+    controls = _VISIBLE_CONTROLS_CACHE["controls"]
+    if key is None or _VISIBLE_CONTROLS_CACHE["key"] != key:
+        _VISIBLE_CONTROLS_CACHE["key"] = None
+        found = []
+        for control in _iter_all_effect_controls(context):
+            try:
+                if control.type == "MESH" and control.visible_get():
+                    found.append(control.name)
+                    yield control
+            except FBP_DATA_ERRORS:
+                continue
+        # Names, not RNA: nothing freed by Undo or a file load is kept.
+        _VISIBLE_CONTROLS_CACHE["key"] = key
+        _VISIBLE_CONTROLS_CACHE["controls"] = tuple(found)
+        return
+    objects = bpy.data.objects
+    for name in controls:
+        control = objects.get(name)
+        if control is None:
+            _VISIBLE_CONTROLS_CACHE["key"] = None
             continue
+        yield control
 
 
 def _linear_to_display(value):
@@ -4171,6 +4212,8 @@ def clear_effect_controls_runtime_cache():
     _PENDING_CONTROL_SIGNATURES.clear()
     _PENDING_CONTROL_TRANSFORMS.clear()
     _CONTROL_NAMES.clear()
+    _VISIBLE_CONTROLS_CACHE["key"] = None
+    _VISIBLE_CONTROLS_CACHE["controls"] = ()
     _CONTROL_OWNER_CACHE.clear()
     _CONTEXT_OBJECTS_CACHE.clear()
     _SCENE_SERVICE_CACHE.clear()
