@@ -519,6 +519,9 @@ def test_native_effect_controls():
         handle = geo._fbp_modifier_input_handle(modifier, tools)
         assert "NONE" not in {item.identifier for item in handle.bl_rna.properties["value"].enum_items}
         handle.value = "Reset Rig"
+        # Object mask shapes get their helper buttons as Tools too.
+        circle = shells._effect_actions("CIRCLE_MASK", geo.fbp_effect_definition("CIRCLE_MASK") or {})
+        assert {"EDIT_SHAPE", "PERFECT_SHAPE", "RECREATE_SHAPE"} <= {action[0] for action in circle}
         shells.fbp_shell_sync_values(rig)
         shells.fbp_shell_sync_values(rig)
         assert shells._action_input(modifier, tools) == ""
@@ -530,7 +533,10 @@ def test_native_effect_controls():
         assert not any(call[0] == "operator_menu_enum" and call[1][0] == "fbp.set_mask_stack_operation" for call in mask)
         assert not any("first active mask" in str(call[2].get("text", "")) for call in mask)
         assert any(call[0] == "template_curve_mapping" for call in calls("CURVES"))
-        crop_operators = [call[1][0] for call in calls("CROP") if call[0] == "operator"]
+        # Crop has nothing left under its inputs: every button is at the top.
+        layout = StubLayout()
+        panel.fbp_draw_native_effect_controls(layout, context, shells.fbp_shell_modifier(rig, "CROP"))
+        crop_operators = [call[1][0] for call in layout.calls if call[0] == "operator"]
         assert "fbp.crop_alpha" not in crop_operators and "fbp.reset_crop" not in crop_operators
 
         # A modifier that is not a Frame By Plane effect gets nothing.

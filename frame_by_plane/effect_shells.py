@@ -262,7 +262,8 @@ _SHELL_UI_KEY = "fbp_shell_ui"
 # 3: variant, input, preview, mask operation, viewport control and sources.
 # 4: Actions is the first input, with the Lattice cage and handle actions.
 # 6: Action button rows rest with no button pressed.
-_SHELL_UI_VERSION = 6
+# 7: More effects get a Tools row (mask shapes, Gradient Light, Motion...).
+_SHELL_UI_VERSION = 7
 _SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
 _SHELL_USAGE_NODE_KEY = "fbp_shell_usage_node"
 _SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
@@ -399,6 +400,20 @@ def _effect_actions(effect_id, definition):
         actions.append(("RESET_CROP", "Reset Crop", "fbp.reset_crop", {}))
     if effect_id == "SHADOW":
         actions.append(("FIT_SHADOW", "Fit Canvas", "fbp.fit_shadow_canvas", {}))
+    if effect_id == "GRADIENT_LIGHT":
+        actions.append(("LIGHT_CONTROLLER", "Light Controller", "fbp.gradient_light_controller", {}))
+    shape = _MASK_SHAPES.get(effect_id)
+    if shape:
+        shape_kwargs = {"rig_name": _RIG, "shape": shape}
+        actions.extend((
+            ("EDIT_SHAPE", "Edit Shape", "fbp.edit_object_mask_helper", shape_kwargs),
+            ("PERFECT_SHAPE", "Perfect Shape", "fbp.perfect_object_mask_shape", shape_kwargs),
+            ("RECREATE_SHAPE", "Recreate Shape", "fbp.recreate_object_mask_helper", shape_kwargs),
+        ))
+    if effect_id == "CAMERA_SCALE_LOCK":
+        actions.append(("CAPTURE_SCALE", "Capture Reference", "fbp.capture_camera_scale_reference", {}))
+    if effect_id == "MOTION":
+        actions.append(("CAPTURE_BASE", "Capture Base", "fbp.motion_capture_base", {}))
     if effect_id == "LATTICE":
         actions.extend((
             ("SELECT_CAGE", "Select Cage", "fbp.select_lattice_helper", {"rig_name": _RIG}),
@@ -409,14 +424,18 @@ def _effect_actions(effect_id, definition):
     return tuple(actions)
 
 
-def fbp_shell_tool_operators(effect_id):
-    """Operators the effect's Tools button row runs."""
+def fbp_shell_tool_operators(effect_id, key="@TOOLS"):
+    """Operators one of the effect's button rows runs."""
     definition = _geo().fbp_effect_definition(effect_id) or {}
+    general = key != "@TOOLS"
     return frozenset(
-        op for key, _label, op, _kwargs in _effect_actions(effect_id, definition)
-        if key not in _EFFECT_ACTIONS
+        op for action, _label, op, _kwargs in _effect_actions(effect_id, definition)
+        if (action in _EFFECT_ACTIONS) == general
     )
 
+
+# Object mask effects and the shape their helper operators take.
+_MASK_SHAPES = {"CIRCLE_MASK": "CIRCLE", "SQUARE_MASK": "SQUARE", "TRIANGLE_MASK": "TRIANGLE"}
 
 # Stands for the layer's name in an action's operator settings.
 _RIG = "\x00RIG"
