@@ -260,7 +260,8 @@ def _build_shell_group(rig, effect_id, token):
 _SHELL_UI_KEY = "fbp_shell_ui"
 # 2: every panel control (choices, extra settings, Animate) is an input.
 # 3: variant, input, preview, mask operation, viewport control and sources.
-_SHELL_UI_VERSION = 3
+# 4: Actions is the first input, with the Lattice cage and handle actions.
+_SHELL_UI_VERSION = 4
 _SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
 _SHELL_USAGE_NODE_KEY = "fbp_shell_usage_node"
 _SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
@@ -391,7 +392,18 @@ def _effect_actions(effect_id, definition):
         actions.append(("RESET_CROP", "Reset Crop", "fbp.reset_crop", {}))
     if effect_id == "SHADOW":
         actions.append(("FIT_SHADOW", "Fit Shadow Canvas", "fbp.fit_shadow_canvas", {}))
+    if effect_id == "LATTICE":
+        actions.extend((
+            ("SELECT_CAGE", "Select Cage", "fbp.select_lattice_helper", {"rig_name": _RIG}),
+            ("EDIT_CAGE", "Edit Cage", "fbp.edit_lattice_helper", {"rig_name": _RIG}),
+            ("FINISH_CAGE", "Back to Plane", "fbp.finish_lattice_editing", {"rig_name": _RIG}),
+            ("POINT_HANDLES", "Point Handles", "fbp.lattice_point_handles", {"rig_name": _RIG, "action": "ADD"}),
+        ))
     return tuple(actions)
+
+
+# Stands for the layer's name in an action's operator settings.
+_RIG = "\x00RIG"
 
 
 def _run_action(rig, effect_id, definition, key):
@@ -400,6 +412,10 @@ def _run_action(rig, effect_id, definition, key):
     if action is None:
         return False
     _key, _label, idname, kwargs = action
+    kwargs = {
+        prop: (str(getattr(rig, "name", "") or "") if value == _RIG else value)
+        for prop, value in kwargs.items()
+    }
     module, _dot, name = idname.partition(".")
     operator = getattr(getattr(bpy.ops, module), name)
     window = next(iter(bpy.context.window_manager.windows), None)
@@ -483,10 +499,12 @@ def _shell_layout_entries(effect_id, skip=()):
     if _has_viewport_control(effect_id):
         names.insert(0, "fbp_effect_controls_enabled")
     plain, animated = [], {}
-    trailing = []
+    leading = []
     for key, setting in _virtual_settings(effect_id, definition):
         entry = (key, "", setting, "VIRTUAL", setting.name, False)
-        (trailing if key == "@ACTION" else plain).append(entry)
+        # Actions opens the modifier: Select Rig, Edit Cage... come first.
+        (leading if key == "@ACTION" else plain).append(entry)
+    plain[:0] = leading
     skip = set(skip or ())
     for prop_name in dict.fromkeys(str(name or "") for name in names):
         if prop_name in skip:
@@ -531,7 +549,6 @@ def _shell_layout_entries(effect_id, skip=()):
     plain.extend(
         animated[suffix] + ("Animate",) for suffix, _label in _SHELL_ANIMATE if suffix in animated
     )
-    plain.extend(entry + ("",) for entry in trailing)
     return plain
 
 
@@ -759,6 +776,32 @@ def _populate_shell_group(group, effect_id):
     return group
 
 
+def _actions_first(group):
+    """Make the Actions dropdown the modifier's first row.
+
+    It goes right after the Geometry input: a Geometry Nodes modifier feeds
+    its geometry into the group's first input.
+    """
+    identifier = next(
+        (entry[2] for entry in _shell_layer_mapping(group) if entry[0] == "@ACTION"), ""
+    )
+    if not identifier:
+        return
+    interface = group.interface
+    for item in interface.items_tree:
+        if getattr(item, "identifier", "") == identifier:
+            geometry = next((
+                index for index, other in enumerate(interface.items_tree)
+                if getattr(other, "in_out", "") == "INPUT"
+                and getattr(other, "socket_type", "") == "NodeSocketGeometry"
+            ), -1)
+            try:
+                interface.move(item, geometry + 1)
+            except FBP_DATA_ERRORS:
+                pass
+            return
+
+
 _GEOMETRY_INPUTS_KEY = "fbp_panel_inputs"
 
 
@@ -916,6 +959,7 @@ def fbp_extend_geometry_group(group, effect_id):
             _wire_usage(group, used, source, group_output)
         elif not target.is_linked:
             links.new(source, target)
+        _actions_first(group)
         group[_GEOMETRY_INPUTS_KEY] = marker
         return True
     except FBP_DATA_ERRORS as exc:
