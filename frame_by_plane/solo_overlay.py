@@ -11,10 +11,10 @@ from mathutils.geometry import tessellate_polygon
 from .grease_pencil_bridge import any_gp_canvas_solo, gp_canvas_solo_active
 from .fbp_index import iter_scene_gp_canvases
 from .runtime import FBP_DATA_ERRORS
+from .common import uniform_color_shader as _shader
 
 
 _DRAW_HANDLE = None
-_SHADER = None
 
 # Same translucent look as the navigation buttons on the viewport's right side.
 _BADGE_FILL = (0.0, 0.0, 0.0, 0.24)
@@ -149,13 +149,6 @@ def solo_layer_count(scene):
     return count
 
 
-def _shader():
-    global _SHADER
-    if _SHADER is None:
-        _SHADER = gpu.shader.from_builtin("UNIFORM_COLOR")
-    return _SHADER
-
-
 def _fill(vertices, color, kind="TRI_FAN"):
     shader = _shader()
     batch = batch_for_shader(shader, kind, {"pos": vertices})
@@ -274,10 +267,9 @@ def register():
 
 
 def unregister():
-    global _DRAW_HANDLE, _SHADER
+    global _DRAW_HANDLE
     handle = _DRAW_HANDLE
     _DRAW_HANDLE = None
-    _SHADER = None
     if handle is not None:
         try:
             bpy.types.SpaceView3D.draw_handler_remove(handle, "WINDOW")

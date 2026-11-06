@@ -27,6 +27,19 @@ def clamp(value, minimum, maximum):
     """Clamp a comparable value to the inclusive ``minimum``/``maximum`` range."""
     return max(minimum, min(maximum, value))
 
+def percentile(values, quantile) -> float:
+    """Linear-interpolated percentile of ``values`` (``quantile`` in 0..1)."""
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return 0.0
+    position = (len(ordered) - 1) * max(0.0, min(1.0, float(quantile)))
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + ((ordered[upper] - ordered[lower]) * (position - lower))
+
+
 def safe_float(value, fallback=0.0) -> float:
     """Convert *value* to a finite float and sanitize the fallback as well."""
     try:
@@ -107,6 +120,7 @@ def point_inside_polygon(x, y, points) -> bool:
 
 __all__ = (
     "clamp",
+    "percentile",
     "point_inside_polygon",
     "point_inside_polygon_unchecked",
     "safe_float",

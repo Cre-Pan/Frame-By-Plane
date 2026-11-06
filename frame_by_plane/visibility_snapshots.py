@@ -20,12 +20,7 @@ from .grease_pencil_bridge import (
 )
 from .identifiers import ensure_layer_identity, ensure_mask_identity, stable_id
 from .layers import fbp_set_ui_units_x, get_layer_item_for_rig, update_global_visibility
-from .registration import (
-    register_classes,
-    register_interactive_classes,
-    unregister_classes,
-    unregister_type_properties,
-)
+from .registration import register_scene_library, unregister_scene_library
 from .runtime import (
     FBP_DATA_ERRORS,
     fbp_request_redraw,
@@ -41,6 +36,7 @@ from .interface_preferences import (
     fbp_uilist_is_spacer,
     fbp_uilist_visible_columns,
 )
+from .common import safe_text as _safe_text
 
 
 VISIBILITY_SNAPSHOT_SCHEMA_VERSION = 1
@@ -86,13 +82,6 @@ class FBP_VisibilitySnapshot(PropertyGroup):
         options={"HIDDEN"},
     )
     states: CollectionProperty(type=FBP_VisibilitySnapshotState)
-
-
-def _safe_text(value):
-    try:
-        return str(value or "").strip()
-    except FBP_DATA_ERRORS:
-        return ""
 
 
 def _active_snapshot(scene):
@@ -757,44 +746,21 @@ def _register_scene_properties():
     )
 
 
+_SCENE_PROPERTIES = ("fbp_visibility_snapshots", "fbp_visibility_snapshots_index")
+
+
 def register():
-    unregister_type_properties(
-        bpy.types.Scene,
-        (
-            "fbp_visibility_snapshots",
-            "fbp_visibility_snapshots_index",
-        ),
+    register_scene_library(
+        _registered_classes,
+        _model_classes,
+        _interactive_classes,
+        _SCENE_PROPERTIES,
+        _register_scene_properties,
     )
-    _registered_classes.clear()
-    try:
-        _registered_classes.extend(register_classes(_model_classes))
-        _register_scene_properties()
-        _registered_classes.extend(
-            register_interactive_classes(_interactive_classes)
-        )
-    except Exception:
-        unregister_type_properties(
-            bpy.types.Scene,
-            (
-                "fbp_visibility_snapshots",
-                "fbp_visibility_snapshots_index",
-            ),
-        )
-        unregister_classes(tuple(_registered_classes))
-        _registered_classes.clear()
-        raise
 
 
 def unregister():
-    unregister_type_properties(
-        bpy.types.Scene,
-        (
-            "fbp_visibility_snapshots",
-            "fbp_visibility_snapshots_index",
-        ),
-    )
-    unregister_classes(tuple(_registered_classes))
-    _registered_classes.clear()
+    unregister_scene_library(_registered_classes, _SCENE_PROPERTIES)
 
 
 __all__ = (

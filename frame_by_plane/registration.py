@@ -205,6 +205,43 @@ def unregister_type_properties(owner, names: Iterable[str]) -> int:
     return removed
 
 
+def register_scene_library(
+    registered: list,
+    model_classes: Iterable[type],
+    interactive_classes: Iterable[type],
+    property_names: Iterable[str],
+    register_properties,
+    on_failure=None,
+) -> None:
+    """Register a Scene library module: its data classes, the Scene
+    properties that store it and its UI classes, all or nothing.
+
+    ``registered`` collects the classes for :func:`unregister_scene_library`.
+    ``on_failure`` runs after the rollback, before the error is raised again.
+    """
+    names = tuple(property_names)
+    unregister_type_properties(bpy.types.Scene, names)
+    registered.clear()
+    try:
+        registered.extend(register_classes(model_classes))
+        register_properties()
+        registered.extend(register_interactive_classes(interactive_classes))
+    except Exception:
+        unregister_type_properties(bpy.types.Scene, names)
+        unregister_classes(tuple(registered))
+        registered.clear()
+        if on_failure is not None:
+            on_failure()
+        raise
+
+
+def unregister_scene_library(registered: list, property_names: Iterable[str]) -> None:
+    """Undo :func:`register_scene_library`."""
+    unregister_type_properties(bpy.types.Scene, tuple(property_names))
+    unregister_classes(tuple(registered))
+    registered.clear()
+
+
 def _handler_module_matches(module_name: str, module_suffix: str) -> bool:
     """Return whether a callback module belongs to this add-on generation."""
     module_name = str(module_name or "")
@@ -381,8 +418,10 @@ __all__ = (
     "register_classes",
     "register_handlers",
     "register_interactive_classes",
+    "register_scene_library",
     "remove_handlers_by_name",
     "unregister_classes",
+    "unregister_scene_library",
     "unregister_type_properties",
     "unregister_timer",
 )

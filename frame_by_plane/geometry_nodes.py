@@ -212,6 +212,7 @@ from .effects_registry import (
     fbp_effect_tooltip,
     fbp_normalize_effect_id,
 )
+from .math_utils import percentile as _fbp_percentile
 
 
 _FBP_LOADABLE_EFFECT_IMAGES = {
@@ -2639,18 +2640,6 @@ def _fbp_effect_handler_record(milliseconds):
     _FBP_EFFECT_HANDLER_SAMPLES_MS.append(value)
 
 
-def _fbp_percentile(values, quantile):
-    ordered = sorted(float(value) for value in values)
-    if not ordered:
-        return 0.0
-    position = (len(ordered) - 1) * max(0.0, min(1.0, float(quantile)))
-    lower = int(math.floor(position))
-    upper = int(math.ceil(position))
-    if lower == upper:
-        return ordered[lower]
-    return ordered[lower] + ((ordered[upper] - ordered[lower]) * (position - lower))
-
-
 def fbp_effect_runtime_profile_metrics(*, reset=False):
     """Return local handler measurements without retaining Blender RNA."""
     samples = tuple(float(value) for value in _FBP_EFFECT_HANDLER_SAMPLES_MS)
@@ -2668,6 +2657,90 @@ def fbp_effect_runtime_profile_metrics(*, reset=False):
         _FBP_EFFECT_RUNTIME_STATS.update(_FBP_EFFECT_RUNTIME_STAT_DEFAULTS)
         _FBP_EFFECT_HANDLER_SAMPLES_MS.clear()
     return result
+
+
+def _fbp_evolve_property_names(effect_id, *, with_speed=True):
+    """The Evolve (and Speed) settings of one effect, as a set of names."""
+    definition = fbp_effect_definition(effect_id)
+    keys = ("evolve_property", "evolve_speed_property") if with_speed else ("evolve_property",)
+    return {name for name in (str(definition.get(key, "") or "") for key in keys) if name}
+
+
+class _FrameEffectPush:
+    """Writes one layer's per-frame effect values during a frame change.
+
+    Every write goes through here, so a deleted or rebuilt datablock retires
+    the layer's runtime profile (the next frame resolves fresh targets)
+    instead of stopping the updates of the other layers.
+    """
+
+    __slots__ = ("rig", "scene", "profile", "count")
+
+    def __init__(self, rig, scene, profile, count):
+        self.rig = rig
+        self.scene = scene
+        self.profile = profile
+        self.count = count
+
+    def _failed(self):
+        _fbp_invalidate_effect_runtime_profile(self.rig)
+        return False
+
+    def effect(self, effect_id, property_names, *, refresh_composites=False, geometry_only=False):
+        """Push an effect's values; Evolve and procedural inputs of Mesh
+        effects never reach the materials, so their composites stay."""
+        rig, profile = self.rig, self.profile
+        try:
+            if fbp_effect_definition(effect_id).get("kind") == "GEOMETRY" or geometry_only:
+                fbp_update_geometry_effect(
+                    rig,
+                    effect_id,
+                    modifier=profile.get("geometry_modifiers", {}).get(effect_id),
+                    scene=self.scene,
+                    sync_alpha=False,
+                    property_names=property_names,
+                    refresh_composites=refresh_composites,
+                )
+                if self.count:
+                    _fbp_effect_stat_add("geometry_effect_updates")
+                return True
+            fbp_update_shader_effect(
+                rig,
+                effect_id,
+                scene=self.scene,
+                property_names=property_names,
+                nodes=profile.get("shader_nodes", {}).get(effect_id),
+            )
+            if effect_id == FBP_EFFECT_PIXELATE:
+                _fbp_refresh_extrude_pixel_dependency(
+                    rig,
+                    modifier=profile.get("geometry_modifiers", {}).get(FBP_EFFECT_THICKNESS),
+                    scene=self.scene,
+                )
+            if self.count:
+                _fbp_effect_stat_add("shader_effect_updates")
+            return True
+        except FBP_DATA_ERRORS:
+            return self._failed()
+
+    def instance(self, effect_id, instance_id):
+        """Push the Evolve and Speed values of one concrete shader instance."""
+        try:
+            fbp_update_shader_effect(
+                self.rig,
+                effect_id,
+                scene=self.scene,
+                property_names=_fbp_evolve_property_names(effect_id) or None,
+                instance_id=instance_id,
+                nodes=self.profile.get("shader_nodes_by_instance", {}).get(
+                    effect_instance_token(effect_id, instance_id)
+                ),
+            )
+            if self.count:
+                _fbp_effect_stat_add("shader_effect_updates")
+            return True
+        except FBP_DATA_ERRORS:
+            return self._failed()
 
 
 @persistent
@@ -2721,6 +2794,8 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
             _fbp_effect_stat_add("camera_binding_passes")
         _fbp_sync_scene_camera_bindings(scene, rigs)
         deferred_composite_rigs = []
+        global _FBP_COMPOSITE_REFRESH_PENDING
+        _FBP_COMPOSITE_REFRESH_PENDING = {}
 
         for rig in rigs:
             try:
@@ -2868,11 +2943,15 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     # keyed, driven or written from Python (effect settings,
                     # Evolve, procedural frames), so a plain stack skips the
                     # rescan (several ms per layer) while scrubbing or playing.
+                    # Evolve and procedural frames of Mesh effects write
+                    # modifier inputs, never the layer material, and shader
+                    # writes below queue their own refresh, so only keyed or
+                    # driven materials (and renders) refresh here. Queued
+                    # refreshes run once per layer after every write of the
+                    # frame, so the composites never lag one frame behind.
                     if (
                         render_guard_active
                         or has_animated_effects
-                        or evolve_enabled
-                        or procedural_frame_sync
                         or _fbp_layer_material_frame_dependent(rig)
                     ):
                         _fbp_refresh_geometry_source_materials(rig)
@@ -2892,172 +2971,64 @@ def fbp_effect_evolve_frame_change(scene, depsgraph=None):
                     effect_id, instance_id, _prop_name = _fbp_effect_instance_channel_identity(channel)
                     if effect_id not in active_effect_ids or not instance_id:
                         continue
-                    _fbp_apply_effect_instance_channel(rig, channel, scene=scene)
+                    if _fbp_apply_effect_instance_channel(rig, channel, scene=scene):
+                        _fbp_refresh_geometry_source_materials(rig)
                 except FBP_DATA_ERRORS:
                     _fbp_invalidate_effect_runtime_profile(rig)
                     continue
 
+            push = _FrameEffectPush(rig, scene, runtime_profile, profile_enabled)
             for effect_id, instance_id, _item in instance_speed_fcurve_pairs:
-                try:
-                    token = effect_instance_token(effect_id, instance_id)
-                    definition = fbp_effect_definition(effect_id)
-                    speed_prop = str(definition.get("evolve_speed_property", "") or "")
-                    evolve_prop = str(definition.get("evolve_property", "") or "")
-                    property_names = {name for name in (speed_prop, evolve_prop) if name}
-                    fbp_update_shader_effect(
-                        rig,
-                        effect_id,
-                        scene=scene,
-                        property_names=property_names or None,
-                        instance_id=instance_id,
-                        nodes=runtime_profile.get("shader_nodes_by_instance", {}).get(token),
-                    )
-                except FBP_DATA_ERRORS:
-                    _fbp_invalidate_effect_runtime_profile(rig)
-                    continue
+                push.instance(effect_id, instance_id)
 
             updated_effect_ids = set()
             for animated_effect_id, animated_properties in animated_effect_properties.items():
-                try:
-                    if animated_effect_id not in active_effect_ids:
-                        continue
-                    definition = fbp_effect_definition(animated_effect_id)
-                    effective_properties = set(animated_properties or ())
-                    if animated_effect_id in active_evolve_ids:
-                        evolve_property = str(definition.get("evolve_property", "") or "")
-                        speed_property = str(definition.get("evolve_speed_property", "") or "")
-                        effective_properties.update(
-                            name for name in (evolve_property, speed_property) if name
-                        )
-                    if animated_effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
-                        _fbp_apply_track_to_camera_constraint(rig, scene)
-                    elif definition.get("kind") == "GEOMETRY":
-                        if profile_enabled:
-                            _fbp_effect_stat_add("geometry_effect_updates")
-                        fbp_update_geometry_effect(
-                            rig,
-                            animated_effect_id,
-                            modifier=runtime_profile.get("geometry_modifiers", {}).get(animated_effect_id),
-                            scene=scene,
-                            sync_alpha=False,
-                            property_names=effective_properties,
-                        )
-                    else:
-                        if profile_enabled:
-                            _fbp_effect_stat_add("shader_effect_updates")
-                        fbp_update_shader_effect(
-                            rig,
-                            animated_effect_id,
-                            scene=scene,
-                            property_names=effective_properties,
-                            nodes=runtime_profile.get("shader_nodes", {}).get(animated_effect_id),
-                        )
-                        if animated_effect_id == FBP_EFFECT_PIXELATE:
-                            _fbp_refresh_extrude_pixel_dependency(
-                                rig,
-                                modifier=runtime_profile.get(
-                                    "geometry_modifiers", {}
-                                ).get(FBP_EFFECT_THICKNESS),
-                                scene=scene,
-                            )
-                    updated_effect_ids.add(animated_effect_id)
-                except FBP_DATA_ERRORS:
-                    _fbp_invalidate_effect_runtime_profile(rig)
+                if animated_effect_id not in active_effect_ids:
                     continue
+                property_names = set(animated_properties or ())
+                if animated_effect_id in active_evolve_ids:
+                    property_names |= _fbp_evolve_property_names(animated_effect_id)
+                if animated_effect_id == FBP_EFFECT_CAMERA_BILLBOARD:
+                    try:
+                        _fbp_apply_track_to_camera_constraint(rig, scene)
+                    except FBP_DATA_ERRORS:
+                        _fbp_invalidate_effect_runtime_profile(rig)
+                        continue
+                # Keyed values may feed generated materials, so the
+                # composites follow them.
+                elif not push.effect(animated_effect_id, property_names, refresh_composites=True):
+                    continue
+                updated_effect_ids.add(animated_effect_id)
 
             for effect_id in (procedural_frame_effects or ()):
-                try:
-                    if effect_id not in active_effect_ids:
-                        continue
-                    if effect_id in updated_effect_ids:
-                        continue
-                    definition = fbp_effect_definition(effect_id)
-                    evolve_property = str(definition.get("evolve_property", "") or "")
-                    property_names = {evolve_property} if evolve_property else None
-                    fbp_update_geometry_effect(
-                        rig,
+                if effect_id in active_effect_ids and effect_id not in updated_effect_ids:
+                    if push.effect(
                         effect_id,
-                        modifier=runtime_profile.get("geometry_modifiers", {}).get(effect_id),
-                        scene=scene,
-                        sync_alpha=False,
-                        property_names=property_names,
-                    )
-                    updated_effect_ids.add(effect_id)
-                    if profile_enabled:
-                        _fbp_effect_stat_add("geometry_effect_updates")
-                except FBP_DATA_ERRORS:
-                    _fbp_invalidate_effect_runtime_profile(rig)
-                    continue
+                        _fbp_evolve_property_names(effect_id, with_speed=False) or None,
+                        geometry_only=True,
+                    ):
+                        updated_effect_ids.add(effect_id)
 
             if not evolve_enabled:
                 continue
 
-            # Avoid allocating a temporary tuple for every rig on every frame.
             for effect_id, _property_key in active_evolve_pairs:
-                try:
-                    if effect_id in updated_effect_ids:
-                        continue
-                    if effect_id not in active_effect_ids:
-                        continue
-                    definition = fbp_effect_definition(effect_id)
-                    evolve_property = str(definition.get("evolve_property", "") or "")
-                    property_names = {evolve_property} if evolve_property else None
-                    if definition.get("kind") == "GEOMETRY":
-                        if profile_enabled:
-                            _fbp_effect_stat_add("geometry_effect_updates")
-                        fbp_update_geometry_effect(
-                            rig,
-                            effect_id,
-                            modifier=runtime_profile.get("geometry_modifiers", {}).get(effect_id),
-                            scene=scene,
-                            sync_alpha=False,
-                            property_names=property_names,
-                        )
-                    else:
-                        if profile_enabled:
-                            _fbp_effect_stat_add("shader_effect_updates")
-                        fbp_update_shader_effect(
-                            rig,
-                            effect_id,
-                            scene=scene,
-                            property_names=property_names,
-                            nodes=runtime_profile.get("shader_nodes", {}).get(effect_id),
-                        )
-                except FBP_DATA_ERRORS:
-                    # A deleted/rebuilt datablock must not abort updates for the
-                    # remaining layers during playback or background rendering.
-                    # Retire the profile so the next frame resolves fresh targets.
-                    _fbp_invalidate_effect_runtime_profile(rig)
-                    continue
+                if effect_id in active_effect_ids and effect_id not in updated_effect_ids:
+                    push.effect(
+                        effect_id,
+                        _fbp_evolve_property_names(effect_id, with_speed=False) or None,
+                    )
 
             for effect_id, instance_id, _item in active_instance_evolve_pairs:
-                try:
-                    token = effect_instance_token(effect_id, instance_id)
-                    if effect_id not in active_effect_ids:
-                        continue
-                    definition = fbp_effect_definition(effect_id)
-                    evolve_property = str(definition.get("evolve_property", "") or "")
-                    speed_property = str(definition.get("evolve_speed_property", "") or "")
-                    property_names = {
-                        name for name in (evolve_property, speed_property) if name
-                    }
-                    fbp_update_shader_effect(
-                        rig,
-                        effect_id,
-                        scene=scene,
-                        property_names=property_names or None,
-                        instance_id=instance_id,
-                        nodes=runtime_profile.get("shader_nodes_by_instance", {}).get(token),
-                    )
-                    if profile_enabled:
-                        _fbp_effect_stat_add("shader_effect_updates")
-                except FBP_DATA_ERRORS:
-                    _fbp_invalidate_effect_runtime_profile(rig)
-                    continue
+                if effect_id in active_effect_ids:
+                    push.instance(effect_id, instance_id)
+        _fbp_flush_composite_refreshes()
         if deferred_composite_rigs:
             # Settle the skipped composites once the timeline stops moving.
             _fbp_schedule_composite_catchup(scene, deferred_composite_rigs)
     finally:
+        if _FBP_COMPOSITE_REFRESH_PENDING is not None:
+            _fbp_flush_composite_refreshes()
         _FBP_EVOLVE_HANDLER_ACTIVE = False
         if profile_started:
             _fbp_effect_handler_record(
@@ -9490,9 +9461,31 @@ def _fbp_apply_geometry_material_composites(
     return changed
 
 
+# While a frame change runs, refresh requests are queued here (runtime key ->
+# rig) and run once per layer at the end, instead of once per changed effect.
+_FBP_COMPOSITE_REFRESH_PENDING = None
+
+
+def _fbp_flush_composite_refreshes():
+    global _FBP_COMPOSITE_REFRESH_PENDING
+    pending = _FBP_COMPOSITE_REFRESH_PENDING
+    _FBP_COMPOSITE_REFRESH_PENDING = None
+    for rig in (pending or {}).values():
+        try:
+            _fbp_refresh_geometry_source_materials(rig)
+        except FBP_DATA_ERRORS:
+            continue
+
+
 def _fbp_refresh_geometry_source_materials(rig):
     """Refresh every Geometry Nodes material input after stack/node changes."""
     global _FBP_MIXED_TOKENS_MEMO
+    pending = _FBP_COMPOSITE_REFRESH_PENDING
+    if pending is not None:
+        key = fbp_obj_runtime_key(rig)
+        if key is not None:
+            pending[key] = rig
+            return False
     if _FBP_MIXED_TOKENS_MEMO is not None:
         return _fbp_refresh_geometry_source_materials_pass(rig)
     _FBP_MIXED_TOKENS_MEMO = {}
@@ -9930,12 +9923,15 @@ def fbp_update_geometry_effect(
     *,
     sync_alpha=True,
     property_names=None,
+    refresh_composites=True,
 ):
     """Push effect values into one Geometry Nodes modifier.
 
     ``property_names`` limits interactive RNA callbacks to the sockets that
     actually changed. Full updates are still used after asset repair, file load,
-    frame evaluation and explicit stack rebuilds.
+    frame evaluation and explicit stack rebuilds. Frame changes that only move
+    Evolve or procedural inputs pass ``refresh_composites=False``: those values
+    never reach the materials, so the boundary composites stay as they are.
     """
     effect_id = fbp_normalize_effect_id(effect_id)
     definition = fbp_effect_definition(effect_id)
@@ -10202,18 +10198,19 @@ def fbp_update_geometry_effect(
     # This runs after the native material has been updated, so Text Matrix,
     # Image Solids, Fiber, Paper, Glass, Crystal and Felt all consume the exact
     # cumulative Image/Mask result below their Mesh row.
-    updated = _fbp_apply_geometry_material_composites(
-        rig,
-        modifier,
-        effect_id,
-        (
-            _fbp_geometry_modifier_instance_id(
-                rig, modifier, effect_id, ensure=True
-            )
-            if _fbp_effect_uses_multi_instances(effect_id)
-            else ""
-        ),
-    ) or updated
+    if refresh_composites or node_group is not previous_group:
+        updated = _fbp_apply_geometry_material_composites(
+            rig,
+            modifier,
+            effect_id,
+            (
+                _fbp_geometry_modifier_instance_id(
+                    rig, modifier, effect_id, ensure=True
+                )
+                if _fbp_effect_uses_multi_instances(effect_id)
+                else ""
+            ),
+        ) or updated
 
     alpha_changed = False
     if (definition.get("alpha_aware") or definition.get("image_aware")) and sync_alpha:
@@ -19516,6 +19513,35 @@ def _fbp_maintain_effect_shells(rigs):
             fbp_warn("Could not refresh the effect rows in Modifiers", exc)
 
 
+# The sidebar asks for each selected layer's group signature on every redraw.
+# It only changes with an edit, and every edit ends in a depsgraph update, so
+# the answer is kept for that update (and at most half a second).
+_FBP_DRAW_GROUP_SIGNATURES = {}
+
+
+def _fbp_draw_group_state_signature(rig, effect_ids):
+    try:
+        from . import runtime as _runtime
+        key = (
+            fbp_obj_runtime_key(rig),
+            float(getattr(_runtime, "_FBP_LAST_DEPSGRAPH_ACTIVITY", 0.0) or 0.0),
+            int(time.monotonic() * 2.0),
+            tuple(effect_ids),
+            _fbp_effect_stack_v2_raw(rig),
+            len(getattr(rig, "fbp_effect_groups", ()) or ()),
+        )
+    except FBP_DATA_ERRORS:
+        return _fbp_effect_group_state_signature(rig, effect_ids)
+    cached = _FBP_DRAW_GROUP_SIGNATURES.get(key[0])
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    signature = _fbp_effect_group_state_signature(rig, effect_ids)
+    if len(_FBP_DRAW_GROUP_SIGNATURES) > 256:
+        _FBP_DRAW_GROUP_SIGNATURES.clear()
+    _FBP_DRAW_GROUP_SIGNATURES[key[0]] = (key, signature)
+    return signature
+
+
 def fbp_schedule_effect_items_sync(rig, rigs=None):
     if rig is None or not hasattr(rig, "fbp_effects"):
         return []
@@ -19542,7 +19568,7 @@ def fbp_schedule_effect_items_sync(rig, rigs=None):
             rig_names.append("")
         runtime_ids = tuple(_fbp_runtime_effect_ids(target_rig))
         group_signatures.append(
-            _fbp_effect_group_state_signature(target_rig, runtime_ids)
+            _fbp_draw_group_state_signature(target_rig, runtime_ids)
         )
         for effect_id in runtime_ids:
             if effect_id in target_seen:

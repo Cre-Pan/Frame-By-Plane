@@ -18,6 +18,7 @@ from bpy.types import Operator
 from gpu_extras.batch import batch_for_shader
 
 from .runtime import FBP_DATA_ERRORS
+from .common import uniform_color_shader as _shader
 
 try:
     import numpy as np
@@ -255,15 +256,6 @@ def _tool_mode(context, idname):
     except FBP_DATA_ERRORS:
         return 'SET'
 
-
-_SHADER = None
-
-
-def _shader():
-    global _SHADER
-    if _SHADER is None:
-        _SHADER = gpu.shader.from_builtin("UNIFORM_COLOR")
-    return _SHADER
 
 
 def _draw_gesture(operator):

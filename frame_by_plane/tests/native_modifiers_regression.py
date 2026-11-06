@@ -520,10 +520,45 @@ def test_native_effect_controls():
         _remove(rig)
 
 
+def test_depsgraph_handler_only_reads():
+    """The Modifiers-panel handler defers every write to a safe task.
+
+    Writing layer settings from depsgraph_update_post runs their update
+    callbacks there, which can free data that later handlers (other add-ons)
+    still read from the same update list.
+    """
+    geo, native, _shells = _modules()
+    rig = _rig("FBP Native Handler Reads")
+    try:
+        _add(geo, rig, "LATTICE")
+        plane = geo._fbp_plane(rig)
+        bpy.context.view_layer.update()
+        native._run_pending_sync()
+        modifier = plane.modifiers["Lattice"]
+        before = int(rig.fbp_lattice_points_u)
+        geo._fbp_modifier_input_set(modifier, "Socket_2", before + 2)
+
+        class _Update:
+            id = plane
+            is_updated_geometry = True
+
+        class _Depsgraph:
+            updates = (_Update(),)
+
+        native.fbp_native_modifiers_depsgraph_post(bpy.context.scene, _Depsgraph())
+        assert int(rig.fbp_lattice_points_u) == before, "handler wrote the layer"
+        assert rig.name in native._PENDING_VALUE_RIGS
+        native._run_pending_sync()
+        assert int(rig.fbp_lattice_points_u) == before + 2
+        assert not native._PENDING_VALUE_RIGS
+    finally:
+        _remove(rig)
+
+
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
     test_add_image_modifier, test_effect_shells, test_shell_value_sync, test_row_effects,
-    test_native_effect_controls,
+    test_native_effect_controls, test_depsgraph_handler_only_reads,
 )
 
 failed = []
