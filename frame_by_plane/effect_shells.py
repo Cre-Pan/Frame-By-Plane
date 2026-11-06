@@ -12,8 +12,9 @@ Cycles.
 Every built-in image effect and mask gets a shell as soon as it is added, so
 Blender's Modifiers panel is the only effect stack, and the shell carries every
 setting of the effect panel: values the material reads, choices (dropdowns),
-settings Frame By Plane converts and the Animate section. Only curves, ramps,
-images and Grease Pencil editing stay in the Frame By Plane panel.
+settings Frame By Plane converts and the Animate section. Buttons, curves,
+ramps, images and Grease Pencil editing are drawn under the inputs by
+``native_effect_panel``.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ _SHELL_DERIVED_PROPERTIES = {
 _SHELL_CATEGORIES = {"BASE", "2D", "MASK"}
 # Layer effects that do not run in the material (Crop and Extend resize the
 # plane, Emission sets its surface, the others move or deform it). Their
-# modifier is a row only: order, eye, camera and delete; the settings stay in
-# the Frame By Plane panel, which shows them while the row is active.
+# modifier is a row for order, eye, camera and delete; the settings it cannot
+# hold as inputs are drawn under them by ``native_effect_panel``.
 FBP_SHELL_ROW_EFFECTS = (
     "CROP", "EXTEND", "EMISSION", "MOTION", "CAMERA_BILLBOARD", "LATTICE",
 )
@@ -1164,6 +1165,13 @@ def _shell_mapping(group):
         if len(parts) == 4:
             result.append(tuple(parts))
     return tuple(result)
+
+
+def fbp_shell_covered_settings(group):
+    """Layer settings (and ``@`` panel controls) that are inputs of ``group``."""
+    return frozenset(
+        entry[0] for entry in _shell_mapping(group) + _shell_layer_mapping(group)
+    )
 
 
 def _effect_nodes(rig, effect_id, instance_id):

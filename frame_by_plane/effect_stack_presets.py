@@ -618,12 +618,14 @@ class FBP_UL_EffectStackPresets(UIList):
                 apply.mode = "REPLACE"
 
 
-def draw_effect_stack_presets_ui(layout, context, selected_rigs):
+def draw_effect_stack_presets_ui(layout, context, selected_rigs, *, collapsible=True):
     scene = getattr(context, "scene", None)
     if scene is None or not hasattr(scene, "fbp_effect_stack_presets"):
         return
     presets = scene.fbp_effect_stack_presets
     try:
+        if not collapsible:
+            raise TypeError
         header, body = layout.panel(
             "FBP_effect_stack_presets_section",
             default_closed=True,

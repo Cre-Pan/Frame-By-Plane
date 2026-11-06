@@ -46,6 +46,11 @@ def section_header(
     align=False,
 ):
     """Draw a lightweight, non-boxed section header with optional count."""
+    # Layouts that leave out settings (modifier panels) drop a section whose
+    # settings are all gone: they need to know where each one starts.
+    mark_section = getattr(layout, "fbp_mark_section", None)
+    if mark_section is not None:
+        mark_section()
     row = layout.row(align=bool(align))
     row.scale_y = float(scale)
     label = str(title or "Settings")

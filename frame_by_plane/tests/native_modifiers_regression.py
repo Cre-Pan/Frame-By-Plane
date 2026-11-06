@@ -468,9 +468,62 @@ def test_row_effects():
         _remove(rig)
 
 
+class _PlaneContext:
+    """bpy.context with the Modifiers tab showing the layer's plane."""
+
+    def __init__(self, plane):
+        self.object = plane
+
+    def __getattr__(self, name):
+        return getattr(bpy.context, name)
+
+
+def test_native_effect_controls():
+    """Each modifier panel draws only what its inputs do not already show."""
+    geo, _native, shells = _modules()
+    panel = importlib.import_module(f"{PACKAGE_NAME}.native_effect_panel")
+    rig = _rig("FBP Native Controls")
+    try:
+        _add(geo, rig, "GRADIENT_MASK", "CURVES", "CROP")
+        shells.fbp_shell_ensure(rig)
+        plane = geo._fbp_plane(rig)
+        context = _PlaneContext(plane)
+
+        def calls(effect_id):
+            modifier = shells.fbp_shell_modifier(rig, effect_id)
+            assert modifier is not None, effect_id
+            layout = StubLayout()
+            assert panel.fbp_draw_native_effect_controls(layout, context, modifier), effect_id
+            covered = shells.fbp_shell_covered_settings(modifier.node_group)
+            assert covered, effect_id
+            drawn = {call[1][1] for call in layout.calls if call[0] == "prop" and len(call[1]) > 1 and call[1][0] is rig}
+            assert not (drawn & covered), (effect_id, drawn & covered)
+            return layout.calls
+
+        mask = calls("GRADIENT_MASK")
+        operators = [call[1][0] for call in mask if call[0] == "operator"]
+        assert "fbp.select_effect_control" in operators and "fbp.reset_effect_control" in operators
+        # Stack Operation is a modifier input: neither its menu nor its hint.
+        assert not any(call[0] == "operator_menu_enum" and call[1][0] == "fbp.set_mask_stack_operation" for call in mask)
+        assert not any("first active mask" in str(call[2].get("text", "")) for call in mask)
+        assert any(call[0] == "template_curve_mapping" for call in calls("CURVES"))
+        crop_operators = [call[1][0] for call in calls("CROP") if call[0] == "operator"]
+        assert "fbp.crop_alpha" in crop_operators and "fbp.reset_crop" in crop_operators
+
+        # A modifier that is not a Frame By Plane effect gets nothing.
+        own = plane.modifiers.new("Artist Nodes", "NODES")
+        layout = StubLayout()
+        assert not panel.fbp_draw_native_effect_controls(layout, context, own)
+        assert not layout.calls
+        plane.modifiers.remove(own)
+    finally:
+        _remove(rig)
+
+
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
     test_add_image_modifier, test_effect_shells, test_shell_value_sync, test_row_effects,
+    test_native_effect_controls,
 )
 
 failed = []
