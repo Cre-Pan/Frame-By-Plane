@@ -17,6 +17,7 @@ from bpy.types import Operator
 from mathutils import Vector, geometry
 
 from .runtime import FBP_DATA_ERRORS
+from .common import ui_scale as _ui_scale, view_ray as fbp_view_ray
 
 
 _MAX_STEPS = 64
@@ -340,34 +341,6 @@ def fbp_pick_layer_through_alpha(context, origin, direction, *, by_image_with_ri
                 return rig, True
         origin = location + direction * nudge
     return None, crossed_plane
-
-
-def fbp_view_ray(region, region_data, coord):
-    """World ``(origin, direction)`` of the view ray under a region pixel.
-
-    In orthographic views (including an orthographic camera) Blender's
-    ``region_2d_to_origin_3d`` can place the origin beyond the scene, so the
-    ray would start behind every plane. The origin is taken on the near clip
-    plane instead, so the ray covers everything the view shows.
-    """
-    from bpy_extras import view3d_utils
-
-    direction = view3d_utils.region_2d_to_vector_3d(region, region_data, coord)
-    if bool(getattr(region_data, "is_perspective", True)):
-        return view3d_utils.region_2d_to_origin_3d(region, region_data, coord), direction
-    x = 2.0 * float(coord[0]) / max(1.0, float(region.width)) - 1.0
-    y = 2.0 * float(coord[1]) / max(1.0, float(region.height)) - 1.0
-    near = region_data.perspective_matrix.inverted_safe() @ Vector((x, y, -1.0, 1.0))
-    if abs(near.w) > 1e-12:
-        near = near / near.w
-    return near.to_3d(), direction
-
-
-def _ui_scale(context):
-    try:
-        return float(context.preferences.system.ui_scale) or 1.0
-    except FBP_DATA_ERRORS:
-        return 1.0
 
 
 def _by_image_with_rig():

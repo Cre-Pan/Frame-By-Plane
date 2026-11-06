@@ -2083,7 +2083,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_cursor_color', text='Cursor Color')
                 row.prop(self, 'gp_scrub_cursor_text_color', text='Cursor Text')
-                hint_row(appearance_box, f'Hold < to scrub · header button pins the bar · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
+                hint_row(appearance_box, 'Hold < to scrub · header button pins the bar · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
 
             body = _section(category, 'pref_ui_show_procedural', 'Procedural Planes', 'menu.color_plane', 'MATERIAL')
             if body:

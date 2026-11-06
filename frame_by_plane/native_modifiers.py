@@ -557,13 +557,34 @@ def _playing_or_rendering():
 
 
 _PENDING_RIGS = set()
+# Layers whose plane geometry changed: their modifier inputs and layer
+# settings are compared (and written) from the deferred task, never from the
+# depsgraph callback itself.
+_PENDING_VALUE_RIGS = set()
+
+
+def _sync_modifier_values(rig):
+    try:
+        from .effect_shells import fbp_shell_sync_values
+        from .geometry_nodes import fbp_pull_geometry_modifier_edits
+        fbp_shell_sync_values(rig)
+        # Mesh effects: inputs edited in the Modifiers panel.
+        fbp_pull_geometry_modifier_edits(rig)
+    except (ImportError, *FBP_DATA_ERRORS) as exc:
+        fbp_warn("Could not sync an effect modifier with its layer", exc)
 
 
 def _run_pending_sync():
+    value_names = tuple(_PENDING_VALUE_RIGS)
+    _PENDING_VALUE_RIGS.clear()
     names = tuple(_PENDING_RIGS)
     _PENDING_RIGS.clear()
     if fbp_undo_guard_active():
         return None
+    for name in value_names:
+        rig = bpy.data.objects.get(name)
+        if rig is not None:
+            _sync_modifier_values(rig)
     for name in names:
         rig = bpy.data.objects.get(name)
         if rig is None:
@@ -577,6 +598,14 @@ def _run_pending_sync():
 
 @bpy.app.handlers.persistent
 def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
+    """Note which layers changed; every write runs later from a safe task.
+
+    Writing layer settings here runs their RNA update callbacks inside
+    depsgraph_update_post. Those callbacks can rebuild cages, node groups and
+    helper objects, which leaves the same update list pointing at freed data
+    for every handler that runs after this one (another add-on reading
+    ``update.id`` then crashes Blender). So this callback only reads.
+    """
     if _SYNCING or _playing_or_rendering() or fbp_undo_guard_active():
         return
     try:
@@ -599,33 +628,33 @@ def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
         rig = fbp_resolve_rig_from_any_object(obj)
         if rig is None:
             continue
-        try:
-            from .effect_shells import fbp_shell_sync_values
-            from .geometry_nodes import fbp_pull_geometry_modifier_edits
-            fbp_shell_sync_values(rig)
-            # Mesh effects: inputs edited in the Modifiers panel.
-            fbp_pull_geometry_modifier_edits(rig)
-        except (ImportError, *FBP_DATA_ERRORS) as exc:
-            fbp_warn("Could not sync an effect modifier with its layer", exc)
-        if _SIGNATURES.get(_rig_key(rig)) == _plane_signature(obj):
-            continue
-        _PENDING_RIGS.add(rig.name)
+        _PENDING_VALUE_RIGS.add(rig.name)
         found = True
+        if _SIGNATURES.get(_rig_key(rig)) != _plane_signature(obj):
+            _PENDING_RIGS.add(rig.name)
     if found:
+        # If the task cannot be scheduled now (Undo, paused timers) the names
+        # stay pending and the next update schedules them; never run inline.
         try:
             from .safe_tasks import schedule_once
             schedule_once("native_modifiers.sync", _run_pending_sync, first_interval=0.0)
-        except (ImportError, *FBP_DATA_ERRORS):
-            _run_pending_sync()
+        except (ImportError, *FBP_DATA_ERRORS) as exc:
+            fbp_warn("Could not schedule a Modifiers panel sync", exc)
 
 
 @bpy.app.handlers.persistent
 def fbp_native_modifiers_reset(*_args):
     """Undo, redo and file loads restore a consistent state: re-snapshot."""
     fbp_native_forget_all()
+    _PENDING_RIGS.clear()
+    _PENDING_VALUE_RIGS.clear()
     _AUTO_PINNED.clear()
     _RELEASED.clear()
     _subscribe_msgbus()
+    # A loaded file keeps its active layer: nothing else asks the Modifiers
+    # tab to show its plane (the Frame By Plane section used to, when drawn).
+    if not bool(getattr(bpy.app, "background", False)):
+        _deferred_follow()
 
 
 # --------------------------------------------------------------------------
@@ -720,12 +749,6 @@ def _deferred_follow(*_args):
         bpy.app.timers.register(run, first_interval=0.0)
     except FBP_DATA_ERRORS:
         pass
-
-
-def fbp_request_properties_follow():
-    """Called from panel drawing: a pin cannot change inside ``draw()``."""
-    if _follow_enabled():
-        _deferred_follow()
 
 
 def _subscribe_msgbus():
@@ -1031,6 +1054,29 @@ class FBP_MT_ModifierAddMask(Menu):
         )
 
 
+class FBP_OT_EffectStackPresetsPopup(bpy.types.Operator):
+    bl_idname = "fbp.effect_stack_presets_popup"
+    bl_label = "Effect Stack Presets"
+    bl_description = "Save the layer's whole effect stack as a preset, or apply, import and export one"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(_geo()._fbp_selected_rigs(context))
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_popup(self, width=380)
+
+    def draw(self, context):
+        from .effect_stack_presets import draw_effect_stack_presets_ui
+        draw_effect_stack_presets_ui(
+            self.layout, context, list(_geo()._fbp_selected_rigs(context)), collapsible=False,
+        )
+
+    def execute(self, _context):
+        return {"FINISHED"}
+
+
 def draw_modifier_add_mesh(self, context):
     rig, _plane = _context_layer(context)
     if rig is None:
@@ -1040,9 +1086,14 @@ def draw_modifier_add_mesh(self, context):
     layout.menu(FBP_MT_ModifierAddMesh.bl_idname, text=_MESH_MENU_LABEL, icon=_MESH_MENU_ICON)
     layout.menu(FBP_MT_ModifierAddImage.bl_idname, text=_IMAGE_MENU_LABEL, icon=_IMAGE_MENU_ICON)
     layout.menu(FBP_MT_ModifierAddMask.bl_idname, text=_MASK_MENU_LABEL, icon=_MASK_MENU_ICON)
+    # The whole stack at once: what used to sit under the Frame By Plane
+    # section of this tab.
+    layout.operator_context = "INVOKE_DEFAULT"
+    layout.operator(FBP_OT_EffectStackPresetsPopup.bl_idname, text="Stack Presets…", icon="PRESET")
 
 
 classes = (
+    FBP_OT_EffectStackPresetsPopup,
     FBP_OT_AddEffectModifier,
     FBP_MT_ModifierAddMesh,
     FBP_MT_ModifierAddMask,
@@ -1073,6 +1124,7 @@ def register():
     ):
         append_handler_once(handler_list, fbp_native_modifiers_reset, module_suffix=_MODULE_SUFFIX)
     _subscribe_msgbus()
+    _deferred_follow()
 
 
 def unregister():

@@ -13,11 +13,12 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet 
 - ↺ **Reset Layer:** right-click > Frame By Plane > Layer > Reset puts Position, Rotation, Scale or the Anchor Point back (or All at once). Scale returns to the layer's creation scale. Fit to Camera, Horizontal / Vertical and Place on Ground are in the same menu.
 - ◻️ **Box orientation:** the square below the transform box turns the box without turning the layer, so you can then stretch the layer along any direction.
 - 🎯 **Minimal viewport controls:** the handles of Crop, Extend, Shape Masks and every effect with viewport controls are thin, single-colour shapes, always drawn in front in every shading mode, with no relationship lines. They follow a tilted layer and bend with the Lattice deformation. Gradients get Figma-style colour stops you can slide, arrows have an open V head, and Swirl, Bulge / Pinch, Ripple, Vignette, radial gradients and Shape Mask feathers show their reach as a dashed line.
-- 🧩 **Effects in Blender's Modifiers panel:** mesh effects are in **Add Modifier > Mesh**, and with a layer selected Properties > Modifiers shows its plane, so drag and drop, the eye and camera toggles and delete work natively. Every image effect gets a **Mask** subpanel. Preview: **Image Effects as Modifiers** for a first set of image effects and masks (Preferences > Advanced > LTS Feature Scope).
+- 🧩 **Effects in Blender's Modifiers panel:** mesh effects are in **Add Modifier > Mesh**, and with a layer selected Properties > Modifiers shows its plane, so drag and drop, the eye and camera toggles and delete work natively. Every image effect gets a **Mask** subpanel. Each modifier opens with two rows of buttons, **Tools** (Select Rig, Reset Rig, Crop Alpha, Edit Shape, Light Controller, Select Cage, Edit Cage...) and **Effect** (Reset, Presets, Node Editor), and holds the effect's editors (colour ramps and curves, Lattice poses and pins), so the separate Frame By Plane section is gone: Blend is in Layer Settings and Stack Presets in Add Modifier.
 - 💥 **Broken Glass** is a shatter tool: it cuts the layer into triangles (**Impact** or **Shards**) and one **Shatter** slider breaks them apart, with Spread, Gap, Explode, Depth, Fall and Spin, and presets.
 - 🎨 **Replace Color** (Image, Color): recolor every pixel close to a Source Color with a Target Color, with Tolerance, Softness and Preserve Shading.
 - 🎨 **Every effect has an icon** in the add menus, the effect stack and the pie menu. The Image, Mask and Mesh add menus are reordered into coherent sections.
 - 🧱 **Frame Stack follows playback:** with image sequences the slices step through the drawings in the layer's timing order, so holds, reordered rows, loops, Ping-Pong and sequences numbered from any value stack correctly. Each layer keeps its own Frame Stack (and Knit & Crochet).
+- ⚡ **Lighter Frame Stack:** with image sequences each slice reads a small cached thumbnail instead of a full-resolution frame, and all slices are built in one pass. With 48 frames at 1080p memory drops from about 2.1 GB to 0.45 GB, the first pass through a frame is about 3 times faster and Render quality evaluates in about half the time. Videos keep reading full frames, now without the slowdown that grew with the slice count.
 - 🟩 **Color Key** now includes everything Chroma Key did, with a new **Despill** and the Green Screen and Blue Screen presets. Files that use Chroma Key are converted automatically.
 - 🖨️ **Riso Print:** **Drift Angle**, **Print Rotation**, a real **Seed** and **Animate** with Speed and Stepped.
 - 🥧 **Z Pie:** Hide, Solo and Holdout on one row, plus Show Overlays and Show Onion Skin; Lock and Selectability only while a layer is selected. Cursor on Camera is an icon button.
@@ -43,6 +44,9 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet 
 - Gaussian, Directional and Triangle Blur skip the samples above their Samples setting: same picture, about a third fewer image reads at the default. Riso Print skips the third ink, the dot screens and the grain while they are off. Syncing effect modifier rows with the layer is about six times lighter.
 - Scrubbing and stepping frames with Mesh effects over image effects is about ten times lighter; box and lasso select of layers without a rig no longer stall on dense Mesh effects.
 - Mesh effect materials copy Math and Mix node inputs one by one instead of repeating the first value.
+- Playing or scrubbing layers with animated Mesh effects (Mesh Wiggle, Evolve) is about four times lighter: with 8 such layers a frame went from about 32 ms to about 7 ms.
+- Keyed Image effect values under a Mesh effect no longer show one frame late on the Mesh effect.
+- The sidebar and the viewport handles redraw with about 30% less Python work.
 - Halftone: Color Mode and Use Source Color work again, so BW Light, BW Dark and a custom Ink Color render as expected.
 - Slice Shift: neighbouring bands move in opposite directions, so Bands has a visible effect.
 - Grain no longer writes negative colors in dark areas.
@@ -51,6 +55,7 @@ Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet 
 - Extrude Array: transparent areas no longer render black in Cycles.
 - Paper Shards and Fiber Tufts follow the exact image alpha, and dark chips no longer sink below the plane.
 - Crosshatch: smoother line edges, and diagonal hatches use the same spacing as straight ones.
+- Apply Effects: choose EEVEE (fast on a GPU) or Cycles, a custom frame range with a step, a lower resolution and the samples, and see an estimated time before starting. Cycles bakes faster (one pass per frame instead of two), and soft or semi-transparent edges are no longer baked darker.
 - Files saved with the old versions of these effects are updated when opened.
 - The Rig Shape stays on the image after Crop or after moving the layer's origin: changing Shape, Fit or Expand no longer shifts the controller away from the plane, and Perfect Shape is centred on the visible (cropped) image.
 

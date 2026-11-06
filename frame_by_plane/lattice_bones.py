@@ -78,7 +78,8 @@ _GRID_KINDS = {"POINT", "GRID_CORNER"}
 
 def is_bones_object(obj):
     try:
-        return bool(obj is not None and str(obj.get(BONES_OWNER_KEY, "") or "") and obj.type == 'ARMATURE')
+        # The type test is cheaper than the custom property: it goes first.
+        return bool(obj is not None and obj.type == 'ARMATURE' and str(obj.get(BONES_OWNER_KEY, "") or ""))
     except FBP_DATA_ERRORS:
         return False
 

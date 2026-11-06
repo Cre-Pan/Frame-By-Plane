@@ -38,6 +38,7 @@ from .interface_preferences import (
     fbp_uilist_is_spacer,
     fbp_uilist_visible_columns,
 )
+from .common import safe_text as _safe_text
 
 
 LAYER_FILTER_SCHEMA_VERSION = 1
@@ -92,13 +93,6 @@ _FILTER_PROPERTY_NAMES = (
     "fbp_layer_filter_mask",
     "fbp_layer_filter_motion",
 )
-
-def _safe_text(value):
-    try:
-        return str(value or "").strip()
-    except FBP_DATA_ERRORS:
-        return ""
-
 
 def layer_filter_is_active(scene):
     if scene is None:
