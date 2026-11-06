@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 
+from .common import unique_name
 from .runtime import FBP_DATA_ERRORS
 
 
@@ -332,13 +333,7 @@ def _ensure_basis(helper):
 
 
 def _unique_name(helper, base):
-    names = {block.name for block in lattice_poses(helper)}
-    if base not in names:
-        return base
-    index = 2
-    while f"{base} {index}" in names:
-        index += 1
-    return f"{base} {index}"
+    return unique_name((block.name for block in lattice_poses(helper)), base)
 
 
 def preset_minimum_points(preset_id):

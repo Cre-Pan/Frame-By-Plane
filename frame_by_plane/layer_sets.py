@@ -17,9 +17,8 @@ from .layers import (
 )
 from .registration import (
     register_classes,
-    register_interactive_classes,
-    unregister_classes,
-    unregister_type_properties,
+    register_scene_library,
+    unregister_scene_library,
 )
 from .runtime import FBP_DATA_ERRORS, fbp_request_redraw
 from .shortcut_runtime import primary_modifier_name, primary_modifier_pressed
@@ -33,6 +32,7 @@ from .interface_preferences import (
     fbp_uilist_is_spacer,
     fbp_uilist_visible_columns,
 )
+from .common import safe_text as _safe_text
 
 
 LAYER_SET_SCHEMA_VERSION = 1
@@ -74,13 +74,6 @@ class FBP_SavedLayerSet(PropertyGroup):
     )
     schema_version: IntProperty(default=LAYER_SET_SCHEMA_VERSION, min=1, options={'HIDDEN'})
     members: CollectionProperty(type=FBP_SavedLayerSetMember)
-
-
-def _safe_text(value):
-    try:
-        return str(value or "").strip()
-    except FBP_DATA_ERRORS:
-        return ""
 
 
 def _active_layer_set(scene):
@@ -630,38 +623,31 @@ def _register_scene_properties(layer_set_type):
     )
 
 
+_SCENE_PROPERTIES = ("fbp_saved_layer_sets", "fbp_saved_layer_sets_index")
+
+
 def register():
     previous_member_type = getattr(bpy.types, "FBP_SavedLayerSetMember", None)
     previous_set_type = getattr(bpy.types, "FBP_SavedLayerSet", None)
-    unregister_type_properties(
-        bpy.types.Scene,
-        ("fbp_saved_layer_sets", "fbp_saved_layer_sets_index"),
-    )
-    _registered_classes.clear()
-    try:
-        _registered_classes.extend(register_classes(_model_classes))
-        _register_scene_properties(FBP_SavedLayerSet)
-        _registered_classes.extend(register_interactive_classes(_interactive_classes))
-    except Exception:
-        unregister_type_properties(
-            bpy.types.Scene,
-            ("fbp_saved_layer_sets", "fbp_saved_layer_sets_index"),
-        )
-        unregister_classes(tuple(_registered_classes))
-        _registered_classes.clear()
+
+    def restore_previous():
+        # A failed reload keeps the Layer Sets of the previous generation.
         if previous_member_type is not None and previous_set_type is not None:
             try:
                 register_classes((previous_member_type, previous_set_type))
                 _register_scene_properties(previous_set_type)
             except Exception:
                 pass
-        raise
+
+    register_scene_library(
+        _registered_classes,
+        _model_classes,
+        _interactive_classes,
+        _SCENE_PROPERTIES,
+        lambda: _register_scene_properties(FBP_SavedLayerSet),
+        restore_previous,
+    )
 
 
 def unregister():
-    unregister_type_properties(
-        bpy.types.Scene,
-        ("fbp_saved_layer_sets", "fbp_saved_layer_sets_index"),
-    )
-    unregister_classes(tuple(_registered_classes))
-    _registered_classes.clear()
+    unregister_scene_library(_registered_classes, _SCENE_PROPERTIES)

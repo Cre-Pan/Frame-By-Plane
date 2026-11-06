@@ -33,6 +33,7 @@ from .viewport_handles import (
     STOP_RING_COLOR,
     handle_selected_color,
 )
+from .common import view_plane_hit as _plane_hit, undo_push as _undo_push
 
 
 _DRAW_HANDLE = None
@@ -969,13 +970,6 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
             pass
 
 
-def _undo_push(message):
-    try:
-        bpy.ops.ed.undo_push(message=message)
-    except RuntimeError:
-        pass
-
-
 class FBP_OT_gradient_stop_color(bpy.types.Operator):
     """Change the colour of a gradient stop"""
 
@@ -1408,18 +1402,6 @@ def _line_segment(rig, effect_id, in_control, out_control, start, end):
         pass
     del in_control, out_control
     return start, end
-
-
-def _plane_hit(region, view, coord, point, normal):
-    try:
-        from .alpha_pick import fbp_view_ray
-        origin, direction = fbp_view_ray(region, view, coord)
-    except (ImportError,) + FBP_DATA_ERRORS:
-        return None
-    denominator = direction.dot(normal)
-    if abs(denominator) <= 1.0e-9:
-        return None
-    return origin + direction * ((point - origin).dot(normal) / denominator)
 
 
 class FBP_GT_gradient_drag(bpy.types.Gizmo):
