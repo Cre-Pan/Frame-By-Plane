@@ -3374,6 +3374,69 @@ def _effect_stage_materials(geo, rig):
     return result
 
 
+def test_effect_mixed_stack_keyed_composites(_module):
+    """Keyed Image effect values reach the composites under a Mesh effect on
+    the same frame, not one frame later."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scene = bpy.context.scene
+    rig = _effect_stack_fixture_rig("FBP Effect Keyed Composite")
+    owned = [rig, *rig.children_recursive]
+    previous_frame = scene.frame_current
+    try:
+        for effect_id in ("HUE_SATURATION", "MESH_WIGGLE"):
+            assert geo.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+        keyed = 0
+        for channel in rig.fbp_effect_instance_channels:
+            if channel.effect_id != "HUE_SATURATION" or not channel.active:
+                continue
+            attribute = {
+                "FLOAT": "float_value", "FACTOR": "factor_value", "POSITIVE": "positive_value",
+            }.get(channel.value_kind, "")
+            if not attribute or not hasattr(channel, attribute):
+                continue
+            value = float(getattr(channel, attribute))
+            setattr(channel, attribute, value)
+            channel.keyframe_insert(attribute, frame=1)
+            setattr(channel, attribute, value * 0.5 + 0.1)
+            channel.keyframe_insert(attribute, frame=12)
+            keyed += 1
+        assert keyed, "no Hue & Saturation channel to key"
+        owner_id = geo._fbp_effect_stack_owner_id(rig)
+
+        def values(material):
+            return {
+                node.name: tuple(
+                    round(float(socket.default_value), 5)
+                    for socket in node.inputs
+                    if isinstance(getattr(socket, "default_value", None), (int, float))
+                )
+                for node in geo._fbp_shader_effect_nodes(material, effect_id="HUE_SATURATION")
+            }
+
+        compared = 0
+        for frame in range(1, 7):
+            scene.frame_set(frame)
+            geo.fbp_effect_evolve_frame_change(scene)
+            source = values(geo._fbp_plane_source_material(rig))
+            for material in bpy.data.materials:
+                if str(material.get("fbp_effect_composite_owner_id", "") or "") != owner_id:
+                    continue
+                for name, mirrored in values(material).items():
+                    assert source.get(name) == mirrored, (frame, material.name, source.get(name), mirrored)
+                    compared += 1
+        assert compared, "no composite mirrors Hue & Saturation"
+    finally:
+        scene.frame_set(previous_frame)
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"keyed_channels": keyed, "compared": compared}
+
+
 def test_effect_stack_evaluation_order(_module):
     """Each row is built only from the rows below it in the visible stack."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -6792,6 +6855,7 @@ def run_background():
             ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),
             ("effect_stack_reorder_contract", test_effect_stack_reorder_contract),
             ("effect_mixed_stack_contract", test_effect_mixed_stack_contract),
+            ("effect_mixed_stack_keyed_composites", test_effect_mixed_stack_keyed_composites),
             ("effect_stack_evaluation_order", test_effect_stack_evaluation_order),
             ("effect_render_visibility_contract", test_effect_render_visibility_contract),
             ("effect_render_visibility_cycles", test_effect_render_visibility_cycles),

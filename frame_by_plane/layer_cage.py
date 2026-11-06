@@ -31,6 +31,11 @@ from mathutils import Matrix, Vector
 
 from .runtime import FBP_DATA_ERRORS
 from .viewport_handles import handle_selected_color
+from .common import (
+    view_plane_hit as _plane_hit,
+    ui_scale as _ui_scale,
+    undo_push as _undo_push,
+)
 
 
 _MAX_CAGES = 32
@@ -406,13 +411,6 @@ def _pixels_per_unit(region, region_data, origin, direction):
     return length if length > 1.0e-6 else None
 
 
-def _ui_scale(context):
-    try:
-        return float(context.preferences.system.ui_scale) or 1.0
-    except FBP_DATA_ERRORS:
-        return 1.0
-
-
 _FRAME_CACHE = {}
 
 
@@ -581,17 +579,6 @@ def _gizmos_shown(context):
         return bool(space.overlay.show_overlays and space.show_gizmo)
     except FBP_DATA_ERRORS:
         return False
-
-
-def _plane_hit(region, region_data, coord, point, normal):
-    from bpy_extras.view3d_utils import region_2d_to_origin_3d, region_2d_to_vector_3d
-
-    origin = region_2d_to_origin_3d(region, region_data, coord)
-    direction = region_2d_to_vector_3d(region, region_data, coord)
-    denominator = direction.dot(normal)
-    if abs(denominator) <= 1.0e-9:
-        return None
-    return origin + direction * ((point - origin).dot(normal) / denominator)
 
 
 ANCHOR_KEY = "fbp_box_anchor"
@@ -1268,13 +1255,6 @@ def reset_box_orientation(rig):
     rig.matrix_world = turn @ initial
     _keep_children(rig, initial, inverses)
     return True
-
-
-def _undo_push(message):
-    try:
-        bpy.ops.ed.undo_push(message=message)
-    except RuntimeError:
-        pass
 
 
 class FBP_GGT_layer_cage(bpy.types.GizmoGroup):

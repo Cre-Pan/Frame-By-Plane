@@ -30,12 +30,7 @@ from .geometry_nodes import (
     fbp_set_mask_stack_operation,
 )
 from .layers import fbp_set_ui_units_x, get_selected_or_active_rigs
-from .registration import (
-    register_classes,
-    register_interactive_classes,
-    unregister_classes,
-    unregister_type_properties,
-)
+from .registration import register_scene_library, unregister_scene_library
 from .runtime import FBP_DATA_ERRORS
 from .ui_style import configure_layout, hint_row, section_header
 from .ui_list_state import mark_ui_list_draw
@@ -47,27 +42,12 @@ from .interface_preferences import (
     fbp_uilist_is_spacer,
     fbp_uilist_visible_columns,
 )
+from .common import canonical_json as _canonical_json, safe_text as _safe_text, unique_name
 
 
 FBP_MASK_SOURCE_SCHEMA_VERSION = 1
 FBP_MASK_SOURCE_MAX_BYTES = 512 * 1024
 _OPERATION_IDS = frozenset(item[0] for item in FBP_MASK_STACK_OPERATIONS)
-
-
-def _safe_text(value):
-    try:
-        return str(value or "").strip()
-    except FBP_DATA_ERRORS:
-        return ""
-
-
-def _canonical_json(value):
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
 
 
 def _active_source(scene):
@@ -87,18 +67,10 @@ def _active_source(scene):
 def _unique_name(scene, base="Mask Source"):
     base = _safe_text(base) or "Mask Source"
     try:
-        names = {
-            _safe_text(item.name).casefold()
-            for item in scene.fbp_mask_sources
-        }
+        existing = [_safe_text(item.name) for item in scene.fbp_mask_sources]
     except FBP_DATA_ERRORS:
-        names = set()
-    if base.casefold() not in names:
-        return base
-    number = 2
-    while f"{base} {number}".casefold() in names:
-        number += 1
-    return f"{base} {number}"
+        existing = ()
+    return unique_name(existing, base, casefold=True)
 
 
 def _mask_definition(effect_id):
@@ -605,35 +577,21 @@ def _register_scene_properties():
     )
 
 
+_SCENE_PROPERTIES = ("fbp_mask_sources", "fbp_mask_sources_index")
+
+
 def register():
-    unregister_type_properties(
-        bpy.types.Scene,
-        ("fbp_mask_sources", "fbp_mask_sources_index"),
+    register_scene_library(
+        _registered_classes,
+        _model_classes,
+        _interactive_classes,
+        _SCENE_PROPERTIES,
+        _register_scene_properties,
     )
-    _registered_classes.clear()
-    try:
-        _registered_classes.extend(register_classes(_model_classes))
-        _register_scene_properties()
-        _registered_classes.extend(
-            register_interactive_classes(_interactive_classes)
-        )
-    except Exception:
-        unregister_type_properties(
-            bpy.types.Scene,
-            ("fbp_mask_sources", "fbp_mask_sources_index"),
-        )
-        unregister_classes(tuple(_registered_classes))
-        _registered_classes.clear()
-        raise
 
 
 def unregister():
-    unregister_type_properties(
-        bpy.types.Scene,
-        ("fbp_mask_sources", "fbp_mask_sources_index"),
-    )
-    unregister_classes(tuple(_registered_classes))
-    _registered_classes.clear()
+    unregister_scene_library(_registered_classes, _SCENE_PROPERTIES)
 
 
 __all__ = (

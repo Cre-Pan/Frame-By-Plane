@@ -19,18 +19,16 @@ import bpy
 from mathutils import Matrix, Vector
 
 from .runtime import FBP_DATA_ERRORS
+from .common import (
+    view_plane_hit as _plane_hit,
+    ui_scale as _ui_scale,
+    undo_push as _undo_push,
+)
 
 
 _CLICK_PX = 4.0
 _PICK_PX = 4.0
 _GRADIENT_LINE_EFFECTS = ("GRADIENT_LIGHT", "GRADIENT_MASK", "TILT_SHIFT")
-
-
-def _ui_scale(context):
-    try:
-        return float(context.preferences.system.ui_scale) or 1.0
-    except FBP_DATA_ERRORS:
-        return 1.0
 
 
 def _posed_rigs(context):
@@ -85,17 +83,6 @@ def posed_handle_under_cursor(context, coord):
     return handle if _handle_layer(handle) in rigs else None
 
 
-def _plane_hit(region, region_data, coord, point, normal):
-    from bpy_extras.view3d_utils import region_2d_to_origin_3d, region_2d_to_vector_3d
-
-    origin = region_2d_to_origin_3d(region, region_data, coord)
-    direction = region_2d_to_vector_3d(region, region_data, coord)
-    denominator = direction.dot(normal)
-    if abs(denominator) <= 1.0e-9:
-        return None
-    return origin + direction * ((point - origin).dot(normal) / denominator)
-
-
 def _clamped(handle, target):
     """``target`` held inside the handle's own Limit Location constraints.
 
@@ -131,13 +118,6 @@ def _sync_handle(handle):
         if is_effect_control(handle):
             sync_properties_from_control(handle)
     except (ImportError, *FBP_DATA_ERRORS):
-        pass
-
-
-def _undo_push(message):
-    try:
-        bpy.ops.ed.undo_push(message=message)
-    except RuntimeError:
         pass
 
 
