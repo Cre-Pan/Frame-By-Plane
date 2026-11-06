@@ -509,6 +509,19 @@ def test_native_effect_controls():
         # Tools and Effect are the first two inputs, drawn as button rows.
         assert button_rows("GRADIENT_MASK") == ["Tools", "Effect"]
         assert button_rows("CROP") == ["Tools", "Effect"]
+        # No button stays pressed: a press runs and the row goes back to rest.
+        modifier = shells.fbp_shell_modifier(rig, "CROP")
+        tools = next(
+            entry[2] for entry in shells._shell_layer_mapping(modifier.node_group) if entry[0] == "@TOOLS"
+        )
+        shells.fbp_shell_sync_values(rig)
+        assert shells._action_input(modifier, tools) == ""
+        handle = geo._fbp_modifier_input_handle(modifier, tools)
+        assert "NONE" not in {item.identifier for item in handle.bl_rna.properties["value"].enum_items}
+        handle.value = "Reset Rig"
+        shells.fbp_shell_sync_values(rig)
+        shells.fbp_shell_sync_values(rig)
+        assert shells._action_input(modifier, tools) == ""
         mask = calls("GRADIENT_MASK")
         operators = [call[1][0] for call in mask if call[0] == "operator"]
         # Select/Reset Rig are Tools buttons now, not panel buttons.
