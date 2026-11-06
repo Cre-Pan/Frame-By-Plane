@@ -500,15 +500,26 @@ def test_native_effect_controls():
             assert not (drawn & covered), (effect_id, drawn & covered)
             return layout.calls
 
+        def button_rows(effect_id):
+            group = shells.fbp_shell_modifier(rig, effect_id).node_group
+            inputs = [item for item in group.interface.items_tree if getattr(item, "in_out", "") == "INPUT"]
+            assert inputs[0].socket_type == "NodeSocketGeometry", effect_id
+            rows = [item for item in inputs[1:3] if getattr(item, "menu_expanded", False)]
+            return [item.name for item in rows]
+
+        # Tools and Effect are the first two inputs, drawn as button rows.
+        assert button_rows("GRADIENT_MASK") == ["Tools", "Effect"]
+        assert button_rows("CROP") == ["Tools", "Effect"]
         mask = calls("GRADIENT_MASK")
         operators = [call[1][0] for call in mask if call[0] == "operator"]
-        assert "fbp.select_effect_control" in operators and "fbp.reset_effect_control" in operators
+        # Select/Reset Rig are Tools buttons now, not panel buttons.
+        assert "fbp.select_effect_control" not in operators and "fbp.reset_effect_control" not in operators
         # Stack Operation is a modifier input: neither its menu nor its hint.
         assert not any(call[0] == "operator_menu_enum" and call[1][0] == "fbp.set_mask_stack_operation" for call in mask)
         assert not any("first active mask" in str(call[2].get("text", "")) for call in mask)
         assert any(call[0] == "template_curve_mapping" for call in calls("CURVES"))
         crop_operators = [call[1][0] for call in calls("CROP") if call[0] == "operator"]
-        assert "fbp.crop_alpha" in crop_operators and "fbp.reset_crop" in crop_operators
+        assert "fbp.crop_alpha" not in crop_operators and "fbp.reset_crop" not in crop_operators
 
         # A modifier that is not a Frame By Plane effect gets nothing.
         own = plane.modifiers.new("Artist Nodes", "NODES")

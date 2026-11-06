@@ -261,7 +261,8 @@ _SHELL_UI_KEY = "fbp_shell_ui"
 # 2: every panel control (choices, extra settings, Animate) is an input.
 # 3: variant, input, preview, mask operation, viewport control and sources.
 # 4: Actions is the first input, with the Lattice cage and handle actions.
-_SHELL_UI_VERSION = 4
+# 5: Actions are two rows of buttons (Tools, Effect).
+_SHELL_UI_VERSION = 5
 _SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
 _SHELL_USAGE_NODE_KEY = "fbp_shell_usage_node"
 _SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
@@ -358,14 +359,25 @@ def _virtual_settings(effect_id, definition):
             [(item[0], item[1]) for item in geo.FBP_MASK_STACK_OPERATIONS],
             "How this mask combines with the masks above it",
         )))
+    # Two rows of buttons at the top of the modifier: what the effect's
+    # handles and helpers can do, then Reset, Presets and Node Editor.
     actions = _effect_actions(effect_id, definition)
-    if actions:
+    tools = [(key, label) for key, label, _op, _kwargs in actions if key not in _EFFECT_ACTIONS]
+    general = [(key, label) for key, label, _op, _kwargs in actions if key in _EFFECT_ACTIONS]
+    if tools:
+        result.append(("@TOOLS", _VirtualSetting(
+            "@TOOLS", "Tools", [("NONE", "·")] + tools, "Run a tool of this effect",
+        )))
+    if general:
         result.append(("@ACTION", _VirtualSetting(
-            "@ACTION", "Actions",
-            [("NONE", "Choose…")] + [(key, label) for key, label, _op, _kwargs in actions],
-            "Run an action on this effect",
+            "@ACTION", "Effect", [("NONE", "·")] + general, "Reset this effect, load a preset or open its nodes",
         )))
     return result
+
+
+# Keys of the actions every effect has (second button row).
+_EFFECT_ACTIONS = frozenset({"RESET", "PRESETS", "NODES"})
+_ACTION_KEYS = ("@TOOLS", "@ACTION")
 
 
 def _effect_actions(effect_id, definition):
@@ -373,25 +385,20 @@ def _effect_actions(effect_id, definition):
     if bool(definition.get("custom", False)):
         return ()
     actions = [
-        ("RESET", "Reset to Defaults", "fbp.reset_active_effect", {"effect_id": effect_id}),
-        ("PRESETS", "Presets…", "fbp.open_effect_presets", {"effect_id": effect_id}),
+        ("RESET", "Reset", "fbp.reset_active_effect", {"effect_id": effect_id}),
+        ("PRESETS", "Presets", "fbp.open_effect_presets", {"effect_id": effect_id}),
     ]
     if definition.get("kind") in {"SHADER", "MASK", "GEOMETRY"}:
         # Color ramps and curves are edited in the node tree.
-        label = (
-            "Edit Ramp in Node Editor" if definition.get("color_ramp_role")
-            else "Edit Curves in Node Editor" if effect_id == "CURVES"
-            else "Open in Node Editor"
-        )
-        actions.append(("NODES", label, "fbp.open_effect_nodes", {"effect_id": effect_id}))
+        actions.append(("NODES", "Node Editor", "fbp.open_effect_nodes", {"effect_id": effect_id}))
     if _has_viewport_control(effect_id):
-        actions.append(("SELECT_CONTROL", "Select Viewport Control", "fbp.select_effect_control", {"effect_id": effect_id}))
-        actions.append(("RESET_CONTROL", "Reset Viewport Control", "fbp.reset_effect_control", {"effect_id": effect_id}))
+        actions.append(("SELECT_CONTROL", "Select Rig", "fbp.select_effect_control", {"effect_id": effect_id}))
+        actions.append(("RESET_CONTROL", "Reset Rig", "fbp.reset_effect_control", {"effect_id": effect_id}))
     if effect_id == "CROP":
         actions.append(("CROP_ALPHA", "Crop Alpha", "fbp.crop_alpha", {}))
         actions.append(("RESET_CROP", "Reset Crop", "fbp.reset_crop", {}))
     if effect_id == "SHADOW":
-        actions.append(("FIT_SHADOW", "Fit Shadow Canvas", "fbp.fit_shadow_canvas", {}))
+        actions.append(("FIT_SHADOW", "Fit Canvas", "fbp.fit_shadow_canvas", {}))
     if effect_id == "LATTICE":
         actions.extend((
             ("SELECT_CAGE", "Select Cage", "fbp.select_lattice_helper", {"rig_name": _RIG}),
@@ -400,6 +407,15 @@ def _effect_actions(effect_id, definition):
             ("POINT_HANDLES", "Point Handles", "fbp.lattice_point_handles", {"rig_name": _RIG, "action": "ADD"}),
         ))
     return tuple(actions)
+
+
+def fbp_shell_tool_operators(effect_id):
+    """Operators the effect's Tools button row runs."""
+    definition = _geo().fbp_effect_definition(effect_id) or {}
+    return frozenset(
+        op for key, _label, op, _kwargs in _effect_actions(effect_id, definition)
+        if key not in _EFFECT_ACTIONS
+    )
 
 
 # Stands for the layer's name in an action's operator settings.
@@ -503,7 +519,7 @@ def _shell_layout_entries(effect_id, skip=()):
     for key, setting in _virtual_settings(effect_id, definition):
         entry = (key, "", setting, "VIRTUAL", setting.name, False)
         # Actions opens the modifier: Select Rig, Edit Cage... come first.
-        (leading if key == "@ACTION" else plain).append(entry)
+        (leading if key in _ACTION_KEYS else plain).append(entry)
     plain[:0] = leading
     skip = set(skip or ())
     for prop_name in dict.fromkeys(str(name or "") for name in names):
@@ -772,34 +788,41 @@ def _populate_shell_group(group, effect_id):
     group["fbp_shell_mapping"] = ["\x1f".join(entry) for entry in mapping]
     group[_SHELL_LAYER_MAPPING_KEY] = ["\x1f".join(entry) for entry in layer_mapping]
     _wire_usage(group, used, group_input.outputs[0], group_output)
+    _actions_first(group)
     group[_SHELL_UI_KEY] = _SHELL_UI_VERSION
     return group
 
 
 def _actions_first(group):
-    """Make the Actions dropdown the modifier's first row.
+    """Make the action button rows the modifier's first rows.
 
-    It goes right after the Geometry input: a Geometry Nodes modifier feeds
+    They go right after the Geometry input: a Geometry Nodes modifier feeds
     its geometry into the group's first input.
     """
-    identifier = next(
-        (entry[2] for entry in _shell_layer_mapping(group) if entry[0] == "@ACTION"), ""
+    identifiers = dict(
+        (entry[0], entry[2]) for entry in _shell_layer_mapping(group) if entry[0] in _ACTION_KEYS
     )
-    if not identifier:
-        return
     interface = group.interface
-    for item in interface.items_tree:
-        if getattr(item, "identifier", "") == identifier:
-            geometry = next((
-                index for index, other in enumerate(interface.items_tree)
-                if getattr(other, "in_out", "") == "INPUT"
-                and getattr(other, "socket_type", "") == "NodeSocketGeometry"
-            ), -1)
-            try:
-                interface.move(item, geometry + 1)
-            except FBP_DATA_ERRORS:
-                pass
-            return
+    offset = 1
+    for key in _ACTION_KEYS:
+        item = next((
+            other for other in interface.items_tree
+            if identifiers.get(key) and getattr(other, "identifier", "") == identifiers[key]
+        ), None)
+        if item is None:
+            continue
+        geometry = next((
+            index for index, other in enumerate(interface.items_tree)
+            if getattr(other, "in_out", "") == "INPUT"
+            and getattr(other, "socket_type", "") == "NodeSocketGeometry"
+        ), -1)
+        try:
+            # A row of buttons instead of a dropdown.
+            item.menu_expanded = True
+            interface.move(item, geometry + offset)
+            offset += 1
+        except FBP_DATA_ERRORS:
+            pass
 
 
 _GEOMETRY_INPUTS_KEY = "fbp_panel_inputs"
@@ -1018,7 +1041,7 @@ def _virtual_value(rig, effect_id, instance_id, key):
         return geo.fbp_effect_debug_mode(rig, effect_id)
     if key == "@MASKOP":
         return geo.fbp_mask_stack_operation(rig, effect_id)
-    if key == "@ACTION":
+    if key in _ACTION_KEYS:
         return "NONE"
     return None
 
@@ -1041,7 +1064,7 @@ def _run_virtual(rig_name, effect_id, instance_id, key, value):
         elif key == "@MASKOP":
             from .mask_stack import fbp_set_mask_stack_operation
             fbp_set_mask_stack_operation(rig, effect_id, value, rebuild=True)
-        elif key == "@ACTION" and value != "NONE":
+        elif key in _ACTION_KEYS and value != "NONE":
             _run_action(rig, effect_id, geo.fbp_effect_definition(effect_id) or {}, value)
     except FBP_DATA_ERRORS as exc:
         fbp_warn(f"Could not apply {key[1:].title()} from the modifier", exc)

@@ -212,6 +212,10 @@ def _hidden_test(rig, effect_id, instance_id, covered):
     hidden_calls = {
         _VIRTUAL_CONTROLS[key] for key in covered if key in _VIRTUAL_CONTROLS
     }
+    if "@TOOLS" in covered:
+        # The Tools buttons at the top replace the same buttons down here.
+        from .effect_shells import fbp_shell_tool_operators
+        hidden_calls.update(("operator", op) for op in fbp_shell_tool_operators(effect_id))
     channel_key = (effect_id, str(instance_id or ""))
 
     def is_covered(owner, prop_name):
