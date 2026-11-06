@@ -5283,7 +5283,6 @@ class FBP_OT_ToggleGreasePencilScrubSlider(Operator):
         return _scrub_header_available(context)
 
     def execute(self, context):
-        global _ACTIVE_OPERATOR
         active = _ACTIVE_OPERATOR
         try:
             area_pointer = int(context.area.as_pointer())

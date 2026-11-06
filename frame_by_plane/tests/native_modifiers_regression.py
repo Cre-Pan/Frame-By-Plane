@@ -261,7 +261,6 @@ def _difference(first, second):
 
 def test_add_image_modifier():
     geo, native, shells = _modules()
-    scene = bpy.context.scene
     registered = hasattr(bpy.types, "FBP_OT_add_effect_modifier") or "add_effect_modifier" in dir(bpy.ops.fbp)
     if not registered:
         bpy.utils.register_class(native.FBP_OT_AddEffectModifier)

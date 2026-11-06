@@ -3079,7 +3079,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event):
         del event
-        global _ACTIVE_OPERATOR, _RESUME_STATE, _RESUME_SCENE_PTR
+        global _ACTIVE_OPERATOR
         if _ACTIVE_OPERATOR is not None:
             _ACTIVE_OPERATOR._close(context)
 

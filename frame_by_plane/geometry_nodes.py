@@ -26856,7 +26856,6 @@ class FBP_UL_EffectStack:
             # The group action menu is structural and remains at the far right.
             trailing_units=1,
         )
-        row = zones["row"]
         targets = zones["targets"]
 
         # The grip is structural and intentionally never enters the configurable
@@ -27068,7 +27067,6 @@ class FBP_UL_EffectStack:
             # contains both an icon and a short operation glyph.
             trailing_units=(1 if is_partial else 0) + (2 if is_mask_effect else 0),
         )
-        row = zones["row"]
         targets = zones["targets"]
 
         drag_token = _fbp_effect_ref(

@@ -2290,7 +2290,6 @@ class FBP_UL_PendingList(UIList):
             order=order,
             leading_units=depth,
         )
-        row = zones["row"]
         targets = zones["targets"]
         zones["left"].label(text="", icon="GRIP_V")
         for _ in range(depth):
@@ -2396,7 +2395,6 @@ class FBP_UL_PendingTreeList(UIList):
                 order=order,
                 leading_units=depth + 1,
             )
-            row = zones["row"]
             targets = zones["targets"]
             # Group rows are not draggable, but keep the fixed grip slot so
             # their foldout and names align with the layer rows below.
@@ -2474,7 +2472,6 @@ class FBP_UL_PendingTreeList(UIList):
             order=order,
             leading_units=depth,
         )
-        row = zones["row"]
         targets = zones["targets"]
 
         # Fixed structural grip. It never appears in preferences and cannot be

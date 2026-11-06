@@ -76,6 +76,10 @@ All notable public changes to Frame By Plane are documented here.
 - Mesh effect materials copied the first input of nodes with repeated input names (Math, Mix) into the second one; they now copy input by input.
 - Helpers that were copied into several modules now live once: `common.py` holds text cleaning, unique names, Undo steps, the UI scale, the flat colour shader and the view ray (14 copies removed), the Scene libraries (Effect Stack presets, Mask sources, Visibility snapshots, Layer Sets) register through one function, and the frame-change handler writes effect values through one helper instead of five copies. The transform box and Pose Mode handles now use the same view ray as the overlay, which starts on the near clip plane in orthographic views.
 - Removed unused compositor helpers and leftover code, and the 7.1.x audit, performance and test reports (their history is in Git and the release notes in `release-notes/`).
+- The viewport handle overlay no longer looks through every visible object on each redraw for Lattice handles when the file has no armature: with 60 layers that part went from about 55 µs to about 2 µs per redraw.
+- The handle overlay, transform box, Pose Mode handles and Solo badge read the UI scale through the shared helper, and the panel width helper no longer keeps a cache that cost more than the arithmetic it saved.
+- Removed code left without callers by the Modifiers-panel move and earlier passes: the panel-draw request for the Modifiers tab pin, two unused caches, a write-only timestamp in the effect update queue, unused imports, variables and `global` statements.
+- The two copies of the 8.2.1 release notes (inside the add-on and in `release-notes/`) had drifted apart; they are one text again.
 
 ### Lattice puppet pins
 

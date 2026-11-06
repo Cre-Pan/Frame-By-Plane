@@ -3163,7 +3163,6 @@ def test_lattice_pin_names_contract(_module):
 
 def test_lattice_types_contract(_module):
     """Bones, Corner Pin, Grid point handles and Bend/Stiff pins stack on one cage."""
-    import math
     from mathutils import Vector
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     pins_module = importlib.import_module(f"{PACKAGE}.lattice_pins")

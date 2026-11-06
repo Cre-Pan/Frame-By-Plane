@@ -930,15 +930,20 @@ def _shell_needs_rebuild(group):
         return False
 
 
-def _shell_layer_mapping(group):
+def _stored_mapping(group, key):
+    """Rows of four fields stored under ``key`` on a shell node group."""
     try:
-        raw = tuple(group.get(_SHELL_LAYER_MAPPING_KEY, ()) or ())
+        raw = tuple(group.get(key, ()) or ())
     except FBP_DATA_ERRORS:
         return ()
     return tuple(
         tuple(parts) for parts in (str(entry).split("\x1f") for entry in raw)
         if len(parts) == 4
     )
+
+
+def _shell_layer_mapping(group):
+    return _stored_mapping(group, _SHELL_LAYER_MAPPING_KEY)
 
 
 def _layer_owner(rig, effect_id, instance_id, prop_name, storage):
@@ -1155,16 +1160,7 @@ def _rebuild_shell(rig, token, modifier):
 
 
 def _shell_mapping(group):
-    try:
-        raw = tuple(group.get("fbp_shell_mapping", ()) or ())
-    except FBP_DATA_ERRORS:
-        return ()
-    result = []
-    for entry in raw:
-        parts = str(entry).split("\x1f")
-        if len(parts) == 4:
-            result.append(tuple(parts))
-    return tuple(result)
+    return _stored_mapping(group, "fbp_shell_mapping")
 
 
 def fbp_shell_covered_settings(group):

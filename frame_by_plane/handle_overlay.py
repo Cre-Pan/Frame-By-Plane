@@ -33,11 +33,15 @@ from .viewport_handles import (
     STOP_RING_COLOR,
     handle_selected_color,
 )
-from .common import view_plane_hit as _plane_hit, undo_push as _undo_push
+from .common import (
+    ui_scale as _ui_scale,
+    uniform_color_shader as _fill_shader,
+    undo_push as _undo_push,
+    view_plane_hit as _plane_hit,
+)
 
 
 _DRAW_HANDLE = None
-_FILL_SHADER = None
 _LINE_SHADER = None
 _OUTLINE_WIDTH = 1.5
 _GUIDE_WIDTH = 1.4
@@ -45,12 +49,10 @@ _GUIDE_OUTLINE_WIDTH = 3.4
 
 
 def _shaders():
-    global _FILL_SHADER, _LINE_SHADER
-    if _FILL_SHADER is None:
-        _FILL_SHADER = gpu.shader.from_builtin("UNIFORM_COLOR")
+    global _LINE_SHADER
     if _LINE_SHADER is None:
         _LINE_SHADER = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
-    return _FILL_SHADER, _LINE_SHADER
+    return _fill_shader(), _LINE_SHADER
 
 
 def _visible_handles(context):
@@ -104,6 +106,10 @@ def _lattice_guides(context):
         from .lattice_pins import PIN_GRID_KEY, PIN_POINT_KEY
         from .viewport_handles import dashed_pieces
     except ImportError:
+        return []
+    # Lattice handles are armatures: a file without any skips the scan of
+    # every visible object on each redraw.
+    if not len(bpy.data.armatures):
         return []
     segments = []
     for armature in tuple(getattr(context, "visible_objects", ()) or ()):
@@ -505,10 +511,7 @@ def _draw_handles():
     except FBP_DATA_ERRORS:
         return
     fill_shader, line_shader = _shaders()
-    try:
-        scale = float(context.preferences.system.ui_scale) or 1.0
-    except FBP_DATA_ERRORS:
-        scale = 1.0
+    scale = _ui_scale(context)
     guides = list(lattice_guides) + plane_guides
     for solid, _dashed in mask_guides:
         guides.extend(solid)
@@ -1204,10 +1207,7 @@ class FBP_GT_color_plane_grip(bpy.types.Gizmo):
 
     def test_select(self, context, location):
         region, view = context.region, context.region_data
-        try:
-            scale = float(context.preferences.system.ui_scale) or 1.0
-        except FBP_DATA_ERRORS:
-            scale = 1.0
+        scale = _ui_scale(context)
         a = location_3d_to_region_2d(region, view, Vector(self.fbp_a))
         if a is None:
             return -1
@@ -1438,10 +1438,7 @@ class FBP_GT_gradient_drag(bpy.types.Gizmo):
 
     def _hit(self, context, location):
         region, view = context.region, context.region_data
-        try:
-            scale = float(context.preferences.system.ui_scale) or 1.0
-        except FBP_DATA_ERRORS:
-            scale = 1.0
+        scale = _ui_scale(context)
         a = location_3d_to_region_2d(region, view, Vector(self.fbp_a))
         if a is None:
             return -1
@@ -1681,10 +1678,9 @@ def register():
 
 
 def unregister():
-    global _DRAW_HANDLE, _FILL_SHADER, _LINE_SHADER
+    global _DRAW_HANDLE, _LINE_SHADER
     handle = _DRAW_HANDLE
     _DRAW_HANDLE = None
-    _FILL_SHADER = None
     _LINE_SHADER = None
     if handle is not None:
         try:

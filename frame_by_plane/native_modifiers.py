@@ -751,12 +751,6 @@ def _deferred_follow(*_args):
         pass
 
 
-def fbp_request_properties_follow():
-    """Called from panel drawing: a pin cannot change inside ``draw()``."""
-    if _follow_enabled():
-        _deferred_follow()
-
-
 def _subscribe_msgbus():
     try:
         bpy.msgbus.clear_by_owner(_MSGBUS_OWNER)

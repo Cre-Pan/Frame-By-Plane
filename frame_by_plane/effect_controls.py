@@ -135,9 +135,6 @@ _CONTROL_FULL_SCAN_INTERVAL = 5.0
 _CONTROL_OWNER_CACHE = globals().get("_CONTROL_OWNER_CACHE", {})
 if not isinstance(_CONTROL_OWNER_CACHE, dict):
     _CONTROL_OWNER_CACHE = {}
-# Scene-object caches retain primitive runtime keys and names only.
-_CONTEXT_OBJECTS_CACHE = {}
-_CONTEXT_OBJECTS_CACHE_TTL = 0.35
 
 
 # One source of truth for effects that expose spatial interaction. Modes:
@@ -2719,7 +2716,6 @@ def _iter_all_effect_controls(context=None):
     selection timers should not walk every object ten times per second.
     """
     global _LAST_CONTROL_FULL_SCAN_TIME, _LAST_CONTROL_EMPTY_SCAN_TIME
-    global _SELECTION_VISIBILITY_EMPTY_SINCE
     seen = set()
     # The scene list only matters when many controls are known; skip reading
     # it on the common path (no or few controls) that runs on every redraw.
@@ -4215,7 +4211,6 @@ def clear_effect_controls_runtime_cache():
     _VISIBLE_CONTROLS_CACHE["key"] = None
     _VISIBLE_CONTROLS_CACHE["controls"] = ()
     _CONTROL_OWNER_CACHE.clear()
-    _CONTEXT_OBJECTS_CACHE.clear()
     _SCENE_SERVICE_CACHE.clear()
     _GUIDE_NAMES.clear()
     _FBP_PLANE_MESH_KEYS.clear()

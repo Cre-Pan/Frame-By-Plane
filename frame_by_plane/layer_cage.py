@@ -265,12 +265,12 @@ def _update_hover(context, xy):
     name = ""
     try:
         from .alpha_pick import fbp_handle_under_cursor
-        scale = float(context.preferences.system.ui_scale) or 1.0
-        handle = fbp_handle_under_cursor(context, xy, 4.0 * scale)
+        radius = 4.0 * _ui_scale(context)
+        handle = fbp_handle_under_cursor(context, xy, radius)
         name = str(handle.name) if handle is not None else ""
         if not name:
             from .handle_overlay import lattice_handle_under_cursor
-            name = lattice_handle_under_cursor(context, xy, 4.0 * scale)
+            name = lattice_handle_under_cursor(context, xy, radius)
     except (ImportError, *FBP_DATA_ERRORS):
         name = ""
     set_hovered_handle(context, name)

@@ -11,7 +11,7 @@ from mathutils.geometry import tessellate_polygon
 from .grease_pencil_bridge import any_gp_canvas_solo, gp_canvas_solo_active
 from .fbp_index import iter_scene_gp_canvases
 from .runtime import FBP_DATA_ERRORS
-from .common import uniform_color_shader as _shader
+from .common import ui_scale as _ui_scale, uniform_color_shader as _shader
 
 
 _DRAW_HANDLE = None
@@ -221,10 +221,7 @@ def _draw_badge():
         return
     if count <= 0 and not local_view:
         return
-    try:
-        scale = float(context.preferences.system.ui_scale) or 1.0
-    except FBP_DATA_ERRORS:
-        scale = 1.0
+    scale = _ui_scale(context)
     text = f"SOLO  {count}" if count > 1 else "SOLO"
     font_id = 0
     blf.size(font_id, 12.0 * scale)
