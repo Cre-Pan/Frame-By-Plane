@@ -535,7 +535,10 @@ def test_depsgraph_handler_only_reads():
         native._run_pending_sync()
         modifier = plane.modifiers["Lattice"]
         before = int(rig.fbp_lattice_points_u)
-        geo._fbp_modifier_input_set(modifier, "Socket_2", before + 2)
+        # By name: the Actions menu now comes first and shifts the identifiers.
+        points_u = geo._fbp_interface_input_identifier(modifier.node_group, "Points U")
+        assert points_u
+        geo._fbp_modifier_input_set(modifier, points_u, before + 2)
 
         class _Update:
             id = plane
