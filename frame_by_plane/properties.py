@@ -839,6 +839,15 @@ def update_shortcut_preferences_cb(self, context):
     update_interface_preferences_cb(self, context)
 
 
+def update_node_view_annotations_cb(self, context):
+    """Add or remove the note frames in every generated node view."""
+    try:
+        from .geometry_nodes import fbp_tidy_all_node_views
+        fbp_tidy_all_node_views(force=True, annotate=bool(self.node_view_annotations))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
 class FBP_AddonPreferences(AddonPreferences):
     bl_idname = __package__ if __package__ else "frame_by_plane"
 
@@ -860,6 +869,12 @@ class FBP_AddonPreferences(AddonPreferences):
         name="Modifiers Follow Layer",
         description="When a Frame By Plane layer is selected, Properties > Modifiers shows the modifiers of its image plane, so mesh effects can be reordered, hidden and removed natively",
         default=True,
+    )
+    node_view_annotations: BoolProperty(
+        name="Notes in Node Views",
+        description="Add short note frames to the node trees Frame By Plane generates for effects (layer materials, effect groups, effect modifiers). Display only: the result is the same either way",
+        default=True,
+        update=update_node_view_annotations_cb,
     )
     show_control_panel_properties: BoolProperty(
         name="Properties",
@@ -2217,6 +2232,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'show_panel_grease_pencil', text='Grease Pencil', toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row.prop(self, 'show_panel_layer_settings', text='Layer Settings', toggle=True, icon='TOOL_SETTINGS')
                 body.prop(self, 'modifiers_follow_layer', icon='MODIFIER')
+                body.prop(self, 'node_view_annotations', icon='NODETREE')
                 if not any_location:
                     hint_row(body, 'Both control-panel locations are disabled. Shift+A, Modifiers, Output and Camera tools remain available.', icon='HIDE_ON')
                 else:

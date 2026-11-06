@@ -2158,6 +2158,88 @@ def test_effect_stack_reorder_contract(_module):
     return {"effects": len(effects), "sort_stage_rebuilds": sort_rebuilds}
 
 
+def test_effect_node_views_contract(_module):
+    """Generated node views are framed, ordered and display-only."""
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    layout = importlib.import_module(f"{PACKAGE}.node_layout")
+    rig = _effect_stack_fixture_rig("FBP Effect Node Views")
+    owned = [rig, *rig.children_recursive]
+
+    def topology(tree):
+        return sorted(
+            (link.from_node.name, link.from_socket.identifier,
+             link.to_node.name, link.to_socket.identifier)
+            for link in tree.links
+        )
+
+    def names(tree):
+        return sorted(node.name for node in tree.nodes if node.bl_idname != "NodeFrame")
+
+    try:
+        for effect_id in ("SWIRL", "HUE_SATURATION", "VIGNETTE", "CIRCLE_MASK", "MESH_WIGGLE"):
+            assert geo.fbp_add_effect(
+                rig, effect_id, select_object_mask_helper=False, inherit_active_group=False,
+            ), effect_id
+        materials = [m for m in geo._fbp_plane_materials(rig) if m.node_tree is not None]
+        assert materials
+        checked = 0
+        for material in materials:
+            tree = material.node_tree
+            if not geo._fbp_shader_effect_nodes(material):
+                continue
+            assert layout.node_view_is_current(tree), material.name
+            frames = [node for node in tree.nodes if layout.is_node_view_helper(node)]
+            labels = {frame.label for frame in frames}
+            assert "UV effects" in labels and "Color effects" in labels, labels
+            assert any(label.startswith("1 · Swirl") for label in labels), labels
+            # Every effect node sits in its own numbered frame.
+            for node in geo._fbp_shader_effect_nodes(material):
+                assert node.parent is not None and layout.is_node_view_helper(node.parent), node.name
+            # Left to right: the UV chain ends before the Color chain starts.
+            uv = geo._fbp_stage_effect_nodes(material, "UV")
+            color = geo._fbp_stage_effect_nodes(material, "COLOR")
+            if uv and color:
+                assert max(n.location_absolute.x for n in uv) < min(n.location_absolute.x for n in color)
+            # A forced relayout and the notes toggle never relink or rename.
+            before_links, before_names = topology(tree), names(tree)
+            positions = {n.name: tuple(n.location_absolute) for n in tree.nodes if n.bl_idname != "NodeFrame"}
+            assert geo.fbp_tidy_layer_material(material, force=True, annotate=False)
+            assert not any(n.get("fbp_node_view_note") for n in tree.nodes)
+            assert geo.fbp_tidy_layer_material(material, force=True, annotate=True)
+            assert any(n.get("fbp_node_view_note") for n in tree.nodes)
+            assert topology(tree) == before_links
+            assert names(tree) == before_names
+            after = {n.name: tuple(n.location_absolute) for n in tree.nodes if n.bl_idname != "NodeFrame"}
+            assert after == positions, "relayout is not deterministic"
+            checked += 1
+        assert checked, "no effect material checked"
+
+        # Effect groups and the modifier shells get frames too.
+        swirl = geo._fbp_load_effect_group("SWIRL")
+        assert any(layout.is_node_view_helper(node) for node in swirl.nodes)
+        output = next(node for node in swirl.nodes if node.bl_idname == "NodeGroupOutput")
+        group_input = next(node for node in swirl.nodes if node.bl_idname == "NodeGroupInput")
+        assert group_input.location_absolute.x < output.location_absolute.x
+        shells = [g for g in bpy.data.node_groups if g.get("fbp_shell_group") and rig.name in g.name]
+        assert shells and all(
+            any(layout.is_node_view_helper(node) for node in shell.nodes) for shell in shells
+        )
+        # Cheap when nothing changed.
+        material = materials[0]
+        started = time.perf_counter()
+        for _index in range(20):
+            geo.fbp_tidy_layer_material(material)
+        per_call_ms = (time.perf_counter() - started) * 50.0
+        assert per_call_ms < 5.0, per_call_ms
+    finally:
+        for obj in reversed(owned):
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return {"materials": checked, "shells": len(shells), "check_ms": round(per_call_ms, 3)}
+
+
 def test_effect_mixed_stack_contract(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     rig = _effect_stack_fixture_rig("FBP Effect Mixed Stack")
@@ -6854,6 +6936,7 @@ def run_background():
             ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),
             ("effect_stack_reorder_contract", test_effect_stack_reorder_contract),
             ("effect_mixed_stack_contract", test_effect_mixed_stack_contract),
+            ("effect_node_views_contract", test_effect_node_views_contract),
             ("effect_mixed_stack_keyed_composites", test_effect_mixed_stack_keyed_composites),
             ("effect_stack_evaluation_order", test_effect_stack_evaluation_order),
             ("effect_render_visibility_contract", test_effect_render_visibility_contract),
