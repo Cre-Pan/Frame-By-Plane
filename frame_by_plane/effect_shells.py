@@ -813,7 +813,134 @@ def _populate_shell_group(group, effect_id):
     _wire_usage(group, used, group_input.outputs[0], group_output)
     _actions_first(group)
     group[_SHELL_UI_KEY] = _SHELL_UI_VERSION
+    fbp_tidy_shell_group(group, effect_id=effect_id, force=True)
     return group
+
+
+def _shell_effect_label(group, effect_id=""):
+    geo = _geo()
+    if not effect_id:
+        try:
+            effect_id = geo._fbp_effect_ref_parts(str(group.get(_SHELL_TOKEN_KEY, "") or ""))[0]
+        except FBP_DATA_ERRORS:
+            effect_id = ""
+    if effect_id:
+        label = str(geo.fbp_effect_definition(effect_id).get("label", "") or "")
+        if label:
+            return label
+    return str(getattr(group, "name", "") or "").rsplit("•", 1)[-1].strip() or "Effect"
+
+
+def fbp_tidy_shell_group(group, *, effect_id="", force=False, annotate=None):
+    """Make an effect's modifier node tree readable.
+
+    The tree has no image work: its inputs are the effect's settings, read by
+    the layer material. Readers get the name of the setting they read, the
+    sum that keeps Blender from greying the inputs out is one compact column,
+    and frames plus an optional note say what each part is for.
+    """
+    from .node_layout import (
+        _PLACEMENTS,
+        _add_note,
+        _drop_unused_frames,
+        _flush_positions,
+        _new_view_frame,
+        _remove_view_frames,
+        _stamp_view,
+        node_height,
+        node_view_annotations_enabled,
+        node_view_is_current,
+    )
+
+    if group is None or getattr(group, "library", None) is not None:
+        return False
+    if annotate is None:
+        annotate = node_view_annotations_enabled()
+    if not force and node_view_is_current(group, annotate=annotate):
+        return True
+    try:
+        nodes, links = group.nodes, group.links
+        _PLACEMENTS.clear()
+        _remove_view_frames(group)
+        group_input = next((node for node in nodes if node.bl_idname == "NodeGroupInput"), None)
+        group_output = next((node for node in nodes if node.bl_idname == "NodeGroupOutput"), None)
+        if group_input is None or group_output is None:
+            return False
+        label = _shell_effect_label(group, effect_id)
+        readers, adds, passes = [], [], []
+        for node in nodes:
+            if not node.get(_SHELL_USAGE_NODE_KEY):
+                continue
+            if node.bl_idname == "ShaderNodeMath":
+                adds.append(node)
+            elif node.bl_idname in {"GeometryNodeStoreNamedAttribute", "GeometryNodeRemoveAttribute"}:
+                passes.append(node)
+            else:
+                readers.append(node)
+        for link in tuple(links):
+            node = link.to_node
+            if node in readers and link.from_node == group_input:
+                node.label = f"{'Choice' if node.bl_idname == 'GeometryNodeMenuSwitch' else 'Read'} · {link.from_socket.name}"[:63]
+        for node in adds:
+            node.label = "Keep input active"
+        for node in passes:
+            node.label = (
+                "Mark inputs as used" if node.bl_idname == "GeometryNodeStoreNamedAttribute"
+                else "Remove the marker"
+            )
+        passes.sort(key=lambda node: node.bl_idname != "GeometryNodeStoreNamedAttribute")
+        # Readers and adds were created in input order: keep that order.
+        readers.sort(key=lambda node: -float(node.location_absolute.y))
+        adds.sort(key=lambda node: -float(node.location_absolute.y))
+
+        y0 = 0.0
+        if annotate:
+            _add_note(
+                group,
+                f"Note · {label} modifier"[:63],
+                [
+                    f"These inputs are the {label} settings. The effect itself runs in the layer material, which reads them.",
+                    "The geometry passes through unchanged. The small sum only keeps Blender from greying the inputs out.",
+                ],
+                0.0,
+                0.0,
+                620.0,
+                bottom=y0 + 90.0,
+            )
+        inputs_frame = _new_view_frame(group, "Effect settings", (0.20, 0.20, 0.24), label_size=18)
+        group_input.parent = inputs_frame
+        _PLACEMENTS.append((group_input, 0.0, y0))
+        x = float(group_input.width) + 140.0
+        right = x
+        if readers or adds:
+            keep_frame = _new_view_frame(group, "Keep inputs active", (0.17, 0.22, 0.30), label_size=18)
+            cursor = y0
+            for node in readers:
+                node.parent = keep_frame
+                _PLACEMENTS.append((node, x, cursor))
+                cursor -= node_height(node) + 8.0
+            add_x = x + (max((float(node.width) for node in readers), default=0.0) + 60.0 if readers else 0.0)
+            cursor = y0
+            for node in adds:
+                node.parent = keep_frame
+                _PLACEMENTS.append((node, add_x, cursor))
+                cursor -= node_height(node) + 8.0
+            right = add_x + (max((float(node.width) for node in adds), default=140.0)) + 140.0
+        out_frame = _new_view_frame(group, "Geometry out (unchanged)", (0.24, 0.17, 0.17), label_size=18)
+        cursor_x = right
+        for node in passes:
+            node.parent = out_frame
+            _PLACEMENTS.append((node, cursor_x, y0))
+            cursor_x += float(node.width) + 60.0
+        group_output.parent = out_frame
+        _PLACEMENTS.append((group_output, cursor_x, y0))
+        _flush_positions(group)
+        _drop_unused_frames(group)
+        _stamp_view(group, annotate)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not tidy the effect modifier's nodes", exc)
+        return False
+    return True
 
 
 def _actions_first(group):
@@ -1007,10 +1134,19 @@ def fbp_extend_geometry_group(group, effect_id):
             links.new(source, target)
         _actions_first(group)
         group[_GEOMETRY_INPUTS_KEY] = marker
+        geo.fbp_tidy_effect_group(group, effect_id, force=True)
         return True
     except FBP_DATA_ERRORS as exc:
         fbp_warn("Could not add the effect's panel settings to its modifier", exc)
         return False
+
+
+def _shell_view_stamped(group):
+    from .node_layout import NODE_VIEW_VERSION, NODE_VIEW_VERSION_KEY
+    try:
+        return group is None or int(group.get(NODE_VIEW_VERSION_KEY, 0) or 0) == NODE_VIEW_VERSION
+    except FBP_DATA_ERRORS:
+        return True
 
 
 def _shell_needs_rebuild(group):
@@ -1371,6 +1507,10 @@ def fbp_shell_refresh_links(rig):
         mapping = _shell_mapping(modifier.node_group)
         for node in _effect_nodes(rig, effect_id, instance_id):
             linked += _link_effect_node(node, modifier, mapping, token)
+    if linked:
+        # New setting readers appeared in the materials: place them.
+        for material in geo._fbp_plane_materials(rig):
+            geo.fbp_tidy_layer_material(material)
     return linked
 
 
@@ -1493,6 +1633,9 @@ def fbp_shell_maintain(rig):
                 changed = bool(_rebuild_shell(rig, token, modifier)) or changed
             except FBP_DATA_ERRORS as exc:
                 fbp_warn("Could not update the effect's modifier inputs", exc)
+        elif not _shell_view_stamped(modifier.node_group):
+            # Shells saved before node views were tidied: lay them out once.
+            fbp_tidy_shell_group(modifier.node_group)
     if fbp_shell_modifiers(rig):
         changed = bool(fbp_shell_refresh_links(rig)) or changed
         changed = bool(fbp_shell_reposition(rig)) or changed

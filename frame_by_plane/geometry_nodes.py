@@ -13,7 +13,7 @@ from pathlib import Path
 from array import array
 import os
 import copy
-from collections import OrderedDict, deque
+from collections import OrderedDict, defaultdict, deque
 import importlib
 import json
 import math
@@ -38,7 +38,14 @@ from .storage_keys import (
     fbp_compact_idproperty_key,
     fbp_effect_storage_key,
 )
-from .node_layout import organize_node_tree
+from .node_layout import (
+    is_node_view_helper,
+    layout_layer_material,
+    node_view_annotations_enabled,
+    node_view_is_current,
+    organize_node_tree,
+    tidy_effect_group,
+)
 from .path_utils import natural_sort_key
 
 from .shortcut_runtime import alt_modifier_name
@@ -6320,6 +6327,9 @@ def _fbp_store_effect_group_cache(effect_id, node_group):
     if node_group is None:
         _FBP_EFFECT_GROUP_CACHE.pop(str(effect_id or ""), None)
         return None
+    # Lay the group out before its health signature is taken: frames count
+    # as nodes there. Already tidy groups return after one property read.
+    fbp_tidy_effect_group(node_group, effect_id)
     _FBP_EFFECT_GROUP_CACHE[str(effect_id or "")] = str(getattr(node_group, "name_full", getattr(node_group, "name", "")) or "")
     try:
         pointer = int(node_group.as_pointer())
@@ -8025,6 +8035,7 @@ def _fbp_owned_geometry_group(rig, effect_id, source_group, current=None):
             if not _fbp_patch_alpha_mask(node_group):
                 _fbp_remove_node_group(node_group)
                 return None
+        fbp_tidy_effect_group(node_group, effect_id)
         return node_group
     except FBP_DATA_ERRORS as exc:
         fbp_warn("Could not create alpha-aware effect group", exc)
@@ -11576,7 +11587,286 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
             fbp_shell_relink_material(material)
         except (ImportError, *FBP_DATA_ERRORS):
             pass
+        fbp_tidy_layer_material(material)
     return result
+
+
+# Shared coordinates stay in the Source section even when one effect uses them.
+_FBP_NODE_VIEW_SOURCE_TYPES = {"ShaderNodeTexCoord", "ShaderNodeUVMap", "ShaderNodeNewGeometry"}
+
+
+def _fbp_node_view_owned(node):
+    """True for nodes Frame By Plane generated in a layer material."""
+    try:
+        if node.bl_idname == "NodeFrame":
+            return False
+        name = str(node.name or "")
+        if name.startswith(("FBP", "fbp")) or str(node.label or "").startswith("Frame by Plane"):
+            return True
+        return any(str(key).startswith("fbp_") for key in node.keys())
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_layer_material_view_sections(material):
+    """Group a layer material's generated nodes into readable sections.
+
+    Returns ``{section: [(label, nodes), ...]}`` for
+    :func:`node_layout.layout_layer_material`. Each effect becomes one block
+    with the nodes that only feed it (its modifier inputs, local mask mix).
+    """
+    tree = getattr(material, "node_tree", None)
+    if tree is None:
+        return {}
+    owned = []
+    for node in tree.nodes:
+        if not _fbp_node_view_owned(node):
+            continue
+        parent = getattr(node, "parent", None)
+        if parent is not None and not is_node_view_helper(parent):
+            continue  # inside an artist's own frame
+        owned.append(node)
+    if not owned:
+        return {}
+    members = set(owned)
+    producers = {node: set() for node in owned}
+    consumers = {node: set() for node in owned}
+    for link in tuple(tree.links):
+        try:
+            source, target = link.from_node, link.to_node
+        except FBP_DATA_ERRORS:
+            continue
+        if source in members and target in members and source is not target:
+            producers[target].add(source)
+            consumers[source].add(target)
+
+    rig = None
+    try:
+        owner_name = str(material.get("fbp_effect_rig_owner", "") or "")
+        rig = bpy.data.objects.get(owner_name) if owner_name else None
+    except FBP_DATA_ERRORS:
+        rig = None
+    stage_of = {}
+    order_of = {}
+    for stage in ("UV", "COLOR", "MASK"):
+        try:
+            ordered = (
+                _fbp_color_stage_evaluation_nodes(material, rig)
+                if stage == "COLOR" else _fbp_stage_effect_nodes(material, stage)
+            )
+        except FBP_DATA_ERRORS:
+            ordered = []
+        for index, node in enumerate(ordered):
+            if node in members:
+                stage_of[node] = stage
+                order_of[node] = index
+    for node in owned:
+        if node in stage_of:
+            continue
+        effect_id = _fbp_shader_effect_id(node)
+        if effect_id:
+            stage = str(fbp_effect_definition(effect_id).get("stage", "") or "COLOR")
+            stage_of[node] = stage if stage in {"UV", "COLOR", "MASK"} else "COLOR"
+            order_of[node] = 10_000 + len(order_of)
+
+    block_of = {node: node for node in stage_of}
+    token_owner = {}
+    for node in stage_of:
+        effect_id = _fbp_shader_effect_id(node)
+        token = _fbp_effect_ref(
+            effect_id,
+            effect_instance_id(node) if _fbp_effect_uses_multi_instances(effect_id) else "",
+        )
+        token_owner.setdefault(token, node)
+        token_owner.setdefault(effect_id, node)
+    by_name = {node.name: node for node in owned}
+    image_nodes = [node for node in owned if node.bl_idname == "ShaderNodeTexImage" and node not in block_of]
+    for node in image_nodes:
+        block_of[node] = "IMAGE"
+    for node in owned:
+        if node in block_of:
+            continue
+        try:
+            target_name = str(node.get("fbp_shell_target", "") or "")
+            target_token = str(node.get("fbp_local_effect_mask_target", "") or "")
+        except FBP_DATA_ERRORS:
+            target_name = target_token = ""
+        anchor = by_name.get(target_name) if target_name else token_owner.get(target_token)
+        if anchor is not None and anchor in block_of:
+            block_of[node] = block_of[anchor]
+
+    # Nodes whose only neighbours belong to one block join that block.
+    changed = True
+    while changed:
+        changed = False
+        for node in owned:
+            if node in block_of or node.bl_idname in _FBP_NODE_VIEW_SOURCE_TYPES:
+                continue
+            outs = consumers[node]
+            ins = producers[node]
+            if not outs:
+                continue
+            blocks = {block_of[item] for item in outs if item in block_of}
+            blocks.update(block_of[item] for item in ins if item in block_of)
+            if len(blocks) != 1:
+                continue
+            if any(item not in block_of for item in outs):
+                continue
+            if any(item not in block_of and producers[item] for item in ins):
+                continue
+            block_of[node] = next(iter(blocks))
+            changed = True
+
+    def upstream_stages(node):
+        seen = set()
+        stack = list(producers[node])
+        stages = set()
+        while stack:
+            item = stack.pop()
+            if item in seen:
+                continue
+            seen.add(item)
+            block = block_of.get(item)
+            if block == "IMAGE" or item in image_nodes:
+                stages.add("IMAGE")
+            elif block is not None:
+                stages.add(stage_of.get(block, "COLOR"))
+            stack.extend(producers[item])
+        return stages
+
+    sections = {key: [] for key in ("SOURCE", "UV", "IMAGE", "COLOR", "MASK", "OUTPUT")}
+    leftovers = {"SOURCE": [], "MASK": [], "OUTPUT": []}
+    for node in owned:
+        if node in block_of:
+            continue
+        if not producers[node]:
+            leftovers["SOURCE"].append(node)
+            continue
+        stages = upstream_stages(node)
+        leftovers["MASK" if stages and stages <= {"MASK", "UV"} and "MASK" in stages else "OUTPUT"].append(node)
+
+    grouped = defaultdict(list)
+    for node, block in block_of.items():
+        grouped[block].append(node)
+    for stage in ("UV", "COLOR", "MASK"):
+        effects = sorted(
+            (node for node in stage_of if stage_of[node] == stage),
+            key=lambda item: (order_of.get(item, 0), item.name),
+        )
+        for index, node in enumerate(effects):
+            label = str(node.label or fbp_effect_definition(_fbp_shader_effect_id(node)).get("label", "") or node.name)
+            if bool(getattr(node, "mute", False)):
+                label += " (hidden)"
+            sections[stage].append((f"{index + 1} · {label}", grouped[node]))
+    if grouped.get("IMAGE"):
+        sections["IMAGE"].append(("Layer image", grouped["IMAGE"]))
+    if leftovers["SOURCE"]:
+        sections["SOURCE"].append(("Source", leftovers["SOURCE"]))
+    if leftovers["MASK"]:
+        sections["MASK"].append(("Combine masks", leftovers["MASK"]))
+    if leftovers["OUTPUT"]:
+        sections["OUTPUT"].append(("Output", leftovers["OUTPUT"]))
+    return {key: value for key, value in sections.items() if value}
+
+
+def fbp_tidy_layer_material(material, *, force=False, annotate=None):
+    """Keep a layer material readable: effects in order, framed and labelled.
+
+    Display only: nodes are moved and framed, never renamed or relinked. The
+    check is a cheap signature, so calling this after every rebuild is fine.
+    """
+    tree = getattr(material, "node_tree", None)
+    if tree is None:
+        return False
+    try:
+        if not bool(material.get("fbp_effect_rig_owner", "")) and not any(
+            _fbp_shader_effect_id(node) for node in tree.nodes
+        ):
+            return False
+    except FBP_DATA_ERRORS:
+        return False
+    if annotate is None:
+        annotate = node_view_annotations_enabled()
+    if not force and node_view_is_current(tree, annotate=annotate):
+        return True
+    try:
+        sections = fbp_layer_material_view_sections(material)
+        return layout_layer_material(
+            tree,
+            sections,
+            title=str(getattr(material, "name", "") or ""),
+            annotate=annotate,
+            force=True,
+        )
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not tidy the layer material's nodes", exc)
+        return False
+
+
+def fbp_tidy_effect_group(node_group, effect_id="", *, force=False, annotate=None):
+    """Lay out one generated effect group (never a custom or user-edited one)."""
+    if node_group is None:
+        return False
+    try:
+        if bool(node_group.get("fbp_user_editable_effect_group", False)):
+            return False
+    except FBP_DATA_ERRORS:
+        return False
+    definition = fbp_effect_definition(effect_id) if effect_id else {}
+    if bool(definition.get("custom", False)):
+        return False
+    title = str(definition.get("label", "") or "")
+    description = str(definition.get("description", "") or "")
+    asset_id = str(definition.get("asset_id", "") or "")
+    if asset_id:
+        # Some groups serve several effects (Mesh Wiggle and Wind Bender):
+        # name them all and leave out a description that fits only one.
+        sharing = [
+            str(other.get("label", "") or key)
+            for key, other in FBP_EFFECT_REGISTRY.items()
+            if str(other.get("asset_id", "") or "") == asset_id
+        ]
+        if len(sharing) > 1:
+            title = " / ".join(sharing[:3])
+            description = "Shared by: " + ", ".join(sharing) + "."
+    return tidy_effect_group(
+        node_group,
+        title=title,
+        description=description,
+        annotate=annotate,
+        force=force,
+    )
+
+
+def fbp_tidy_all_node_views(*, force=True, annotate=None):
+    """Re-tidy every generated layer material and effect group in the file."""
+    count = 0
+    for material in tuple(bpy.data.materials):
+        try:
+            if getattr(material, "library", None) is not None or material.node_tree is None:
+                continue
+        except FBP_DATA_ERRORS:
+            continue
+        if fbp_tidy_layer_material(material, force=force, annotate=annotate):
+            count += 1
+    for node_group in tuple(bpy.data.node_groups):
+        try:
+            if getattr(node_group, "library", None) is not None:
+                continue
+            effect_id = str(node_group.get("fbp_effect_id", "") or "")
+            shell = bool(node_group.get("fbp_shell_group", False))
+            if shell:
+                from .effect_shells import fbp_tidy_shell_group
+                if fbp_tidy_shell_group(node_group, force=force, annotate=annotate):
+                    count += 1
+                continue
+            if not effect_id:
+                continue
+        except (ImportError, *FBP_DATA_ERRORS):
+            continue
+        if fbp_tidy_effect_group(node_group, effect_id, force=force, annotate=annotate):
+            count += 1
+    return count
 
 
 def _fbp_rebuild_shader_stage_links(material, stage, source_override=None, target_override=None):
@@ -15418,6 +15708,7 @@ def _fbp_owned_shader_group(rig, material, effect_id, source_group, current=None
         private["fbp_effect_private_owner_kind"] = owner_kind
         # Preserve the effect-level key as the current single-instance mirror.
         private["fbp_effect_material_owner"] = owner
+        fbp_tidy_effect_group(private, effect_id)
         return private
     except FBP_DATA_ERRORS as exc:
         fbp_warn(f"Could not create private {definition.get('label', effect_id)} shader group", exc)
