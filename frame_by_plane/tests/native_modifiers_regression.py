@@ -468,9 +468,92 @@ def test_row_effects():
         _remove(rig)
 
 
+class _PlaneContext:
+    """bpy.context with the Modifiers tab showing the layer's plane."""
+
+    def __init__(self, plane):
+        self.object = plane
+
+    def __getattr__(self, name):
+        return getattr(bpy.context, name)
+
+
+def test_native_effect_controls():
+    """Each modifier panel draws only what its inputs do not already show."""
+    geo, _native, shells = _modules()
+    panel = importlib.import_module(f"{PACKAGE_NAME}.native_effect_panel")
+    rig = _rig("FBP Native Controls")
+    try:
+        _add(geo, rig, "GRADIENT_MASK", "CURVES", "CROP")
+        shells.fbp_shell_ensure(rig)
+        plane = geo._fbp_plane(rig)
+        context = _PlaneContext(plane)
+
+        def calls(effect_id):
+            modifier = shells.fbp_shell_modifier(rig, effect_id)
+            assert modifier is not None, effect_id
+            layout = StubLayout()
+            assert panel.fbp_draw_native_effect_controls(layout, context, modifier), effect_id
+            covered = shells.fbp_shell_covered_settings(modifier.node_group)
+            assert covered, effect_id
+            drawn = {call[1][1] for call in layout.calls if call[0] == "prop" and len(call[1]) > 1 and call[1][0] is rig}
+            assert not (drawn & covered), (effect_id, drawn & covered)
+            return layout.calls
+
+        def button_rows(effect_id):
+            group = shells.fbp_shell_modifier(rig, effect_id).node_group
+            inputs = [item for item in group.interface.items_tree if getattr(item, "in_out", "") == "INPUT"]
+            assert inputs[0].socket_type == "NodeSocketGeometry", effect_id
+            rows = [item for item in inputs[1:3] if getattr(item, "menu_expanded", False)]
+            return [item.name for item in rows]
+
+        # Tools and Effect are the first two inputs, drawn as button rows.
+        assert button_rows("GRADIENT_MASK") == ["Tools", "Effect"]
+        assert button_rows("CROP") == ["Tools", "Effect"]
+        # No button stays pressed: a press runs and the row goes back to rest.
+        modifier = shells.fbp_shell_modifier(rig, "CROP")
+        tools = next(
+            entry[2] for entry in shells._shell_layer_mapping(modifier.node_group) if entry[0] == "@TOOLS"
+        )
+        shells.fbp_shell_sync_values(rig)
+        assert shells._action_input(modifier, tools) == ""
+        handle = geo._fbp_modifier_input_handle(modifier, tools)
+        assert "NONE" not in {item.identifier for item in handle.bl_rna.properties["value"].enum_items}
+        handle.value = "Reset Rig"
+        # Object mask shapes get their helper buttons as Tools too.
+        circle = shells._effect_actions("CIRCLE_MASK", geo.fbp_effect_definition("CIRCLE_MASK") or {})
+        assert {"EDIT_SHAPE", "PERFECT_SHAPE", "RECREATE_SHAPE"} <= {action[0] for action in circle}
+        shells.fbp_shell_sync_values(rig)
+        shells.fbp_shell_sync_values(rig)
+        assert shells._action_input(modifier, tools) == ""
+        mask = calls("GRADIENT_MASK")
+        operators = [call[1][0] for call in mask if call[0] == "operator"]
+        # Select/Reset Rig are Tools buttons now, not panel buttons.
+        assert "fbp.select_effect_control" not in operators and "fbp.reset_effect_control" not in operators
+        # Stack Operation is a modifier input: neither its menu nor its hint.
+        assert not any(call[0] == "operator_menu_enum" and call[1][0] == "fbp.set_mask_stack_operation" for call in mask)
+        assert not any("first active mask" in str(call[2].get("text", "")) for call in mask)
+        assert any(call[0] == "template_curve_mapping" for call in calls("CURVES"))
+        # Crop has nothing left under its inputs: every button is at the top.
+        layout = StubLayout()
+        panel.fbp_draw_native_effect_controls(layout, context, shells.fbp_shell_modifier(rig, "CROP"))
+        crop_operators = [call[1][0] for call in layout.calls if call[0] == "operator"]
+        assert "fbp.crop_alpha" not in crop_operators and "fbp.reset_crop" not in crop_operators
+
+        # A modifier that is not a Frame By Plane effect gets nothing.
+        own = plane.modifiers.new("Artist Nodes", "NODES")
+        layout = StubLayout()
+        assert not panel.fbp_draw_native_effect_controls(layout, context, own)
+        assert not layout.calls
+        plane.modifiers.remove(own)
+    finally:
+        _remove(rig)
+
+
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
     test_add_image_modifier, test_effect_shells, test_shell_value_sync, test_row_effects,
+    test_native_effect_controls,
 )
 
 failed = []

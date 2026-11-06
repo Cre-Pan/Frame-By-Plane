@@ -24542,8 +24542,15 @@ class FBP_OT_GradientLightController(Operator):
 
 def fbp_draw_effect_settings(
     layout, rig, effect_id, selected_count=1, present_count=None, context=None,
-    instance_id="",
+    instance_id="", native=False,
 ):
+    """Draw one effect's Frame By Plane settings.
+
+    ``native`` draws them inside the effect's own Blender modifier panel:
+    the effect's name, variant and the settings the modifier already shows
+    as inputs are left to the modifier (``layout`` then filters them, see
+    ``native_effect_panel``), and the viewport control buttons get labels.
+    """
     if context is None:
         try:
             context = getattr(bpy, "context", None)
@@ -24558,10 +24565,11 @@ def fbp_draw_effect_settings(
         # Image effects and masks keep their values on their modifier: the
         # settings below edit those modifier inputs instead of the layer's.
         from .effect_shells import fbp_shell_layout
-        layout = fbp_shell_layout(layout, rig, effect_id, instance_id)
+        if not native:
+            layout = fbp_shell_layout(layout, rig, effect_id, instance_id)
     except ImportError:
         pass
-    box = layout.box()
+    box = layout.column(align=False) if native else layout.box()
     configure_layout(box)
     header = box.row(align=True)
     header_split = header.split(factor=0.68, align=False)
@@ -24586,7 +24594,11 @@ def fbp_draw_effect_settings(
             pass
     family_id = fbp_effect_family_id(effect_id)
     family = fbp_effect_family_definition(family_id) if family_id else {}
-    if family and gp_mask_header_canvas is None:
+    if native:
+        # The modifier header already names the effect and its inputs hold
+        # the variant: only the buttons on the right are left in this row.
+        pass
+    elif family and gp_mask_header_canvas is None:
         # Sub-effects: the family name with its variant dropdown right next
         # to it, at the top of the effect panel.
         # The title itself is the dropdown, so it survives narrow sidebars.
@@ -24717,40 +24729,64 @@ def fbp_draw_effect_settings(
             # main setting, so it no longer fills the panel with a blue bar.
             controls_row = box.row(align=False)
             controls_row.enabled = not duplicate_controls
-            controls_split = controls_row.split(factor=0.6, align=False)
-            controls_split.prop(
-                rig, "fbp_effect_controls_enabled", text="Viewport Control",
-            )
-            controls = controls_split.row(align=True)
-            controls.alignment = 'RIGHT'
-            controls.active = bool(getattr(rig, "fbp_effect_controls_enabled", True))
-            if effect_id == FBP_EFFECT_GRADIENT_LIGHT:
-                controls.operator(
-                    "fbp.gradient_light_controller",
-                    text="",
-                    icon="EMPTY_AXIS",
-                    depress=getattr(
-                        rig, "fbp_gradient_light_controller", None
-                    ) is not None,
+            if native:
+                # The Viewport Control checkbox is a modifier input: here the
+                # rig gets labelled buttons instead of icons in a corner.
+                # Row-only modifiers have no input for the checkbox: it is
+                # drawn here and hidden where the modifier already shows it.
+                controls_row.prop(rig, "fbp_effect_controls_enabled", text="Viewport Control")
+                native_controls = controls_row.row(align=True)
+                native_controls.active = bool(getattr(rig, "fbp_effect_controls_enabled", True))
+                if effect_id == FBP_EFFECT_GRADIENT_LIGHT:
+                    native_controls.operator(
+                        "fbp.gradient_light_controller",
+                        text="Light Controller",
+                        icon="EMPTY_AXIS",
+                        depress=getattr(rig, "fbp_gradient_light_controller", None) is not None,
+                    )
+                select_rig = native_controls.operator(
+                    "fbp.select_effect_control", text="Select Rig", icon="RESTRICT_SELECT_OFF",
                 )
-            active_control = getattr(context, "active_object", None) if context else None
-            control_is_active = bool(
-                is_effect_control(active_control)
-                and effect_control_owner(active_control) is rig
-                and str(active_control.get("fbp_effect_control_effect", "") or "").upper() == effect_id
-                and bool(active_control.select_get())
-            )
-            select_control = controls.operator(
-                "fbp.select_effect_control",
-                text="",
-                icon="RESTRICT_SELECT_OFF",
-                depress=control_is_active,
-            )
-            select_control.effect_id = effect_id
-            reset_control = controls.operator(
-                "fbp.reset_effect_control", text="", icon=ui_icon("action.reset")
-            )
-            reset_control.effect_id = effect_id
+                select_rig.effect_id = effect_id
+                reset_rig = native_controls.operator(
+                    "fbp.reset_effect_control", text="Reset Rig", icon=ui_icon("action.reset"),
+                )
+                reset_rig.effect_id = effect_id
+            else:
+                controls_split = controls_row.split(factor=0.6, align=False)
+                controls_split.prop(
+                    rig, "fbp_effect_controls_enabled", text="Viewport Control",
+                )
+                controls = controls_split.row(align=True)
+                controls.alignment = 'RIGHT'
+                controls.active = bool(getattr(rig, "fbp_effect_controls_enabled", True))
+                if effect_id == FBP_EFFECT_GRADIENT_LIGHT:
+                    controls.operator(
+                        "fbp.gradient_light_controller",
+                        text="",
+                        icon="EMPTY_AXIS",
+                        depress=getattr(
+                            rig, "fbp_gradient_light_controller", None
+                        ) is not None,
+                    )
+                active_control = getattr(context, "active_object", None) if context else None
+                control_is_active = bool(
+                    is_effect_control(active_control)
+                    and effect_control_owner(active_control) is rig
+                    and str(active_control.get("fbp_effect_control_effect", "") or "").upper() == effect_id
+                    and bool(active_control.select_get())
+                )
+                select_control = controls.operator(
+                    "fbp.select_effect_control",
+                    text="",
+                    icon="RESTRICT_SELECT_OFF",
+                    depress=control_is_active,
+                )
+                select_control.effect_id = effect_id
+                reset_control = controls.operator(
+                    "fbp.reset_effect_control", text="", icon=ui_icon("action.reset")
+                )
+                reset_control.effect_id = effect_id
             if effect_id in {FBP_EFFECT_CROP, FBP_EFFECT_EXTEND}:
                 hint_row(
                     box,
@@ -25967,7 +26003,9 @@ def fbp_draw_effect_settings(
             box.label(text="Enable Follow Source Transform for spatial track mattes", icon="BLANK1")
     if str(definition.get("stage", "") or "") == "MASK":
         operation = fbp_mask_stack_operation(rig, effect_id)
-        operation_row = box.row(align=True)
+        # One block: where the operation is a modifier input, its hint goes too.
+        operation_box = box.column(align=False)
+        operation_row = operation_box.row(align=True)
         operation_row.label(text="Stack Operation", icon="SELECT_INTERSECT")
         operation_menu = operation_row.operator_menu_enum(
             "fbp.set_mask_stack_operation",
@@ -25980,7 +26018,7 @@ def fbp_draw_effect_settings(
             }.get(operation, "Intersect"),
         )
         operation_menu.mask_effect_id = effect_id
-        hint = box.row(align=False)
+        hint = operation_box.row(align=False)
         hint.enabled = False
         hint.label(
             text=(
