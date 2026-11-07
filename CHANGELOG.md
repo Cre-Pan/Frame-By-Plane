@@ -80,6 +80,13 @@ All notable public changes to Frame By Plane are documented here.
 - The handle overlay, transform box, Pose Mode handles and Solo badge read the UI scale through the shared helper, and the panel width helper no longer keeps a cache that cost more than the arithmetic it saved.
 - Removed code left without callers by the Modifiers-panel move and earlier passes: the panel-draw request for the Modifiers tab pin, two unused caches, a write-only timestamp in the effect update queue, unused imports, variables and `global` statements.
 - The two copies of the 8.2.1 release notes (inside the add-on and in `release-notes/`) had drifted apart; they are one text again.
+- The Add Effect, Image, Mesh, Mask, Frame By Plane Effects and Effect Presets menus open a search as soon as you type, like the Add Modifier menus.
+- **Frame By Plane Diagnostics**: Project Doctor and Performance Dashboard are sub-panels of one Output panel instead of two. The Performance Dashboard is a developer tool and shows only when Preferences > Diagnostics and Repair > **Performance Dashboard** is on.
+- Removed the Blender 5.3 Timeline backport, which patched Blender's own playback header and time editors; it is outside the add-on's scope and Blender 5.3 has it natively.
+- `geometry_nodes.py` went from about 37,700 to 25,400 lines: effect drawing moved to `effect_ui.py` (one drawing function per effect instead of a 2,100-line if/elif chain) and the effect stack operators to `effect_operators.py`. Effect properties bind their update callback at registration, which removes 764 one-line callbacks from `properties.py`. Names, keyframe paths and saved files are unchanged.
+- List draw failures, a layer copy that cannot keep its plane's offset and a failed Layer Sets re-registration are now reported instead of failing silently.
+- Every pull request runs the Blender 5.2 background regression suite and the feature gate on Linux; the four-platform release gate keeps its label.
+- Dated audits and the post-7.1 roadmap moved to `docs/archive/`.
 
 ### Lattice puppet pins
 
