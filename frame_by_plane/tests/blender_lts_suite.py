@@ -4161,8 +4161,11 @@ def test_irreversible_action_contracts(_module):
     preset_path = preset_dir / "effect_presets.json"
     preset_payload = '{"PIXELATE": {"Audit": {"size": 4}}}\n'
     preset_path.write_text(preset_payload, encoding="utf-8")
-    original_preset_path = geometry_nodes._fbp_user_preset_path
-    geometry_nodes._fbp_user_preset_path = lambda: preset_path
+    # The preset library lives in effect_operators (re-exported by
+    # geometry_nodes); patch it where its callers look it up.
+    effect_operators = importlib.import_module(f"{PACKAGE}.effect_operators")
+    original_preset_path = effect_operators._fbp_user_preset_path
+    effect_operators._fbp_user_preset_path = lambda: preset_path
     try:
         backup_ok, backup_path = geometry_nodes._fbp_backup_user_preset_library()
         assert backup_ok and backup_path is not None, (backup_ok, backup_path)
@@ -4195,13 +4198,13 @@ def test_irreversible_action_contracts(_module):
         # a deterministic write failure on every supported operating system.
         invalid_parent = preset_dir / "not-a-directory"
         invalid_parent.write_text("FBP audit blocker", encoding="utf-8")
-        geometry_nodes._fbp_user_preset_path = lambda: invalid_parent / "effect_presets.json"
+        effect_operators._fbp_user_preset_path = lambda: invalid_parent / "effect_presets.json"
         try:
             assert not geometry_nodes._fbp_save_user_presets(
                 {"PIXELATE": {"Must Not Replace": {"size": 99}}}
             )
         finally:
-            geometry_nodes._fbp_user_preset_path = lambda: preset_path
+            effect_operators._fbp_user_preset_path = lambda: preset_path
 
         preset_path.write_text("{still corrupted", encoding="utf-8")
         backup_path.write_text("{backup corrupted", encoding="utf-8")
@@ -4211,7 +4214,7 @@ def test_irreversible_action_contracts(_module):
         )
         assert not prepared and "corrupt" in prepare_error.lower(), prepare_error
     finally:
-        geometry_nodes._fbp_user_preset_path = original_preset_path
+        effect_operators._fbp_user_preset_path = original_preset_path
 
     assert "Blender Undo cannot restore" in geometry_nodes.FBP_OT_SaveEffectPreset.bl_description
     assert "Blender Undo cannot restore" in geometry_nodes.FBP_OT_DeleteEffectPreset.bl_description
