@@ -20,7 +20,7 @@ from .registration import (
     register_scene_library,
     unregister_scene_library,
 )
-from .runtime import FBP_DATA_ERRORS, fbp_request_redraw
+from .runtime import FBP_DATA_ERRORS, fbp_request_redraw, fbp_warn
 from .shortcut_runtime import primary_modifier_name, primary_modifier_pressed
 from .ui_style import configure_layout, hint_row, section_header
 from .ui_list_state import mark_ui_list_draw
@@ -636,8 +636,9 @@ def register():
             try:
                 register_classes((previous_member_type, previous_set_type))
                 _register_scene_properties(previous_set_type)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Last-resort path after a failed reload: never raise, but say so.
+                fbp_warn("Could not restore the previous Layer Sets registration", exc)
 
     register_scene_library(
         _registered_classes,

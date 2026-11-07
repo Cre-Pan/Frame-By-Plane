@@ -15,6 +15,7 @@ from functools import wraps
 import time
 import uuid
 
+from .runtime import fbp_warn_once
 from .shortcut_runtime import primary_modifier_pressed
 
 _UI_STATE_ERRORS = (
@@ -424,6 +425,16 @@ def _normalize_ui_list_filter_result(instance, data, propname, result):
     return flags, new_order
 
 
+def _warn_ui_list_error(cls, callback, exc):
+    """Report a list callback failure once, instead of only an "Unavailable" row."""
+    name = getattr(cls, "__name__", "UIList")
+    fbp_warn_once(
+        f"ui_list:{name}:{callback}:{type(exc).__name__}",
+        f"{name}.{callback} failed; the list shows a fallback until it is fixed",
+        exc,
+    )
+
+
 def harden_ui_list_class(cls):
     """Wrap one UIList class with fail-closed draw and filter boundaries.
 
@@ -442,8 +453,9 @@ def harden_ui_list_class(cls):
             mark_ui_list_draw()
             try:
                 return draw_item(self, context, layout, data, item, icon, active_data, active_propname, index)
-            except Exception:
+            except Exception as exc:
                 _UI_LIST_RUNTIME_ERRORS += 1
+                _warn_ui_list_error(cls, "draw_item", exc)
                 try:
                     layout.label(text="Unavailable", icon="ERROR")
                 except Exception:
@@ -459,8 +471,9 @@ def harden_ui_list_class(cls):
             mark_ui_list_draw()
             try:
                 return draw_filter(self, context, layout)
-            except Exception:
+            except Exception as exc:
                 _UI_LIST_RUNTIME_ERRORS += 1
+                _warn_ui_list_error(cls, "draw_filter", exc)
                 # A broken search/sort header must not suppress the complete
                 # list or abort the containing panel. The row callbacks remain
                 # available and Blender can redraw normally on the next event.
@@ -475,8 +488,9 @@ def harden_ui_list_class(cls):
             mark_ui_list_draw()
             try:
                 result = filter_items(self, context, data, propname)
-            except Exception:
+            except Exception as exc:
                 _UI_LIST_RUNTIME_ERRORS += 1
+                _warn_ui_list_error(cls, "filter_items", exc)
                 count = _safe_ui_list_count(data, propname)
                 return _safe_ui_list_fallback_flags(self, count), []
             try:
