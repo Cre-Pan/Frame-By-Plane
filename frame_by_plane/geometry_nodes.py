@@ -28442,6 +28442,7 @@ class FBP_OT_AddEffectFamily(Operator):
 class FBP_MT_AddEffect(Menu):
     bl_idname = "FBP_MT_add_effect"
     bl_label = "Add Effect"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -29217,6 +29218,7 @@ class FBP_OT_RemoveGenericMeshEffects(Operator):
 class FBP_MT_GenericMeshEffects(Menu):
     bl_idname = "FBP_MT_generic_mesh_effects"
     bl_label = "Frame By Plane Mesh Effects"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -29248,6 +29250,7 @@ class FBP_MT_GenericMeshEffects(Menu):
 class FBP_MT_ObjectEffects2D(Menu):
     bl_idname = "FBP_MT_object_effects_2d"
     bl_label = "Image Effects"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         if not _fbp_selected_rigs(context):
@@ -29259,6 +29262,7 @@ class FBP_MT_ObjectEffects2D(Menu):
 class FBP_MT_ObjectEffects3D(Menu):
     bl_idname = "FBP_MT_object_effects_3d"
     bl_label = "Mesh Effects"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         if not _fbp_selected_rigs(context):
@@ -29270,6 +29274,7 @@ class FBP_MT_ObjectEffects3D(Menu):
 class FBP_MT_ObjectMasks(Menu):
     bl_idname = "FBP_MT_object_masks"
     bl_label = "Mask"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         if not _fbp_selected_rigs(context):
@@ -29283,6 +29288,7 @@ class FBP_MT_ObjectImageEffects(Menu):
 
     bl_idname = "FBP_MT_object_image_effects"
     bl_label = "Image"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -29327,6 +29333,7 @@ class FBP_MT_PieEffectDomains(Menu):
 class FBP_MT_ObjectEffects(Menu):
     bl_idname = "FBP_MT_object_effects"
     bl_label = "Frame By Plane Effects"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -31835,6 +31842,7 @@ def _fbp_apply_preset_values(rig, effect_id, values, *, instance_id=""):
 class FBP_MT_EffectPresets(Menu):
     bl_idname = "FBP_MT_effect_presets"
     bl_label = "Effect Presets"
+    bl_options = {"SEARCH_ON_KEY_PRESS"}
 
     def draw(self, context):
         layout = configure_layout(self.layout)

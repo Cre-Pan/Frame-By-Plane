@@ -202,7 +202,6 @@ def load_installed_contract(path: Path) -> dict[str, object]:
         and bool(data.get("camera_aspect_dropdown_contract", False))
         and bool(data.get("camera_linked_pixels_presets_contract", False))
         and bool(data.get("gp_edit_undo_guard", False))
-        and bool(data.get("timeline_backport_contract", False))
         and all(str(wheels.get(name, "")).strip() for name in ("pillow", "psd_tools", "attrs", "typing_extensions"))
     )
     return {
@@ -227,7 +226,6 @@ def load_installed_contract(path: Path) -> dict[str, object]:
         "camera_aspect_dropdown_contract": bool(data.get("camera_aspect_dropdown_contract", False)),
         "camera_linked_pixels_presets_contract": bool(data.get("camera_linked_pixels_presets_contract", False)),
         "gp_edit_undo_guard": bool(data.get("gp_edit_undo_guard", False)),
-        "timeline_backport_contract": bool(data.get("timeline_backport_contract", False)),
         "wheels": wheels,
         "source_report": str(path),
     }

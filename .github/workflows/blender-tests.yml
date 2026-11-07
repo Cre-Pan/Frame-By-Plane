@@ -1,0 +1,91 @@
+name: Blender 5.2 regression tests
+
+# Runs the background regression suite in a real Blender 5.2 on every pull
+# request and every push to main, so a broken effect, panel or handler shows
+# up on the PR instead of in a hand-made build. The full four-platform release
+# gate (packages, install smoke, interactive UI) stays in
+# blender-5-2-release-gate.yml behind the "release-gate" label and tags.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blender-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-background:
+    name: Linux background suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BLENDER_VERSION: "5.2.0"
+      BLENDER_ASSET: blender-5.2.0-linux-x64.tar.xz
+      FBP_CI_RESULTS: ${{ github.workspace }}/work/fbp-results
+      BLENDER_USER_CONFIG: ${{ github.workspace }}/work/fbp-user/config
+      BLENDER_USER_SCRIPTS: ${{ github.workspace }}/work/fbp-user/scripts
+      FBP_TEST_SKIP_NATIVE_RENDER: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Linux runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libx11-6 libxi6 libxfixes3 libxrender1 libxkbcommon0 libsm6 libgl1
+
+      - name: Cache Blender
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/blender
+          key: blender-${{ env.BLENDER_VERSION }}-linux-x64
+
+      - name: Download and verify Blender
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$BLENDER_ASSET"
+          checksums="$RUNNER_TEMP/blender-$BLENDER_VERSION.sha256"
+          base="https://download.blender.org/release/Blender5.2"
+          curl --fail --location --retry 3 "$base/$BLENDER_ASSET" --output "$archive"
+          curl --fail --location --retry 3 "$base/blender-$BLENDER_VERSION.sha256" --output "$checksums"
+          python tools/verify_blender_download.py "$archive" "$checksums"
+          mkdir -p "$RUNNER_TEMP/blender"
+          tar -xf "$archive" -C "$RUNNER_TEMP/blender" --strip-components=1
+          rm "$archive"
+
+      - name: Run background regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$FBP_CI_RESULTS" "$BLENDER_USER_CONFIG" "$BLENDER_USER_SCRIPTS"
+          python frame_by_plane/tests/run_blender_lts.py \
+            --blender "$RUNNER_TEMP/blender/blender" \
+            --output "$FBP_CI_RESULTS/background.json" \
+            --background-timeout 2400
+
+      - name: Run focused feature regressions
+        shell: bash
+        run: python frame_by_plane/tests/run_7_2_feature_gate.py --blender "$RUNNER_TEMP/blender/blender"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-background-results
+          path: work/fbp-results
+          if-no-files-found: ignore

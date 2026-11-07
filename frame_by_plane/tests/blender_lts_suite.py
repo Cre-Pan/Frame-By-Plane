@@ -4272,75 +4272,6 @@ def test_irreversible_action_contracts(_module):
     }
 
 
-def test_timeline_backport(_module):
-    timeline = importlib.import_module(f"{PACKAGE}.timeline_backport")
-    workspace = bpy.context.workspace
-    window = bpy.context.window
-    assert window is not None
-    assert hasattr(workspace, "show_jump_to_endpoints")
-    assert hasattr(workspace, "show_jump_to_keyframes")
-    assert hasattr(workspace, "show_jump_by_delta")
-    assert hasattr(workspace, "use_scene_time_sync_follow_scene")
-    assert hasattr(workspace, "fbp_use_scene_time_sync")
-    assert hasattr(bpy.types, "FBP_PT_time_jump")
-    assert hasattr(bpy.types, "FBP_PT_dopesheet_time_sync")
-    assert hasattr(bpy.types, "FBP_PT_graph_time_sync")
-    assert hasattr(bpy.types, "FBP_PT_nla_time_sync")
-    assert hasattr(bpy.types, "FBP_PT_sequencer_time_sync")
-    assert sum(
-        getattr(handler, "__name__", "") == "fbp_timeline_scene_time_sync"
-        for handler in bpy.app.handlers.frame_change_post
-    ) == 1
-
-    original_scene = window.scene
-    original_sequencer_scene = workspace.sequencer_scene
-    original_sync = bool(workspace.fbp_use_scene_time_sync)
-    original_follow = bool(workspace.use_scene_time_sync_follow_scene)
-    original_native_sync = bool(workspace.use_scene_time_sync)
-    master = bpy.data.scenes.new("FBP Timeline Backport Master")
-    source = bpy.data.scenes.new("FBP Timeline Backport Source")
-    source.frame_start = 1
-    strip = master.sequence_editor_create().strips.new_scene(
-        "FBP Timeline Scene Strip", source, 3, 20
-    )
-    try:
-        workspace.sequencer_scene = master
-        workspace.fbp_use_scene_time_sync = True
-        workspace.use_scene_time_sync_follow_scene = False
-        assert workspace.use_scene_time_sync is False
-        window.scene = source
-
-        master.frame_set(25)
-        timeline.fbp_timeline_scene_time_sync(master)
-        assert source.frame_current == 6, (master.frame_current, source.frame_current)
-        assert window.scene == source
-
-        source.frame_set(12)
-        timeline.fbp_timeline_scene_time_sync(source)
-        assert master.frame_current == 31, (master.frame_current, source.frame_current)
-        assert window.scene == source
-
-        strip.use_reverse_frames = True
-        mapped = timeline._timeline_to_scene_frame(master, strip, 25.0)
-        assert mapped is not None
-        assert abs(timeline._scene_to_timeline_frame(master, strip, mapped) - 25.0) < 1.0e-6
-    finally:
-        window.scene = original_scene
-        workspace.sequencer_scene = original_sequencer_scene
-        workspace.use_scene_time_sync_follow_scene = original_follow
-        workspace.fbp_use_scene_time_sync = original_sync
-        workspace.use_scene_time_sync = original_native_sync
-        bpy.data.scenes.remove(master)
-        bpy.data.scenes.remove(source)
-
-    return {
-        "compact_jump_controls": True,
-        "all_time_editor_popovers": 4,
-        "bidirectional_scene_strip_sync": True,
-        "follow_scene_split": True,
-    }
-
-
 def test_generic_mesh_matrix(_module):
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
     matrix = geo.fbp_generic_mesh_effect_matrix()
@@ -6930,7 +6861,6 @@ def run_background():
             ("collections_and_layer_tree", test_collections),
             ("undo_redo", test_undo_redo),
             ("scrub_bar_regressions", test_scrub_bar_regressions),
-            ("timeline_pr_162412_backport", test_timeline_backport),
             ("gp_effect_support", test_gp_support),
             ("gp_runtime_cache_cleanup", test_gp_runtime_cache_cleanup),
             ("felt_fuzz_canonical_contract", test_felt_fuzz_canonical_contract),

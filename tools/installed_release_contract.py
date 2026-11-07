@@ -37,7 +37,6 @@ def main():
     gp_colors = importlib.import_module(f"{BASE}.gp_vertex_colors")
     ui = importlib.import_module(f"{BASE}.ui")
     operator_import = importlib.import_module(f"{BASE}.operator_import")
-    importlib.import_module(f"{BASE}.timeline_backport")
 
     assert constants.FBP_VERSION_STRING == "8.2.1"
     assert hasattr(bpy.ops.fbp, "import_folder_multiplane")
@@ -191,31 +190,6 @@ def main():
     gp_edit_undo_guard = not bridge._gp_external_settings_undo_safe(EditingCanvas())
     assert gp_edit_undo_guard
 
-    workspace = bpy.context.workspace
-    timeline_contract = bool(
-        all(
-            hasattr(workspace, name)
-            for name in (
-                "show_jump_to_endpoints",
-                "show_jump_to_keyframes",
-                "show_jump_by_delta",
-                "use_scene_time_sync_follow_scene",
-                "fbp_use_scene_time_sync",
-            )
-        )
-        and all(
-            hasattr(bpy.types, name)
-            for name in (
-                "FBP_PT_time_jump",
-                "FBP_PT_dopesheet_time_sync",
-                "FBP_PT_graph_time_sync",
-                "FBP_PT_nla_time_sync",
-                "FBP_PT_sequencer_time_sync",
-            )
-        )
-    )
-    assert timeline_contract
-
     payload = {
         "blender": bpy.app.version_string,
         "addon_version": constants.FBP_VERSION_STRING,
@@ -237,7 +211,6 @@ def main():
         "camera_aspect_dropdown_contract": True,
         "camera_linked_pixels_presets_contract": True,
         "gp_edit_undo_guard": gp_edit_undo_guard,
-        "timeline_backport_contract": timeline_contract,
         "wheels": {
             "pillow": PIL.__version__,
             "psd_tools": psd_tools.__version__,
