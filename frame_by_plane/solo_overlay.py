@@ -11,10 +11,10 @@ from mathutils.geometry import tessellate_polygon
 from .grease_pencil_bridge import any_gp_canvas_solo, gp_canvas_solo_active
 from .fbp_index import iter_scene_gp_canvases
 from .runtime import FBP_DATA_ERRORS
+from .common import ui_scale as _ui_scale, uniform_color_shader as _shader
 
 
 _DRAW_HANDLE = None
-_SHADER = None
 
 # Same translucent look as the navigation buttons on the viewport's right side.
 _BADGE_FILL = (0.0, 0.0, 0.0, 0.24)
@@ -130,7 +130,12 @@ def solo_layer_count(scene):
         return 0
     count = 0
     try:
-        count += sum(1 for item in getattr(scene, "fbp_layers", ()) or () if bool(getattr(item, "solo", False)))
+        layers = getattr(scene, "fbp_layers", None)
+        if layers:
+            # One native read for every row; this runs on each viewport redraw.
+            flags = [False] * len(layers)
+            layers.foreach_get("solo", flags)
+            count += sum(1 for flag in flags if flag)
     except FBP_DATA_ERRORS:
         pass
     try:
@@ -142,13 +147,6 @@ def solo_layer_count(scene):
     except FBP_DATA_ERRORS:
         pass
     return count
-
-
-def _shader():
-    global _SHADER
-    if _SHADER is None:
-        _SHADER = gpu.shader.from_builtin("UNIFORM_COLOR")
-    return _SHADER
 
 
 def _fill(vertices, color, kind="TRI_FAN"):
@@ -223,10 +221,7 @@ def _draw_badge():
         return
     if count <= 0 and not local_view:
         return
-    try:
-        scale = float(context.preferences.system.ui_scale) or 1.0
-    except FBP_DATA_ERRORS:
-        scale = 1.0
+    scale = _ui_scale(context)
     text = f"SOLO  {count}" if count > 1 else "SOLO"
     font_id = 0
     blf.size(font_id, 12.0 * scale)
@@ -269,10 +264,9 @@ def register():
 
 
 def unregister():
-    global _DRAW_HANDLE, _SHADER
+    global _DRAW_HANDLE
     handle = _DRAW_HANDLE
     _DRAW_HANDLE = None
-    _SHADER = None
     if handle is not None:
         try:
             bpy.types.SpaceView3D.draw_handler_remove(handle, "WINDOW")

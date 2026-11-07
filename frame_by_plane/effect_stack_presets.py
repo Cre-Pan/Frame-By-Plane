@@ -25,12 +25,7 @@ from .geometry_nodes import (
     fbp_normalize_effect_id,
 )
 from .layers import fbp_set_ui_units_x, get_selected_or_active_rigs
-from .registration import (
-    register_classes,
-    register_interactive_classes,
-    unregister_classes,
-    unregister_type_properties,
-)
+from .registration import register_scene_library, unregister_scene_library
 from .runtime import FBP_DATA_ERRORS
 from .ui_style import configure_layout, hint_row
 from .ui_list_state import mark_ui_list_draw
@@ -42,6 +37,7 @@ from .interface_preferences import (
     fbp_uilist_is_spacer,
     fbp_uilist_visible_columns,
 )
+from .common import canonical_json as _canonical_json, safe_text as _safe_text, unique_name
 
 
 EFFECT_STACK_PRESET_FORMAT = "FRAME_BY_PLANE_EFFECT_STACK_PRESET"
@@ -54,22 +50,6 @@ _CATEGORY_ITEMS = (
     ("MASK", "Mask", "Mask-focused stack"),
     ("CUSTOM", "Custom", "User-defined category"),
 )
-
-
-def _safe_text(value):
-    try:
-        return str(value or "").strip()
-    except FBP_DATA_ERRORS:
-        return ""
-
-
-def _canonical_json(value):
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
 
 
 def _decode_stack(raw):
@@ -124,18 +104,10 @@ def _active_preset(scene):
 def _unique_name(scene, base="Effect Stack Preset"):
     base = _safe_text(base) or "Effect Stack Preset"
     try:
-        existing = {
-            _safe_text(item.name).casefold()
-            for item in scene.fbp_effect_stack_presets
-        }
+        existing = [_safe_text(item.name) for item in scene.fbp_effect_stack_presets]
     except FBP_DATA_ERRORS:
-        existing = set()
-    if base.casefold() not in existing:
-        return base
-    number = 2
-    while f"{base} {number}".casefold() in existing:
-        number += 1
-    return f"{base} {number}"
+        existing = ()
+    return unique_name(existing, base, casefold=True)
 
 
 def _store_stack(preset, stack, *, source_name=""):
@@ -618,12 +590,14 @@ class FBP_UL_EffectStackPresets(UIList):
                 apply.mode = "REPLACE"
 
 
-def draw_effect_stack_presets_ui(layout, context, selected_rigs):
+def draw_effect_stack_presets_ui(layout, context, selected_rigs, *, collapsible=True):
     scene = getattr(context, "scene", None)
     if scene is None or not hasattr(scene, "fbp_effect_stack_presets"):
         return
     presets = scene.fbp_effect_stack_presets
     try:
+        if not collapsible:
+            raise TypeError
         header, body = layout.panel(
             "FBP_effect_stack_presets_section",
             default_closed=True,
@@ -756,44 +730,21 @@ def _register_scene_properties():
     )
 
 
+_SCENE_PROPERTIES = ("fbp_effect_stack_presets", "fbp_effect_stack_presets_index")
+
+
 def register():
-    unregister_type_properties(
-        bpy.types.Scene,
-        (
-            "fbp_effect_stack_presets",
-            "fbp_effect_stack_presets_index",
-        ),
+    register_scene_library(
+        _registered_classes,
+        _model_classes,
+        _interactive_classes,
+        _SCENE_PROPERTIES,
+        _register_scene_properties,
     )
-    _registered_classes.clear()
-    try:
-        _registered_classes.extend(register_classes(_model_classes))
-        _register_scene_properties()
-        _registered_classes.extend(
-            register_interactive_classes(_interactive_classes)
-        )
-    except Exception:
-        unregister_type_properties(
-            bpy.types.Scene,
-            (
-                "fbp_effect_stack_presets",
-                "fbp_effect_stack_presets_index",
-            ),
-        )
-        unregister_classes(tuple(_registered_classes))
-        _registered_classes.clear()
-        raise
 
 
 def unregister():
-    unregister_type_properties(
-        bpy.types.Scene,
-        (
-            "fbp_effect_stack_presets",
-            "fbp_effect_stack_presets_index",
-        ),
-    )
-    unregister_classes(tuple(_registered_classes))
-    _registered_classes.clear()
+    unregister_scene_library(_registered_classes, _SCENE_PROPERTIES)
 
 
 __all__ = (

@@ -151,6 +151,9 @@ def _resolve_cache_key(obj, context=None):
             bool(getattr(grandparent, "is_fbp_control", False)) if grandparent is not None else False,
             _idprop_string(obj, "fbp_parent_rig_name"),
             _idprop_string(obj, "fbp_lattice_owner"),
+            _idprop_string(obj, "fbp_lattice_pin_owner"),
+            _idprop_string(obj, "fbp_lattice_corner_owner"),
+            _idprop_string(obj, "fbp_lattice_bones_owner"),
             _idprop_string(obj, "fbp_effect_control_owner"),
             bool(obj.get("fbp_gradient_controller", False)) if obj is not None else False,
             _idprop_string(obj, "fbp_gradient_controller_owner"),
@@ -1369,8 +1372,16 @@ def iter_fbp_rigs_in_collection(collection, recursive=True):
 def get_layer_item_for_rig(context, rig):
     if not rig:
         return None
+    try:
+        rig_name = str(rig.name)
+    except FBP_DATA_ERRORS:
+        return None
     for item in context.scene.fbp_layers:
         try:
+            # ``item.obj`` is a name lookup in bpy.data; only the row that
+            # stores this name can resolve to ``rig``.
+            if str(item.obj_name or "") != rig_name:
+                continue
             if item.obj == rig:
                 return item
         except ReferenceError:
@@ -2158,6 +2169,21 @@ def _fbp_resolve_rig_from_any_object_uncached(obj, context=None):
                         return owner
             except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
+        for id_key, owner_key in (
+            ("fbp_lattice_pin_id", "fbp_lattice_pin_owner"),
+            ("fbp_lattice_corner", "fbp_lattice_corner_owner"),
+            ("fbp_lattice_bones_owner", "fbp_lattice_bones_owner"),
+        ):
+            if not str(obj.get(id_key, "") or ""):
+                continue
+            # Lattice pins, corner handles and bones are parented to their layer rig.
+            owner = getattr(obj, "parent", None)
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
+            owner_name = str(obj.get(owner_key, "") or "")
+            owner = bpy.data.objects.get(owner_name) if owner_name else None
+            if owner and getattr(owner, "is_fbp_control", False):
+                return owner
         if str(getattr(obj, "type", "") or "") == "LATTICE":
             # Parenting is the native ownership contract and survives rig
             # renames. The readable name tag is only a repair fallback. Older
@@ -2714,9 +2740,18 @@ def fbp_layer_depth_value_from_cache(rig, depth_cache=None):
 def _safe_layer_obj(layer_item):
     try:
         obj = layer_item.obj
-        if obj and object_in_scene(obj):
+        if not obj:
+            return None
+        # ``layer_item.obj`` already resolved the object through
+        # ``bpy.data.objects``; only Scene membership is left to check.
+        # These getters run for every drawn Layers row and column.
+        context = bpy.context
+        scene = context.scene if context else None
+        if not scene:
             return obj
-    except ReferenceError:
+        if scene.objects.get(obj.name) == obj:
+            return obj
+    except FBP_DATA_ERRORS:
         pass
     return None
 

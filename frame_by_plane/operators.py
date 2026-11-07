@@ -9,6 +9,7 @@ import bpy
 from .registration import register_classes, unregister_classes
 from .shortcut_runtime import (
     addon_keymap,
+    keyconfig_triplet,
     refresh_keymap_registration,
     primary_modifier_kwargs,
     remove_matching_keymap_items,
@@ -120,6 +121,7 @@ from .operator_sequence import (
     FBP_OT_SetColorPlaneMode,
     FBP_OT_GradientController,
     FBP_OT_Transform,
+    FBP_OT_ResetLayerTransform,
     FBP_OT_PopupTransform,
     FBP_OT_UpdateEmission,
     FBP_OT_UpdateOpacity,
@@ -152,9 +154,12 @@ from .operator_render import (
     FBP_OT_StopBackgroundRender,
     FBP_OT_BackgroundRenderStatus,
 )
+from .alpha_pick import FBP_OT_SelectThroughAlpha
+from .rig_gesture_select import FBP_GESTURE_BINDINGS, FBP_OT_GestureSelect
 from .operator_procedural import (
     FBP_OT_CreateColorPlane,
     FBP_OT_ResetCrop,
+    FBP_OT_CropAlpha,
     FBP_OT_ResetExtend,
     FBP_OT_FocusCropExtend,
     FBP_OT_PopupCrop,
@@ -199,10 +204,13 @@ def _register_keymaps():
 
     owned_ids = {
         'fbp.duplicate_or_default',
+        'fbp.delete_or_default',
         'fbp.create_layer_collection',
         'fbp.ungroup_selected_layers',
         'fbp.group_or_pass',
         'fbp.ungroup_or_pass',
+        'fbp.select_through_alpha',
+        'fbp.gesture_select',
     }
     remove_matching_keymap_items(
         keymap,
@@ -217,6 +225,18 @@ def _register_keymaps():
             shift=True,
         )
         _addon_keymaps.append((keymap, item))
+
+    if shortcut_enabled('shortcut_delete_layer'):
+        # X asks for confirmation and Delete does not, as in Blender. Both
+        # pass through to Blender's delete when no FBP layer is selected.
+        for key, confirm in (('X', True), ('DEL', False)):
+            item = keymap.keymap_items.new(
+                'fbp.delete_or_default',
+                type=key,
+                value='PRESS',
+            )
+            item.properties.confirm = confirm
+            _addon_keymaps.append((keymap, item))
 
     if shortcut_enabled('shortcut_group_layers'):
         group_item = keymap.keymap_items.new(
@@ -234,6 +254,64 @@ def _register_keymaps():
             **primary_modifier_kwargs(shift=True),
         )
         _addon_keymaps.append((keymap, ungroup_item))
+
+
+    if shortcut_enabled('shortcut_click_through_alpha'):
+        select_mouse = 'LEFT'
+        try:
+            keyconfig = bpy.context.window_manager.keyconfigs.active
+            select_mouse = str(getattr(getattr(keyconfig, 'preferences', None), 'select_mouse', 'LEFT') or 'LEFT')
+        except (AttributeError, ReferenceError, RuntimeError):
+            select_mouse = 'LEFT'
+        mouse = 'RIGHTMOUSE' if select_mouse == 'RIGHT' else 'LEFTMOUSE'
+        value = 'PRESS' if mouse == 'RIGHTMOUSE' else 'CLICK'
+        for toggle in (False, True):
+            pick_item = keymap.keymap_items.new(
+                'fbp.select_through_alpha', type=mouse, value=value, shift=toggle,
+            )
+            pick_item.properties.toggle = toggle
+            _addon_keymaps.append((keymap, pick_item))
+        _register_gesture_keymaps()
+
+
+def _register_gesture_keymaps():
+    """Box/lasso bindings that also select layers without a visible rig.
+
+    They mirror Blender's own bindings; with no rig-less layer in view the
+    operator passes the event through, so Blender's gesture runs as before.
+    """
+    _window_manager, addon_config, default_config = keyconfig_triplet()
+    if addon_config is None:
+        return
+    keymaps = {}
+    for name, gesture, event_type, value, shift, ctrl, mode in FBP_GESTURE_BINDINGS:
+        keymap = keymaps.get(name)
+        if keymap is None:
+            if name == 'Object Mode':
+                keymap = addon_keymap(name, fallback_space_type='VIEW_3D', fallback_region_type='WINDOW')
+            else:
+                reference = default_config.keymaps.get(name) if default_config else None
+                if reference is None:
+                    continue
+                try:
+                    keymap = addon_config.keymaps.new(
+                        name=name, space_type=reference.space_type,
+                        region_type=reference.region_type, tool=bool(getattr(reference, 'is_tool', True)),
+                    )
+                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                    keymap = None
+            if keymap is None:
+                continue
+            remove_matching_keymap_items(
+                keymap, lambda item: str(getattr(item, 'idname', '') or '') == 'fbp.gesture_select',
+            )
+            keymaps[name] = keymap
+        item = keymap.keymap_items.new(
+            'fbp.gesture_select', type=event_type, value=value, shift=shift, ctrl=ctrl,
+        )
+        item.properties.gesture = gesture
+        item.properties.mode = mode
+        _addon_keymaps.append((keymap, item))
 
 
 def _unregister_keymaps():
@@ -312,6 +390,7 @@ classes = (
     FBP_OT_SetColorPlaneMode,
     FBP_OT_GradientController,
     FBP_OT_Transform,
+    FBP_OT_ResetLayerTransform,
     FBP_OT_PopupTransform,
     FBP_OT_UpdateEmission,
     FBP_OT_UpdateOpacity,
@@ -352,6 +431,9 @@ classes = (
     FBP_OT_BackgroundRenderStatus,
     FBP_OT_CreateColorPlane,
     FBP_OT_ResetCrop,
+    FBP_OT_CropAlpha,
+    FBP_OT_SelectThroughAlpha,
+    FBP_OT_GestureSelect,
     FBP_OT_ResetExtend,
     FBP_OT_FocusCropExtend,
     FBP_OT_PopupCrop,

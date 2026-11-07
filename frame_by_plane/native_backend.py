@@ -1,5 +1,6 @@
 """Blender native image/video backend for Frame by Plane layers."""
 
+import bisect
 import hashlib
 import json
 import os
@@ -1043,6 +1044,91 @@ def _runtime_sequence_is_available(mat):
     if not directory or not files:
         return False
     return len(_valid_files(directory, files)) == len(files)
+
+def fbp_native_playback_timing(mat):
+    """Return the playback cycle of one native sequence material.
+
+    Each entry is one position of the playback cycle in timing order (a
+    Ping-Pong cycle runs forward and back): the runtime frame number Blender
+    resolves for it, whether the row is a blank frame and how long it holds.
+    Returns ``None`` for movies, stills and incomplete metadata.
+    """
+    try:
+        if (
+            not mat
+            or not bool(mat.get("fbp_native_sequence", False))
+            or bool(mat.get("fbp_native_video", False))
+            or bool(mat.get("fbp_native_static_image", False))
+        ):
+            return None
+        row_count = max(1, int(mat.get("fbp_native_frame_count", 1) or 1))
+        default_duration = max(1, int(mat.get("fbp_native_duration_per_image", 1) or 1))
+        durations = _decode_json_values(
+            mat.get("fbp_native_item_durations_json", ""), row_count, default_duration, int,
+        )
+        loop_mode = str(mat.get("fbp_native_loop_mode", "NONE") or "NONE")
+        frame_start = int(mat.get("fbp_native_frame_start", 1) or 1)
+    except FBP_DATA_ERRORS:
+        return None
+    source_indices = _source_indices_from_material(mat, row_count)
+    if len(source_indices) != row_count or any(index < 0 for index in source_indices):
+        source_indices = list(range(row_count))
+    flags = _transparent_flags_from_material(mat, row_count) or [False] * row_count
+    frame_number_base = _material_frame_number_base(mat)
+    order, seq_durations = _timing_order_for_mode(row_count, durations, loop_mode)
+    ends = []
+    elapsed = 0
+    for duration in seq_durations:
+        elapsed += max(1, int(duration))
+        ends.append(elapsed)
+    return {
+        "files": tuple(frame_number_base + int(source_indices[row]) for row in order),
+        "visible": tuple(not bool(flags[row]) for row in order),
+        "ends": tuple(ends),
+        "loop_mode": loop_mode,
+        "frame_start": frame_start,
+    }
+
+
+def fbp_native_source_path_at_frame(rig, timeline_frame):
+    """Return the source file a native sequence shows at ``timeline_frame``.
+
+    Returns ``(path, visible)``. ``path`` is empty for stills, movies or
+    incomplete metadata; ``visible`` is False on blank (transparent) rows.
+    """
+    mat = _native_material_from_rig(rig)
+    timing = fbp_native_playback_timing(mat)
+    if not timing or not timing.get("files"):
+        return "", True
+    directory, files = _source_sequence_from_material(mat)
+    if not directory or not files:
+        return "", True
+    position = fbp_native_playback_position(timing, timeline_frame)
+    try:
+        source_index = int(timing["files"][position]) - _material_frame_number_base(mat)
+        visible = bool(timing["visible"][position])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return "", True
+    if source_index < 0 or source_index >= len(files):
+        return "", True
+    return os.path.abspath(str(_media_path(directory, files[source_index]))), visible
+
+
+def fbp_native_playback_position(timing, timeline_frame):
+    """Return the cycle position a native sequence shows at ``timeline_frame``.
+
+    Mirrors ``_source_index_at_elapsed``: frames before the start hold the
+    first position, one-shot playback holds the last one after the end.
+    """
+    ends = timing["ends"]
+    total = max(1, int(ends[-1]) if ends else 1)
+    elapsed = int(timeline_frame) - int(timing["frame_start"])
+    if timing["loop_mode"] in {'REPEAT', 'PINGPONG'}:
+        local = max(0, elapsed) % total
+    else:
+        local = max(0, min(elapsed, total - 1))
+    return min(len(ends) - 1, bisect.bisect_right(ends, local)) if ends else 0
+
 
 def fbp_native_source_sequence_from_rig(rig):
     """Return the immutable disk sequence stored by the current native backend."""
@@ -2558,22 +2644,47 @@ def _simplified_linear_key_values(key_frames, value_at):
     return dict(simplified)
 
 
+_TIMING_TABLES = {}
+
+
+def _timing_table(file_count, durations, loop_mode):
+    """``(order, cumulative ends, cycle length)`` for one timing, memoised.
+
+    Rebuilding the order for every timeline frame made baking a sequence's
+    offset curve cost rows x frames; the table is built once per timing.
+    """
+    raw = tuple(durations or ())[:file_count]
+    key = (file_count, raw, loop_mode)
+    table = _TIMING_TABLES.get(key)
+    if table is None:
+        order, seq_durations = _timing_order_for_mode(file_count, list(raw), loop_mode)
+        cumulative = []
+        acc = 0
+        for duration in seq_durations:
+            acc += max(1, int(duration))
+            cumulative.append(acc)
+        table = (tuple(order), tuple(cumulative), max(1, sum(seq_durations)))
+        if len(_TIMING_TABLES) >= 256:
+            _TIMING_TABLES.clear()
+        _TIMING_TABLES[key] = table
+    return table
+
+
 def _source_index_at_elapsed(elapsed, file_count, durations, loop_mode):
+    from bisect import bisect_right
+
     file_count = max(1, int(file_count or 1))
     if file_count <= 1:
         return 0
-    order, seq_durations = _timing_order_for_mode(file_count, durations, loop_mode)
-    cycle_total = max(1, sum(seq_durations))
     loop_mode = str(loop_mode or 'NONE')
+    order, cumulative, cycle_total = _timing_table(file_count, durations, loop_mode)
     if loop_mode in {'REPEAT', 'PINGPONG'}:
         local = int(max(0, elapsed)) % cycle_total
     else:
         local = int(max(0, min(elapsed, cycle_total - 1)))
-    acc = 0
-    for src, dur in zip(order, seq_durations, strict=True):
-        acc += max(1, int(dur))
-        if local < acc:
-            return max(0, min(file_count - 1, int(src)))
+    position = bisect_right(cumulative, local)
+    if position < len(order):
+        return max(0, min(file_count - 1, int(order[position])))
     return max(0, min(file_count - 1, int(order[-1] if order else 0)))
 
 
@@ -2621,6 +2732,44 @@ def _timing_transition_elapsed_values(file_count, durations, loop_mode, elapsed_
                 break
             yield elapsed
         cycle_start += cycle_total
+
+
+def _insert_linear_keys(id_data, data_path, key_values, set_key):
+    """Key ``{frame: value}`` on ``data_path`` of ``id_data``.
+
+    The first key goes through ``set_key`` (``keyframe_insert``), which
+    creates the action, slot and F-Curve the usual way. The rest are added to
+    that F-Curve in one block instead of one ``keyframe_insert`` each, which
+    took most of a sequence rebuild on long timelines. Callers set the
+    interpolation afterwards, as before.
+    """
+    items = sorted((int(frame), value) for frame, value in key_values.items())
+    if not items:
+        return
+    set_key(*items[0])
+    if len(items) == 1:
+        return
+    curve = None
+    if data_path:
+        matches = [
+            fcurve for fcurve in (fbp_action_fcurves(id_data) or ())
+            if fcurve.data_path == data_path
+        ]
+        if len(matches) == 1 and len(matches[0].keyframe_points) == 1:
+            curve = matches[0]
+    if curve is None:
+        for frame, value in items[1:]:
+            set_key(frame, value)
+        return
+    points = curve.keyframe_points
+    points.add(len(items) - 1)
+    flat = []
+    for frame, value in items:
+        flat.extend((float(frame), float(value)))
+    points.foreach_set("co", flat)
+    points.foreach_set("handle_left", flat)
+    points.foreach_set("handle_right", flat)
+    curve.update()
 
 
 def _install_frame_offset_keyframes(tex_node, *, file_count=1, frame_start=1, durations=None, loop_mode='NONE', frame_number_base=1, source_indices=None, image_user_start=None, hold_start=None, hold_end=None, scene=None):
@@ -2706,10 +2855,9 @@ def _install_frame_offset_keyframes(tex_node, *, file_count=1, frame_start=1, du
                 key_frames.add(timeline_frame)
 
         key_values = _simplified_linear_key_values(key_frames, offset_at)
-        for timeline_frame, value in key_values.items():
-            set_key(timeline_frame, value)
-
         tree = getattr(tex_node, "id_data", None)
+        _insert_linear_keys(tree, data_path, key_values, set_key)
+
         if data_path:
             for fcurve in fbp_action_fcurves(tree) or ():
                 if fcurve.data_path == data_path:

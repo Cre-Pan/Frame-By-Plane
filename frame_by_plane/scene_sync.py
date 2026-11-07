@@ -22,6 +22,7 @@ from .runtime import (
     fbp_normalize_obj_runtime_token,
     fbp_registration_busy,
 )
+from .fbp_index import ObjectNameLookup
 from .layers import (
     object_in_scene,
     is_fbp_layer_object,
@@ -357,13 +358,14 @@ def fbp_scene_fallback_candidates(scene):
 
     result = []
     seen = set()
+    lookup = ObjectNameLookup(scene)
 
     def add(obj):
         if not obj:
             return
         try:
             key = int(obj.as_pointer())
-            if key in seen or not object_in_scene(obj, scene):
+            if key in seen or not lookup.in_scene(obj):
                 return
             seen.add(key)
             result.append(obj)
@@ -382,7 +384,7 @@ def fbp_scene_fallback_candidates(scene):
 
     for item in list(getattr(scene, "fbp_layers", ()) or ()):
         try:
-            rig = getattr(item, "obj", None)
+            rig = lookup.layer_item_obj(item)
             add(rig)
             add(getattr(rig, "fbp_plane_target", None) if rig else None)
         except FBP_DATA_ERRORS:
@@ -390,9 +392,9 @@ def fbp_scene_fallback_candidates(scene):
 
     links = _fbp_get_known_links(scene)
     for rig_name, plane_names in links.items():
-        add(bpy.data.objects.get(str(rig_name)))
+        add(lookup.data_get(str(rig_name)))
         for plane_name in list(plane_names or ()):
-            add(bpy.data.objects.get(str(plane_name)))
+            add(lookup.data_get(str(plane_name)))
 
     root = getattr(scene, "collection", None)
 
@@ -1276,7 +1278,12 @@ def fbp_remove_plane_datablock(plane, *, pending_materials=None):
             return False
         mesh = getattr(plane, 'data', None)
         mats_to_remove = [mat for mat in mesh.materials if mat] if mesh else []
-        for child in tuple(getattr(plane, 'children', ()) or ()):
+        # Viewport handles follow the plane through a constraint, not as children.
+        followers = tuple(
+            obj for obj in bpy.data.objects
+            if obj.get('fbp_follow_plane') == plane.name and obj.parent is None
+        )
+        for child in tuple(getattr(plane, 'children', ()) or ()) + followers:
             try:
                 is_control = bool(child.get('fbp_is_effect_control', False))
                 is_bounds_guide = bool(child.get('fbp_is_crop_extend_bounds_guide', False))
@@ -1872,9 +1879,16 @@ def fbp_repair_default_duplicate_rig(rig, context=None):
         # Keep the same local offset/mesh state, but parent it to the duplicated rig.
         try:
             source_basis = source_plane.matrix_basis.copy()
-        except Exception:
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not read the duplicated plane's transform", exc)
             source_basis = None
         new_plane.parent = rig
+        try:
+            # The transform box can turn the rig while the plane stays: that
+            # offset lives in the parent inverse, so the copy keeps it too.
+            new_plane.matrix_parent_inverse = source_plane.matrix_parent_inverse.copy()
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not keep the duplicated plane's offset from its rig", exc)
         if source_basis is not None:
             new_plane.matrix_basis = source_basis
         else:
@@ -2053,22 +2067,25 @@ def fbp_known_links_have_deleted_rig(scene):
     if not links:
         return False
     identities = _fbp_get_known_link_identities(scene)
+    # This runs on every depsgraph update; resolve all names in one pass
+    # instead of two linear ``get`` scans per remembered layer.
+    lookup = ObjectNameLookup(scene)
     for rig_name in list(links.keys()):
         record = identities.get(rig_name, {})
         expected = _fbp_normalize_identity(record.get("rig_key")) if isinstance(record, dict) else None
-        rig = bpy.data.objects.get(rig_name)
+        rig = lookup.data_get(rig_name)
         try:
             if (
                 not rig
                 or not getattr(rig, "is_fbp_control", False)
-                or not object_in_scene(rig, scene)
+                or not lookup.in_scene(rig)
                 or (expected is not None and not _fbp_identity_matches(rig, expected))
             ):
                 plane_names = tuple(links.get(rig_name, ()) or ())
                 if plane_names:
                     quarantined = True
                     for plane_name in plane_names:
-                        plane = bpy.data.objects.get(str(plane_name))
+                        plane = lookup.data_get(str(plane_name))
                         if plane is not None and not bool(plane.get(FBP_ORPHAN_QUARANTINE_KEY, False)):
                             quarantined = False
                             break

@@ -7,7 +7,6 @@ automatically. No telemetry, project data or automatic messages are sent.
 
 from __future__ import annotations
 
-import re
 import textwrap
 import time
 from pathlib import Path
@@ -30,6 +29,7 @@ from .runtime import (
 )
 from .safe_tasks import schedule_once, scheduled_task_pending
 from .ui_style import configure_layout
+from .common import rna_pointer as _feedback_pointer
 
 
 _PREVIOUS_GPU_POPUP = globals().get("_ACTIVE_GPU_POPUP")
@@ -170,12 +170,6 @@ def _preferences(context=None):
         return fbp_get_addon_preferences(context)
     except FBP_DATA_ERRORS:
         return None
-
-
-def _version_tuple(value):
-    """Return the comparable ``major.minor.patch`` release key."""
-    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)", str(value or ""))
-    return tuple(int(part) for part in match.groups()) if match else ()
 
 
 def _install_stamp():
@@ -391,13 +385,6 @@ def _feedback_override(window, screen, area=None, region=None):
     if region is not None:
         override["region"] = region
     return override
-
-
-def _feedback_pointer(value):
-    try:
-        return int(value.as_pointer()) if value is not None else 0
-    except FBP_DATA_ERRORS:
-        return 0
 
 
 def _feedback_resolve_ui_context(window_key, area_key=0, region_key=0):

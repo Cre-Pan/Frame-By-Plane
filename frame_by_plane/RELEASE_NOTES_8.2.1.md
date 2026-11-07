@@ -1,0 +1,186 @@
+# 🎞️ Frame By Plane — 8.2.1
+
+Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet rig (Grid, Corner Pin, Bones and Pins), redraws every viewport control in one minimal style, gives every effect its own icon, makes Frame Stack follow image sequence playback, merges Chroma Key into Color Key, extends Riso Print, reorganizes the Z Pie and fixes several effects. Everything from 8.0.1 and 8.0.0 is listed below.
+
+## 🆕 New in 8.2.1
+
+- 🌀 **Lattice types:** the Lattice panel opens on a **Type** menu (**Grid**, **Corner Pin**, **Bones**, **Pins**, **Camera**). The types stack on the same cage, and all handles and bones of a layer live in one Controls armature, posed and keyed in Pose Mode.
+- 📌 **Puppet Pins:** click on the layer to place pins, move or rotate them and the drawing bends around them while the other pins hold. **Bend** pins only rotate or scale their area, and **Stiff Area** keeps a region rigid. Pins use native Hooks with weights that follow the drawing.
+- 🦴 **Bones:** click joints on the layer to build chains, with an IK handle at the end of each chain. A native Armature deforms the cage, so it keys, saves and renders like any rig.
+- ◰ **Corner Pin:** four corner handles map the layer onto any quad with true perspective. **Grid** gains **Point Handles** you can move and key without entering Edit Mode.
+- 🦾 **Pose Mode shows every handle:** with Ctrl+T a layer shows the handles of all its effects (Crop, Gradient, Shape Mask, Swirl...) next to the Lattice handles, ready to drag without selecting them, and stays in Pose Mode while you edit them.
+- 🔲 **Transform box and anchor point:** selected layers show a Grease Pencil style box: drag inside to move, edges and corners to scale (**Alt** symmetric, **Shift** proportional) and the knob to rotate. Click the knob to show the **anchor point** and drag it: it snaps to the centre, the corners and the middle of the edges, and the knob turns the layer around it.
+- ↺ **Reset Layer:** right-click > Frame By Plane > Layer > Reset puts Position, Rotation, Scale or the Anchor Point back (or All at once). Scale returns to the layer's creation scale. Fit to Camera, Horizontal / Vertical and Place on Ground are in the same menu.
+- ◻️ **Box orientation:** the square below the transform box turns the box without turning the layer, so you can then stretch the layer along any direction.
+- 🎯 **Minimal viewport controls:** the handles of Crop, Extend, Shape Masks and every effect with viewport controls are thin, single-colour shapes, always drawn in front in every shading mode, with no relationship lines. They follow a tilted layer and bend with the Lattice deformation. Gradients get Figma-style colour stops you can slide, arrows have an open V head, and Swirl, Bulge / Pinch, Ripple, Vignette, radial gradients and Shape Mask feathers show their reach as a dashed line.
+- 🧩 **Effects in Blender's Modifiers panel:** mesh effects are in **Add Modifier > Mesh**, and with a layer selected Properties > Modifiers shows its plane, so drag and drop, the eye and camera toggles and delete work natively. Every image effect gets a **Mask** subpanel. Each modifier opens with two rows of buttons, **Tools** (Select Rig, Reset Rig, Crop Alpha, Edit Shape, Light Controller, Select Cage, Edit Cage...) and **Effect** (Reset, Presets, Node Editor), and holds the effect's editors (colour ramps and curves, Lattice poses and pins), so the separate Frame By Plane section is gone: Blend is in Layer Settings and Stack Presets in Add Modifier.
+- 💥 **Broken Glass** is a shatter tool: it cuts the layer into triangles (**Impact** or **Shards**) and one **Shatter** slider breaks them apart, with Spread, Gap, Explode, Depth, Fall and Spin, and presets.
+- 🎨 **Replace Color** (Image, Color): recolor every pixel close to a Source Color with a Target Color, with Tolerance, Softness and Preserve Shading.
+- 🎨 **Every effect has an icon** in the add menus, the effect stack and the pie menu. The Image, Mask and Mesh add menus are reordered into coherent sections.
+- 🧱 **Frame Stack follows playback:** with image sequences the slices step through the drawings in the layer's timing order, so holds, reordered rows, loops, Ping-Pong and sequences numbered from any value stack correctly. Each layer keeps its own Frame Stack (and Knit & Crochet).
+- ⚡ **Lighter Frame Stack:** with image sequences each slice reads a small cached thumbnail instead of a full-resolution frame, and all slices are built in one pass. With 48 frames at 1080p memory drops from about 2.1 GB to 0.45 GB, the first pass through a frame is about 3 times faster and Render quality evaluates in about half the time. Videos keep reading full frames, now without the slowdown that grew with the slice count.
+- 🟩 **Color Key** now includes everything Chroma Key did, with a new **Despill** and the Green Screen and Blue Screen presets. Files that use Chroma Key are converted automatically.
+- 🖨️ **Riso Print:** **Drift Angle**, **Print Rotation**, a real **Seed** and **Animate** with Speed and Stepped.
+- 🥧 **Z Pie:** Hide, Solo and Holdout on one row, plus Show Overlays and Show Onion Skin; Lock and Selectability only while a layer is selected. Cursor on Camera is an icon button.
+- 💬 **Shorter tooltips:** one short sentence per operator and per effect.
+- ✂️ **Crop Alpha:** one button in Crop crops the selected layers to their visible pixels without moving them. Image sequences use the union of every frame.
+- 🔲 **Alpha Outline rig shape (default for new image layers):** the layer's controller follows the visible pixels of the image, **Smooth** (curves that keep sharp corners sharp) or **Pixel** (stepped), with a Detail slider. With **Follow Frame** an image sequence's outline follows the drawing shown on each frame. It updates with Crop and Expand.
+- 👆 **Rig hidden, click the image:** new layers hide their controller wire. Click an image's solid pixels to select its layer; clicks on transparent, faint (under 15% opacity) or scattered pixels reach the layer behind, also on rotated, scaled or distant planes and through orthographic views and cameras. **Use Rig** (Rig Shape popup) brings the wire back per layer, and layers that use it are picked from the wire only, unless **Rig Layers: Click Image Too** is on. Preferences > Shortcuts holds both options plus **Use Rig on New Layers**. Layers without a rig draw nothing and skip all outline work, and Follow Frame outlines wait until playback stops, so playback stays light. Box and lasso select (tools, B and Ctrl+right-drag) pick rig-less layers by their solid pixels too, with the usual Set, Extend, Subtract and Intersect modes.
+- 🔷 **Rig shapes:** the Shape menu now lists Alpha Outline, Rectangle, Polygon (3 to 50 sides) and Circle, plus Custom. Diamond, Hexagon and Octagon rigs open as Polygons.
+- 🗺️ **Readable effect node views:** the layer material reads left to right in framed sections (Source, UV effects, Layer image, Color effects, Masks & alpha, Output), and each effect sits in its own numbered frame, in stack order, with its settings beside it. Effect groups and effect modifiers get labelled steps from Inputs to Result, and readers carry the name of the setting they read. Short note frames explain each part; turn them off with **Notes in Node Views** in the preferences. Display only: nothing is relinked or renamed.
+
+### 🛠️ Fixes in 8.2.1
+
+- Transform box: on a layer whose position or rotation is keyframed, the square below the box (and Reset > Box Orientation) no longer turns the box, because the keys would have turned the drawing on every other frame. A message explains why.
+- Transform box and handles: with Gizmos or Overlays hidden, clicks no longer land on the invisible box or handles; a click on the box knob, dots or edges no longer adds an empty Undo step.
+- Reset Position, Rotation and Scale leave locked channels alone, as Blender's own Clear does, and only auto-key a layer they changed.
+- Transform popup: Reset Rotation no longer lays a vertical layer flat, and Reset Rotation / Reset Scale now leave locked channels alone and turn the box back with the layer, like right-click > Layer > Reset.
+- Playback and scrubbing with image effects (blurs, Edge, Emboss...) on image sequences: the per-frame check of the effects' image samples is about 40% lighter.
+- Effect modifiers no longer rewrite their sync state on every geometry update of the layer when the effect has a colour or vector setting.
+- Gradient and Color Plane handles: a handle being dragged is never removed mid-drag (for example when an end dot is dropped on the other end), which could crash Blender.
+- Effect panels: settings of effects without a hand-made layout are sorted into sections by whole words, so Triangle Mask no longer files Factor and Feather under Transform, Directional Blur's Samples sit under Quality, Wind Bender's pin settings get their own Pinning section, and a lone Factor joins the main section.
+- Heavy effects show a clock in their header instead of a red error sign (red is kept for the two very heavy effects), and its tooltip names the settings that speed up the preview (Samples, Subdivision, Playback ...).
+- Mesh effects (Crystal, Glass, Image Relief, Wind Bender ...): their Blender modifier now groups its inputs into the same sections as the Frame By Plane panel, and numbered choices (Texture Type, Pattern, Mode ...) list what each number means in their tooltip and stop at the last choice. Effects added before this update keep their modifier layout.
+- Text Matrix: Rows reads "Rows (Auto)" while it is 0, which derives the rows from the plane and font.
+- Gaussian, Directional and Triangle Blur skip the samples above their Samples setting: same picture, about a third fewer image reads at the default. Riso Print skips the third ink, the dot screens and the grain while they are off. Syncing effect modifier rows with the layer is about six times lighter.
+- Scrubbing and stepping frames with Mesh effects over image effects is about ten times lighter; box and lasso select of layers without a rig no longer stall on dense Mesh effects.
+- Mesh effect materials copy Math and Mix node inputs one by one instead of repeating the first value.
+- Playing or scrubbing layers with animated Mesh effects (Mesh Wiggle, Evolve) is about four times lighter: with 8 such layers a frame went from about 32 ms to about 7 ms.
+- Keyed Image effect values under a Mesh effect no longer show one frame late on the Mesh effect.
+- The sidebar and the viewport handles redraw with about 30% less Python work.
+- Halftone: Color Mode and Use Source Color work again, so BW Light, BW Dark and a custom Ink Color render as expected.
+- Slice Shift: neighbouring bands move in opposite directions, so Bands has a visible effect.
+- Grain no longer writes negative colors in dark areas.
+- Oil Paint and Edge Distance Mask build about five times faster the first time.
+- Felt Fuzz: the Render Density slider ends at 400,000 strands to avoid running out of memory.
+- Extrude Array: transparent areas no longer render black in Cycles.
+- Paper Shards and Fiber Tufts follow the exact image alpha, and dark chips no longer sink below the plane.
+- Crosshatch: smoother line edges, and diagonal hatches use the same spacing as straight ones.
+- Apply Effects: choose EEVEE (fast on a GPU) or Cycles, a custom frame range with a step, a lower resolution and the samples, and see an estimated time before starting. Cycles bakes faster (one pass per frame instead of two), and soft or semi-transparent edges are no longer baked darker.
+- Files saved with the old versions of these effects are updated when opened.
+- The Rig Shape stays on the image after Crop or after moving the layer's origin: changing Shape, Fit or Expand no longer shifts the controller away from the plane, and Perfect Shape is centred on the visible (cropped) image.
+
+## 🆕 New in 8.0.1
+
+- 🧱 **Frame Stack** (Mesh, for image sequences and videos): earlier frames stacked in depth behind the plane as a solid of time, with offset, depth, rotation, twist and scale per slice, Follow Playback or a Fixed Range, Depth Fade, Luminance Key, Glow and an optional Outline. Concept inspired by "Video Frame Stack" by hipofizus.
+- 🧶 **Knit & Crochet** (Mesh): the image rebuilt as yarn, as stockinette Knit stitches or single-crochet rows. Every stitch takes its color from the image and sequences stay animated.
+- 🖨️ **Riso Print** (Image, Pixel / Print): two or three spot inks on colored paper with misregistration, halftone dots and ink grain, with presets for Pink & Blue, Three Drum and Green & Orange.
+- 🖌️ **Oil Paint** (Image, Edges): an anisotropic Kuwahara filter that turns color into brush strokes following the image's edges.
+- 🔲 **Edge Distance Mask** (Mask, Nodes): a ramp from the artwork's transparent edge inward, for glowing borders, inner strokes and grow-in reveals.
+- ➕ **Fewer popups:** Single Plane (images, sequences and videos) and Multiplane show their settings in the file browser sidebar; Color, Gradient, Holdout, Hex and Grease Pencil planes are created at once and adjusted in Blender's Adjust Last Operation panel. Only drag and drop still opens a popup.
+
+### 🛠️ Fixes in 8.0.1
+
+- Image Projector: the projection is sharp by default. The image size follows the Cone Angle and Image Zoom only, Radius starts at 0 (labeled Softness) and the whole image fits inside the cone.
+- Image Projector: image sequences numbered from anything other than 1 (for example 0101) project again, with the right aspect ratio.
+- Project Selected FBP Layer follows the layer's timing (holds, loops) instead of freezing on the current frame.
+- A movie picked as Projector Media plays all of its frames; an image used by another plane is no longer renamed or turned into a sequence.
+- Projector panel in Blender's layout: labels on the left, Focus in a collapsible section, and the Cycles note only when another render engine is active.
+
+## ✨ What's new in 8.0
+
+- 🎭 **Grease Pencil Mask you can edit:** **Edit Grease Pencil** brings the mask strokes back for drawing, **Done** returns to the layer, and an eye shows or hides the strokes. Blur and Expand each have their own checkbox. The mask now covers the whole shot from frame 1 wherever it is created, Ctrl+Z after drawing no longer removes the effect, and the mask is computed many times faster.
+- ✂️ **Split into Multiple Planes:** from the frame list or right-click → Frame By Plane → Layer, turn every frame of a layer into its own plane, keeping position, size and effects.
+- 💡 **SOLO badge:** a translucent badge at the top of the Viewport shows when Solo is on (layer Solo or the Z pie's Solo Selection). Hide Overlays hides it too.
+- 🎓 **New Live Tutorial:** a redesigned guide with a color per guide, key caps and a clear HOW path for every action, plus a new Frame by Frame tutorial.
+- 🧪 **Apply Effects:** bake a layer's image effects into the layer itself.
+- ⏱️ **Magnetic Scrub Bar:** hold `<` to scrub, release it and the playhead snaps back to where you started with a small bounce. Exact on the bar, faster as the pointer moves away. A tap no longer pins the bar; pin it from the Viewport header.
+- 🗂️ **Scrub Bar menu:** collapsible sections, a live Length slider and an Audio Scrubbing toggle. Return to Start has its own button next to the pin, and in Draw Mode the bar shows only the active layer.
+- ↔️ **Hold `<` in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer:** move left or right to scrub from where the playhead is.
+- 🎬 **Set Scene Length from Media:** an option (off by default) in Single Plane and Multiplane that fits the Scene range to a new Image Sequence or Video.
+- 🎨 **Every selected color:** Edit Mode shows each distinct Stroke and Fill color as its own swatch, with dropdowns, Replace All and per-stroke Invert.
+- 🖌️ **Material in Edit Mode:** pick the material slot without leaving Edit Mode.
+- 🌍 **Six languages:** Italian, Spanish, French, German, Simplified Chinese and Japanese. Frame By Plane follows Blender's language, or pick one in Preferences → Interface → Language.
+- 🧹 **Leaner Grease Pencil tools:** see *Removed in 7.5* below.
+
+## 🌀 Deform Plane (Lattice)
+
+- **Poses:** one-click deformations (Sway, Arch, Squash / Stretch, Taper, Shear, Bulge / Pinch, Wave, Flag and Curl), each added as a slider you can keyframe. Sliders mix freely and go from −1 to 1, so Squash becomes Stretch and Sway bends either way. **Custom** adds an empty pose and opens the cage to shape it by hand.
+- Presets are exact at any cage density, and a preset that needs more control points refines the cage on its own.
+- Changing the **Cage Grid** keeps the current shape, the poses and their animation instead of resetting the cage.
+- Fixed: after a grid change the cage grew by the amount of the current deformation.
+
+## 🎯 On-plane controls
+
+- **Gradient Mask**, **Gradient Light** and **Tilt-Shift** handles now line up with the visible effect on non-square images. Existing projects render exactly as before.
+- **Radial Gradient Mask** has its own handles (centre, inner and outer radius) and is now a true circle on non-square images instead of an oval.
+- Touching a Gradient Light handle no longer resets Shadow Position.
+- **Wave Mask** and **Voronoi Mask** get an on-plane arrow to rotate the pattern.
+
+## 🧩 Compositor (Preview)
+
+- **Opening a file no longer adds a compositor.** Earlier versions gave every scene an empty compositor on load, and F12 rendered through it. Files saved that way are cleaned up automatically.
+- **Compositor Off really turns it off:** your own compositor, render settings and View Layers come back. The Frame By Plane nodes are kept, and turning it on again resumes the same setup.
+- Building the compositor never changes F12 until **Use Compositor in Render** is on.
+- New **Compositor | Refresh | Live Update** row: Live Update is off by default, so adding layers or effects no longer rebuilds everything after every click.
+- **Color Grade** Temperature and Tint now work, and copied scenes no longer render the original scene's layers.
+
+## ⚡ Performance
+
+- Reordering and adding effects is about twice as fast on large stacks.
+- Stacks that mix Image and Mesh effects are about three times faster to edit.
+
+## 🛠️ Effect stack fixes
+
+- **Hide in Render** now works for every Image effect.
+- Duplicate places the copy directly above the original, inside the same group.
+- Switching a variant (for example Pixelate → Hex Pixelate) keeps its place and replaces only the selected copy.
+- Adding an effect with a group selected puts it inside that group.
+- Copy / Paste Effect Stack and Effect Stack Presets reproduce the source exactly: order, groups, duplicated effects and local masks.
+- Hiding a global mask no longer makes a semi-transparent layer more transparent.
+- Masks no longer lose their UV input after effects are moved, removed or sorted.
+
+## ✏️ Grease Pencil (from 7.2.1)
+
+- New Gap Off / On icons with two connected buttons.
+- Cleaner color controls, with a visible Swap Colors button in every mode.
+- The Scrub Bar is always first in the centered Viewport controls.
+- Gap Off correctly opens selected curves when the selection mixes open and closed strokes.
+
+## 🗑️ Removed in 7.5
+
+These tools are gone. Files that used them still open; effects already on a drawing stay as normal Blender effects.
+
+- **Grease Pencil effect list** and its grouped picker (Reset, Move, Toggle, Repair Duplicates, compatibility report). Use Blender's own Modifiers and Visual Effects panels.
+- **Draw on Canvas** (the Draw, Fill and Erase buttons next to a Drawing Plane).
+- **Ink Over Image** panel.
+- **Create Missing / Current GP Drawings**.
+- **Limited Loop Blocks**. Layers they left locked are unlocked on load.
+
+Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
+
+## 📁 Where files are saved
+
+- Effect presets now live in the extension's own user folder. Presets from earlier versions are copied there automatically.
+- Media that Frame By Plane generates (PSD and Procreate layers, converted animated images, image-sequence proxies, pasted clipboard images) now goes into an `assets` folder next to your saved `.blend`, so the project folder can be moved or shared as a whole. Unsaved files still write next to the source media.
+
+## 🛠️ Fixes in 8.0.0
+
+- Grease Pencil Mask works on planes with Crop applied: the mask stays aligned with what was drawn.
+- No thin unmasked line along the image edge when a mask stroke runs past it.
+- Adding an effect, a Grease Pencil Mask or a Clipping Mask from the pie menu can be undone with Ctrl+Z.
+- Ctrl+Z while drawing in a Grease Pencil Mask no longer risks crashing Blender.
+- Draw Mode Stroke/Fill colors stay stable, and the first stroke drawn with Auto Keying gets its fill color instead of black.
+- The interface language follows Blender again after loading a file.
+- Holding `<` in the time editors stops at frame 0 when Allow Negative Frames is off.
+- A pinned Scrub Bar no longer redraws the viewport constantly while idle.
+- Swap and swatch edits are safer: stroke-only strokes keep their colors, and editing a swatch never recolors the other side.
+- Layers left locked by the old Limited Loop tool are unlocked on load.
+- The Scrub Bar stays where it is placed: it no longer slides toward the mouse.
+- The Strokes and Fills dropdowns show their color list again.
+- Stroke/Fill colors: the first color picked for strokes that had none now shows, and the Draw colors are no longer replaced by the selection's colors after a visit to Edit Mode.
+- Scrub Bar fixes: the playhead no longer jumps back after scrolling past the bar's end, a click right after the return glide lands where you click, and the return lands on the start frame even outside the scene range.
+
+## 📥 Download the correct ZIP
+
+| Computer | Release asset |
+|---|---|
+| Most Windows PCs | `frame_by_plane-8.2.1-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.2.1-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.2.1-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.2.1-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.2.1-linux_x64.zip` |
+
+Install the ZIP through **Edit > Preferences > Get Extensions > Install from Disk**. Do not install GitHub's automatically generated Source code ZIP.
+
+> Requires **Blender 5.2.x LTS**. Projects from 7.x open without manual migration.

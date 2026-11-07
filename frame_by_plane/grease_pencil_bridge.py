@@ -46,6 +46,8 @@ from .runtime import (
     fbp_set_rna_property_silent,
     fbp_warn,
     fbp_warn_once,
+    fbp_release_orphan_image,
+    fbp_mark_image_in_use,
     fbp_capture_runtime_targets as _gp_capture_runtime_targets
 )
 from .layers import (
@@ -67,7 +69,12 @@ from .identifiers import (
     stable_id,
 )
 from .ownership import tag_managed
-from .safe_tasks import cancel_scheduled_prefixes, schedule_once, scheduled_task_pending
+from .safe_tasks import (
+    cancel_scheduled_prefixes,
+    schedule_once,
+    scheduled_payload_pending,
+    scheduled_task_pending,
+)
 from .gp_runtime_state import GP_TASK_PREFIXES, clear_runtime_collections
 from .registration import (
     append_handler_once,
@@ -4326,10 +4333,10 @@ def _prune_gp_mask_retired_images(now=None, *, remove_orphans=False):
     """Prune retired GP-mask bookkeeping without losing live orphan IDs.
 
     Cache clears and reloads may discard entries only when their Image no
-    longer exists.  The raster/publish path may additionally remove old,
-    zero-user generated buffers from ``bpy.data.images`` before dropping the
-    corresponding timestamp.  Keeping the two operations coupled prevents an
-    untracked Image leak while remaining safe during Undo/load handlers.
+    longer exists.  The raster/publish path may additionally release the
+    pixels of old, zero-user generated buffers.  Image IDs are never deleted
+    at runtime (Eevee may still hold their pointers); entries leave the table
+    only when it overflows, and Blender drops the empty orphans on reload.
     """
     if not _GP_MASK_IMAGE_RETIRED_AT:
         return 0
@@ -4369,12 +4376,17 @@ def _prune_gp_mask_retired_images(now=None, *, remove_orphans=False):
             removable = False
         if not removable:
             continue
-        try:
-            bpy.data.images.remove(image)
-        except FBP_DATA_ERRORS:
+        # Never delete the Image ID here: a cached Eevee GPU material or an
+        # Undo step may still hold its raw pointer, and removing it crashed
+        # Blender 5.2 inside image_acquire_ibuf on the next viewport sync
+        # (typically right after an auto-keyed transform re-rasterized the
+        # mask). Free the pixels instead; the empty orphan is dropped by
+        # Blender on save/reload and stays reusable at the same resolution.
+        if not fbp_release_orphan_image(image):
             continue
-        _GP_MASK_IMAGE_RETIRED_AT.pop(name, None)
-        removed += 1
+        if must_reduce_table:
+            _GP_MASK_IMAGE_RETIRED_AT.pop(name, None)
+            removed += 1
     return removed
 
 
@@ -4453,6 +4465,7 @@ def _publish_mask_image(canvas, image, previous_image=None):
         canvas.fbp_gp_mask_image = image
         canvas[KEY_MASK_IMAGE_NAME] = image.name
         image["fbp_orphan_candidate"] = False
+        fbp_mark_image_in_use(image)
     except FBP_DATA_ERRORS:
         return False
     if previous_image is not None and not _same_datablock(previous_image, image):
@@ -8558,6 +8571,10 @@ def fbp_gp_frame_change(scene, _depsgraph=None):
     scene_pointer = _canvas_pointer(scene)
     if not scene_pointer:
         return
+    task_name = f"grease_pencil.frame_publish:{scene_pointer}"
+    if scheduled_payload_pending(task_name):
+        # The queued publish reads the scene again when it runs.
+        return
 
     def _publish():
         if fbp_undo_guard_active() or fbp_render_mutation_blocked():
@@ -8570,7 +8587,7 @@ def fbp_gp_frame_change(scene, _depsgraph=None):
         return None
 
     schedule_once(
-        f"grease_pencil.frame_publish:{scene_pointer}",
+        task_name,
         _publish,
         first_interval=0.03,
     )
@@ -8852,8 +8869,6 @@ def clear_grease_pencil_runtime_caches():
     Render visibility backups and the saved 3D Cursor are intentionally excluded:
     their dedicated restore paths must run before those states are discarded.
     """
-    global _GP_GEOMETRY_CACHE_BYTES, _GP_DISTANCE_CACHE_BYTES
-    global _GP_REVEAL_POSITION_CACHE_BYTES, _GP_RGBA_BUFFER_CACHE_BYTES
     _clear_gp_exposure_cache()
     _clear_gp_output_caches()
     _clear_gp_geometry_cache()
@@ -9129,7 +9144,7 @@ def _register_properties():
         default="DRAWING",
         update=_canvas_kind_update,
     )
-    bpy.types.Object.fbp_gp_attachment_mode = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.',
+    bpy.types.Object.fbp_gp_attachment_mode = EnumProperty(description='How the drawing is attached',
         name="Canvas Attachment",
         items=ATTACHMENT_ITEMS,
         default="PLANE",
@@ -9203,10 +9218,10 @@ def _register_properties():
         default=False,
         update=_mask_output_property_update,
     )
-    bpy.types.Object.fbp_gp_reveal_mode = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Reveal Mode", items=REVEAL_MODE_ITEMS, default="REVEAL", update=_mask_output_property_update)
+    bpy.types.Object.fbp_gp_reveal_mode = EnumProperty(description='How the mask reveals the layer', name="Reveal Mode", items=REVEAL_MODE_ITEMS, default="REVEAL", update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_start = IntProperty(name="Start", description="Timeline frame where the reveal begins", default=1, update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_end = IntProperty(name="End", description="Timeline frame where the reveal reaches its final state", default=24, update=_mask_output_property_update)
-    bpy.types.Object.fbp_gp_reveal_direction = EnumProperty(description='Direction used by the action. Example: UP/DOWN for stack movement, or positive/negative for directional controls.', name="Direction", items=REVEAL_DIRECTION_ITEMS, default="LEFT_RIGHT", update=_mask_output_property_update)
+    bpy.types.Object.fbp_gp_reveal_direction = EnumProperty(description='Reveal direction', name="Direction", items=REVEAL_DIRECTION_ITEMS, default="LEFT_RIGHT", update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_invert = BoolProperty(name="Invert Direction", description="Invert the generated reveal matte", default=False, update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_feather = FloatProperty(name="Reveal Feather", description="Soften the moving reveal edge", default=0.05, min=0.0, max=1.0, soft_max=0.25, subtype="FACTOR", update=_mask_output_property_update)
     bpy.types.Object.fbp_gp_reveal_hold = BoolProperty(name="Hold Result", description="Keep the completed reveal or erase after the End frame", default=True, update=_mask_output_property_update)
@@ -9217,7 +9232,7 @@ def _register_properties():
         type=bpy.types.Image,
         update=_imported_mask_pointer_update,
     )
-    bpy.types.Object.fbp_imported_mask_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.',
+    bpy.types.Object.fbp_imported_mask_source_type = EnumProperty(description='Mask source',
         name="Mask Source Type",
         items=(("FILE", "Image File", "Imported mask path"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil mask image")),
         default="FILE",
@@ -9230,13 +9245,13 @@ def _register_properties():
     )
     bpy.types.Object.fbp_gp_mask_slot_2_canvas = PointerProperty(name="Grease Pencil Mask Slot 2 Canvas", description="Grease Pencil canvas assigned to independent mask slot 2", type=bpy.types.Object, update=_gp_mask_slot_2_canvas_pointer_update)
     bpy.types.Object.fbp_gp_mask_slot_2_image = PointerProperty(name="Grease Pencil Mask Slot 2 Image", type=bpy.types.Image, update=_gp_mask_slot_2_pointer_update)
-    bpy.types.Object.fbp_gp_mask_slot_2_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Grease Pencil Mask Slot 2 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
+    bpy.types.Object.fbp_gp_mask_slot_2_source_type = EnumProperty(description='Mask source', name="Grease Pencil Mask Slot 2 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
     bpy.types.Object.fbp_gp_mask_slot_3_canvas = PointerProperty(name="Grease Pencil Mask Slot 3 Canvas", description="Grease Pencil canvas assigned to independent mask slot 3", type=bpy.types.Object, update=_gp_mask_slot_3_canvas_pointer_update)
     bpy.types.Object.fbp_gp_mask_slot_3_image = PointerProperty(name="Grease Pencil Mask Slot 3 Image", type=bpy.types.Image, update=_gp_mask_slot_3_pointer_update)
-    bpy.types.Object.fbp_gp_mask_slot_3_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Grease Pencil Mask Slot 3 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
+    bpy.types.Object.fbp_gp_mask_slot_3_source_type = EnumProperty(description='Mask source', name="Grease Pencil Mask Slot 3 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
     bpy.types.Object.fbp_gp_mask_slot_4_canvas = PointerProperty(name="Grease Pencil Mask Slot 4 Canvas", description="Grease Pencil canvas assigned to independent mask slot 4", type=bpy.types.Object, update=_gp_mask_slot_4_canvas_pointer_update)
     bpy.types.Object.fbp_gp_mask_slot_4_image = PointerProperty(name="Grease Pencil Mask Slot 4 Image", type=bpy.types.Image, update=_gp_mask_slot_4_pointer_update)
-    bpy.types.Object.fbp_gp_mask_slot_4_source_type = EnumProperty(description='Operation mode for this Grease Pencil workflow. Example: choose whether the command adds, removes, previews, repairs or applies settings.', name="Grease Pencil Mask Slot 4 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
+    bpy.types.Object.fbp_gp_mask_slot_4_source_type = EnumProperty(description='Mask source', name="Grease Pencil Mask Slot 4 Source", items=(("FILE", "Image File", "Image file"), ("GREASE_PENCIL", "Grease Pencil", "Generated Grease Pencil image")), default="GREASE_PENCIL")
 
 
 def _unregister_properties():

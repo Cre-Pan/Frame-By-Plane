@@ -48,6 +48,119 @@ def fbp_apply_creation_orientation(rig, scene):
         rig.fbp_is_vertical = True
     return True
 
+
+FBP_CAMERA_PLACEMENT_DEFAULT_DEPTH = 10.0
+
+
+class FBPLayerPlacement:
+    """Where newly imported layers are generated.
+
+    With a scene camera every layer is centred on the camera frame, faces the
+    camera and steps away from it along the view axis, whatever the camera's
+    height, rotation or parenting. The depth of the first layer is the 3D
+    cursor's distance along that axis, so a camera made 10 units from the
+    cursor gives exactly the classic layout. Without a camera the legacy
+    cursor + global axis layout is kept.
+    """
+
+    def __init__(self, scene, camera=None, anchor=None):
+        self.scene = scene
+        cursor = getattr(getattr(scene, "cursor", None), "location", None)
+        self.anchor = mathutils.Vector(anchor if anchor is not None else (cursor if cursor is not None else (0.0, 0.0, 0.0)))
+        self.camera = None
+        self.rotation = None
+        self.forward = None
+        self.origin = None
+        self.vertical = not fbp_scene_orientation_is_horizontal(scene)
+        if camera is not None and getattr(camera, "type", "") == 'CAMERA':
+            try:
+                self._bind_camera(camera)
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, ZeroDivisionError) as exc:
+                _fbp_warn("Could not place new layers in front of the camera", exc)
+                self.camera = None
+
+    def _bind_camera(self, camera):
+        cam_loc, cam_rot, _cam_scale = camera.matrix_world.decompose()
+        cam_rot.normalize()
+        forward = cam_rot @ mathutils.Vector((0.0, 0.0, -1.0))
+        if forward.length < 1e-8:
+            return
+        forward.normalize()
+        data = camera.data
+        clip_start = max(1e-4, float(getattr(data, "clip_start", 0.1) or 0.1))
+        clip_end = max(clip_start * 2.0, float(getattr(data, "clip_end", 1000.0) or 1000.0))
+        depth = float((self.anchor - cam_loc).dot(forward))
+        if not (clip_start * 1.5 < depth < clip_end * 0.95):
+            depth = min(max(FBP_CAMERA_PLACEMENT_DEFAULT_DEPTH, clip_start * 2.0), clip_end * 0.5)
+
+        # Frame centre in camera space: honours lens shift and sensor fit.
+        frame = data.view_frame(scene=self.scene)
+        center_x = sum(v.x for v in frame) / 4.0
+        center_y = sum(v.y for v in frame) / 4.0
+        if getattr(data, "type", 'PERSP') == 'ORTHO':
+            local = mathutils.Vector((center_x, center_y, -depth))
+        else:
+            frame_z = abs(frame[0].z) if abs(frame[0].z) > 1e-8 else 1.0
+            local = mathutils.Vector((center_x, center_y, -frame_z)) * (depth / frame_z)
+        self.camera = camera
+        self.rotation = cam_rot
+        self.forward = forward
+        self.origin = cam_loc + cam_rot @ local
+        # The layer stands vertically when the camera looks mostly sideways.
+        self.vertical = abs(forward.z) < math.sqrt(0.5)
+
+    @property
+    def uses_camera(self):
+        return self.camera is not None
+
+    def location(self, offset=0.0):
+        """World location of a layer ``offset`` units behind the first one."""
+        offset = float(offset or 0.0)
+        if self.uses_camera:
+            return self.origin + self.forward * offset
+        location = self.anchor.copy()
+        if self.vertical:
+            location.y += offset
+        else:
+            location.z -= offset
+        return location
+
+    def orient(self, rig):
+        """Turn a freshly built, unparented rig towards the camera."""
+        if not rig or not self.uses_camera:
+            return False
+        try:
+            mode = str(getattr(rig, "rotation_mode", 'XYZ') or 'XYZ')
+            if mode == 'QUATERNION':
+                rig.rotation_quaternion = self.rotation.copy()
+            elif mode == 'AXIS_ANGLE':
+                axis, angle = self.rotation.to_axis_angle()
+                rig.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
+            else:
+                rig.rotation_euler = self.rotation.to_euler(mode)
+            rig.fbp_is_vertical = bool(self.vertical)
+            return True
+        except FBP_DATA_IO_ERRORS:
+            return False
+
+    def place(self, rig, offset=0.0):
+        """Move and orient an already built rig."""
+        if not rig:
+            return False
+        try:
+            rig.location = self.location(offset)
+        except FBP_DATA_IO_ERRORS:
+            return False
+        self.orient(rig)
+        return True
+
+
+def fbp_layer_placement(scene, camera=None, anchor=None):
+    """Return the placement for new layers; ``camera`` defaults to scene.camera."""
+    if camera is None:
+        camera = getattr(scene, "camera", None)
+    return FBPLayerPlacement(scene, camera, anchor)
+
 def camera_ratio_scale(context):
     """Return local XY scale matching the active render/camera ratio."""
     sc = context.scene if context else bpy.context.scene
@@ -133,40 +246,37 @@ def fbp_create_rect_mesh(name, size=2.0, with_face=True):
     return mesh
 
 
-def _fbp_rig_shape_geometry(shape, size=2.1, *, half_extents=None, center=(0.0, 0.0)):
+def _fbp_rig_shape_sides(rig):
+    try:
+        return max(3, min(50, int(getattr(rig, "fbp_rig_shape_sides", 6) or 6)))
+    except (TypeError, ValueError):
+        return 6
+
+
+def _fbp_rig_shape_geometry(shape, size=2.1, *, half_extents=None, center=(0.0, 0.0), sides=6):
     """Return local XY wire geometry for a non-rendering FBP control rig."""
     shape = str(shape or "DEFAULT").upper()
-    if shape == "DEFAULT":
-        shape = "RECTANGLE"
     radius = max(0.0001, float(size) * 0.5)
-    if shape == "CIRCLE":
-        count = 32
+    if shape in {"CIRCLE", "POLYGON"}:
+        count = 32 if shape == "CIRCLE" else max(3, min(50, int(sides)))
+        # Polygons rest on a flat bottom edge.
+        offset = 0.0 if shape == "CIRCLE" else (math.pi / count - math.pi * 0.5)
         verts = [
-            (math.cos((math.tau * index) / count) * radius,
-             math.sin((math.tau * index) / count) * radius,
-             0.0)
-            for index in range(count)
-        ]
-    elif shape == "DIAMOND":
-        verts = [(0.0, radius, 0.0), (radius, 0.0, 0.0), (0.0, -radius, 0.0), (-radius, 0.0, 0.0)]
-    elif shape == "HEXAGON":
-        count = 6
-        verts = [
-            (math.cos((math.tau * index) / count) * radius,
-             math.sin((math.tau * index) / count) * radius,
-             0.0)
-            for index in range(count)
-        ]
-    elif shape == "OCTAGON":
-        count = 8
-        verts = [
-            (math.cos((math.tau * index) / count + math.pi / 8.0) * radius,
-             math.sin((math.tau * index) / count + math.pi / 8.0) * radius,
+            (math.cos((math.tau * index) / count + offset) * radius,
+             math.sin((math.tau * index) / count + offset) * radius,
              0.0)
             for index in range(count)
         ]
     else:
         verts = [(-radius, -radius, 0.0), (radius, -radius, 0.0), (radius, radius, 0.0), (-radius, radius, 0.0)]
+    if half_extents is not None and shape == "POLYGON":
+        # Fit to Plane: the polygon's bounding box spans the plane bounds.
+        xs = [x for x, _y, _z in verts]
+        ys = [y for _x, y, _z in verts]
+        mid_x, mid_y = (max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5
+        span_x = max(1e-6, (max(xs) - min(xs)) * 0.5)
+        span_y = max(1e-6, (max(ys) - min(ys)) * 0.5)
+        verts = [((x - mid_x) / span_x * radius, (y - mid_y) / span_y * radius, z) for x, y, z in verts]
     if half_extents is not None:
         hx, hy = half_extents
         hx = max(0.0001, float(hx))
@@ -188,6 +298,421 @@ def fbp_rig_shape_margin(rig):
         expand = 1.0
     return 0.05 * expand
 
+def _fbp_plane_to_rig_matrix(rig, plane):
+    """Return the plane-local to rig-local matrix, or None when it is identity.
+
+    The rig wire lives in rig-local space while Crop/Extend write plane-local
+    vertices. They only coincide while the plane sits at the rig origin. After
+    Blender's Set Origin (or any edit that offsets the child plane) the two
+    spaces differ, so the wire must be mapped through the parent relation.
+    The relation is read from ``matrix_parent_inverse @ matrix_basis`` instead
+    of ``matrix_world`` because world matrices can still be stale while a layer
+    is being rebuilt.
+    """
+    if rig is None or plane is None:
+        return None
+    try:
+        if getattr(plane, "parent", None) == rig:
+            relation = plane.matrix_parent_inverse @ plane.matrix_basis
+        else:
+            relation = rig.matrix_world.inverted_safe() @ plane.matrix_world
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+    try:
+        identity = mathutils.Matrix.Identity(4)
+        if all(
+            abs(float(relation[row][col]) - float(identity[row][col])) <= 1.0e-9
+            for row in range(4) for col in range(4)
+        ):
+            return None
+    except (IndexError, TypeError, ValueError):
+        return None
+    return relation
+
+
+def fbp_plane_bounds_in_rig_space(rig, min_x, max_x, min_y, max_y, plane=None):
+    """Map plane-local XY bounds to the rig-local XY bounds of the wire."""
+    if plane is None:
+        plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    bounds = (float(min_x), float(max_x), float(min_y), float(max_y))
+    relation = _fbp_plane_to_rig_matrix(rig, plane)
+    if relation is None:
+        return bounds
+    try:
+        corners = [
+            relation @ mathutils.Vector((x, y, 0.0))
+            for x in (bounds[0], bounds[1])
+            for y in (bounds[2], bounds[3])
+        ]
+    except (AttributeError, TypeError, ValueError):
+        return bounds
+    xs = [float(corner.x) for corner in corners]
+    ys = [float(corner.y) for corner in corners]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _fbp_plane_depth_in_rig_space(rig, x=0.0, y=0.0):
+    """Rig-local Z of the plane surface, so the wire sits on the image."""
+    relation = _fbp_plane_to_rig_matrix(rig, getattr(rig, "fbp_plane_target", None) if rig else None)
+    if relation is None:
+        return 0.0
+    try:
+        return float((relation @ mathutils.Vector((float(x), float(y), 0.0))).z)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def _fbp_wire_at_depth(verts, depth):
+    if abs(float(depth)) <= 1.0e-9:
+        return verts
+    return [(x, y, float(depth)) for x, y, _z in verts]
+
+
+def _fbp_plane_mesh_bounds_in_rig_space(rig):
+    plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    vertices = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
+    if not vertices:
+        return None
+    xs = [float(vertex.co.x) for vertex in vertices]
+    ys = [float(vertex.co.y) for vertex in vertices]
+    return fbp_plane_bounds_in_rig_space(rig, min(xs), max(xs), min(ys), max(ys), plane=plane)
+
+
+_FBP_IMAGE_ALPHA_CACHE = globals().get("_FBP_IMAGE_ALPHA_CACHE", {})
+if not isinstance(_FBP_IMAGE_ALPHA_CACHE, dict):
+    _FBP_IMAGE_ALPHA_CACHE = {}
+
+
+_FBP_ALPHA_FOLLOW_STATE = globals().get("_FBP_ALPHA_FOLLOW_STATE", {})
+if not isinstance(_FBP_ALPHA_FOLLOW_STATE, dict):
+    _FBP_ALPHA_FOLLOW_STATE = {}
+
+
+def _fbp_alpha_follow_key(rig):
+    try:
+        return int(rig.as_pointer())
+    except (AttributeError, ReferenceError):
+        return id(rig)
+
+
+def fbp_refresh_alpha_follow_rigs(scene):
+    """Rebuild Alpha Outline wires that follow the frame when the frame changes."""
+    if scene is None:
+        return 0
+    refreshed = 0
+    for obj in tuple(getattr(scene, "objects", ()) or ()):
+        try:
+            if (
+                not bool(getattr(obj, "is_fbp_control", False))
+                or str(getattr(obj, "fbp_rig_shape", "") or "") != "ALPHA"
+                or not bool(getattr(obj, "fbp_rig_shape_alpha_follow", False))
+                or str(getattr(obj, "mode", "OBJECT") or "OBJECT") != "OBJECT"
+                or not fbp_rig_wire_visible(obj)
+            ):
+                continue
+        except ReferenceError:
+            continue
+        path = fbp_rig_alpha_frame_source(obj, scene)
+        if not path or _FBP_ALPHA_FOLLOW_STATE.get(_fbp_alpha_follow_key(obj)) == path:
+            continue
+        if fbp_apply_rig_shape(obj, "ALPHA"):
+            refreshed += 1
+    return refreshed
+
+
+def _fbp_plane_source_image(rig):
+    plane = getattr(rig, "fbp_plane_target", None) if rig else None
+    for mat in tuple(getattr(getattr(plane, "data", None), "materials", ()) or ()):
+        tree = getattr(mat, "node_tree", None) if mat else None
+        for node in tuple(getattr(tree, "nodes", ()) or ()):
+            if getattr(node, "type", None) == 'TEX_IMAGE' and getattr(node, "image", None):
+                return node.image
+    return None
+
+
+def fbp_rig_alpha_frame_source(rig, scene=None, *, force=False):
+    """Source file shown now when the Alpha Outline follows the frame, else ""."""
+    if not force and not bool(getattr(rig, "fbp_rig_shape_alpha_follow", False)):
+        return ""
+    scene = scene or getattr(getattr(bpy, "context", None), "scene", None)
+    if scene is None:
+        return ""
+    try:
+        from .native_backend import fbp_native_source_path_at_frame
+        path, visible = fbp_native_source_path_at_frame(rig, int(scene.frame_current))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ""
+    return path if path and visible and os.path.isfile(path) else ""
+
+
+def fbp_rig_alpha_union(rig, *, frame_path=None):
+    """Return the visible-alpha union of a layer's source, or ``None``.
+
+    Files on disk are read through Pillow (the union of every sequence frame,
+    so the outline and Crop Alpha cover the whole animation). Packed or
+    generated images fall back to the Blender pixel buffer. ``frame_path``
+    restricts the outline to the one frame shown now (Follow Frame).
+    """
+    from . import rig_alpha_shape as alpha_shape
+
+    if frame_path:
+        try:
+            union = alpha_shape.alpha_union_from_paths(
+                (frame_path,), max_side=alpha_shape.FBP_ALPHA_FRAME_MAX_SIDE,
+            )
+            if union is not None:
+                return union
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _fbp_warn("Could not read frame alpha", exc)
+
+    paths = []
+    try:
+        from .native_backend import fbp_native_source_sequence_from_rig
+        directory, files = fbp_native_source_sequence_from_rig(rig)
+        for name in files or ():
+            name = str(name or "")
+            if name:
+                paths.append(name if os.path.isabs(name) else os.path.join(str(directory or ""), name))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        paths = []
+    if paths:
+        try:
+            union = alpha_shape.alpha_union_from_paths(paths)
+            if union is not None:
+                return union
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _fbp_warn("Could not read source alpha", exc)
+
+    image = _fbp_plane_source_image(rig)
+    if image is None:
+        return None
+    try:
+        filepath = bpy.path.abspath(str(getattr(image, "filepath", "") or ""))
+        source = str(getattr(image, "source", "FILE") or "FILE")
+        if source == 'FILE' and filepath and os.path.isfile(filepath) and not getattr(image, "packed_file", None):
+            union = alpha_shape.alpha_union_from_paths((filepath,))
+            if union is not None:
+                return union
+        if source not in {'FILE', 'GENERATED'}:
+            return None
+        width, height = (int(value) for value in image.size)
+        if width <= 0 or height <= 0:
+            return None
+        key = (str(image.name_full), width, height, filepath, bool(getattr(image, "is_dirty", False)))
+        cached = _FBP_IMAGE_ALPHA_CACHE.get(str(image.name_full))
+        if cached is not None and cached[0] == key and not key[-1]:
+            return cached[1]
+        import numpy as np
+        pixels = np.empty(width * height * 4, dtype=np.float32)
+        image.pixels.foreach_get(pixels)
+        union = alpha_shape.alpha_union_from_rgba(pixels, width, height)
+        if len(_FBP_IMAGE_ALPHA_CACHE) > 16:
+            _FBP_IMAGE_ALPHA_CACHE.clear()
+        _FBP_IMAGE_ALPHA_CACHE[str(image.name_full)] = (key, union)
+        return union
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        _fbp_warn("Could not read image alpha", exc)
+        return None
+
+
+def _fbp_wrap_uv(value, mode):
+    if 0.0 <= value <= 1.0:
+        return value
+    if mode == "REPEAT":
+        return value % 1.0
+    if mode == "MIRROR":
+        period = value % 2.0
+        return period if period <= 1.0 else 2.0 - period
+    if mode == "EDGE":
+        return min(1.0, max(0.0, value))
+    return None
+
+
+def fbp_rig_shown_alpha(rig, scene=None):
+    """``(visible, union, extend_mode)`` for the frame the layer shows now.
+
+    ``visible`` is False when the layer shows nothing on this frame; ``union``
+    is ``None`` when the alpha cannot be read.
+    """
+    try:
+        from .native_backend import fbp_native_source_path_at_frame
+        scene = scene or getattr(getattr(bpy, "context", None), "scene", None)
+        path, visible = fbp_native_source_path_at_frame(rig, int(scene.frame_current)) if scene else ("", True)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        path, visible = "", True
+    mode = str(getattr(rig, "fbp_extend_mode", "MIRROR") or "MIRROR").upper()
+    if not visible:
+        return False, None, mode
+    frame_path = path if path and os.path.isfile(path) else None
+    return True, fbp_rig_alpha_union(rig, frame_path=frame_path), mode
+
+
+def fbp_rig_alpha_visible_at_uv(rig, u, v, scene=None):
+    """True/False when a click at UV (u, v) lands on solid pixels of the
+    shown frame (faint pixels and scattered specks do not count).
+
+    Returns ``None`` when the alpha cannot be read, so callers can fall back
+    to treating the plane as solid.
+    """
+    visible, union, mode = fbp_rig_shown_alpha(rig, scene)
+    if not visible:
+        return False
+    if union is None:
+        return None
+    u = _fbp_wrap_uv(float(u), mode)
+    v = _fbp_wrap_uv(float(v), mode)
+    if u is None or v is None:
+        return False
+    from .rig_alpha_shape import solid_at
+    solid = solid_at(union, u, v)
+    if solid is not None:
+        return solid
+    mask = union.mask
+    rows, cols = mask.shape
+    col = min(cols - 1, max(0, int(u * cols)))
+    row = min(rows - 1, max(0, int((1.0 - v) * rows)))
+    return bool(mask[row, col])
+
+
+def _fbp_alpha_rig_geometry(rig, margin):
+    """Rig-space wire geometry outlining the visible alpha, or ``None``."""
+    frame_path = fbp_rig_alpha_frame_source(rig)
+    union = fbp_rig_alpha_union(rig, frame_path=frame_path)
+    _FBP_ALPHA_FOLLOW_STATE[_fbp_alpha_follow_key(rig)] = frame_path
+    if union is None:
+        return None
+    from . import rig_alpha_shape as alpha_shape
+    try:
+        _source, cropped, _extended, uv = fbp_plane_reference_bounds(rig)
+        style = str(getattr(rig, "fbp_rig_shape_alpha_style", "SMOOTH") or "SMOOTH").upper()
+        cells = int(getattr(rig, "fbp_rig_shape_alpha_detail", alpha_shape.FBP_ALPHA_OUTLINE_CELLS) or 64)
+        outline = alpha_shape.outline_for_union(
+            union, uv, cropped, style=style, margin=margin, cells=cells,
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        _fbp_warn("Could not build alpha rig outline", exc)
+        return None
+    if outline is None:
+        return None
+    points, edges = outline
+    relation = _fbp_plane_to_rig_matrix(rig, getattr(rig, "fbp_plane_target", None))
+    if relation is None:
+        verts = [(float(x), float(y), 0.0) for x, y in points]
+    else:
+        verts = [tuple(relation @ mathutils.Vector((x, y, 0.0))) for x, y in points]
+    return verts, edges
+
+
+def fbp_migrate_legacy_rig_shapes(objects=None):
+    """Move rig shapes removed from the menu (Rectangle, Diamond, Hexagon,
+    Octagon) to Rectangle or Polygon. Returns the number of layers changed."""
+    from .properties import RIG_SHAPE_LEGACY_VALUES
+
+    changed = 0
+    for obj in tuple(objects if objects is not None else bpy.data.objects):
+        try:
+            if not bool(getattr(obj, "is_fbp_control", False)) or getattr(obj, "fbp_rig_shape", "DEFAULT"):
+                continue
+            getter = getattr(obj, "bl_system_properties_get", None)
+            stored = getter() if getter is not None else obj
+            raw = stored.get("fbp_rig_shape") if stored is not None else None
+            shape, sides = RIG_SHAPE_LEGACY_VALUES.get(int(raw) if raw is not None else -1, ('DEFAULT', 0))
+            if sides:
+                obj.fbp_rig_shape_sides = sides
+            obj.fbp_rig_shape = shape
+            changed += 1
+        except (*FBP_DATA_ERRORS, TypeError, ValueError):
+            continue
+    return changed
+
+
+def fbp_object_local_bounds(obj):
+    """Local bounding-box corners of ``obj``.
+
+    A layer with Use Rig off keeps an empty rig mesh (so Blender draws no
+    points), so its bounds come from the image plane mapped into rig space.
+    """
+    bounds = tuple(tuple(corner[:3]) for corner in (getattr(obj, "bound_box", ()) or ()))
+    try:
+        if not bool(getattr(obj, "is_fbp_control", False)) or len(obj.data.vertices):
+            return bounds
+        plane = getattr(obj, "fbp_plane_target", None)
+        if plane is None:
+            return bounds
+        corners = tuple(tuple(corner[:3]) for corner in plane.bound_box)
+        relation = _fbp_plane_to_rig_matrix(obj, plane)  # None means identity
+        if relation is None:
+            return corners
+        return tuple(tuple(relation @ mathutils.Vector(corner)) for corner in corners)
+    except FBP_DATA_ERRORS:
+        return bounds
+
+
+def fbp_show_rig_on_new_layers():
+    try:
+        from .interface_preferences import fbp_get_addon_preferences
+        preferences = fbp_get_addon_preferences()
+        return bool(getattr(preferences, "rig_show_on_new_layers", False)) if preferences else False
+    except (ImportError, AttributeError, ReferenceError, RuntimeError):
+        return False
+
+
+def fbp_rig_wire_visible(rig):
+    """True when the layer shows its rig wire (Use Rig); Custom always shows."""
+    if str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper() == "CUSTOM":
+        return True
+    return bool(getattr(rig, "fbp_rig_visible", True))
+
+
+def _fbp_write_rig_wire(rig, mesh, verts, edges):
+    """Write the wire outline to the rig mesh.
+
+    With Use Rig off the mesh stays empty, so Blender draws nothing (loose
+    points would still show as dots); ``fbp_object_local_bounds`` gives the
+    layer's bounds from its image plane instead.
+    """
+    mesh.clear_geometry()
+    if fbp_rig_wire_visible(rig):
+        verts = [tuple(float(value) for value in vert) for vert in verts]
+        edges = [tuple(int(value) for value in edge) for edge in edges]
+        mesh.from_pydata(verts, edges, [])
+    mesh.update()
+
+
+def _fbp_rig_shape_wire(rig, shape):
+    """Rig-space (verts, edges) for a preset or Alpha Outline shape."""
+    fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
+    half_extents = None
+    center = (0.0, 0.0)
+    margin = fbp_rig_shape_margin(rig)
+    bounds = _fbp_plane_mesh_bounds_in_rig_space(rig)
+    if bounds is not None:
+        min_x, max_x, min_y, max_y = bounds
+        # Both fit modes follow the visible (cropped) plane, so a cropped
+        # layer or a moved origin never leaves the wire off the image.
+        center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
+    if fit_mode == "FIT_PLANE" or shape in {"DEFAULT", "ALPHA"}:
+        if bounds is not None:
+            half_extents = (
+                max(0.0001, (max_x - min_x) * 0.5 + margin),
+                max(0.0001, (max_y - min_y) * 0.5 + margin),
+            )
+        else:
+            aspect_x, aspect_y = fbp_native_aspect_half_extents(rig)
+            half_extents = (
+                max(0.0001, aspect_x + margin),
+                max(0.0001, aspect_y + margin),
+            )
+    shape_size = max(0.0002, 2.0 + margin * 2.0)
+    alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == "ALPHA" else None
+    if alpha_geometry is not None:
+        return alpha_geometry
+    verts, edges = _fbp_rig_shape_geometry(
+        shape, size=shape_size, half_extents=half_extents, center=center, sides=_fbp_rig_shape_sides(rig),
+    )
+    return _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig)), edges
+
+
 def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
     """Replace only the control-rig wire mesh, preserving plane/media/effects."""
     if rig is None or not bool(getattr(rig, "is_fbp_control", False)):
@@ -204,31 +729,9 @@ def fbp_apply_rig_shape(rig, shape=None, *, size=2.1):
         if str(getattr(rig, "mode", "OBJECT") or "OBJECT") != "OBJECT":
             return False
         fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
-        half_extents = None
-        center = (0.0, 0.0)
-        margin = fbp_rig_shape_margin(rig)
-        if fit_mode == "FIT_PLANE" or shape == "DEFAULT":
-            plane = getattr(rig, "fbp_plane_target", None)
-            coords = tuple(getattr(getattr(plane, "data", None), "vertices", ()) or ())
-            if coords:
-                xs = [float(vertex.co.x) for vertex in coords]
-                ys = [float(vertex.co.y) for vertex in coords]
-                half_extents = (
-                    max(0.0001, (max(xs) - min(xs)) * 0.5 + margin),
-                    max(0.0001, (max(ys) - min(ys)) * 0.5 + margin),
-                )
-                center = ((max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5)
-            else:
-                aspect_x, aspect_y = fbp_native_aspect_half_extents(rig)
-                half_extents = (
-                    max(0.0001, aspect_x + margin),
-                    max(0.0001, aspect_y + margin),
-                )
-        shape_size = max(0.0002, 2.0 + margin * 2.0)
-        verts, edges = _fbp_rig_shape_geometry(shape, size=shape_size, half_extents=half_extents, center=center)
-        mesh.clear_geometry()
-        mesh.from_pydata(verts, edges, [])
-        mesh.update()
+        # Use Rig off: nothing is drawn, so skip building the outline at all.
+        verts, edges = _fbp_rig_shape_wire(rig, shape) if fbp_rig_wire_visible(rig) else ((), ())
+        _fbp_write_rig_wire(rig, mesh, verts, edges)
         mesh["fbp_rig_shape"] = shape
         mesh["fbp_rig_shape_fit_mode"] = fit_mode
         rig.update_tag()
@@ -398,23 +901,31 @@ def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=
         shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper()
         if shape == 'CUSTOM':
             return True
+        if not fbp_rig_wire_visible(rig):
+            _fbp_write_rig_wire(rig, rig.data, (), ())
+            return True
         margin = fbp_rig_shape_margin(rig) if margin is None else max(0.0, float(margin))
+        # Callers pass plane-local bounds; the wire lives in rig-local space.
+        min_x, max_x, min_y, max_y = fbp_plane_bounds_in_rig_space(rig, min_x, max_x, min_y, max_y)
         min_x, max_x = float(min_x) - margin, float(max_x) + margin
         min_y, max_y = float(min_y) - margin, float(max_y) + margin
         mesh = rig.data
-        mesh.clear_geometry()
         fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
         half_extents = None
-        center = (0.0, 0.0)
-        if fit_mode == 'FIT_PLANE' or shape == 'DEFAULT':
+        center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
+        if fit_mode == 'FIT_PLANE' or shape in {'DEFAULT', 'ALPHA'}:
             half_extents = ((max_x - min_x) * 0.5, (max_y - min_y) * 0.5)
-            center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
         shape_size = max(0.0002, 2.0 + margin * 2.0)
-        verts, edges = _fbp_rig_shape_geometry(
-            shape, size=shape_size, half_extents=half_extents, center=center
-        )
-        mesh.from_pydata(verts, edges, [])
-        mesh.update()
+        alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == 'ALPHA' else None
+        if alpha_geometry is not None:
+            verts, edges = alpha_geometry
+        else:
+            verts, edges = _fbp_rig_shape_geometry(
+                shape, size=shape_size, half_extents=half_extents, center=center,
+                sides=_fbp_rig_shape_sides(rig),
+            )
+            verts = _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig))
+        _fbp_write_rig_wire(rig, mesh, verts, edges)
         return True
     except Exception as exc:
         _fbp_warn("Could not update rig frame mesh bounds", exc)
@@ -518,6 +1029,13 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
         tag_layer_contract(rig)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
+    try:
+        # Like image layers, new colour planes hide their rig wire unless the
+        # Use Rig on New Layers preference is on; click the plane to select.
+        fbp_set_rna_property_silent(rig, 'fbp_rig_visible', fbp_show_rig_on_new_layers())
+        fbp_apply_rig_shape(rig)
+    except FBP_DATA_IO_ERRORS as exc:
+        _fbp_warn('Could not apply the default rig visibility', exc)
     return rig
 
 # SECTION 04 - Plane Extension / Crop Geometry #
@@ -746,32 +1264,76 @@ def fbp_rig_base_image_size(rig):
     base_y = max(float(getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0))[1]), 0.0001)
     return 2.0 * base_x, 2.0 * base_y
 
-def apply_fit_to_camera(context, rig, cam):
-    """Uniformly fit the real image rectangle inside the active camera.
+FBP_FIT_MODE_ITEMS = (
+    ('CONTAIN', "Fit Inside", "Scale uniformly until the first image side touches the camera border; the whole image stays visible", 'FULLSCREEN_EXIT', 0),
+    ('COVER', "Fill Frame", "Scale uniformly until the image covers the whole camera frame; the longer side is cropped by the frame", 'FULLSCREEN_ENTER', 1),
+    ('WIDTH', "Match Width", "Scale uniformly so the image width matches the camera frame width", 'ARROW_LEFTRIGHT', 2),
+    ('HEIGHT', "Match Height", "Scale uniformly so the image height matches the camera frame height", 'EMPTY_SINGLE_ARROW', 3),
+    ('STRETCH', "Stretch", "Scale width and height separately so the image matches the camera frame exactly, changing its proportions", 'MOD_LENGTH', 4),
+)
+FBP_FIT_MODES = frozenset(item[0] for item in FBP_FIT_MODE_ITEMS)
 
-    There is intentionally only one mode: the first image side that touches the
-    camera border stops the scale. Crop / Extend and the wire rig are ignored.
-    """
-    if not rig or not cam:
-        return
-    cam_z = cam.matrix_world.to_3x3() @ mathutils.Vector((0.0, 0.0, -1.0))
-    vec = rig.matrix_world.translation - cam.matrix_world.translation
-    dist = abs(vec.dot(cam_z))
-    if dist < 0.001 and getattr(cam.data, 'type', '') != 'ORTHO':
-        return
 
-    frame = cam.data.view_frame(scene=context.scene)
-    min_x = min(v.x for v in frame)
-    max_x = max(v.x for v in frame)
-    min_y = min(v.y for v in frame)
-    max_y = max(v.y for v in frame)
+def fbp_scene_fit_mode(scene):
+    mode = str(getattr(scene, "fbp_fit_mode", 'CONTAIN') or 'CONTAIN')
+    return mode if mode in FBP_FIT_MODES else 'CONTAIN'
+
+
+def fbp_camera_frame_size(scene, cam, depth):
+    """Return the camera frame (width, height) in world units at ``depth``."""
+    frame = cam.data.view_frame(scene=scene)
+    width = abs(max(v.x for v in frame) - min(v.x for v in frame))
+    height = abs(max(v.y for v in frame) - min(v.y for v in frame))
     if getattr(cam.data, 'type', '') == 'ORTHO':
-        projection_scale = 1.0
+        return width, height
+    if getattr(cam.data, 'type', '') == 'PANO':
+        return 0.0, 0.0
+    frame_z = abs(frame[0].z) if abs(frame[0].z) > 1e-6 else 1.0
+    projection_scale = abs(depth) / frame_z
+    return width * projection_scale, height * projection_scale
+
+
+def apply_fit_to_camera(context, rig, cam, mode=None, align=False):
+    """Fit the real image rectangle to the camera frame.
+
+    ``mode`` is one of FBP_FIT_MODES (default: the Scene Fit Mode). With
+    ``align`` the layer is also centred on the camera frame and turned to
+    face the camera at its current depth. Perspective and orthographic
+    cameras are both measured at the layer's depth along the view axis, so
+    the result does not depend on where the layer sits beside the axis.
+    Crop / Extend and the wire rig are ignored.
+    """
+    if not rig or not cam or getattr(cam, "type", "") != 'CAMERA':
+        return False
+    if align:
+        # A box turned apart from its layer would tilt the fitted image.
+        try:
+            from .layer_cage import reset_box_orientation
+            reset_box_orientation(rig)
+        except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            pass
+    scene = context.scene if context else bpy.context.scene
+    mode = mode if mode in FBP_FIT_MODES else fbp_scene_fit_mode(scene)
+    is_ortho = getattr(cam.data, 'type', '') == 'ORTHO'
+
+    if align:
+        placement = FBPLayerPlacement(scene, cam, rig.matrix_world.translation.copy())
+        if not placement.uses_camera:
+            return False
+        target_location = placement.location(0.0)
+        target_rotation = placement.rotation
     else:
-        frame_z = abs(frame[0].z) if abs(frame[0].z) > 1e-6 else 1.0
-        projection_scale = dist / frame_z
-    frame_width = abs(max_x - min_x) * projection_scale
-    frame_height = abs(max_y - min_y) * projection_scale
+        target_location = rig.matrix_world.translation.copy()
+        target_rotation = None
+
+    cam_loc, cam_rot, _cam_scale = cam.matrix_world.decompose()
+    forward = cam_rot @ mathutils.Vector((0.0, 0.0, -1.0))
+    depth = (target_location - cam_loc).dot(forward)
+    if abs(depth) < 0.001 and not is_ortho:
+        return False
+    frame_width, frame_height = fbp_camera_frame_size(scene, cam, depth)
+    if frame_width <= 0.0 or frame_height <= 0.0:
+        return False
 
     base_vec = getattr(rig, "fbp_base_scale_vec", (1.0, 1.0, 1.0))
     try:
@@ -788,10 +1350,38 @@ def apply_fit_to_camera(context, rig, cam):
         base_z = max(float(base_vec[2]), 0.0001)
     img_width, img_height = fbp_rig_base_image_size(rig)
     if img_width <= 0 or img_height <= 0:
-        return
+        return False
 
-    factor = min(frame_width / img_width, frame_height / img_height)
-    rig.scale = (base_x * factor, base_y * factor, base_z * factor)
+    factor_x = frame_width / img_width
+    factor_y = frame_height / img_height
+    if mode == 'COVER':
+        factor_x = factor_y = max(factor_x, factor_y)
+    elif mode == 'WIDTH':
+        factor_y = factor_x
+    elif mode == 'HEIGHT':
+        factor_x = factor_y
+    elif mode == 'CONTAIN':
+        factor_x = factor_y = min(factor_x, factor_y)
+    factor_z = math.sqrt(factor_x * factor_y)
+
+    # A scaled parent would multiply the result: divide its world scale out.
+    parent = getattr(rig, "parent", None)
+    parent_scale = parent.matrix_world.to_scale() if parent is not None else mathutils.Vector((1.0, 1.0, 1.0))
+    parent_scale = [value if abs(value) > 1e-8 else 1.0 for value in parent_scale]
+
+    if align:
+        try:
+            world = mathutils.Matrix.LocRotScale(target_location, target_rotation, rig.matrix_world.to_scale())
+            rig.matrix_world = world
+            rig.fbp_is_vertical = bool(placement.vertical)
+        except FBP_DATA_IO_ERRORS:
+            pass
+    rig.scale = (
+        base_x * factor_x / parent_scale[0],
+        base_y * factor_y / parent_scale[1],
+        base_z * factor_z / parent_scale[2],
+    )
+    return True
 
 # SECTION 06 - Image Sequence Rig Builder #
 def fbp_prepare_media_source(context, directory, files_list, item_durations=None):
@@ -936,6 +1526,14 @@ def build_fbp_rig(
             natural_order = sorted(files_list, key=natural_sort_key)
             is_reversed = files_list == list(reversed(natural_order)) and files_list != natural_order
             fbp_set_rna_property_silent(rig, "fbp_sequence_reversed", is_reversed)
+        # New image layers get a controller that follows their visible pixels.
+        # Layers without readable alpha (videos) keep the rectangle fallback.
+        try:
+            fbp_set_rna_property_silent(rig, "fbp_rig_shape", "ALPHA")
+            fbp_set_rna_property_silent(rig, "fbp_rig_visible", fbp_show_rig_on_new_layers())
+            fbp_apply_rig_shape(rig, "ALPHA")
+        except FBP_DATA_IO_ERRORS as exc:
+            _fbp_warn("Could not apply the default Alpha Outline", exc)
         return rig
     except Exception as exc:
         _fbp_warn("Native Image Sequence import failed", exc)

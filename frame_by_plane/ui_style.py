@@ -9,13 +9,7 @@ code to operators or scene logic.
 FBP_UI_GAP_SECTION = 0.35
 FBP_UI_ROW_SCALE = 1.0
 FBP_UI_LIST_MIN_ROWS = 7
-FBP_UI_EFFECT_MIN_ROWS = 10
-FBP_UI_EFFECT_MAX_ROWS = 14
 FBP_UI_COMPACT_WIDTH = 360.0
-_UI_METRIC_CACHE = globals().get("_UI_METRIC_CACHE", {})
-if not isinstance(_UI_METRIC_CACHE, dict):
-    _UI_METRIC_CACHE = {}
-_UI_METRIC_CACHE_LIMIT = 64
 
 
 def configure_layout(layout, *, property_split=False, decorate=False):
@@ -48,6 +42,11 @@ def section_header(
     align=False,
 ):
     """Draw a lightweight, non-boxed section header with optional count."""
+    # Layouts that leave out settings (modifier panels) drop a section whose
+    # settings are all gone: they need to know where each one starts.
+    mark_section = getattr(layout, "fbp_mark_section", None)
+    if mark_section is not None:
+        mark_section()
     row = layout.row(align=bool(align))
     row.scale_y = float(scale)
     label = str(title or "Settings")
@@ -89,32 +88,22 @@ def list_rows(item_count, *, minimum=FBP_UI_LIST_MIN_ROWS, maximum=14):
 
 
 def _ui_metrics(context, default=420.0):
-    """Return cached ``(scale, logical width)`` for one editor region."""
+    """Return ``(scale, logical width)`` for one editor region.
+
+    Plain arithmetic on a few preferences: cheaper than any cache key.
+    """
     try:
-        preferences = getattr(context, "preferences", None)
-        system = getattr(preferences, "system", None)
-        scale_value = float(getattr(system, "ui_scale", 1.0) or 1.0)
-        pixel_size = float(getattr(system, "pixel_size", 1.0) or 1.0)
-        scale = max(0.5, scale_value * pixel_size)
-        region = getattr(context, "region", None)
-        width = float(getattr(region, "width", 0.0) or 0.0)
-        if width <= 0.0:
-            width = float(default)
-        try:
-            region_key = int(region.as_pointer()) if region is not None else 0
-        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            region_key = 0
-        key = (region_key, width, scale_value, pixel_size, float(default))
-        cached = _UI_METRIC_CACHE.get(key)
-        if cached is not None:
-            return cached
-        metrics = (scale, width / scale)
-        if len(_UI_METRIC_CACHE) >= _UI_METRIC_CACHE_LIMIT:
-            _UI_METRIC_CACHE.clear()
-        _UI_METRIC_CACHE[key] = metrics
-        return metrics
-    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
-        return (1.0, float(default))
+        system = context.preferences.system
+        scale = max(0.5, float(system.ui_scale or 1.0) * float(system.pixel_size or 1.0))
+    except (AttributeError, TypeError, ValueError):
+        scale = 1.0
+    try:
+        width = float(context.region.width or 0.0)
+    except (AttributeError, ReferenceError, TypeError, ValueError):
+        width = 0.0
+    if width <= 0.0:
+        width = float(default)
+    return (scale, width / scale)
 
 
 def ui_scale(context):

@@ -16,6 +16,7 @@ import uuid
 import bpy
 
 from .runtime import FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS, fbp_error, fbp_warn
+from .common import rna_pointer as _pointer
 
 
 GENERATION_JOURNAL_KEY = "fbp_incremental_generation_journal"
@@ -62,13 +63,6 @@ _METRICS = {
     "last_refusal": "",
 }
 _FAILPOINTS = {}
-
-
-def _pointer(value):
-    try:
-        return int(value.as_pointer()) if value is not None else 0
-    except FBP_DATA_ERRORS:
-        return 0
 
 
 def _safe_name(value):

@@ -6,17 +6,11 @@ import bpy
 from bpy.types import Panel, UIList, Menu, Operator
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
-from .geometry_nodes import fbp_active_effect_id, fbp_active_effect_instance_id, fbp_can_move_effect_selection, fbp_draw_effect_settings, fbp_draw_effect_mask_editor, fbp_effect_presence, fbp_effect_source_rig, fbp_focus_lattice_ui, fbp_schedule_effect_items_sync, fbp_selected_effect_instances
-from .effect_instances import split_effect_instance_token
+from .geometry_nodes import fbp_draw_effect_settings
 from .effects_registry import (
     FBP_EFFECT_CLIPPING_MASK,
     FBP_EFFECT_LAYER_BLEND,
-    FBP_EFFECT_SQUARE_MASK,
-    FBP_EFFECT_CIRCLE_MASK,
-    FBP_EFFECT_TRIANGLE_MASK,
-    FBP_EFFECT_LATTICE,
     fbp_effect_definition,
-    fbp_normalize_effect_id,
 )
 
 
@@ -52,10 +46,8 @@ from .layer_filters import (
     layer_filter_is_active,
 )
 from .visibility_snapshots import draw_visibility_snapshots_ui
-from .effect_stack_presets import draw_effect_stack_presets_ui
-from .mask_stack import draw_mask_source_library_ui
 from .registration import register_classes, unregister_classes
-from .shortcut_runtime import alt_shortcut_label, primary_shortcut_label
+from .shortcut_runtime import primary_shortcut_label
 from .service_registry import register_service, unregister_service
 from .fbp_index import iter_scene_fbp_rigs, iter_scene_gp_canvases, scene_has_gp_canvas
 from .grease_pencil_bridge import (
@@ -84,8 +76,8 @@ from .ui_icons import (
     ui_label_icon_kwargs,
     ui_icon_value,
 )
-from .interface_preferences import UILIST_COLUMN_DEFINITIONS, clear_interface_preferences_cache, fbp_get_addon_preferences, fbp_draw_uilist_header, fbp_draw_uilist_profile_preview, fbp_clear_uilist_drag_preview, fbp_set_uilist_drag_preview, fbp_uilist_column_icon_kwargs, fbp_set_uilist_profile_order, fbp_set_uilist_profile_visibility, fbp_uilist_icon_flags, fbp_uilist_icon_order, fbp_uilist_label_alignment, fbp_uilist_fixed_row_layouts, fbp_uilist_row_layouts, fbp_uilist_profile_definition, fbp_uilist_profile_columns, fbp_uilist_is_spacer, fbp_draw_uilist_spacer, fbp_uilist_visible_columns
-from .ui_style import FBP_UI_EFFECT_MAX_ROWS, FBP_UI_EFFECT_MIN_ROWS, FBP_UI_LIST_MIN_ROWS, adaptive_row, configure_layout, empty_state, hint_row, is_compact, list_rows, section_gap, section_header, selection_status
+from .interface_preferences import UILIST_COLUMN_DEFINITIONS, clear_interface_preferences_cache, fbp_get_addon_preferences, fbp_draw_uilist_header, fbp_draw_uilist_profile_preview, fbp_clear_uilist_drag_preview, fbp_set_uilist_drag_preview, fbp_uilist_column_icon_kwargs, fbp_set_uilist_profile_order, fbp_set_uilist_profile_visibility, fbp_uilist_icon_flags, fbp_uilist_icon_order, fbp_uilist_label_alignment, fbp_uilist_fixed_row_layouts, fbp_uilist_row_layouts, fbp_uilist_profile_definition, fbp_uilist_profile_columns, fbp_uilist_is_spacer, fbp_draw_uilist_spacer, fbp_uilist_visible_columns, fbp_template_list, fbp_uilist_pass_memo
+from .ui_style import FBP_UI_LIST_MIN_ROWS, adaptive_row, configure_layout, empty_state, hint_row, is_compact, list_rows, section_gap, section_header, selection_status
 
 
 _FBP_UILIST_DRAG_ACTIVE = {"profile": "", "column_key": ""}
@@ -599,67 +591,6 @@ def fbp_layer_backend_icon(rig):
 #
 # Main icon aliases live in ui_icons.py.
 
-
-_FBP_SHAPE_MASK_EFFECTS = (
-    FBP_EFFECT_SQUARE_MASK,
-    FBP_EFFECT_CIRCLE_MASK,
-    FBP_EFFECT_TRIANGLE_MASK,
-)
-_FBP_SHAPE_TO_EFFECT = {
-    "SQUARE": FBP_EFFECT_SQUARE_MASK,
-    "CIRCLE": FBP_EFFECT_CIRCLE_MASK,
-    "TRIANGLE": FBP_EFFECT_TRIANGLE_MASK,
-}
-
-
-def _fbp_context_shape_mask_effect(context, rig, listed_effects, active_effect):
-    """Return the Shape Mask whose controls should remain immediately visible.
-
-    Selecting the helper should never require manually changing the Effects tab
-    or finding the corresponding stack row. Selecting its plane also exposes
-    controls automatically when that layer owns a single Shape Mask. The
-    function uses the already-built effect list, so it does not rescan shader
-    nodes during a UI redraw.
-    """
-    # ``listed_effects`` is already the synchronized stack mirror. Rechecking
-    # each mask through material/modifier presence scans duplicated work during
-    # every sidebar redraw and could temporarily disagree during Undo.
-    available = tuple(
-        effect_id for effect_id in listed_effects
-        if effect_id in _FBP_SHAPE_MASK_EFFECTS
-    )
-    if not available:
-        return ""
-
-    active_obj = getattr(context, "active_object", None) if context else None
-    selected_objects = tuple(getattr(context, "selected_objects", ()) or ()) if context else ()
-    candidates = ([active_obj] if active_obj is not None else []) + [
-        obj for obj in selected_objects if obj is not active_obj
-    ]
-    try:
-        from .object_masks import (
-            find_object_mask_controller_owner,
-            is_object_mask_controller,
-            object_mask_controller_shape,
-        )
-        for candidate in candidates:
-            if not is_object_mask_controller(candidate):
-                continue
-            owner = find_object_mask_controller_owner(candidate)
-            effect_id = _FBP_SHAPE_TO_EFFECT.get(
-                object_mask_controller_shape(candidate), ""
-            )
-            if owner is rig and effect_id in available:
-                return effect_id
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        pass
-
-    if active_effect in available:
-        return active_effect
-    # A plane can own more than one Shape Mask. Keep at least one set of
-    # controls visible, choosing the first mask in the actual stack order; the
-    # user can select another helper or stack row to change the context.
-    return available[0]
 
 def fbp_draw_procedural_frame_swatch(row, rig, index):
     """Draw a live per-frame procedural preview chip in the Frames UIList."""
@@ -1512,6 +1443,14 @@ def _fbp_collection_snapshot_icon(item):
     )
 
 
+def _fbp_pass_layer_filter_active(context):
+    """Layer filter state, read once per list draw pass (see fbp_template_list)."""
+    scene = getattr(context, "scene", None)
+    return fbp_uilist_pass_memo(
+        ("layer_filter_is_active",), lambda: layer_filter_is_active(scene)
+    )
+
+
 class FBP_UL_LayerTreeList(UIList):
     """True Blender UIList tree for the Layers panel.
 
@@ -1574,7 +1513,7 @@ class FBP_UL_LayerTreeList(UIList):
                 return
 
             drag_cell = zones["left"].row(align=True)
-            drag_cell.enabled = not layer_filter_is_active(context.scene)
+            drag_cell.enabled = not _fbp_pass_layer_filter_active(context)
             drag = drag_cell.operator(
                 'fbp.drag_layer_collection', text='', icon='GRIP_V', emboss=False,
             )
@@ -1685,7 +1624,7 @@ class FBP_UL_LayerTreeList(UIList):
             owner = gp_canvas_owner(canvas)
 
             drag_cell = zones["left"].row(align=True)
-            drag_cell.enabled = not layer_filter_is_active(context.scene)
+            drag_cell.enabled = not _fbp_pass_layer_filter_active(context)
             drag = drag_cell.operator(
                 'fbp.drag_layer_tree', text='', icon='GRIP_V', emboss=False,
             )
@@ -1791,7 +1730,7 @@ class FBP_UL_LayerTreeList(UIList):
             return
 
         drag_cell = zones["left"].row(align=True)
-        drag_cell.enabled = not layer_filter_is_active(context.scene)
+        drag_cell.enabled = not _fbp_pass_layer_filter_active(context)
         drag = drag_cell.operator(
             'fbp.drag_layer_tree', text='', icon='GRIP_V', emboss=False,
         )
@@ -1802,13 +1741,20 @@ class FBP_UL_LayerTreeList(UIList):
         for _ in range(depth):
             zones["left"].label(text='', icon=ui_icon('generic.blank'))
 
+        # ``rig_locked`` is a Python getter (layer lookup + scene check);
+        # read it once per row instead of once per column.
+        try:
+            rig_locked = bool(layer_item.rig_locked)
+        except FBP_DATA_IO_ERRORS:
+            rig_locked = None
         try:
             content_enabled = (
                 bool(getattr(rig, 'fbp_is_visible', True))
-                and not bool(layer_item.rig_locked)
+                and not bool(rig_locked if rig_locked is not None else layer_item.rig_locked)
             )
         except FBP_DATA_IO_ERRORS:
             content_enabled = True
+        rig_locked = bool(rig_locked)
 
         for key in row_order:
             if not flags.get(key, False):
@@ -1893,7 +1839,7 @@ class FBP_UL_LayerTreeList(UIList):
             elif key == 'lock':
                 lock_icon = (
                     ui_icon('layer.lock_on')
-                    if layer_item.rig_locked else ui_icon('layer.lock_off')
+                    if rig_locked else ui_icon('layer.lock_off')
                 )
                 target.prop(
                     layer_item, 'rig_locked', text='',
@@ -1901,10 +1847,10 @@ class FBP_UL_LayerTreeList(UIList):
                 )
             elif key == 'select':
                 select_cell = target.row(align=True)
-                select_cell.enabled = not layer_item.rig_locked
+                select_cell.enabled = not rig_locked
                 select_cell.prop(
                     layer_item, 'selected', text='',
-                    icon=fbp_select_rig_icon(layer_item.rig_locked, rig.select_get()),
+                    icon=fbp_select_rig_icon(rig_locked, rig.select_get()),
                     icon_only=True, emboss=False,
                 )
 
@@ -1975,7 +1921,7 @@ class FBP_UL_GreasePencilLayerList(UIList):
                 or ''
             )
             grip_cell = zones["left"].row(align=True)
-            grip_cell.enabled = bool(coll_name) and not layer_filter_is_active(context.scene)
+            grip_cell.enabled = bool(coll_name) and not _fbp_pass_layer_filter_active(context)
             if not coll_name:
                 grip_cell.label(text='', icon='GRIP_V')
                 row.label(
@@ -2105,7 +2051,7 @@ class FBP_UL_GreasePencilLayerList(UIList):
         selected = bool(canvas.select_get())
         owner = gp_canvas_owner(canvas)
         grip_cell = zones["left"].row(align=True)
-        grip_cell.enabled = not layer_filter_is_active(context.scene)
+        grip_cell.enabled = not _fbp_pass_layer_filter_active(context)
         drag = grip_cell.operator('fbp.drag_layer_tree', text='', icon='GRIP_V', emboss=False)
         drag.tree_index = index
         drag.rig_name = canvas.name
@@ -2344,7 +2290,6 @@ class FBP_UL_PendingList(UIList):
             order=order,
             leading_units=depth,
         )
-        row = zones["row"]
         targets = zones["targets"]
         zones["left"].label(text="", icon="GRIP_V")
         for _ in range(depth):
@@ -2450,7 +2395,6 @@ class FBP_UL_PendingTreeList(UIList):
                 order=order,
                 leading_units=depth + 1,
             )
-            row = zones["row"]
             targets = zones["targets"]
             # Group rows are not draggable, but keep the fixed grip slot so
             # their foldout and names align with the layer rows below.
@@ -2528,7 +2472,6 @@ class FBP_UL_PendingTreeList(UIList):
             order=order,
             leading_units=depth,
         )
-        row = zones["row"]
         targets = zones["targets"]
 
         # Fixed structural grip. It never appears in preferences and cannot be
@@ -3146,6 +3089,26 @@ class FBP_PT_OutputRender(Panel):
         row.operator("fbp.apply_preferences_to_scene", text="", icon='CHECKMARK')
 
 
+class FBP_PT_Diagnostics(Panel):
+    """One Output panel for project checks: Project Doctor, then (optional) Performance."""
+
+    bl_label = "Frame By Plane Diagnostics"
+    bl_description = "Check and repair the project, and compare layer and effect cost"
+    bl_idname = "FBP_PT_diagnostics"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "output"
+    bl_parent_id = "FBP_PT_output_anchor"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 1
+
+    def draw_header(self, context):
+        FBP_PT_ProjectDoctor.draw_header(self, context)
+
+    def draw(self, _context):
+        pass
+
+
 class FBP_PT_ProjectDoctor(Panel):
     bl_label = "Project Doctor"
     bl_description = "Scan, navigate and safely repair Frame By Plane project problems"
@@ -3153,9 +3116,8 @@ class FBP_PT_ProjectDoctor(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "output"
-    bl_parent_id = "FBP_PT_output_anchor"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
+    bl_parent_id = "FBP_PT_diagnostics"
+    bl_order = 0
 
     def draw_header(self, context):
         status = str(getattr(context.scene, "fbp_health_last_status", "NOT_RUN") or "NOT_RUN").upper()
@@ -3315,9 +3277,15 @@ class FBP_PT_PerformanceDashboard(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "output"
-    bl_parent_id = "FBP_PT_output_anchor"
+    bl_parent_id = "FBP_PT_diagnostics"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 2
+    bl_order = 1
+
+    @classmethod
+    def poll(cls, context):
+        # A developer tool: shown only when enabled in the Preferences.
+        prefs = _fbp_ui_preferences(context)
+        return bool(getattr(prefs, "show_performance_dashboard", False)) if prefs else False
 
     def draw_header(self, context):
         status = (
@@ -3554,7 +3522,8 @@ class FBP_PT_OutputCompositor(Panel):
                 content, context, "COMPOSITOR_LAYERS"
             )
             list_row = list_box.row(align=False)
-            list_row.template_list(
+            fbp_template_list(
+                list_row,
                 "FBP_UL_CompositorLayers",
                 "",
                 sc,
@@ -3656,7 +3625,8 @@ class FBP_PT_OutputCompositor(Panel):
                     settings, context, "COMPOSITOR_EFFECTS"
                 )
                 effects_row = list_box.row(align=False)
-                effects_row.template_list(
+                fbp_template_list(
+                    effects_row,
                     "FBP_UL_CompositorEffects",
                     "",
                     item,
@@ -3899,7 +3869,9 @@ class FBP_PT_CameraSettings(Panel):
         row = adaptive_row(setup, context)
         row.prop(sc, "fbp_gen_camera", text="Create Camera", toggle=True, icon='CAMERA_DATA')
         row.prop(sc, "fbp_cam_pivot", text="Cursor Pivot", toggle=True, icon='PIVOT_CURSOR')
-        setup.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row = setup.row(align=True)
+        row.prop(sc, "fbp_auto_scale", text="Fit Layers to Camera", toggle=True, icon='FULLSCREEN_ENTER')
+        row.prop(sc, "fbp_fit_mode", text="")
         setup.prop(sc, "fbp_camera_fit_source_aspect", text="Use Source Aspect on Import", icon='IMAGE_DATA')
 
 
@@ -4331,6 +4303,21 @@ class FBP_PT_GreasePencilStack(Panel):
         tool_row.operator('fbp.use_grease_pencil_as_mask', text='Use as Mask', icon='CLIPUV_HLT')
 
 
+def _fbp_native_active_effect(rig):
+    """Effect and instance of the plane's active modifier, if it is one."""
+    try:
+        from .native_modifiers import _layer_plane, fbp_native_modifier_token
+        from .geometry_nodes import _fbp_effect_ref_parts
+    except ImportError:
+        return "", ""
+    _rig, plane = _layer_plane(rig)
+    modifier = getattr(getattr(plane, "modifiers", None), "active", None) if plane else None
+    token = fbp_native_modifier_token(rig, modifier) if modifier is not None else ""
+    if not token:
+        return "", ""
+    return _fbp_effect_ref_parts(token)
+
+
 def _fbp_draw_blend_control(layout, selected_rigs):
     """Draw Layer Blend as a first-class control above the effects stack."""
     if not selected_rigs:
@@ -4372,294 +4359,6 @@ def _fbp_draw_blend_control(layout, selected_rigs):
     layout.separator(factor=0.35)
 
 
-def draw_effects_ui(layout, context, *, force_view=None):
-    """Draw Image, Mask and Mesh stacks without replacing the main controls.
-
-    Shape Mask helpers expose contextual settings, but those settings are
-    deliberately drawn *after* the unified stack. This keeps the effect list
-    and side toolbar visible at all times.
-    """
-    configure_layout(layout)
-    selected_rigs = get_selected_rigs(context)
-    if not selected_rigs:
-        empty_state(
-            layout,
-            "Select a Frame By Plane layer",
-            "Image effects, masks and mesh effects are edited here.",
-            icon="RESTRICT_SELECT_OFF",
-        )
-        return
-
-    sc = context.scene
-    rig = selected_rigs[0]
-    active_object = getattr(context, "object", None)
-    force_lattice_mesh_view = False
-    try:
-        if active_object is not None and str(getattr(active_object, "type", "") or "") == "LATTICE":
-            owner = fbp_resolve_rig_from_any_object(active_object, context)
-            if owner is not None and owner in selected_rigs:
-                rig = owner
-                force_lattice_mesh_view = True
-                # Never mutate Scene/UI state directly from a Panel.draw call.
-                # Queue the category and row focus for the next safe timer tick,
-                # while this draw already renders the contextual Mesh stack.
-                from .safe_tasks import schedule_once
-                helper_name = str(getattr(active_object, "name", "") or "")
-                owner_name = str(getattr(owner, "name", "") or "")
-
-                def _focus_lattice_from_panel():
-                    current = getattr(bpy.context, "active_object", None)
-                    if (
-                        current is None
-                        or str(getattr(current, "type", "") or "") != "LATTICE"
-                        or str(getattr(current, "name", "") or "") != helper_name
-                    ):
-                        return None
-                    current_owner = bpy.data.objects.get(owner_name)
-                    if current_owner is not None:
-                        fbp_focus_lattice_ui(bpy.context, current_owner)
-                    return None
-
-                schedule_once(
-                    f"lattice.selection_focus.{owner_name}",
-                    _focus_lattice_from_panel,
-                    first_interval=0.0,
-                )
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        pass
-
-    selection_status(layout, len(selected_rigs), noun="layer")
-    _fbp_draw_blend_control(layout, selected_rigs)
-    listed_effects = fbp_schedule_effect_items_sync(rig, selected_rigs)
-    effect_definitions = {
-        effect_id: (fbp_effect_definition(effect_id) or {})
-        for effect_id in listed_effects
-    }
-    active_effect = fbp_active_effect_id(rig) if listed_effects else ""
-    if force_lattice_mesh_view and FBP_EFFECT_LATTICE in listed_effects:
-        active_effect = FBP_EFFECT_LATTICE
-    if active_effect == FBP_EFFECT_LAYER_BLEND:
-        active_effect = ""
-    active_definition = effect_definitions.get(active_effect, {}) if active_effect else {}
-    presence_cache = {}
-
-    def effect_presence(effect_id):
-        effect_id = str(effect_id or "")
-        if not effect_id:
-            return (0, len(selected_rigs))
-        cached = presence_cache.get(effect_id)
-        if cached is None:
-            cached = fbp_effect_presence(selected_rigs, effect_id)
-            presence_cache[effect_id] = cached
-        return cached
-
-    present_count, selected_count = effect_presence(active_effect)
-    contextual_shape_effect = _fbp_context_shape_mask_effect(
-        context, rig, listed_effects, active_effect
-    )
-    active_category = str(
-        active_definition.get("category", "2D") or "2D"
-    ).upper()
-    effects_view = (
-        "3D" if force_lattice_mesh_view
-        else ("MASK" if active_category == "MASK" else (
-            "3D" if active_category == "3D" else "2D"
-        ))
-    )
-    visible_categories = {"BASE", "2D", "MASK", "3D"}
-
-    visible_effects = [
-        effect_id for effect_id in listed_effects
-        if effect_id != FBP_EFFECT_LAYER_BLEND
-    ]
-    stack_row = layout.row(align=False)
-    stack_box = stack_row.box()
-    configure_layout(stack_box)
-    stack_header = section_header(
-        stack_box,
-        "Effect Stack",
-        icon="SHADERFX",
-        count=len(visible_effects),
-    )
-    _fbp_draw_uilist_header_controls(
-        stack_header, context, "EFFECT_IMAGE"
-    )
-
-    # The stack UIList is part of the Modifiers workflow even when the current
-    # category is empty. Showing the empty list keeps Effects and Masks editable
-    # from one stable place instead of replacing it with a plain message.
-    list_type = "FBP_UL_EffectStackUnified"
-    list_id = "STACK"
-    # Keep the Effects UIList at least as tall as the adjacent toolbar.
-    # Count buttons plus visual separators: move x2, Add, Actions, and the
-    # spacer rows between them. This prevents the list from ending above the
-    # icon column in compact stacks.
-    stack_rows = list_rows(
-        len(visible_effects),
-        minimum=FBP_UI_EFFECT_MIN_ROWS,
-        maximum=FBP_UI_EFFECT_MAX_ROWS,
-    )
-    stack_box.template_list(
-        list_type, list_id,
-        rig, "fbp_effects",
-        rig, "fbp_effects_index",
-        rows=stack_rows,
-    )
-
-    selected_effect_instances = tuple(
-        (effect_id, instance_id)
-        for effect_id, instance_id in fbp_selected_effect_instances(
-            rig,
-            fallback_active=True,
-            movable_only=True,
-            categories=visible_categories,
-        )
-        if effect_id != FBP_EFFECT_LAYER_BLEND
-    )
-    selected_effect_refs = tuple(
-        f"{effect_id}::{instance_id}" if instance_id else effect_id
-        for effect_id, instance_id in selected_effect_instances
-    )
-    selected_effect_ids = tuple(dict.fromkeys(
-        effect_id for effect_id, _instance_id in selected_effect_instances
-    ))
-    shared_selection = bool(
-        selected_effect_refs
-        and all(
-            effect_presence(effect_id)[0] == selected_count
-            for effect_id in selected_effect_ids
-        )
-    )
-
-    # One compact, modular side bar shared by every stack category:
-    # extras, movement, delete, then add. Infrequent actions remain in the
-    # COLLAPSEMENU menu instead of lengthening the permanent strip.
-    controls = stack_row.column(align=True)
-    fbp_set_ui_units_x(controls, 1.0)
-
-    extras = controls.operator(
-        "fbp.open_effect_toolbar_menu", text="", icon="COLLAPSEMENU"
-    )
-    extras.menu = "ACTIONS"
-
-    controls.separator()
-    move_group = controls.column(align=True)
-    for direction, icon_name in (
-        ("UP", "SORT_DESC"),
-        ("DOWN", "SORT_ASC"),
-    ):
-        move = move_group.row(align=True)
-        move.enabled = bool(
-            shared_selection
-            and fbp_can_move_effect_selection(
-                selected_rigs, selected_effect_refs, direction
-            )
-        )
-        op = move.operator(
-            "fbp.move_active_effect", text="", icon=icon_name
-        )
-        op.direction = direction
-
-    controls.separator()
-    remove = controls.row(align=True)
-    remove.enabled = bool(selected_effect_instances)
-    remove.operator(
-        "fbp.remove_selected_effects", text="", icon="TRASH"
-    )
-    add = controls.operator(
-        "fbp.open_effect_toolbar_menu", text="", icon="ADD"
-    )
-    add.menu = "ADD"
-
-    if active_effect:
-        source_rig = fbp_effect_source_rig(selected_rigs, active_effect)
-        if source_rig:
-            fbp_draw_effect_settings(
-                layout, source_rig, active_effect,
-                selected_count=selected_count,
-                present_count=present_count,
-                context=context,
-                instance_id=fbp_active_effect_instance_id(rig),
-            )
-    if not visible_effects:
-        hint_row(
-            layout,
-            "No effects. Use + to add one.",
-            icon="INFO",
-            disabled=True,
-        )
-
-    if effects_view == "MASK":
-        section_gap(layout)
-        draw_mask_source_library_ui(layout, context, selected_rigs)
-
-    section_gap(layout)
-    draw_effect_stack_presets_ui(layout, context, selected_rigs)
-
-    mask_edit_target, mask_edit_instance = split_effect_instance_token(
-        getattr(sc, "fbp_effect_mask_edit_target", "") or ""
-    )
-    mask_edit_target = fbp_normalize_effect_id(mask_edit_target)
-
-    def _schedule_mask_editor_clear():
-        """Clear stale mask-editor state outside Panel.draw()."""
-        from .safe_tasks import schedule_once
-        scene_name = str(getattr(sc, "name", "") or "")
-
-        def _clear_stale_mask_editor():
-            scene = bpy.data.scenes.get(scene_name) if scene_name else None
-            if scene is not None:
-                try:
-                    scene.fbp_effect_mask_edit_target = ""
-                except FBP_DATA_ERRORS:
-                    pass
-            return None
-
-        schedule_once(
-            f"ui.clear_mask_editor.{scene_name}",
-            _clear_stale_mask_editor,
-            first_interval=0.0,
-        )
-
-    if effects_view == "2D" and mask_edit_target:
-        if mask_edit_target in visible_effects:
-            section_gap(layout)
-            if not fbp_draw_effect_mask_editor(
-                layout, context, selected_rigs, mask_edit_target, mask_edit_instance
-            ):
-                _schedule_mask_editor_clear()
-        else:
-            _schedule_mask_editor_clear()
-
-    # Keep the selected Shape Mask immediately editable without ever replacing
-    # the regular Effects stack. When it is already the active row in Masks,
-    # its settings were drawn above and are not duplicated.
-    if contextual_shape_effect and not (
-        effects_view == "MASK" and active_effect == contextual_shape_effect
-    ):
-        contextual_source = fbp_effect_source_rig(
-            selected_rigs, contextual_shape_effect
-        ) or rig
-        contextual_present, contextual_selected = effect_presence(
-            contextual_shape_effect
-        )
-        section_gap(layout)
-        context_header = layout.row(align=True)
-        context_header.label(text="Selected Shape Mask", **ui_label_icon_kwargs("menu.holdout_plane", fallback="MOD_MASK"))
-        show = context_header.operator(
-            "fbp.select_effect",
-            text="Show in Masks",
-            icon="IMAGE_ALPHA",
-        )
-        show.effect_id = contextual_shape_effect
-        fbp_draw_effect_settings(
-            layout, contextual_source, contextual_shape_effect,
-            selected_count=contextual_selected,
-            present_count=contextual_present,
-            context=context,
-        )
-
-
 # SECTION 07 - Panel: Sequence / Selected Layer #
 # ###ICON Panel Sequence, Functions: replace, visibility, emission, fit, transform and frames.
 class FBP_OT_RigShapePopup(Operator):
@@ -4686,11 +4385,25 @@ class FBP_OT_RigShapePopup(Operator):
         if rig is None:
             layout.label(text="Layer no longer exists", icon='ERROR')
             return
-        layout.prop(rig, "fbp_rig_shape", text="Shape")
-        layout.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
-        layout.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
-        if str(getattr(rig, "fbp_rig_shape", "DEFAULT")) == 'CUSTOM':
-            edit = layout.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
+        header = layout.row(align=True)
+        header.prop(rig, "fbp_rig_visible", text="Use Rig")
+        shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT"))
+        body = layout.column()
+        # Custom rigs always show their wire, so their controls stay live.
+        body.active = bool(getattr(rig, "fbp_rig_visible", True)) or shape == 'CUSTOM'
+        body.prop(rig, "fbp_rig_shape", text="Shape")
+        if shape == 'ALPHA':
+            row = body.row(align=True)
+            row.prop(rig, "fbp_rig_shape_alpha_style", expand=True)
+            body.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
+            body.prop(rig, "fbp_rig_shape_alpha_follow", text="Follow Frame")
+        else:
+            if shape == 'POLYGON':
+                body.prop(rig, "fbp_rig_shape_sides", text="Sides", slider=True)
+            body.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
+        body.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
+        if shape == 'CUSTOM':
+            edit = body.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
             edit.rig_name = rig.name
 
 
@@ -4942,12 +4655,18 @@ class FBP_PT_Sequence(Panel):
                     row.prop(rig, "fbp_color_plane_emission", text="", icon=emiss_icon, toggle=True)
                 else:
                     row.prop(rig, "fbp_use_emission", text="", icon=emiss_icon, toggle=True)
+            # Layer Blend is a layer setting, not a row of the modifier stack.
+            _fbp_draw_blend_control(box, selected_rigs)
 
         row = box.row(align=False)
         if len(selected_rigs) > 1:
-            row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.multi_fit_camera", text="Fit", icon=ui_icon("sequence.fit"))
+            fit_row.operator_menu_enum("fbp.multi_fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         else:
-            row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row = row.row(align=True)
+            fit_row.operator("fbp.fit_camera", icon=ui_icon("sequence.fit"), text="Fit")
+            fit_row.operator_menu_enum("fbp.fit_camera", "mode", text="", icon='DOWNARROW_HLT')
         row.operator("fbp.popup_transform", text="Transform", icon=ui_icon("sequence.transform"))
         row.operator("fbp.open_effects_masks", text="Effects & Masks", icon='SHADERFX')
         if mixed_backends:
@@ -5029,7 +4748,7 @@ class FBP_PT_Sequence(Panel):
                     can_remove = frame_count > 1 or bool(getattr(rig, "fbp_is_color_plane", False))
 
                     row = box.row(align=False)
-                    row.template_list("FBP_UL_ImageList", "",
+                    fbp_template_list(row, "FBP_UL_ImageList", "",
                                       rig, "fbp_images",
                                       rig, "fbp_images_index", rows=14)
                     col = row.column(align=False)
@@ -5205,51 +4924,6 @@ class FBP_PT_Sequence(Panel):
                 color_row.prop(rig, "fbp_color_plane_color", text="Color")
 
 
-def _fbp_draw_properties_modifier_effects(layout, context):
-    """Draw the real Frame By Plane effect stack/settings in Modifiers."""
-    active = getattr(context, "object", None)
-    try:
-        from .grease_pencil_bridge import (
-            draw_gp_mask_settings_ui,
-            is_gp_mask_canvas,
-        )
-        if is_gp_mask_canvas(active):
-            owner = fbp_resolve_rig_from_any_object(active, context)
-            if owner is not None:
-                try:
-                    active_mode = str(getattr(active, "mode", "OBJECT") or "OBJECT").upper()
-                    context_mode = str(getattr(context, "mode", "OBJECT") or "OBJECT").upper()
-                except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                    active_mode = context_mode = "OBJECT"
-                if (
-                    active_mode in {"EDIT", "SCULPT", "WEIGHT_PAINT", "VERTEX_PAINT"}
-                    or context_mode in {
-                        "EDIT_GREASE_PENCIL",
-                        "SCULPT_GREASE_PENCIL",
-                        "WEIGHT_GREASE_PENCIL",
-                        "VERTEX_GREASE_PENCIL",
-                    }
-                ):
-                    # Do not draw the full effect stack while GP Edit Mode is
-                    # changing selections/radii.
-                    # Blender 5.2 can crash in UI redraws after Select All/Alt+S
-                    # if the panel touches GP-derived settings during that window.
-                    box = layout.box()
-                    configure_layout(box)
-                    section_header(box, "Grease Pencil Edit Mode", icon="GREASEPENCIL")
-                    hint_row(box, "Mask refresh is deferred until Object Mode.", icon="PAUSE")
-                    hint_row(box, f"Stroke Type updates after leaving Edit Mode; {alt_shortcut_label('S')} is disabled.", icon="BLANK1")
-                    return
-                draw_effects_ui(layout, context)
-                return
-            draw_gp_mask_settings_ui(layout, context, active, embedded=False, header_actions=True)
-            return
-    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
-        fbp_warn("Could not draw Frame By Plane Grease Pencil modifiers UI", exc)
-
-    draw_effects_ui(layout, context)
-
-
 class FBP_PT_ToolLayerStack(FBP_PT_LayerStack):
     """Layers panel shown in the standard 3D View Tool tab.
 
@@ -5346,41 +5020,43 @@ class FBP_PT_ImagePlaneData(Panel):
         FBP_PT_Sequence.draw(self, context)
 
 
-class FBP_PT_ModifierShortcuts(Panel):
-    bl_label = "Frame By Plane Effects"
-    bl_description = "Edit Frame By Plane image effects, masks and mesh effects from Blender's Modifiers tab"
-    bl_idname = "FBP_PT_modifier_shortcuts"
+class _FBPLatticeControlsPanel:
+    """Lattice settings next to the layer's controls armature (Pose Mode has no Modifiers tab)."""
+
+    bl_label = "Frame By Plane Lattice"
+    bl_description = "Edit the Lattice effect of the layer these handles and bones belong to"
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
-    bl_context = 'modifier'
-    bl_parent_id = 'DATA_PT_modifiers'
     bl_order = 0
 
     @classmethod
     def poll(cls, context):
-        active = getattr(context, "object", None)
-        if active is None:
-            return False
         try:
-            from .grease_pencil_bridge import is_gp_canvas, is_gp_mask_canvas
-            if is_gp_canvas(active):
-                # Drawing canvases use Blender's own Modifiers and Visual
-                # Effects panels; only GP masks have Frame By Plane settings.
-                return is_gp_mask_canvas(active)
+            from .lattice_pins import lattice_controller_owner
+            return lattice_controller_owner(getattr(context, "object", None)) is not None
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-            pass
-        if str(getattr(active, "type", "") or "").upper() == "GREASEPENCIL":
-            return True
-        return fbp_resolve_rig_from_any_object(active, context) is not None
+            return False
 
     def draw_header(self, _context):
-        self.layout.label(text="", **ui_label_icon_kwargs("menu.multiplane", fallback="MODIFIER"))
+        self.layout.label(text="", icon="MOD_LATTICE")
 
     def draw(self, context):
+        from .lattice_pins import lattice_controller_owner
+        rig = lattice_controller_owner(getattr(context, "object", None))
+        if rig is None:
+            return
         layout = configure_layout(self.layout)
-        # Add Effect / Add Mask live in the stack UI itself.  The Modifiers tab
-        # should open directly on the real Frame By Plane lists/settings.
-        _fbp_draw_properties_modifier_effects(layout, context)
+        fbp_draw_effect_settings(layout, rig, "LATTICE", context=context)
+
+
+class FBP_PT_LatticeControls(_FBPLatticeControlsPanel, Panel):
+    bl_idname = "FBP_PT_lattice_controls"
+    bl_context = 'data'
+
+
+class FBP_PT_LatticeControlsBone(_FBPLatticeControlsPanel, Panel):
+    bl_idname = "FBP_PT_lattice_controls_bone"
+    bl_context = 'bone'
 
 
 # SECTION 10 - Menu: Shift+A > Frame By Plane #
@@ -5577,6 +5253,21 @@ class FBP_MT_ObjectMaskContext(Menu):
             layout.label(text="Mask helper controls unavailable", icon="ERROR")
 
 
+class FBP_MT_ObjectLayerResetContext(Menu):
+    bl_idname = "FBP_MT_object_layer_reset_context"
+    bl_label = "Reset"
+
+    def draw(self, context):
+        layout = configure_layout(self.layout)
+        layout.operator("fbp.reset_layer_transform", text="Position", icon="ORIENTATION_GLOBAL").mode = 'POSITION'
+        layout.operator("fbp.reset_layer_transform", text="Rotation", icon="DRIVER_ROTATIONAL_DIFFERENCE").mode = 'ROTATION'
+        layout.operator("fbp.reset_layer_transform", text="Scale", icon="FULLSCREEN_EXIT").mode = 'SCALE'
+        layout.operator("fbp.reset_layer_transform", text="Anchor Point", icon="PIVOT_CURSOR").mode = 'ANCHOR'
+        layout.operator("fbp.reset_layer_transform", text="Box Orientation", icon="ORIENTATION_LOCAL").mode = 'ORIENTATION'
+        layout.separator()
+        layout.operator("fbp.reset_layer_transform", text="All", icon="FILE_REFRESH").mode = 'ALL'
+
+
 class FBP_MT_ObjectLayerContext(Menu):
     bl_idname = "FBP_MT_object_layer_context"
     bl_label = "Layer"
@@ -5593,6 +5284,13 @@ class FBP_MT_ObjectLayerContext(Menu):
             )
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             drawing_gp_canvases = ()
+
+        if rigs:
+            layout.menu(FBP_MT_ObjectLayerResetContext.bl_idname, text="Reset", icon="FILE_REFRESH")
+            layout.operator_menu_enum("fbp.fit_camera", "mode", text="Fit to Camera", icon="VIEW_CAMERA")
+            layout.operator("fbp.transform", text="Horizontal / Vertical", icon="RENDER_SWAP_DIMENSIONS").mode = 'TOGGLE_ROT'
+            layout.operator("fbp.transform", text="Place on Ground", icon="GRID").mode = 'TO_GROUND'
+            layout.separator()
 
         group_targets = tuple(rigs) + drawing_gp_canvases
         if group_targets:
@@ -6530,6 +6228,7 @@ ui_classes = (
     FBP_UL_CompositorEffects,
     FBP_PT_OutputAnchor,
     FBP_PT_OutputRender,
+    FBP_PT_Diagnostics,
     FBP_PT_ProjectDoctor,
     FBP_PT_PerformanceDashboard,
     FBP_MT_PendingSetupActions,
@@ -6550,9 +6249,11 @@ ui_classes = (
     FBP_PT_ToolGreasePencilStack,
     FBP_PT_ToolSequence,
     FBP_PT_ImagePlaneData,
-    FBP_PT_ModifierShortcuts,
+    FBP_PT_LatticeControls,
+    FBP_PT_LatticeControlsBone,
     FBP_MT_FrameByPlaneAdd,
     FBP_MT_ObjectMaskContext,
+    FBP_MT_ObjectLayerResetContext,
     FBP_MT_ObjectLayerContext,
     FBP_OT_SetSelectedLayerTag,
     FBP_MT_ObjectLayerTags,
@@ -6579,6 +6280,7 @@ def _all_properties_order_classes():
     ordered = [
         FBP_PT_OutputAnchor,
         FBP_PT_OutputRender,
+        FBP_PT_Diagnostics,
         FBP_PT_ProjectDoctor,
         FBP_PT_PerformanceDashboard,
         FBP_PT_OutputCompositor,
@@ -6591,7 +6293,6 @@ def _all_properties_order_classes():
     if projector is not None:
         ordered.append(projector)
     ordered.append(FBP_PT_ImagePlaneData)
-    ordered.append(FBP_PT_ModifierShortcuts)
     return tuple(dict.fromkeys(ordered))
 
 

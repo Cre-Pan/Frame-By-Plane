@@ -1,6 +1,7 @@
 """Blender handlers, timers and render-state guards for Frame by Plane."""
 
 import time
+from pathlib import Path
 
 import bpy
 
@@ -373,6 +374,7 @@ def fbp_deferred_scene_sync():
     """Refresh lightweight layer/UI state after the active Scene changes."""
     if fbp_undo_is_active() or fbp_render_is_active():
         return 0.25
+    _fbp_migrate_rig_shapes()
     try:
         context = bpy.context
         if context and getattr(context, "scene", None):
@@ -409,6 +411,13 @@ def fbp_deferred_scene_sync():
             try:
                 from .drawing_plane import fbp_refresh_drawing_scene
                 fbp_refresh_drawing_scene(context.scene)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+            try:
+                # The Frame Stack timing table is a generated image: its
+                # pixels are not saved, so rebuild them for the loaded file.
+                from .geometry_nodes import fbp_sync_frame_stack_scene
+                fbp_sync_frame_stack_scene(context.scene)
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
     except Exception as exc:
@@ -955,7 +964,12 @@ def fbp_deferred_active_layer_ui_sync():
     changed = False
     if rig is not None:
         try:
+            rig_name = str(getattr(rig, "name", "") or "")
             for index, item in enumerate(tuple(getattr(scene, "fbp_layers", ()) or ())):
+                # ``item.obj`` looks the stored name up in bpy.data, so only
+                # resolve the row that can match: the one carrying this name.
+                if str(getattr(item, "obj_name", "") or "") != rig_name:
+                    continue
                 if getattr(item, "obj", None) is rig:
                     if int(getattr(scene, "fbp_layer_stack_index", -1)) != index:
                         scene.fbp_layer_stack_index = index
@@ -1195,8 +1209,17 @@ def fbp_register_object_mask_runtime_timer():
         return False
 
 
+def _fbp_migrate_rig_shapes():
+    try:
+        from .builder import fbp_migrate_legacy_rig_shapes
+        fbp_migrate_legacy_rig_shapes()
+    except (ImportError, *FBP_DATA_ERRORS):
+        pass
+
+
 def fbp_deferred_load_post_rebuild():
     """Rebuild loaded-file services only after Blender exposes an idle Main."""
+    _fbp_migrate_rig_shapes()
     # Retire pre-load Python runtime from the ordinary idle loop, never from
     # load_pre while Eevee or Blender's Main replacement may still be active.
     try:
@@ -1226,6 +1249,12 @@ def fbp_deferred_load_post_rebuild():
     try:
         fbp_clear_effect_runtime_caches()
     except FBP_DATA_ERRORS:
+        pass
+    try:
+        # A file saved during playback keeps Light Playback's paused effects.
+        from .geometry_nodes import fbp_restore_playback_suspended_effects
+        fbp_restore_playback_suspended_effects()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
     fbp_runtime_set("fbp_pause_managed_timers", False)
     fbp_runtime_set("fbp_managed_timers_resume_after", time.monotonic() + 0.20)
@@ -1263,6 +1292,30 @@ def fbp_deferred_load_post_rebuild():
         fbp_warn_once(
             "aspect_remesh_load_upgrade",
             "Could not update the shared mesh-effect remesh group",
+            exc,
+        )
+
+    try:
+        from .geometry_nodes import fbp_migrate_chroma_key_scene_rigs
+        fbp_migrate_chroma_key_scene_rigs()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "chroma_key_color_key_migration",
+            "Could not convert Chroma Key to Color Key",
+            exc,
+        )
+
+    try:
+        from .builtin_effects import fbp_upgrade_stale_effect_groups
+        if fbp_upgrade_stale_effect_groups(
+            _effects_registry.FBP_EFFECT_REGISTRY, Path(__file__).resolve().parent / "assets",
+        ):
+            from .geometry_nodes import fbp_resync_geometry_effects
+            fbp_resync_geometry_effects()
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "stale_effect_load_upgrade",
+            "Could not update saved effect groups",
             exc,
         )
 

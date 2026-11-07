@@ -34,6 +34,7 @@ from .shortcut_runtime import (
 )
 from .ui_context import restore_modal_cursor
 from .ui_icons import floating_timeline_icon_kwargs
+from .common import rna_pointer as _rna_pointer
 
 
 _PREVIOUS_ACTIVE_OPERATOR = globals().get("_ACTIVE_OPERATOR")
@@ -722,11 +723,6 @@ def playhead_snap_settings(scene):
     }
 
 
-def animation_snapping_enabled(scene):
-    """Compatibility helper for diagnostics and third-party integrations."""
-    return bool(playhead_snap_settings(scene)["enabled"])
-
-
 def scene_fps(scene):
     try:
         render = scene.render
@@ -750,13 +746,6 @@ def major_second_frames(minimum, maximum, fps):
     first_second = int(math.floor(left / rate)) - 1
     last_second = int(math.ceil(right / rate)) + 1
     return tuple(sorted({int(round(second * rate)) for second in range(first_second, last_second + 1) if left <= int(round(second * rate)) <= right}))
-
-
-def _rna_pointer(value):
-    try:
-        return int(value.as_pointer()) if value is not None else 0
-    except FBP_DATA_ERRORS:
-        return 0
 
 
 def _normalized_keyframe_type(value):
@@ -1730,15 +1719,6 @@ def reconcile_scrub_bookmarks(scene):
     if changed or normalized != entries:
         _save_bookmark_state(scene, normalized)
     return tuple(matched)
-
-
-def is_scrub_bookmark(marker, scene=None):
-    pointer = _marker_pointer(marker)
-    if pointer and pointer in _BOOKMARK_POINTER_UIDS:
-        return True
-    if scene is not None:
-        return any(candidate is marker for _entry, candidate in reconcile_scrub_bookmarks(scene))
-    return _marker_name_has_bookmark_prefix(marker)
 
 
 def scrub_bookmark_records(scene):
@@ -5303,7 +5283,6 @@ class FBP_OT_ToggleGreasePencilScrubSlider(Operator):
         return _scrub_header_available(context)
 
     def execute(self, context):
-        global _ACTIVE_OPERATOR
         active = _ACTIVE_OPERATOR
         try:
             area_pointer = int(context.area.as_pointer())
@@ -5888,7 +5867,6 @@ class FBP_OT_AddScrubBookmark(Operator):
         return getattr(context, "scene", None) is not None
 
     def invoke(self, context, _event):
-        target_frame = int(context.scene.frame_current) if int(self.frame) == _FRAME_NUMBER_MIN else int(self.frame)
         if not str(self.name or "").strip():
             self.name = _next_bookmark_default_label(context.scene)
         return context.window_manager.invoke_props_dialog(self, width=320)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import statistics
 import time
@@ -39,6 +38,7 @@ from .interface_preferences import (
     fbp_uilist_is_spacer,
     fbp_uilist_visible_columns,
 )
+from .math_utils import percentile as _percentile
 
 
 PERFORMANCE_REPORT_SCHEMA_VERSION = 2
@@ -103,18 +103,6 @@ def format_memory(byte_count):
     if byte_count >= 1024.0:
         return f"{byte_count / 1024.0:.1f} KiB"
     return f"{int(byte_count)} B"
-
-
-def _percentile(values, quantile):
-    ordered = sorted(float(value) for value in values)
-    if not ordered:
-        return 0.0
-    position = (len(ordered) - 1) * max(0.0, min(1.0, float(quantile)))
-    lower = int(math.floor(position))
-    upper = int(math.ceil(position))
-    if lower == upper:
-        return ordered[lower]
-    return ordered[lower] + ((ordered[upper] - ordered[lower]) * (position - lower))
 
 
 def _timing_summary_ms(samples):
@@ -884,6 +872,28 @@ def build_performance_report(scene):
                 action=(
                     "Prefer proxies for large sequences, reuse shared Image "
                     "datablocks and release inactive managed buffers."
+                ),
+            )
+        )
+    try:
+        from .playback_cache import fbp_playback_cache_estimate
+        cache = fbp_playback_cache_estimate(scene, use_cache=False)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        cache = {}
+    if cache.get("images") and not cache.get("fits", True):
+        guidance.append(
+            _guidance(
+                "WARNING",
+                "PLAYBACK_CACHE",
+                (
+                    f"The image sequences in the playback range need about "
+                    f"{format_memory(int(cache['needed_mb']) * 1024 * 1024)} of image cache; "
+                    f"the Memory Cache Limit is {format_memory(int(cache['limit_mb']) * 1024 * 1024)}."
+                ),
+                action=(
+                    "Playback slows down from the frame where the cache is full. "
+                    "Use Raise Image Cache in the Timeline's Playback popover, "
+                    "then Preload Frames."
                 ),
             )
         )
