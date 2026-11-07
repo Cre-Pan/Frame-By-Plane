@@ -1769,6 +1769,11 @@ class FBP_AddonPreferences(AddonPreferences):
     pref_ui_show_procedural: BoolProperty(name="Procedural", description="Show Color, Gradient and Holdout plane defaults", default=False)
     pref_ui_show_performance: BoolProperty(name="Performance", description="Show cleanup and performance defaults", default=False)
     pref_ui_show_preview_features: BoolProperty(name="Feature Scope", description="Show stable and preview feature controls", default=False)
+    show_performance_dashboard: BoolProperty(
+        name="Performance Dashboard",
+        description="Show the Performance Dashboard under Frame By Plane Diagnostics in the Output properties",
+        default=False,
+    )
     pref_ui_show_diagnostics: BoolProperty(name="Diagnostics", description="Show repair, health and report tools", default=False)
     pref_ui_show_links: BoolProperty(name="Links", description="Show update, review and support actions", default=False)
 
@@ -2441,6 +2446,8 @@ class FBP_AddonPreferences(AddonPreferences):
                 # One diagnostic per row, with a dedicated icon-only report copy.
                 _diagnostic_row(body, 'fbp.project_health_check', 'Project Doctor', ui_icon('settings.health'), 'FBP_Project_Health')
                 _diagnostic_row(body, 'fbp.run_persistence_audit', 'Persistence Audit', 'FILE_TICK', 'FBP_Persistence_Audit')
+                row = _row(body)
+                row.prop(self, 'show_performance_dashboard', toggle=True, icon='TIME')
 
                 section_gap(body, 0.45)
                 maintenance = adaptive_row(body, context, align=False, scale=1.02, threshold=620.0)

@@ -3089,6 +3089,26 @@ class FBP_PT_OutputRender(Panel):
         row.operator("fbp.apply_preferences_to_scene", text="", icon='CHECKMARK')
 
 
+class FBP_PT_Diagnostics(Panel):
+    """One Output panel for project checks: Project Doctor, then (optional) Performance."""
+
+    bl_label = "Frame By Plane Diagnostics"
+    bl_description = "Check and repair the project, and compare layer and effect cost"
+    bl_idname = "FBP_PT_diagnostics"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "output"
+    bl_parent_id = "FBP_PT_output_anchor"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 1
+
+    def draw_header(self, context):
+        FBP_PT_ProjectDoctor.draw_header(self, context)
+
+    def draw(self, _context):
+        pass
+
+
 class FBP_PT_ProjectDoctor(Panel):
     bl_label = "Project Doctor"
     bl_description = "Scan, navigate and safely repair Frame By Plane project problems"
@@ -3096,9 +3116,8 @@ class FBP_PT_ProjectDoctor(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "output"
-    bl_parent_id = "FBP_PT_output_anchor"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
+    bl_parent_id = "FBP_PT_diagnostics"
+    bl_order = 0
 
     def draw_header(self, context):
         status = str(getattr(context.scene, "fbp_health_last_status", "NOT_RUN") or "NOT_RUN").upper()
@@ -3258,9 +3277,15 @@ class FBP_PT_PerformanceDashboard(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "output"
-    bl_parent_id = "FBP_PT_output_anchor"
+    bl_parent_id = "FBP_PT_diagnostics"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 2
+    bl_order = 1
+
+    @classmethod
+    def poll(cls, context):
+        # A developer tool: shown only when enabled in the Preferences.
+        prefs = _fbp_ui_preferences(context)
+        return bool(getattr(prefs, "show_performance_dashboard", False)) if prefs else False
 
     def draw_header(self, context):
         status = (
@@ -6203,6 +6228,7 @@ ui_classes = (
     FBP_UL_CompositorEffects,
     FBP_PT_OutputAnchor,
     FBP_PT_OutputRender,
+    FBP_PT_Diagnostics,
     FBP_PT_ProjectDoctor,
     FBP_PT_PerformanceDashboard,
     FBP_MT_PendingSetupActions,
@@ -6254,6 +6280,7 @@ def _all_properties_order_classes():
     ordered = [
         FBP_PT_OutputAnchor,
         FBP_PT_OutputRender,
+        FBP_PT_Diagnostics,
         FBP_PT_ProjectDoctor,
         FBP_PT_PerformanceDashboard,
         FBP_PT_OutputCompositor,
