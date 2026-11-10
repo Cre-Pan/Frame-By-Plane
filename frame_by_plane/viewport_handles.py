@@ -264,6 +264,41 @@ def bounds_handle_geometry(size, role):
     return verts, faces
 
 
+def crop_bounds_handle_geometry(size, role):
+    """An L on a corner or a short bar on a side of the Crop/Expand frame.
+
+    Corners open towards the inside of the rectangle, so they read as the
+    corners of the bounds they edit; sides are a bar along their edge.
+    """
+    role = str(role or "").upper()
+    size = max(float(size), 1.0e-6)
+    thickness = max(size * 0.2, 1.0e-6)
+    side_length = size * 2.4
+    corner_length = size * 1.4
+    verts, faces = [], []
+    if role in {"TOP", "BOTTOM"}:
+        append_rect_geometry(verts, faces, 0.0, 0.0, side_length, thickness)
+    elif role in {"LEFT", "RIGHT"}:
+        append_rect_geometry(verts, faces, 0.0, 0.0, thickness, side_length)
+    else:
+        sx = -1.0 if "RIGHT" in role else 1.0
+        sy = -1.0 if "TOP" in role else 1.0
+        half = thickness * 0.5
+        points = [
+            (-sx * half, -sy * half),
+            (sx * corner_length, -sy * half),
+            (sx * corner_length, sy * half),
+            (sx * half, sy * half),
+            (sx * half, sy * corner_length),
+            (-sx * half, sy * corner_length),
+        ]
+        if sx * sy < 0:
+            # Keep the outline counter-clockwise for the mirrored corners.
+            points.reverse()
+        append_polygon_geometry(verts, faces, points)
+    return verts, faces
+
+
 def point_handle_geometry(size, *, with_angle=False):
     """Thin hollow ring with a small centre dot, like Grease Pencil's grid
     points; a tick on +X shows the rotation when it matters."""
@@ -672,6 +707,7 @@ __all__ = [
     "append_disc_geometry",
     "append_arrow_geometry",
     "bounds_handle_geometry",
+    "crop_bounds_handle_geometry",
     "point_handle_geometry",
     "offset_handle_geometry",
     "angle_handle_geometry",

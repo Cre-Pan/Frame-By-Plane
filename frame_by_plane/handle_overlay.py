@@ -280,7 +280,8 @@ def handle_screen_scale(obj, region, region_data, ui_scale=1.0):
         return None
     try:
         nominal = float(obj.get(KEY_HANDLE_NOMINAL_SIZE, 0.0) or 0.0)
-        if nominal <= 0.0 or str(obj.get(KEY_MODE, "") or "").upper() in _UNSCALED_MODES:
+        mode = str(obj.get(KEY_MODE, "") or "").upper()
+        if nominal <= 0.0 or mode in _UNSCALED_MODES:
             return None
         modifier = obj.modifiers.get(LATTICE_FOLLOW_MODIFIER)
         if modifier is not None and modifier.show_viewport and modifier.object is not None:
@@ -299,7 +300,13 @@ def handle_screen_scale(obj, region, region_data, ui_scale=1.0):
     pixels = (end - start).length
     if pixels <= 1.0e-6:
         return None
-    return anchor, HANDLE_SCREEN_SIZE_PX * float(ui_scale) / pixels
+    factor = HANDLE_SCREEN_SIZE_PX * float(ui_scale) / pixels
+    if mode == "CROP_EXTEND":
+        # Blender also draws the handle mesh itself in Solid shading. The L
+        # corners and side bars do not sit on their centre like a dot, so
+        # never draw them smaller than that mesh: it stays hidden under them.
+        factor = max(factor, 1.0)
+    return anchor, factor
 
 
 def _scaled(points, anchor, factor):
@@ -540,6 +547,9 @@ def _draw_handles():
         if not triangles:
             continue
         bounds = _bounds_role(obj)
+        if bounds is not None and bounds[0][0] == "CROP":
+            # Crop/Expand draw their own L corners and side bars, all shown.
+            bounds = None
         if bounds is not None:
             frame = frames.setdefault(bounds[0], {"corners": {}, "sides": []})
             center = _triangles_center(triangles)
@@ -1658,10 +1668,177 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
             gizmo.scale_basis = HANDLE_SCREEN_SIZE_PX * 0.5 / gizmo_size
 
 
+# --- Crop / Expand bounds -----------------------------------------------------
+#
+# The bounds handles are drawn by the overlay as dots on a thin frame. Without
+# a grip of their own a click-drag on a dot reached the active tool, so the
+# Select Box tool started a box select instead of moving the dot. This grip
+# takes the press over any visible Crop/Expand dot: a drag moves that bound
+# (one undo step, Esc or right click restores it), a plain click selects the
+# handle so G, the sidebar and the Modifiers panel still work as before.
+
+def _bounds_handle(obj):
+    try:
+        from .effect_controls import KEY_MODE
+        return obj is not None and str(obj.get(KEY_MODE, "") or "").upper() == "CROP_EXTEND"
+    except (ImportError,) + FBP_DATA_ERRORS:
+        return False
+
+
+def _bounds_handles_shown(context):
+    return any(_bounds_handle(obj) for obj in _visible_handles(context))
+
+
+def _bounds_handle_under_cursor(context, location):
+    if not _bounds_handles_shown(context):
+        return None
+    try:
+        from .alpha_pick import fbp_handle_under_cursor
+        handle = fbp_handle_under_cursor(context, location, _DRAG_DOT_PX * _ui_scale(context))
+    except (ImportError,) + FBP_DATA_ERRORS + (IndexError, ValueError):
+        return None
+    return handle if _bounds_handle(handle) else None
+
+
+class FBP_GT_bounds_drag(bpy.types.Gizmo):
+    """Invisible grip over the Crop/Expand dots (the overlay draws them)."""
+
+    bl_idname = "FBP_GT_bounds_drag"
+    __slots__ = (
+        "fbp_handle_name", "fbp_initial", "fbp_press", "fbp_moved",
+        "fbp_hit", "fbp_normal", "fbp_to_local",
+    )
+
+    def setup(self):
+        self.fbp_handle_name = ""
+        self.fbp_initial = None
+        self.fbp_press = None
+        self.fbp_moved = False
+        self.use_draw_hover = False
+
+    def draw(self, context):
+        del context
+
+    def test_select(self, context, location):
+        if self.is_modal:
+            return 0
+        handle = _bounds_handle_under_cursor(context, location)
+        self.fbp_handle_name = handle.name if handle is not None else ""
+        if handle is None:
+            return -1
+        try:
+            from .layer_cage import set_hovered_handle
+            set_hovered_handle(context, handle.name)
+        except ImportError:
+            pass
+        return 0
+
+    def _handle(self):
+        obj = bpy.data.objects.get(self.fbp_handle_name or "")
+        return obj if _bounds_handle(obj) else None
+
+    def invoke(self, context, event):
+        control = self._handle()
+        if control is None:
+            return {"CANCELLED"}
+        self.fbp_press = (event.mouse_region_x, event.mouse_region_y)
+        self.fbp_moved = False
+        world = control.matrix_world
+        self.fbp_normal = tuple(world.col[2].xyz.normalized())
+        hit = _plane_hit(
+            context.region, context.region_data, self.fbp_press,
+            world.translation.copy(), Vector(self.fbp_normal),
+        )
+        if hit is None:
+            return {"CANCELLED"}
+        self.fbp_hit = tuple(hit)
+        # The location lives in the space the plane binding gives it.
+        space = world @ control.matrix_basis.inverted_safe()
+        self.fbp_to_local = [tuple(row) for row in space.inverted_safe()]
+        self.fbp_initial = tuple(control.location)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event, tweak):
+        del tweak
+        if not self.fbp_moved:
+            dx = event.mouse_region_x - self.fbp_press[0]
+            dy = event.mouse_region_y - self.fbp_press[1]
+            if dx * dx + dy * dy < _STOP_CLICK_PX * _STOP_CLICK_PX:
+                return {"RUNNING_MODAL"}
+            self.fbp_moved = True
+            control = self._handle()
+            if control is not None:
+                _select_only(context, control)
+        hit = _plane_hit(
+            context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
+            Vector(self.fbp_hit), Vector(self.fbp_normal),
+        )
+        control = self._handle()
+        if hit is None or control is None:
+            return {"RUNNING_MODAL"}
+        delta = Matrix(self.fbp_to_local).to_3x3() @ (hit - Vector(self.fbp_hit))
+        start = Vector(self.fbp_initial)
+        target = Vector((start.x + delta.x, start.y + delta.y, start.z))
+        if (Vector(control.location) - target).length > 1.0e-7:
+            control.location = target
+            _sync_control(control)
+        context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
+
+    def exit(self, context, cancel):
+        control = self._handle()
+        if cancel:
+            if control is not None and self.fbp_initial is not None and tuple(control.location) != self.fbp_initial:
+                control.location = self.fbp_initial
+                _sync_control(control)
+        elif self.fbp_moved:
+            _undo_push("Move Crop Bound")
+        elif control is not None and context.mode != "POSE":
+            # A plain click selects the handle: G, the sidebar and the
+            # Modifiers panel keep working on it.
+            _select_only(context, control)
+            _undo_push("Select")
+        context.area.tag_redraw()
+
+
+def _select_only(context, obj):
+    try:
+        for other in tuple(context.selected_objects):
+            if other != obj:
+                other.select_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+    except FBP_DATA_ERRORS:
+        pass
+
+
+class FBP_GGT_bounds_drag(bpy.types.GizmoGroup):
+    bl_idname = "FBP_GGT_bounds_drag"
+    bl_label = "Frame By Plane Crop Bounds"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"3D", "PERSISTENT"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+        return _bounds_handles_shown(context)
+
+    def setup(self, context):
+        del context
+        if not self.gizmos:
+            self.gizmos.new(FBP_GT_bounds_drag.bl_idname)
+
+
 _GIZMO_CLASSES = (
     FBP_GT_gradient_stop, FBP_OT_gradient_stop_color, FBP_GGT_gradient_stops,
     FBP_GT_gradient_drag, FBP_GGT_gradient_lines,
     FBP_GT_color_plane_grip, FBP_GGT_color_plane_gradient,
+    FBP_GT_bounds_drag, FBP_GGT_bounds_drag,
 )
 
 
