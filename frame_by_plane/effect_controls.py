@@ -48,6 +48,7 @@ from .viewport_handles import (
     attach_to_plane,
     attached_plane,
     bounds_handle_geometry,
+    crop_bounds_handle_geometry,
     direction_handle_geometry,
     ensure_viewport_handle_material,
     is_attached_to,
@@ -842,7 +843,7 @@ def _control_mesh_signature(rig, mode, role, spec=None, control=None):
     parameters = _control_mesh_parameters(rig, mode, role, spec, control)
     for key in sorted(parameters):
         extra += f":{key}={_format_parameter(parameters[key])}"
-    return f"fbp_handle_v10:{mode}:{role}:{size:.6f}{extra}"
+    return f"fbp_handle_v11:{mode}:{role}:{size:.6f}{extra}"
 
 
 def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
@@ -859,7 +860,7 @@ def _control_mesh_geometry(rig, mode, role, spec=None, control=None):
     with_angle = bool(spec and spec.get("angle"))
     parameters = _control_mesh_parameters(rig, mode, role, spec, control)
     if _is_crop_extend_mode(mode):
-        return bounds_handle_geometry(size, role)
+        return crop_bounds_handle_geometry(size, role)
     if mode == "RANGE_CENTER":
         return range_center_geometry(
             size,
