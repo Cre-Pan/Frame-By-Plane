@@ -4557,6 +4557,279 @@ class FBP_MT_SequenceFrameAdd(Menu):
         layout.operator("fbp.insert_transparent_frame", text="Transparent", icon=ui_icon("sequence.add_transparent"))
 
 
+def _fbp_draw_layer_look_row(box, rig, selected_rigs, mixed_backends):
+    """Visibility, opacity, emission and blend: shared by sidebar and Material."""
+    row = box.row(align=False)
+    vis_icon=ui_icon("layer.visible_on") if rig.fbp_is_visible else ui_icon("layer.visible_off")
+    row.prop(rig, "fbp_is_visible", text="", icon=vis_icon)
+    is_holdout_plane = bool(
+        not mixed_backends
+        and getattr(rig, "fbp_is_color_plane", False)
+        and getattr(rig, "fbp_color_plane_mode", 'SOLID') == 'HOLDOUT'
+    )
+    if not is_holdout_plane:
+        row.prop(rig, "fbp_opacity", text="Opacity", slider=True)
+        if not mixed_backends:
+            emiss_icon='LIGHT_SUN'
+            if getattr(rig, "fbp_is_color_plane", False):
+                row.prop(rig, "fbp_color_plane_emission", text="", icon=emiss_icon, toggle=True)
+            else:
+                row.prop(rig, "fbp_use_emission", text="", icon=emiss_icon, toggle=True)
+        # Layer Blend is a layer setting, not a row of the modifier stack.
+        _fbp_draw_blend_control(box, selected_rigs)
+
+
+def _fbp_draw_layer_timing(layout, context, rig):
+    """Animation / Movie Playback box for sequence, movie and multi Color Planes."""
+    backend_type = fbp_layer_backend_type(rig)
+    is_movie = backend_type == 'NATIVE_MOVIE'
+    show_animation_panel = (
+        is_movie
+        or backend_type == 'NATIVE_SEQUENCE'
+        or (getattr(rig, "fbp_is_color_plane", False) and len(rig.fbp_images) > 0)
+    )
+    if show_animation_panel:
+        section_gap(layout)
+        box = layout.box()
+        configure_layout(box)
+        section_header(
+            box,
+            "Movie Playback" if is_movie else "Animation",
+            icon=ui_icon("sequence.frames"),
+        )
+        row = adaptive_row(box, context)
+        sub1 = row.row(align=True)
+        sub1.prop(rig, "fbp_start_frame")
+        sub1.operator("fbp.set_current_frame", text="", icon=ui_icon("sequence.set_current"))
+        if is_movie:
+            playback = row.row(align=True)
+            playback.prop_enum(rig, "fbp_loop_mode", 'NONE', text="One Shot")
+            playback.prop_enum(rig, "fbp_loop_mode", 'REPEAT', text="Loop")
+        else:
+            row.prop(rig, "fbp_loop_mode", text="")
+            row.prop(rig, "fbp_global_duration", text="Frame Hold")
+
+
+def _fbp_draw_layer_frames(layout, rig):
+    """Frames / Color Plane Frames list with its action column."""
+    show_frame_tools = not getattr(rig, "fbp_is_color_plane", False) or len(rig.fbp_images) > 0
+    can_add_frames = not getattr(rig, "fbp_is_color_plane", False) or fbp_color_plane_can_have_frames(rig)
+
+    if not (getattr(rig, "fbp_is_color_plane", False) and not fbp_color_plane_can_have_frames(rig)):
+        is_color_plane = bool(getattr(rig, "fbp_is_color_plane", False))
+        box = _fbp_collapsible_box(
+            layout, rig, "fbp_sequence_show_frames",
+            "Color Plane Frames" if is_color_plane else "Frames",
+            icon=ui_icon("layer.header"),
+        )
+        if box is not None and show_frame_tools:
+            frame_count = len(rig.fbp_images)
+            checked_indices = [
+                index for index, item in enumerate(rig.fbp_images)
+                if bool(getattr(item, "is_selected", False))
+            ]
+            active_frame_index = max(
+                0,
+                min(int(getattr(rig, "fbp_images_index", 0) or 0), frame_count - 1),
+            ) if frame_count else -1
+            action_indices = checked_indices or (
+                [active_frame_index] if active_frame_index >= 0 else []
+            )
+            action_index_set = set(action_indices)
+            can_move_up = any(
+                index > 0 and (index - 1) not in action_index_set
+                for index in action_indices
+            )
+            can_move_down = any(
+                index < frame_count - 1 and (index + 1) not in action_index_set
+                for index in action_indices
+            )
+            can_duplicate = bool(checked_indices)
+            can_reverse_sequence = frame_count > 1
+            can_remove = frame_count > 1 or bool(getattr(rig, "fbp_is_color_plane", False))
+
+            row = box.row(align=False)
+            fbp_template_list(row, "FBP_UL_ImageList", "",
+                              rig, "fbp_images",
+                              rig, "fbp_images_index", rows=14)
+            col = row.column(align=False)
+
+            col.menu(
+                "FBP_MT_sequence_frame_actions",
+                text="",
+                icon="COLLAPSEMENU",
+            )
+            is_color_frames = bool(
+                getattr(rig, "fbp_is_color_plane", False)
+            )
+            if not is_color_frames:
+                col.menu(
+                    "FBP_MT_sequence_frame_add",
+                    text="",
+                    icon="ADD",
+                )
+            col.separator()
+
+            moves = col.column(align=True)
+            control = moves.row(align=True)
+            control.enabled = can_move_up
+            control.operator(
+                "fbp.list_action",
+                icon=ui_icon("sequence.move_up"),
+                text="",
+            ).action = 'MOVE_UP'
+            control = moves.row(align=True)
+            control.enabled = can_move_down
+            control.operator(
+                "fbp.list_action",
+                icon=ui_icon("sequence.move_down"),
+                text="",
+            ).action = 'MOVE_DOWN'
+            col.separator()
+
+            control = col.row(align=False)
+            control.enabled = can_reverse_sequence
+            control.operator(
+                "fbp.reverse_sequence",
+                icon=ui_icon("sequence.reverse"),
+                text="",
+                depress=bool(
+                    getattr(rig, "fbp_sequence_reversed", False)
+                ),
+            )
+
+            control = col.row(align=False)
+            control.enabled = can_remove
+            control.operator(
+                "fbp.list_action",
+                icon=ui_icon("sequence.delete"),
+                text="",
+            ).action = 'REMOVE'
+
+            col.separator()
+            col.separator()
+            control = col.row(align=False)
+            control.enabled = can_duplicate
+            control.operator(
+                "fbp.list_action",
+                icon=ui_icon("sequence.duplicate"),
+                text="",
+            ).action = 'DUPLICATE_SELECTED'
+
+            if is_color_frames:
+                op = col.operator(
+                    "fbp.insert_images_after_selected",
+                    text="",
+                    **ui_icon_kwargs(
+                        "menu.color_plane", fallback="COLOR"
+                    ),
+                )
+                op.frame_mode = "COLOR"
+                op = col.operator(
+                    "fbp.insert_images_after_selected",
+                    text="",
+                    **ui_icon_kwargs(
+                        "menu.gradient_plane", fallback="COLOR"
+                    ),
+                )
+                op.frame_mode = "GRADIENT"
+            col.operator(
+                "fbp.insert_transparent_frame",
+                icon=ui_icon("sequence.add_transparent"),
+                text="",
+            )
+
+            if fbp_rig_native_sequence_needs_rename(rig):
+                warn = box.box()
+                warn.alert = True
+                warn.label(text="Native sequence filenames may show pink in Blender.", icon=ui_icon("generic.error"))
+                warn.operator("fbp.rename_sequence_for_blender", text="Rename Original Files for Blender", icon=ui_icon("sequence.replace"))
+
+            row = box.row(align=True)
+            all_selected = len(rig.fbp_images) > 0 and all(bool(item.is_selected) for item in rig.fbp_images)
+            row.operator("fbp.select_all", text="None" if all_selected else "All", icon=ui_icon("sequence.select_none") if all_selected else ui_icon("sequence.select_all")).action = 'TOGGLE'
+            row.operator("fbp.select_all", text="Invert", icon=ui_icon("sequence.select_invert")).action = 'INVERT'
+            if not getattr(rig, "fbp_is_color_plane", False):
+                optimize = box.row(align=True)
+                optimize.operator(
+                    "fbp.optimize_sequence_frames",
+                    text="Analyze / Consolidate Holds",
+                    icon=ui_icon("sequence.optimize"),
+                )
+        elif box is not None and can_add_frames:
+            if is_color_plane:
+                state = box.row(align=True)
+                state.alignment = "LEFT"
+                state.label(
+                    text="Single Color Plane",
+                    **ui_label_icon_kwargs(
+                        "menu.color_plane", fallback="COLOR"
+                    ),
+                )
+                animate = box.operator(
+                    "fbp.insert_images_after_selected",
+                    text="Make Multi Color Plane",
+                    icon=ui_icon("sequence.frames"),
+                )
+                animate.frame_mode = "AUTO"
+            else:
+                row = box.row(align=True)
+                row.operator("fbp.insert_linked_image_after_selected", text="Import Image Frame", icon=ui_icon("settings.project_folder"))
+
+
+def _fbp_draw_color_plane_appearance(layout, context, rig):
+    """Color Plane Frame Appearance: Color / Gradient switch, ramp and position."""
+    if not getattr(rig, "fbp_is_color_plane", False):
+        return
+    section_gap(layout)
+    details_box = layout.box()
+    configure_layout(details_box)
+    section_header(details_box, "Frame Appearance", icon=ui_icon("sequence.node_texture"))
+    current_mode = str(getattr(rig, "fbp_color_plane_mode", 'SOLID') or 'SOLID')
+    if current_mode in {'SOLID', 'GRADIENT'}:
+        mode_row = details_box.row(align=True)
+        solid = mode_row.operator(
+            "fbp.set_color_plane_mode",
+            text="Color",
+            icon=ui_icon("menu.color_plane"),
+            depress=current_mode == 'SOLID',
+        )
+        solid.mode = 'SOLID'
+        gradient = mode_row.operator(
+            "fbp.set_color_plane_mode",
+            text="Gradient",
+            icon=ui_icon("menu.gradient_plane"),
+            depress=current_mode == 'GRADIENT',
+        )
+        gradient.mode = 'GRADIENT'
+
+    if current_mode == 'GRADIENT':
+        grad_col = details_box.column(align=False)
+        draw_native_fbp_color_ramp(grad_col, rig)
+        transform_box = grad_col.box()
+        is_open = bool(getattr(rig, 'fbp_show_gradient_transform', True))
+        row = transform_box.row(align=True)
+        row.prop(rig, 'fbp_show_gradient_transform', text='Position', icon=(ui_icon("setup.expanded") if is_open else ui_icon("setup.collapsed")), emboss=False)
+        row.operator(
+            "fbp.gradient_controller",
+            text="",
+            icon="EMPTY_AXIS",
+            depress=getattr(rig, "fbp_gradient_controller", None) is not None,
+        )
+        if is_open:
+            row = adaptive_row(transform_box, context)
+            row.prop(rig, "fbp_gradient_offset_x", text="X")
+            row.prop(rig, "fbp_gradient_offset_y", text="Y")
+            row = adaptive_row(transform_box, context)
+            row.prop(rig, "fbp_gradient_scale_x", text="Scale X")
+            row.prop(rig, "fbp_gradient_scale_y", text="Scale Y")
+            transform_box.prop(rig, "fbp_gradient_rotation", text="Rotation")
+    elif current_mode == 'SOLID':
+        color_row = details_box.row(align=False)
+        color_row.prop(rig, "fbp_color_plane_color", text="Color")
+
+
+
 class FBP_PT_Sequence(Panel):
     bl_label       = "Layer Settings"
     bl_description = "Edit the selected Frame By Plane layer, timing, frames, color, transform and tools"
@@ -4639,24 +4912,7 @@ class FBP_PT_Sequence(Panel):
         else:
             name.label(text=f"Primary: {rig.name}", icon=ui_icon("sequence.header"))
 
-        row = box.row(align=False)
-        vis_icon=ui_icon("layer.visible_on") if rig.fbp_is_visible else ui_icon("layer.visible_off")
-        row.prop(rig, "fbp_is_visible", text="", icon=vis_icon)
-        is_holdout_plane = bool(
-            not mixed_backends
-            and getattr(rig, "fbp_is_color_plane", False)
-            and getattr(rig, "fbp_color_plane_mode", 'SOLID') == 'HOLDOUT'
-        )
-        if not is_holdout_plane:
-            row.prop(rig, "fbp_opacity", text="Opacity", slider=True)
-            if not mixed_backends:
-                emiss_icon='LIGHT_SUN'
-                if getattr(rig, "fbp_is_color_plane", False):
-                    row.prop(rig, "fbp_color_plane_emission", text="", icon=emiss_icon, toggle=True)
-                else:
-                    row.prop(rig, "fbp_use_emission", text="", icon=emiss_icon, toggle=True)
-            # Layer Blend is a layer setting, not a row of the modifier stack.
-            _fbp_draw_blend_control(box, selected_rigs)
+        _fbp_draw_layer_look_row(box, rig, selected_rigs, mixed_backends)
 
         row = box.row(align=False)
         if len(selected_rigs) > 1:
@@ -4684,244 +4940,12 @@ class FBP_PT_Sequence(Panel):
             summary.label(text="Visibility, opacity, camera fit and transform remain available")
             return
 
-        show_animation_panel = (
-            is_movie
-            or backend_type == 'NATIVE_SEQUENCE'
-            or (getattr(rig, "fbp_is_color_plane", False) and len(rig.fbp_images) > 0)
-        )
-        if show_animation_panel:
-            section_gap(layout)
-            box = layout.box()
-            configure_layout(box)
-            section_header(
-                box,
-                "Movie Playback" if is_movie else "Animation",
-                icon=ui_icon("sequence.frames"),
-            )
-            row = adaptive_row(box, context)
-            sub1 = row.row(align=True)
-            sub1.prop(rig, "fbp_start_frame")
-            sub1.operator("fbp.set_current_frame", text="", icon=ui_icon("sequence.set_current"))
-            if is_movie:
-                playback = row.row(align=True)
-                playback.prop_enum(rig, "fbp_loop_mode", 'NONE', text="One Shot")
-                playback.prop_enum(rig, "fbp_loop_mode", 'REPEAT', text="Loop")
-            else:
-                row.prop(rig, "fbp_loop_mode", text="")
-                row.prop(rig, "fbp_global_duration", text="Frame Hold")
+        _fbp_draw_layer_timing(layout, context, rig)
 
         if len(selected_rigs) <= 1 and not is_movie:
-            show_frame_tools = not getattr(rig, "fbp_is_color_plane", False) or len(rig.fbp_images) > 0
-            can_add_frames = not getattr(rig, "fbp_is_color_plane", False) or fbp_color_plane_can_have_frames(rig)
+            _fbp_draw_layer_frames(layout, rig)
 
-            if not (getattr(rig, "fbp_is_color_plane", False) and not fbp_color_plane_can_have_frames(rig)):
-                is_color_plane = bool(getattr(rig, "fbp_is_color_plane", False))
-                box = _fbp_collapsible_box(
-                    layout, rig, "fbp_sequence_show_frames",
-                    "Color Plane Frames" if is_color_plane else "Frames",
-                    icon=ui_icon("layer.header"),
-                )
-                if box is not None and show_frame_tools:
-                    frame_count = len(rig.fbp_images)
-                    checked_indices = [
-                        index for index, item in enumerate(rig.fbp_images)
-                        if bool(getattr(item, "is_selected", False))
-                    ]
-                    active_frame_index = max(
-                        0,
-                        min(int(getattr(rig, "fbp_images_index", 0) or 0), frame_count - 1),
-                    ) if frame_count else -1
-                    action_indices = checked_indices or (
-                        [active_frame_index] if active_frame_index >= 0 else []
-                    )
-                    action_index_set = set(action_indices)
-                    can_move_up = any(
-                        index > 0 and (index - 1) not in action_index_set
-                        for index in action_indices
-                    )
-                    can_move_down = any(
-                        index < frame_count - 1 and (index + 1) not in action_index_set
-                        for index in action_indices
-                    )
-                    can_duplicate = bool(checked_indices)
-                    can_reverse_sequence = frame_count > 1
-                    can_remove = frame_count > 1 or bool(getattr(rig, "fbp_is_color_plane", False))
-
-                    row = box.row(align=False)
-                    fbp_template_list(row, "FBP_UL_ImageList", "",
-                                      rig, "fbp_images",
-                                      rig, "fbp_images_index", rows=14)
-                    col = row.column(align=False)
-
-                    col.menu(
-                        "FBP_MT_sequence_frame_actions",
-                        text="",
-                        icon="COLLAPSEMENU",
-                    )
-                    is_color_frames = bool(
-                        getattr(rig, "fbp_is_color_plane", False)
-                    )
-                    if not is_color_frames:
-                        col.menu(
-                            "FBP_MT_sequence_frame_add",
-                            text="",
-                            icon="ADD",
-                        )
-                    col.separator()
-
-                    moves = col.column(align=True)
-                    control = moves.row(align=True)
-                    control.enabled = can_move_up
-                    control.operator(
-                        "fbp.list_action",
-                        icon=ui_icon("sequence.move_up"),
-                        text="",
-                    ).action = 'MOVE_UP'
-                    control = moves.row(align=True)
-                    control.enabled = can_move_down
-                    control.operator(
-                        "fbp.list_action",
-                        icon=ui_icon("sequence.move_down"),
-                        text="",
-                    ).action = 'MOVE_DOWN'
-                    col.separator()
-
-                    control = col.row(align=False)
-                    control.enabled = can_reverse_sequence
-                    control.operator(
-                        "fbp.reverse_sequence",
-                        icon=ui_icon("sequence.reverse"),
-                        text="",
-                        depress=bool(
-                            getattr(rig, "fbp_sequence_reversed", False)
-                        ),
-                    )
-
-                    control = col.row(align=False)
-                    control.enabled = can_remove
-                    control.operator(
-                        "fbp.list_action",
-                        icon=ui_icon("sequence.delete"),
-                        text="",
-                    ).action = 'REMOVE'
-
-                    col.separator()
-                    col.separator()
-                    control = col.row(align=False)
-                    control.enabled = can_duplicate
-                    control.operator(
-                        "fbp.list_action",
-                        icon=ui_icon("sequence.duplicate"),
-                        text="",
-                    ).action = 'DUPLICATE_SELECTED'
-
-                    if is_color_frames:
-                        op = col.operator(
-                            "fbp.insert_images_after_selected",
-                            text="",
-                            **ui_icon_kwargs(
-                                "menu.color_plane", fallback="COLOR"
-                            ),
-                        )
-                        op.frame_mode = "COLOR"
-                        op = col.operator(
-                            "fbp.insert_images_after_selected",
-                            text="",
-                            **ui_icon_kwargs(
-                                "menu.gradient_plane", fallback="COLOR"
-                            ),
-                        )
-                        op.frame_mode = "GRADIENT"
-                    col.operator(
-                        "fbp.insert_transparent_frame",
-                        icon=ui_icon("sequence.add_transparent"),
-                        text="",
-                    )
-
-                    if fbp_rig_native_sequence_needs_rename(rig):
-                        warn = box.box()
-                        warn.alert = True
-                        warn.label(text="Native sequence filenames may show pink in Blender.", icon=ui_icon("generic.error"))
-                        warn.operator("fbp.rename_sequence_for_blender", text="Rename Original Files for Blender", icon=ui_icon("sequence.replace"))
-
-                    row = box.row(align=True)
-                    all_selected = len(rig.fbp_images) > 0 and all(bool(item.is_selected) for item in rig.fbp_images)
-                    row.operator("fbp.select_all", text="None" if all_selected else "All", icon=ui_icon("sequence.select_none") if all_selected else ui_icon("sequence.select_all")).action = 'TOGGLE'
-                    row.operator("fbp.select_all", text="Invert", icon=ui_icon("sequence.select_invert")).action = 'INVERT'
-                    if not getattr(rig, "fbp_is_color_plane", False):
-                        optimize = box.row(align=True)
-                        optimize.operator(
-                            "fbp.optimize_sequence_frames",
-                            text="Analyze / Consolidate Holds",
-                            icon=ui_icon("sequence.optimize"),
-                        )
-                elif box is not None and can_add_frames:
-                    if is_color_plane:
-                        state = box.row(align=True)
-                        state.alignment = "LEFT"
-                        state.label(
-                            text="Single Color Plane",
-                            **ui_label_icon_kwargs(
-                                "menu.color_plane", fallback="COLOR"
-                            ),
-                        )
-                        animate = box.operator(
-                            "fbp.insert_images_after_selected",
-                            text="Make Multi Color Plane",
-                            icon=ui_icon("sequence.frames"),
-                        )
-                        animate.frame_mode = "AUTO"
-                    else:
-                        row = box.row(align=True)
-                        row.operator("fbp.insert_linked_image_after_selected", text="Import Image Frame", icon=ui_icon("settings.project_folder"))
-
-        if getattr(rig, "fbp_is_color_plane", False):
-            section_gap(layout)
-            details_box = layout.box()
-            configure_layout(details_box)
-            section_header(details_box, "Frame Appearance", icon=ui_icon("sequence.node_texture"))
-            current_mode = str(getattr(rig, "fbp_color_plane_mode", 'SOLID') or 'SOLID')
-            if current_mode in {'SOLID', 'GRADIENT'}:
-                mode_row = details_box.row(align=True)
-                solid = mode_row.operator(
-                    "fbp.set_color_plane_mode",
-                    text="Color",
-                    icon=ui_icon("menu.color_plane"),
-                    depress=current_mode == 'SOLID',
-                )
-                solid.mode = 'SOLID'
-                gradient = mode_row.operator(
-                    "fbp.set_color_plane_mode",
-                    text="Gradient",
-                    icon=ui_icon("menu.gradient_plane"),
-                    depress=current_mode == 'GRADIENT',
-                )
-                gradient.mode = 'GRADIENT'
-
-            if current_mode == 'GRADIENT':
-                grad_col = details_box.column(align=False)
-                draw_native_fbp_color_ramp(grad_col, rig)
-                transform_box = grad_col.box()
-                is_open = bool(getattr(rig, 'fbp_show_gradient_transform', True))
-                row = transform_box.row(align=True)
-                row.prop(rig, 'fbp_show_gradient_transform', text='Position', icon=(ui_icon("setup.expanded") if is_open else ui_icon("setup.collapsed")), emboss=False)
-                row.operator(
-                    "fbp.gradient_controller",
-                    text="",
-                    icon="EMPTY_AXIS",
-                    depress=getattr(rig, "fbp_gradient_controller", None) is not None,
-                )
-                if is_open:
-                    row = adaptive_row(transform_box, context)
-                    row.prop(rig, "fbp_gradient_offset_x", text="X")
-                    row.prop(rig, "fbp_gradient_offset_y", text="Y")
-                    row = adaptive_row(transform_box, context)
-                    row.prop(rig, "fbp_gradient_scale_x", text="Scale X")
-                    row.prop(rig, "fbp_gradient_scale_y", text="Scale Y")
-                    transform_box.prop(rig, "fbp_gradient_rotation", text="Rotation")
-            elif current_mode == 'SOLID':
-                color_row = details_box.row(align=False)
-                color_row.prop(rig, "fbp_color_plane_color", text="Color")
+        _fbp_draw_color_plane_appearance(layout, context, rig)
 
 
 class FBP_PT_ToolLayerStack(FBP_PT_LayerStack):
@@ -5018,6 +5042,79 @@ class FBP_PT_ImagePlaneData(Panel):
         # Reuse the canonical Layer Settings implementation so the Properties
         # and 3D View versions cannot drift apart.
         FBP_PT_Sequence.draw(self, context)
+
+
+def _fbp_draw_plane_material(layout, context, rig):
+    """Material-tab copy of the plane's look, frames and Color Plane appearance.
+
+    Every block is the same function Layer Settings draws in the sidebar, so the
+    two places cannot drift apart. Identity, camera fit and transform stay in
+    Layer Settings because they are not material settings.
+    """
+    layout = configure_layout(layout)
+    look = layout.box()
+    configure_layout(look)
+    _fbp_draw_layer_look_row(look, rig, [rig], False)
+    if fbp_is_drawing_rig(rig):
+        draw_drawing_plane_ui(layout, context, rig, include_layer=False)
+        return
+    _fbp_draw_layer_timing(layout, context, rig)
+    if fbp_layer_backend_type(rig) != 'NATIVE_MOVIE':
+        _fbp_draw_layer_frames(layout, rig)
+    _fbp_draw_color_plane_appearance(layout, context, rig)
+
+
+class _FBPPlaneMaterialPanel:
+    """Plane controls at the top of Properties > Material.
+
+    Blender lists add-on panels after its own ones, so this is a child of the
+    render engine's headerless material-slot panel: it opens right below the
+    slot list, before Preview and Surface.
+    """
+
+    bl_label = "Plane Material"
+    bl_description = "Color, gradient and frames of the selected Frame By Plane plane"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'material'
+    bl_order = 0
+
+    @classmethod
+    def poll(cls, context):
+        return _fbp_image_properties_rig(context) is not None
+
+    def draw_header(self, _context):
+        self.layout.label(text="", **ui_label_icon_kwargs("menu.image_plane", fallback="MATERIAL"))
+
+    def draw(self, context):
+        rig = _fbp_image_properties_rig(context)
+        if rig is None:
+            return
+        _fbp_draw_plane_material(self.layout, context, rig)
+
+
+class FBP_PT_PlaneMaterialEevee(_FBPPlaneMaterialPanel, Panel):
+    bl_idname = "FBP_PT_plane_material_eevee"
+    bl_parent_id = "EEVEE_MATERIAL_PT_context_material"
+
+
+class FBP_PT_PlaneMaterialCycles(_FBPPlaneMaterialPanel, Panel):
+    bl_idname = "FBP_PT_plane_material_cycles"
+    bl_parent_id = "CYCLES_PT_context_material"
+
+
+plane_material_panels = (
+    FBP_PT_PlaneMaterialEevee,
+    FBP_PT_PlaneMaterialCycles,
+)
+
+
+def _fbp_available_plane_material_panels():
+    """Material panels whose engine slot panel exists (Cycles can be disabled)."""
+    return tuple(
+        cls for cls in plane_material_panels
+        if getattr(bpy.types, cls.bl_parent_id, None) is not None
+    )
 
 
 class _FBPLatticeControlsPanel:
@@ -6368,6 +6465,7 @@ def register():
         icons_registered = True
         _set_properties_panel_orders(True)
         register_classes(ui_classes)
+        register_classes(_fbp_available_plane_material_panels())
         register_fbp_menus()
         register_service(
             "ui.refresh_properties_panel_order",
@@ -6383,6 +6481,7 @@ def register():
         unregister_service("ui.refresh_shift_a_menu")
         unregister_service("ui.refresh_properties_panel_order")
         unregister_fbp_menus()
+        unregister_classes(plane_material_panels)
         unregister_classes(ui_classes)
         if icons_registered:
             unregister_custom_icons()
@@ -6393,5 +6492,6 @@ def unregister():
     unregister_service("ui.refresh_shift_a_menu")
     unregister_service("ui.refresh_properties_panel_order")
     unregister_fbp_menus()
+    unregister_classes(plane_material_panels)
     unregister_classes(ui_classes)
     unregister_custom_icons()

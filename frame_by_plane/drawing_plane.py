@@ -2359,7 +2359,8 @@ def _current_preview(rig, scene=None):
     return load_drawing_preview(rig, getattr(item, "filepath", ""), scene=scene), str(getattr(item, "name", "") or f"Drawing {index}")
 
 
-def draw_drawing_plane_ui(layout, context, rig):
+def draw_drawing_plane_ui(layout, context, rig, *, include_layer=True):
+    """Draw Cutout settings; ``include_layer=False`` keeps only drawings/library."""
     configure_layout(layout)
     frame = int(getattr(context.scene, "frame_current", 1) or 1)
     drawing_index = fbp_drawing_index(rig)
@@ -2368,27 +2369,29 @@ def draw_drawing_plane_ui(layout, context, rig):
     if state != (frame, drawing_index):
         fbp_schedule_drawing_sync(rig, context.scene, key_delay=0.075)
 
-    box = layout.box()
-    configure_layout(box)
-    section_header(box, "Cutout Layer", icon="MESH_DATA", icon_value=ui_icon_value("menu.cutout_plane"))
-    row = box.row(align=True)
-    row.prop(rig, "fbp_color_tag", text="")
-    row.prop(rig, "fbp_rig_shape", text="", icon_only=True)
-    row.prop(rig, "fbp_layer_name", text="", **ui_label_icon_kwargs("menu.cutout_plane", fallback="MESH_DATA"))
-    row.operator("fbp.add_drawing_images", text="", icon="ADD")
+    if include_layer:
+        box = layout.box()
+        configure_layout(box)
+        section_header(box, "Cutout Layer", icon="MESH_DATA", icon_value=ui_icon_value("menu.cutout_plane"))
+        row = box.row(align=True)
+        row.prop(rig, "fbp_color_tag", text="")
+        row.prop(rig, "fbp_rig_shape", text="", icon_only=True)
+        row.prop(rig, "fbp_layer_name", text="", **ui_label_icon_kwargs("menu.cutout_plane", fallback="MESH_DATA"))
+        row.operator("fbp.add_drawing_images", text="", icon="ADD")
 
-    row = box.row(align=True)
-    row.prop(rig, "fbp_is_visible", text="", icon="HIDE_OFF" if rig.fbp_is_visible else "HIDE_ON")
-    row.prop(rig, "fbp_opacity", text="Opacity", slider=True)
-    row.prop(rig, "fbp_use_emission", text="", icon="LIGHT_SUN", toggle=True)
-    row.prop(rig, "fbp_track_cam", text="", icon="CON_TRACKTO", toggle=True)
-    row.operator("fbp.fit_camera", text="", icon="FULLSCREEN_ENTER")
-    row.operator("fbp.popup_transform", text="", icon="ORIENTATION_GLOBAL")
+        row = box.row(align=True)
+        row.prop(rig, "fbp_is_visible", text="", icon="HIDE_OFF" if rig.fbp_is_visible else "HIDE_ON")
+        row.prop(rig, "fbp_opacity", text="Opacity", slider=True)
+        row.prop(rig, "fbp_use_emission", text="", icon="LIGHT_SUN", toggle=True)
+        row.prop(rig, "fbp_track_cam", text="", icon="CON_TRACKTO", toggle=True)
+        row.operator("fbp.fit_camera", text="", icon="FULLSCREEN_ENTER")
+        row.operator("fbp.popup_transform", text="", icon="ORIENTATION_GLOBAL")
 
     # The active Cutout preview is always available. The global thumbnail toggle
     # now controls only compact UIList thumbnails, which keeps the main editing
     # feedback predictable while still allowing large libraries to stay light.
-    section_gap(layout)
+    if include_layer:
+        section_gap(layout)
     preview_box = layout.box()
     configure_layout(preview_box)
     preview_header = section_header(preview_box, "Active Drawing", icon="IMAGE_DATA", align=True)
