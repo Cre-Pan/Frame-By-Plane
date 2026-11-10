@@ -139,7 +139,7 @@ All notable public changes to Frame By Plane are documented here.
 
 - **Back** works on every step. It goes back one step at a time, the finished ones included, and the card shows that step again with its guidance, shortcut and button, marked "done". **Next** walks forward again to where you were. Before, Back after skipped or finished steps was undone half a second later and replayed the confetti. Back from the first step opens the guide list, and picking the same guide again resumes it.
 - The confetti plays once per guide. The last card says how many steps were skipped, if any.
-- Opening a guide: the progress bar drops into place, the guide's icon and name rise into the title bar, "?" pops in, the step dots appear one after another and Back, the main button and Skip fade in together. The ripple around the main button no longer plays when a guide opens, only when the next step becomes live, and it is smaller.
+- Opening a guide: the progress bar drops into place, the guide's icon and name fade into the title bar, "?" pops in, the step dots appear one after another and Back, the main button and Skip fade in together, and step text fades in place instead of sliding. The ripple around the main button no longer plays when a guide opens, only when the next step becomes live, and it is smaller.
 - Minimised tutorial: the bar is wider than the open card and has no "–" button. Click the bar to open the card again (dragging still moves it); it lightens under the pointer.
 - The **?** help follows the step shown, also while reviewing.
 

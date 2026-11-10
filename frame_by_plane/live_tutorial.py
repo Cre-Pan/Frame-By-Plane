@@ -2462,12 +2462,12 @@ def _sync_motion(state: TutorialState) -> None:
 
 
 def _content_motion(state: TutorialState, scale: float) -> tuple[float, float]:
-    """(opacity, x offset) of a step sliding in from the side it came from."""
+    """(opacity, x offset) of a new step: it only fades in, the text never slides."""
+    del scale
     phase = state.motion.phase("content")
     if phase is None:
         return 1.0, 0.0
-    eased = ease_out_cubic(phase)
-    return eased, (1.0 - eased) * 18.0 * scale * state.content_direction
+    return ease_out_cubic(phase), 0.0
 
 
 class _translated:
@@ -2841,11 +2841,10 @@ def _draw_card(state: TutorialState, hud: dict[str, Any]) -> None:
     else:
         header_label = "Tutorials"
     text_right = controls["help"][0] if state.route is not None else controls.get("collapse", controls["close"])[0]
-    # Picking a guide: its icon and name rise into the title bar, so the
-    # eye follows them to where the guide's title lives from now on.
+    # Picking a guide: its icon and name fade into the title bar.
     elapsed = _route_in_elapsed(state)
     rise = ease_out_cubic(clamp01(elapsed / 0.45)) if elapsed is not None else 1.0
-    with _opacity(rise), _translated(0.0, (1.0 - rise) * -14.0 * scale):
+    with _opacity(rise):
         _draw_header_badge(state, hud, content_x, tile_y, tile)
         _draw_text(
             _ellipsize(header_label, text_right - content_x - tile - 14.0 * scale, hud["body_size"]),
