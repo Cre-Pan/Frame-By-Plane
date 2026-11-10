@@ -70,6 +70,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Stability
 
 - Keyed or driven Image effect values under a Mesh effect (for example Hue & Saturation below Mesh Wiggle or Glass) showed the previous frame's value on the Mesh effect: its material copy was refreshed before the new values were written. It now shows the current frame.
+- The **Scrub Bar** button in the 3D View header (and any other Frame By Plane icon) could show as an empty grey square. If Blender once failed to read an icon PNG, for example while an update was replacing the add-on files, it remembered the failure in its thumbnail cache, and because every release zip gives its files the same date the icon stayed blank in later installs too. Icons that come back empty are now read straight from the PNG, and an icon that cannot be read at all falls back to a Blender icon instead of a blank button.
 - Fixed a Blender crash (`EXCEPTION_ACCESS_VIOLATION`) that could hit when an effect was added or edited while another add-on watched scene updates (seen with Doodle Music). The Modifiers panel sync wrote layer settings from inside Blender's scene-update callback, and their updates could rebuild data that the next add-on's callback was still reading. The callback now only notes which layers changed, and the sync runs right after.
 
 ### Cleanup
