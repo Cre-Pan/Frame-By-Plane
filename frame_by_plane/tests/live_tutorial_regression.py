@@ -164,7 +164,9 @@ try:
     assert not state.motion.busy(), "the first frame must not animate"
     state.enter_route(bpy.context, "IMAGE")
     tutorial._sync_motion(state)
-    assert state.motion.running("content") and state.motion.running("attention")
+    assert state.motion.running("content") and state.motion.running("route_in")
+    assert state.motion.running("dots") or state.motion.busy()
+    assert not state.motion.running("attention"), "opening a guide does not ripple the main button"
     final = tutorial._compute_hud(bpy.context, region, state)
     state.motion.snap("height", 0.0)
     gliding = tutorial._compute_hud(bpy.context, region, state, animated=True)
@@ -177,6 +179,62 @@ try:
     assert state.motion.running("done"), "a confirmed step flashes"
     clock[0] += 5.0
     assert not state.motion.busy(), "every animation ends by itself"
+
+    # Back really goes back. Skipping every step of a guide used to leave
+    # Back useless: the detection timer re-advanced the page it moved to
+    # (all steps done) and replayed the confetti every time.
+    state = tutorial.TutorialState()
+    state.motion.clock = lambda: clock[0]
+    state.enter_route(bpy.context, "IMAGE")
+    tutorial._sync_motion(state)
+    steps = tutorial._route_steps(state.route)
+    assert [task.key for _page, task in steps][:2] == ["image_open_importer", "image_import"]
+    for _page, task in steps:
+        state.manual_completed.add(task.key)
+        tutorial._advance_completed_page(state)
+    assert tutorial._route_is_finished(state)
+    tutorial._sync_motion(state)
+    assert state.celebrated
+    clock[0] += 5.0
+    live_page = state.page_index
+    tutorial._go_back(state)
+    page, task, reviewing = tutorial._shown_step(state)
+    assert reviewing and task.key == steps[-1][1].key, task
+    for _tick in range(4):
+        tutorial._update_progress(bpy.context, state)
+    assert tutorial._shown_step(state)[1].key == steps[-1][1].key, "the timer must not undo Back"
+    assert state.page_index == live_page
+    assert tutorial._route_progress(state)[0] == len(steps)
+    tutorial._sync_motion(state)
+    for _index in range(len(steps) - 1):
+        tutorial._go_back(state)
+    assert tutorial._shown_step(state)[1].key == steps[0][1].key
+    assert tutorial._route_progress(state)[0] == 1
+    for _index in range(len(steps)):
+        assert tutorial._go_forward_in_review(state)
+    assert not state.review_key and tutorial._route_is_finished(state)
+    tutorial._sync_motion(state)
+    assert not state.motion.running("celebrate"), "confetti plays once per guide"
+
+    # Back from the first step opens the guide list; the same guide resumes.
+    state = tutorial.TutorialState()
+    state.enter_route(bpy.context, "COLOR")
+    first = state.active_task
+    state.manual_completed.add(first.key)
+    tutorial._go_back(state)
+    assert state.review_key == first.key
+    tutorial._go_back(state)
+    assert state.route is None and state.paused_route == "COLOR"
+    state.enter_route(bpy.context, "COLOR")
+    assert first.key in state.manual_completed and state.active_task.key != first.key
+
+    # Collapsed: no "–" button, a wider bar, the bar itself reopens the card.
+    state.collapsed = True
+    bar = tutorial._compute_hud(bpy.context, region, state)
+    assert "collapse" not in bar["controls"]
+    state.collapsed = False
+    card = tutorial._compute_hud(bpy.context, region, state)
+    assert bar["width"] > card["width"] and "collapse" in card["controls"]
     print("FBPTEST live_tutorial: PASS")
 except Exception:
     traceback.print_exc()
