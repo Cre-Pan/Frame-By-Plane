@@ -319,6 +319,7 @@ _FBP_ICON_METRIC_DEFAULTS = {
     "cache_misses": 0,
     "filesystem_checks": 0,
     "preview_loads": 0,
+    "direct_rebuilds": 0,
     "path_alias_hits": 0,
     "load_failures": 0,
     "load_total_ms": 0.0,
@@ -413,6 +414,85 @@ def custom_icon_path_for_ui_key(key):
     return _fbp_existing_icon_path(custom_key)
 
 
+def _fbp_preview_has_pixels(preview):
+    """Return True when Blender actually decoded pixels for *preview*.
+
+    Reading ``icon_size`` makes Blender load the deferred preview now. A preview
+    whose image could not be read still gets a positive ``icon_id`` but stays
+    0x0, and the button then draws with no icon at all.
+    """
+    try:
+        width, height = tuple(preview.icon_size)[:2]
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+    return int(width) > 0 and int(height) > 0
+
+
+def _fbp_rebuild_preview_from_file(pcoll, key, path):
+    """Fill *key* with the PNG's pixels without Blender's thumbnail cache.
+
+    ``pcoll.load(..., 'IMAGE')`` goes through the system thumbnail cache. When
+    one read of a file fails (for example while an add-on update is replacing
+    files) Blender stores a "failed" entry keyed by path and modification
+    time. Release zips give every file the same fixed date, so later installs
+    match that entry and the icon stays blank for good, even with
+    ``force_reload``. Decoding the PNG directly avoids the cache.
+    """
+    try:
+        import imbuf
+        image = imbuf.load(path)
+    except Exception:
+        return False
+    try:
+        if str(getattr(image, "buffer_type", "BYTE")) != "BYTE":
+            image.convert_buffer_type("BYTE")
+        if int(getattr(image, "channels", 4) or 4) != 4:
+            return False
+        width, height = (int(value) for value in tuple(image.size)[:2])
+        if width <= 0 or height <= 0:
+            return False
+        # Previews hold premultiplied alpha and the PNG straight alpha.
+        # Premultiply before scaling so transparent edges do not darken.
+        with image.with_buffer(write=True) as buffer:
+            flat = buffer.cast("B")
+            for index in range(0, len(flat), 4):
+                alpha = flat[index + 3]
+                if alpha < 255:
+                    for offset in range(3):
+                        flat[index + offset] = (flat[index + offset] * alpha + 127) // 255
+        if max(width, height) > 32:
+            # Same 32 px size Blender's own preview loader produces.
+            scale = 32.0 / max(width, height)
+            width = max(1, round(width * scale))
+            height = max(1, round(height * scale))
+            image.resize((width, height), method="BILINEAR")
+        with image.with_buffer() as buffer:
+            rgba = bytes(buffer.cast("B"))
+        if len(rgba) != width * height * 4:
+            return False
+        pixels = [
+            int.from_bytes(rgba[index:index + 4], "little", signed=True)
+            for index in range(0, len(rgba), 4)
+        ]
+        if key in pcoll:
+            del pcoll[key]
+        preview = pcoll.new(key)
+        # ImBuf rows run bottom to top, the same order previews expect.
+        preview.icon_size = (width, height)
+        preview.icon_pixels = pixels
+        preview.image_size = (width, height)
+        preview.image_pixels = pixels
+        _FBP_ICON_METRICS["direct_rebuilds"] += 1
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            image.free()
+        except Exception:
+            pass
+
+
 def custom_icon_value(custom_key):
     """Return a Blender ``icon_value`` for a custom PNG icon, or 0.
 
@@ -470,7 +550,13 @@ def custom_icon_value(custom_key):
         if canonical_key not in pcoll:
             pcoll.load(canonical_key, path, 'IMAGE')
             _FBP_ICON_METRICS["preview_loads"] += 1
+            if not _fbp_preview_has_pixels(pcoll[canonical_key]):
+                _fbp_rebuild_preview_from_file(pcoll, canonical_key, path)
         value = int(getattr(pcoll[canonical_key], "icon_id", 0) or 0)
+        if value and not _fbp_preview_has_pixels(pcoll[canonical_key]):
+            # An empty preview draws as a blank button; the caller's native
+            # fallback icon is better than nothing.
+            value = 0
     except Exception:
         _FBP_ICON_METRICS["load_failures"] += 1
         value = 0
