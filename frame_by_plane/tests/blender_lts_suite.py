@@ -6541,6 +6541,40 @@ def test_icon_runtime_contract(_module):
     }
 
 
+def test_icon_rebuild_skips_thumbnail_cache(_module):
+    """A PNG Blender could not read once must still draw, not a blank button."""
+    icons = importlib.import_module(f"{PACKAGE}.ui_icons")
+    import bpy.utils.previews
+
+    path = icons._fbp_existing_icon_path("floating_timeline")
+    assert path, "Scrub Bar icon file is missing"
+    pcoll = bpy.utils.previews.new()
+    try:
+        broken = pcoll.load("broken", path + ".missing.png", "IMAGE")
+        assert not icons._fbp_preview_has_pixels(broken)
+        assert icons._fbp_rebuild_preview_from_file(pcoll, "scrub", path)
+        rebuilt = pcoll["scrub"]
+        assert tuple(rebuilt.icon_size) == (32, 32), tuple(rebuilt.icon_size)
+        assert icons._fbp_preview_has_pixels(rebuilt)
+        packed = [value & 0xFFFFFFFF for value in rebuilt.icon_pixels]
+        alphas = [value >> 24 for value in packed]
+        assert max(alphas) == 255, max(alphas)
+        # Premultiplied: colour never exceeds alpha.
+        assert all(((value >> shift) & 0xFF) <= (value >> 24) for value in packed for shift in (0, 8, 16))
+        reference = pcoll.load("reference", path, "IMAGE")
+        if icons._fbp_preview_has_pixels(reference):
+            expected = [value & 0xFFFFFFFF for value in reference.icon_pixels]
+            worst = max(
+                abs(((a >> shift) & 0xFF) - ((b >> shift) & 0xFF))
+                for a, b in zip(packed, expected)
+                for shift in (0, 8, 16, 24)
+            )
+            assert worst <= 2, worst
+    finally:
+        bpy.utils.previews.remove(pcoll)
+    return "Scrub Bar icon rebuilt from the PNG"
+
+
 def _redraw_all(iterations=1):
     for window in tuple(bpy.context.window_manager.windows):
         for area in tuple(window.screen.areas):
@@ -6925,6 +6959,7 @@ def run_background():
             ("effect_panel_sections_and_hints", test_effect_panel_sections_and_hints),
             ("mesh_effect_modifier_sections", test_mesh_effect_modifier_sections),
             ("icon_runtime_contract", test_icon_runtime_contract),
+            ("icon_rebuild_skips_thumbnail_cache", test_icon_rebuild_skips_thumbnail_cache),
             ("layer_box_animated_orientation_guard", test_layer_box_animated_orientation_guard),
             ("save_reopen", test_save_reopen),
             ("tiny_render", test_tiny_render),
