@@ -650,6 +650,10 @@ def fbp_native_modifiers_reset(*_args):
     _PENDING_VALUE_RIGS.clear()
     _AUTO_PINNED.clear()
     _RELEASED.clear()
+    # Properties editors are not undone and a .blend stores their pin, so a
+    # pin set before Ctrl+Z or before saving is still there. Claim it again,
+    # or it would look like an artist pin and stay on the old plane.
+    _adopt_plane_pins()
     _subscribe_msgbus()
     # A loaded file keeps its active layer: nothing else asks the Modifiers
     # tab to show its plane (the Frame By Plane section used to, when drawn).
@@ -683,6 +687,36 @@ def _layer_plane(obj):
         return None, None
     plane = _geo()._fbp_plane(rig, repair=False)
     return rig, plane
+
+
+def _is_layer_plane(id_block):
+    """True when a pinned data-block is the image plane of a layer."""
+    if id_block is None or not isinstance(id_block, bpy.types.Object):
+        return False
+    _rig, plane = _layer_plane(id_block)
+    return plane is not None and plane == id_block
+
+
+def _adopt_plane_pins():
+    """Treat Modifiers-tab pins on a layer plane as set by Frame By Plane."""
+    try:
+        wm = bpy.context.window_manager
+    except FBP_DATA_ERRORS:
+        return
+    for window in tuple(getattr(wm, "windows", ()) or ()):
+        try:
+            areas = tuple(getattr(window.screen, "areas", ()) or ())
+        except FBP_DATA_ERRORS:
+            continue
+        for area in areas:
+            if area.type != "PROPERTIES":
+                continue
+            try:
+                space = area.spaces.active
+                if space.use_pin_id and _is_layer_plane(space.pin_id):
+                    _AUTO_PINNED[int(space.as_pointer())] = space.pin_id.name
+            except FBP_DATA_ERRORS:
+                continue
 
 
 def fbp_follow_properties_pins(context=None):
@@ -727,7 +761,11 @@ def fbp_follow_properties_pins(context=None):
                     _AUTO_PINNED[key] = plane.name
                 elif ours and not wants:
                     # Leave an artist pin alone: only release the one we set.
-                    if space.use_pin_id and getattr(space.pin_id, "name", "") == _AUTO_PINNED[key]:
+                    pinned = space.pin_id
+                    if space.use_pin_id and (
+                        getattr(pinned, "name", "") == _AUTO_PINNED[key]
+                        or _is_layer_plane(pinned)
+                    ):
                         space.use_pin_id = False
                         space.pin_id = None
                         area.tag_redraw()

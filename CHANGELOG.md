@@ -137,6 +137,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- Properties > Modifiers no longer stays pinned to an old plane. After Ctrl+Z, Redo or reopening a saved file, Frame By Plane forgot it had set the pin, treated it as the artist's own and left it there, so the tab kept showing a plane that was no longer selected. It now takes those pins back and moves them to the selected layer (or releases them), and also releases a pin whose plane was renamed.
 - Transform box: on a layer whose position or rotation is keyframed, the square below the box (and Reset > Box Orientation) no longer turns the box, because the keys would have turned the drawing on every other frame. A message explains why.
 - Transform box and handles: with Gizmos or Overlays hidden, clicks no longer land on the invisible box or handles; a click on the box knob, dots or edges no longer adds an empty Undo step.
 - Reset Position, Rotation and Scale leave locked channels alone, as Blender's own Clear does, and only auto-key a layer they changed.
