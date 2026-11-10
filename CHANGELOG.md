@@ -135,6 +135,14 @@ All notable public changes to Frame By Plane are documented here.
 - Crop, Extend, Emission, Motion, Track to Camera and Lattice also get a row in Modifiers (Add Modifier > Image or > Mesh). The row sets their order and lets you delete them; their settings stay in the Frame By Plane panel, which shows them while the row is active.
 - The Frame By Plane effect list is gone: the panel shows the settings of the effect that is active in Properties > Modifiers, and its + button opens Add Modifier. Effect groups, solo and editing several layers at once went with the list.
 
+### Tutorial
+
+- **Back** works on every step. It goes back one step at a time, the finished ones included, and the card shows that step again with its guidance, shortcut and button, marked "done". **Next** walks forward again to where you were. Before, Back after skipped or finished steps was undone half a second later and replayed the confetti. Back from the first step opens the guide list, and picking the same guide again resumes it.
+- The confetti plays once per guide. The last card says how many steps were skipped, if any.
+- Opening a guide: the progress bar drops into place, the guide's icon and name fade into the title bar, "?" pops in, the step dots appear one after another and Back, the main button and Skip fade in together, and step text fades in place instead of sliding. The ripple around the main button no longer plays when a guide opens, only when the next step becomes live, and it is smaller.
+- Minimised tutorial: the bar is wider than the open card and has no "–" button. Click the bar to open the card again (dragging still moves it); it lightens under the pointer.
+- The **?** help follows the step shown, also while reviewing.
+
 ### Fixes
 
 - Properties > Modifiers no longer stays pinned to an old plane. After Ctrl+Z, Redo or reopening a saved file, Frame By Plane forgot it had set the pin, treated it as the artist's own and left it there, so the tab kept showing a plane that was no longer selected. It now takes those pins back and moves them to the selected layer (or releases them), and also releases a pin whose plane was renamed.
