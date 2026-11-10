@@ -6441,6 +6441,86 @@ def test_gizmo_fit_keeps_dragged_gizmo(_module):
     return "dragged gizmo kept, spares hidden then trimmed"
 
 
+def test_color_plane_gradient_line_perpendicular(_module):
+    """On a non-square Gradient Color Plane the rig line crosses the bands at
+    a right angle, diagonals included, and dragging its ends round-trips."""
+    from mathutils import Euler, Vector
+    overlay = importlib.import_module(f"{PACKAGE}.handle_overlay")
+    procedural = importlib.import_module(f"{PACKAGE}.operator_procedural")
+    materials = importlib.import_module(f"{PACKAGE}.materials")
+    rig = procedural.fbp_create_color_plane(bpy.context, "GRADIENT")
+    owned = [rig, *rig.children_recursive]
+    try:
+        rig.fbp_gradient_mode = "LINEAR"
+        frame = overlay._color_plane_frame(rig)
+        assert frame is not None
+        bpy.context.view_layer.update()
+        basis = frame[0].matrix_world.to_3x3()
+        ex = basis @ Vector((frame[3], 0.0, 0.0))
+        ey = basis @ Vector((0.0, frame[4], 0.0))
+        assert abs(ex.length / ey.length - 1.0) > 0.2, (ex.length, ey.length)
+        mat = materials.get_fbp_gradient_material_from_rig(rig)
+
+        def fac(uv):
+            # The material's own chain: UV - centre, Mapping (Point), + 0.5, Linear.
+            centre = materials.get_fbp_gradient_center_node(mat).inputs[1].default_value
+            mapping = materials.get_fbp_gradient_mapping_node(mat)
+            scale = mapping.inputs["Scale"].default_value
+            rotation = Euler(tuple(mapping.inputs["Rotation"].default_value)).to_matrix()
+            v = Vector((uv[0] - centre[0], uv[1] - centre[1], 0.0))
+            v = rotation @ Vector((v.x * scale[0], v.y * scale[1], 0.0))
+            return v.x + 0.5
+
+        checked = 0
+        for rotation in (0.0, 90.0, -46.32, 30.0, 135.0):
+            rig.fbp_gradient_rotation = rotation
+            rig.fbp_gradient_scale_x = 0.9
+            rig.fbp_gradient_scale_y = 0.9
+            rig.fbp_gradient_offset_x = 0.3
+            rig.fbp_gradient_offset_y = 0.15
+            radial, uv_0, uv_1 = overlay.color_plane_endpoints(rig)
+            assert not radial
+            assert abs(fac(uv_0)) < 1.0e-4 and abs(fac(uv_1) - 1.0) < 1.0e-4, (rotation, fac(uv_0), fac(uv_1))
+            # Along a band (same fac) the plane direction is perpendicular to the line.
+            line = ex * (uv_1 - uv_0).x + ey * (uv_1 - uv_0).y
+            band_uv = None
+            mid = (uv_0 + uv_1) * 0.5
+            for probe in (Vector((0.1, 0.0)), Vector((0.0, 0.1))):
+                df = fac(mid + probe) - fac(mid)
+                if abs(df) > 1.0e-9:
+                    other = Vector((0.1, 0.0)) if probe.y else Vector((0.0, 0.1))
+                    dg = fac(mid + other) - fac(mid)
+                    # mid + other - probe * dg / df keeps fac constant.
+                    band_uv = other - probe * (dg / df)
+                    break
+            assert band_uv is not None
+            band = ex * band_uv.x + ey * band_uv.y
+            cosine = abs(line.normalized().dot(band.normalized()))
+            assert cosine < 1.0e-4, (rotation, cosine)
+            # Dragging the ends back to where they are changes nothing.
+            before = (rig.fbp_gradient_rotation, rig.fbp_gradient_scale_x, rig.fbp_gradient_scale_y)
+            overlay.apply_color_plane_endpoints(rig, uv_0, uv_1)
+            after = (rig.fbp_gradient_rotation, rig.fbp_gradient_scale_x, rig.fbp_gradient_scale_y)
+            delta = (before[0] - after[0] + 180.0) % 360.0 - 180.0
+            assert abs(delta) < 1.0e-3 and abs(before[1] - after[1]) < 1.0e-4 and abs(before[2] - after[2]) < 1.0e-4, (before, after)
+            checked += 1
+        # A 45 degree line on screen gives bands at 45 degrees on screen.
+        lx, ly = 1.0 / ex.length, 1.0 / ey.length
+        end = Vector((0.5 + 0.3 * lx, 0.5 + 0.3 * ly))
+        overlay.apply_color_plane_endpoints(rig, Vector((0.5, 0.5)), end)
+        assert abs(fac(Vector((0.5, 0.5)))) < 1.0e-4
+        assert abs(fac(end) - 1.0) < 1.0e-4
+        along_band = Vector((0.5 + 0.1 * lx, 0.5 - 0.1 * ly))
+        assert abs(fac(along_band) - fac(Vector((0.5, 0.5)))) < 1.0e-4
+    finally:
+        for obj in owned:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return f"{checked} angles perpendicular on a {ex.length:.2f}x{ey.length:.2f} plane"
+
+
 def test_effect_panel_sections_and_hints(_module):
     """Auto sections match whole words; heavy effects explain what helps."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -6956,6 +7036,7 @@ def run_background():
             ("projector_contract", test_projector_contract),
             ("performance_profile_contract", test_performance_profile_contract),
             ("gizmo_fit_keeps_dragged_gizmo", test_gizmo_fit_keeps_dragged_gizmo),
+            ("color_plane_gradient_line_perpendicular", test_color_plane_gradient_line_perpendicular),
             ("effect_panel_sections_and_hints", test_effect_panel_sections_and_hints),
             ("mesh_effect_modifier_sections", test_mesh_effect_modifier_sections),
             ("icon_runtime_contract", test_icon_runtime_contract),

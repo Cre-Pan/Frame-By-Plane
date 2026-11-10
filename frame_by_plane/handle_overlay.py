@@ -797,6 +797,8 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
         self.fbp_moved = False
         # A fixed size on screen, like the other handles (see draw_prepare).
         self.use_draw_scale = True
+        # Keep drawing while dragged: the stop follows the mouse on the line.
+        self.use_draw_modal = True
 
     def _draw_part(self, shape, color, alpha=1.0):
         self.color = color
@@ -1041,6 +1043,11 @@ class FBP_OT_gradient_stop_color(bpy.types.Operator):
 # or from 1 at the centre to 0 on an ellipse of radius Scale / 2 (radial).
 # The line goes from the ramp's 0 to its 1; dragging its ends rewrites
 # Offset, Rotation and Scale, keeping the Scale X/Y ratio.
+#
+# UVs stretch with the plane's size and scale, so a direction in UVs is
+# not the same direction on the plane unless the plane is square. The line
+# is laid along the gradient's direction on the plane itself: it always
+# crosses the colour bands at a right angle, diagonals included.
 
 COLOR_PLANE_ID = "COLOR_PLANE"
 
@@ -1089,7 +1096,22 @@ def _world_to_uv(frame, world):
     return Vector(((local.x - min_x) / width, (local.y - min_y) / height))
 
 
-def color_plane_endpoints(rig):
+def _color_plane_metric(frame):
+    """``(gxx, gxy, gyy)``: lengths and angle of the UV axes on the plane, in
+    world space (mesh size, object scale and parents included)."""
+    if frame is None:
+        return 1.0, 0.0, 1.0
+    plane, _min_x, _min_y, width, height = frame
+    basis = plane.matrix_world.to_3x3()
+    ex = basis @ Vector((width, 0.0, 0.0))
+    ey = basis @ Vector((0.0, height, 0.0))
+    gxx, gxy, gyy = ex.dot(ex), ex.dot(ey), ey.dot(ey)
+    if gxx <= 1.0e-12 or gyy <= 1.0e-12 or gxx * gyy - gxy * gxy <= 1.0e-18:
+        return 1.0, 0.0, 1.0
+    return gxx, gxy, gyy
+
+
+def color_plane_endpoints(rig, frame=None):
     """``(radial, uv_0, uv_1)``: where the ramp's 0 and 1 sit, in UVs."""
     radial = str(getattr(rig, "fbp_gradient_mode", "LINEAR") or "LINEAR") == "CENTER"
     centre = Vector((0.5 + float(rig.fbp_gradient_offset_x), 0.5 + float(rig.fbp_gradient_offset_y)))
@@ -1099,9 +1121,16 @@ def color_plane_endpoints(rig):
     if radial:
         edge = centre + Vector((0.5 * scale_x * math.cos(angle), -0.5 * scale_y * math.sin(angle)))
         return True, edge, centre
-    # fac = 0.5 + d . (uv - centre), d = (cos a / Sx, -sin a / Sy).
+    # fac = 0.5 + d . (uv - centre), d = (cos a / Sx, -sin a / Sy). With G
+    # the UV metric on the plane, the ramp's direction on the plane is
+    # G^-1 d in UVs: the line runs along it from fac 0 to fac 1, so
+    # span = G^-1 d / (d . G^-1 d), perpendicular to the bands on screen
+    # whatever the plane's proportions.
     d = Vector((math.cos(angle) / scale_x, -math.sin(angle) / scale_y))
-    span = d / max(d.length_squared, 1.0e-12)
+    gxx, gxy, gyy = _color_plane_metric(frame if frame is not None else _color_plane_frame(rig))
+    det = gxx * gyy - gxy * gxy
+    along = Vector(((gyy * d.x - gxy * d.y) / det, (gxx * d.y - gxy * d.x) / det))
+    span = along / max(d.dot(along), 1.0e-12)
     return False, centre - span * 0.5, centre + span * 0.5
 
 
@@ -1109,6 +1138,7 @@ def apply_color_plane_endpoints(rig, uv_0, uv_1):
     """Rewrite Offset, Rotation and Scale so the ramp runs from ``uv_0`` to ``uv_1``."""
     radial = str(getattr(rig, "fbp_gradient_mode", "LINEAR") or "LINEAR") == "CENTER"
     ratio = max(0.001, float(rig.fbp_gradient_scale_y)) / max(0.001, float(rig.fbp_gradient_scale_x))
+    frame = _color_plane_frame(rig)
     if radial:
         centre = Vector(uv_1)
         v = Vector(uv_0) - centre
@@ -1120,7 +1150,10 @@ def apply_color_plane_endpoints(rig, uv_0, uv_1):
         span = Vector(uv_1) - Vector(uv_0)
         if span.length <= 1.0e-6:
             return False
-        d = span / span.length_squared
+        # The inverse of color_plane_endpoints: d = G s / (s . G s).
+        gxx, gxy, gyy = _color_plane_metric(frame)
+        g_span = Vector((gxx * span.x + gxy * span.y, gxy * span.x + gyy * span.y))
+        d = g_span / max(span.dot(g_span), 1.0e-12)
         angle = math.atan2(-d.y * ratio, d.x)
         scale_x = 1.0 / max(math.hypot(d.x, d.y * ratio), 1.0e-9)
         centre = (Vector(uv_0) + Vector(uv_1)) * 0.5
@@ -1131,7 +1164,6 @@ def apply_color_plane_endpoints(rig, uv_0, uv_1):
     }
     offset = (float(centre.x) - 0.5, float(centre.y) - 0.5)
     controller = getattr(rig, "fbp_gradient_controller", None)
-    frame = _color_plane_frame(rig)
     if controller is not None and frame is not None:
         # The offset is driven by the Gradient Controller: move it instead.
         controller.location.x = offset[0] * frame[3]
@@ -1168,7 +1200,7 @@ def color_plane_gradient_targets(context):
             frame = _color_plane_frame(rig)
             if frame is None:
                 continue
-            radial, uv_0, uv_1 = color_plane_endpoints(rig)
+            radial, uv_0, uv_1 = color_plane_endpoints(rig, frame)
             world_0, world_1 = _uv_to_world(frame, uv_0), _uv_to_world(frame, uv_1)
             normal = plane.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
         except (ZeroDivisionError,) + FBP_DATA_ERRORS:
@@ -1202,6 +1234,7 @@ class FBP_GT_color_plane_grip(bpy.types.Gizmo):
         self.fbp_press = None
         self.fbp_moved = False
         self.use_draw_scale = True
+        self.use_draw_modal = True
 
     def draw(self, context):
         if self.fbp_kind == "LINE":
@@ -1255,7 +1288,7 @@ class FBP_GT_color_plane_grip(bpy.types.Gizmo):
         hit = _plane_hit(context.region, context.region_data, self.fbp_press, frame[0].matrix_world.translation, normal)
         if hit is None:
             return {"CANCELLED"}
-        _radial, uv_0, uv_1 = color_plane_endpoints(rig)
+        _radial, uv_0, uv_1 = color_plane_endpoints(rig, frame)
         controller = getattr(rig, "fbp_gradient_controller", None)
         self.fbp_hit = tuple(_world_to_uv(frame, hit))
         self.fbp_initial = {
@@ -1337,7 +1370,8 @@ class FBP_GGT_color_plane_gradient(bpy.types.GizmoGroup):
     bl_label = "Frame By Plane Color Plane Gradient"
     bl_space_type = "VIEW_3D"
     bl_region_type = "WINDOW"
-    bl_options = {"3D", "PERSISTENT"}
+    # SHOW_MODAL_ALL: the end dots stay on screen while a stop is dragged.
+    bl_options = {"3D", "PERSISTENT", "SHOW_MODAL_ALL"}
 
     @classmethod
     def poll(cls, context):
@@ -1363,14 +1397,17 @@ class FBP_GGT_color_plane_gradient(bpy.types.GizmoGroup):
             gizmo_size = 75.0
         gizmos = self.gizmos
         _fit_gizmos(gizmos, len(grips), FBP_GT_color_plane_grip.bl_idname)
+        view_rotation = context.region_data.view_rotation.to_matrix().to_4x4()
         for gizmo, (rig_name, kind, a, b) in zip(gizmos, grips):
             if gizmo.is_modal:
+                # Being dragged: keep its target, follow the line on screen.
+                if gizmo.fbp_rig_name == rig_name and gizmo.fbp_kind == kind:
+                    gizmo.matrix_basis = Matrix.Translation(a) @ view_rotation
                 continue
             gizmo.fbp_rig_name = rig_name
             gizmo.fbp_kind = kind
             gizmo.fbp_a = tuple(a)
             gizmo.fbp_b = tuple(b)
-            view_rotation = context.region_data.view_rotation.to_matrix().to_4x4()
             gizmo.matrix_basis = Matrix.Translation(a) @ view_rotation
             gizmo.scale_basis = HANDLE_SCREEN_SIZE_PX * _CP_DOT_RADIUS * 0.5 / gizmo_size
 
@@ -1611,7 +1648,9 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
     bl_label = "Frame By Plane Gradient Stops"
     bl_space_type = "VIEW_3D"
     bl_region_type = "WINDOW"
-    bl_options = {"3D", "PERSISTENT"}
+    # SHOW_MODAL_ALL: every stop stays on screen while one of them, or an
+    # end dot of the line, is dragged.
+    bl_options = {"3D", "PERSISTENT", "SHOW_MODAL_ALL"}
 
     @classmethod
     def poll(cls, context):
@@ -1655,6 +1694,11 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
         _fit_gizmos(gizmos, len(stops), FBP_GT_gradient_stop.bl_idname)
         for gizmo, (rig_name, effect_id, key, start, end, location, basis, color) in zip(gizmos, stops):
             if gizmo.is_modal:
+                # Being dragged: it keeps the line it was grabbed on (the
+                # drag reads fbp_start/fbp_end) and moves to its new place.
+                if (gizmo.fbp_rig_name, gizmo.fbp_effect_id, gizmo.fbp_key) == (rig_name, effect_id, key):
+                    gizmo.matrix_basis = Matrix.Translation(location) @ basis
+                    gizmo.fbp_swatch = tuple(color)[:3]
                 continue
             gizmo.fbp_rig_name = rig_name
             gizmo.fbp_effect_id = effect_id
