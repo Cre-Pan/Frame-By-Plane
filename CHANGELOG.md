@@ -47,6 +47,10 @@ All notable public changes to Frame By Plane are documented here.
 - **Apply** (or Ctrl+A) on an image-effect modifier row opens **Apply Effects** instead of silently removing the effect.
 - Lighter panels: no repeated Effects box in the Modifiers tab (a hint shows what to click when no effect is open), on/off options are checkboxes instead of full-width blue bars, Viewport Control is a checkbox row, and the internal mixed-stack rows (FBP • Input Material...) are created folded.
 
+### Plane Material
+
+- Properties > **Material** opens with a **Plane Material** panel, right below the material slots, that repeats the selected plane's look from Layer Settings: Opacity, Emission and Blend, then what that plane type has. A **Color Plane** shows Color Plane Frames and **Frame Appearance** (Color or Gradient, the Color Ramp and its Position), an **image sequence** Animation and Frames, a **movie** Movie Playback, and a **Cutout** plane Active Drawing and Cutout Library. The panel draws the same blocks as Layer Settings, so the two always match. It works with EEVEE, Workbench and Cycles.
+
 ### Playback speed
 
 - Image sequences no longer slow playback down part-way through the timeline when Blender's image cache is full. Blender keeps decoded sequence frames in its Memory Cache (4 GB by default); six HD layers fill it after about 85 frames, and from there every frame was decoded again from disk, dropping to 8-10 fps. The Timeline's **Playback** popover now shows how much cache the visible sequences need for the playback range, **Raise Image Cache** sets Blender's limit to fit (never above 75% of the computer's memory), and **Preload Frames** decodes every frame up front so even the first playback runs from memory. The Performance Dashboard warns when the cache is too small.

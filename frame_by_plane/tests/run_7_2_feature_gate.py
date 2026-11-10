@@ -23,6 +23,7 @@ TESTS = (
     "gp_mask_crop_regression.py",
     "compositor_opt_in_regression.py",
     "image_properties_regression.py",
+    "plane_material_panel_regression.py",
     "addon_lifecycle_regression.py",
     "ui_draw_sweep.py",
     "native_modifiers_regression.py",
