@@ -783,6 +783,19 @@ class TutorialState:
     shown_done: frozenset[str] = frozenset()
     shown_finished: bool = False
     content_direction: float = 1.0
+    # Back/Next review finished steps without touching progress: the live
+    # position (page_index + active_task) stays where the detectors left it,
+    # and ``review_key`` names the earlier step shown instead. Keeping the two
+    # apart is what lets Back stay back: the detection timer used to re-advance
+    # a page whose steps were all done half a second after Back moved to it.
+    review_key: str = ""
+    # Guide left through Back on its first step: picking it again resumes it.
+    paused_route: str = ""
+    # Confetti plays once per run of a guide, not every time the last page
+    # is shown again after a review.
+    celebrated: bool = False
+    # Steps passed with Skip, so the last card can say they were not done.
+    skipped: set[str] = field(default_factory=set)
 
     def reset_baseline(self, context: bpy.types.Context) -> None:
         objects = tuple(context.scene.objects)
@@ -821,10 +834,21 @@ class TutorialState:
         return None
 
     def enter_route(self, context: bpy.types.Context, route_key: str = "IMAGE") -> None:
-        self.route_key = route_key if route_key in ROUTES else "IMAGE"
+        route_key = route_key if route_key in ROUTES else "IMAGE"
+        paused, self.paused_route = self.paused_route, ""
+        self.review_key = ""
+        if paused == route_key:
+            # Back from the first step only peeked at the guide list: picking
+            # the same guide again resumes it, unless it was already finished.
+            self.route_key = route_key
+            if not _route_is_finished(self):
+                return
+        self.route_key = route_key
         self.page_index = 0
+        self.celebrated = False
         self.completed.clear()
         self.manual_completed.clear()
+        self.skipped.clear()
         self.reset_baseline(context)
 
 
@@ -1260,6 +1284,88 @@ def _advance_completed_page(state: TutorialState) -> bool:
     if page.tasks and not all(state.task_is_done(task) for task in page.tasks):
         return False
     state.page_index += 1
+    return True
+
+
+_ROUTE_STEPS: dict[str, tuple[tuple[int, TaskSpec], ...]] = {}
+
+
+def _route_steps(route: RouteSpec) -> tuple[tuple[int, TaskSpec], ...]:
+    """Every step of a guide in order, as (page index, task).
+
+    The summary page repeats earlier keys, so it adds no steps of its own.
+    """
+    steps = _ROUTE_STEPS.get(route.key)
+    if steps is None:
+        seen: set[str] = set()
+        collected = []
+        for page_index, page in enumerate(route.pages):
+            for task in page.tasks:
+                if task.key not in seen:
+                    seen.add(task.key)
+                    collected.append((page_index, task))
+        steps = _ROUTE_STEPS[route.key] = tuple(collected)
+    return steps
+
+
+def _live_step_index(state: TutorialState) -> int:
+    """Index of the first step still to do; the step count when all are done."""
+    route = state.route
+    if route is None:
+        return 0
+    steps = _route_steps(route)
+    return next((index for index, (_page, task) in enumerate(steps) if not state.task_is_done(task)), len(steps))
+
+
+def _review_step(state: TutorialState) -> tuple[int, int, TaskSpec] | None:
+    """(step index, page index, task) of the step under review, if any."""
+    route = state.route
+    if route is None or not state.review_key:
+        return None
+    for index, (page_index, task) in enumerate(_route_steps(route)):
+        if task.key == state.review_key:
+            return index, page_index, task
+    return None
+
+
+def _shown_step(state: TutorialState) -> tuple[PageSpec | None, TaskSpec | None, bool]:
+    """(page, task, reviewing) the card shows: the reviewed step or the live one."""
+    review = _review_step(state)
+    if review is not None:
+        return state.route.pages[review[1]], review[2], True
+    return state.page, state.active_task, False
+
+
+def _shown_position(state: TutorialState) -> int:
+    review = _review_step(state)
+    return review[0] if review is not None else _live_step_index(state)
+
+
+def _go_back(state: TutorialState) -> None:
+    """One step back. Before the first step, back to the guide list."""
+    route = state.route
+    if route is None:
+        return
+    target = _shown_position(state) - 1
+    if target < 0:
+        state.paused_route = route.key
+        state.route_key = None
+        state.review_key = ""
+        return
+    state.review_key = _route_steps(route)[target][1].key
+
+
+def _go_forward_in_review(state: TutorialState) -> bool:
+    """Next while reviewing: the following step, then the live one. False if not reviewing."""
+    review = _review_step(state)
+    if review is None:
+        state.review_key = ""
+        return False
+    target = review[0] + 1
+    if target >= _live_step_index(state):
+        state.review_key = ""
+    else:
+        state.review_key = _route_steps(state.route)[target][1].key
     return True
 
 
@@ -1911,7 +2017,9 @@ def _task_shortcut_text(context: bpy.types.Context, task: TaskSpec, page: PageSp
 
 def _route_is_finished(state: TutorialState) -> bool:
     route = state.route
-    return bool(route and state.page_index == len(route.pages) - 1 and state.active_task is None)
+    return bool(
+        route and not state.review_key and state.page_index == len(route.pages) - 1 and state.active_task is None
+    )
 
 
 def _route_progress(state: TutorialState) -> tuple[int, int, float]:
@@ -1921,7 +2029,11 @@ def _route_progress(state: TutorialState) -> tuple[int, int, float]:
     tasks = _all_route_tasks(route)
     total = len(tasks)
     completed = sum(1 for task in tasks if state.task_is_done(task))
-    current = min(total, completed + (1 if state.active_task is not None else 0))
+    review = _review_step(state)
+    if review is not None:
+        current = review[0] + 1
+    else:
+        current = min(total, completed + (1 if state.active_task is not None else 0))
     return current, total, (completed / total if total else 1.0)
 
 
@@ -1977,6 +2089,7 @@ def _is_key_label(label: str) -> bool:
 # be dragged by its title bar and collapsed to the title bar alone, so the
 # viewport stays usable while the guide is open. Details live behind "?".
 _HUD_TOP_CLEARANCE = 44.0
+_COLLAPSED_WIDTH = 420.0
 
 
 def _compute_hud(
@@ -2008,7 +2121,9 @@ def _compute_hud(
         "line_h": 14.0 * scale,
     }
     if state.collapsed:
-        width, height = 280.0 * scale, header_h
+        # The bar is wider than the open card: the step name gets room, and
+        # the change of shape reads as "minimised" at a glance.
+        width, height = _COLLAPSED_WIDTH * scale, header_h
     elif state.route is None:
         width, height = 340.0 * scale, header_h + 150.0 * scale
     else:
@@ -2019,8 +2134,10 @@ def _compute_hud(
     height = min(height, max(1.0, region_h - margin * 2.0))
     if animated:
         # The top edge stays put (default_y below is measured from the top),
-        # so the card unrolls downwards and rolls back up on collapse.
+        # so the card unrolls downwards and rolls back up on collapse; the
+        # width glides around the centre between card and bar.
         height = max(min(header_h, height), state.motion.value("height", height, _CARD_RESIZE_SECONDS))
+        width = max(1.0, state.motion.value("width", width, _CARD_RESIZE_SECONDS))
     header_h = min(header_h, height)
     default_x = (region_w - width) * 0.5
     default_y = region_h - height - _HUD_TOP_CLEARANCE * scale
@@ -2033,22 +2150,26 @@ def _compute_hud(
     gap = 4.0 * scale
     header_control_y = y + height - header_h + (header_h - button) * 0.5
     right = x + width - 6.0 * scale
-    controls = {
-        "close": (right - button, header_control_y, button, button),
-        "collapse": (right - button * 2.0 - gap, header_control_y, button, button),
-        "help": (right - button * 3.0 - gap * 2.0, header_control_y, button, button),
-    }
+    # The bar has no "–": clicking the bar itself opens the card again, so
+    # "?" moves into the slot the collapse button leaves free.
+    slots = [(right - button * (index + 1) - gap * index, header_control_y, button, button) for index in range(3)]
+    controls = {"close": slots[0]}
+    if state.collapsed:
+        controls["help"] = slots[1]
+    else:
+        controls["collapse"] = slots[1]
+        controls["help"] = slots[2]
     footer_y = y + pad
     back_w = 58.0 * scale
     next_w = 58.0 * scale
     controls["back"] = (x + pad, footer_y, back_w, control_h)
     controls["next"] = (x + width - pad - next_w, footer_y, next_w, control_h)
     action_rect = None
-    if not state.collapsed and state.route is not None and state.active_task is not None:
+    if not state.collapsed and state.route is not None and _shown_step(state)[1] is not None:
         action_left = controls["back"][0] + back_w + gap * 2.0
         action_right = controls["next"][0] - gap * 2.0
         action_rect = (action_left, footer_y, max(1.0, action_right - action_left), control_h)
-    first_control = controls["help"][0] if state.route is not None else controls["collapse"][0]
+    first_control = controls["help"][0] if state.route is not None else controls.get("collapse", controls["close"])[0]
     hud.update({
         "x": x,
         "y": y,
@@ -2069,10 +2190,14 @@ def _compute_hud(
 
 
 def _step_guidance(state: TutorialState) -> tuple[str, str]:
-    task = state.active_task
+    _page, task, _reviewing = _shown_step(state)
     if task is not None:
         return task.label, _TASK_GUIDANCE.get(task.key, "Complete this action in Blender to continue.")
     if _route_is_finished(state):
+        skipped = sum(1 for _page, step in _route_steps(state.route) if step.key in state.skipped)
+        if skipped:
+            noun = "step was" if skipped == 1 else "steps were"
+            return "Guide complete", f"{skipped} {noun} skipped. Press Back to review them, or pick another guide."
         return "Guide complete", "Every action was detected. Pick another guide or review earlier steps."
     return "Step complete", "Press Next to continue, or Back to review this step."
 
@@ -2080,13 +2205,12 @@ def _step_guidance(state: TutorialState) -> tuple[str, str]:
 def _step_body_height(state: TutorialState, hud: dict[str, Any]) -> float:
     """Height of the step body: progress, title, guidance and the HOW path."""
     scale = hud["scale"]
-    page = state.page
+    page, task, _reviewing = _shown_step(state)
     if page is None:
         return 0.0
     _title, guidance = _step_guidance(state)
     lines = len(_wrap_measured(guidance, hud["content_w"], hud["small_size"], max_lines=2))
     height = 10.0 * scale + 3.0 * scale + 14.0 * scale + hud["heading_size"] + lines * hud["line_h"]
-    task = state.active_task
     shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
     if shortcut:
         height += 8.0 * scale + _draw_shortcut_chips(hud, shortcut, 0.0, 0.0, hud["content_w"], measure=True)
@@ -2264,8 +2388,12 @@ _CHOOSER_SECONDS = 0.62
 _HOVER_SECONDS = 0.14
 _PROGRESS_SECONDS = 0.6
 _DONE_SECONDS = 0.9
-_ATTENTION_SECONDS = 1.8
+_ATTENTION_SECONDS = 0.9
 _CELEBRATE_SECONDS = 2.0
+# Opening a guide: the progress bar drops in, the icon and title rise into the
+# title bar, "?" pops and the step dots appear one after another.
+_ROUTE_IN_SECONDS = 0.9
+_DOTS_SECONDS = 1.0
 _FRAME_INTERVAL = 1.0 / 60.0
 
 
@@ -2274,8 +2402,18 @@ def _hover_amount(state: TutorialState, key: str) -> float:
 
 
 def _content_signature(state: TutorialState) -> tuple[Any, ...]:
-    task = state.active_task
-    return (state.route_key, state.page_index, task.key if task is not None else "", state.collapsed)
+    """(route, page, step, collapsed, position, reviewing) of what the card shows."""
+    page, task, reviewing = _shown_step(state)
+    route = state.route
+    page_index = route.pages.index(page) if route is not None and page is not None else 0
+    return (
+        state.route_key,
+        page_index,
+        task.key if task is not None else "",
+        state.collapsed,
+        _shown_position(state),
+        reviewing,
+    )
 
 
 def _sync_motion(state: TutorialState) -> None:
@@ -2287,20 +2425,36 @@ def _sync_motion(state: TutorialState) -> None:
     previous = state.shown_content
     if previous is not None and content != previous:
         same_route = content[0] == previous[0]
-        backwards = (same_route and content[1] < previous[1]) or (content[0] is None and previous[0] is not None)
+        backwards = (same_route and content[4] < previous[4]) or (content[0] is None and previous[0] is not None)
         state.content_direction = -1.0 if backwards else 1.0
-        motion.trigger("content", _CONTENT_SECONDS)
+        if content[3] == previous[3] or not same_route:
+            # Collapsing or expanding resizes the card; the step itself
+            # did not change, so it does not slide.
+            motion.trigger("content", _CONTENT_SECONDS)
         if not same_route:
             # A new guide starts its progress bar from zero, not from the
             # previous guide's value.
             motion.snap("progress", 0.0)
+            motion.trigger("route_in", _ROUTE_IN_SECONDS)
             if content[0] is None:
                 motion.trigger("chooser", _CHOOSER_SECONDS)
-        if content[2] and content[2] != previous[2] and not content[3]:
+            else:
+                motion.trigger("dots", _DOTS_SECONDS, delay=0.12)
+        elif content[1] != previous[1] and content[0] is not None:
+            motion.trigger("dots", _DOTS_SECONDS)
+        # The ripple around the main button marks a step that just became
+        # the live one after the previous was confirmed. Opening a guide,
+        # reviewing with Back/Next or expanding the card stay quiet.
+        moved_on = same_route and content[4] > previous[4] and not content[5] and not previous[5]
+        if moved_on and content[2] and content[2] != previous[2] and not content[3]:
             motion.trigger("attention", _ATTENTION_SECONDS, delay=_CONTENT_SECONDS * 0.6)
     if previous is not None and content[0] == previous[0] and done - state.shown_done:
         motion.trigger("done", _DONE_SECONDS)
-    if previous is not None and finished and not state.shown_finished and content[0] == previous[0]:
+    if (
+        previous is not None and finished and not state.shown_finished
+        and content[0] == previous[0] and not state.celebrated
+    ):
+        state.celebrated = True
         motion.trigger("celebrate", _CELEBRATE_SECONDS)
     state.shown_content = content
     state.shown_done = done
@@ -2308,12 +2462,12 @@ def _sync_motion(state: TutorialState) -> None:
 
 
 def _content_motion(state: TutorialState, scale: float) -> tuple[float, float]:
-    """(opacity, x offset) of a step sliding in from the side it came from."""
+    """(opacity, x offset) of a new step: it only fades in, the text never slides."""
+    del scale
     phase = state.motion.phase("content")
     if phase is None:
         return 1.0, 0.0
-    eased = ease_out_cubic(phase)
-    return eased, (1.0 - eased) * 18.0 * scale * state.content_direction
+    return ease_out_cubic(phase), 0.0
 
 
 class _translated:
@@ -2443,24 +2597,35 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
             )
 
 
-def _draw_task_dots(state: TutorialState, hud: dict[str, Any], page: PageSpec, right: float, cy: float) -> None:
+def _draw_task_dots(
+    state: TutorialState, hud: dict[str, Any], page: PageSpec, shown: TaskSpec | None, right: float, cy: float,
+) -> None:
     palette = hud["palette"]
     scale = hud["scale"]
     radius = 3.5 * scale
     spacing = 12.0 * scale
-    active = state.active_task
+    count = len(page.tasks)
+    # On a new guide or page the dots pop in one after another, left to right.
+    dots = state.motion.phase("dots")
+    elapsed = dots * _DOTS_SECONDS if dots is not None else None
+    stagger = min(0.07, 0.5 / max(1, count))
+    phase = state.motion.phase("content")
     for index, task in enumerate(reversed(page.tasks)):
         cx = right - radius - index * spacing
-        if state.task_is_done(task):
-            _draw_circle(cx, cy, radius, palette["success"])
-        elif active is not None and task.key == active.key:
-            # The current dot grows in when its step slides in.
-            phase = state.motion.phase("content")
-            grow = ease_out_back(phase, 2.4) if phase is not None else 1.0
-            _draw_circle(cx, cy, (radius + 1.5 * scale) * grow, palette["tint"])
+        order = count - 1 - index
+        appear = 1.0 if elapsed is None else ease_out_back(clamp01((elapsed - order * stagger) / 0.26), 2.2)
+        if appear <= 0.0:
+            continue
+        current = shown is not None and task.key == shown.key
+        done = state.task_is_done(task)
+        if current:
+            # The current dot is a ring; it grows in when its step slides in.
+            # A reviewed step keeps its green: it is done, just shown again.
+            grow = (ease_out_back(phase, 2.4) if phase is not None else 1.0) * appear
+            _draw_circle(cx, cy, (radius + 1.5 * scale) * grow, palette["success"] if done else palette["tint"])
             _draw_circle(cx, cy, max(0.0, (radius - 0.5 * scale) * grow), palette["card"])
         else:
-            _draw_circle(cx, cy, radius, palette["pending"])
+            _draw_circle(cx, cy, radius * appear, palette["success"] if done else palette["pending"])
 
 
 def _draw_progress_bar(state: TutorialState, hud: dict[str, Any], bar_y: float) -> None:
@@ -2486,18 +2651,18 @@ def _draw_progress_bar(state: TutorialState, hud: dict[str, Any], bar_y: float) 
 
 
 def _draw_attention(state: TutorialState, hud: dict[str, Any], rect) -> None:
-    """Two soft ripples around the main button when a new step appears."""
+    """One soft ripple around the main button when the next step becomes live."""
     phase = state.motion.phase("attention")
     if phase is None:
         return
     scale = hud["scale"]
     tint = hud["palette"]["tint"]
-    for offset in (0.0, 0.5):
-        wave = phase * 2.0 - offset * 2.0
+    for offset in (0.0,):
+        wave = phase - offset
         if not 0.0 <= wave <= 1.0:
             continue
-        grow = ease_out_cubic(wave) * 7.0 * scale
-        alpha = 0.42 * (1.0 - wave)
+        grow = ease_out_cubic(wave) * 4.0 * scale
+        alpha = 0.3 * (1.0 - wave)
         _draw_round_rect(rect[0] - grow, rect[1] - grow, rect[2] + grow * 2.0, rect[3] + grow * 2.0, rect[3] * 0.5 + grow, (*tint[:3], alpha))
 
 
@@ -2507,17 +2672,20 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
     y, h = hud["y"], hud["height"]
     content_x, content_w = hud["content_x"], hud["content_w"]
     route = state.route
-    page = state.page
+    page, task, reviewing = _shown_step(state)
     if route is None or page is None:
         return
 
     # Thin progress bar across the whole guide. It stays still while the step
-    # below it slides, so the eye keeps a fixed reference.
+    # below it slides, so the eye keeps a fixed reference. When a guide opens
+    # it drops down out of the title bar.
     bar_h = 3.0 * scale
     bar_y = y + h - hud["header_h"] - 6.0 * scale - bar_h
-    _draw_progress_bar(state, hud, bar_y)
+    route_in = state.motion.phase("route_in")
+    drop = ease_out_cubic(clamp01(route_in * _ROUTE_IN_SECONDS / 0.42)) if route_in is not None else 1.0
+    with _opacity(drop), _translated(0.0, (1.0 - drop) * 9.0 * scale):
+        _draw_progress_bar(state, hud, bar_y)
 
-    task = state.active_task
     title, guidance = _step_guidance(state)
     title_y = bar_y - 12.0 * scale - hud["heading_size"] * 0.8
     opacity, slide = _content_motion(state, scale)
@@ -2536,7 +2704,10 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
             _draw_text(title, content_x + badge + 8.0 * scale, title_y, hud["heading_size"], palette["text"])
         else:
             dots_w = len(page.tasks) * 12.0 * scale + 6.0 * scale
-            label = title + ("  · optional" if task.optional else "")
+            if reviewing:
+                label = title + "  · done"
+            else:
+                label = title + ("  · optional" if task.optional else "")
             _draw_text(_ellipsize(label, content_w - dots_w, hud["heading_size"]), content_x, title_y, hud["heading_size"], palette["text"])
         lines = _wrap_measured(guidance, content_w, hud["small_size"], max_lines=2)
         cursor = _draw_text_lines(lines, content_x, title_y - 17.0 * scale, hud["small_size"], palette["secondary"], hud["line_h"])
@@ -2546,14 +2717,16 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
             _draw_shortcut_chips(hud, shortcut, content_x, cursor - chip_h + 4.0 * scale, content_w)
     if task is not None:
         # Dots sit outside the slide: they belong to the page, not the step.
-        _draw_task_dots(state, hud, page, content_x + content_w, title_y + 4.0 * scale)
+        _draw_task_dots(state, hud, page, task, content_x + content_w, title_y + 4.0 * scale)
 
     action_rect = hud.get("action_rect")
     if task is not None and action_rect is not None:
+        # The main button stays put while the step slides: it is the same
+        # control on every step, only its label changes.
         label = _TASK_ACTION_LABELS.get(task.key, "Do This Step")
         _draw_attention(state, hud, action_rect)
-        with _opacity(0.35 + 0.65 * opacity):
-            _draw_pill_button(state, hud, "do_action", action_rect, label, primary=True)
+        with _opacity(_footer_fade(state)):
+            _draw_pill_button(state, hud, "do_action", action_rect, label, primary=not reviewing)
 
 
 def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
@@ -2569,14 +2742,31 @@ def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
     _draw_hud(state, hud)
 
 
-def _draw_round_control(state: TutorialState, hud: dict[str, Any], key: str, rect, label: str) -> None:
+def _draw_round_control(
+    state: TutorialState, hud: dict[str, Any], key: str, rect, label: str, *, pop: float = 1.0,
+) -> None:
     palette = hud["palette"]
     hover = _hover_amount(state, key)
     state.hitboxes[key] = rect
-    _draw_circle(rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5, rect[2] * 0.5 * (1.0 + 0.08 * hover),
+    if pop <= 0.0:
+        return
+    _draw_circle(rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5, rect[2] * 0.5 * (1.0 + 0.08 * hover) * pop,
                  _mix_color(palette["button"], palette["button_hover"], hover), 32)
-    _draw_text(label, rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5 - hud["small_size"] * 0.38,
-               hud["small_size"], _mix_color(palette["secondary"], palette["text"], hover), align="CENTER")
+    with _opacity(clamp01(pop)):
+        _draw_text(label, rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5 - hud["small_size"] * 0.38,
+                   hud["small_size"], _mix_color(palette["secondary"], palette["text"], hover), align="CENTER")
+
+
+def _route_in_elapsed(state: TutorialState) -> float | None:
+    phase = state.motion.phase("route_in")
+    return phase * _ROUTE_IN_SECONDS if phase is not None else None
+
+
+def _footer_fade(state: TutorialState) -> float:
+    """Back, the main button and Skip fade in together when a guide opens,
+    instead of the main button appearing at full strength on an empty card."""
+    elapsed = _route_in_elapsed(state)
+    return ease_out_cubic(clamp01((elapsed - 0.12) / 0.3)) if elapsed is not None else 1.0
 
 
 def _draw_header_badge(state: TutorialState, hud: dict[str, Any], x: float, y: float, size: float) -> None:
@@ -2628,33 +2818,41 @@ def _draw_card(state: TutorialState, hud: dict[str, Any]) -> None:
         grow = spread * scale
         _draw_round_rect(x - grow, y - grow * 1.3, w + grow * 2.0, h + grow * 2.0, outer_radius + grow, (0.0, 0.0, 0.0, alpha))
     _draw_round_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, outer_radius + 1.0, palette["hairline"])
-    _draw_round_rect(x, y, w, h, outer_radius, palette["surface"])
     controls = hud["controls"]
+    surface = palette["surface"]
+    if state.collapsed:
+        # The whole bar is the "open again" button: it lightens under the pointer.
+        surface = _mix_color(surface, palette["card_hover"], _hover_amount(state, "drag_header"))
+    _draw_round_rect(x, y, w, h, outer_radius, surface)
     state.hitboxes.clear()
     state.hitboxes["drag_header"] = hud["drag_rect"]
     header_y = y + h - hud["header_h"]
     content_x = hud["content_x"]
     tile = 18.0 * scale
     tile_y = header_y + (hud["header_h"] - tile) * 0.5
-    _draw_header_badge(state, hud, content_x, tile_y, tile)
     if state.route is not None:
         header_label = _ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)
         current, total, _progress = _route_progress(state)
         if total:
             header_label += f"  ·  {min(current, total)}/{total}"
-        task = state.active_task
+        _page, task, _reviewing = _shown_step(state)
         if state.collapsed and task is not None:
             header_label += f"  ·  {task.label}"
     else:
         header_label = "Tutorials"
-    text_right = controls["help"][0] if state.route is not None else controls["collapse"][0]
-    _draw_text(
-        _ellipsize(header_label, text_right - content_x - tile - 14.0 * scale, hud["body_size"]),
-        content_x + tile + 8.0 * scale,
-        header_y + hud["header_h"] * 0.5 - hud["body_size"] * 0.36,
-        hud["body_size"],
-        palette["text"],
-    )
+    text_right = controls["help"][0] if state.route is not None else controls.get("collapse", controls["close"])[0]
+    # Picking a guide: its icon and name fade into the title bar.
+    elapsed = _route_in_elapsed(state)
+    rise = ease_out_cubic(clamp01(elapsed / 0.45)) if elapsed is not None else 1.0
+    with _opacity(rise):
+        _draw_header_badge(state, hud, content_x, tile_y, tile)
+        _draw_text(
+            _ellipsize(header_label, text_right - content_x - tile - 14.0 * scale, hud["body_size"]),
+            content_x + tile + 8.0 * scale,
+            header_y + hud["header_h"] * 0.5 - hud["body_size"] * 0.36,
+            hud["body_size"],
+            palette["text"],
+        )
     # While the card unrolls after Expand, the body waits until there is
     # room for it instead of spilling over the title bar.
     expanded = not state.collapsed and h > hud["header_h"] + 24.0 * scale
@@ -2664,17 +2862,23 @@ def _draw_card(state: TutorialState, hud: dict[str, Any]) -> None:
         else:
             _draw_step(state, hud)
     _draw_round_control(state, hud, "control_close", controls["close"], "×")
-    _draw_round_control(state, hud, "control_collapse", controls["collapse"], "+" if state.collapsed else "–")
+    if "collapse" in controls:
+        _draw_round_control(state, hud, "control_collapse", controls["collapse"], "–")
     if state.route is not None:
-        _draw_round_control(state, hud, "control_help", controls["help"], "?")
+        # "?" arrives with the guide: a small pop once the title has risen.
+        pop = ease_out_back(clamp01((elapsed - 0.22) / 0.3), 1.8) if elapsed is not None else 1.0
+        _draw_round_control(state, hud, "control_help", controls["help"], "?", pop=pop)
         if expanded:
-            task = state.active_task
-            _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
-            if task is not None:
-                _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
-            else:
-                next_label = "Guides" if _route_is_finished(state) else "Next  ›"
-                _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
+            _page, task, reviewing = _shown_step(state)
+            with _opacity(_footer_fade(state)):
+                _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
+                if reviewing:
+                    _draw_pill_button(state, hud, "control_next", controls["next"], "Next  ›", primary=True)
+                elif task is not None:
+                    _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
+                else:
+                    next_label = "Guides" if _route_is_finished(state) else "Next  ›"
+                    _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
 
 
 # -----------------------------------------------------------------------------
@@ -2762,8 +2966,10 @@ def _open_viewport_radial(context: bpy.types.Context) -> bool:
         return False
 
 
-def _run_tutorial_task_action(context: bpy.types.Context, state: TutorialState) -> bool:
-    task = state.active_task
+def _run_tutorial_task_action(
+    context: bpy.types.Context, state: TutorialState, task: TaskSpec | None = None,
+) -> bool:
+    task = task or state.active_task
     if task is None:
         return False
     key = task.key
@@ -2891,6 +3097,9 @@ def _resume_state_for_context(context: bpy.types.Context) -> TutorialState:
     return state
 
 
+_CLICK_SLOP = 4
+
+
 def _find_view3d_area(context: bpy.types.Context) -> bpy.types.Area | None:
     if context.area and context.area.type == "VIEW_3D":
         return context.area
@@ -2986,7 +3195,7 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event):
         del event
-        if _ACTIVE_OPERATOR is None or _ACTIVE_OPERATOR._state.page is None:
+        if _ACTIVE_OPERATOR is None or _shown_step(_ACTIVE_OPERATOR._state)[0] is None:
             return {"CANCELLED"}
         return context.window_manager.invoke_popup(self, width=620)
 
@@ -3002,7 +3211,7 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
             return
         state = operator._state
         route = state.route
-        page = state.page
+        page = _shown_step(state)[0]
         if route is None or page is None:
             self.layout.label(text="Choose a tutorial route first.", icon="BOOKMARKS")
             return
@@ -3013,7 +3222,7 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
             page.help_title or page.title,
             icon_value=int(_help_icon_kwargs(page.icon).get("icon_value", 0) or 0),
             icon=str(_help_icon_kwargs(page.icon).get("icon", "INFO")),
-            suffix=f"· {state.page_index + 1} / {len(route.pages)}",
+            suffix=f"· {route.pages.index(page) + 1} / {len(route.pages)}",
         )
         header.alignment = 'LEFT'
 
@@ -3102,11 +3311,17 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
         context.window_manager.modal_handler_add(self)
         _ACTIVE_OPERATOR = self
         state = self._state
+        # A card closed mid-drag or under the pointer must not reopen stuck.
+        state.drag_origin = None
+        state.hover = ""
         state.shown_content = None
         state.motion.snap("height", 0.0)
         state.motion.trigger("open", _CARD_OPEN_SECONDS)
         if state.route is None:
             state.motion.trigger("chooser", _CHOOSER_SECONDS)
+        else:
+            state.motion.trigger("route_in", _ROUTE_IN_SECONDS)
+            state.motion.trigger("dots", _DOTS_SECONDS, delay=0.12)
         self._refresh()
         return {"RUNNING_MODAL"}
 
@@ -3182,7 +3397,13 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             self._close(context)
             return {"FINISHED"}
         if action == "ACTION":
-            task = state.active_task
+            _page, task, reviewing = _shown_step(state)
+            if reviewing:
+                # Doing a reviewed step again opens its tool; progress stays.
+                if not _run_tutorial_task_action(context, state, task):
+                    self.report({"INFO"}, f"Select a compatible layer, then complete: {task.label}")
+                self._refresh()
+                return {"FINISHED"}
             started = _run_tutorial_task_action(context, state)
             if started and task is not None and task.key in _MANUAL_ACTION_TASKS:
                 state.manual_completed.add(task.key)
@@ -3210,18 +3431,15 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             self._refresh()
             return {"FINISHED"}
         if action == "BACK":
-            if state.route is not None and state.page_index > 0:
-                state.page_index -= 1
-            elif state.route is not None:
-                state.route_key = None
-                state.page_index = 0
+            _go_back(state)
             self._refresh()
             return {"FINISHED"}
         if action == "SKIP":
             task = state.active_task
-            if task is None:
+            if task is None or state.review_key:
                 return {"CANCELLED"}
             state.manual_completed.add(task.key)
+            state.skipped.add(task.key)
             _capture_completion_anchors(context, state, task.key)
             _advance_completed_page(state)
             self.report({"INFO"}, f"Skipped tutorial step: {task.label}")
@@ -3230,6 +3448,8 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
         if action == "NEXT":
             if state.route is None:
                 state.enter_route(context)
+            elif _go_forward_in_review(state):
+                pass
             else:
                 task = state.active_task
                 if task is not None and not task.optional:
@@ -3238,6 +3458,8 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                     return {"FINISHED"}
                 if task is not None and task.optional:
                     state.manual_completed.add(task.key)
+                    state.skipped.add(task.key)
+                    _capture_completion_anchors(context, state, task.key)
                     _advance_completed_page(state)
                     self._refresh()
                     return {"FINISHED"}
@@ -3246,6 +3468,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                 else:
                     state.route_key = None
                     state.page_index = 0
+                    state.paused_route = ""
             self._refresh()
             return {"FINISHED"}
         return {"CANCELLED"}
@@ -3286,7 +3509,16 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                 _tag_area(self._target_area_ptr)
                 return {"RUNNING_MODAL"}
             if event.type in {"LEFTMOUSE", "ESC", "RIGHTMOUSE"} and event.value in {"RELEASE", "PRESS"}:
+                start_x, start_y = state.drag_origin[0], state.drag_origin[1]
                 state.drag_origin = None
+                clicked = (
+                    event.type == "LEFTMOUSE" and event.value == "RELEASE"
+                    and abs(event.mouse_x - start_x) + abs(event.mouse_y - start_y) <= _CLICK_SLOP
+                )
+                if clicked and state.collapsed:
+                    # A click (not a drag) on the bar opens the card again.
+                    state.collapsed = False
+                    state.hover = ""
                 self._clamp_offset(context)
                 self._refresh()
                 return {"RUNNING_MODAL"}
