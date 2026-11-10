@@ -144,6 +144,9 @@ All notable public changes to Frame By Plane are documented here.
 - Opening a guide: the progress bar drops into place, the guide's icon and name fade into the title bar, "?" pops in, the step dots appear one after another and Back, the main button and Skip fade in together, and step text fades in place instead of sliding. The ripple around the main button no longer plays when a guide opens, only when the next step becomes live, and it is smaller.
 - Minimised tutorial: the bar is wider than the open card and has no "–" button. Click the bar to open the card again (dragging still moves it); it lightens under the pointer.
 - The **?** help follows the step shown, also while reviewing.
+- Every step is rewritten to say exactly where to click: **Shift + A > Frame By Plane** to create, **Properties > Tool > Layer Settings** for colors, gradients, frames and loop modes, **Properties > Modifiers > Add Modifier** (Image, Mesh, Mask) for effects, and the **Z** menu corners (Masks bottom left, Effects bottom right) as the quick route. The guide no longer sends you to the N-Panel, and its **Open Layer Settings** button opens the Tool tab of the Properties editor.
+- The keys to press and the names to click are drawn in the guide's colour inside the step text, which now has room for three lines.
+- Color Plane guide: **Switch to Gradient** uses the Gradient button of Frame Appearance, and the frames step starts from **Make Multi Color Plane**. Multiplane guide: clipping starts from a right-click on the layer in the Layers list, holdout from the Z menu. The suggested mesh effects (Extrude, Wind, Mesh Wiggle) are the ones in the Mesh menu.
 
 ### Fixes
 

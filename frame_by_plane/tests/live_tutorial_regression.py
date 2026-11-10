@@ -1,5 +1,6 @@
 import importlib
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -73,6 +74,41 @@ try:
             state.offset = (-5000.0, 5000.0)
             moved = tutorial._compute_hud(bpy.context, region, state)
             _inside_region(moved, region)
+    # Every step points to Properties (Tool or Modifiers), the Z menu or
+    # Shift + A, never to the sidebar, and marks the words to click with **.
+    # Each guidance fits the card in full: no step text is cut with "…".
+    hud = tutorial._compute_hud(bpy.context, _Region(1600, 900), tutorial.TutorialState())
+    content_w = 340.0 * hud["scale"] - hud["pad"] * 2.0
+    texts = []
+    for route in tutorial.ROUTES.values():
+        for page in route.pages:
+            texts.extend(page.help_steps)
+            texts.extend(page.help_notes)
+            texts.append(page.pro_tip)
+            for task in page.tasks:
+                guidance = tutorial._TASK_GUIDANCE.get(task.key, "")
+                texts.extend((guidance, tutorial._TASK_SHORTCUTS.get(task.key, "")))
+                if page is route.pages[-1]:
+                    continue
+                assert "**" in guidance, task.key
+                lines = tutorial._wrap_rich(guidance, content_w, hud["small_size"], tutorial._GUIDANCE_MAX_LINES)
+                flat = [part for line in lines for word in line for part, _bold in word]
+                assert "…" not in flat, (task.key, len(lines))
+    for text in texts:
+        assert text.count("**") % 2 == 0, text
+        assert not re.search(r"\bN[- ]panel\b|\bsidebar\b|^N  >", text, re.IGNORECASE), text
+    for key in tutorial._LAYER_SETTINGS_TASKS:
+        assert key in tutorial._TASK_SHORTCUTS, key
+    assert tutorial._TASK_SHORTCUTS["color_open_settings"].startswith("Properties  >  Tool")
+    words = tutorial._rich_words("Press **Z** and click **Crop**, or **Shift + A**.")
+    assert [tutorial._rich_word_text(word) for word in words] == [
+        "Press", "Z", "and", "click", "Crop,", "or", "Shift", "+", "A.",
+    ]
+    assert words[1] == (("Z", True),) and words[4] == (("Crop", True), (",", False))
+    assert words[6] == (("Shift", True),) and words[8] == (("A", True), (".", False))
+    assert tutorial._plain_text("Press **Z**") == "Press Z"
+    assert tutorial._help_wrap("Click **Material**.") == ("Click Material.",)
+
     assert "image_import" in tutorial._DIALOG_OPTION_NOTES
     assert "multi_generate" in tutorial._DIALOG_OPTION_NOTES
 
