@@ -100,7 +100,7 @@ ROUTES: dict[str, RouteSpec] = {
         pages=(
             PageSpec(
                 title="Import and frame your image",
-                subtitle="Create a Single Plane, then frame it with the Z-menu handles.",
+                subtitle="Add a Single Plane, then crop it from the Z menu.",
                 icon="IMAGE",
                 description=(
                     "Start with any supported image. Move, rotate and scale the resulting plane",
@@ -113,13 +113,14 @@ ROUTES: dict[str, RouteSpec] = {
                     TaskSpec("image_open_crop", "Open Crop / Expand", "CROP", "crop_open"),
                     TaskSpec("image_crop", "Adjust the visible canvas", "CROP", "image_crop"),
                 ),
-                pro_tip="Press Z, choose Crop or Expand, then drag the existing edge controllers directly in the viewport.",
+                pro_tip="Crop and Expand are effects too: you find them again in Properties > Modifiers.",
                 help_title="Import & Framing",
                 help_steps=(
-                    "Move the pointer over the 3D Viewport.",
-                    "Press Shift + A, open Frame By Plane, then choose Single Plane.",
-                    "Select an image and confirm the import.",
-                    "Press Z and choose Crop or Expand. No popup is needed: use the visible edge handles.",
+                    "Move the pointer over the **3D Viewport**.",
+                    "Press **Shift + A**, open **Frame By Plane** and click **Single Plane**.",
+                    "Pick an image in the file browser and click **Single Plane** at the bottom right.",
+                    "Press **Z**. In the **Effects** corner (bottom right) click **Crop**, or **Expand** for extra space.",
+                    "Drag an **L corner** or a **side bar** on the edge of the plane. **Esc** cancels the drag.",
                 ),
                 help_notes=(
                     "Crop hides pixels without changing the original file.",
@@ -131,25 +132,27 @@ ROUTES: dict[str, RouteSpec] = {
                 subtitle="Draw a Grease Pencil mask, then add Pixelate from Modifiers.",
                 icon="MASK",
                 description=(
-                    "Masks and image effects remain non-destructive. You can reorder, disable",
-                    "or edit them later from the Frame By Plane effect stack.",
+                    "Masks and image effects remain non-destructive. Every effect is a modifier:",
+                    "reorder, disable or edit it later in Properties > Modifiers.",
                 ),
-                shortcut=(("KEY", "Z"), ("MASK", "Grease Pencil Mask"), ("TEXT", "then"), ("EFFECT", "Modifiers > Pixelate")),
+                shortcut=(("KEY", "Z"), ("MASK", "Masks"), ("TEXT", "then"), ("EFFECT", "Modifiers > Add Modifier > Image")),
                 tasks=(
                     TaskSpec("image_mask", "Add a Grease Pencil Mask", "MASK", "image_mask"),
                     TaskSpec("image_open_effects", "Open the Modifiers tab", "EFFECT", "effects_2d_open"),
                     TaskSpec("image_effect", "Add the Pixelate effect", "EFFECT", "image_effect"),
                 ),
-                pro_tip="The wrench icon in Properties opens the real non-destructive Frame By Plane effect stack.",
+                pro_tip="Press Z for the quickest route: Masks sit in the bottom-left corner, Effects in the bottom-right one.",
                 help_title="Grease Pencil Mask & Pixelate",
                 help_steps=(
-                    "Select the imported plane.",
-                    "Press Z and choose Grease Pencil Mask, then draw the matte in native Draw Mode.",
-                    "When the mask is ready, open Properties and click the wrench (Modifiers).",
-                    "In the unified Frame By Plane Effect Stack, add Pixelate and adjust its controls.",
+                    "Click the imported plane to select it.",
+                    "Press **Z** and, in the **Masks** corner (bottom left), click the **Grease Pencil Mask** icon.",
+                    "Paint the mask in **Draw Mode**, then switch back to **Object Mode** from the header mode menu.",
+                    "In the **Properties** editor click the blue **wrench** tab: **Modifiers**.",
+                    "Click **Add Modifier > Image** and pick **Pixelate & Mosaic** in the **Pixel & Print** column.",
+                    "Adjust the pixel size in the new modifier panel.",
                 ),
                 help_notes=(
-                    "The mask and effect stack can be reordered at any time.",
+                    "From the viewport: Z > Effects > menu button under Expand > Image Effects.",
                     "Pixelate remains editable and can be restricted by the Grease Pencil mask.",
                 ),
             ),
@@ -169,10 +172,10 @@ ROUTES: dict[str, RouteSpec] = {
                 ),
                 help_title="Single Plane Recap",
                 help_steps=(
-                    "Import through Shift + A > Frame By Plane > Single Plane.",
-                    "Frame the image with Crop / Expand.",
-                    "Use a mask for local control.",
-                    "Add and reorder 2D effects.",
+                    "Import: **Shift + A > Frame By Plane > Single Plane**.",
+                    "Frame: **Z > Effects > Crop** or **Expand**, then drag the edge handles.",
+                    "Mask: **Z > Masks**.",
+                    "Effects: **Properties > Modifiers > Add Modifier > Image**.",
                 ),
             ),
         ),
@@ -199,9 +202,9 @@ ROUTES: dict[str, RouteSpec] = {
                 pro_tip="Select a Frame By Plane layer first: the drawing is placed and sized on that plane.",
                 help_title="Grease Pencil Drawing",
                 help_steps=(
-                    "Select an image or color plane in the 3D Viewport.",
-                    "Press Shift + A, open Frame By Plane, then choose Grease Pencil Drawing.",
-                    "With the new drawing active, press Ctrl + Tab or pick Draw Mode in the header.",
+                    "Click an image or color plane in the **3D Viewport** to select it.",
+                    "Press **Shift + A**, open **Frame By Plane** and click **Grease Pencil Drawing**.",
+                    "With the new drawing selected, press **Ctrl + Tab** or pick **Draw Mode** in the header.",
                 ),
                 help_notes=(
                     "Grease Pencil Drawing stays inactive in the menu until a plane is selected.",
@@ -226,10 +229,10 @@ ROUTES: dict[str, RouteSpec] = {
                 pro_tip="X swaps Stroke and Fill. Hold Shift + X and move over the canvas to sample a color into Stroke.",
                 help_title="Stroke & Fill Colors",
                 help_steps=(
-                    "In the Draw Mode header, click the Color Attribute icon next to the material.",
-                    "Choose Both in the Stroke / Fill / Both selector.",
-                    "Click the Stroke swatch for the line color and the Fill swatch for the fill color.",
-                    "Press G (Close Gap) to join the last point to the first for clean fills.",
+                    "In the **Draw Mode** header, click the **Color Attribute** icon next to the material.",
+                    "In the **Stroke / Fill / Both** selector, click **Both**.",
+                    "Click the **Stroke** swatch for the line color and the **Fill** swatch for the fill color.",
+                    "Press **G** (Close Gap) to join the last point to the first, for clean fills.",
                 ),
                 help_notes=(
                     "X swaps the two colors; Shift + X samples the viewport into Stroke.",
@@ -254,11 +257,11 @@ ROUTES: dict[str, RouteSpec] = {
                 pro_tip="Release < and the playhead snaps back to the frame you started from, ready for the next drawing.",
                 help_title="Frame by Frame",
                 help_steps=(
-                    "Turn on Auto Keying (the record button in the Timeline header).",
-                    "Press → (Right Arrow) to move a few frames forward.",
-                    "Draw: the new keyframe is created by the first stroke.",
-                    "Hold < in the 3D Viewport and move the mouse to scrub; release to snap back.",
-                    "Press Tab for Edit Mode, select strokes and change their Stroke or Fill swatch.",
+                    "Turn on **Auto Keying**: the round record button in the **Timeline** header.",
+                    "Press **→** (Right Arrow) to move a few frames forward.",
+                    "Draw: your first stroke creates the new keyframe.",
+                    "Hold **<** over the 3D Viewport and move the mouse to scrub; release to snap back.",
+                    "Press **Tab** for **Edit Mode**, select strokes and change their **Stroke** or **Fill** swatch.",
                 ),
                 help_notes=(
                     "Additive Drawing copies the previous drawing into the new keyframe.",
@@ -281,10 +284,10 @@ ROUTES: dict[str, RouteSpec] = {
                 pro_tip="Combine drawings with Multiplane depth: each plane can carry its own animated layer.",
                 help_title="Frame by Frame Recap",
                 help_steps=(
-                    "Select a plane, then Shift + A > Frame By Plane > Grease Pencil Drawing.",
-                    "Color Attribute + Both for separate Stroke and Fill colors.",
-                    "Auto Keying on, move to a new frame, draw.",
-                    "Hold < to scrub the animation.",
+                    "Select a plane, then **Shift + A > Frame By Plane > Grease Pencil Drawing**.",
+                    "**Color Attribute** + **Both** for separate Stroke and Fill colors.",
+                    "**Auto Keying** on, move to a new frame, draw.",
+                    "Hold **<** to scrub the animation.",
                 ),
             ),
         ),
@@ -297,7 +300,7 @@ ROUTES: dict[str, RouteSpec] = {
         pages=(
             PageSpec(
                 title="Build a procedural Color Plane",
-                subtitle="Generate the plane, add colors and create a gradient.",
+                subtitle="Add the plane, pick its color, then turn it into a gradient.",
                 icon="COLOR",
                 description=(
                     "A Color Plane needs no external image. It is useful for backgrounds,",
@@ -305,57 +308,57 @@ ROUTES: dict[str, RouteSpec] = {
                 ),
                 shortcut=(("KEY", "Shift + A"), ("TEXT", "Frame By Plane"), ("COLOR", "Color Plane")),
                 tasks=(
-                    TaskSpec("color_open_creator", "Open Color Plane", "COLOR", ""),
-                    TaskSpec("color_generate", "Generate a Color Plane", "COLOR", "color_generate"),
+                    TaskSpec("color_open_creator", "Add a Color Plane", "COLOR", ""),
+                    TaskSpec("color_generate", "Create the Color Plane", "COLOR", "color_generate"),
                     TaskSpec("color_open_settings", "Open Layer Settings", "PALETTE", "layer_settings_open"),
-                    TaskSpec("color_edit", "Edit its colors", "PALETTE", "color_edit"),
-                    TaskSpec("color_add_gradient", "Add a Gradient frame", "GRADIENT", "color_gradient"),
-                    TaskSpec("color_gradient_edit", "Edit the Gradient", "GRADIENT", "color_gradient_edit"),
+                    TaskSpec("color_edit", "Pick a new color", "PALETTE", "color_edit"),
+                    TaskSpec("color_add_gradient", "Turn it into a gradient", "GRADIENT", "color_gradient"),
+                    TaskSpec("color_gradient_edit", "Edit the gradient", "GRADIENT", "color_gradient_edit"),
                     TaskSpec("color_preview", "View it in Material Preview", "MATERIAL", "color_preview"),
                 ),
-                pro_tip="Press Z and switch to Material Preview to see the procedural gradient correctly in the Viewport.",
+                pro_tip="Solid shading shows a flat color: press Z and click Material to see the real gradient.",
                 help_title="Color Plane",
                 help_steps=(
-                    "Press Shift + A, open Frame By Plane, then choose Color Plane.",
-                    "Open Layer Settings: the Frames UI List already contains the first Color row.",
-                    "Select that row and edit its color in Frame Appearance.",
-                    "Use the custom Gradient Plane + icon beside Frames to add a Gradient row.",
-                    "Select the Gradient row and edit color stops, position, rotation and scale.",
-                    "Press Z and choose Material Preview to see the material result.",
+                    "Press **Shift + A**, open **Frame By Plane** and click **Color Plane**. It appears right away.",
+                    "In the **Properties** editor click the **Tool** tab (screwdriver and wrench, at the top).",
+                    "Scroll to **Layer Settings**. In **Frame Appearance**, click the **Color** field and pick a color.",
+                    "Click **Gradient**, next to Color, to blend two colors.",
+                    "In **Color Ramp**, click a **color stop** to change it, or drag it. Open **Position** to move, scale or rotate.",
+                    "Press **Z** and click **Material** to see the result.",
                 ),
                 help_notes=(
                     "Solid shading does not display the full material result.",
-                    "Each Frames UI List row stores an independent Color or Gradient appearance.",
+                    "Size, type and camera options are in the Adjust Last Operation panel, bottom left, right after creation.",
                 ),
             ),
             PageSpec(
                 title="Animate with procedural frames",
-                subtitle="Add Color or Gradient rows, then add a mesh-based effect.",
+                subtitle="Add Color or Gradient frames, then add a mesh effect.",
                 icon="ANIMATE",
                 description=(
-                    "Color Planes animate through the Frames UI List. Each row keeps its own",
-                    "appearance and duration; no I-keyframes are required for this workflow.",
+                    "Color Planes animate through their frames list. Each row keeps its own",
+                    "color or gradient and its own duration; no keyframes are needed.",
                 ),
-                shortcut=(("ANIMATE", "Frames"), ("COLOR", "Add Color / Gradient Frame"), ("MESH", "Mesh Effect")),
+                shortcut=(("PALETTE", "Layer Settings"), ("ANIMATE", "Color Plane Frames"), ("MESH", "Add Modifier > Mesh")),
                 tasks=(
-                    TaskSpec("color_add_frame", "Add another Color or Gradient frame", "ANIMATE", "color_animate"),
-                    TaskSpec("color_open_mesh_effects", "Open Mesh Effects", "MESH", "effects_3d_open"),
-                    TaskSpec("color_mesh", "Add one mesh effect", "MESH", "color_mesh"),
+                    TaskSpec("color_add_frame", "Add a second frame", "ANIMATE", "color_animate"),
+                    TaskSpec("color_open_mesh_effects", "Open the Modifiers tab", "MESH", "effects_3d_open"),
+                    TaskSpec("color_mesh", "Add a mesh effect", "MESH", "color_mesh"),
                 ),
-                pro_tip="Set a different duration per row, reorder or duplicate frames, and mix Color, Gradient and Transparent rows in one procedural animation.",
+                pro_tip="Mix Color, Gradient and Transparent rows: a Transparent row makes a visible pause or cut.",
                 help_title="Frames & Mesh Effects",
                 help_steps=(
-                    "Select the Color Plane and open Layer Settings > Frames.",
-                    "Use the custom Color Plane or Gradient Plane + icon beside the Frames UI List.",
-                    "The new row is inserted after the active row, or after the last checked row.",
-                    "Select the new row and edit its colors or gradient in Frame Appearance.",
-                    "Adjust each row duration, reorder or duplicate rows, then preview from the timeline.",
-                    "Press Z and choose a favourite 3D effect, or open Effects & Masks > Mesh.",
-                    "Add Extrude, Bend, Lattice, Surface Conform, Sphere Screen or another mesh effect.",
+                    "Select the Color Plane and open **Properties > Tool > Layer Settings**.",
+                    "In **Color Plane Frames**, click **Make Multi Color Plane**: the plane gets a list of frames.",
+                    "Use the **Color** or **Gradient** icon right of the list to add more rows.",
+                    "Select a row and edit its color or gradient in **Frame Appearance**.",
+                    "Set each row's duration, reorder or duplicate rows, then press **Space** to play.",
+                    "Click the blue **wrench** tab (**Modifiers**), then **Add Modifier > Mesh**.",
+                    "Pick a mesh effect such as **Extrude**, **Wind** or **Mesh Wiggle**.",
                 ),
                 help_notes=(
-                    "Pressing I is not required: Color Plane animation is driven by the ordered Frames UI List.",
-                    "Gradient rows are useful for light sweeps; Transparent rows create visible pauses or cuts.",
+                    "Pressing I is not required: the ordered frames list drives the Color Plane animation.",
+                    "From the viewport: Z > Effects > menu button under Expand > Mesh Effects.",
                     "Mesh effects preserve the procedural material.",
                 ),
             ),
@@ -375,10 +378,10 @@ ROUTES: dict[str, RouteSpec] = {
                 ),
                 help_title="Color Plane Recap",
                 help_steps=(
-                    "Generate the Color Plane.",
-                    "Build the color or gradient in Material Preview.",
-                    "Add and arrange Color or Gradient rows in the Frames UI List.",
-                    "Add a geometry effect.",
+                    "Create: **Shift + A > Frame By Plane > Color Plane**.",
+                    "Color and gradient: **Properties > Tool > Layer Settings > Frame Appearance**.",
+                    "Animation: **Color Plane Frames** rows.",
+                    "Geometry: **Properties > Modifiers > Add Modifier > Mesh**.",
                 ),
             ),
         ),
@@ -400,14 +403,15 @@ ROUTES: dict[str, RouteSpec] = {
                 shortcut=(("KEY", "Shift + A"), ("TEXT", "Frame By Plane"), ("FOLDER", "Multiplane")),
                 tasks=(
                     TaskSpec("multi_open_importer", "Open Multiplane", "MULTIPLANE", ""),
-                    TaskSpec("multi_generate", "Generate a multiplane setup", "MULTIPLANE", "multi_generate"),
+                    TaskSpec("multi_generate", "Import a folder of layers", "MULTIPLANE", "multi_generate"),
                 ),
                 help_title="Multiplane Import",
                 help_steps=(
-                    "Place one visual layer in each file or numbered sequence folder.",
-                    "Use prefixes such as 01_BG, 02_Midground, 03_Character and 04_FG.",
-                    "Press Shift + A > Frame By Plane > Multiplane.",
-                    "Review the import report for imported and skipped files.",
+                    "Put one visual layer in each file, or one numbered sequence in each folder.",
+                    "Name them with prefixes such as **01_BG**, **02_Midground**, **03_Character**, **04_FG**.",
+                    "Press **Shift + A**, open **Frame By Plane** and click **Multiplane**.",
+                    "Open the folder in the file browser and click **Multiplane** at the bottom right.",
+                    "Read the import report to see what was imported and what was skipped.",
                 ),
                 help_notes=(
                     "Accepted: PNG, JPG, TIFF, EXR, numbered sequences and supported video formats.",
@@ -416,27 +420,27 @@ ROUTES: dict[str, RouteSpec] = {
             ),
             PageSpec(
                 title="Set the camera and create depth",
-                subtitle="Distribute the layers in space and preserve their framing.",
+                subtitle="Spread the layers in space and keep their framing.",
                 icon="CAMERA",
                 description=(
                     "Place background, midground and foreground at different distances.",
                     "Scale layers as needed, then move the camera to preview parallax.",
                 ),
-                shortcut=(("CAMERA", "Frame By Plane Camera"), ("KEY", "G / S"), ("KEY", "Z > Cursor to Selected")),
+                shortcut=(("CAMERA", "Create Camera"), ("KEY", "G / S"), ("KEY", "Z > Cursor to Selected")),
                 tasks=(
                     TaskSpec("multi_open_camera", "Open Camera Setup", "CAMERA", ""),
                     TaskSpec("multi_camera", "Set an active camera", "CAMERA", "multi_camera"),
-                    TaskSpec("multi_start_depth", "Start moving a layer", "DEPTH", ""),
+                    TaskSpec("multi_start_depth", "Move a layer", "DEPTH", ""),
                     TaskSpec("multi_depth", "Separate layers in depth", "DEPTH", "multi_depth"),
                 ),
                 pro_tip="Cursor to Selected from the Z Pie Menu makes local scaling and rotation around the chosen layer faster.",
                 help_title="Camera & Depth",
                 help_steps=(
-                    "Create a Frame By Plane Camera or select the existing scene camera.",
-                    "Select a layer and move it away from the camera.",
-                    "Scale it to preserve the desired framing.",
-                    "Repeat for foreground and background layers.",
-                    "Move the camera slightly to preview parallax.",
+                    "Click **Create Camera** in the guide, or keep the scene camera you already have.",
+                    "Click one layer in the viewport and press **G** to move it away from the camera.",
+                    "Press **S** to scale it back to the framing you want.",
+                    "Repeat for the foreground and background layers.",
+                    "Move the camera slightly to preview the parallax.",
                 ),
                 help_notes=(
                     "Close layers move faster; distant layers move more slowly.",
@@ -445,29 +449,30 @@ ROUTES: dict[str, RouteSpec] = {
             ),
             PageSpec(
                 title="Timing, effects and layer relationships",
-                subtitle="Configure animated media, then test clipping and holdout.",
+                subtitle="Set the loop of animated layers, then add effects, clipping and holdout.",
                 icon="LAYERS",
                 description=(
                     "Animated layers can use independent timing and loop modes. Effects,",
                     "clipping masks and holdouts add depth and local compositing control.",
                 ),
-                shortcut=(("KEY", "Z"), ("MASK", "Masks / Favourite Effects"), ("TEXT", "or"), ("EFFECT", "Effects & Masks")),
+                shortcut=(("TEXT", "Properties"), ("PALETTE", "Tool"), ("TEXT", "or"), ("EFFECT", "Modifiers"), ("TEXT", "or"), ("KEY", "Z")),
                 tasks=(
                     TaskSpec("multi_open_settings", "Open Layer Settings", "LOOP", "layer_settings_open"),
-                    TaskSpec("multi_loop", "Set a loop mode on animated media", "LOOP", "multi_loop", optional=True),
-                    TaskSpec("multi_open_effects", "Open Effects", "EFFECT", "effects_2d_open"),
+                    TaskSpec("multi_loop", "Set a loop mode", "LOOP", "multi_loop", optional=True),
+                    TaskSpec("multi_open_effects", "Open the Modifiers tab", "EFFECT", "effects_2d_open"),
                     TaskSpec("multi_effect", "Add an effect to one layer", "EFFECT", "multi_effect"),
-                    TaskSpec("multi_open_masks", "Open Masks", "MASK", "masks_open"),
-                    TaskSpec("multi_clipping", "Create a clipping relationship", "CLIP", "multi_clipping", optional=True),
+                    TaskSpec("multi_open_masks", "Find the masks", "MASK", "masks_open"),
+                    TaskSpec("multi_clipping", "Clip to the layer below", "CLIP", "multi_clipping", optional=True),
                     TaskSpec("multi_holdout", "Create a holdout", "HOLDOUT", "multi_holdout", optional=True),
                 ),
                 pro_tip="Blur distant backgrounds, add atmospheric color, and use Grease Pencil holdouts for editable animated cut-outs.",
                 help_title="Timing & Compositing",
                 help_steps=(
-                    "Select a video or image-sequence layer and choose One Shot, Loop or Ping-Pong.",
-                    "Press Z and add a favourite effect, or open Effects & Masks and use Image or Mesh.",
-                    "Place a layer above another, then use Z > Clipping Mask or Effects & Masks > Masks.",
-                    "Create a holdout to cut transparent space through selected layers.",
+                    "Select a video or sequence layer. In **Properties > Tool > Layer Settings > Animation**, choose **Loop** or **Ping-Pong**.",
+                    "Click the blue **wrench** tab (**Modifiers**) and use **Add Modifier > Image**, for example **Gaussian Blur**.",
+                    "Masks are in **Add Modifier > Mask**, or press **Z** and use the **Masks** corner.",
+                    "In **Properties > Tool > Layers**, right-click the upper layer and choose **Enable Clipping Mask**.",
+                    "Press **Z** and click the **Holdout** icon at the bottom to cut through the layers behind.",
                 ),
                 help_notes=(
                     "Different animated layers can use independent offsets, speeds and ranges.",
@@ -492,9 +497,9 @@ ROUTES: dict[str, RouteSpec] = {
                 help_title="Multiplane Recap",
                 help_steps=(
                     "Prepare clearly named layers and sequences.",
-                    "Import the folder and review skipped files.",
-                    "Set the camera and arrange the layers in depth.",
-                    "Configure animation, effects, clipping and holdout.",
+                    "Import the folder: **Shift + A > Frame By Plane > Multiplane**.",
+                    "Set the camera and spread the layers in depth with **G** and **S**.",
+                    "Timing in **Properties > Tool**, effects and masks in **Properties > Modifiers** or **Z**.",
                 ),
             ),
         ),
@@ -867,16 +872,19 @@ def _detect_crop_open(context: bpy.types.Context, state: TutorialState) -> bool:
 
 
 def _detect_layer_settings_open(context: bpy.types.Context, state: TutorialState) -> bool:
+    """Layer Settings is on screen: Properties > Tool, or a sidebar tab showing it."""
     del state
     categories = set(_layer_settings_categories(context))
     if not categories:
         return False
     screen = getattr(context, "screen", None)
     for area in tuple(getattr(screen, "areas", ()) or ()):
-        if area.type != "VIEW_3D":
-            continue
         try:
-            if not bool(area.spaces.active.show_region_ui):
+            if area.type == "PROPERTIES":
+                if "Tool" in categories and str(area.spaces.active.context or "") == "TOOL":
+                    return True
+                continue
+            if area.type != "VIEW_3D" or not bool(area.spaces.active.show_region_ui):
                 continue
             region = next((item for item in area.regions if item.type == "UI"), None)
             if region is not None and str(region.active_panel_category) in categories:
@@ -886,9 +894,8 @@ def _detect_layer_settings_open(context: bpy.types.Context, state: TutorialState
     return False
 
 
-def _detect_effects_panel_open(context: bpy.types.Context, view: str) -> bool:
-    if str(getattr(context.scene, "fbp_effects_view", "") or "") != view:
-        return False
+def _detect_effects_panel_open(context: bpy.types.Context) -> bool:
+    """Properties > Modifiers is on screen: every effect and mask lives there."""
     screen = getattr(context, "screen", None)
     for area in tuple(getattr(screen, "areas", ()) or ()):
         if area.type != "PROPERTIES":
@@ -903,17 +910,17 @@ def _detect_effects_panel_open(context: bpy.types.Context, view: str) -> bool:
 
 def _detect_masks_open(context: bpy.types.Context, state: TutorialState) -> bool:
     del state
-    return _detect_effects_panel_open(context, "MASK")
+    return _detect_effects_panel_open(context)
 
 
 def _detect_effects_2d_open(context: bpy.types.Context, state: TutorialState) -> bool:
     del state
-    return _detect_effects_panel_open(context, "2D")
+    return _detect_effects_panel_open(context)
 
 
 def _detect_effects_3d_open(context: bpy.types.Context, state: TutorialState) -> bool:
     del state
-    return _detect_effects_panel_open(context, "3D")
+    return _detect_effects_panel_open(context)
 
 
 def _detect_image_crop(context: bpy.types.Context, state: TutorialState) -> bool:
@@ -1795,37 +1802,86 @@ def _ellipsize(text: str, max_width: float, size: int) -> str:
     return value[:lo].rstrip() + suffix
 
 
-def _wrap_measured(text: str, max_width: float, size: int, max_lines: int | None = None) -> list[str]:
-    words = " ".join(str(text or "").split()).split()
-    if not words:
-        return []
-    lines: list[str] = []
-    current = ""
+# Guidance text marks the keys to press and the names to click with **...**.
+# The card draws those words in the guide's accent colour; the "?" help,
+# which uses plain Blender labels, simply drops the marks.
+_EMPHASIS_MARK = "**"
+_GUIDANCE_MAX_LINES = 3
+
+RichWord = tuple[tuple[str, bool], ...]
+
+
+def _plain_text(text: str) -> str:
+    return str(text or "").replace(_EMPHASIS_MARK, "")
+
+
+def _rich_words(text: str) -> list[RichWord]:
+    """Split marked text into words, each a run list of (text, emphasised)."""
+    words: list[RichWord] = []
+    emphasised = False
+    for raw in str(text or "").split():
+        runs: list[tuple[str, bool]] = []
+        for index, part in enumerate(raw.split(_EMPHASIS_MARK)):
+            if index:
+                emphasised = not emphasised
+            if part:
+                runs.append((part, emphasised))
+        if runs:
+            words.append(tuple(runs))
+    return words
+
+
+def _rich_word_text(word: RichWord) -> str:
+    return "".join(part for part, _emphasised in word)
+
+
+def _wrap_rich(text: str, max_width: float, size: int, max_lines: int | None = None) -> list[list[RichWord]]:
+    """Wrap marked text to ``max_width``, keeping each word's emphasis."""
+    words = _rich_words(text)
+    lines: list[list[RichWord]] = []
+    current: list[RichWord] = []
     for word in words:
-        candidate = word if not current else f"{current} {word}"
+        candidate = " ".join(_rich_word_text(item) for item in (*current, word))
         if not current or _text_dimensions(candidate, size)[0] <= max_width:
-            current = candidate
+            current.append(word)
             continue
         lines.append(current)
-        current = word
-        if max_lines is not None and len(lines) >= max_lines:
-            break
-    if current and (max_lines is None or len(lines) < max_lines):
+        current = [word]
+    if current:
         lines.append(current)
-    if max_lines is not None and len(lines) >= max_lines:
-        consumed = " ".join(lines)
-        original = " ".join(words)
-        if len(consumed) < len(original):
-            lines[-1] = _ellipsize(lines[-1] + " " + " ".join(words[len(consumed.split()):]), max_width, size)
+    if max_lines is not None and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        suffix = "…"
+        while last:
+            text_w = _text_dimensions(" ".join(_rich_word_text(item) for item in last) + suffix, size)[0]
+            if text_w <= max_width or len(last) == 1:
+                break
+            last.pop()
+        if last:
+            last[-1] = (*last[-1], (suffix, last[-1][-1][1]))
     return lines
 
 
-def _draw_text_lines(lines: Iterable[str], x: float, y: float, size: int, color: tuple[float, float, float, float], line_height: float) -> float:
-    cursor = y
+def _draw_rich_lines(
+    lines: Iterable[list[RichWord]],
+    x: float,
+    y: float,
+    size: int,
+    color: tuple[float, float, float, float],
+    emphasis_color: tuple[float, float, float, float],
+    line_height: float,
+) -> float:
+    space = _text_dimensions(" ", size)[0]
+    cursor_y = y
     for line in lines:
-        _draw_text(line, x, cursor, size, color)
-        cursor -= line_height
-    return cursor
+        cursor_x = x
+        for word in line:
+            for part, emphasised in word:
+                cursor_x += _draw_text(part, cursor_x, cursor_y, size, emphasis_color if emphasised else color)
+            cursor_x += space
+        cursor_y -= line_height
+    return cursor_y
 
 
 def _inside(rect: tuple[float, float, float, float], x: float, y: float) -> bool:
@@ -1867,48 +1923,50 @@ _ROUTE_CARD_DETAILS = {
     "MULTIPLANE": "Camera · depth · loop · masks",
 }
 
+# Guidance is drawn under the step title. Words between ** are drawn in the
+# guide's accent colour: the keys to press and the names to click.
 _TASK_GUIDANCE = {
-    "draw_add": "Select a plane, then add a Grease Pencil Drawing on it. An existing drawing works too.",
-    "draw_mode": "Switch the drawing to Draw Mode to start painting.",
-    "draw_vertex_color": "In the header, click the Color Attribute icon so strokes use vertex colors.",
-    "draw_both": "Choose Both: every stroke gets the Stroke color on the line and the Fill color inside.",
-    "draw_colors": "Click the Stroke or Fill swatch in the header and choose a new color.",
-    "draw_close_gap": "Press G to close each stroke: the last point joins the first for clean fills.",
-    "draw_autokey": "Turn on Auto Keying so drawing on an empty frame creates a keyframe.",
-    "draw_new_key": "Move to a frame without a drawing and draw a stroke.",
-    "draw_scrub": "Hold < over the 3D Viewport and move the mouse; release to snap back.",
-    "draw_edit_colors": "Press Tab, select strokes and change their Stroke or Fill swatch.",
-    "image_open_importer": "Open the Single Plane importer. The next card will wait for the file you choose.",
-    "image_import": "Choose an image or a video in the file browser; the settings are in its sidebar. Press ? to see what every option does.",
-    "image_open_crop": "Press Z and choose Crop or Expand to reveal the existing viewport edge controllers.",
-    "image_crop": "Drag a Crop or Expand edge controller to frame the selected plane.",
-    "image_open_masks": "Press Z to reach Grease Pencil Mask.",
-    "image_mask": "Press Z, choose Grease Pencil Mask, then draw directly in native Draw Mode.",
-    "image_open_effects": "Open Properties > Modifiers using the wrench icon.",
-    "image_effect": "Add Pixelate from the Image effects list in the Modifiers tab.",
-    "color_open_creator": "Open the Color Plane creator. The next card will wait for the generated plane.",
-    "color_generate": "Create a Color Plane directly from this guide.",
-    "color_open_settings": "Reveal Layer Settings in the panel location enabled in Preferences.",
-    "color_edit": "Change the selected Color Plane color in Layer Settings.",
-    "color_add_gradient": "Add a Gradient row from the Frames UI List.",
-    "color_gradient_edit": "Change the ramp or Position controls of the new Gradient frame.",
-    "color_preview": "Switch the 3D Viewport to Material Preview.",
-    "color_add_frame": "Add a Color or Gradient row from the Frames UI List, then edit its appearance and duration.",
-    "color_open_mesh_effects": "Open the Mesh section for the selected Color Plane.",
-    "color_mesh": "Use Z for a favourite 3D effect, or add one from Effects & Masks > Mesh.",
-    "multi_open_importer": "Open Multiplane. The next card will wait for the imported layer setup.",
-    "multi_generate": "Choose a folder with at least two layers and press OK. Press ? for the options.",
-    "multi_open_camera": "Open the Frame By Plane camera setup.",
-    "multi_camera": "Create or choose the active scene camera.",
-    "multi_start_depth": "Select one imported layer and start a constrained move.",
-    "multi_depth": "Move at least one layer in depth to create parallax.",
-    "multi_open_settings": "Reveal Layer Settings for the selected animated layer.",
-    "multi_loop": "Choose a loop mode for an animated image or video layer.",
-    "multi_open_effects": "Open Image Effects for one imported layer.",
-    "multi_effect": "Use Z for a favourite effect, or add one from Effects & Masks.",
-    "multi_open_masks": "Open Masks for the selected multiplane layer.",
-    "multi_clipping": "Use Z > Clipping Mask, or create the relationship in Effects & Masks > Masks.",
-    "multi_holdout": "Create or enable a holdout layer.",
+    "draw_add": "Click a plane to select it, then press **Shift + A** and choose **Frame By Plane > Grease Pencil Drawing**.",
+    "draw_mode": "With the drawing selected, press **Ctrl + Tab** or pick **Draw Mode** in the header.",
+    "draw_vertex_color": "In the **Draw Mode** header, click the **Color Attribute** icon next to the material.",
+    "draw_both": "In the **Stroke / Fill / Both** selector click **Both**: one stroke draws the line and fills it.",
+    "draw_colors": "Click the **Stroke** swatch for the line color, or the **Fill** swatch for the inside.",
+    "draw_close_gap": "Press **G** to close each stroke: the last point joins the first for clean fills.",
+    "draw_autokey": "Click the round **Auto Keying** button in the **Timeline** header, so drawing creates keyframes.",
+    "draw_new_key": "Press **→** to move to an empty frame, then draw a stroke.",
+    "draw_scrub": "Hold **<** over the 3D Viewport and move the mouse; release to snap back.",
+    "draw_edit_colors": "Press **Tab** for **Edit Mode**, select strokes and change their **Stroke** or **Fill** swatch.",
+    "image_open_importer": "Hover the **3D Viewport**, press **Shift + A** and choose **Frame By Plane > Single Plane**.",
+    "image_import": "Pick an **image** or a **video**, then click **Single Plane** at the bottom right of the file browser. **?** explains every option.",
+    "image_open_crop": "Press **Z** over the viewport. In the **Effects** corner, bottom right, click **Crop** (or **Expand** for extra space).",
+    "image_crop": "Drag an **L corner** or a **side bar** on the edge of the plane. **Esc** cancels the drag.",
+    "image_open_masks": "Press **Z** and look at the **Masks** corner, bottom left.",
+    "image_mask": "Press **Z** and click the **Grease Pencil Mask** icon in the **Masks** corner, bottom left. Then paint the mask.",
+    "image_open_effects": "In the **Properties** editor click the blue **wrench** tab: **Modifiers**.",
+    "image_effect": "Click **Add Modifier > Image** and choose **Pixelate & Mosaic** in the **Pixel & Print** column.",
+    "color_open_creator": "Press **Shift + A** and choose **Frame By Plane > Color Plane**. The plane appears right away.",
+    "color_generate": "Press **Shift + A** and choose **Frame By Plane > Color Plane**, or click the button below.",
+    "color_open_settings": "In the **Properties** editor click the **Tool** tab (screwdriver and wrench, at the top) and find **Layer Settings**.",
+    "color_edit": "In **Layer Settings > Frame Appearance**, click the **Color** field and pick a new color.",
+    "color_add_gradient": "In **Frame Appearance**, click **Gradient** next to **Color**: the plane now blends two colors.",
+    "color_gradient_edit": "In **Color Ramp**, click a **color stop** to change its color, or drag it. **Position** moves, scales and rotates the gradient.",
+    "color_preview": "Press **Z** and click **Material**, on the right. **Solid** shading does not show the gradient.",
+    "color_add_frame": "In **Color Plane Frames**, click **Make Multi Color Plane**. The **Color** and **Gradient** icons right of the list add more rows.",
+    "color_open_mesh_effects": "In the **Properties** editor click the blue **wrench** tab: **Modifiers**.",
+    "color_mesh": "Click **Add Modifier > Mesh** and pick an effect, such as **Extrude** or **Wind**.",
+    "multi_open_importer": "Press **Shift + A** and choose **Frame By Plane > Multiplane**.",
+    "multi_generate": "Open a folder with at least **two layers** and click **Multiplane** at the bottom right. **?** explains the options.",
+    "multi_open_camera": "Click **Create Camera** below to frame a new camera on the layers. Your scene camera works too.",
+    "multi_camera": "Confirm **Create Camera** with **OK**, or keep the scene camera: the guide moves on by itself.",
+    "multi_start_depth": "Click one layer in the viewport and press **G** to move it. Click to confirm.",
+    "multi_depth": "Push the background **away from the camera** and bring the foreground **closer**. **S** rescales a layer.",
+    "multi_open_settings": "In the **Properties** editor click the **Tool** tab (screwdriver and wrench, at the top) and find **Layer Settings**.",
+    "multi_loop": "Select a **sequence** or **video** layer. In **Layer Settings > Animation**, choose **Loop** or **Ping-Pong**.",
+    "multi_open_effects": "With a layer selected, click the blue **wrench** tab in **Properties**: **Modifiers**.",
+    "multi_effect": "Click **Add Modifier > Image** and pick an effect, such as **Gaussian Blur** on a distant layer.",
+    "multi_open_masks": "Masks are in **Add Modifier > Mask**. In the viewport, press **Z**: the **Masks** corner is bottom left.",
+    "multi_clipping": "In **Properties > Tool > Layers**, right-click the **upper** layer and choose **Enable Clipping Mask**.",
+    "multi_holdout": "Select a layer, press **Z** and click the **Holdout** icon at the bottom: it cuts through the layers behind.",
 }
 
 _TASK_ACTION_LABELS = {
@@ -1924,37 +1982,38 @@ _TASK_ACTION_LABELS = {
     "draw_edit_colors": "Enter Edit Mode",
     "image_open_importer": "Open Single Plane",
     "image_import": "Add Single Plane",
-    "image_open_crop": "Open Z Pie",
-    "image_crop": "Show Crop / Expand Handles",
-    "image_open_masks": "Open Z Pie",
-    "image_mask": "Z: Grease Pencil Mask",
+    "image_open_crop": "Open Z Menu",
+    "image_crop": "Open Z Menu",
+    "image_open_masks": "Open Z Menu",
+    "image_mask": "Open Z Menu",
     "image_open_effects": "Open Modifiers",
     "image_effect": "Add Pixelate",
-    "color_open_creator": "Open Color Plane",
+    "color_open_creator": "Add Color Plane",
     "color_generate": "Add Color Plane",
     "color_open_settings": "Open Layer Settings",
     "color_edit": "Open Layer Settings",
-    "color_add_gradient": "Add Gradient Frame",
+    "color_add_gradient": "Switch to Gradient",
     "color_gradient_edit": "Open Layer Settings",
     "color_preview": "Material Preview",
     "color_add_frame": "Add Color Frame",
-    "color_open_mesh_effects": "Open Mesh Effects",
-    "color_mesh": "Open Mesh Effects",
+    "color_open_mesh_effects": "Open Modifiers",
+    "color_mesh": "Open Modifiers",
     "multi_open_importer": "Open Multiplane",
     "multi_generate": "Open Multiplane",
-    "multi_open_camera": "Open Camera Setup",
+    "multi_open_camera": "Create Camera",
     "multi_camera": "Create Camera",
     "multi_start_depth": "Move Selected Layer",
     "multi_depth": "Move Selected Layer",
     "multi_open_settings": "Open Layer Settings",
     "multi_loop": "Open Layer Settings",
-    "multi_open_effects": "Open Effects",
-    "multi_effect": "Open Effects",
-    "multi_open_masks": "Open Masks",
-    "multi_clipping": "Open Masks",
-    "multi_holdout": "Open Masks",
+    "multi_open_effects": "Open Modifiers",
+    "multi_effect": "Open Modifiers",
+    "multi_open_masks": "Open Modifiers",
+    "multi_clipping": "Open Layers",
+    "multi_holdout": "Open Z Menu",
 }
 
+# The HOW path under the guidance: key caps and the names to click, in order.
 _TASK_SHORTCUTS = {
     "draw_add": "Select a plane  >  Shift + A  >  Frame By Plane  >  Grease Pencil Drawing",
     "draw_mode": "Ctrl + Tab  >  Draw Mode",
@@ -1967,36 +2026,36 @@ _TASK_SHORTCUTS = {
     "draw_scrub": "Hold <",
     "draw_edit_colors": "Tab  >  Select  >  Stroke / Fill",
     "image_open_importer": "Shift + A  >  Frame By Plane  >  Single Plane",
-    "image_import": "Choose Image  >  Open Image",
-    "image_open_crop": "Z  >  Crop or Expand",
-    "image_crop": "Drag an edge controller  >  Confirm",
-    "image_open_masks": "Z  >  Grease Pencil Mask",
-    "image_mask": "Z  >  Grease Pencil Mask  >  Draw",
+    "image_import": "Pick a file  >  Single Plane",
+    "image_open_crop": "Z  >  Effects  >  Crop / Expand",
+    "image_crop": "Drag a corner or a side bar",
+    "image_open_masks": "Z  >  Masks",
+    "image_mask": "Z  >  Masks  >  Grease Pencil Mask",
     "image_open_effects": "Properties  >  Modifiers (wrench)",
-    "image_effect": "Image Effects  >  Add Effect  >  Pixelate",
+    "image_effect": "Add Modifier  >  Image  >  Pixelate & Mosaic",
     "color_open_creator": "Shift + A  >  Frame By Plane  >  Color Plane",
-    "color_generate": "Choose Color settings  >  Create",
-    "color_open_settings": "Layer Settings",
+    "color_generate": "Shift + A  >  Frame By Plane  >  Color Plane",
+    "color_open_settings": "Properties  >  Tool  >  Layer Settings",
     "color_edit": "Frame Appearance  >  Color",
-    "color_add_gradient": "Frames  >  + Gradient",
-    "color_gradient_edit": "Frame Appearance  >  Gradient / Position",
-    "color_preview": "Z  >  Material Preview",
-    "color_add_frame": "Frames  >  + Color / Gradient",
-    "color_open_mesh_effects": "Z  >  Favourite 3D Effects",
-    "color_mesh": "Choose a Mesh Effect  >  Adjust it",
+    "color_add_gradient": "Frame Appearance  >  Gradient",
+    "color_gradient_edit": "Frame Appearance  >  Color stops / Position",
+    "color_preview": "Z  >  Material",
+    "color_add_frame": "Color Plane Frames  >  Make Multi Color Plane",
+    "color_open_mesh_effects": "Properties  >  Modifiers (wrench)",
+    "color_mesh": "Add Modifier  >  Mesh  >  Extrude",
     "multi_open_importer": "Shift + A  >  Frame By Plane  >  Multiplane",
-    "multi_generate": "Choose Folder  >  Review Layers  >  Generate",
-    "multi_open_camera": "Frame By Plane  >  Camera",
-    "multi_camera": "Choose Camera settings  >  Create",
-    "multi_start_depth": "Select Layer  >  G",
-    "multi_depth": "Move on depth axis  >  Confirm",
-    "multi_open_settings": "Layer Settings",
-    "multi_loop": "Media Timing  >  Loop Mode",
-    "multi_open_effects": "Z  >  Favourite Effects",
-    "multi_effect": "Choose Effect  >  Adjust it",
-    "multi_open_masks": "Z  >  Masks",
-    "multi_clipping": "Masks  >  Clipping Mask",
-    "multi_holdout": "Masks  >  Holdout",
+    "multi_generate": "Pick a folder  >  Multiplane",
+    "multi_open_camera": "Create Camera",
+    "multi_camera": "Create Camera  >  OK",
+    "multi_start_depth": "Click a layer  >  G",
+    "multi_depth": "G  >  Move away from the camera  >  S",
+    "multi_open_settings": "Properties  >  Tool  >  Layer Settings",
+    "multi_loop": "Layer Settings  >  Animation  >  Loop",
+    "multi_open_effects": "Properties  >  Modifiers (wrench)",
+    "multi_effect": "Add Modifier  >  Image  >  Gaussian Blur",
+    "multi_open_masks": "Add Modifier  >  Mask",
+    "multi_clipping": "Tool  >  Layers  >  Right-click  >  Enable Clipping Mask",
+    "multi_holdout": "Z  >  Holdout",
 }
 
 
@@ -2004,14 +2063,32 @@ def _shortcut_text(page: PageSpec) -> str:
     return "  >  ".join(label for _kind, label in page.shortcut)
 
 
+# Steps that happen inside Layer Settings. The guide points to the Tool tab
+# of the Properties editor; when Preferences hide Layer Settings there, the
+# path names the Preferences switch that brings it back.
+_LAYER_SETTINGS_TASKS = frozenset({
+    "color_open_settings", "color_edit", "color_add_gradient", "color_gradient_edit",
+    "color_add_frame", "multi_open_settings", "multi_loop",
+})
+
+
+def _layer_settings_unavailable_path(context: bpy.types.Context) -> str:
+    """Preferences path that shows Layer Settings in Properties > Tool, or ""."""
+    prefs = _tutorial_preferences(context)
+    if prefs is None:
+        return ""
+    if not bool(getattr(prefs, "show_panel_layer_settings", True)):
+        return "Preferences  >  Interface  >  Visible Control Panels  >  Layer Settings"
+    if not bool(getattr(prefs, "show_control_panel_properties", True)):
+        return "Preferences  >  Interface  >  Control Panel Position  >  Properties"
+    return ""
+
+
 def _task_shortcut_text(context: bpy.types.Context, task: TaskSpec, page: PageSpec) -> str:
-    if task.key in {"color_open_settings", "color_edit", "color_gradient_edit", "multi_open_settings", "multi_loop"}:
-        categories = _layer_settings_categories(context)
-        if categories and categories[0] == "Frame By Plane":
-            return "N  >  Frame By Plane  >  Layer Settings"
-        if "Tool" in categories:
-            return "N  >  Tool  >  Layer Settings"
-        return "Preferences  >  Interface  >  Enable Layer Settings"
+    if task.key in _LAYER_SETTINGS_TASKS:
+        missing = _layer_settings_unavailable_path(context)
+        if missing:
+            return missing
     return _TASK_SHORTCUTS.get(task.key, _shortcut_text(page))
 
 
@@ -2209,7 +2286,7 @@ def _step_body_height(state: TutorialState, hud: dict[str, Any]) -> float:
     if page is None:
         return 0.0
     _title, guidance = _step_guidance(state)
-    lines = len(_wrap_measured(guidance, hud["content_w"], hud["small_size"], max_lines=2))
+    lines = len(_wrap_rich(guidance, hud["content_w"], hud["small_size"], max_lines=_GUIDANCE_MAX_LINES))
     height = 10.0 * scale + 3.0 * scale + 14.0 * scale + hud["heading_size"] + lines * hud["line_h"]
     shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
     if shortcut:
@@ -2268,6 +2345,9 @@ def _hud_palette(context: bpy.types.Context, route_key: str = "") -> dict[str, t
     palette["on_tint"] = _ensure_contrast(white, tint, 3.0)
     palette["tint_label"] = _ensure_contrast(_mix_color(tint, white, 0.35, alpha=1.0), surface, 4.5)
     palette["tint_soft_label"] = _ensure_contrast(_mix_color(tint, white, 0.55, alpha=1.0), palette["tint_soft"], 4.5)
+    # Keys and names to click inside the guidance: the guide's own colour,
+    # lifted until it reads clearly on the card.
+    palette["emphasis"] = _ensure_contrast(_mix_color(tint, white, 0.45, alpha=1.0), card, 4.5)
     return palette
 
 
@@ -2709,8 +2789,11 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
             else:
                 label = title + ("  · optional" if task.optional else "")
             _draw_text(_ellipsize(label, content_w - dots_w, hud["heading_size"]), content_x, title_y, hud["heading_size"], palette["text"])
-        lines = _wrap_measured(guidance, content_w, hud["small_size"], max_lines=2)
-        cursor = _draw_text_lines(lines, content_x, title_y - 17.0 * scale, hud["small_size"], palette["secondary"], hud["line_h"])
+        lines = _wrap_rich(guidance, content_w, hud["small_size"], max_lines=_GUIDANCE_MAX_LINES)
+        cursor = _draw_rich_lines(
+            lines, content_x, title_y - 17.0 * scale, hud["small_size"],
+            palette["secondary"], palette["emphasis"], hud["line_h"],
+        )
         shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
         if shortcut:
             chip_h = 20.0 * scale
@@ -2907,20 +2990,41 @@ def _layer_settings_categories(context: bpy.types.Context) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _show_properties_tab(context: bpy.types.Context, tab: str) -> bool:
+    """Switch the first Properties editor of the screen to ``tab``."""
+    screen = getattr(context, "screen", None)
+    for area in tuple(getattr(screen, "areas", ()) or ()):
+        if area.type != "PROPERTIES":
+            continue
+        try:
+            area.spaces.active.context = tab
+            area.tag_redraw()
+            return True
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+    return False
+
+
 def _show_layer_settings(context: bpy.types.Context) -> bool:
+    """Open Layer Settings in Properties > Tool, where the guide points.
+
+    Only when Preferences keep it out of the Tool tab does the button fall
+    back to the dedicated sidebar tab, so the click still shows the panel.
+    """
+    categories = _layer_settings_categories(context)
+    if not categories:
+        return False
+    if "Tool" in categories and _show_properties_tab(context, "TOOL"):
+        return True
     area = _find_view3d_area(context)
     active = getattr(getattr(area, "spaces", None), "active", None)
     if area is None or active is None:
         return False
-    categories = _layer_settings_categories(context)
-    if not categories:
-        return False
-    category = categories[0]
     try:
         active.show_region_ui = True
         region = next((item for item in area.regions if item.type == "UI"), None)
         if region is not None:
-            region.active_panel_category = category
+            region.active_panel_category = categories[0]
         area.tag_redraw()
         return True
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
@@ -2982,8 +3086,12 @@ def _run_tutorial_task_action(
             return _open_viewport_radial(context)
         if key in {"image_open_masks", "image_mask"}:
             return _open_viewport_radial(context)
-        if key in {"multi_open_masks", "multi_clipping", "multi_holdout"}:
+        if key == "multi_open_masks":
             return _open_effects_view(context, "MASK")
+        if key == "multi_clipping":
+            return _show_properties_tab(context, "TOOL")
+        if key == "multi_holdout":
+            return _open_viewport_radial(context)
         if key == "image_open_effects":
             return _open_effects_view(context, "2D")
         if key == "image_effect":
@@ -3000,7 +3108,8 @@ def _run_tutorial_task_action(
         if key == "color_add_gradient":
             if _activate_tutorial_color_rig(context, state) is None:
                 return False
-            return _operator_started(bpy.ops.fbp.insert_images_after_selected(frame_mode="GRADIENT"))
+            _show_layer_settings(context)
+            return _operator_started(bpy.ops.fbp.set_color_plane_mode(mode="GRADIENT"))
         if key == "color_preview":
             space = getattr(getattr(context, "area", None), "spaces", None)
             active = getattr(space, "active", None)
@@ -3129,7 +3238,7 @@ def _help_icon_kwargs(kind: str) -> dict[str, Any]:
 
 
 def _help_wrap(text: str, width: int = 82) -> tuple[str, ...]:
-    words = " ".join(str(text or "").split()).split()
+    words = " ".join(_plain_text(text).split()).split()
     if not words:
         return ()
     lines: list[str] = []
@@ -3183,6 +3292,25 @@ _DIALOG_OPTION_NOTES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     "multi_open_importer": ("Multiplane", _MULTIPLANE_OPTION_NOTES),
     "multi_generate": ("Multiplane", _MULTIPLANE_OPTION_NOTES),
 }
+
+
+_PLANE_MATERIAL_NOTE = (
+    "The same frame and color controls are also in Properties > Material > Plane Material "
+    "while the plane itself is the active object."
+)
+
+
+def _plane_material_panel_registered() -> bool:
+    """True once the Plane Material panel of Properties > Material exists."""
+    try:
+        return any(
+            getattr(panel, "bl_label", "") == "Plane Material"
+            and getattr(panel, "bl_context", "") == "material"
+            and getattr(panel, "is_registered", False)
+            for panel in bpy.types.Panel.__subclasses__()
+        )
+    except (AttributeError, RuntimeError, TypeError):
+        return False
 
 
 class FBP_OT_tutorial_help(bpy.types.Operator):
@@ -3254,11 +3382,14 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
                 col = options.column(align=True)
                 _help_labels(col, f"{name}: {text}", icon="DOT", width=78)
 
-        if page.help_notes:
+        help_notes = page.help_notes
+        if _plane_material_panel_registered() and any(task.key in _LAYER_SETTINGS_TASKS for task in page.tasks):
+            help_notes = (*help_notes, _PLANE_MATERIAL_NOTE)
+        if help_notes:
             notes = layout.box()
             configure_layout(notes)
             section_header(notes, "Notes", icon="INFO")
-            for note in page.help_notes:
+            for note in help_notes:
                 col = notes.column(align=True)
                 _help_labels(col, note, icon="DOT", width=78)
 
