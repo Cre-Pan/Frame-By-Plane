@@ -1879,9 +1879,16 @@ def fbp_repair_default_duplicate_rig(rig, context=None):
         # Keep the same local offset/mesh state, but parent it to the duplicated rig.
         try:
             source_basis = source_plane.matrix_basis.copy()
-        except Exception:
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not read the duplicated plane's transform", exc)
             source_basis = None
         new_plane.parent = rig
+        try:
+            # The transform box can turn the rig while the plane stays: that
+            # offset lives in the parent inverse, so the copy keeps it too.
+            new_plane.matrix_parent_inverse = source_plane.matrix_parent_inverse.copy()
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not keep the duplicated plane's offset from its rig", exc)
         if source_basis is not None:
             new_plane.matrix_basis = source_basis
         else:

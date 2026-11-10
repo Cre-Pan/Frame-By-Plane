@@ -78,7 +78,8 @@ _GRID_KINDS = {"POINT", "GRID_CORNER"}
 
 def is_bones_object(obj):
     try:
-        return bool(obj is not None and str(obj.get(BONES_OWNER_KEY, "") or "") and obj.type == 'ARMATURE')
+        # The type test is cheaper than the custom property: it goes first.
+        return bool(obj is not None and obj.type == 'ARMATURE' and str(obj.get(BONES_OWNER_KEY, "") or ""))
     except FBP_DATA_ERRORS:
         return False
 
@@ -91,6 +92,37 @@ def bones_owner(obj):
         return parent
     owner = bpy.data.objects.get(str(obj.get(BONES_OWNER_KEY, "") or ""))
     return owner if owner is not None and bool(getattr(owner, "is_fbp_control", False)) else None
+
+
+def posed_layer_rigs(context=None):
+    """Layer rigs whose Controls armature is in Pose Mode right now.
+
+    Pose Mode on a layer (Ctrl+T) is where its handles are edited, so every
+    effect handle of these layers is shown and can be dragged there too.
+    """
+    context = context or getattr(bpy, "context", None)
+    if context is None:
+        return []
+    try:
+        if str(getattr(context, "mode", "") or "") != "POSE":
+            return []
+        candidates = list(getattr(context, "objects_in_mode", ()) or ())
+        active = getattr(context, "active_object", None)
+        if active is not None and active not in candidates:
+            candidates.append(active)
+    except FBP_DATA_ERRORS:
+        return []
+    rigs = []
+    for armature in candidates:
+        try:
+            if str(getattr(armature, "mode", "") or "") != "POSE" or not is_bones_object(armature):
+                continue
+        except FBP_DATA_ERRORS:
+            continue
+        rig = bones_owner(armature)
+        if rig is not None and rig not in rigs:
+            rigs.append(rig)
+    return rigs
 
 
 def bones_object(rig):

@@ -1756,7 +1756,6 @@ def _copy_motion_values(source, destination, *, include_local=True, include_seed
 
 
 def _propagate_linked_motion(source, scene=None):
-    global _MOTION_LINK_GUARD
     if _MOTION_LINK_GUARD:
         return 0
     link_id = str(getattr(source, "link_id", "") or "")
@@ -4198,7 +4197,7 @@ def _remove_motion_handler(handler_list, callback_name):
 
 @persistent
 def _fbp_motion_frame_change(scene, _depsgraph=None):
-    global _MOTION_HANDLER_GUARD, _MOTION_DEFERRED_VIEWPORT_ACTIVE
+    global _MOTION_HANDLER_GUARD
     if _MOTION_HANDLER_GUARD or fbp_undo_guard_active():
         return
     render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))

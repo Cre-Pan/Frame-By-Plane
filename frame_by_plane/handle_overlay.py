@@ -33,10 +33,15 @@ from .viewport_handles import (
     STOP_RING_COLOR,
     handle_selected_color,
 )
+from .common import (
+    ui_scale as _ui_scale,
+    uniform_color_shader as _fill_shader,
+    undo_push as _undo_push,
+    view_plane_hit as _plane_hit,
+)
 
 
 _DRAW_HANDLE = None
-_FILL_SHADER = None
 _LINE_SHADER = None
 _OUTLINE_WIDTH = 1.5
 _GUIDE_WIDTH = 1.4
@@ -44,12 +49,10 @@ _GUIDE_OUTLINE_WIDTH = 3.4
 
 
 def _shaders():
-    global _FILL_SHADER, _LINE_SHADER
-    if _FILL_SHADER is None:
-        _FILL_SHADER = gpu.shader.from_builtin("UNIFORM_COLOR")
+    global _LINE_SHADER
     if _LINE_SHADER is None:
         _LINE_SHADER = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
-    return _FILL_SHADER, _LINE_SHADER
+    return _fill_shader(), _LINE_SHADER
 
 
 def _visible_handles(context):
@@ -103,6 +106,10 @@ def _lattice_guides(context):
         from .lattice_pins import PIN_GRID_KEY, PIN_POINT_KEY
         from .viewport_handles import dashed_pieces
     except ImportError:
+        return []
+    # Lattice handles are armatures: a file without any skips the scan of
+    # every visible object on each redraw.
+    if not len(bpy.data.armatures):
         return []
     segments = []
     for armature in tuple(getattr(context, "visible_objects", ()) or ()):
@@ -195,7 +202,8 @@ def _visible_lattice_handles(context):
         return
     for armature in tuple(getattr(context, "visible_objects", ()) or ()):
         try:
-            if not is_bones_object(armature):
+            # Cheap type test first: this runs on every cursor move.
+            if armature.type != "ARMATURE" or not is_bones_object(armature):
                 continue
             for pose_bone in armature.pose.bones:
                 if not pose_bone.bone.hide and pose_bone.custom_shape is not None:
@@ -298,36 +306,117 @@ def _scaled(points, anchor, factor):
     return [anchor + (point - anchor) * factor for point in points]
 
 
-def _handle_geometry(obj, depsgraph):
-    """World-space triangles per part, rim segments and guide segments of one handle."""
+# Local-space topology of each handle mesh, keyed by the mesh and a digest of
+# its coordinates and face parts. Handles are redrawn on every viewport redraw
+# and picked on every cursor move; building a temporary evaluated mesh for
+# each of them every time cost about 0.3 ms per handle. Only plain meshes are
+# cached: a handle with an active modifier (Lattice Follow) or shape keys is
+# read from its evaluated mesh as before.
+_MESH_CACHE = {}
+_MESH_CACHE_LIMIT = 256
+
+
+def _mesh_topology(mesh):
+    """Local vertices, triangles with their part, rim, guide and loose X edges."""
+    vertices = [vertex.co.copy() for vertex in mesh.vertices]
+    parts = None
+    attribute = mesh.attributes.get(PART_ATTRIBUTE)
+    if attribute is not None and attribute.domain == "FACE" and len(attribute.data) == len(mesh.polygons):
+        parts = [0] * len(mesh.polygons)
+        attribute.data.foreach_get("value", parts)
+    mesh.calc_loop_triangles()
+    triangles = [
+        (parts[tri.polygon_index] if parts else PART_HANDLE, tuple(tri.vertices))
+        for tri in mesh.loop_triangles
+    ]
+    edge_users = {}
+    for polygon in mesh.polygons:
+        for key in polygon.edge_keys:
+            edge_users[key] = edge_users.get(key, 0) + 1
+    rim = tuple(key for key, users in edge_users.items() if users == 1)
+    guides = tuple(
+        tuple(edge.vertices)
+        for edge in mesh.edges
+        if tuple(sorted(edge.vertices)) not in edge_users
+    )
+    loose_x = tuple(
+        tuple(edge.vertices)
+        for edge in mesh.edges
+        if edge.is_loose
+        and abs(vertices[edge.vertices[0]].y) <= 1.0e-6
+        and abs(vertices[edge.vertices[1]].y) <= 1.0e-6
+    )
+    return {
+        "vertices": vertices,
+        "triangles": triangles,
+        "triangle_vertices": tuple(sorted({index for _part, indices in triangles for index in indices})),
+        "rim": rim,
+        "guides": guides,
+        "loose_x": loose_x,
+    }
+
+
+def _mesh_digest(mesh):
+    from array import array
+
+    coords = array("f", [0.0]) * (len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", coords)
+    digest = [len(mesh.vertices), len(mesh.edges), len(mesh.polygons), hash(coords.tobytes())]
+    attribute = mesh.attributes.get(PART_ATTRIBUTE)
+    if attribute is not None and attribute.domain == "FACE":
+        values = array("i", [0]) * len(attribute.data)
+        attribute.data.foreach_get("value", values)
+        digest.append(hash(values.tobytes()))
+    return tuple(digest)
+
+
+def _plain_mesh(obj):
+    """The handle's own mesh when nothing deforms it, else None."""
+    mesh = getattr(obj, "data", None)
+    if mesh is None or getattr(obj, "type", "") != "MESH":
+        return None
+    if getattr(mesh, "shape_keys", None) is not None:
+        return None
+    if obj.parent is not None and obj.parent_type in {"LATTICE", "ARMATURE"}:
+        return None
+    for modifier in obj.modifiers:
+        if modifier.show_viewport:
+            return None
+    return mesh
+
+
+def handle_mesh(obj, depsgraph):
+    """``(matrix_world, topology)`` of a handle as the viewport shows it."""
     evaluated = obj.evaluated_get(depsgraph)
-    mesh = evaluated.to_mesh()
+    matrix = evaluated.matrix_world.copy()
+    mesh = _plain_mesh(obj)
+    if mesh is not None:
+        key = (int(getattr(mesh, "session_uid", 0) or 0) or mesh.as_pointer(), mesh.name_full)
+        digest = _mesh_digest(mesh)
+        cached = _MESH_CACHE.get(key)
+        if cached is not None and cached[0] == digest:
+            return matrix, cached[1]
+        topology = _mesh_topology(mesh)
+        if len(_MESH_CACHE) >= _MESH_CACHE_LIMIT:
+            _MESH_CACHE.clear()
+        _MESH_CACHE[key] = (digest, topology)
+        return matrix, topology
+    evaluated_mesh = evaluated.to_mesh()
     try:
-        matrix = evaluated.matrix_world
-        points = [matrix @ vertex.co for vertex in mesh.vertices]
-        parts = None
-        attribute = mesh.attributes.get(PART_ATTRIBUTE)
-        if attribute is not None and attribute.domain == "FACE" and len(attribute.data) == len(mesh.polygons):
-            parts = [0] * len(mesh.polygons)
-            attribute.data.foreach_get("value", parts)
-        mesh.calc_loop_triangles()
-        triangles = {}
-        for tri in mesh.loop_triangles:
-            part = parts[tri.polygon_index] if parts else PART_HANDLE
-            triangles.setdefault(part, []).extend(points[index] for index in tri.vertices)
-        edge_users = {}
-        for polygon in mesh.polygons:
-            for key in polygon.edge_keys:
-                edge_users[key] = edge_users.get(key, 0) + 1
-        rim = [points[index] for key, users in edge_users.items() if users == 1 for index in key]
-        guides = [
-            points[index]
-            for edge in mesh.edges
-            if tuple(sorted(edge.vertices)) not in edge_users
-            for index in edge.vertices
-        ]
+        return matrix, _mesh_topology(evaluated_mesh)
     finally:
         evaluated.to_mesh_clear()
+
+
+def _handle_geometry(obj, depsgraph):
+    """World-space triangles per part, rim segments and guide segments of one handle."""
+    matrix, topology = handle_mesh(obj, depsgraph)
+    points = [matrix @ vertex for vertex in topology["vertices"]]
+    triangles = {}
+    for part, indices in topology["triangles"]:
+        triangles.setdefault(part, []).extend(points[index] for index in indices)
+    rim = [points[index] for key in topology["rim"] for index in key]
+    guides = [points[index] for edge in topology["guides"] for index in edge]
     return triangles, rim, guides
 
 
@@ -422,10 +511,7 @@ def _draw_handles():
     except FBP_DATA_ERRORS:
         return
     fill_shader, line_shader = _shaders()
-    try:
-        scale = float(context.preferences.system.ui_scale) or 1.0
-    except FBP_DATA_ERRORS:
-        scale = 1.0
+    scale = _ui_scale(context)
     guides = list(lattice_guides) + plane_guides
     for solid, _dashed in mask_guides:
         guides.extend(solid)
@@ -617,6 +703,28 @@ def _gradient_stops(rig, effect_id, in_control, out_control):
             t = (float(element.position) - first) / span if abs(span) > 1.0e-9 else 0.5
         stops.append((key, t, controls._display_color(element.color)))
     return stops
+
+
+def _fit_gizmos(gizmos, count, idname):
+    """Give a gizmo group exactly ``count`` usable gizmos.
+
+    A gizmo being dragged is never removed: Blender's modal handler still
+    points at it, and freeing it mid-drag (an end dot dropped on the other
+    end, a layer deselected by a script) crashes Blender. Spare gizmos are
+    hidden until the drag ends and the next redraw trims them.
+    """
+    while len(gizmos) < count:
+        gizmos.new(idname)
+    if any(gizmo.is_modal for gizmo in gizmos):
+        for index, gizmo in enumerate(gizmos):
+            if not gizmo.is_modal:
+                gizmo.hide = index >= count
+        return
+    while len(gizmos) > count:
+        gizmos.remove(gizmos[-1])
+    for gizmo in gizmos:
+        if gizmo.hide:
+            gizmo.hide = False
 
 
 def _ring_triangles(outer, inner, segments=32, center=(0.0, 0.0)):
@@ -865,13 +973,6 @@ class FBP_GT_gradient_stop(bpy.types.Gizmo):
             pass
 
 
-def _undo_push(message):
-    try:
-        bpy.ops.ed.undo_push(message=message)
-    except RuntimeError:
-        pass
-
-
 class FBP_OT_gradient_stop_color(bpy.types.Operator):
     """Change the colour of a gradient stop"""
 
@@ -1106,10 +1207,7 @@ class FBP_GT_color_plane_grip(bpy.types.Gizmo):
 
     def test_select(self, context, location):
         region, view = context.region, context.region_data
-        try:
-            scale = float(context.preferences.system.ui_scale) or 1.0
-        except FBP_DATA_ERRORS:
-            scale = 1.0
+        scale = _ui_scale(context)
         a = location_3d_to_region_2d(region, view, Vector(self.fbp_a))
         if a is None:
             return -1
@@ -1254,10 +1352,7 @@ class FBP_GGT_color_plane_gradient(bpy.types.GizmoGroup):
         except FBP_DATA_ERRORS:
             gizmo_size = 75.0
         gizmos = self.gizmos
-        while len(gizmos) > len(grips):
-            gizmos.remove(gizmos[-1])
-        while len(gizmos) < len(grips):
-            gizmos.new(FBP_GT_color_plane_grip.bl_idname)
+        _fit_gizmos(gizmos, len(grips), FBP_GT_color_plane_grip.bl_idname)
         for gizmo, (rig_name, kind, a, b) in zip(gizmos, grips):
             if gizmo.is_modal:
                 continue
@@ -1309,18 +1404,6 @@ def _line_segment(rig, effect_id, in_control, out_control, start, end):
     return start, end
 
 
-def _plane_hit(region, view, coord, point, normal):
-    try:
-        from .alpha_pick import fbp_view_ray
-        origin, direction = fbp_view_ray(region, view, coord)
-    except (ImportError,) + FBP_DATA_ERRORS:
-        return None
-    denominator = direction.dot(normal)
-    if abs(denominator) <= 1.0e-9:
-        return None
-    return origin + direction * ((point - origin).dot(normal) / denominator)
-
-
 class FBP_GT_gradient_drag(bpy.types.Gizmo):
     """Invisible grip over a gradient's end dot or base line (the overlay draws them)."""
 
@@ -1355,10 +1438,7 @@ class FBP_GT_gradient_drag(bpy.types.Gizmo):
 
     def _hit(self, context, location):
         region, view = context.region, context.region_data
-        try:
-            scale = float(context.preferences.system.ui_scale) or 1.0
-        except FBP_DATA_ERRORS:
-            scale = 1.0
+        scale = _ui_scale(context)
         a = location_3d_to_region_2d(region, view, Vector(self.fbp_a))
         if a is None:
             return -1
@@ -1453,6 +1533,9 @@ class FBP_GT_gradient_drag(bpy.types.Gizmo):
                     _sync_control(control)
         elif self.fbp_moved:
             _undo_push("Move Gradient" if self.fbp_kind == "LINE" else "Move Gradient End")
+        elif context.mode == "POSE":
+            # Selecting the handle would take the layer out of Pose Mode.
+            pass
         else:
             # A plain click selects the handle, as before the line was draggable.
             control = self._moved_control()
@@ -1484,7 +1567,8 @@ class FBP_GGT_gradient_lines(bpy.types.GizmoGroup):
     @classmethod
     def poll(cls, context):
         try:
-            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+            # Pose Mode too: a posed layer shows its gradient handles.
+            if context.mode not in {"OBJECT", "POSE"} or not context.space_data.overlay.show_overlays:
                 return False
         except FBP_DATA_ERRORS:
             return False
@@ -1501,10 +1585,7 @@ class FBP_GGT_gradient_lines(bpy.types.GizmoGroup):
             grips.append((rig.name, effect_id, "IN", start, start))
             grips.append((rig.name, effect_id, "OUT", end, end))
         gizmos = self.gizmos
-        while len(gizmos) > len(grips):
-            gizmos.remove(gizmos[-1])
-        while len(gizmos) < len(grips):
-            gizmos.new(FBP_GT_gradient_drag.bl_idname)
+        _fit_gizmos(gizmos, len(grips), FBP_GT_gradient_drag.bl_idname)
         for gizmo, (rig_name, effect_id, kind, a, b) in zip(gizmos, grips):
             if gizmo.is_modal:
                 continue
@@ -1525,7 +1606,8 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
     @classmethod
     def poll(cls, context):
         try:
-            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+            # Pose Mode too: a posed layer shows its gradient handles.
+            if context.mode not in {"OBJECT", "POSE"} or not context.space_data.overlay.show_overlays:
                 return False
         except FBP_DATA_ERRORS:
             return False
@@ -1560,10 +1642,7 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
         except FBP_DATA_ERRORS:
             gizmo_size = 75.0
         gizmos = self.gizmos
-        while len(gizmos) > len(stops):
-            gizmos.remove(gizmos[-1])
-        while len(gizmos) < len(stops):
-            gizmos.new(FBP_GT_gradient_stop.bl_idname)
+        _fit_gizmos(gizmos, len(stops), FBP_GT_gradient_stop.bl_idname)
         for gizmo, (rig_name, effect_id, key, start, end, location, basis, color) in zip(gizmos, stops):
             if gizmo.is_modal:
                 continue
@@ -1599,10 +1678,9 @@ def register():
 
 
 def unregister():
-    global _DRAW_HANDLE, _FILL_SHADER, _LINE_SHADER
+    global _DRAW_HANDLE, _LINE_SHADER
     handle = _DRAW_HANDLE
     _DRAW_HANDLE = None
-    _FILL_SHADER = None
     _LINE_SHADER = None
     if handle is not None:
         try:

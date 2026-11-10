@@ -135,9 +135,6 @@ _CONTROL_FULL_SCAN_INTERVAL = 5.0
 _CONTROL_OWNER_CACHE = globals().get("_CONTROL_OWNER_CACHE", {})
 if not isinstance(_CONTROL_OWNER_CACHE, dict):
     _CONTROL_OWNER_CACHE = {}
-# Scene-object caches retain primitive runtime keys and names only.
-_CONTEXT_OBJECTS_CACHE = {}
-_CONTEXT_OBJECTS_CACHE_TTL = 0.35
 
 
 # One source of truth for effects that expose spatial interaction. Modes:
@@ -2719,7 +2716,6 @@ def _iter_all_effect_controls(context=None):
     selection timers should not walk every object ten times per second.
     """
     global _LAST_CONTROL_FULL_SCAN_TIME, _LAST_CONTROL_EMPTY_SCAN_TIME
-    global _SELECTION_VISIBILITY_EMPTY_SINCE
     seen = set()
     # The scene list only matters when many controls are known; skip reading
     # it on the common path (no or few controls) that runs on every redraw.
@@ -2785,14 +2781,55 @@ def _iter_all_effect_controls(context=None):
         _LAST_CONTROL_EMPTY_SCAN_TIME = now
 
 
+# One redraw asks for the visible handles several times (overlay draw, hover,
+# gradient stops). The answer only changes with a depsgraph update (selection,
+# hide, new handles) or a new frame, so it is kept for that state and at most
+# half a second, and rebuilt otherwise.
+_VISIBLE_CONTROLS_CACHE = {"key": None, "controls": ()}
+
+
+def _visible_controls_key(context):
+    try:
+        from . import runtime as _runtime
+        scene = getattr(context, "scene", None) if context is not None else None
+        view_layer = getattr(context, "view_layer", None) if context is not None else None
+        return (
+            float(getattr(_runtime, "_FBP_LAST_DEPSGRAPH_ACTIVITY", 0.0) or 0.0),
+            int(time.monotonic() * 2.0),
+            fbp_obj_runtime_key(scene),
+            str(getattr(view_layer, "name", "") or ""),
+            int(getattr(scene, "frame_current", 0) or 0),
+            len(_CONTROL_NAMES),
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
 def iter_visible_effect_controls(context=None):
     """Visible handle meshes, for the always-in-front overlay."""
-    for control in _iter_all_effect_controls(context):
-        try:
-            if control.type == "MESH" and control.visible_get():
-                yield control
-        except FBP_DATA_ERRORS:
+    key = _visible_controls_key(context or getattr(bpy, "context", None))
+    controls = _VISIBLE_CONTROLS_CACHE["controls"]
+    if key is None or _VISIBLE_CONTROLS_CACHE["key"] != key:
+        _VISIBLE_CONTROLS_CACHE["key"] = None
+        found = []
+        for control in _iter_all_effect_controls(context):
+            try:
+                if control.type == "MESH" and control.visible_get():
+                    found.append(control.name)
+                    yield control
+            except FBP_DATA_ERRORS:
+                continue
+        # Names, not RNA: nothing freed by Undo or a file load is kept.
+        _VISIBLE_CONTROLS_CACHE["key"] = key
+        _VISIBLE_CONTROLS_CACHE["controls"] = tuple(found)
+        return
+    objects = bpy.data.objects
+    for name in controls:
+        control = objects.get(name)
+        if control is None:
+            _VISIBLE_CONTROLS_CACHE["key"] = None
             continue
+        yield control
 
 
 def _linear_to_display(value):
@@ -2939,16 +2976,86 @@ def _rig_or_controller_is_selected(rig, helper=None, context=None):
     )
 
 
+def posed_layer_rigs(context=None):
+    """Layers whose Controls armature is in Pose Mode (see ``lattice_bones``)."""
+    try:
+        from .lattice_bones import posed_layer_rigs as _posed
+    except ImportError:
+        return []
+    try:
+        return list(_posed(context))
+    except FBP_DATA_ERRORS:
+        return []
+
+
+def _effect_shows_controls(rig, effect_id, active_check=None):
+    """True when ``effect_id`` is on, has viewport handles and the layer shows them."""
+    if rig is None or not effect_has_controls(effect_id):
+        return False
+    try:
+        if not bool(getattr(rig, "fbp_effect_controls_enabled", True)):
+            return False
+        if active_check is None:
+            from .geometry_nodes import fbp_effect_is_active as active_check
+        return bool(active_check(rig, effect_id))
+    except (ImportError,) + FBP_DATA_ERRORS:
+        return False
+
+
+def posed_control_effect_ids(rig):
+    """Effects of a posed layer whose handles Pose Mode shows, in stack order."""
+    try:
+        from .geometry_nodes import fbp_effect_ids_for_rig, fbp_effect_is_active
+        stack = [str(effect_id or "").upper() for effect_id in fbp_effect_ids_for_rig(rig)]
+    except (ImportError,) + FBP_DATA_ERRORS:
+        return []
+    found = []
+    for effect_id in stack:
+        if effect_id not in found and _effect_shows_controls(rig, effect_id, fbp_effect_is_active):
+            found.append(effect_id)
+    return found
+
+
+def ensure_posed_layer_controls(context, rig):
+    """Create and place every handle a posed layer shows.
+
+    Called from the operators that enter Pose Mode, inside their Undo step:
+    the deferred visibility pass never creates objects.
+    """
+    created = False
+    for effect_id in posed_control_effect_ids(rig):
+        for spec in CONTROL_SPECS.get(effect_id, ()):
+            role = str(spec.get("role", "CONTROL") or "CONTROL").upper()
+            if find_effect_control(rig, effect_id, role) is None:
+                created = ensure_effect_control(rig, effect_id, spec) is not None or created
+        try:
+            sync_controls_from_properties(rig, effect_id, create=True)
+        except FBP_DATA_ERRORS:
+            pass
+    sync_global_controller_visibility(context)
+    return created
+
+
 def _sync_all_effect_control_visibility(context=None):
     """Keep only the active effect's helpers visible while its layer is selected.
 
     Crop/Extend handles are stricter editing tools: selecting the plane alone
     must hide them, even if Crop is still the active UI row. They remain visible
     only while one handle in their control group is actually selected.
+
+    A layer in Pose Mode (its Controls armature) shows the handles of every
+    effect that has them, Crop and Extend included, without selecting them.
     """
     context = context or getattr(bpy, "context", None)
     changed = False
     controls = tuple(_iter_all_effect_controls(context))
+    posed_keys = set()
+    for posed in posed_layer_rigs(context):
+        try:
+            posed_keys.add(int(fbp_obj_runtime_key(posed) or 0))
+        except FBP_DATA_ERRORS:
+            continue
+    posed_effects = {}
     selected_pointers = _selected_pointer_set(context)
     if not selected_pointers:
         for control in controls:
@@ -2995,16 +3102,23 @@ def _sync_all_effect_control_visibility(context=None):
             group_selected = bool(owner and (owner_key, effect_id) in active_groups)
             active_effect = active_effect_by_owner.get(owner_key, "")
         except FBP_DATA_ERRORS:
+            owner_key = 0
             group_selected = False
             active_effect = ""
         owner_selected = bool(
             _rna_in_pointer_set(owner, selected_pointers)
             or _rna_in_pointer_set(plane, selected_pointers)
         )
+        posed = False
+        if owner is not None and owner_key in posed_keys:
+            if owner_key not in posed_effects:
+                posed_effects[owner_key] = set(posed_control_effect_ids(owner))
+            posed = effect_id in posed_effects[owner_key]
         visible = bool(
             owner
             and (
-                group_selected
+                posed
+                or group_selected
                 or (
                     owner_selected
                     and effect_id == active_effect
@@ -3200,7 +3314,11 @@ def sync_active_effect_controls(
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
     changed = False
-    selected_rig_names = {str(getattr(rig, "name", "") or "") for rig in rigs}
+    # Posed layers show all their handles (see the visibility pass); selecting
+    # one of them here would take the armature out of Pose Mode.
+    posed_rigs = posed_layer_rigs(context)
+    rigs = [rig for rig in rigs if rig not in posed_rigs]
+    selected_rig_names = {str(getattr(rig, "name", "") or "") for rig in (*rigs, *posed_rigs)}
     for name in tuple(_GUIDE_NAMES):
         control = bpy.data.objects.get(name)
         if control is None:
@@ -3216,6 +3334,20 @@ def sync_active_effect_controls(
         str(active_object.get(KEY_EFFECT_ID, "") or "").upper()
         if active_is_control else ""
     )
+
+    for rig in posed_rigs:
+        for effect_id in posed_control_effect_ids(rig):
+            controls = [
+                control for control in (
+                    find_effect_control(rig, effect_id, str(spec.get("role", "CONTROL") or "CONTROL").upper())
+                    for spec in CONTROL_SPECS[effect_id]
+                )
+                if control is not None
+            ]
+            if controls and not any(
+                control.name in _PENDING_CONTROL_SIGNATURES for control in controls
+            ):
+                sync_controls_from_properties(rig, effect_id, create=False)
 
     selected_control = None
     selected_related = ()
@@ -4076,8 +4208,9 @@ def clear_effect_controls_runtime_cache():
     _PENDING_CONTROL_SIGNATURES.clear()
     _PENDING_CONTROL_TRANSFORMS.clear()
     _CONTROL_NAMES.clear()
+    _VISIBLE_CONTROLS_CACHE["key"] = None
+    _VISIBLE_CONTROLS_CACHE["controls"] = ()
     _CONTROL_OWNER_CACHE.clear()
-    _CONTEXT_OBJECTS_CACHE.clear()
     _SCENE_SERVICE_CACHE.clear()
     _GUIDE_NAMES.clear()
     _FBP_PLANE_MESH_KEYS.clear()

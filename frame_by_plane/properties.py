@@ -105,6 +105,7 @@ class _FBPTrackedRNAOwner:
         property_name = _fbp_rna_property_name(name)
         if not property_name:
             raise AttributeError("RNA property name cannot be empty")
+        definition = _fbp_bind_effect_setting_update(property_name, definition)
         registry = _FBP_REGISTERED_TYPE_PROPERTIES.setdefault(
             self._owner_name, {}
         )
@@ -116,6 +117,36 @@ class _FBPTrackedRNAOwner:
 
     def __setattr__(self, name, definition):
         self.assign(name, definition)
+
+
+class _FBPEffectSettingUpdate:
+    """Placeholder for ``update=``: the effect-setting callback of this property.
+
+    Every effect setting needs the same queued update, bound to its effect and
+    to its own property name. ``_effect_setting('GLASS')`` in a declaration is
+    replaced, when the property is registered, by that callback, so the name
+    is written once (on the property itself) instead of in a separate table.
+    """
+
+    __slots__ = ("effect_id",)
+
+    def __init__(self, effect_id):
+        self.effect_id = effect_id
+
+
+def _effect_setting(effect_id):
+    return _FBPEffectSettingUpdate(effect_id)
+
+
+def _fbp_bind_effect_setting_update(property_name, definition):
+    keywords = getattr(definition, "keywords", None)
+    marker = keywords.get("update") if isinstance(keywords, dict) else None
+    if not isinstance(marker, _FBPEffectSettingUpdate):
+        return definition
+    return definition.function(**{
+        **keywords,
+        "update": _make_effect_update_callback(marker.effect_id, property_name),
+    })
 
 
 _FBP_SCENE_RNA = _FBPTrackedRNAOwner(bpy.types.Scene, "Scene")
@@ -839,6 +870,15 @@ def update_shortcut_preferences_cb(self, context):
     update_interface_preferences_cb(self, context)
 
 
+def update_node_view_annotations_cb(self, context):
+    """Add or remove the note frames in every generated node view."""
+    try:
+        from .geometry_nodes import fbp_tidy_all_node_views
+        fbp_tidy_all_node_views(force=True, annotate=bool(self.node_view_annotations))
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
+
+
 class FBP_AddonPreferences(AddonPreferences):
     bl_idname = __package__ if __package__ else "frame_by_plane"
 
@@ -860,6 +900,12 @@ class FBP_AddonPreferences(AddonPreferences):
         name="Modifiers Follow Layer",
         description="When a Frame By Plane layer is selected, Properties > Modifiers shows the modifiers of its image plane, so mesh effects can be reordered, hidden and removed natively",
         default=True,
+    )
+    node_view_annotations: BoolProperty(
+        name="Notes in Node Views",
+        description="Add short note frames to the node trees Frame By Plane generates for effects (layer materials, effect groups, effect modifiers). Display only: the result is the same either way",
+        default=True,
+        update=update_node_view_annotations_cb,
     )
     show_control_panel_properties: BoolProperty(
         name="Properties",
@@ -1723,6 +1769,11 @@ class FBP_AddonPreferences(AddonPreferences):
     pref_ui_show_procedural: BoolProperty(name="Procedural", description="Show Color, Gradient and Holdout plane defaults", default=False)
     pref_ui_show_performance: BoolProperty(name="Performance", description="Show cleanup and performance defaults", default=False)
     pref_ui_show_preview_features: BoolProperty(name="Feature Scope", description="Show stable and preview feature controls", default=False)
+    show_performance_dashboard: BoolProperty(
+        name="Performance Dashboard",
+        description="Show the Performance Dashboard under Frame By Plane Diagnostics in the Output properties",
+        default=False,
+    )
     pref_ui_show_diagnostics: BoolProperty(name="Diagnostics", description="Show repair, health and report tools", default=False)
     pref_ui_show_links: BoolProperty(name="Links", description="Show update, review and support actions", default=False)
 
@@ -2083,7 +2134,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(appearance_box)
                 row.prop(self, 'gp_scrub_cursor_color', text='Cursor Color')
                 row.prop(self, 'gp_scrub_cursor_text_color', text='Cursor Text')
-                hint_row(appearance_box, f'Hold < to scrub · header button pins the bar · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
+                hint_row(appearance_box, 'Hold < to scrub · header button pins the bar · A bookmark · Shift+D duplicate · G move · X delete.', icon='TIME')
 
             body = _section(category, 'pref_ui_show_procedural', 'Procedural Planes', 'menu.color_plane', 'MATERIAL')
             if body:
@@ -2217,6 +2268,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'show_panel_grease_pencil', text='Grease Pencil', toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row.prop(self, 'show_panel_layer_settings', text='Layer Settings', toggle=True, icon='TOOL_SETTINGS')
                 body.prop(self, 'modifiers_follow_layer', icon='MODIFIER')
+                body.prop(self, 'node_view_annotations', icon='NODETREE')
                 if not any_location:
                     hint_row(body, 'Both control-panel locations are disabled. Shift+A, Modifiers, Output and Camera tools remain available.', icon='HIDE_ON')
                 else:
@@ -2394,6 +2446,8 @@ class FBP_AddonPreferences(AddonPreferences):
                 # One diagnostic per row, with a dedicated icon-only report copy.
                 _diagnostic_row(body, 'fbp.project_health_check', 'Project Doctor', ui_icon('settings.health'), 'FBP_Project_Health')
                 _diagnostic_row(body, 'fbp.run_persistence_audit', 'Persistence Audit', 'FILE_TICK', 'FBP_Persistence_Audit')
+                row = _row(body)
+                row.prop(self, 'show_performance_dashboard', toggle=True, icon='TIME')
 
                 section_gap(body, 0.45)
                 maintenance = adaptive_row(body, context, align=False, scale=1.02, threshold=620.0)
@@ -2732,299 +2786,6 @@ def _make_effect_update_callback(effect_id, prop_name):
     return _update
 
 
-update_uv_distortion_scale_cb = _make_effect_update_callback('UV_DISTORTION', 'fbp_uv_distortion_scale')
-update_uv_distortion_amount_cb = _make_effect_update_callback('UV_DISTORTION', 'fbp_uv_distortion_amount')
-update_uv_distortion_evolution_cb = _make_effect_update_callback('UV_DISTORTION', 'fbp_uv_distortion_evolution')
-update_pixelate_resolution_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_resolution')
-update_pixelate_height_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_height')
-update_pixelate_grid_mode_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_grid_mode')
-update_pixelate_size_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_size')
-update_pixelate_stretch_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_stretch')
-update_pixelate_rotation_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_rotation')
-update_pixelate_offset_x_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_offset_x')
-update_pixelate_offset_y_cb = _make_effect_update_callback('PIXELATE', 'fbp_pixelate_offset_y')
-update_swirl_center_x_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_center_x')
-update_swirl_center_y_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_center_y')
-update_swirl_radius_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_radius')
-update_swirl_angle_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_angle')
-update_swirl_factor_cb = _make_effect_update_callback('SWIRL', 'fbp_swirl_factor')
-update_bulge_pinch_center_x_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_center_x')
-update_bulge_pinch_center_y_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_center_y')
-update_bulge_pinch_radius_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_radius')
-update_bulge_pinch_strength_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_strength')
-update_bulge_pinch_factor_cb = _make_effect_update_callback('BULGE_PINCH', 'fbp_bulge_pinch_factor')
-update_lens_warp_center_x_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_center_x')
-update_lens_warp_center_y_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_center_y')
-update_lens_warp_distortion_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_distortion')
-update_lens_warp_zoom_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_zoom')
-update_lens_warp_factor_cb = _make_effect_update_callback('LENS_WARP', 'fbp_lens_warp_factor')
-update_wave_warp_amplitude_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_amplitude')
-update_wave_warp_frequency_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_frequency')
-update_wave_warp_phase_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_phase')
-update_wave_warp_angle_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_angle')
-update_wave_warp_factor_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_factor')
-update_wave_warp_speed_cb = _make_effect_update_callback('WAVE_WARP', 'fbp_wave_warp_speed')
-update_ripple_distortion_center_x_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_center_x')
-update_ripple_distortion_center_y_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_center_y')
-update_ripple_distortion_amplitude_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_amplitude')
-update_ripple_distortion_frequency_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_frequency')
-update_ripple_distortion_phase_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_phase')
-update_ripple_distortion_radius_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_radius')
-update_ripple_distortion_falloff_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_falloff')
-update_ripple_distortion_factor_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_factor')
-update_ripple_distortion_speed_cb = _make_effect_update_callback('RIPPLE_DISTORTION', 'fbp_ripple_distortion_speed')
-update_kaleidoscope_center_x_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_center_x')
-update_kaleidoscope_center_y_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_center_y')
-update_kaleidoscope_segments_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_segments')
-update_kaleidoscope_rotation_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_rotation')
-update_kaleidoscope_factor_cb = _make_effect_update_callback('KALEIDOSCOPE', 'fbp_kaleidoscope_factor')
-update_hex_pixelate_cells_x_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_cells_x')
-update_hex_pixelate_cells_y_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_cells_y')
-update_hex_pixelate_rotation_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_rotation')
-update_hex_pixelate_factor_cb = _make_effect_update_callback('HEX_PIXELATE', 'fbp_hex_pixelate_factor')
-update_mosaic_jitter_cells_x_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_cells_x')
-update_mosaic_jitter_cells_y_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_cells_y')
-update_mosaic_jitter_rotation_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_rotation')
-update_mosaic_jitter_amount_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_amount')
-update_mosaic_jitter_offset_x_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_offset_x')
-update_mosaic_jitter_offset_y_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_offset_y')
-update_mosaic_jitter_seed_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_seed')
-update_mosaic_jitter_factor_cb = _make_effect_update_callback('MOSAIC_JITTER', 'fbp_mosaic_jitter_factor')
-update_slice_shift_angle_cb = _make_effect_update_callback('SLICE_SHIFT', 'fbp_slice_shift_angle')
-update_slice_shift_bands_cb = _make_effect_update_callback('SLICE_SHIFT', 'fbp_slice_shift_bands')
-update_slice_shift_shift_cb = _make_effect_update_callback('SLICE_SHIFT', 'fbp_slice_shift_shift')
-update_slice_shift_random_cb = _make_effect_update_callback('SLICE_SHIFT', 'fbp_slice_shift_random')
-update_slice_shift_seed_cb = _make_effect_update_callback('SLICE_SHIFT', 'fbp_slice_shift_seed')
-update_slice_shift_factor_cb = _make_effect_update_callback('SLICE_SHIFT', 'fbp_slice_shift_factor')
-update_depth_blur_mode_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_mode')
-update_depth_blur_manual_radius_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_manual_radius')
-update_depth_blur_max_radius_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_max_radius')
-update_depth_blur_use_camera_focus_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_use_camera_focus')
-update_depth_blur_focus_distance_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_focus_distance')
-update_depth_blur_focus_range_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_focus_range')
-update_depth_blur_falloff_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_falloff')
-update_depth_blur_near_strength_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_near_strength')
-update_depth_blur_far_strength_cb = _make_effect_update_callback('DEPTH_BLUR', 'fbp_depth_blur_far_strength')
-update_gaussian_blur_radius_x_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_radius_x')
-update_gaussian_blur_radius_y_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_radius_y')
-update_gaussian_blur_samples_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_samples')
-update_gaussian_blur_factor_cb = _make_effect_update_callback('GAUSSIAN_BLUR', 'fbp_gaussian_blur_factor')
-update_directional_blur_angle_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_angle')
-update_directional_blur_distance_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_distance')
-update_directional_blur_samples_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_samples')
-update_directional_blur_factor_cb = _make_effect_update_callback('DIRECTIONAL_BLUR', 'fbp_directional_blur_factor')
-update_triangle_blur_radius_cb = _make_effect_update_callback('TRIANGLE_BLUR', 'fbp_triangle_blur_radius')
-update_triangle_blur_samples_cb = _make_effect_update_callback('TRIANGLE_BLUR', 'fbp_triangle_blur_samples')
-update_triangle_blur_factor_cb = _make_effect_update_callback('TRIANGLE_BLUR', 'fbp_triangle_blur_factor')
-update_tilt_shift_position_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_position')
-update_tilt_shift_width_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_width')
-update_tilt_shift_angle_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_angle')
-update_tilt_shift_radius_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_radius')
-update_tilt_shift_factor_cb = _make_effect_update_callback('TILT_SHIFT', 'fbp_tilt_shift_factor')
-update_unsharp_radius_cb = _make_effect_update_callback('UNSHARP_MASK', 'fbp_unsharp_radius')
-update_unsharp_amount_cb = _make_effect_update_callback('UNSHARP_MASK', 'fbp_unsharp_amount')
-update_unsharp_factor_cb = _make_effect_update_callback('UNSHARP_MASK', 'fbp_unsharp_factor')
-update_edge_detect_width_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_width')
-update_edge_detect_strength_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_strength')
-update_edge_detect_threshold_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_threshold')
-update_edge_detect_softness_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_softness')
-update_edge_detect_color_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_color')
-update_edge_detect_factor_cb = _make_effect_update_callback('EDGE_DETECT', 'fbp_edge_detect_factor')
-update_oil_paint_radius_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_radius')
-update_oil_paint_sharpness_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_sharpness')
-update_oil_paint_anisotropy_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_anisotropy')
-update_oil_paint_factor_cb = _make_effect_update_callback('OIL_PAINT', 'fbp_oil_paint_factor')
-update_riso_ink_1_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_ink_1')
-update_riso_ink_2_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_ink_2')
-update_riso_ink_3_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_ink_3')
-update_riso_use_ink_3_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_use_ink_3')
-update_riso_paper_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_paper')
-update_riso_misregistration_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_misregistration')
-update_riso_halftone_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_halftone')
-update_riso_dot_size_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_dot_size')
-update_riso_grain_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_grain')
-update_riso_drift_angle_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_drift_angle')
-update_riso_print_rotation_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_print_rotation')
-update_riso_seed_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_seed')
-update_riso_factor_cb = _make_effect_update_callback('RISO_PRINT', 'fbp_riso_factor')
-update_edge_distance_mask_distance_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_distance')
-update_edge_distance_mask_threshold_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_threshold')
-update_edge_distance_mask_softness_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_softness')
-update_edge_distance_mask_image_border_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_image_border')
-update_edge_distance_mask_factor_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_factor')
-update_edge_distance_mask_invert_cb = _make_effect_update_callback('EDGE_DISTANCE_MASK', 'fbp_edge_distance_mask_invert')
-update_smooth_toon_levels_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_levels')
-update_smooth_toon_softness_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_softness')
-update_smooth_toon_factor_cb = _make_effect_update_callback('SMOOTH_TOON', 'fbp_smooth_toon_factor')
-update_adaptive_threshold_radius_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_radius')
-update_adaptive_threshold_offset_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_offset')
-update_adaptive_threshold_softness_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_softness')
-update_adaptive_threshold_invert_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_invert')
-update_adaptive_threshold_factor_cb = _make_effect_update_callback('ADAPTIVE_THRESHOLD', 'fbp_adaptive_threshold_factor')
-update_false_color_dark_cb = _make_effect_update_callback('FALSE_COLOR', 'fbp_false_color_dark')
-update_false_color_light_cb = _make_effect_update_callback('FALSE_COLOR', 'fbp_false_color_light')
-update_false_color_factor_cb = _make_effect_update_callback('FALSE_COLOR', 'fbp_false_color_factor')
-update_chromatic_aberration_distance_cb = _make_effect_update_callback('CHROMATIC_ABERRATION', 'fbp_chromatic_aberration_distance')
-update_chromatic_aberration_angle_cb = _make_effect_update_callback('CHROMATIC_ABERRATION', 'fbp_chromatic_aberration_angle')
-update_chromatic_aberration_factor_cb = _make_effect_update_callback('CHROMATIC_ABERRATION', 'fbp_chromatic_aberration_factor')
-update_ink_width_cb = _make_effect_update_callback('INK', 'fbp_ink_width')
-update_ink_threshold_cb = _make_effect_update_callback('INK', 'fbp_ink_threshold')
-update_ink_softness_cb = _make_effect_update_callback('INK', 'fbp_ink_softness')
-update_ink_strength_cb = _make_effect_update_callback('INK', 'fbp_ink_strength')
-update_ink_color_cb = _make_effect_update_callback('INK', 'fbp_ink_color')
-update_ink_paper_color_cb = _make_effect_update_callback('INK', 'fbp_ink_paper_color')
-update_ink_preserve_color_cb = _make_effect_update_callback('INK', 'fbp_ink_preserve_color')
-update_ink_factor_cb = _make_effect_update_callback('INK', 'fbp_ink_factor')
-update_edge_work_radius_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_radius')
-update_edge_work_thickness_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_thickness')
-update_edge_work_strength_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_strength')
-update_edge_work_threshold_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_threshold')
-update_edge_work_softness_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_softness')
-update_edge_work_color_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_color')
-update_edge_work_factor_cb = _make_effect_update_callback('EDGE_WORK', 'fbp_edge_work_factor')
-update_pencil_sketch_radius_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_radius')
-update_pencil_sketch_contrast_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_contrast')
-update_pencil_sketch_graphite_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_graphite')
-update_pencil_sketch_paper_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_paper')
-update_pencil_sketch_color_amount_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_color_amount')
-update_pencil_sketch_factor_cb = _make_effect_update_callback('PENCIL_SKETCH', 'fbp_pencil_sketch_factor')
-update_poster_edges_levels_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_levels')
-update_poster_edges_softness_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_softness')
-update_poster_edges_width_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_width')
-update_poster_edges_strength_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_strength')
-update_poster_edges_threshold_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_threshold')
-update_poster_edges_color_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_color')
-update_poster_edges_factor_cb = _make_effect_update_callback('POSTER_EDGES', 'fbp_poster_edges_factor')
-update_crosshatch_scale_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_scale')
-update_crosshatch_rotation_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_rotation')
-update_crosshatch_line_width_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_line_width')
-update_crosshatch_levels_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_levels')
-update_crosshatch_ink_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_ink')
-update_crosshatch_paper_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_paper')
-update_crosshatch_preserve_color_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_preserve_color')
-update_crosshatch_factor_cb = _make_effect_update_callback('CROSSHATCH', 'fbp_crosshatch_factor')
-update_emboss_angle_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_angle')
-update_emboss_distance_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_distance')
-update_emboss_strength_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_strength')
-update_emboss_bias_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_bias')
-update_emboss_color_amount_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_color_amount')
-update_emboss_factor_cb = _make_effect_update_callback('EMBOSS', 'fbp_emboss_factor')
-update_alpha_matte_source_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_source')
-update_alpha_matte_factor_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_factor')
-update_alpha_matte_invert_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_invert')
-update_alpha_matte_use_source_transform_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_use_source_transform')
-update_alpha_matte_source_display_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_source_display')
-update_alpha_matte_uv_offset_x_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_uv_offset_x')
-update_alpha_matte_uv_offset_y_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_uv_offset_y')
-update_alpha_matte_uv_scale_x_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_uv_scale_x')
-update_alpha_matte_uv_scale_y_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_uv_scale_y')
-update_alpha_matte_uv_rotation_cb = _make_effect_update_callback('ALPHA_MATTE', 'fbp_alpha_matte_uv_rotation')
-update_luma_matte_source_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_source')
-update_luma_matte_source_type_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_source_type')
-update_luma_matte_path_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_path')
-update_luma_matte_image_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_image')
-update_luma_matte_factor_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_factor')
-update_luma_matte_invert_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_invert')
-update_luma_matte_threshold_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_threshold')
-update_luma_matte_softness_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_softness')
-update_luma_matte_use_source_transform_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_use_source_transform')
-update_luma_matte_source_display_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_source_display')
-update_luma_matte_uv_offset_x_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_uv_offset_x')
-update_luma_matte_uv_offset_y_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_uv_offset_y')
-update_luma_matte_uv_scale_x_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_uv_scale_x')
-update_luma_matte_uv_scale_y_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_uv_scale_y')
-update_luma_matte_uv_rotation_cb = _make_effect_update_callback('LUMA_MATTE', 'fbp_luma_matte_uv_rotation')
-update_clipping_mask_source_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_source')
-update_clipping_mask_factor_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_factor')
-update_clipping_mask_invert_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_invert')
-update_clipping_mask_use_source_transform_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_use_source_transform')
-update_clipping_mask_use_camera_projection_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_use_camera_projection')
-update_clipping_mask_uv_offset_x_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_offset_x')
-update_clipping_mask_uv_offset_y_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_offset_y')
-update_clipping_mask_uv_scale_x_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_scale_x')
-update_clipping_mask_uv_scale_y_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_scale_y')
-update_clipping_mask_uv_rotation_cb = _make_effect_update_callback('CLIPPING_MASK', 'fbp_clipping_mask_uv_rotation')
-update_imported_mask_path_cb = _make_effect_update_callback('IMPORTED_MASK', 'fbp_imported_mask_path')
-update_imported_mask_factor_cb = _make_effect_update_callback('IMPORTED_MASK', 'fbp_imported_mask_factor')
-update_imported_mask_invert_cb = _make_effect_update_callback('IMPORTED_MASK', 'fbp_imported_mask_invert')
-update_gp_mask_slot_2_path_cb = _make_effect_update_callback('GP_MASK_SLOT_2', 'fbp_gp_mask_slot_2_path')
-update_gp_mask_slot_2_factor_cb = _make_effect_update_callback('GP_MASK_SLOT_2', 'fbp_gp_mask_slot_2_factor')
-update_gp_mask_slot_2_invert_cb = _make_effect_update_callback('GP_MASK_SLOT_2', 'fbp_gp_mask_slot_2_invert')
-update_gp_mask_slot_3_path_cb = _make_effect_update_callback('GP_MASK_SLOT_3', 'fbp_gp_mask_slot_3_path')
-update_gp_mask_slot_3_factor_cb = _make_effect_update_callback('GP_MASK_SLOT_3', 'fbp_gp_mask_slot_3_factor')
-update_gp_mask_slot_3_invert_cb = _make_effect_update_callback('GP_MASK_SLOT_3', 'fbp_gp_mask_slot_3_invert')
-update_gp_mask_slot_4_path_cb = _make_effect_update_callback('GP_MASK_SLOT_4', 'fbp_gp_mask_slot_4_path')
-update_gp_mask_slot_4_factor_cb = _make_effect_update_callback('GP_MASK_SLOT_4', 'fbp_gp_mask_slot_4_factor')
-update_gp_mask_slot_4_invert_cb = _make_effect_update_callback('GP_MASK_SLOT_4', 'fbp_gp_mask_slot_4_invert')
-update_layer_blend_source_cb = _make_effect_update_callback('LAYER_BLEND', 'fbp_layer_blend_source')
-update_layer_blend_mode_cb = _make_effect_update_callback('LAYER_BLEND', 'fbp_layer_blend_mode')
-update_layer_blend_factor_cb = _make_effect_update_callback('LAYER_BLEND', 'fbp_layer_blend_factor')
-update_square_mask_object_cb = _make_effect_update_callback('SQUARE_MASK', 'fbp_square_mask_object')
-update_square_mask_factor_cb = _make_effect_update_callback('SQUARE_MASK', 'fbp_square_mask_factor')
-update_square_mask_invert_cb = _make_effect_update_callback('SQUARE_MASK', 'fbp_square_mask_invert')
-update_square_mask_feather_cb = _make_effect_update_callback('SQUARE_MASK', 'fbp_square_mask_feather')
-update_circle_mask_object_cb = _make_effect_update_callback('CIRCLE_MASK', 'fbp_circle_mask_object')
-update_circle_mask_factor_cb = _make_effect_update_callback('CIRCLE_MASK', 'fbp_circle_mask_factor')
-update_circle_mask_invert_cb = _make_effect_update_callback('CIRCLE_MASK', 'fbp_circle_mask_invert')
-update_circle_mask_feather_cb = _make_effect_update_callback('CIRCLE_MASK', 'fbp_circle_mask_feather')
-update_emission_strength_cb = _make_effect_update_callback('EMISSION', 'fbp_emission_strength')
-update_triangle_mask_object_cb = _make_effect_update_callback('TRIANGLE_MASK', 'fbp_triangle_mask_object')
-update_triangle_mask_factor_cb = _make_effect_update_callback('TRIANGLE_MASK', 'fbp_triangle_mask_factor')
-update_triangle_mask_invert_cb = _make_effect_update_callback('TRIANGLE_MASK', 'fbp_triangle_mask_invert')
-update_triangle_mask_feather_cb = _make_effect_update_callback('TRIANGLE_MASK', 'fbp_triangle_mask_feather')
-update_color_mask_color_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_color')
-update_color_mask_tolerance_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_tolerance')
-update_color_mask_softness_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_softness')
-update_color_mask_factor_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_factor')
-update_color_mask_invert_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_invert')
-update_color_mask_despill_cb = _make_effect_update_callback('COLOR_MASK', 'fbp_color_mask_despill')
-update_luminance_mask_minimum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_minimum')
-update_luminance_mask_maximum_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_maximum')
-update_luminance_mask_softness_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_softness')
-update_luminance_mask_factor_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_factor')
-update_luminance_mask_invert_cb = _make_effect_update_callback('LUMINANCE_MASK', 'fbp_luminance_mask_invert')
-update_channel_mask_channel_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_channel')
-update_channel_mask_minimum_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_minimum')
-update_channel_mask_maximum_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_maximum')
-update_channel_mask_softness_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_softness')
-update_channel_mask_factor_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_factor')
-update_channel_mask_invert_cb = _make_effect_update_callback('CHANNEL_MASK', 'fbp_channel_mask_invert')
-update_gradient_mask_type_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_type')
-update_gradient_mask_center_x_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_center_x')
-update_gradient_mask_center_y_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_center_y')
-update_gradient_mask_scale_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_scale')
-update_gradient_mask_angle_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_angle')
-update_gradient_mask_position_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_position')
-update_gradient_mask_feather_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_feather')
-update_gradient_mask_factor_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_factor')
-update_gradient_mask_invert_cb = _make_effect_update_callback('GRADIENT_MASK', 'fbp_gradient_mask_invert')
-update_noise_mask_scale_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_scale')
-update_noise_mask_detail_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_detail')
-update_noise_mask_roughness_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_roughness')
-update_noise_mask_threshold_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_threshold')
-update_noise_mask_softness_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_softness')
-update_noise_mask_seed_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_seed')
-update_noise_mask_factor_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_factor')
-update_noise_mask_invert_cb = _make_effect_update_callback('NOISE_MASK', 'fbp_noise_mask_invert')
-update_voronoi_mask_scale_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_scale')
-update_voronoi_mask_angle_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_angle')
-update_voronoi_mask_randomness_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_randomness')
-update_voronoi_mask_threshold_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_threshold')
-update_voronoi_mask_softness_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_softness')
-update_voronoi_mask_seed_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_seed')
-update_voronoi_mask_factor_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_factor')
-update_voronoi_mask_invert_cb = _make_effect_update_callback('VORONOI_MASK', 'fbp_voronoi_mask_invert')
-update_wave_mask_scale_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_scale')
-update_wave_mask_angle_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_angle')
-update_wave_mask_distortion_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_distortion')
-update_wave_mask_detail_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_detail')
-update_wave_mask_detail_scale_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_detail_scale')
-update_wave_mask_detail_roughness_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_detail_roughness')
-update_wave_mask_phase_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_phase')
-update_wave_mask_threshold_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_threshold')
-update_wave_mask_softness_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_softness')
-update_wave_mask_factor_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_factor')
-update_wave_mask_invert_cb = _make_effect_update_callback('WAVE_MASK', 'fbp_wave_mask_invert')
 
 
 
@@ -3088,160 +2849,6 @@ update_triangle_mask_follow_bounds_cb = _make_object_mask_follow_update('TRIANGL
 update_square_mask_runtime_cb = _make_object_mask_runtime_update('SQUARE')
 update_circle_mask_runtime_cb = _make_object_mask_runtime_update('CIRCLE')
 update_triangle_mask_runtime_cb = _make_object_mask_runtime_update('TRIANGLE')
-update_grain_strength_cb = _make_effect_update_callback('GRAIN', 'fbp_grain_strength')
-update_grain_scale_cb = _make_effect_update_callback('GRAIN', 'fbp_grain_scale')
-update_grain_seed_cb = _make_effect_update_callback('GRAIN', 'fbp_grain_seed')
-update_digital_noise_luma_cb = _make_effect_update_callback('DIGITAL_NOISE', 'fbp_digital_noise_luma')
-update_digital_noise_chroma_cb = _make_effect_update_callback('DIGITAL_NOISE', 'fbp_digital_noise_chroma')
-update_digital_noise_scale_cb = _make_effect_update_callback('DIGITAL_NOISE', 'fbp_digital_noise_scale')
-update_digital_noise_shadow_bias_cb = _make_effect_update_callback('DIGITAL_NOISE', 'fbp_digital_noise_shadow_bias')
-update_digital_noise_seed_cb = _make_effect_update_callback('DIGITAL_NOISE', 'fbp_digital_noise_seed')
-update_chroma_key_color_cb = _make_effect_update_callback('CHROMA_KEY', 'fbp_chroma_key_color')
-update_chroma_key_tolerance_cb = _make_effect_update_callback('CHROMA_KEY', 'fbp_chroma_key_tolerance')
-update_chroma_key_softness_cb = _make_effect_update_callback('CHROMA_KEY', 'fbp_chroma_key_softness')
-update_chroma_key_despill_cb = _make_effect_update_callback('CHROMA_KEY', 'fbp_chroma_key_despill')
-update_chroma_key_invert_cb = _make_effect_update_callback('CHROMA_KEY', 'fbp_chroma_key_invert')
-update_halftone_scale_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_scale')
-update_halftone_dot_size_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_dot_size')
-update_halftone_dot_scale_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_dot_scale')
-update_halftone_blend_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_blend')
-update_halftone_softness_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_softness')
-update_halftone_rotation_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_rotation')
-update_halftone_contrast_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_contrast')
-update_halftone_invert_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_invert')
-update_halftone_pattern_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_pattern')
-update_halftone_color_mode_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_color_mode')
-update_halftone_shape_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_shape')
-update_halftone_use_source_color_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_use_source_color')
-update_halftone_foreground_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_foreground')
-update_halftone_background_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_background')
-update_halftone_transparent_background_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_transparent_background')
-update_halftone_center_x_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_center_x')
-update_halftone_center_y_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_center_y')
-update_halftone_clip_alpha_cb = _make_effect_update_callback('HALFTONE', 'fbp_halftone_clip_alpha')
-update_dot_matrix_scale_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_scale')
-update_dot_matrix_dot_size_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_dot_size')
-update_dot_matrix_spacing_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_spacing')
-update_dot_matrix_contrast_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_contrast')
-update_dot_matrix_response_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_response')
-update_dot_matrix_invert_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_invert')
-update_dot_matrix_random_size_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_random_size')
-update_dot_matrix_random_brightness_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_random_brightness')
-update_dot_matrix_seed_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_seed')
-update_dot_matrix_glow_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_glow')
-update_dot_matrix_use_source_color_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_use_source_color')
-update_dot_matrix_foreground_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_foreground')
-update_dot_matrix_background_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_background')
-update_dot_matrix_transparent_background_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_transparent_background')
-update_dot_matrix_shape_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_shape')
-update_dot_matrix_min_size_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_min_size')
-update_dot_matrix_max_size_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_max_size')
-update_dot_matrix_dead_pixels_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_dead_pixels')
-update_dot_matrix_flicker_cb = _make_effect_update_callback('DOT_MATRIX', 'fbp_dot_matrix_flicker')
-update_ascii_scale_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_scale')
-update_ascii_contrast_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_contrast')
-update_ascii_gamma_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_gamma')
-update_ascii_glyph_scale_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_glyph_scale')
-update_ascii_glyph_width_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_glyph_width')
-update_ascii_invert_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_invert')
-update_ascii_colorize_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_colorize')
-update_ascii_foreground_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_foreground')
-update_ascii_background_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_background')
-update_ascii_transparent_background_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_transparent_background')
-update_ascii_variation_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_variation')
-update_ascii_random_seed_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_random_seed')
-update_ascii_charset_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_charset')
-update_ascii_character_count_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_character_count')
-update_ascii_edge_boost_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_edge_boost')
-update_ascii_dither_cb = _make_effect_update_callback('ASCII_MATRIX', 'fbp_ascii_dither')
-update_terminal_ascii_scale_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_scale')
-update_terminal_ascii_contrast_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_contrast')
-update_terminal_ascii_invert_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_invert')
-update_terminal_ascii_fill_strength_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_fill_strength')
-update_terminal_ascii_fill_threshold_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_fill_threshold')
-update_terminal_ascii_use_edges_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_use_edges')
-update_terminal_ascii_edge_strength_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_edge_strength')
-update_terminal_ascii_edge_threshold_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_edge_threshold')
-update_terminal_ascii_edge_mix_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_edge_mix')
-update_terminal_ascii_use_source_color_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_use_source_color')
-update_terminal_ascii_foreground_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_foreground')
-update_terminal_ascii_background_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_background')
-update_terminal_ascii_transparent_background_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_transparent_background')
-update_terminal_ascii_seed_cb = _make_effect_update_callback('ASCII', 'fbp_terminal_ascii_seed')
-update_text_matrix_character_count_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_character_count')
-update_text_matrix_character_aspect_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_character_aspect')
-update_text_matrix_glyph_scale_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_glyph_scale')
-update_text_matrix_contrast_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_contrast')
-update_text_matrix_invert_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_invert')
-update_text_matrix_variation_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_variation')
-update_text_matrix_seed_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_seed')
-update_text_matrix_alpha_threshold_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_alpha_threshold')
-update_text_matrix_transparent_background_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_transparent_background')
-update_text_matrix_realize_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_realize')
-update_text_matrix_charset_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_charset')
-update_text_matrix_custom_charset_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_custom_charset')
-update_text_matrix_font_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_font')
-update_text_matrix_use_source_color_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_use_source_color')
-update_text_matrix_text_color_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_text_color')
-update_text_matrix_background_color_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_background_color')
-update_text_matrix_viewport_columns_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_viewport_columns')
-update_text_matrix_viewport_rows_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_viewport_rows')
-update_text_matrix_render_columns_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_render_columns')
-update_text_matrix_render_rows_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_render_rows')
-update_text_matrix_playback_columns_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_playback_columns')
-update_text_matrix_playback_rows_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_playback_rows')
-update_text_matrix_auto_playback_limit_cb = _make_effect_update_callback('TEXT_MATRIX', 'fbp_text_matrix_auto_playback_limit')
-update_hue_saturation_hue_cb = _make_effect_update_callback('HUE_SATURATION', 'fbp_hue_saturation_hue')
-update_hue_saturation_saturation_cb = _make_effect_update_callback('HUE_SATURATION', 'fbp_hue_saturation_saturation')
-update_hue_saturation_value_cb = _make_effect_update_callback('HUE_SATURATION', 'fbp_hue_saturation_value')
-update_brightness_contrast_brightness_cb = _make_effect_update_callback('BRIGHTNESS_CONTRAST', 'fbp_brightness_contrast_brightness')
-update_brightness_contrast_contrast_cb = _make_effect_update_callback('BRIGHTNESS_CONTRAST', 'fbp_brightness_contrast_contrast')
-update_invert_factor_cb = _make_effect_update_callback('INVERT', 'fbp_invert_factor')
-update_threshold_value_cb = _make_effect_update_callback('THRESHOLD', 'fbp_threshold_value')
-update_posterize_steps_cb = _make_effect_update_callback('POSTERIZE', 'fbp_posterize_steps')
-update_solarize_threshold_cb = _make_effect_update_callback('SOLARIZE', 'fbp_solarize_threshold')
-update_solarize_softness_cb = _make_effect_update_callback('SOLARIZE', 'fbp_solarize_softness')
-update_solarize_factor_cb = _make_effect_update_callback('SOLARIZE', 'fbp_solarize_factor')
-update_tritone_shadows_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_shadows')
-update_tritone_midtones_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_midtones')
-update_tritone_highlights_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_highlights')
-update_tritone_midpoint_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_midpoint')
-update_tritone_factor_cb = _make_effect_update_callback('TRITONE', 'fbp_tritone_factor')
-update_film_fade_color_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_color')
-update_film_fade_amount_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_amount')
-update_film_fade_desaturation_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_desaturation')
-update_film_fade_contrast_loss_cb = _make_effect_update_callback('FILM_FADE', 'fbp_film_fade_contrast_loss')
-update_solid_mask_color_cb = _make_effect_update_callback('SOLID_MASK', 'fbp_solid_mask_color')
-update_solid_mask_factor_cb = _make_effect_update_callback('SOLID_MASK', 'fbp_solid_mask_factor')
-update_stop_motion_resolution_cb = _make_effect_update_callback('STOP_MOTION_CRUMPLE', 'fbp_stop_motion_resolution')
-update_stop_motion_playback_resolution_cb = _make_effect_update_callback('STOP_MOTION_CRUMPLE', 'fbp_stop_motion_playback_resolution')
-update_stop_motion_render_resolution_cb = _make_effect_update_callback('STOP_MOTION_CRUMPLE', 'fbp_stop_motion_render_resolution')
-update_stop_motion_strength_cb = _make_effect_update_callback('STOP_MOTION_CRUMPLE', 'fbp_stop_motion_strength')
-update_stop_motion_step_frames_cb = _make_effect_update_callback('STOP_MOTION_CRUMPLE', 'fbp_stop_motion_step_frames')
-update_wind_bend_amount_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_bend_amount')
-update_wind_speed_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_speed')
-update_wind_shade_smooth_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_shade_smooth')
-update_wind_playback_subdivision_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_playback_subdivision')
-update_wind_render_subdivision_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_render_subdivision')
-update_wind_subdivision_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_subdivision')
-update_wind_stepped_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_stepped')
-update_wind_pin_edge_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_pin_edge')
-update_wind_pin_strength_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_pin_strength')
-update_wind_pin_vertex_group_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_pin_vertex_group')
-update_wind_motion_mode_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_motion_mode')
-update_wind_ripple_direction_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_ripple_direction')
-update_wind_wave_count_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_wave_count')
-update_wind_wave_amplitude_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_wave_amplitude')
-update_wind_wave_speed_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_wave_speed')
-update_wind_phase_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_phase')
-update_wind_turbulence_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_turbulence')
-update_wind_reverse_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_reverse')
-update_wind_falloff_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_falloff')
-update_wind_noise_scale_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_noise_scale')
-update_wind_gust_strength_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_gust_strength')
-update_wind_direction_space_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_direction_space')
-update_wind_direction_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_direction')
-update_wind_preview_falloff_cb = _make_effect_update_callback('WIND_BENDER', 'fbp_wind_preview_falloff')
 def update_lattice_effect_cb(self, context):
     try:
         from .fbp_dirty import mark_geometry_callback
@@ -3338,21 +2945,6 @@ def update_lattice_interpolation_cb(self, context):
     return _call_geometry_nodes('update_lattice_interpolation_cb', self, context)
 
 
-update_cutout_outline_viewport_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_viewport_resolution')
-update_cutout_outline_playback_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_playback_resolution')
-update_cutout_outline_render_resolution_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_render_resolution')
-update_cutout_outline_alpha_threshold_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_alpha_threshold')
-update_cutout_outline_width_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_width')
-update_cutout_outline_offset_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_offset')
-update_cutout_outline_color_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_color')
-update_cutout_outline_show_image_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_show_image')
-update_cutout_outline_wiggle_amount_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_wiggle_amount')
-update_cutout_outline_wiggle_scale_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_wiggle_scale')
-update_cutout_outline_wiggle_phase_cb = _make_effect_update_callback('CUTOUT_OUTLINE', 'fbp_cutout_outline_wiggle_phase')
-update_camera_scale_lock_reference_distance_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_distance')
-update_camera_scale_lock_reference_lens_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_lens')
-update_camera_scale_lock_reference_sensor_width_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_reference_sensor_width')
-update_camera_scale_lock_influence_cb = _make_effect_update_callback('CAMERA_SCALE_LOCK', 'fbp_camera_scale_lock_influence')
 def _update_camera_track_cb(self, context):
     if fbp_undo_guard_active() or fbp_is_silent_property_update(self):
         return
@@ -3365,308 +2957,6 @@ def _update_camera_track_cb(self, context):
 update_camera_billboard_mode_cb = _update_camera_track_cb
 update_camera_billboard_flip_cb = _update_camera_track_cb
 update_camera_billboard_influence_cb = _update_camera_track_cb
-update_mirror_x_cb = _make_effect_update_callback('MIRROR', 'fbp_mirror_x')
-update_mirror_y_cb = _make_effect_update_callback('MIRROR', 'fbp_mirror_y')
-update_thickness_viewport_pixels_x_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_viewport_pixels_x')
-update_thickness_viewport_pixels_y_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_viewport_pixels_y')
-update_thickness_playback_pixels_x_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_playback_pixels_x')
-update_thickness_playback_pixels_y_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_playback_pixels_y')
-update_thickness_render_pixels_x_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_render_pixels_x')
-update_thickness_render_pixels_y_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_render_pixels_y')
-update_thickness_grid_mode_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_grid_mode')
-update_thickness_follow_pixelate_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_follow_pixelate')
-update_thickness_safe_grid_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_safe_grid')
-update_thickness_amount_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_amount')
-update_thickness_mode_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_mode')
-update_thickness_array_count_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_array_count')
-update_thickness_alpha_threshold_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_alpha_threshold')
-update_thickness_direction_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_direction')
-update_thickness_side_material_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_side_material')
-update_thickness_side_color_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_side_color')
-update_thickness_use_plane_colors_cb = _make_effect_update_callback('THICKNESS', 'fbp_thickness_use_plane_colors')
-update_infinite_rotation_speed_cb = _make_effect_update_callback('INFINITE_ROTATION', 'fbp_infinite_rotation_speed')
-update_infinite_rotation_direction_cb = _make_effect_update_callback('INFINITE_ROTATION', 'fbp_infinite_rotation_direction')
-update_infinite_rotation_stepped_cb = _make_effect_update_callback('INFINITE_ROTATION', 'fbp_infinite_rotation_stepped')
-update_infinite_rotation_offset_cb = _make_effect_update_callback('INFINITE_ROTATION', 'fbp_infinite_rotation_offset')
-update_felt_render_density_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_render_density')
-update_felt_viewport_percentage_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_viewport_percentage')
-update_felt_fuzz_length_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_fuzz_length')
-update_felt_subdivisions_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_subdivisions')
-update_felt_fuzz_radius_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_fuzz_radius')
-update_felt_seed_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_seed')
-update_felt_curl_amount_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_curl_amount')
-update_felt_alpha_threshold_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_alpha_threshold')
-update_felt_alpha_resolution_cb = _make_effect_update_callback('FELT_FUZZ', 'fbp_felt_alpha_resolution')
-update_fiber_render_density_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_render_density')
-update_fiber_viewport_percentage_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_viewport_percentage')
-update_fiber_length_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_length')
-update_fiber_luminance_length_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_luminance_length')
-update_fiber_radius_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_radius')
-update_fiber_segments_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_segments')
-update_fiber_bend_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_bend')
-update_fiber_randomness_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_randomness')
-update_fiber_seed_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_seed')
-update_fiber_alpha_threshold_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_alpha_threshold')
-update_fiber_alpha_resolution_cb = _make_effect_update_callback('FIBER_TUFTS', 'fbp_fiber_alpha_resolution')
-update_shards_render_density_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_render_density')
-update_shards_viewport_percentage_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_viewport_percentage')
-update_shards_size_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_size')
-update_shards_aspect_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_aspect')
-update_shards_thickness_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_thickness')
-update_shards_lift_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_lift')
-update_shards_luminance_lift_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_luminance_lift')
-update_shards_tilt_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_tilt')
-update_shards_scale_randomness_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_scale_randomness')
-update_shards_seed_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_seed')
-update_shards_alpha_threshold_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_alpha_threshold')
-update_shards_alpha_resolution_cb = _make_effect_update_callback('PAPER_SHARDS', 'fbp_shards_alpha_resolution')
-update_sphere_screen_viewport_columns_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_viewport_columns')
-update_sphere_screen_viewport_rows_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_viewport_rows')
-update_sphere_screen_render_columns_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_render_columns')
-update_sphere_screen_render_rows_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_render_rows')
-update_sphere_screen_shape_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_shape')
-update_sphere_screen_scale_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_scale')
-update_sphere_screen_luminance_size_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_luminance_size')
-update_sphere_screen_subdivisions_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_subdivisions')
-update_sphere_screen_depth_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_depth')
-update_sphere_screen_depth_mode_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_depth_mode')
-update_sphere_screen_depth_image_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_depth_image')
-update_sphere_screen_flicker_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_flicker')
-update_sphere_screen_phase_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_phase')
-update_sphere_screen_alpha_threshold_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_alpha_threshold')
-update_sphere_screen_show_source_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_show_source')
-update_sphere_screen_emission_cb = _make_effect_update_callback('SPHERE_SCREEN', 'fbp_sphere_screen_emission')
-update_image_relief_subdivision_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_subdivision')
-update_image_relief_playback_subdivision_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_playback_subdivision')
-update_image_relief_render_subdivision_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_render_subdivision')
-update_image_relief_depth_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_depth')
-update_image_relief_midlevel_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_midlevel')
-update_image_relief_depth_mode_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_depth_mode')
-update_image_relief_depth_image_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_depth_image')
-update_image_relief_smooth_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_smooth')
-update_image_relief_smooth_iterations_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_smooth_iterations')
-update_image_relief_alpha_threshold_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_alpha_threshold')
-update_image_relief_shade_smooth_cb = _make_effect_update_callback('IMAGE_RELIEF', 'fbp_image_relief_shade_smooth')
-update_glass_pattern_cb = _make_effect_update_callback('GLASS', 'fbp_glass_pattern')
-update_glass_pieces_cb = _make_effect_update_callback('GLASS', 'fbp_glass_pieces')
-update_glass_irregularity_cb = _make_effect_update_callback('GLASS', 'fbp_glass_irregularity')
-update_glass_shatter_cb = _make_effect_update_callback('GLASS', 'fbp_glass_shatter')
-update_glass_impact_x_cb = _make_effect_update_callback('GLASS', 'fbp_glass_impact_x')
-update_glass_impact_y_cb = _make_effect_update_callback('GLASS', 'fbp_glass_impact_y')
-update_glass_spread_cb = _make_effect_update_callback('GLASS', 'fbp_glass_spread')
-update_glass_gap_cb = _make_effect_update_callback('GLASS', 'fbp_glass_gap')
-update_glass_explode_cb = _make_effect_update_callback('GLASS', 'fbp_glass_explode')
-update_glass_depth_cb = _make_effect_update_callback('GLASS', 'fbp_glass_depth')
-update_glass_fall_cb = _make_effect_update_callback('GLASS', 'fbp_glass_fall')
-update_glass_spin_cb = _make_effect_update_callback('GLASS', 'fbp_glass_spin')
-update_glass_thickness_cb = _make_effect_update_callback('GLASS', 'fbp_glass_thickness')
-update_glass_phase_cb = _make_effect_update_callback('GLASS', 'fbp_glass_phase')
-update_glass_alpha_threshold_cb = _make_effect_update_callback('GLASS', 'fbp_glass_alpha_threshold')
-update_glass_use_glass_cb = _make_effect_update_callback('GLASS', 'fbp_glass_use_glass')
-update_glass_roughness_cb = _make_effect_update_callback('GLASS', 'fbp_glass_roughness')
-update_glass_ior_cb = _make_effect_update_callback('GLASS', 'fbp_glass_ior')
-update_glass_tint_cb = _make_effect_update_callback('GLASS', 'fbp_glass_tint')
-update_glass_source_color_cb = _make_effect_update_callback('GLASS', 'fbp_glass_source_color')
-update_glass_edge_tint_cb = _make_effect_update_callback('GLASS', 'fbp_glass_edge_tint')
-update_glass_absorption_cb = _make_effect_update_callback('GLASS', 'fbp_glass_absorption')
-update_crystal_subdivision_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_subdivision')
-update_crystal_playback_subdivision_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_playback_subdivision')
-update_crystal_render_subdivision_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_render_subdivision')
-update_crystal_silhouette_detail_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_silhouette_detail')
-update_crystal_depth_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_depth')
-update_crystal_thickness_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_thickness')
-update_crystal_roundness_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_roundness')
-update_crystal_edge_pinning_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_edge_pinning')
-update_crystal_blur_iterations_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_blur_iterations')
-update_crystal_use_influence_map_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_use_influence_map')
-update_crystal_influence_image_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_influence_image')
-update_crystal_invert_influence_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_invert_influence')
-update_crystal_influence_strength_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_influence_strength')
-update_crystal_texture_type_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_texture_type')
-update_crystal_pattern_mode_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_pattern_mode')
-update_crystal_pattern_scale_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_pattern_scale')
-update_crystal_correct_aspect_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_correct_aspect')
-update_crystal_texture_scale_x_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_texture_scale_x')
-update_crystal_texture_scale_y_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_texture_scale_y')
-update_crystal_pattern_detail_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_pattern_detail')
-update_crystal_pattern_strength_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_pattern_strength')
-update_crystal_cell_randomness_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_cell_randomness')
-update_crystal_cell_seed_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_cell_seed')
-update_crystal_phase_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_phase')
-update_crystal_alpha_threshold_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_alpha_threshold')
-update_crystal_surface_subdivision_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_surface_subdivision')
-update_crystal_shade_smooth_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_shade_smooth')
-update_crystal_distortion_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_distortion')
-update_crystal_roughness_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_roughness')
-update_crystal_ior_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_ior')
-update_crystal_tint_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_tint')
-update_crystal_source_color_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_source_color')
-update_crystal_absorption_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_absorption')
-update_crystal_thin_wall_cb = _make_effect_update_callback('CRYSTAL', 'fbp_crystal_thin_wall')
-update_surface_conform_target_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_target')
-update_surface_conform_subdivision_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_subdivision')
-update_surface_conform_playback_subdivision_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_playback_subdivision')
-update_surface_conform_render_subdivision_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_render_subdivision')
-update_surface_conform_factor_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_factor')
-update_surface_conform_offset_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_offset')
-update_surface_conform_max_distance_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_max_distance')
-update_surface_conform_shade_smooth_cb = _make_effect_update_callback('SURFACE_CONFORM', 'fbp_surface_conform_shade_smooth')
-update_accordion_subdivision_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_subdivision')
-update_accordion_playback_subdivision_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_playback_subdivision')
-update_accordion_render_subdivision_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_render_subdivision')
-update_accordion_folds_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_folds')
-update_accordion_depth_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_depth')
-update_accordion_phase_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_phase')
-update_accordion_vertical_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_vertical')
-update_accordion_shade_smooth_cb = _make_effect_update_callback('ACCORDION_FOLD', 'fbp_accordion_shade_smooth')
-update_sculpt_waves_subdivision_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_subdivision')
-update_sculpt_waves_playback_subdivision_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_playback_subdivision')
-update_sculpt_waves_render_subdivision_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_render_subdivision')
-update_sculpt_waves_style_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_style')
-update_sculpt_waves_amplitude_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_amplitude')
-update_sculpt_waves_frequency_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_frequency')
-update_sculpt_waves_phase_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_phase')
-update_sculpt_waves_edge_falloff_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_edge_falloff')
-update_sculpt_waves_shade_smooth_cb = _make_effect_update_callback('SCULPT_WAVES', 'fbp_sculpt_waves_shade_smooth')
-update_kinetic_tiles_subdivision_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_subdivision')
-update_kinetic_tiles_playback_subdivision_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_playback_subdivision')
-update_kinetic_tiles_render_subdivision_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_render_subdivision')
-update_kinetic_tiles_pattern_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_pattern')
-update_kinetic_tiles_gap_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_gap')
-update_kinetic_tiles_thickness_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_thickness')
-update_kinetic_tiles_motion_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_motion')
-update_kinetic_tiles_frequency_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_frequency')
-update_kinetic_tiles_phase_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_phase')
-update_kinetic_tiles_shade_smooth_cb = _make_effect_update_callback('KINETIC_TILES', 'fbp_kinetic_tiles_shade_smooth')
-update_layered_echo_layers_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_layers')
-update_layered_echo_playback_layers_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_playback_layers')
-update_layered_echo_render_layers_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_render_layers')
-update_layered_echo_offset_x_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_offset_x')
-update_layered_echo_offset_y_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_offset_y')
-update_layered_echo_spacing_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_spacing')
-update_layered_echo_scale_step_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_scale_step')
-update_layered_echo_rotation_x_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_rotation_x')
-update_layered_echo_rotation_y_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_rotation_y')
-update_layered_echo_twist_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_twist')
-update_layered_echo_wave_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_wave')
-update_layered_echo_phase_cb = _make_effect_update_callback('LAYERED_ECHO', 'fbp_layered_echo_phase')
-update_yarn_stitch_type_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_stitch_type')
-update_yarn_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_columns')
-update_yarn_playback_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_playback_columns')
-update_yarn_render_columns_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_render_columns')
-update_yarn_row_height_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_row_height')
-update_yarn_loop_width_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_loop_width')
-update_yarn_thickness_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_thickness')
-update_yarn_plies_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_plies')
-update_yarn_twist_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_twist')
-update_yarn_color_variation_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_color_variation')
-update_yarn_jitter_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_jitter')
-update_yarn_seed_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_seed')
-update_yarn_alpha_threshold_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_alpha_threshold')
-update_yarn_fuzz_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_fuzz')
-update_yarn_self_light_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_self_light')
-update_yarn_show_plane_cb = _make_effect_update_callback('KNIT_CROCHET', 'fbp_yarn_show_plane')
-update_frame_stack_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_slices')
-update_frame_stack_playback_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_playback_slices')
-update_frame_stack_render_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_render_slices')
-update_frame_stack_step_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_step')
-update_frame_stack_fixed_start_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_fixed_start')
-update_frame_stack_start_frame_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_start_frame')
-update_frame_stack_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_detail')
-update_frame_stack_playback_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_playback_detail')
-update_frame_stack_render_detail_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_render_detail')
-update_frame_stack_offset_x_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_offset_x')
-update_frame_stack_offset_y_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_offset_y')
-update_frame_stack_spacing_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_spacing')
-update_frame_stack_scale_step_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_scale_step')
-update_frame_stack_rotation_x_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_rotation_x')
-update_frame_stack_rotation_y_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_rotation_y')
-update_frame_stack_twist_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_twist')
-update_frame_stack_front_slices_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_front_slices')
-update_frame_stack_front_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_front_opacity')
-update_frame_stack_back_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_back_opacity')
-update_frame_stack_depth_fade_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_depth_fade')
-update_frame_stack_luminance_opacity_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_luminance_opacity')
-update_frame_stack_show_plane_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_show_plane')
-update_frame_stack_outline_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline')
-update_frame_stack_outline_width_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline_width')
-update_frame_stack_outline_color_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_outline_color')
-update_frame_stack_glow_cb = _make_effect_update_callback('FRAME_STACK', 'fbp_frame_stack_glow')
-update_color_isolate_target_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_target')
-update_color_isolate_tolerance_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_tolerance')
-update_color_isolate_falloff_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_falloff')
-update_color_isolate_factor_cb = _make_effect_update_callback('COLOR_ISOLATE', 'fbp_color_isolate_factor')
-update_replace_color_source_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_source')
-update_replace_color_target_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_target')
-update_replace_color_tolerance_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_tolerance')
-update_replace_color_softness_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_softness')
-update_replace_color_preserve_shading_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_preserve_shading')
-update_replace_color_factor_cb = _make_effect_update_callback('REPLACE_COLOR', 'fbp_replace_color_factor')
-update_white_balance_temperature_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_temperature')
-update_white_balance_tint_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_tint')
-update_white_balance_factor_cb = _make_effect_update_callback('WHITE_BALANCE', 'fbp_white_balance_factor')
-update_curves_factor_cb = _make_effect_update_callback('CURVES', 'fbp_curves_factor')
-update_duotone_shadows_cb = _make_effect_update_callback('DUOTONE', 'fbp_duotone_shadows')
-update_duotone_highlights_cb = _make_effect_update_callback('DUOTONE', 'fbp_duotone_highlights')
-update_recolor_factor_cb = _make_effect_update_callback('RECOLOR', 'fbp_recolor_factor')
-update_gradient_map_factor_cb = _make_effect_update_callback('GRADIENT_MAP', 'fbp_gradient_map_factor')
-update_channel_mixer_red_cb = _make_effect_update_callback('CHANNEL_MIXER', 'fbp_channel_mixer_red')
-update_channel_mixer_green_cb = _make_effect_update_callback('CHANNEL_MIXER', 'fbp_channel_mixer_green')
-update_channel_mixer_blue_cb = _make_effect_update_callback('CHANNEL_MIXER', 'fbp_channel_mixer_blue')
-update_channel_mixer_factor_cb = _make_effect_update_callback('CHANNEL_MIXER', 'fbp_channel_mixer_factor')
-update_dither_style_cb = _make_effect_update_callback('DITHER', 'fbp_dither_style')
-update_dither_size_cb = _make_effect_update_callback('DITHER', 'fbp_dither_size')
-update_dither_brightness_cb = _make_effect_update_callback('DITHER', 'fbp_dither_brightness')
-update_dither_contrast_cb = _make_effect_update_callback('DITHER', 'fbp_dither_contrast')
-update_dither_mono_cb = _make_effect_update_callback('DITHER', 'fbp_dither_mono')
-update_dither_mono_color_cb = _make_effect_update_callback('DITHER', 'fbp_dither_mono_color')
-update_dither_factor_cb = _make_effect_update_callback('DITHER', 'fbp_dither_factor')
-update_bloom_threshold_cb = _make_effect_update_callback('BLOOM', 'fbp_bloom_threshold')
-update_bloom_softness_cb = _make_effect_update_callback('BLOOM', 'fbp_bloom_softness')
-update_bloom_intensity_cb = _make_effect_update_callback('BLOOM', 'fbp_bloom_intensity')
-update_bloom_color_cb = _make_effect_update_callback('BLOOM', 'fbp_bloom_color')
-update_bloom_factor_cb = _make_effect_update_callback('BLOOM', 'fbp_bloom_factor')
-update_filter_preset_sepia_cb = _make_effect_update_callback('FILTER_PRESETS', 'fbp_filter_preset_sepia')
-update_filter_preset_warm_cb = _make_effect_update_callback('FILTER_PRESETS', 'fbp_filter_preset_warm')
-update_filter_preset_cool_cb = _make_effect_update_callback('FILTER_PRESETS', 'fbp_filter_preset_cool')
-update_filter_preset_noir_cb = _make_effect_update_callback('FILTER_PRESETS', 'fbp_filter_preset_noir')
-update_filter_preset_factor_cb = _make_effect_update_callback('FILTER_PRESETS', 'fbp_filter_preset_factor')
-update_paper_fiber_scale_cb = _make_effect_update_callback('PAPER_FIBERS', 'fbp_paper_fiber_scale')
-update_paper_fiber_intensity_cb = _make_effect_update_callback('PAPER_FIBERS', 'fbp_paper_fiber_intensity')
-update_paper_fiber_phase_cb = _make_effect_update_callback('PAPER_FIBERS', 'fbp_paper_fiber_phase')
-update_gradient_light_center_x_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_center_x')
-update_gradient_light_center_y_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_center_y')
-update_gradient_light_angle_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_angle')
-update_gradient_light_strength_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_light_strength')
-update_gradient_shadow_position_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_shadow_position')
-update_gradient_softness_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_softness')
-update_gradient_shadow_color_cb = _make_effect_update_callback('GRADIENT_LIGHT', 'fbp_gradient_shadow_color')
-update_rim_mode_cb = _make_effect_update_callback('RIM', 'fbp_rim_mode')
-update_rim_blend_mode_cb = _make_effect_update_callback('RIM', 'fbp_rim_blend_mode')
-update_rim_width_cb = _make_effect_update_callback('RIM', 'fbp_rim_width')
-update_rim_expand_cb = _make_effect_update_callback('RIM', 'fbp_rim_expand')
-update_rim_offset_x_cb = _make_effect_update_callback('RIM', 'fbp_rim_offset_x')
-update_rim_offset_y_cb = _make_effect_update_callback('RIM', 'fbp_rim_offset_y')
-update_rim_rotation_cb = _make_effect_update_callback('RIM', 'fbp_rim_rotation')
-update_rim_blur_cb = _make_effect_update_callback('RIM', 'fbp_rim_blur')
-update_rim_softness_cb = _make_effect_update_callback('RIM', 'fbp_rim_softness')
-update_rim_intensity_cb = _make_effect_update_callback('RIM', 'fbp_rim_intensity')
-update_rim_color_cb = _make_effect_update_callback('RIM', 'fbp_rim_color')
-update_shadow_mode_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_mode')
-update_shadow_blend_mode_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_blend_mode')
-update_shadow_offset_x_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_offset_x')
-update_shadow_offset_y_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_offset_y')
-update_shadow_blur_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_blur')
-update_shadow_opacity_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_opacity')
-update_shadow_color_cb = _make_effect_update_callback('SHADOW', 'fbp_shadow_color')
-update_gobo_pattern_scale_cb = _make_effect_update_callback('GOBO_SHADOWS', 'fbp_gobo_pattern_scale')
-update_gobo_rotation_cb = _make_effect_update_callback('GOBO_SHADOWS', 'fbp_gobo_rotation')
-update_gobo_sharpness_cb = _make_effect_update_callback('GOBO_SHADOWS', 'fbp_gobo_sharpness')
-update_crt_line_count_cb = _make_effect_update_callback('CRT_SCANLINES', 'fbp_crt_line_count')
-update_crt_opacity_cb = _make_effect_update_callback('CRT_SCANLINES', 'fbp_crt_opacity')
-update_vignette_radius_cb = _make_effect_update_callback('VIGNETTE', 'fbp_vignette_radius')
-update_vignette_smoothness_cb = _make_effect_update_callback('VIGNETTE', 'fbp_vignette_smoothness')
-update_vignette_strength_cb = _make_effect_update_callback('VIGNETTE', 'fbp_vignette_strength')
 
 
 _EFFECT_ANIMATION_IDS = (
@@ -5190,7 +4480,7 @@ def register_properties():
         name="Strength",
         description="Real Emission shader strength. Values above 1 create high-dynamic-range light for Cycles and bloom/compositing workflows",
         default=1.0, min=0.0, soft_max=100.0, max=100000.0, precision=3,
-        update=update_emission_strength_cb,
+        update=_effect_setting('EMISSION'),
     )
     _FBP_OBJECT_RNA.fbp_use_emission   = BoolProperty(
         name="Shadeless", description="Use an emission-style material so the image is not affected by scene lighting", default=False, update=update_emission_cb)
@@ -5366,201 +4656,201 @@ def register_properties():
         update=update_mesh_wiggle_render_subdivisions_cb)
 
     # Additional geometry effects from the corrected bundled library
-    _FBP_OBJECT_RNA.fbp_stop_motion_resolution = IntProperty(description="Viewport subdivision level used before Crumple deformation. Higher values preserve finer bends but increase viewport cost.", name="Viewport", default=3, min=0, max=6, update=update_stop_motion_resolution_cb)
-    _FBP_OBJECT_RNA.fbp_stop_motion_playback_resolution = IntProperty(description="Maximum Crumple subdivision level used during timeline playback. Lower values keep playback responsive.", name="Playback", default=2, min=0, max=6, update=update_stop_motion_playback_resolution_cb)
-    _FBP_OBJECT_RNA.fbp_stop_motion_render_resolution = IntProperty(description="Subdivision level used by Crumple during final render.", name="Render", default=4, min=0, max=6, update=update_stop_motion_render_resolution_cb)
-    _FBP_OBJECT_RNA.fbp_stop_motion_strength = FloatProperty(description="Maximum displacement applied by Crumple. Increase for stronger paper-like deformation; zero keeps the plane flat.", name="Strength", default=0.05, min=0.0, soft_max=1.0, precision=3, update=update_stop_motion_strength_cb)
-    _FBP_OBJECT_RNA.fbp_stop_motion_step_frames = IntProperty(description="Number of timeline frames each Crumple pose is held before a new deterministic deformation is evaluated.", name="Stepped", default=3, min=1, soft_max=24, update=update_stop_motion_step_frames_cb)
-    _FBP_OBJECT_RNA.fbp_wind_bend_amount = FloatProperty(description="Overall amount and direction of Mesh Motion deformation. Positive and negative values bend the free side in opposite directions.", name="Bend Amount", default=0.5, soft_min=-2.0, soft_max=2.0, precision=3, update=update_wind_bend_amount_cb)
-    _FBP_OBJECT_RNA.fbp_wind_speed = FloatProperty(description="Animation speed used by Wind. Negative values reverse temporal direction; zero freezes the current wind phase.", name="Speed", default=2.0, soft_min=-20.0, soft_max=20.0, precision=3, update=update_wind_speed_cb)
+    _FBP_OBJECT_RNA.fbp_stop_motion_resolution = IntProperty(description="Viewport subdivision level used before Crumple deformation. Higher values preserve finer bends but increase viewport cost.", name="Viewport", default=3, min=0, max=6, update=_effect_setting('STOP_MOTION_CRUMPLE'))
+    _FBP_OBJECT_RNA.fbp_stop_motion_playback_resolution = IntProperty(description="Maximum Crumple subdivision level used during timeline playback. Lower values keep playback responsive.", name="Playback", default=2, min=0, max=6, update=_effect_setting('STOP_MOTION_CRUMPLE'))
+    _FBP_OBJECT_RNA.fbp_stop_motion_render_resolution = IntProperty(description="Subdivision level used by Crumple during final render.", name="Render", default=4, min=0, max=6, update=_effect_setting('STOP_MOTION_CRUMPLE'))
+    _FBP_OBJECT_RNA.fbp_stop_motion_strength = FloatProperty(description="Maximum displacement applied by Crumple. Increase for stronger paper-like deformation; zero keeps the plane flat.", name="Strength", default=0.05, min=0.0, soft_max=1.0, precision=3, update=_effect_setting('STOP_MOTION_CRUMPLE'))
+    _FBP_OBJECT_RNA.fbp_stop_motion_step_frames = IntProperty(description="Number of timeline frames each Crumple pose is held before a new deterministic deformation is evaluated.", name="Stepped", default=3, min=1, soft_max=24, update=_effect_setting('STOP_MOTION_CRUMPLE'))
+    _FBP_OBJECT_RNA.fbp_wind_bend_amount = FloatProperty(description="Overall amount and direction of Mesh Motion deformation. Positive and negative values bend the free side in opposite directions.", name="Bend Amount", default=0.5, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('WIND_BENDER'))
+    _FBP_OBJECT_RNA.fbp_wind_speed = FloatProperty(description="Animation speed used by Wind. Negative values reverse temporal direction; zero freezes the current wind phase.", name="Speed", default=2.0, soft_min=-20.0, soft_max=20.0, precision=3, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_shade_smooth = BoolProperty(
         name="Shade Smooth",
         description="Smooth the subdivided Wind mesh after deformation. Disable it for a faceted paper look.",
         default=True,
-        update=update_wind_shade_smooth_cb)
+        update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_pin_edge = EnumProperty(
         name="Pin Mode", description="Pin one evaluated mesh border, all borders, or a named vertex group. Evaluated bounds automatically follow Crop and Extend.",
         items=(('LEFT', "Left", "Pin the left border"), ('RIGHT', "Right", "Pin the right border"), ('BOTTOM', "Bottom", "Pin the bottom border"), ('TOP', "Top", "Pin the top border"), ('ALL', "All Borders", "Pin all four evaluated borders"), ('VERTEX_GROUP', "Vertex Group", "Use a vertex group where weight one is fully pinned")),
-        default='LEFT', update=update_wind_pin_edge_cb)
+        default='LEFT', update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_pin_strength = FloatProperty(
         name="Pin Strength", description="Blend between unpinned motion and the selected border or vertex-group pinning.",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_wind_pin_strength_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_pin_vertex_group = StringProperty(
         name="Vertex Group", description="Name of the vertex group used when Pin Mode is Vertex Group. Weight one is pinned; zero remains free.",
-        default="", update=update_wind_pin_vertex_group_cb)
+        default="", update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_motion_mode = EnumProperty(
         name="Behavior", description="Choose a broad sway, traveling flag waves, or a directional/radial ripple.",
         items=(('SWAY', "Sway", "Bend the free area as one broad motion"), ('FLOW', "Flow", "Generate traveling flag-like waves"), ('RIPPLE', "Ripple", "Generate directional or radial surface ripples")),
-        default='SWAY', update=update_wind_motion_mode_cb)
+        default='SWAY', update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_ripple_direction = EnumProperty(
         name="Ripple Direction", description="Coordinate used by Ripple behavior.",
         items=(('X', "Horizontal", "Waves travel across local X"), ('Y', "Vertical", "Waves travel across local Y"), ('RADIAL', "Radial", "Waves expand from the evaluated mesh center")),
-        default='X', update=update_wind_ripple_direction_cb)
+        default='X', update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_wave_count = FloatProperty(
         name="Wave Count", description="Number of waves distributed between pinned and free edge",
-        default=2.0, min=0.0, soft_max=10.0, max=40.0, update=update_wind_wave_count_cb)
+        default=2.0, min=0.0, soft_max=10.0, max=40.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_wave_amplitude = FloatProperty(description="Strength of traveling waves layered over the main Mesh Motion deformation.",
-        name="Wave Amplitude", default=0.12, min=0.0, soft_max=1.0, max=10.0, update=update_wind_wave_amplitude_cb)
+        name="Wave Amplitude", default=0.12, min=0.0, soft_max=1.0, max=10.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_wave_speed = FloatProperty(description="Speed and direction of traveling waves in Mesh Motion. Negative values make waves move backward.",
-        name="Wave Speed", default=2.0, soft_min=-20.0, soft_max=20.0, update=update_wind_wave_speed_cb)
+        name="Wave Speed", default=2.0, soft_min=-20.0, soft_max=20.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_phase = FloatProperty(description="Manual phase offset for Mesh Motion waves. Animate this value to control motion independently from automatic Scene Time.",
-        name="Starting Phase", default=0.0, soft_min=-6.283185, soft_max=6.283185, subtype='ANGLE', update=update_wind_phase_cb)
+        name="Starting Phase", default=0.0, soft_min=-6.283185, soft_max=6.283185, subtype='ANGLE', update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_turbulence = FloatProperty(
         name="Turbulence", description="Small irregular motion layered over the main deformation",
-        default=0.03, min=0.0, soft_max=0.3, max=2.0, update=update_wind_turbulence_cb)
+        default=0.03, min=0.0, soft_max=0.3, max=2.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_reverse = BoolProperty(
         name="Reverse Direction", description="Reverse the wind displacement vector while preserving all other Wind strength, turbulence and animation settings.",
-        default=False, update=update_wind_reverse_cb)
+        default=False, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_falloff = FloatProperty(
         name="Falloff", description="Shape how strongly the pinned edge stays fixed",
-        default=1.5, min=0.1, max=8.0, update=update_wind_falloff_cb)
+        default=1.5, min=0.1, max=8.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_noise_scale = FloatProperty(
         name="Noise Scale", description="Size of the turbulence pattern used by Mesh Motion. Lower values produce broad gusts; higher values create smaller local variations.",
-        default=3.0, min=0.01, soft_max=20.0, max=100.0, update=update_wind_noise_scale_cb)
+        default=3.0, min=0.01, soft_max=20.0, max=100.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_gust_strength = FloatProperty(
         name="Gust Strength", description="Amount of slow irregular gust variation layered over the main wind cycle to reduce visibly repetitive motion.",
-        default=0.0, min=0.0, soft_max=1.0, max=4.0, update=update_wind_gust_strength_cb)
+        default=0.0, min=0.0, soft_max=1.0, max=4.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_direction_space = EnumProperty(
         name="Direction Space",
         description="Interpret Wind Direction in the plane local axes or in world axes",
         items=(("LOCAL", "Local", "Direction rotates with the plane"),
                ("WORLD", "World", "Direction stays aligned to the world")),
-        default="LOCAL", update=update_wind_direction_space_cb)
+        default="LOCAL", update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_direction = FloatVectorProperty(
         name="Direction", description="Direction vector used by Wind. Rotate the viewport directional null to edit this value.",
         size=3, subtype='DIRECTION', default=(0.0, 0.0, 1.0),
-        min=-1.0, max=1.0, update=update_wind_direction_cb)
+        min=-1.0, max=1.0, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_wind_preview_falloff = BoolProperty(
         name="Preview Falloff",
         description="Temporarily replace animated wind with a static displacement that visualizes pinned-edge falloff",
-        default=False, update=update_wind_preview_falloff_cb)
+        default=False, update=_effect_setting('WIND_BENDER'))
     _FBP_OBJECT_RNA.fbp_felt_render_density = IntProperty(
         name="Render Density",
         description="Approximate strand count generated by Felt Fuzz at render quality. Each 100,000 strands need about 1 GB of memory at render; values above the slider range can be typed in.",
         # Rendering costs about 10 KB per strand, so the old 3,000,000 slider
         # end asked for roughly 30 GB. Typed values still reach the hard max.
         default=50000, min=1000, soft_max=400000, max=3000000, step=100,
-        options={'ANIMATABLE'}, update=update_felt_render_density_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('FELT_FUZZ'))
     _FBP_OBJECT_RNA.fbp_felt_viewport_percentage = FloatProperty(
         name="Viewport %", description="Fraction of the render strand count displayed in the viewport",
         default=0.0025, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_felt_viewport_percentage_cb)
+        update=_effect_setting('FELT_FUZZ'))
     _FBP_OBJECT_RNA.fbp_felt_fuzz_length = FloatProperty(description="Length of generated Felt Fuzz strands measured in scene units. Longer strands create softer wool but cost more to evaluate and render.",
         name="Fuzz Length", default=0.04, min=0.0, soft_max=0.5, max=10.0,
-        precision=4, subtype='DISTANCE', options={'ANIMATABLE'}, update=update_felt_fuzz_length_cb)
+        precision=4, subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('FELT_FUZZ'))
     _FBP_OBJECT_RNA.fbp_felt_subdivisions = IntProperty(
         name="Subdivisions", description="Number of points along every strand; increase for smooth, tightly curled wool",
-        default=3, min=2, soft_max=24, max=64, options={'ANIMATABLE'}, update=update_felt_subdivisions_cb)
+        default=3, min=2, soft_max=24, max=64, options={'ANIMATABLE'}, update=_effect_setting('FELT_FUZZ'))
     _FBP_OBJECT_RNA.fbp_felt_curl_amount = FloatProperty(
         name="Curl Turns", description="Curl frequency and intensity. The response accelerates toward the upper range so fibers can coil back around themselves.",
         default=1.0, min=0.0, soft_max=8.0, max=24.0, precision=3,
-        options={'ANIMATABLE'}, update=update_felt_curl_amount_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('FELT_FUZZ'))
     _FBP_OBJECT_RNA.fbp_felt_fuzz_radius = FloatProperty(description="Radius of each generated Felt Fuzz strand. Very small values create fine fibers; larger values produce thick yarn-like strands.",
         name="Fuzz Radius", default=0.0005, min=0.00001, soft_min=0.0005,
         soft_max=0.05, max=1.0, precision=6, subtype='DISTANCE', options={'ANIMATABLE'},
-        update=update_felt_fuzz_radius_cb)
+        update=_effect_setting('FELT_FUZZ'))
     _FBP_OBJECT_RNA.fbp_felt_seed = IntProperty(description="Deterministic random seed controlling Felt Fuzz strand placement and variation. The same value reproduces the same result.",
-        name="Seed", default=0, min=0, max=2147483647, options={'ANIMATABLE'}, update=update_felt_seed_cb)
-    _FBP_OBJECT_RNA.fbp_felt_alpha_threshold = FloatProperty(description="Minimum source alpha required to generate Felt Fuzz. Increase this value to keep fibers away from soft or partially transparent edges.", name="Alpha Threshold", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_felt_alpha_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_felt_alpha_resolution = IntProperty(name="Alpha Resolution", description="Subdivision detail used only to sample the image alpha for fiber placement", default=2, min=2, max=6, update=update_felt_alpha_resolution_cb)
+        name="Seed", default=0, min=0, max=2147483647, options={'ANIMATABLE'}, update=_effect_setting('FELT_FUZZ'))
+    _FBP_OBJECT_RNA.fbp_felt_alpha_threshold = FloatProperty(description="Minimum source alpha required to generate Felt Fuzz. Increase this value to keep fibers away from soft or partially transparent edges.", name="Alpha Threshold", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FELT_FUZZ'))
+    _FBP_OBJECT_RNA.fbp_felt_alpha_resolution = IntProperty(name="Alpha Resolution", description="Subdivision detail used only to sample the image alpha for fiber placement", default=2, min=2, max=6, update=_effect_setting('FELT_FUZZ'))
     _FBP_OBJECT_RNA.fbp_fiber_render_density = IntProperty(
         name="Render Density", description="Approximate Fiber Tufts per square scene unit at render quality",
         default=12000, min=0, soft_max=250000, max=3000000, step=100,
-        options={'ANIMATABLE'}, update=update_fiber_render_density_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_viewport_percentage = FloatProperty(
         name="Viewport %", description="Fraction of render density evaluated in the viewport",
         default=0.05, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_fiber_viewport_percentage_cb)
+        update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_length = FloatProperty(
         name="Length", description="Length of each instanced fiber clump",
         default=0.035, min=0.0, soft_max=0.5, max=10.0, precision=4, subtype='DISTANCE',
-        options={'ANIMATABLE'}, update=update_fiber_length_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_luminance_length = FloatProperty(
         name="Luminance Length", description="Make bright texture regions grow longer fibers and dark regions shorter; use negative values to invert the response",
         default=0.5, min=-1.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_fiber_luminance_length_cb)
+        update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_radius = FloatProperty(
         name="Radius", description="Radius of the low-poly fiber profile",
         default=0.0007, min=0.00001, soft_max=0.02, max=1.0, precision=6, subtype='DISTANCE',
-        options={'ANIMATABLE'}, update=update_fiber_radius_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_segments = IntProperty(
         name="Segments", description="Control points along the shared bent fiber prototype",
-        default=4, min=2, soft_max=8, max=32, update=update_fiber_segments_cb)
+        default=4, min=2, soft_max=8, max=32, update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_bend = FloatProperty(
         name="Bend", description="Sideways bow applied to the shared fiber prototype",
         default=0.008, min=-1.0, max=1.0, soft_min=-0.1, soft_max=0.1, precision=4,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_fiber_bend_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_randomness = FloatProperty(
         name="Randomness", description="Per-instance tilt and scale variation",
         default=0.35, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_fiber_randomness_cb)
+        update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_seed = IntProperty(
         name="Seed", description="Deterministic seed for Fiber Tufts placement and variation",
-        default=0, min=0, max=2147483647, options={'ANIMATABLE'}, update=update_fiber_seed_cb)
+        default=0, min=0, max=2147483647, options={'ANIMATABLE'}, update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Minimum source alpha that receives fibers",
-        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_fiber_alpha_threshold_cb)
+        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FIBER_TUFTS'))
     _FBP_OBJECT_RNA.fbp_fiber_alpha_resolution = IntProperty(
         name="Alpha Resolution", description="Subdivision detail used only for alpha silhouette sampling",
-        default=2, min=0, max=6, update=update_fiber_alpha_resolution_cb)
+        default=2, min=0, max=6, update=_effect_setting('FIBER_TUFTS'))
 
     _FBP_OBJECT_RNA.fbp_shards_render_density = IntProperty(
         name="Render Density", description="Approximate Paper Shards per square scene unit at render quality",
         default=1800, min=0, soft_max=50000, max=1000000, step=50,
-        options={'ANIMATABLE'}, update=update_shards_render_density_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_viewport_percentage = FloatProperty(
         name="Viewport %", description="Fraction of render density evaluated in the viewport",
         default=0.15, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_shards_viewport_percentage_cb)
+        update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_size = FloatProperty(
         name="Shard Size", description="Base width of every instanced paper chip",
         default=0.025, min=0.0001, soft_max=0.25, max=10.0, subtype='DISTANCE', precision=4,
-        options={'ANIMATABLE'}, update=update_shards_size_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_aspect = FloatProperty(
         name="Aspect", description="Length-to-width ratio of each paper chip",
         default=1.8, min=0.05, soft_max=8.0, max=100.0, precision=3,
-        options={'ANIMATABLE'}, update=update_shards_aspect_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_thickness = FloatProperty(
         name="Thickness", description="Physical thickness of each instanced chip",
         default=0.001, min=0.00001, soft_max=0.05, max=2.0, subtype='DISTANCE', precision=5,
-        options={'ANIMATABLE'}, update=update_shards_thickness_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_lift = FloatProperty(
         name="Lift", description="Offset paper chips away from the source surface",
         default=0.002, min=-1.0, max=10.0, soft_min=0.0, soft_max=0.1, subtype='DISTANCE', precision=4,
-        options={'ANIMATABLE'}, update=update_shards_lift_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_luminance_lift = FloatProperty(
         name="Luminance Lift", description="Move bright and dark shards to opposite sides of the base lift using the sampled plane texture",
         default=0.01, min=-10.0, max=10.0, soft_min=-0.1, soft_max=0.1,
-        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=update_shards_luminance_lift_cb)
+        subtype='DISTANCE', precision=4, options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_tilt = FloatProperty(
         name="Tilt", description="Maximum random local tilt for each paper chip",
-        default=0.35, min=0.0, max=3.141593, subtype='ANGLE', options={'ANIMATABLE'}, update=update_shards_tilt_cb)
+        default=0.35, min=0.0, max=3.141593, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_scale_randomness = FloatProperty(
         name="Scale Randomness", description="Per-instance size variation",
         default=0.4, min=0.0, max=0.95, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_shards_scale_randomness_cb)
+        update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_seed = IntProperty(
         name="Seed", description="Deterministic seed for Paper Shards placement and variation",
-        default=0, min=0, max=2147483647, options={'ANIMATABLE'}, update=update_shards_seed_cb)
+        default=0, min=0, max=2147483647, options={'ANIMATABLE'}, update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Minimum source alpha that receives paper chips",
-        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_shards_alpha_threshold_cb)
+        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('PAPER_SHARDS'))
     _FBP_OBJECT_RNA.fbp_shards_alpha_resolution = IntProperty(
         name="Alpha Resolution", description="Subdivision detail used only for alpha silhouette sampling",
-        default=2, min=0, max=6, update=update_shards_alpha_resolution_cb)
+        default=2, min=0, max=6, update=_effect_setting('PAPER_SHARDS'))
 
     _FBP_OBJECT_RNA.fbp_sphere_screen_viewport_columns = IntProperty(
         name="Viewport Columns", description="Image-solid columns evaluated while editing",
-        default=24, min=2, soft_max=128, max=512, update=update_sphere_screen_viewport_columns_cb)
+        default=24, min=2, soft_max=128, max=512, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_viewport_rows = IntProperty(
         name="Viewport Rows", description="Image-solid rows evaluated while editing",
-        default=14, min=2, soft_max=128, max=512, update=update_sphere_screen_viewport_rows_cb)
+        default=14, min=2, soft_max=128, max=512, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_render_columns = IntProperty(
         name="Render Columns", description="Image-solid columns evaluated for final rendering",
-        default=64, min=2, soft_max=256, max=1024, update=update_sphere_screen_render_columns_cb)
+        default=64, min=2, soft_max=256, max=1024, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_render_rows = IntProperty(
         name="Render Rows", description="Image-solid rows evaluated for final rendering",
-        default=36, min=2, soft_max=256, max=1024, update=update_sphere_screen_render_rows_cb)
+        default=36, min=2, soft_max=256, max=1024, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_shape = EnumProperty(
         name="Solid", description="Shared solid instanced at every sampled image cell",
         items=(
@@ -5568,22 +4858,22 @@ def register_properties():
             ('CUBE', "Cube", "Cubic display cells"),
             ('CYLINDER', "Cylinder", "Cylindrical display cells"),
             ('CONE', "Cone", "Conical display cells"),
-        ), default='SPHERE', update=update_sphere_screen_shape_cb)
+        ), default='SPHERE', update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_scale = FloatProperty(
         name="Solid Scale", description="Solid size relative to the spacing between display cells",
         default=0.82, min=0.01, soft_max=1.5, max=4.0, precision=3,
-        options={'ANIMATABLE'}, update=update_sphere_screen_scale_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_luminance_size = FloatProperty(
         name="Luminance Size", description="Make bright image cells larger and dark cells smaller; negative values invert the response",
         default=0.5, min=-1.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_sphere_screen_luminance_size_cb)
+        update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_subdivisions = IntProperty(
         name="Sphere Detail", description="Icosphere subdivision level; other solid types use optimized fixed topology",
-        default=1, min=1, soft_max=3, max=5, update=update_sphere_screen_subdivisions_cb)
+        default=1, min=1, soft_max=3, max=5, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_depth = FloatProperty(
         name="Depth", description="Move sampled solids away from the plane to create an image-driven relief",
         default=0.0, soft_min=-0.25, soft_max=0.25, min=-10.0, max=10.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_sphere_screen_depth_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_depth_mode = EnumProperty(
         name="Depth Source", description="Image measurement used to move solids in depth",
         items=(
@@ -5591,45 +4881,45 @@ def register_properties():
             ('SHADOWS', "Shadows", "Dark pixels move furthest"),
             ('SATURATION', "Saturation", "Color saturation controls depth"),
             ('CUSTOM', "Custom Map", "Use the selected depth image or sequence"),
-        ), default='LIGHTS', update=update_sphere_screen_depth_mode_cb)
+        ), default='LIGHTS', update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_depth_image = PointerProperty(
         name="Depth Map", description="Custom image or sequence used when Depth Source is Custom Map",
-        type=bpy.types.Image, update=update_sphere_screen_depth_image_cb)
+        type=bpy.types.Image, update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_flicker = FloatProperty(
         name="Flicker", description="Procedural per-solid brightness variation driven by Phase",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_sphere_screen_flicker_cb)
+        update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_phase = FloatProperty(
         name="Phase", description="Starting phase for animated solid flicker",
         default=0.0, soft_min=-100.0, soft_max=100.0, options={'ANIMATABLE'},
-        update=update_sphere_screen_phase_cb)
+        update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_emission = FloatProperty(
         name="Emission", description="Light intensity emitted by the sampled image colors",
         default=3.0, min=0.0, soft_max=20.0, max=1000.0, options={'ANIMATABLE'},
-        update=update_sphere_screen_emission_cb)
+        update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Hide solids where source alpha is below this value",
-        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_sphere_screen_alpha_threshold_cb)
+        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SPHERE_SCREEN'))
     _FBP_OBJECT_RNA.fbp_sphere_screen_show_source = BoolProperty(
         name="Show Source", description="Keep the original textured plane behind the solid display",
-        default=False, update=update_sphere_screen_show_source_cb)
+        default=False, update=_effect_setting('SPHERE_SCREEN'))
 
     _FBP_OBJECT_RNA.fbp_image_relief_subdivision = IntProperty(
         name="Viewport", description="Aspect-balanced triangular remesh detail used while editing Image Relief",
-        default=5, min=0, max=8, update=update_image_relief_subdivision_cb)
+        default=5, min=0, max=8, update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_playback_subdivision = IntProperty(
         name="Playback", description="Maximum Image Relief remesh detail during timeline playback",
-        default=4, min=0, max=8, update=update_image_relief_playback_subdivision_cb)
+        default=4, min=0, max=8, update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_render_subdivision = IntProperty(
         name="Render", description="Image Relief remesh detail used for final rendering",
-        default=7, min=0, max=8, update=update_image_relief_render_subdivision_cb)
+        default=7, min=0, max=8, update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_depth = FloatProperty(
         name="Depth", description="Maximum signed displacement of the textured surface",
         default=0.12, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_image_relief_depth_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_midlevel = FloatProperty(
         name="Midlevel", description="Depth value that remains on the original plane",
-        default=0.5, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_image_relief_midlevel_cb)
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_depth_mode = EnumProperty(
         name="Depth Source", description="Image measurement used to displace the plane",
         items=(
@@ -5637,166 +4927,166 @@ def register_properties():
             ('SHADOWS', "Shadows", "Dark pixels rise"),
             ('SATURATION', "Saturation", "Color saturation controls relief"),
             ('CUSTOM', "Custom Map", "Use the selected depth image or sequence"),
-        ), default='LIGHTS', update=update_image_relief_depth_mode_cb)
+        ), default='LIGHTS', update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_depth_image = PointerProperty(
         name="Depth Map", description="Custom image or sequence used when Depth Source is Custom Map",
-        type=bpy.types.Image, update=update_image_relief_depth_image_cb)
+        type=bpy.types.Image, update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_smooth = FloatProperty(
         name="Smooth", description="Blend the depth field toward a spatially smoothed surface to soften transitions between forward and backward displacement",
         default=0.35, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_image_relief_smooth_cb)
+        update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_smooth_iterations = IntProperty(
         name="Iterations", description="Number of neighboring depth-smoothing passes; higher values create broader, softer transitions",
         default=4, min=0, soft_max=16, max=64, options={'ANIMATABLE'},
-        update=update_image_relief_smooth_iterations_cb)
+        update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Displace only pixels whose source alpha exceeds this value",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_image_relief_alpha_threshold_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('IMAGE_RELIEF'))
     _FBP_OBJECT_RNA.fbp_image_relief_shade_smooth = BoolProperty(
         name="Shade Smooth", description="Smooth-shade the displaced image surface",
-        default=True, update=update_image_relief_shade_smooth_cb)
+        default=True, update=_effect_setting('IMAGE_RELIEF'))
 
     _FBP_OBJECT_RNA.fbp_glass_pattern = EnumProperty(
         name="Pattern", description="How the plane is cut into triangles",
         items=(
             ('SHARDS', "Shards", "Even triangles from a jittered grid"),
             ('IMPACT', "Impact", "Rings and spokes around the impact point, small near it and long towards the border"),
-        ), default='IMPACT', update=update_glass_pattern_cb)
+        ), default='IMPACT', update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_pieces = IntProperty(
         name="Pieces", description="Number of cuts along the longer side of the plane",
-        default=12, min=2, soft_max=48, max=128, update=update_glass_pieces_cb)
+        default=12, min=2, soft_max=48, max=128, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_irregularity = FloatProperty(
         name="Irregularity", description="How far the triangle corners move away from a regular layout",
         default=0.75, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_irregularity_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_shatter = FloatProperty(
         name="Shatter", description="How far the glass has broken: zero keeps the plane whole, one sends every piece to its full motion",
         default=0.45, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_shatter_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_impact_x = FloatProperty(
         name="Impact X", description="Horizontal position of the impact point across the plane",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_impact_x_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_impact_y = FloatProperty(
         name="Impact Y", description="Vertical position of the impact point across the plane",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_impact_y_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_spread = FloatProperty(
         name="Spread", description="Break order: one opens the pieces outwards from the impact point, zero in random order",
         default=0.75, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_spread_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_gap = FloatProperty(
         name="Gap", description="How much each broken piece shrinks, opening cracks between neighbours",
         default=0.12, min=0.0, max=0.9, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_gap_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_explode = FloatProperty(
         name="Explode", description="Distance the pieces fly away from the impact point, relative to the plane size",
         default=0.15, min=0.0, soft_max=2.0, max=10.0,
-        options={'ANIMATABLE'}, update=update_glass_explode_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_depth = FloatProperty(
         name="Depth", description="Distance the pieces come out of the plane towards its front, relative to the plane size",
         default=0.2, min=-10.0, max=10.0, soft_min=-2.0, soft_max=2.0,
-        options={'ANIMATABLE'}, update=update_glass_depth_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_fall = FloatProperty(
         name="Fall", description="Distance the broken pieces drop down the plane, relative to its height",
         default=0.0, min=-10.0, max=10.0, soft_min=-2.0, soft_max=2.0,
-        options={'ANIMATABLE'}, update=update_glass_fall_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_spin = FloatProperty(
         name="Spin", description="How much the broken pieces tumble; one is up to half a turn on each axis",
         default=0.25, min=0.0, soft_max=2.0, max=10.0,
-        options={'ANIMATABLE'}, update=update_glass_spin_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_thickness = FloatProperty(
         name="Thickness", description="Depth of every piece; zero keeps flat triangles",
         default=0.01, min=0.0, soft_max=0.25, max=10.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_glass_thickness_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_phase = FloatProperty(
         name="Seed", description="Pick a different random layout and break order",
         default=0.0, soft_min=-100.0, soft_max=100.0,
-        options={'ANIMATABLE'}, update=update_glass_phase_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Remove pieces that are fully transparent below this alpha",
-        default=0.02, min=0.0, max=1.0, subtype='FACTOR', update=update_glass_alpha_threshold_cb)
+        default=0.02, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_use_glass = BoolProperty(
         name="Glass Surface", description="Render the pieces as refractive glass instead of the plane image",
-        default=False, update=update_glass_use_glass_cb)
+        default=False, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_roughness = FloatProperty(
         name="Roughness", description="Blur and softness of reflections and refraction",
         default=0.12, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_roughness_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_ior = FloatProperty(
         name="IOR", description="Index of refraction; common glass is around 1.45",
         default=1.45, min=1.0, soft_max=2.5, max=10.0,
-        options={'ANIMATABLE'}, update=update_glass_ior_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_tint = FloatVectorProperty(
         name="Tint", description="Base color of the broken glass",
         default=(0.72, 0.92, 1.0, 1.0), min=0.0, max=1.0,
-        size=4, subtype='COLOR', options={'ANIMATABLE'}, update=update_glass_tint_cb)
+        size=4, subtype='COLOR', options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_source_color = FloatProperty(
         name="Source Color", description="Blend from Tint to the unmodified source image; 100% disables Tint, Edge Tint and tinted volume absorption",
         default=0.35, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_source_color_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_edge_tint = FloatProperty(
         name="Edge Tint",
         description="Strength of the Fresnel-colored crystal edge at grazing angles",
         default=0.55, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_glass_edge_tint_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
     _FBP_OBJECT_RNA.fbp_glass_absorption = FloatProperty(
         name="Absorption",
         description="Tint density accumulated through the closed crystal volume; zero disables volume absorption",
         default=0.35, min=0.0, soft_max=10.0, max=100.0,
-        options={'ANIMATABLE'}, update=update_glass_absorption_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('GLASS'))
 
     _FBP_OBJECT_RNA.fbp_crystal_subdivision = IntProperty(
         name="Viewport", description="Aspect-balanced quad remesh used to sample alpha and build the Crystal depth field",
-        default=4, min=0, max=8, update=update_crystal_subdivision_cb)
+        default=4, min=0, max=8, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_playback_subdivision = IntProperty(
         name="Playback", description="Maximum Crystal source remesh detail during timeline playback",
-        default=3, min=0, max=8, update=update_crystal_playback_subdivision_cb)
+        default=3, min=0, max=8, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_render_subdivision = IntProperty(
         name="Render", description="Crystal source remesh detail used for final rendering",
-        default=6, min=0, max=8, update=update_crystal_render_subdivision_cb)
+        default=6, min=0, max=8, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_silhouette_detail = IntProperty(
         name="Silhouette Boost",
         description="Extra local subdivisions after transparent canvas is culled; Source Remesh 4 plus Boost 4 reaches edge density comparable to Source Remesh 8 without refining the full canvas",
-        default=2, min=0, max=4, update=update_crystal_silhouette_detail_cb)
+        default=2, min=0, max=4, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_depth = FloatProperty(
         name="Depth", description="Height of the rounded alpha-derived crystal body",
         default=0.14, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_crystal_depth_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_thickness = FloatProperty(
         name="Back Thickness", description="Optional closed volume behind the crystal; zero keeps one transparent refractive surface and is much lighter",
         default=0.0, min=0.0, soft_max=0.25, max=10.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_crystal_thickness_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_roundness = FloatProperty(
         name="Roundness", description="Blend from a flat alpha body at 0 to the maximum rounded edge-distance profile at 1",
         default=0.8, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_crystal_roundness_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_edge_pinning = FloatProperty(
         name="Edge Pinning",
         description="Keep the crystal body and procedural extrusion attached to the original plane along alpha and influence-map borders",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_crystal_edge_pinning_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_blur_iterations = IntProperty(
         name="Edge Width", description="Width of the topology-derived black-to-white edge-distance profile; it behaves like an internal AO map without changing the exact silhouette cutoff",
         default=4, min=0, soft_max=16, max=32, options={'ANIMATABLE'},
-        update=update_crystal_blur_iterations_cb)
+        update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_use_influence_map = BoolProperty(
         name="Use Influence Map",
         description="Limit crystal displacement, transparency and refractive distortion with a painted grayscale image",
-        default=False, update=update_crystal_use_influence_map_cb)
+        default=False, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_influence_image = PointerProperty(
         name="Influence Map",
         description="Grayscale map where white receives the Crystal effect and black keeps the original opaque image surface",
-        type=bpy.types.Image, update=update_crystal_influence_image_cb)
+        type=bpy.types.Image, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_invert_influence = BoolProperty(
         name="Invert Influence",
         description="Swap the black and white regions of the Crystal influence map",
-        default=False, update=update_crystal_invert_influence_cb)
+        default=False, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_influence_strength = FloatProperty(
         name="Influence Strength",
         description="Blend between Crystal everywhere and the painted influence map",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_crystal_influence_strength_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_texture_type = EnumProperty(
         name="Generator",
         description="Generated texture used for Crystal surface relief",
@@ -5806,405 +5096,405 @@ def register_properties():
             ('WAVE', "Crystal Bands", "Concentric generated bands suitable for layered mineral growth"),
             ('BRICK', "Geometric Blocks", "Regular generated block facets separated by thin mortar lines"),
         ),
-        default='VORONOI', update=update_crystal_texture_type_cb)
+        default='VORONOI', update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_pattern_mode = EnumProperty(
         name="Voronoi Shape", description="Voronoi shaping style used when Generator is Voronoi",
         items=(
             ('DIAMOND', "Diamond", "Sharp faceted ridges following Voronoi cell borders"),
             ('CRYSTAL', "Crystal", "Angular mineral cells with irregular inner height"),
             ('LIQUID', "Liquid", "Rounded flowing cells with softer transitions"),
-        ), default='CRYSTAL', update=update_crystal_pattern_mode_cb)
+        ), default='CRYSTAL', update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_pattern_scale = FloatProperty(
         name="Scale", description="Size and frequency of the procedural crystal cells",
         default=8.0, min=0.01, soft_max=50.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_crystal_pattern_scale_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_correct_aspect = BoolProperty(
         name="Auto Aspect",
         description="Keep Crystal Voronoi cells proportional on wide or tall planes using the mesh dimensions",
-        default=True, update=update_crystal_correct_aspect_cb)
+        default=True, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_texture_scale_x = FloatProperty(
         name="Scale X", description="Additional horizontal Crystal texture frequency after automatic aspect correction",
         default=1.0, min=0.01, soft_max=10.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_crystal_texture_scale_x_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_texture_scale_y = FloatProperty(
         name="Scale Y", description="Additional vertical Crystal texture frequency after automatic aspect correction",
         default=1.0, min=0.01, soft_max=10.0, max=10000.0,
-        options={'ANIMATABLE'}, update=update_crystal_texture_scale_y_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_pattern_detail = FloatProperty(
         name="Detail", description="Sharpness and secondary variation inside the procedural cells",
         default=4.0, min=0.0, soft_max=16.0, max=64.0,
-        options={'ANIMATABLE'}, update=update_crystal_pattern_detail_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_pattern_strength = FloatProperty(
         name="Surface Strength", description="Height of Diamond, Crystal or Liquid detail over the rounded body",
         default=0.035, min=-10.0, max=10.0, soft_min=-0.25, soft_max=0.25,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_crystal_pattern_strength_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_cell_randomness = FloatProperty(
         name="Cell Randomness",
         description="Vary extrusion height independently for each Voronoi island while preserving shared border pinning",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_crystal_cell_randomness_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_cell_seed = IntProperty(
         name="Cell Seed",
         description="Choose another deterministic distribution of randomized Voronoi island heights",
         default=0, min=0, max=2147483647, options={'ANIMATABLE'},
-        update=update_crystal_cell_seed_cb)
+        update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_phase = FloatProperty(
         name="Phase", description="Animate the procedural structure without moving the Frame by Plane layer",
         default=0.0, soft_min=-100.0, soft_max=100.0,
-        options={'ANIMATABLE'}, update=update_crystal_phase_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_alpha_threshold = FloatProperty(
         name="Alpha Cutoff", description="Exact binary silhouette cutoff; source alpha still shapes depth but never creates a translucent edge fade",
-        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_crystal_alpha_threshold_cb)
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_surface_subdivision = IntProperty(
         name="Clay Smoothing", description="Subdivision Surface passes applied after closing the volume; use zero for crisp silhouettes",
-        default=1, min=0, max=2, update=update_crystal_surface_subdivision_cb)
+        default=1, min=0, max=2, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_shade_smooth = BoolProperty(
         name="Shade Smooth", description="Smooth-shade the closed Crystal volume",
-        default=True, update=update_crystal_shade_smooth_cb)
+        default=True, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_distortion = FloatProperty(
         name="Refraction Detail", description="Strength of procedural surface bump used by the refractive material",
         default=0.8, min=0.0, soft_max=3.0, max=10.0,
-        options={'ANIMATABLE'}, update=update_crystal_distortion_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_roughness = FloatProperty(
         name="Roughness", description="Blur and softness of Crystal reflections and refraction",
         default=0.1, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_crystal_roughness_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_ior = FloatProperty(
         name="IOR", description="Index of refraction for the Crystal volume",
         default=1.47, min=1.0, soft_max=2.5, max=10.0,
-        options={'ANIMATABLE'}, update=update_crystal_ior_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_tint = FloatVectorProperty(
         name="Tint", description="Base Crystal color",
         default=(0.48, 0.82, 1.0, 1.0), min=0.0, max=1.0,
-        size=4, subtype='COLOR', options={'ANIMATABLE'}, update=update_crystal_tint_cb)
+        size=4, subtype='COLOR', options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_source_color = FloatProperty(
         name="Source Color", description="Blend from Tint to the unmodified animated source image; 100% removes Tint from both surface and absorption",
         default=0.4, min=0.0, max=1.0, subtype='FACTOR',
-        options={'ANIMATABLE'}, update=update_crystal_source_color_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_absorption = FloatProperty(
         name="Absorption", description="Tint density accumulated through the closed Crystal volume",
         default=0.7, min=0.0, soft_max=10.0, max=100.0,
-        options={'ANIMATABLE'}, update=update_crystal_absorption_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CRYSTAL'))
     _FBP_OBJECT_RNA.fbp_crystal_thin_wall = BoolProperty(
         name="Thin Wall",
         description="Use Blender 5.2 thin-surface transmission. Disabled preserves full refractive distortion; enable it for a lighter sheet-like look",
-        default=False, update=update_crystal_thin_wall_cb)
+        default=False, update=_effect_setting('CRYSTAL'))
 
     _FBP_OBJECT_RNA.fbp_surface_conform_target = PointerProperty(
         name="Target Surface", description="Mesh surface that receives the aspect-balanced remeshed plane",
-        type=bpy.types.Object, update=update_surface_conform_target_cb)
+        type=bpy.types.Object, update=_effect_setting('SURFACE_CONFORM'))
     _FBP_OBJECT_RNA.fbp_surface_conform_subdivision = IntProperty(
         name="Viewport", description="Aspect-balanced triangular remesh detail used while editing Surface Conform",
-        default=3, min=0, max=8, update=update_surface_conform_subdivision_cb)
+        default=3, min=0, max=8, update=_effect_setting('SURFACE_CONFORM'))
     _FBP_OBJECT_RNA.fbp_surface_conform_playback_subdivision = IntProperty(
         name="Playback", description="Maximum remesh detail used during timeline playback",
-        default=2, min=0, max=8, update=update_surface_conform_playback_subdivision_cb)
+        default=2, min=0, max=8, update=_effect_setting('SURFACE_CONFORM'))
     _FBP_OBJECT_RNA.fbp_surface_conform_render_subdivision = IntProperty(
         name="Render", description="Remesh detail used for final rendering",
-        default=5, min=0, max=8, update=update_surface_conform_render_subdivision_cb)
+        default=5, min=0, max=8, update=_effect_setting('SURFACE_CONFORM'))
     _FBP_OBJECT_RNA.fbp_surface_conform_factor = FloatProperty(
         name="Factor", description="Blend between the original plane and the conformed surface",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_surface_conform_factor_cb)
+        update=_effect_setting('SURFACE_CONFORM'))
     _FBP_OBJECT_RNA.fbp_surface_conform_offset = FloatProperty(
         name="Offset", description="Move the conformed plane along the sampled target normal",
         default=0.002, soft_min=-0.1, soft_max=0.1, min=-10.0, max=10.0,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_surface_conform_offset_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('SURFACE_CONFORM'))
     _FBP_OBJECT_RNA.fbp_surface_conform_max_distance = FloatProperty(
         name="Max Distance", description="Only conform vertices within this distance of the target surface",
         default=10.0, min=0.0, soft_max=100.0, max=100000.0, subtype='DISTANCE',
-        update=update_surface_conform_max_distance_cb)
+        update=_effect_setting('SURFACE_CONFORM'))
     _FBP_OBJECT_RNA.fbp_surface_conform_shade_smooth = BoolProperty(
         name="Shade Smooth", description="Smooth-shade the conformed plane",
-        default=True, update=update_surface_conform_shade_smooth_cb)
+        default=True, update=_effect_setting('SURFACE_CONFORM'))
 
     _FBP_OBJECT_RNA.fbp_accordion_subdivision = IntProperty(
         name="Viewport", description="Aspect-balanced triangular remesh detail used while editing Accordion Fold",
-        default=5, min=0, max=8, update=update_accordion_subdivision_cb)
+        default=5, min=0, max=8, update=_effect_setting('ACCORDION_FOLD'))
     _FBP_OBJECT_RNA.fbp_accordion_playback_subdivision = IntProperty(
         name="Playback", description="Maximum remesh detail used during Accordion Fold playback",
-        default=4, min=0, max=8, update=update_accordion_playback_subdivision_cb)
+        default=4, min=0, max=8, update=_effect_setting('ACCORDION_FOLD'))
     _FBP_OBJECT_RNA.fbp_accordion_render_subdivision = IntProperty(
         name="Render", description="Remesh detail used for the final Accordion Fold render",
-        default=6, min=0, max=8, update=update_accordion_render_subdivision_cb)
+        default=6, min=0, max=8, update=_effect_setting('ACCORDION_FOLD'))
     _FBP_OBJECT_RNA.fbp_accordion_folds = IntProperty(
         name="Folds", description="Number of alternating ridges across the plane",
-        default=8, min=1, soft_max=64, max=256, options={'ANIMATABLE'}, update=update_accordion_folds_cb)
+        default=8, min=1, soft_max=64, max=256, options={'ANIMATABLE'}, update=_effect_setting('ACCORDION_FOLD'))
     _FBP_OBJECT_RNA.fbp_accordion_depth = FloatProperty(
         name="Depth", description="Height of the accordion ridges",
         default=0.06, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_accordion_depth_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('ACCORDION_FOLD'))
     _FBP_OBJECT_RNA.fbp_accordion_phase = FloatProperty(
         name="Phase", description="Shift and animate the fold profile across the plane",
-        default=0.0, soft_min=-20.0, soft_max=20.0, options={'ANIMATABLE'}, update=update_accordion_phase_cb)
+        default=0.0, soft_min=-20.0, soft_max=20.0, options={'ANIMATABLE'}, update=_effect_setting('ACCORDION_FOLD'))
     _FBP_OBJECT_RNA.fbp_accordion_vertical = BoolProperty(
         name="Vertical", description="Run the folds along the vertical axis instead of the horizontal axis",
-        default=False, update=update_accordion_vertical_cb)
+        default=False, update=_effect_setting('ACCORDION_FOLD'))
     _FBP_OBJECT_RNA.fbp_accordion_shade_smooth = BoolProperty(
         name="Shade Smooth", description="Smooth the accordion surface shading",
-        default=False, update=update_accordion_shade_smooth_cb)
+        default=False, update=_effect_setting('ACCORDION_FOLD'))
 
     _FBP_OBJECT_RNA.fbp_sculpt_waves_subdivision = IntProperty(
         name="Viewport", description="Aspect-balanced triangular remesh detail used while editing Sculpt Waves",
-        default=5, min=0, max=8, update=update_sculpt_waves_subdivision_cb)
+        default=5, min=0, max=8, update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_playback_subdivision = IntProperty(
         name="Playback", description="Maximum Sculpt Waves remesh detail during timeline playback",
-        default=4, min=0, max=8, update=update_sculpt_waves_playback_subdivision_cb)
+        default=4, min=0, max=8, update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_render_subdivision = IntProperty(
         name="Render", description="Sculpt Waves remesh detail used for final rendering",
-        default=6, min=0, max=8, update=update_sculpt_waves_render_subdivision_cb)
+        default=6, min=0, max=8, update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_style = EnumProperty(
         name="Style", description="Artistic displacement field used to sculpt the textured plane",
         items=(
             ('RADIAL', "Radial", "Concentric expanding waves"),
             ('MOIRE', "Moiré", "Crossed interference waves"),
             ('SPIRAL', "Spiral", "Rotating multi-arm spiral waves"),
-        ), default='RADIAL', update=update_sculpt_waves_style_cb)
+        ), default='RADIAL', update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_amplitude = FloatProperty(
         name="Amplitude", description="Signed height of the sculpted wave surface",
         default=0.08, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_sculpt_waves_amplitude_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_frequency = FloatProperty(
         name="Frequency", description="Number and density of wave bands across the plane",
         default=5.0, min=0.01, soft_max=30.0, max=1000.0,
-        options={'ANIMATABLE'}, update=update_sculpt_waves_frequency_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_phase = FloatProperty(
         name="Phase", description="Animate propagation or rotation of the selected wave style",
         default=0.0, soft_min=-100.0, soft_max=100.0,
-        options={'ANIMATABLE'}, update=update_sculpt_waves_phase_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_edge_falloff = FloatProperty(
         name="Edge Falloff", description="Fade displacement toward the outer edge while preserving the center",
         default=0.35, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_sculpt_waves_edge_falloff_cb)
+        update=_effect_setting('SCULPT_WAVES'))
     _FBP_OBJECT_RNA.fbp_sculpt_waves_shade_smooth = BoolProperty(
         name="Shade Smooth", description="Smooth-shade the sculpted surface",
-        default=True, update=update_sculpt_waves_shade_smooth_cb)
+        default=True, update=_effect_setting('SCULPT_WAVES'))
 
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_subdivision = IntProperty(
         name="Viewport", description="Aspect-balanced quad remesh detail controlling the visible tile count",
-        default=3, min=0, max=7, update=update_kinetic_tiles_subdivision_cb)
+        default=3, min=0, max=7, update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_playback_subdivision = IntProperty(
         name="Playback", description="Maximum tile remesh detail evaluated during timeline playback",
-        default=2, min=0, max=7, update=update_kinetic_tiles_playback_subdivision_cb)
+        default=2, min=0, max=7, update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_render_subdivision = IntProperty(
         name="Render", description="Tile remesh detail used for final rendering",
-        default=4, min=0, max=7, update=update_kinetic_tiles_render_subdivision_cb)
+        default=4, min=0, max=7, update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_pattern = EnumProperty(
         name="Pattern", description="Animated height pattern applied to the separated tiles",
         items=(
             ('WAVE', "Wave", "Traveling diagonal wave"),
             ('CHECKER', "Checker", "Interlocking checker-wave pattern"),
             ('RIPPLE', "Ripple", "Concentric moving ripple"),
-        ), default='WAVE', update=update_kinetic_tiles_pattern_cb)
+        ), default='WAVE', update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_gap = FloatProperty(
         name="Gap", description="Space between neighboring tiles",
         default=0.08, min=0.0, max=0.95, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_kinetic_tiles_gap_cb)
+        update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_thickness = FloatProperty(
         name="Thickness", description="Base signed extrusion depth of every tile",
         default=0.02, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_kinetic_tiles_thickness_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_motion = FloatProperty(
         name="Motion", description="Additional animated height variation from the selected pattern",
         default=0.04, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_kinetic_tiles_motion_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_frequency = FloatProperty(
         name="Frequency", description="Spatial density of the tile animation pattern",
         default=6.0, min=0.01, soft_max=30.0, max=1000.0,
-        options={'ANIMATABLE'}, update=update_kinetic_tiles_frequency_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_phase = FloatProperty(
         name="Phase", description="Animate the tile height pattern across the plane",
         default=0.0, soft_min=-100.0, soft_max=100.0,
-        options={'ANIMATABLE'}, update=update_kinetic_tiles_phase_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('KINETIC_TILES'))
     _FBP_OBJECT_RNA.fbp_kinetic_tiles_shade_smooth = BoolProperty(
         name="Shade Smooth", description="Smooth-shade tile tops and side walls",
-        default=False, update=update_kinetic_tiles_shade_smooth_cb)
+        default=False, update=_effect_setting('KINETIC_TILES'))
 
     _FBP_OBJECT_RNA.fbp_layered_echo_layers = IntProperty(
         name="Viewport", description="Number of shared textured plane instances shown while editing",
-        default=8, min=1, soft_max=64, max=512, options={'ANIMATABLE'}, update=update_layered_echo_layers_cb)
+        default=8, min=1, soft_max=64, max=512, options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_playback_layers = IntProperty(
         name="Playback", description="Maximum number of array layers evaluated during timeline playback",
-        default=6, min=1, soft_max=64, max=512, update=update_layered_echo_playback_layers_cb)
+        default=6, min=1, soft_max=64, max=512, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_render_layers = IntProperty(
         name="Render", description="Number of array layers evaluated for final rendering",
-        default=16, min=1, soft_max=128, max=512, update=update_layered_echo_render_layers_cb)
+        default=16, min=1, soft_max=128, max=512, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_offset_x = FloatProperty(
         name="Offset X", description="Per-layer horizontal offset",
         default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_layered_echo_offset_x_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_offset_y = FloatProperty(
         name="Offset Y", description="Per-layer vertical offset",
         default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_layered_echo_offset_y_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_spacing = FloatProperty(
         name="Spacing", description="Distance between successive array layers",
         default=0.025, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_layered_echo_spacing_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_scale_step = FloatProperty(
         name="Scale Step", description="Per-layer scale change; negative values taper the stack",
         default=-0.025, min=-10.0, max=10.0, soft_min=-0.25, soft_max=0.25,
-        options={'ANIMATABLE'}, update=update_layered_echo_scale_step_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_rotation_x = FloatProperty(
         name="Rotation X", description="Per-layer rotation around local X",
-        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_layered_echo_rotation_x_cb)
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_rotation_y = FloatProperty(
         name="Rotation Y", description="Per-layer rotation around local Y",
-        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_layered_echo_rotation_y_cb)
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_twist = FloatProperty(
         name="Twist", description="Base rotation added by every successive layer",
-        default=0.08, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_layered_echo_twist_cb)
+        default=0.08, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_wave = FloatProperty(
         name="Wave", description="Animated alternating rotation layered over the base twist",
-        default=0.12, min=-6.283185, max=6.283185, subtype='ANGLE', options={'ANIMATABLE'}, update=update_layered_echo_wave_cb)
+        default=0.12, min=-6.283185, max=6.283185, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
     _FBP_OBJECT_RNA.fbp_layered_echo_phase = FloatProperty(
         name="Phase", description="Starting phase for the animated layer wave",
-        default=0.0, soft_min=-100.0, soft_max=100.0, options={'ANIMATABLE'}, update=update_layered_echo_phase_cb)
+        default=0.0, soft_min=-100.0, soft_max=100.0, options={'ANIMATABLE'}, update=_effect_setting('LAYERED_ECHO'))
 
     _FBP_OBJECT_RNA.fbp_yarn_stitch_type = EnumProperty(
         name="Stitch", description="Stitch structure of the yarn",
         items=(
             ('KNIT', "Knit", "Stockinette V stitches in columns, each row tucked under the next"),
             ('CROCHET', "Crochet", "Single crochet: a horizontal head over two posts, rows offset like bricks"),
-        ), default='KNIT', update=update_yarn_stitch_type_cb)
+        ), default='KNIT', update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_columns = IntProperty(
         name="Viewport", description="Stitches across the plane width while editing",
-        default=32, min=2, soft_max=200, max=1000, update=update_yarn_columns_cb)
+        default=32, min=2, soft_max=200, max=1000, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_playback_columns = IntProperty(
         name="Playback", description="Maximum stitches across the width during timeline playback",
-        default=24, min=2, soft_max=200, max=1000, update=update_yarn_playback_columns_cb)
+        default=24, min=2, soft_max=200, max=1000, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_render_columns = IntProperty(
         name="Render", description="Stitches across the width for final rendering",
-        default=48, min=2, soft_max=300, max=1000, update=update_yarn_render_columns_cb)
+        default=48, min=2, soft_max=300, max=1000, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_row_height = FloatProperty(
         name="Row Height", description="Row spacing relative to the natural row height of the stitch",
-        default=1.0, min=0.3, max=3.0, soft_max=2.0, options={'ANIMATABLE'}, update=update_yarn_row_height_cb)
+        default=1.0, min=0.3, max=3.0, soft_max=2.0, options={'ANIMATABLE'}, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_loop_width = FloatProperty(
         name="Loop Width", description="Loop width relative to the stitch; larger values close the gaps",
-        default=1.0, min=0.3, max=2.0, options={'ANIMATABLE'}, update=update_yarn_loop_width_cb)
+        default=1.0, min=0.3, max=2.0, options={'ANIMATABLE'}, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_thickness = FloatProperty(
         name="Thickness", description="Yarn thickness relative to the stitch width",
         default=0.13, min=0.01, max=0.6, soft_max=0.3, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_yarn_thickness_cb)
+        update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_plies = IntProperty(
         name="Plies", description="Number of twisted strands in the yarn",
-        default=3, min=2, max=8, update=update_yarn_plies_cb)
+        default=3, min=2, max=8, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_twist = FloatProperty(
         name="Twist", description="Ply turns per stitch width; negative values twist the other way",
         default=1.5, min=-20.0, max=20.0, soft_min=-6.0, soft_max=6.0, options={'ANIMATABLE'},
-        update=update_yarn_twist_cb)
+        update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_color_variation = FloatProperty(
         name="Color Variation", description="Random brightness change between stitches, like hand-dyed yarn",
         default=0.12, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_yarn_color_variation_cb)
+        update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_jitter = FloatProperty(
         name="Hand-made", description="Random rotation and size of every stitch",
-        default=0.25, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_yarn_jitter_cb)
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_seed = IntProperty(
         name="Seed", description="Random pattern of colour variation and hand-made irregularity",
-        default=0, min=0, options={'ANIMATABLE'}, update=update_yarn_seed_cb)
+        default=0, min=0, options={'ANIMATABLE'}, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Stitches where the image is more transparent than this are left out",
-        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_yarn_alpha_threshold_cb)
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_fuzz = FloatProperty(
         name="Fuzz", description="Soft woolly sheen on the yarn surface",
-        default=0.6, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_yarn_fuzz_cb)
+        default=0.6, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_self_light = FloatProperty(
         name="Self Light", description="Built-in light so the yarn reads in unlit Frame By Plane scenes. Lower it when the scene has its own lights",
-        default=1.0, min=0.0, max=4.0, soft_max=2.0, options={'ANIMATABLE'}, update=update_yarn_self_light_cb)
+        default=1.0, min=0.0, max=4.0, soft_max=2.0, options={'ANIMATABLE'}, update=_effect_setting('KNIT_CROCHET'))
     _FBP_OBJECT_RNA.fbp_yarn_show_plane = BoolProperty(
         name="Show Plane", description="Keep the image plane visible behind the yarn, so it shows through the gaps",
-        default=False, update=update_yarn_show_plane_cb)
+        default=False, update=_effect_setting('KNIT_CROCHET'))
 
     _FBP_OBJECT_RNA.fbp_frame_stack_slices = IntProperty(
         name="Viewport", description="Number of frame slices shown while editing, including the plane itself",
-        default=12, min=1, soft_max=64, max=512, options={'ANIMATABLE'}, update=update_frame_stack_slices_cb)
+        default=12, min=1, soft_max=64, max=512, options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_playback_slices = IntProperty(
         name="Playback", description="Maximum number of frame slices evaluated during timeline playback",
-        default=8, min=1, soft_max=64, max=512, update=update_frame_stack_playback_slices_cb)
+        default=8, min=1, soft_max=64, max=512, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_render_slices = IntProperty(
         name="Render", description="Number of frame slices evaluated for final rendering",
-        default=24, min=1, soft_max=128, max=512, update=update_frame_stack_render_slices_cb)
+        default=24, min=1, soft_max=128, max=512, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_detail = IntProperty(
         name="Viewport", description="Grid detail of every earlier slice while editing. Each level doubles the grid on both sides",
-        default=5, min=0, max=8, update=update_frame_stack_detail_cb)
+        default=5, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_playback_detail = IntProperty(
         name="Playback", description="Maximum slice grid detail during timeline playback",
-        default=4, min=0, max=8, update=update_frame_stack_playback_detail_cb)
+        default=4, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_render_detail = IntProperty(
         name="Render", description="Slice grid detail for final rendering. The plane itself always keeps full resolution",
-        default=7, min=0, max=8, update=update_frame_stack_render_detail_cb)
+        default=7, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_step = IntProperty(
         name="Frame Step", description="Playback frames between two slices: drawings of an image sequence in its timing order, frames of a video. Negative values stack upcoming frames instead of earlier ones",
-        default=2, min=-1000, max=1000, soft_min=-24, soft_max=24, options={'ANIMATABLE'}, update=update_frame_stack_step_cb)
+        default=2, min=-1000, max=1000, soft_min=-24, soft_max=24, options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_fixed_start = BoolProperty(
         name="Fixed Range", description="Stack a fixed range of frames starting at Start Frame instead of following playback",
-        default=False, update=update_frame_stack_fixed_start_cb)
+        default=False, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_start_frame = IntProperty(
         name="Start Frame", description="Timeline frame whose image the front slice shows when Fixed Range is on. Animate it to scroll the solid through time",
-        default=1, min=-1000000, max=1000000, options={'ANIMATABLE'}, update=update_frame_stack_start_frame_cb)
+        default=1, min=-1000000, max=1000000, options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_offset_x = FloatProperty(
         name="Offset X", description="Per-slice horizontal offset",
         default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_offset_x_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_offset_y = FloatProperty(
         name="Offset Y", description="Per-slice vertical offset",
         default=0.0, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_offset_y_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_spacing = FloatProperty(
         name="Depth", description="Distance between successive slices along the plane normal. Negative values stack behind the plane",
         default=-0.04, min=-10.0, max=10.0, soft_min=-0.5, soft_max=0.5,
-        subtype='DISTANCE', options={'ANIMATABLE'}, update=update_frame_stack_spacing_cb)
+        subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_scale_step = FloatProperty(
         name="Scale Step", description="Per-slice scale change; negative values taper the stack",
         default=0.0, min=-10.0, max=10.0, soft_min=-0.25, soft_max=0.25,
-        options={'ANIMATABLE'}, update=update_frame_stack_scale_step_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_rotation_x = FloatProperty(
         name="Rotation X", description="Per-slice rotation around local X",
-        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_rotation_x_cb)
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_rotation_y = FloatProperty(
         name="Rotation Y", description="Per-slice rotation around local Y",
-        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_rotation_y_cb)
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_twist = FloatProperty(
         name="Twist", description="Per-slice rotation around the plane normal",
-        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=update_frame_stack_twist_cb)
+        default=0.0, min=-100.0, max=100.0, subtype='ANGLE', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_front_slices = IntProperty(
         name="Front Slices", description="Number of slices, counted from the plane, that use Front Opacity; the rest use Back Opacity",
-        default=0, min=0, max=512, soft_max=64, options={'ANIMATABLE'}, update=update_frame_stack_front_slices_cb)
+        default=0, min=0, max=512, soft_max=64, options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_front_opacity = FloatProperty(
         name="Front Opacity", description="Opacity of the front slices",
-        default=0.15, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_front_opacity_cb)
+        default=0.15, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_back_opacity = FloatProperty(
         name="Back Opacity", description="Opacity of the remaining slices",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_back_opacity_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_depth_fade = FloatProperty(
         name="Depth Fade", description="Fade older slices: the last slice keeps 1 minus this value of its opacity",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_depth_fade_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_luminance_opacity = FloatProperty(
         name="Luminance Key", description="Make dark areas transparent (positive) or bright areas transparent (negative), like a mask video built from the image itself",
-        default=0.0, min=-1.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_frame_stack_luminance_opacity_cb)
+        default=0.0, min=-1.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_show_plane = BoolProperty(
         name="Show Plane", description="Keep the plane as the full-resolution front slice. When off, the front slice is sampled like the others",
-        default=True, update=update_frame_stack_show_plane_cb)
+        default=True, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_glow = BoolProperty(
         name="Glow", description="Add the slices together like light instead of layering them. Order-independent and noise-free in Eevee; dark areas disappear",
-        default=False, update=update_frame_stack_glow_cb)
+        default=False, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_outline = BoolProperty(
         name="Outline", description="Draw the volume edges: the first and last frame and the four corner lines",
-        default=False, update=update_frame_stack_outline_cb)
+        default=False, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_outline_width = FloatProperty(
         name="Width", description="Thickness of the outline lines",
         default=0.004, min=0.00001, max=1.0, soft_max=0.05, subtype='DISTANCE', options={'ANIMATABLE'},
-        update=update_frame_stack_outline_width_cb)
+        update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_outline_color = FloatVectorProperty(
         name="Color", description="Outline color", subtype='COLOR', size=4,
         default=(1.0, 1.0, 1.0, 1.0), min=0.0, max=1.0, options={'ANIMATABLE'},
-        update=update_frame_stack_outline_color_cb)
+        update=_effect_setting('FRAME_STACK'))
 
-    _FBP_OBJECT_RNA.fbp_wind_subdivision = IntProperty(description="Viewport mesh subdivision level used by Wind. Higher values bend more smoothly but increase viewport cost.", name="Viewport", default=3, min=0, max=6, update=update_wind_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_wind_playback_subdivision = IntProperty(description="Maximum Wind subdivision level used during timeline playback. Lower values keep playback responsive.", name="Playback", default=2, min=0, max=6, update=update_wind_playback_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_wind_render_subdivision = IntProperty(description="Subdivision level used by Wind during final render.", name="Render", default=4, min=0, max=6, update=update_wind_render_subdivision_cb)
-    _FBP_OBJECT_RNA.fbp_wind_stepped = IntProperty(description="Number of frames each Wind deformation state is held. Set to 1 for continuous per-frame motion.", name="Stepped", default=1, min=1, soft_max=24, update=update_wind_stepped_cb)
+    _FBP_OBJECT_RNA.fbp_wind_subdivision = IntProperty(description="Viewport mesh subdivision level used by Wind. Higher values bend more smoothly but increase viewport cost.", name="Viewport", default=3, min=0, max=6, update=_effect_setting('WIND_BENDER'))
+    _FBP_OBJECT_RNA.fbp_wind_playback_subdivision = IntProperty(description="Maximum Wind subdivision level used during timeline playback. Lower values keep playback responsive.", name="Playback", default=2, min=0, max=6, update=_effect_setting('WIND_BENDER'))
+    _FBP_OBJECT_RNA.fbp_wind_render_subdivision = IntProperty(description="Subdivision level used by Wind during final render.", name="Render", default=4, min=0, max=6, update=_effect_setting('WIND_BENDER'))
+    _FBP_OBJECT_RNA.fbp_wind_stepped = IntProperty(description="Number of frames each Wind deformation state is held. Set to 1 for continuous per-frame motion.", name="Stepped", default=1, min=1, soft_max=24, update=_effect_setting('WIND_BENDER'))
 
     # 4.9 Geometry effect quality contract reference implementation.
 
@@ -6338,33 +5628,33 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_lattice_interpolation = EnumProperty(name="Interpolation", description="Interpolation used between Lattice control points. This can be changed without resetting the current deformation.", items=[('LINEAR','Linear','Linear interpolation'),('CARDINAL','Cardinal','Cardinal interpolation'),('CATMULL_ROM','Catmull-Rom','Catmull-Rom interpolation'),('BSPLINE','B-Spline','Smooth B-Spline interpolation')], default='BSPLINE', update=update_lattice_interpolation_cb)
     _FBP_OBJECT_RNA.fbp_cutout_outline_viewport_resolution = IntProperty(
         name="Viewport Alpha Detail", description="Subdivision level used to trace the alpha silhouette while editing",
-        default=4, min=0, max=8, update=update_cutout_outline_viewport_resolution_cb)
+        default=4, min=0, max=8, update=_effect_setting('CUTOUT_OUTLINE'))
     _FBP_OBJECT_RNA.fbp_cutout_outline_playback_resolution = IntProperty(
         name="Playback Alpha Detail", description="Temporary alpha tracing detail used during timeline playback",
-        default=2, min=0, max=8, update=update_cutout_outline_playback_resolution_cb)
+        default=2, min=0, max=8, update=_effect_setting('CUTOUT_OUTLINE'))
     _FBP_OBJECT_RNA.fbp_cutout_outline_render_resolution = IntProperty(
         name="Render Alpha Detail", description="Temporary alpha tracing detail used for final rendering",
-        default=6, min=0, max=8, update=update_cutout_outline_render_resolution_cb)
+        default=6, min=0, max=8, update=_effect_setting('CUTOUT_OUTLINE'))
     _FBP_OBJECT_RNA.fbp_cutout_outline_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Pixels below this alpha value are excluded from the cutout silhouette",
         default=0.05, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_cutout_outline_alpha_threshold_cb)
+        update=_effect_setting('CUTOUT_OUTLINE'))
     _FBP_OBJECT_RNA.fbp_cutout_outline_width = FloatProperty(
         name="Outline Width", description="World-space radius of the generated Cutout Outline geometry. Larger values create a thicker visible border around the source alpha silhouette.",
         default=0.012, min=0.00001, soft_max=0.25, max=10.0, subtype='DISTANCE', precision=5,
-        options={'ANIMATABLE'}, update=update_cutout_outline_width_cb)
+        options={'ANIMATABLE'}, update=_effect_setting('CUTOUT_OUTLINE'))
     _FBP_OBJECT_RNA.fbp_cutout_outline_offset = FloatProperty(
         name="Offset", description="Move the outline along the plane local Z axis",
         default=0.001, min=-10.0, max=10.0, soft_min=-0.1, soft_max=0.1,
-        subtype='DISTANCE', precision=5, options={'ANIMATABLE'}, update=update_cutout_outline_offset_cb)
+        subtype='DISTANCE', precision=5, options={'ANIMATABLE'}, update=_effect_setting('CUTOUT_OUTLINE'))
     _FBP_OBJECT_RNA.fbp_cutout_outline_color = FloatVectorProperty(
         description="RGBA color assigned to the generated Cutout Outline geometry.",
         name="Outline Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.02, 0.02, 0.02, 1.0), update=update_cutout_outline_color_cb)
-    _FBP_OBJECT_RNA.fbp_cutout_outline_show_image = BoolProperty(name="Image", description="Keep the original image visible together with the generated outline.", default=True, update=update_cutout_outline_show_image_cb)
-    _FBP_OBJECT_RNA.fbp_cutout_outline_wiggle_amount = FloatProperty(name="Wiggle Line", description="Procedural displacement applied to the generated outline. Zero keeps the contour perfectly stable.", default=0.0, min=0.0, soft_max=0.05, max=10.0, subtype='DISTANCE', update=update_cutout_outline_wiggle_amount_cb)
-    _FBP_OBJECT_RNA.fbp_cutout_outline_wiggle_scale = FloatProperty(name="Wiggle Scale", description="Spatial frequency of the Cutout Outline line wiggle.", default=8.0, min=0.01, soft_max=64.0, max=1000.0, update=update_cutout_outline_wiggle_scale_cb)
-    _FBP_OBJECT_RNA.fbp_cutout_outline_wiggle_phase = FloatProperty(name="Wiggle Phase", description="Animation phase used by Cutout Outline Evolution.", default=0.0, soft_min=-10.0, soft_max=10.0, min=-100000.0, max=100000.0, update=update_cutout_outline_wiggle_phase_cb)
+        default=(0.02, 0.02, 0.02, 1.0), update=_effect_setting('CUTOUT_OUTLINE'))
+    _FBP_OBJECT_RNA.fbp_cutout_outline_show_image = BoolProperty(name="Image", description="Keep the original image visible together with the generated outline.", default=True, update=_effect_setting('CUTOUT_OUTLINE'))
+    _FBP_OBJECT_RNA.fbp_cutout_outline_wiggle_amount = FloatProperty(name="Wiggle Line", description="Procedural displacement applied to the generated outline. Zero keeps the contour perfectly stable.", default=0.0, min=0.0, soft_max=0.05, max=10.0, subtype='DISTANCE', update=_effect_setting('CUTOUT_OUTLINE'))
+    _FBP_OBJECT_RNA.fbp_cutout_outline_wiggle_scale = FloatProperty(name="Wiggle Scale", description="Spatial frequency of the Cutout Outline line wiggle.", default=8.0, min=0.01, soft_max=64.0, max=1000.0, update=_effect_setting('CUTOUT_OUTLINE'))
+    _FBP_OBJECT_RNA.fbp_cutout_outline_wiggle_phase = FloatProperty(name="Wiggle Phase", description="Animation phase used by Cutout Outline Evolution.", default=0.0, soft_min=-10.0, soft_max=10.0, min=-100000.0, max=100000.0, update=_effect_setting('CUTOUT_OUTLINE'))
 
 
     # Camera-space foundation reference effect.
@@ -6373,24 +5663,24 @@ def register_properties():
         description="Camera-space depth at which the plane keeps its current apparent size",
         default=10.0, min=0.0001, soft_max=1000.0, max=1000000.0,
         precision=4, subtype='DISTANCE', options={'ANIMATABLE'},
-        update=update_camera_scale_lock_reference_distance_cb)
+        update=_effect_setting('CAMERA_SCALE_LOCK'))
     _FBP_OBJECT_RNA.fbp_camera_scale_lock_reference_lens = FloatProperty(
         name="Reference Lens",
         description="Focal length captured with the reference camera depth",
         default=50.0, min=0.1, soft_max=300.0, max=10000.0,
         precision=2, options={'ANIMATABLE'},
-        update=update_camera_scale_lock_reference_lens_cb)
+        update=_effect_setting('CAMERA_SCALE_LOCK'))
     _FBP_OBJECT_RNA.fbp_camera_scale_lock_reference_sensor_width = FloatProperty(
         name="Reference Sensor Width",
         description="Camera sensor width captured with the reference camera depth",
         default=36.0, min=0.1, soft_max=70.0, max=1000.0,
         precision=2, options={'ANIMATABLE'},
-        update=update_camera_scale_lock_reference_sensor_width_cb)
+        update=_effect_setting('CAMERA_SCALE_LOCK'))
     _FBP_OBJECT_RNA.fbp_camera_scale_lock_influence = FloatProperty(
         name="Influence",
         description="Blend between the original size and full projection-aware compensation",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'},
-        update=update_camera_scale_lock_influence_cb)
+        update=_effect_setting('CAMERA_SCALE_LOCK'))
 
     _FBP_OBJECT_RNA.fbp_camera_billboard_mode = EnumProperty(
         description="Choose whether the complete Frame By Plane rig tracks the camera freely or keeps one local axis locked.",
@@ -6407,29 +5697,29 @@ def register_properties():
         default=1.0, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_camera_billboard_influence_cb)
     _FBP_OBJECT_RNA.fbp_mirror_x = BoolProperty(
         name="Mirror X", description="Mirror the plane horizontally around the rig pivot.",
-        default=True, options={'ANIMATABLE'}, update=update_mirror_x_cb)
+        default=True, options={'ANIMATABLE'}, update=_effect_setting('MIRROR'))
     _FBP_OBJECT_RNA.fbp_mirror_y = BoolProperty(
         name="Mirror Y", description="Mirror the plane vertically around the rig pivot.",
-        default=False, options={'ANIMATABLE'}, update=update_mirror_y_cb)
+        default=False, options={'ANIMATABLE'}, update=_effect_setting('MIRROR'))
 
     _FBP_OBJECT_RNA.fbp_thickness_viewport_pixels_x = IntProperty(
         name="Viewport Alpha Pixels X", description="Exact horizontal alpha samples used by Extrude while editing",
-        default=128, min=1, soft_max=1024, max=4096, update=update_thickness_viewport_pixels_x_cb)
+        default=128, min=1, soft_max=1024, max=4096, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_viewport_pixels_y = IntProperty(
         name="Viewport Alpha Pixels Y", description="Exact vertical alpha samples used by Extrude while editing",
-        default=128, min=1, soft_max=1024, max=4096, update=update_thickness_viewport_pixels_y_cb)
+        default=128, min=1, soft_max=1024, max=4096, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_playback_pixels_x = IntProperty(
         name="Playback Alpha Pixels X", description="Exact horizontal alpha samples temporarily used by Extrude during playback",
-        default=64, min=1, soft_max=1024, max=4096, update=update_thickness_playback_pixels_x_cb)
+        default=64, min=1, soft_max=1024, max=4096, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_playback_pixels_y = IntProperty(
         name="Playback Alpha Pixels Y", description="Exact vertical alpha samples temporarily used by Extrude during playback",
-        default=64, min=1, soft_max=1024, max=4096, update=update_thickness_playback_pixels_y_cb)
+        default=64, min=1, soft_max=1024, max=4096, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_render_pixels_x = IntProperty(
         name="Render Alpha Pixels X", description="Exact horizontal alpha samples used by Extrude for final rendering",
-        default=256, min=1, soft_max=2048, max=4096, update=update_thickness_render_pixels_x_cb)
+        default=256, min=1, soft_max=2048, max=4096, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_render_pixels_y = IntProperty(
         name="Render Alpha Pixels Y", description="Exact vertical alpha samples used by Extrude for final rendering",
-        default=256, min=1, soft_max=2048, max=4096, update=update_thickness_render_pixels_y_cb)
+        default=256, min=1, soft_max=2048, max=4096, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_grid_mode = EnumProperty(
         name="Extrude Grid Mode",
         description="Derive Pixels Y from the plane aspect ratio or use an exact X by Y alpha grid",
@@ -6437,46 +5727,46 @@ def register_properties():
             ('AUTO', "Auto Height", "Set Pixels X and derive Pixels Y so Extrude cells remain square", 'FULLSCREEN_ENTER', 0),
             ('EXACT', "Exact Grid", "Enter independent Pixels X and Pixels Y values", 'MESH_GRID', 1),
         ),
-        default='AUTO', update=update_thickness_grid_mode_cb)
+        default='AUTO', update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_follow_pixelate = BoolProperty(
         name="Follow Pixelate",
         description="When Pixelate is present, use its effective X by Y grid for the Extrude silhouette",
-        default=True, update=update_thickness_follow_pixelate_cb)
+        default=True, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_safe_grid = BoolProperty(
         name="Safe Grid Limits",
         description="Limit the effective Extrude alpha grid per quality profile to avoid multi-million-cell geometry. Disable only for deliberate high-resolution final work.",
-        default=True, update=update_thickness_safe_grid_cb)
+        default=True, update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_mode = EnumProperty(
         name="Method", description="Volume creates real alpha-derived side walls; Array repeats the complete textured plane through the chosen depth.",
         items=(('VOLUME', "Volume", "Generate front, back and alpha-derived side walls"), ('ARRAY', "Array", "Create a fake extrusion from repeated textured planes")),
-        default='VOLUME', update=update_thickness_mode_cb)
+        default='VOLUME', update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_array_count = IntProperty(
         name="Array Copies", description="Number of textured plane copies distributed across the Extrude depth in Array mode.",
-        default=12, min=2, soft_max=48, max=128, update=update_thickness_array_count_cb)
-    _FBP_OBJECT_RNA.fbp_thickness_amount = FloatProperty(description="Depth of the Extrude side walls. Zero removes the generated volume.", name="Thickness", default=0.02, min=0.0, soft_max=0.25, max=10.0, precision=4, subtype='DISTANCE', options={'ANIMATABLE'}, update=update_thickness_amount_cb)
-    _FBP_OBJECT_RNA.fbp_thickness_direction = FloatProperty(name="Direction", description="-1 extrudes behind the plane; +1 extrudes toward local front", default=-1.0, min=-1.0, max=1.0, options={'ANIMATABLE'}, update=update_thickness_direction_cb)
-    _FBP_OBJECT_RNA.fbp_thickness_side_material = PointerProperty(description="Optional material assigned to Extrude side faces. Leave empty to use the side color instead.", name="Side Material", type=bpy.types.Material, update=update_thickness_side_material_cb)
-    _FBP_OBJECT_RNA.fbp_thickness_side_color = FloatVectorProperty(description="RGBA fallback color used on Extrude side faces when no custom material is assigned.", name="Side Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.18, 0.12, 0.08, 1.0), update=update_thickness_side_color_cb)
+        default=12, min=2, soft_max=48, max=128, update=_effect_setting('THICKNESS'))
+    _FBP_OBJECT_RNA.fbp_thickness_amount = FloatProperty(description="Depth of the Extrude side walls. Zero removes the generated volume.", name="Thickness", default=0.02, min=0.0, soft_max=0.25, max=10.0, precision=4, subtype='DISTANCE', options={'ANIMATABLE'}, update=_effect_setting('THICKNESS'))
+    _FBP_OBJECT_RNA.fbp_thickness_direction = FloatProperty(name="Direction", description="-1 extrudes behind the plane; +1 extrudes toward local front", default=-1.0, min=-1.0, max=1.0, options={'ANIMATABLE'}, update=_effect_setting('THICKNESS'))
+    _FBP_OBJECT_RNA.fbp_thickness_side_material = PointerProperty(description="Optional material assigned to Extrude side faces. Leave empty to use the side color instead.", name="Side Material", type=bpy.types.Material, update=_effect_setting('THICKNESS'))
+    _FBP_OBJECT_RNA.fbp_thickness_side_color = FloatVectorProperty(description="RGBA fallback color used on Extrude side faces when no custom material is assigned.", name="Side Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.18, 0.12, 0.08, 1.0), update=_effect_setting('THICKNESS'))
     _FBP_OBJECT_RNA.fbp_thickness_use_plane_colors = BoolProperty(
         name="Use Plane Colors",
         description="Use the animated plane material on Extrude side faces so their colors follow the current image or pixel-art frame",
         default=False,
-        update=update_thickness_use_plane_colors_cb,
+        update=_effect_setting('THICKNESS'),
     )
-    _FBP_OBJECT_RNA.fbp_thickness_alpha_threshold = FloatProperty(description="Minimum source alpha included in the Extrude silhouette. Increase to remove translucent edge fringes.", name="Alpha Threshold", default=0.05, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=update_thickness_alpha_threshold_cb)
+    _FBP_OBJECT_RNA.fbp_thickness_alpha_threshold = FloatProperty(description="Minimum source alpha included in the Extrude silhouette. Increase to remove translucent edge fringes.", name="Alpha Threshold", default=0.05, min=0.0, max=1.0, subtype='FACTOR', options={'ANIMATABLE'}, update=_effect_setting('THICKNESS'))
 
-    _FBP_OBJECT_RNA.fbp_infinite_rotation_speed = FloatProperty(name="Speed", description="Automatic rotation speed in degrees per timeline frame. Negative values reverse direction and zero produces no time-based rotation.", default=1.0, min=0.0, soft_max=30.0, precision=3, update=update_infinite_rotation_speed_cb)
-    _FBP_OBJECT_RNA.fbp_infinite_rotation_direction = EnumProperty(description="Direction of automatic Infinite Rotation around the configured axis.", name="Direction", items=(('RIGHT', "Clockwise", "Rotate clockwise"), ('LEFT', "Counter-clockwise", "Rotate counter-clockwise")), default='RIGHT', update=update_infinite_rotation_direction_cb)
-    _FBP_OBJECT_RNA.fbp_infinite_rotation_stepped = IntProperty(description="Number of frames each Infinite Rotation angle is held. Set to 1 for smooth motion or higher values for stepped animation.", name="Stepped", default=1, min=1, soft_max=24, update=update_infinite_rotation_stepped_cb)
-    _FBP_OBJECT_RNA.fbp_infinite_rotation_offset = FloatProperty(description="Manual angular offset added to Infinite Rotation without changing its speed or direction.", name="Offset (°)", default=0.0, soft_min=-360.0, soft_max=360.0, precision=2, update=update_infinite_rotation_offset_cb)
+    _FBP_OBJECT_RNA.fbp_infinite_rotation_speed = FloatProperty(name="Speed", description="Automatic rotation speed in degrees per timeline frame. Negative values reverse direction and zero produces no time-based rotation.", default=1.0, min=0.0, soft_max=30.0, precision=3, update=_effect_setting('INFINITE_ROTATION'))
+    _FBP_OBJECT_RNA.fbp_infinite_rotation_direction = EnumProperty(description="Direction of automatic Infinite Rotation around the configured axis.", name="Direction", items=(('RIGHT', "Clockwise", "Rotate clockwise"), ('LEFT', "Counter-clockwise", "Rotate counter-clockwise")), default='RIGHT', update=_effect_setting('INFINITE_ROTATION'))
+    _FBP_OBJECT_RNA.fbp_infinite_rotation_stepped = IntProperty(description="Number of frames each Infinite Rotation angle is held. Set to 1 for smooth motion or higher values for stepped animation.", name="Stepped", default=1, min=1, soft_max=24, update=_effect_setting('INFINITE_ROTATION'))
+    _FBP_OBJECT_RNA.fbp_infinite_rotation_offset = FloatProperty(description="Manual angular offset added to Infinite Rotation without changing its speed or direction.", name="Offset (°)", default=0.0, soft_min=-360.0, soft_max=360.0, precision=2, update=_effect_setting('INFINITE_ROTATION'))
 
     # Shader effects
     _FBP_OBJECT_RNA.fbp_uv_distortion_scale = FloatProperty(description="Spatial scale of the procedural noise used to distort image UV coordinates. Higher values create smaller distortion features.",
-        name="Noise Scale", default=10.0, min=0.001, soft_max=100.0, precision=3, update=update_uv_distortion_scale_cb)
+        name="Noise Scale", default=10.0, min=0.001, soft_max=100.0, precision=3, update=_effect_setting('UV_DISTORTION'))
     _FBP_OBJECT_RNA.fbp_uv_distortion_amount = FloatProperty(description="Strength of UV displacement applied to the image texture. Zero preserves the original mapping.",
-        name="Distortion Amount", default=0.05, soft_min=-1.0, soft_max=1.0, precision=3, update=update_uv_distortion_amount_cb)
+        name="Distortion Amount", default=0.05, soft_min=-1.0, soft_max=1.0, precision=3, update=_effect_setting('UV_DISTORTION'))
     _FBP_OBJECT_RNA.fbp_uv_distortion_evolution = FloatProperty(description="Phase of the four-dimensional turbulence field. Animate this value to evolve the pattern without changing distortion strength.",
-        name="Evolution", default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, options={'ANIMATABLE'}, update=update_uv_distortion_evolution_cb)
+        name="Evolution", default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, options={'ANIMATABLE'}, update=_effect_setting('UV_DISTORTION'))
     _FBP_OBJECT_RNA.fbp_pixelate_grid_mode = EnumProperty(
         name="Pixel Grid Mode",
         description="Choose automatic square cells or an explicit horizontal and vertical pixel grid.",
@@ -6484,97 +5774,97 @@ def register_properties():
             ('AUTO', "Auto Height", "Set the horizontal pixel count and derive the vertical count so cells remain square", 'FULLSCREEN_ENTER', 0),
             ('EXACT', "Exact Grid", "Enter an explicit pixel grid such as 16 by 10 or 1920 by 1080", 'MESH_GRID', 1),
         ),
-        default='AUTO', update=update_pixelate_grid_mode_cb)
+        default='AUTO', update=_effect_setting('PIXELATE'))
     _FBP_OBJECT_RNA.fbp_pixelate_size = FloatProperty(
         name="Size",
         description="Figma-style tile size. Lower values create more/smaller tiles; higher values create chunkier pixels.",
-        default=10.0, min=1.0, soft_max=128.0, max=512.0, precision=1, update=update_pixelate_size_cb)
+        default=10.0, min=1.0, soft_max=128.0, max=512.0, precision=1, update=_effect_setting('PIXELATE'))
     _FBP_OBJECT_RNA.fbp_pixelate_stretch = FloatProperty(
         name="Stretch",
         description="Stretch tile height as a percentage while preserving the layer aspect contract.",
-        default=1.0, min=0.05, soft_max=3.0, max=10.0, subtype='FACTOR', update=update_pixelate_stretch_cb)
+        default=1.0, min=0.05, soft_max=3.0, max=10.0, subtype='FACTOR', update=_effect_setting('PIXELATE'))
     _FBP_OBJECT_RNA.fbp_pixelate_resolution = IntProperty(
         name="Pixels X", description="Horizontal grid count used in Exact Grid mode and by effects that follow the Pixelate grid.",
-        default=64, min=1, soft_max=2048, max=8192, update=update_pixelate_resolution_cb)
+        default=64, min=1, soft_max=2048, max=8192, update=_effect_setting('PIXELATE'))
     _FBP_OBJECT_RNA.fbp_pixelate_height = IntProperty(
         name="Pixels Y", description="Vertical grid count used in Exact Grid mode.",
-        default=36, min=1, soft_max=2048, max=8192, update=update_pixelate_height_cb)
-    _FBP_OBJECT_RNA.fbp_pixelate_rotation = FloatProperty(name="Rotation", description="Rotate the complete Pixelate sampling grid around the image center.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_pixelate_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_pixelate_offset_x = FloatProperty(name="Offset X", description="Move the Pixelate grid horizontally without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-1.0, max=1.0, update=update_pixelate_offset_x_cb)
-    _FBP_OBJECT_RNA.fbp_pixelate_offset_y = FloatProperty(name="Offset Y", description="Move the Pixelate grid vertically without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-1.0, max=1.0, update=update_pixelate_offset_y_cb)
+        default=36, min=1, soft_max=2048, max=8192, update=_effect_setting('PIXELATE'))
+    _FBP_OBJECT_RNA.fbp_pixelate_rotation = FloatProperty(name="Rotation", description="Rotate the complete Pixelate sampling grid around the image center.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=_effect_setting('PIXELATE'))
+    _FBP_OBJECT_RNA.fbp_pixelate_offset_x = FloatProperty(name="Offset X", description="Move the Pixelate grid horizontally without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-1.0, max=1.0, update=_effect_setting('PIXELATE'))
+    _FBP_OBJECT_RNA.fbp_pixelate_offset_y = FloatProperty(name="Offset Y", description="Move the Pixelate grid vertically without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-1.0, max=1.0, update=_effect_setting('PIXELATE'))
 
-    _FBP_OBJECT_RNA.fbp_swirl_center_x = FloatProperty(name="Center X", description="Horizontal center of the Swirl in normalized image coordinates.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_swirl_center_x_cb)
-    _FBP_OBJECT_RNA.fbp_swirl_center_y = FloatProperty(name="Center Y", description="Vertical center of the Swirl in normalized image coordinates.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_swirl_center_y_cb)
-    _FBP_OBJECT_RNA.fbp_swirl_radius = FloatProperty(name="Radius", description="Normalized radius affected by Swirl.", default=0.5, min=0.001, soft_max=1.5, max=4.0, update=update_swirl_radius_cb)
-    _FBP_OBJECT_RNA.fbp_swirl_angle = FloatProperty(name="Angle", description="Maximum twist at the center of Swirl.", default=3.141592654, min=-25.13274123, max=25.13274123, subtype='ANGLE', update=update_swirl_angle_cb)
-    _FBP_OBJECT_RNA.fbp_swirl_factor = FloatProperty(name="Factor", description="Blend between the original and swirled UV coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_swirl_factor_cb)
+    _FBP_OBJECT_RNA.fbp_swirl_center_x = FloatProperty(name="Center X", description="Horizontal center of the Swirl in normalized image coordinates.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('SWIRL'))
+    _FBP_OBJECT_RNA.fbp_swirl_center_y = FloatProperty(name="Center Y", description="Vertical center of the Swirl in normalized image coordinates.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('SWIRL'))
+    _FBP_OBJECT_RNA.fbp_swirl_radius = FloatProperty(name="Radius", description="Normalized radius affected by Swirl.", default=0.5, min=0.001, soft_max=1.5, max=4.0, update=_effect_setting('SWIRL'))
+    _FBP_OBJECT_RNA.fbp_swirl_angle = FloatProperty(name="Angle", description="Maximum twist at the center of Swirl.", default=3.141592654, min=-25.13274123, max=25.13274123, subtype='ANGLE', update=_effect_setting('SWIRL'))
+    _FBP_OBJECT_RNA.fbp_swirl_factor = FloatProperty(name="Factor", description="Blend between the original and swirled UV coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SWIRL'))
 
-    _FBP_OBJECT_RNA.fbp_bulge_pinch_center_x = FloatProperty(name="Center X", description="Horizontal center of the Bulge or Pinch.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_bulge_pinch_center_x_cb)
-    _FBP_OBJECT_RNA.fbp_bulge_pinch_center_y = FloatProperty(name="Center Y", description="Vertical center of the Bulge or Pinch.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_bulge_pinch_center_y_cb)
-    _FBP_OBJECT_RNA.fbp_bulge_pinch_radius = FloatProperty(name="Radius", description="Normalized radius affected by Bulge or Pinch.", default=0.5, min=0.001, soft_max=1.5, max=4.0, update=update_bulge_pinch_radius_cb)
-    _FBP_OBJECT_RNA.fbp_bulge_pinch_strength = FloatProperty(name="Strength", description="Positive values bulge the image outward; negative values pinch it inward.", default=0.5, min=-2.0, max=2.0, update=update_bulge_pinch_strength_cb)
-    _FBP_OBJECT_RNA.fbp_bulge_pinch_factor = FloatProperty(name="Factor", description="Blend between original and Bulge or Pinch distortion.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_bulge_pinch_factor_cb)
+    _FBP_OBJECT_RNA.fbp_bulge_pinch_center_x = FloatProperty(name="Center X", description="Horizontal center of the Bulge or Pinch.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('BULGE_PINCH'))
+    _FBP_OBJECT_RNA.fbp_bulge_pinch_center_y = FloatProperty(name="Center Y", description="Vertical center of the Bulge or Pinch.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('BULGE_PINCH'))
+    _FBP_OBJECT_RNA.fbp_bulge_pinch_radius = FloatProperty(name="Radius", description="Normalized radius affected by Bulge or Pinch.", default=0.5, min=0.001, soft_max=1.5, max=4.0, update=_effect_setting('BULGE_PINCH'))
+    _FBP_OBJECT_RNA.fbp_bulge_pinch_strength = FloatProperty(name="Strength", description="Positive values bulge the image outward; negative values pinch it inward.", default=0.5, min=-2.0, max=2.0, update=_effect_setting('BULGE_PINCH'))
+    _FBP_OBJECT_RNA.fbp_bulge_pinch_factor = FloatProperty(name="Factor", description="Blend between original and Bulge or Pinch distortion.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('BULGE_PINCH'))
 
-    _FBP_OBJECT_RNA.fbp_lens_warp_center_x = FloatProperty(name="Center X", description="Horizontal optical center of Lens Warp.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_lens_warp_center_x_cb)
-    _FBP_OBJECT_RNA.fbp_lens_warp_center_y = FloatProperty(name="Center Y", description="Vertical optical center of Lens Warp.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_lens_warp_center_y_cb)
-    _FBP_OBJECT_RNA.fbp_lens_warp_distortion = FloatProperty(name="Distortion", description="Barrel or pincushion radial distortion. Positive and negative values bend in opposite directions.", default=0.0, min=-4.0, max=4.0, update=update_lens_warp_distortion_cb)
-    _FBP_OBJECT_RNA.fbp_lens_warp_zoom = FloatProperty(name="Zoom", description="Compensating zoom applied after radial Lens Warp.", default=1.0, min=0.01, soft_max=2.0, max=8.0, update=update_lens_warp_zoom_cb)
-    _FBP_OBJECT_RNA.fbp_lens_warp_factor = FloatProperty(name="Factor", description="Blend between original and lens-warped UV coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_lens_warp_factor_cb)
+    _FBP_OBJECT_RNA.fbp_lens_warp_center_x = FloatProperty(name="Center X", description="Horizontal optical center of Lens Warp.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('LENS_WARP'))
+    _FBP_OBJECT_RNA.fbp_lens_warp_center_y = FloatProperty(name="Center Y", description="Vertical optical center of Lens Warp.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('LENS_WARP'))
+    _FBP_OBJECT_RNA.fbp_lens_warp_distortion = FloatProperty(name="Distortion", description="Barrel or pincushion radial distortion. Positive and negative values bend in opposite directions.", default=0.0, min=-4.0, max=4.0, update=_effect_setting('LENS_WARP'))
+    _FBP_OBJECT_RNA.fbp_lens_warp_zoom = FloatProperty(name="Zoom", description="Compensating zoom applied after radial Lens Warp.", default=1.0, min=0.01, soft_max=2.0, max=8.0, update=_effect_setting('LENS_WARP'))
+    _FBP_OBJECT_RNA.fbp_lens_warp_factor = FloatProperty(name="Factor", description="Blend between original and lens-warped UV coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('LENS_WARP'))
 
-    _FBP_OBJECT_RNA.fbp_wave_warp_amplitude = FloatProperty(name="Amplitude", description="Maximum normalized displacement produced by Wave Warp.", default=0.025, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, update=update_wave_warp_amplitude_cb)
-    _FBP_OBJECT_RNA.fbp_wave_warp_frequency = FloatProperty(name="Frequency", description="Number of Wave Warp oscillations across the image.", default=6.0, min=0.01, soft_max=32.0, max=256.0, update=update_wave_warp_frequency_cb)
-    _FBP_OBJECT_RNA.fbp_wave_warp_phase = FloatProperty(name="Starting Phase", description="Starting phase of Wave Warp.", default=0.0, soft_min=-6.283185307, soft_max=6.283185307, min=-1000.0, max=1000.0, subtype='ANGLE', update=update_wave_warp_phase_cb)
-    _FBP_OBJECT_RNA.fbp_wave_warp_angle = FloatProperty(name="Angle", description="Direction of the Wave Warp bands.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_wave_warp_angle_cb)
-    _FBP_OBJECT_RNA.fbp_wave_warp_factor = FloatProperty(name="Factor", description="Blend between original and Wave distortion.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_wave_warp_factor_cb)
-    _FBP_OBJECT_RNA.fbp_wave_warp_speed = FloatProperty(name="Speed", description="Multiplier applied to automatic Wave Evolution. Zero freezes the animation.", default=1.0, min=-20.0, max=20.0, update=update_wave_warp_speed_cb)
+    _FBP_OBJECT_RNA.fbp_wave_warp_amplitude = FloatProperty(name="Amplitude", description="Maximum normalized displacement produced by Wave Warp.", default=0.025, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, update=_effect_setting('WAVE_WARP'))
+    _FBP_OBJECT_RNA.fbp_wave_warp_frequency = FloatProperty(name="Frequency", description="Number of Wave Warp oscillations across the image.", default=6.0, min=0.01, soft_max=32.0, max=256.0, update=_effect_setting('WAVE_WARP'))
+    _FBP_OBJECT_RNA.fbp_wave_warp_phase = FloatProperty(name="Starting Phase", description="Starting phase of Wave Warp.", default=0.0, soft_min=-6.283185307, soft_max=6.283185307, min=-1000.0, max=1000.0, subtype='ANGLE', update=_effect_setting('WAVE_WARP'))
+    _FBP_OBJECT_RNA.fbp_wave_warp_angle = FloatProperty(name="Angle", description="Direction of the Wave Warp bands.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=_effect_setting('WAVE_WARP'))
+    _FBP_OBJECT_RNA.fbp_wave_warp_factor = FloatProperty(name="Factor", description="Blend between original and Wave distortion.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('WAVE_WARP'))
+    _FBP_OBJECT_RNA.fbp_wave_warp_speed = FloatProperty(name="Speed", description="Multiplier applied to automatic Wave Evolution. Zero freezes the animation.", default=1.0, min=-20.0, max=20.0, update=_effect_setting('WAVE_WARP'))
 
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_center_x = FloatProperty(name="Center X", description="Horizontal center of Ripple Distortion.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_ripple_distortion_center_x_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_center_y = FloatProperty(name="Center Y", description="Vertical center of Ripple Distortion.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_ripple_distortion_center_y_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_amplitude = FloatProperty(name="Amplitude", description="Maximum radial UV displacement produced by Ripple Distortion.", default=0.02, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, update=update_ripple_distortion_amplitude_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_frequency = FloatProperty(name="Frequency", description="Number of radial ripple oscillations per normalized image unit.", default=12.0, min=0.01, soft_max=64.0, max=512.0, update=update_ripple_distortion_frequency_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_phase = FloatProperty(name="Starting Phase", description="Starting phase of Ripple Distortion.", default=0.0, soft_min=-6.283185307, soft_max=6.283185307, min=-1000.0, max=1000.0, subtype='ANGLE', update=update_ripple_distortion_phase_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_radius = FloatProperty(name="Radius", description="Normalized maximum radius reached by Ripple Distortion.", default=0.75, min=0.001, soft_max=1.5, max=4.0, update=update_ripple_distortion_radius_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_falloff = FloatProperty(name="Falloff", description="How rapidly Ripple Distortion fades near its outer radius.", default=1.0, min=0.05, soft_max=4.0, max=8.0, update=update_ripple_distortion_falloff_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_factor = FloatProperty(name="Factor", description="Blend between original and circular Wave coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_ripple_distortion_factor_cb)
-    _FBP_OBJECT_RNA.fbp_ripple_distortion_speed = FloatProperty(name="Speed", description="Multiplier applied to automatic circular Wave Evolution. Zero freezes the animation.", default=1.0, min=-20.0, max=20.0, update=update_ripple_distortion_speed_cb)
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_center_x = FloatProperty(name="Center X", description="Horizontal center of Ripple Distortion.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_center_y = FloatProperty(name="Center Y", description="Vertical center of Ripple Distortion.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_amplitude = FloatProperty(name="Amplitude", description="Maximum radial UV displacement produced by Ripple Distortion.", default=0.02, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_frequency = FloatProperty(name="Frequency", description="Number of radial ripple oscillations per normalized image unit.", default=12.0, min=0.01, soft_max=64.0, max=512.0, update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_phase = FloatProperty(name="Starting Phase", description="Starting phase of Ripple Distortion.", default=0.0, soft_min=-6.283185307, soft_max=6.283185307, min=-1000.0, max=1000.0, subtype='ANGLE', update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_radius = FloatProperty(name="Radius", description="Normalized maximum radius reached by Ripple Distortion.", default=0.75, min=0.001, soft_max=1.5, max=4.0, update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_falloff = FloatProperty(name="Falloff", description="How rapidly Ripple Distortion fades near its outer radius.", default=1.0, min=0.05, soft_max=4.0, max=8.0, update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_factor = FloatProperty(name="Factor", description="Blend between original and circular Wave coordinates.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RIPPLE_DISTORTION'))
+    _FBP_OBJECT_RNA.fbp_ripple_distortion_speed = FloatProperty(name="Speed", description="Multiplier applied to automatic circular Wave Evolution. Zero freezes the animation.", default=1.0, min=-20.0, max=20.0, update=_effect_setting('RIPPLE_DISTORTION'))
 
-    _FBP_OBJECT_RNA.fbp_kaleidoscope_center_x = FloatProperty(name="Center X", description="Horizontal center of the Kaleidoscope.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_kaleidoscope_center_x_cb)
-    _FBP_OBJECT_RNA.fbp_kaleidoscope_center_y = FloatProperty(name="Center Y", description="Vertical center of the Kaleidoscope.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_kaleidoscope_center_y_cb)
-    _FBP_OBJECT_RNA.fbp_kaleidoscope_segments = IntProperty(name="Segments", description="Number of mirrored radial Kaleidoscope segments.", default=6, min=1, soft_max=24, max=64, update=update_kaleidoscope_segments_cb)
-    _FBP_OBJECT_RNA.fbp_kaleidoscope_rotation = FloatProperty(name="Rotation", description="Rotate the Kaleidoscope segment pattern.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_kaleidoscope_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_kaleidoscope_factor = FloatProperty(name="Factor", description="Blend between original and Kaleidoscope mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_kaleidoscope_factor_cb)
+    _FBP_OBJECT_RNA.fbp_kaleidoscope_center_x = FloatProperty(name="Center X", description="Horizontal center of the Kaleidoscope.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('KALEIDOSCOPE'))
+    _FBP_OBJECT_RNA.fbp_kaleidoscope_center_y = FloatProperty(name="Center Y", description="Vertical center of the Kaleidoscope.", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('KALEIDOSCOPE'))
+    _FBP_OBJECT_RNA.fbp_kaleidoscope_segments = IntProperty(name="Segments", description="Number of mirrored radial Kaleidoscope segments.", default=6, min=1, soft_max=24, max=64, update=_effect_setting('KALEIDOSCOPE'))
+    _FBP_OBJECT_RNA.fbp_kaleidoscope_rotation = FloatProperty(name="Rotation", description="Rotate the Kaleidoscope segment pattern.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=_effect_setting('KALEIDOSCOPE'))
+    _FBP_OBJECT_RNA.fbp_kaleidoscope_factor = FloatProperty(name="Factor", description="Blend between original and Kaleidoscope mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('KALEIDOSCOPE'))
 
-    _FBP_OBJECT_RNA.fbp_hex_pixelate_cells_x = IntProperty(name="Cells X", description="Horizontal resolution of the staggered Hex Pixelate grid.", default=48, min=1, soft_max=512, max=8192, update=update_hex_pixelate_cells_x_cb)
-    _FBP_OBJECT_RNA.fbp_hex_pixelate_cells_y = IntProperty(name="Cells Y", description="Vertical resolution of the staggered Hex Pixelate grid.", default=32, min=1, soft_max=512, max=8192, update=update_hex_pixelate_cells_y_cb)
-    _FBP_OBJECT_RNA.fbp_hex_pixelate_rotation = FloatProperty(name="Rotation", description="Rotate the staggered Hex Pixelate grid around the image center.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_hex_pixelate_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_hex_pixelate_factor = FloatProperty(name="Factor", description="Blend between original and Hex Pixelate mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_hex_pixelate_factor_cb)
+    _FBP_OBJECT_RNA.fbp_hex_pixelate_cells_x = IntProperty(name="Cells X", description="Horizontal resolution of the staggered Hex Pixelate grid.", default=48, min=1, soft_max=512, max=8192, update=_effect_setting('HEX_PIXELATE'))
+    _FBP_OBJECT_RNA.fbp_hex_pixelate_cells_y = IntProperty(name="Cells Y", description="Vertical resolution of the staggered Hex Pixelate grid.", default=32, min=1, soft_max=512, max=8192, update=_effect_setting('HEX_PIXELATE'))
+    _FBP_OBJECT_RNA.fbp_hex_pixelate_rotation = FloatProperty(name="Rotation", description="Rotate the staggered Hex Pixelate grid around the image center.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=_effect_setting('HEX_PIXELATE'))
+    _FBP_OBJECT_RNA.fbp_hex_pixelate_factor = FloatProperty(name="Factor", description="Blend between original and Hex Pixelate mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('HEX_PIXELATE'))
 
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_cells_x = IntProperty(name="Cells X", description="Horizontal number of Mosaic Jitter blocks.", default=32, min=1, soft_max=512, max=8192, update=update_mosaic_jitter_cells_x_cb)
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_cells_y = IntProperty(name="Cells Y", description="Vertical number of Mosaic Jitter blocks.", default=18, min=1, soft_max=512, max=8192, update=update_mosaic_jitter_cells_y_cb)
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_rotation = FloatProperty(name="Rotation", description="Rotate the Mosaic Jitter grid around the image center without rotating the plane.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_mosaic_jitter_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_amount = FloatProperty(name="Jitter", description="Random sample displacement measured in cell widths. Values above one can overlap neighboring blocks.", default=0.6, min=0.0, soft_max=2.0, max=4.0, update=update_mosaic_jitter_amount_cb)
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_offset_x = FloatProperty(name="Offset X", description="Move the Mosaic Jitter grid horizontally without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, update=update_mosaic_jitter_offset_x_cb)
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_offset_y = FloatProperty(name="Offset Y", description="Move the Mosaic Jitter grid vertically without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, update=update_mosaic_jitter_offset_y_cb)
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_seed = IntProperty(name="Seed", description="Random pattern seed used by Mosaic Jitter.", default=0, min=-100000, max=100000, update=update_mosaic_jitter_seed_cb)
-    _FBP_OBJECT_RNA.fbp_mosaic_jitter_factor = FloatProperty(name="Factor", description="Blend between original and Mosaic Jitter mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_mosaic_jitter_factor_cb)
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_cells_x = IntProperty(name="Cells X", description="Horizontal number of Mosaic Jitter blocks.", default=32, min=1, soft_max=512, max=8192, update=_effect_setting('MOSAIC_JITTER'))
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_cells_y = IntProperty(name="Cells Y", description="Vertical number of Mosaic Jitter blocks.", default=18, min=1, soft_max=512, max=8192, update=_effect_setting('MOSAIC_JITTER'))
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_rotation = FloatProperty(name="Rotation", description="Rotate the Mosaic Jitter grid around the image center without rotating the plane.", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=_effect_setting('MOSAIC_JITTER'))
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_amount = FloatProperty(name="Jitter", description="Random sample displacement measured in cell widths. Values above one can overlap neighboring blocks.", default=0.6, min=0.0, soft_max=2.0, max=4.0, update=_effect_setting('MOSAIC_JITTER'))
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_offset_x = FloatProperty(name="Offset X", description="Move the Mosaic Jitter grid horizontally without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, update=_effect_setting('MOSAIC_JITTER'))
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_offset_y = FloatProperty(name="Offset Y", description="Move the Mosaic Jitter grid vertically without moving the plane.", default=0.0, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, update=_effect_setting('MOSAIC_JITTER'))
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_seed = IntProperty(name="Seed", description="Random pattern seed used by Mosaic Jitter.", default=0, min=-100000, max=100000, update=_effect_setting('MOSAIC_JITTER'))
+    _FBP_OBJECT_RNA.fbp_mosaic_jitter_factor = FloatProperty(name="Factor", description="Blend between original and Mosaic Jitter mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('MOSAIC_JITTER'))
     _FBP_OBJECT_RNA.fbp_slice_shift_angle = FloatProperty(
         description="Angle of the Figma-inspired Slice Shift bands.",
-        name="Angle", default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_slice_shift_angle_cb)
+        name="Angle", default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=_effect_setting('SLICE_SHIFT'))
     _FBP_OBJECT_RNA.fbp_slice_shift_bands = FloatProperty(
         description="Number of angled bands used by Slice Shift. Higher values create thinner slices.",
-        name="Bands", default=18.0, min=1.0, soft_max=96.0, max=512.0, precision=0, update=update_slice_shift_bands_cb)
+        name="Bands", default=18.0, min=1.0, soft_max=96.0, max=512.0, precision=0, update=_effect_setting('SLICE_SHIFT'))
     _FBP_OBJECT_RNA.fbp_slice_shift_shift = FloatProperty(
         description="UV offset applied to each Slice Shift band along the band direction.",
-        name="Shift", default=0.08, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, precision=4, update=update_slice_shift_shift_cb)
+        name="Shift", default=0.08, soft_min=-0.5, soft_max=0.5, min=-2.0, max=2.0, precision=4, update=_effect_setting('SLICE_SHIFT'))
     _FBP_OBJECT_RNA.fbp_slice_shift_random = FloatProperty(
         description="Per-band random offset added to Slice Shift for a more handmade/glitch look.",
-        name="Random", default=0.0, min=0.0, soft_max=0.4, max=2.0, precision=4, update=update_slice_shift_random_cb)
+        name="Random", default=0.0, min=0.0, soft_max=0.4, max=2.0, precision=4, update=_effect_setting('SLICE_SHIFT'))
     _FBP_OBJECT_RNA.fbp_slice_shift_seed = FloatProperty(
         description="Seed that changes the per-band random Slice Shift offsets.",
-        name="Seed", default=0.0, soft_min=-100.0, soft_max=100.0, update=update_slice_shift_seed_cb)
+        name="Seed", default=0.0, soft_min=-100.0, soft_max=100.0, update=_effect_setting('SLICE_SHIFT'))
     _FBP_OBJECT_RNA.fbp_slice_shift_factor = FloatProperty(
         description="Blend between the original UVs and the Slice Shift distortion.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_slice_shift_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SLICE_SHIFT'))
     _FBP_OBJECT_RNA.fbp_depth_blur_mode = EnumProperty(
         name="Blur Mode",
         description="Use a fixed manual radius or derive the radius from camera-space distance to the focus plane",
@@ -6582,57 +5872,57 @@ def register_properties():
             ('MANUAL', "Manual", "Use the same blur radius for the complete plane", 'MOD_SMOOTH', 0),
             ('DEPTH', "Depth", "Increase blur as the plane moves away from the focus distance", 'CAMERA_DATA', 1),
         ),
-        default='MANUAL', update=update_depth_blur_mode_cb)
+        default='MANUAL', update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_manual_radius = FloatProperty(
         name="Manual Radius", description="Blur radius in source-image pixels used in Manual mode",
         default=4.0, min=0.0, soft_max=32.0, max=256.0, precision=2,
-        update=update_depth_blur_manual_radius_cb)
+        update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_max_radius = FloatProperty(
         name="Maximum Radius", description="Maximum source-image blur radius reached in Depth mode",
         default=16.0, min=0.0, soft_max=64.0, max=256.0, precision=2,
-        update=update_depth_blur_max_radius_cb)
+        update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_use_camera_focus = BoolProperty(
         name="Use Camera Focus", description="Read Focus Distance or the Focus Object from the active scene camera",
-        default=True, update=update_depth_blur_use_camera_focus_cb)
+        default=True, update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_focus_distance = FloatProperty(
         name="Focus Distance", description="Camera-space distance that remains in focus when Camera Focus is disabled",
         default=10.0, min=0.0, soft_max=100.0, max=1000000.0, subtype='DISTANCE', precision=3,
-        update=update_depth_blur_focus_distance_cb)
+        update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_focus_range = FloatProperty(
         name="Focus Range", description="Distance around the focus plane that remains sharp",
         default=0.25, min=0.0, soft_max=10.0, max=1000000.0, subtype='DISTANCE', precision=3,
-        update=update_depth_blur_focus_range_cb)
+        update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_falloff = FloatProperty(
         name="Falloff", description="Distance required to reach the maximum blur outside the focus range",
         default=5.0, min=0.001, soft_max=50.0, max=1000000.0, subtype='DISTANCE', precision=3,
-        update=update_depth_blur_falloff_cb)
+        update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_near_strength = FloatProperty(
         name="Near Strength", description="Multiplier applied to layers closer than the focus plane",
         default=1.0, min=0.0, max=2.0, soft_max=1.0, subtype='FACTOR',
-        update=update_depth_blur_near_strength_cb)
+        update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_depth_blur_far_strength = FloatProperty(
         name="Far Strength", description="Multiplier applied to layers farther than the focus plane",
         default=1.0, min=0.0, max=2.0, soft_max=1.0, subtype='FACTOR',
-        update=update_depth_blur_far_strength_cb)
+        update=_effect_setting('DEPTH_BLUR'))
     _FBP_OBJECT_RNA.fbp_gaussian_blur_radius_x = FloatProperty(
         name="Radius X",
         description="Horizontal Gaussian blur radius measured in source-image pixels. Zero disables horizontal spreading",
         default=4.0, min=0.0, soft_max=64.0, max=256.0, precision=2,
-        update=update_gaussian_blur_radius_x_cb)
+        update=_effect_setting('GAUSSIAN_BLUR'))
     _FBP_OBJECT_RNA.fbp_gaussian_blur_radius_y = FloatProperty(
         name="Radius Y",
         description="Vertical Gaussian blur radius measured in source-image pixels. Zero disables vertical spreading",
         default=4.0, min=0.0, soft_max=64.0, max=256.0, precision=2,
-        update=update_gaussian_blur_radius_y_cb)
+        update=_effect_setting('GAUSSIAN_BLUR'))
     _FBP_OBJECT_RNA.fbp_gaussian_blur_samples = IntProperty(
         description="Number of balanced texture samples used by Gaussian Blur. Higher values hide visible copies and create a smoother result at greater shader cost.",
         name="Samples", default=17, min=3, max=25, soft_min=5, soft_max=25, step=2,
-        update=update_gaussian_blur_samples_cb)
+        update=_effect_setting('GAUSSIAN_BLUR'))
     _FBP_OBJECT_RNA.fbp_gaussian_blur_factor = FloatProperty(
         name="Factor",
         description="Blend between the original layer and the alpha-safe Gaussian blur result",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_gaussian_blur_factor_cb)
+        update=_effect_setting('GAUSSIAN_BLUR'))
     _FBP_OBJECT_RNA.fbp_directional_blur_control_x = FloatProperty(
         name="Control X",
         description="Normalized horizontal viewport position of the Directional Blur controller; moving the helper updates this value without changing the sampled blur center",
@@ -6645,34 +5935,34 @@ def register_properties():
         name="Angle",
         description="Direction of the blur streak. Zero points horizontally along the image X axis",
         default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE',
-        update=update_directional_blur_angle_cb)
+        update=_effect_setting('DIRECTIONAL_BLUR'))
     _FBP_OBJECT_RNA.fbp_directional_blur_distance = FloatProperty(
         name="Distance",
         description="Total centered directional blur distance measured in source-image pixels",
         default=12.0, min=0.0, soft_max=128.0, max=512.0, precision=2,
-        update=update_directional_blur_distance_cb)
+        update=_effect_setting('DIRECTIONAL_BLUR'))
     _FBP_OBJECT_RNA.fbp_directional_blur_samples = IntProperty(
         description="Number of centered texture copies used by Directional Blur. Higher values smooth long motion streaks while increasing shader cost.",
         name="Samples", default=17, min=3, max=25, soft_min=5, soft_max=25, step=2,
-        update=update_directional_blur_samples_cb)
+        update=_effect_setting('DIRECTIONAL_BLUR'))
     _FBP_OBJECT_RNA.fbp_directional_blur_factor = FloatProperty(
         name="Factor",
         description="Blend between the original layer and the alpha-safe directional blur result",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_directional_blur_factor_cb)
+        update=_effect_setting('DIRECTIONAL_BLUR'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_source = PointerProperty(
         name="Source Layer", description="Frame By Plane image or sequence whose alpha channel masks this layer. The source is sampled in normalized UV space",
-        type=bpy.types.Object, poll=_fbp_mask_source_poll, update=update_alpha_matte_source_cb)
+        type=bpy.types.Object, poll=_fbp_mask_source_poll, update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_factor = FloatProperty(
         name="Factor", description="Blend between the original layer alpha and the Alpha Matte result",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_alpha_matte_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_invert = BoolProperty(
         name="Invert", description="Invert the source alpha before applying the matte",
-        default=False, update=update_alpha_matte_invert_cb)
+        default=False, update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_use_source_transform = BoolProperty(
         name="Follow Source Transform",
         description="Project the matte through the source plane so its position, rotation and scale affect the target. Disable to sample both layers in normalized UV space",
-        default=False, update=update_alpha_matte_use_source_transform_cb)
+        default=False, update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_source_display = EnumProperty(
         name="Source Display",
         description="Choose whether the source layer remains a normal rendered layer, works as a viewport-only guide, or stays hidden while still driving the matte",
@@ -6681,22 +5971,22 @@ def register_properties():
             ('GUIDE', "Guide", "Show the source in the viewport but hide it from final renders"),
             ('HIDDEN', "Hidden", "Hide the source in both viewport and render while keeping the matte active"),
         ],
-        default='GUIDE', update=update_alpha_matte_source_display_cb)
+        default='GUIDE', update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_uv_offset_x = FloatProperty(
         name="Offset X", description="Move the sampled matte horizontally in UV space",
-        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_alpha_matte_uv_offset_x_cb)
+        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_uv_offset_y = FloatProperty(
         name="Offset Y", description="Move the sampled matte vertically in UV space",
-        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_alpha_matte_uv_offset_y_cb)
+        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_uv_scale_x = FloatProperty(
         name="Scale X", description="Scale the matte horizontally around its center; values above one make the matte larger",
-        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=update_alpha_matte_uv_scale_x_cb)
+        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_uv_scale_y = FloatProperty(
         name="Scale Y", description="Scale the matte vertically around its center; values above one make the matte larger",
-        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=update_alpha_matte_uv_scale_y_cb)
+        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_alpha_matte_uv_rotation = FloatProperty(
         name="Rotation", description="Rotate the matte around the center of its sampled UV space",
-        default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_alpha_matte_uv_rotation_cb)
+        default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=_effect_setting('ALPHA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_source_type = EnumProperty(
         name="Source",
         description="Use another Frame By Plane sequence or import an external single image/video",
@@ -6704,32 +5994,32 @@ def register_properties():
             ('FBP_SEQUENCE', "Frame by Plane Sequence", "Use another Frame By Plane image or sequence layer"),
             ('FILE', "Import Single Image/Video", "Load an external image or movie directly as the Luma Matte"),
         ),
-        default='FBP_SEQUENCE', update=update_luma_matte_source_type_cb)
+        default='FBP_SEQUENCE', update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_source = PointerProperty(
         name="Source Layer", description="Frame By Plane image or sequence whose luminance masks this layer. The source is sampled in normalized UV space",
-        type=bpy.types.Object, poll=_fbp_mask_source_poll, update=update_luma_matte_source_cb)
+        type=bpy.types.Object, poll=_fbp_mask_source_poll, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_path = StringProperty(
         name="Image / Video", description="External single image or movie used as the Luma Matte",
-        subtype='FILE_PATH', default="", update=update_luma_matte_path_cb)
+        subtype='FILE_PATH', default="", update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_image = PointerProperty(
         name="Loaded Matte Media", description="Image datablock loaded from the external Luma Matte path",
-        type=bpy.types.Image, update=update_luma_matte_image_cb)
+        type=bpy.types.Image, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_factor = FloatProperty(
         name="Factor", description="Blend between the original layer alpha and the Luma Matte result",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_luma_matte_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_invert = BoolProperty(
         name="Invert", description="Invert the luminance matte before applying it",
-        default=False, update=update_luma_matte_invert_cb)
+        default=False, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_threshold = FloatProperty(
         name="Threshold", description="Luminance value used as the center of the matte transition",
-        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_luma_matte_threshold_cb)
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_softness = FloatProperty(
         name="Softness", description="Width of the smooth luminance transition around Threshold",
-        default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=update_luma_matte_softness_cb)
+        default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_use_source_transform = BoolProperty(
         name="Follow Source Transform",
         description="Project the matte through the source plane so its position, rotation and scale affect the target. Disable to sample both layers in normalized UV space",
-        default=False, update=update_luma_matte_use_source_transform_cb)
+        default=False, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_source_display = EnumProperty(
         name="Source Display",
         description="Choose whether the source layer remains a normal rendered layer, works as a viewport-only guide, or stays hidden while still driving the matte",
@@ -6738,64 +6028,64 @@ def register_properties():
             ('GUIDE', "Guide", "Show the source in the viewport but hide it from final renders"),
             ('HIDDEN', "Hidden", "Hide the source in both viewport and render while keeping the matte active"),
         ],
-        default='GUIDE', update=update_luma_matte_source_display_cb)
+        default='GUIDE', update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_uv_offset_x = FloatProperty(
         name="Offset X", description="Move the sampled matte horizontally in UV space",
-        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_luma_matte_uv_offset_x_cb)
+        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_uv_offset_y = FloatProperty(
         name="Offset Y", description="Move the sampled matte vertically in UV space",
-        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_luma_matte_uv_offset_y_cb)
+        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_uv_scale_x = FloatProperty(
         name="Scale X", description="Scale the matte horizontally around its center; values above one make the matte larger",
-        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=update_luma_matte_uv_scale_x_cb)
+        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_uv_scale_y = FloatProperty(
         name="Scale Y", description="Scale the matte vertically around its center; values above one make the matte larger",
-        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=update_luma_matte_uv_scale_y_cb)
+        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_luma_matte_uv_rotation = FloatProperty(
         name="Rotation", description="Rotate the matte around the center of its sampled UV space",
-        default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_luma_matte_uv_rotation_cb)
+        default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=_effect_setting('LUMA_MATTE'))
     _FBP_OBJECT_RNA.fbp_color_mask_color = FloatVectorProperty(
         name="Target Color", description="Source color selected by Color Key",
         subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 1.0, 0.0, 1.0),
-        update=update_color_mask_color_cb)
+        update=_effect_setting('COLOR_MASK'))
     _FBP_OBJECT_RNA.fbp_color_mask_tolerance = FloatProperty(
         name="Tolerance", description="Maximum RGB distance treated as a color match",
         default=0.12, min=0.0, max=1.732, soft_max=1.0, subtype='FACTOR',
-        update=update_color_mask_tolerance_cb)
+        update=_effect_setting('COLOR_MASK'))
     _FBP_OBJECT_RNA.fbp_color_mask_softness = FloatProperty(
         name="Softness", description="Smooth transition outside the Color Key tolerance",
         default=0.08, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_color_mask_softness_cb)
+        update=_effect_setting('COLOR_MASK'))
     _FBP_OBJECT_RNA.fbp_color_mask_factor = FloatProperty(
         name="Factor", description="Blend between the unmasked result and Color Key",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_color_mask_factor_cb)
+        update=_effect_setting('COLOR_MASK'))
     _FBP_OBJECT_RNA.fbp_color_mask_invert = BoolProperty(
         name="Invert", description="Use colors outside the selected range. Enable it to key the color out, like a green or blue screen",
-        default=False, update=update_color_mask_invert_cb)
+        default=False, update=_effect_setting('COLOR_MASK'))
     _FBP_OBJECT_RNA.fbp_color_mask_despill = FloatProperty(
         name="Despill", description="Grey the leftover key color along soft edges. Applies when the key targets the whole Layer",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_color_mask_despill_cb)
+        update=_effect_setting('COLOR_MASK'))
     _FBP_OBJECT_RNA.fbp_luminance_mask_minimum = FloatProperty(
         name="Minimum", description="Lowest source luminance included by Luminance Mask. Minimum and Maximum are automatically ordered if their values cross",
         default=0.2, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_luminance_mask_minimum_cb)
+        update=_effect_setting('LUMINANCE_MASK'))
     _FBP_OBJECT_RNA.fbp_luminance_mask_maximum = FloatProperty(
         name="Maximum", description="Highest source luminance included by Luminance Mask. Minimum and Maximum are automatically ordered if their values cross",
         default=0.8, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_luminance_mask_maximum_cb)
+        update=_effect_setting('LUMINANCE_MASK'))
     _FBP_OBJECT_RNA.fbp_luminance_mask_softness = FloatProperty(
         name="Softness", description="Feather inward from both edges of the selected luminance interval; 0 is hard and 1 uses the widest valid transition",
         default=0.1, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_luminance_mask_softness_cb)
+        update=_effect_setting('LUMINANCE_MASK'))
     _FBP_OBJECT_RNA.fbp_luminance_mask_factor = FloatProperty(
         name="Factor", description="Blend between the unmasked result and Luminance Mask",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_luminance_mask_factor_cb)
+        update=_effect_setting('LUMINANCE_MASK'))
     _FBP_OBJECT_RNA.fbp_luminance_mask_invert = BoolProperty(
         name="Invert", description="Use luminance values outside the selected interval",
-        default=False, update=update_luminance_mask_invert_cb)
+        default=False, update=_effect_setting('LUMINANCE_MASK'))
     _FBP_OBJECT_RNA.fbp_channel_mask_channel = EnumProperty(
         name="Channel", description="Source channel evaluated by Channel Mask",
         items=[
@@ -6804,233 +6094,233 @@ def register_properties():
             ('BLUE', "Blue", "Use the source blue channel"),
             ('ALPHA', "Alpha", "Use the source alpha channel without multiplying it twice"),
             ('LUMINANCE', "Luminance", "Use perceptual source luminance"),
-        ], default='LUMINANCE', update=update_channel_mask_channel_cb)
+        ], default='LUMINANCE', update=_effect_setting('CHANNEL_MASK'))
     _FBP_OBJECT_RNA.fbp_channel_mask_minimum = FloatProperty(
         name="Minimum", description="Lowest selected value in the chosen source channel; Minimum and Maximum are ordered automatically",
         default=0.2, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_channel_mask_minimum_cb)
+        update=_effect_setting('CHANNEL_MASK'))
     _FBP_OBJECT_RNA.fbp_channel_mask_maximum = FloatProperty(
         name="Maximum", description="Highest selected value in the chosen source channel; Minimum and Maximum are ordered automatically",
         default=0.8, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_channel_mask_maximum_cb)
+        update=_effect_setting('CHANNEL_MASK'))
     _FBP_OBJECT_RNA.fbp_channel_mask_softness = FloatProperty(
         name="Softness", description="Feather inward from both edges of the selected channel interval; 0 is hard and 1 uses the widest valid transition",
         default=0.1, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_channel_mask_softness_cb)
+        update=_effect_setting('CHANNEL_MASK'))
     _FBP_OBJECT_RNA.fbp_channel_mask_factor = FloatProperty(
         name="Factor", description="Blend between the unmasked result and Channel Mask",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_channel_mask_factor_cb)
+        update=_effect_setting('CHANNEL_MASK'))
     _FBP_OBJECT_RNA.fbp_channel_mask_invert = BoolProperty(
         name="Invert", description="Use source-channel values outside the selected interval",
-        default=False, update=update_channel_mask_invert_cb)
+        default=False, update=_effect_setting('CHANNEL_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_type = EnumProperty(
         name="Type", description="Gradient shape used by the mask",
         items=[
             ('LINEAR', "Linear", "Directional linear gradient"),
             ('RADIAL', "Radial", "Circular gradient around the mask center"),
-        ], default='LINEAR', update=update_gradient_mask_type_cb)
+        ], default='LINEAR', update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_center_x = FloatProperty(
         name="Center X", description="Horizontal center of the Gradient Mask in UV space",
         default=0.5, soft_min=-1.0, soft_max=2.0, precision=3,
-        update=update_gradient_mask_center_x_cb)
+        update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_center_y = FloatProperty(
         name="Center Y", description="Vertical center of the Gradient Mask in UV space",
         default=0.5, soft_min=-1.0, soft_max=2.0, precision=3,
-        update=update_gradient_mask_center_y_cb)
+        update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_scale = FloatProperty(
         name="Scale", description="Tighten or widen the Gradient Mask around its center; higher values make the transition more compact",
         default=1.0, min=0.001, soft_max=10.0, max=1000.0, precision=3,
-        update=update_gradient_mask_scale_cb)
+        update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_angle = FloatProperty(
         name="Angle", description="Rotate a Linear Gradient Mask around its center",
         default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE',
-        update=update_gradient_mask_angle_cb)
+        update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_position = FloatProperty(
         name="Position", description="Position of the gradient transition",
         default=0.5, soft_min=-1.0, soft_max=2.0, precision=3,
-        update=update_gradient_mask_position_cb)
+        update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_feather = FloatProperty(
         name="Feather", description="Width of the Gradient Mask transition",
         default=0.2, min=0.0, soft_max=1.0, max=2.0, subtype='FACTOR',
-        update=update_gradient_mask_feather_cb)
+        update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_factor = FloatProperty(
         name="Factor", description="Blend between the unmasked result and Gradient Mask",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_gradient_mask_factor_cb)
+        update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_gradient_mask_invert = BoolProperty(
         name="Invert", description="Invert the Gradient Mask",
-        default=False, update=update_gradient_mask_invert_cb)
+        default=False, update=_effect_setting('GRADIENT_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_scale = FloatProperty(
         name="Scale", description="Spatial frequency of the Noise Mask",
         default=11.34, min=0.001, soft_max=100.0, max=1000.0, precision=3,
-        update=update_noise_mask_scale_cb)
+        update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_detail = FloatProperty(
         name="Detail", description="Fractal detail of the Noise Mask",
         default=1.0, min=0.0, max=15.0, precision=2,
-        update=update_noise_mask_detail_cb)
+        update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_roughness = FloatProperty(
         name="Roughness", description="Contribution of fine Noise Mask octaves",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_noise_mask_roughness_cb)
+        update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_threshold = FloatProperty(
         name="Threshold", description="Noise value used as the mask cutoff",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_noise_mask_threshold_cb)
+        update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_softness = FloatProperty(
         name="Softness", description="Width of the smooth transition around the Noise Mask threshold",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_noise_mask_softness_cb)
+        update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_seed = FloatProperty(
         name="Seed", description="Fourth-dimensional coordinate used to animate the Noise Mask",
         default=0.0, soft_min=-1000.0, soft_max=1000.0, precision=3,
-        update=update_noise_mask_seed_cb)
+        update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_factor = FloatProperty(
         name="Factor", description="Blend between the unmasked result and Noise Mask",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_noise_mask_factor_cb)
+        update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_noise_mask_invert = BoolProperty(
         name="Invert", description="Invert the Noise Mask",
-        default=False, update=update_noise_mask_invert_cb)
+        default=False, update=_effect_setting('NOISE_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_scale = FloatProperty(
         name="Scale", description="Spatial frequency of the Voronoi cells",
         default=5.0, min=0.001, soft_max=100.0, max=1000.0, precision=3,
-        update=update_voronoi_mask_scale_cb)
+        update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_angle = FloatProperty(
         name="Angle", description="Rotate the Voronoi texture in UV space",
         default=0.7853981633974483, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE',
-        update=update_voronoi_mask_angle_cb)
+        update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_randomness = FloatProperty(
         name="Randomness", description="Random displacement of Voronoi feature points",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_voronoi_mask_randomness_cb)
+        update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_threshold = FloatProperty(
         name="Threshold", description="Distance cutoff used to form the cellular mask",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_voronoi_mask_threshold_cb)
+        update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_softness = FloatProperty(
         name="Softness", description="Width of the smooth transition around the Voronoi threshold",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_voronoi_mask_softness_cb)
+        update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_seed = FloatProperty(
         name="Seed", description="Fourth-dimensional coordinate used to vary or animate the Voronoi pattern",
         default=0.0, soft_min=-1000.0, soft_max=1000.0, precision=3,
-        update=update_voronoi_mask_seed_cb)
+        update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_factor = FloatProperty(
         name="Factor", description="Blend between the unmasked result and Voronoi Mask",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_voronoi_mask_factor_cb)
+        update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_voronoi_mask_invert = BoolProperty(
         name="Invert", description="Invert the Voronoi Mask",
-        default=False, update=update_voronoi_mask_invert_cb)
+        default=False, update=_effect_setting('VORONOI_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_scale = FloatProperty(
         name="Scale", description="Frequency of the Wave Mask stripes",
         default=2.0, min=0.001, soft_max=100.0, max=1000.0, precision=3,
-        update=update_wave_mask_scale_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_angle = FloatProperty(
         name="Angle", description="Rotate the Wave Mask direction in UV space",
         default=0.7853981633974483, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE',
-        update=update_wave_mask_angle_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_distortion = FloatProperty(
         name="Distortion", description="Warp the Wave Mask with procedural noise",
         default=10.0, min=0.0, soft_max=10.0, max=100.0, precision=3,
-        update=update_wave_mask_distortion_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_detail = FloatProperty(
         name="Detail", description="Fractal detail used by Wave distortion",
         default=5.0, min=0.0, max=15.0, precision=2,
-        update=update_wave_mask_detail_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_detail_scale = FloatProperty(
         name="Detail Scale", description="Scale of the distortion detail",
         default=1.75, min=0.0, soft_max=100.0, max=1000.0, precision=3,
-        update=update_wave_mask_detail_scale_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_detail_roughness = FloatProperty(
         name="Detail Roughness", description="Contribution of fine distortion octaves",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_wave_mask_detail_roughness_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_phase = FloatProperty(
         name="Phase", description="Translate or animate the Wave pattern",
         default=3.0, soft_min=-1000.0, soft_max=1000.0, precision=3,
-        update=update_wave_mask_phase_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_threshold = FloatProperty(
         name="Threshold", description="Wave value used as the mask cutoff",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_wave_mask_threshold_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_softness = FloatProperty(
         name="Softness", description="Width of the smooth transition around the Wave threshold",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_wave_mask_softness_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_factor = FloatProperty(
         name="Factor", description="Blend between the unmasked result and Wave Mask",
         default=1.0, min=0.0, max=1.0, subtype='FACTOR',
-        update=update_wave_mask_factor_cb)
+        update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_wave_mask_invert = BoolProperty(
         name="Invert", description="Invert the Wave Mask",
-        default=False, update=update_wave_mask_invert_cb)
+        default=False, update=_effect_setting('WAVE_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_source = PointerProperty(
         name="Source Layer", description="Layer directly below this one, used automatically as the clipping alpha source",
-        type=bpy.types.Object, poll=_fbp_mask_source_poll, update=update_clipping_mask_source_cb)
+        type=bpy.types.Object, poll=_fbp_mask_source_poll, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_factor = FloatProperty(
         name="Factor", description="Blend between the original layer alpha and the clipping result",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_clipping_mask_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_invert = BoolProperty(
         name="Invert", description="Invert the alpha of the layer below before clipping",
-        default=False, update=update_clipping_mask_invert_cb)
+        default=False, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_use_source_transform = BoolProperty(
         name="Use Source Transform",
         description="Project through the source plane so its position, rotation, scale and cropped bounds define the clipping result. Disable only for full-canvas layered imports",
-        default=True, update=update_clipping_mask_use_source_transform_cb)
+        default=True, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_use_camera_projection = BoolProperty(
         name="Camera Projection",
         description="Project the source alpha through the active camera so clipping remains aligned in perspective and orthographic camera views",
-        default=True, update=update_clipping_mask_use_camera_projection_cb)
+        default=True, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_uv_offset_x = FloatProperty(
         name="Offset X", description="Move the sampled clipping alpha horizontally in UV space",
-        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_clipping_mask_uv_offset_x_cb)
+        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_uv_offset_y = FloatProperty(
         name="Offset Y", description="Move the sampled clipping alpha vertically in UV space",
-        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_clipping_mask_uv_offset_y_cb)
+        default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_uv_scale_x = FloatProperty(
         name="Scale X", description="Scale the clipping alpha horizontally around its center",
-        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=update_clipping_mask_uv_scale_x_cb)
+        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_uv_scale_y = FloatProperty(
         name="Scale Y", description="Scale the clipping alpha vertically around its center",
-        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=update_clipping_mask_uv_scale_y_cb)
+        default=1.0, min=0.001, soft_max=4.0, max=1000.0, precision=3, update=_effect_setting('CLIPPING_MASK'))
     _FBP_OBJECT_RNA.fbp_clipping_mask_uv_rotation = FloatProperty(
         name="Rotation", description="Rotate the clipping alpha around the center of its sampled UV space",
-        default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_clipping_mask_uv_rotation_cb)
+        default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=_effect_setting('CLIPPING_MASK'))
 
     _FBP_OBJECT_RNA.fbp_imported_mask_path = StringProperty(
         name="Imported Mask", description="Full-canvas raster layer mask extracted from a PSD or another layered document",
-        subtype='FILE_PATH', default="", update=update_imported_mask_path_cb)
+        subtype='FILE_PATH', default="", update=_effect_setting('IMPORTED_MASK'))
     _FBP_OBJECT_RNA.fbp_imported_mask_factor = FloatProperty(
         name="Factor", description="Blend between the original alpha and imported layer mask",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_imported_mask_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('IMPORTED_MASK'))
     _FBP_OBJECT_RNA.fbp_imported_mask_invert = BoolProperty(
         name="Invert", description="Invert the imported layer mask",
-        default=False, update=update_imported_mask_invert_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_2_path = StringProperty(name="Grease Pencil Mask Slot 2", description="Internal raster source for Grease Pencil mask slot 2", subtype='FILE_PATH', default="", update=update_gp_mask_slot_2_path_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_2_factor = FloatProperty(name="Factor", description="Strength of Grease Pencil mask slot 2", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_gp_mask_slot_2_factor_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_2_invert = BoolProperty(name="Invert", description="Invert Grease Pencil mask slot 2", default=False, update=update_gp_mask_slot_2_invert_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_3_path = StringProperty(name="Grease Pencil Mask Slot 3", description="Internal raster source for Grease Pencil mask slot 3", subtype='FILE_PATH', default="", update=update_gp_mask_slot_3_path_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_3_factor = FloatProperty(name="Factor", description="Strength of Grease Pencil mask slot 3", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_gp_mask_slot_3_factor_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_3_invert = BoolProperty(name="Invert", description="Invert Grease Pencil mask slot 3", default=False, update=update_gp_mask_slot_3_invert_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_4_path = StringProperty(name="Grease Pencil Mask Slot 4", description="Internal raster source for Grease Pencil mask slot 4", subtype='FILE_PATH', default="", update=update_gp_mask_slot_4_path_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_4_factor = FloatProperty(name="Factor", description="Strength of Grease Pencil mask slot 4", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_gp_mask_slot_4_factor_cb)
-    _FBP_OBJECT_RNA.fbp_gp_mask_slot_4_invert = BoolProperty(name="Invert", description="Invert Grease Pencil mask slot 4", default=False, update=update_gp_mask_slot_4_invert_cb)
+        default=False, update=_effect_setting('IMPORTED_MASK'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_2_path = StringProperty(name="Grease Pencil Mask Slot 2", description="Internal raster source for Grease Pencil mask slot 2", subtype='FILE_PATH', default="", update=_effect_setting('GP_MASK_SLOT_2'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_2_factor = FloatProperty(name="Factor", description="Strength of Grease Pencil mask slot 2", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GP_MASK_SLOT_2'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_2_invert = BoolProperty(name="Invert", description="Invert Grease Pencil mask slot 2", default=False, update=_effect_setting('GP_MASK_SLOT_2'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_3_path = StringProperty(name="Grease Pencil Mask Slot 3", description="Internal raster source for Grease Pencil mask slot 3", subtype='FILE_PATH', default="", update=_effect_setting('GP_MASK_SLOT_3'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_3_factor = FloatProperty(name="Factor", description="Strength of Grease Pencil mask slot 3", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GP_MASK_SLOT_3'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_3_invert = BoolProperty(name="Invert", description="Invert Grease Pencil mask slot 3", default=False, update=_effect_setting('GP_MASK_SLOT_3'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_4_path = StringProperty(name="Grease Pencil Mask Slot 4", description="Internal raster source for Grease Pencil mask slot 4", subtype='FILE_PATH', default="", update=_effect_setting('GP_MASK_SLOT_4'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_4_factor = FloatProperty(name="Factor", description="Strength of Grease Pencil mask slot 4", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GP_MASK_SLOT_4'))
+    _FBP_OBJECT_RNA.fbp_gp_mask_slot_4_invert = BoolProperty(name="Invert", description="Invert Grease Pencil mask slot 4", default=False, update=_effect_setting('GP_MASK_SLOT_4'))
 
     _FBP_OBJECT_RNA.fbp_layer_blend_source = PointerProperty(
         name="Layer Below", description="Image or flat Color Plane directly below this one, used automatically as the blend base",
-        type=bpy.types.Object, poll=_fbp_layer_blend_source_poll, update=update_layer_blend_source_cb)
+        type=bpy.types.Object, poll=_fbp_layer_blend_source_poll, update=_effect_setting('LAYER_BLEND'))
     _FBP_OBJECT_RNA.fbp_layer_blend_mode = EnumProperty(
         name="Blend Mode", description="Blend this layer against the image layer below",
-        items=FBP_LAYER_BLEND_MODE_ITEMS, default='MULTIPLY', update=update_layer_blend_mode_cb)
+        items=FBP_LAYER_BLEND_MODE_ITEMS, default='MULTIPLY', update=_effect_setting('LAYER_BLEND'))
     _FBP_OBJECT_RNA.fbp_layer_blend_factor = FloatProperty(
         name="Factor", description="Strength of the transferred layer blend mode",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_layer_blend_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('LAYER_BLEND'))
 
     _FBP_OBJECT_RNA.fbp_square_mask_object = PointerProperty(
         name="Mask Shape", description="Editable Square Shape Mask helper. Select it and enter Edit Mode to change the silhouette",
-        type=bpy.types.Object, update=update_square_mask_object_cb)
+        type=bpy.types.Object, update=_effect_setting('SQUARE_MASK'))
     _FBP_OBJECT_RNA.fbp_square_mask_external_null = PointerProperty(
         name="External Null",
         description="External Empty whose world position drives this Square Mask while preserving its layer-specific size",
@@ -7040,12 +6330,12 @@ def register_properties():
     )
     _FBP_OBJECT_RNA.fbp_square_mask_factor = FloatProperty(
         name="Factor", description="Blend between the original alpha and the Square Shape Mask result",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_square_mask_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SQUARE_MASK'))
     _FBP_OBJECT_RNA.fbp_square_mask_invert = BoolProperty(
-        name="Invert", description="Invert the Square Shape Mask", default=False, update=update_square_mask_invert_cb)
+        name="Invert", description="Invert the Square Shape Mask", default=False, update=_effect_setting('SQUARE_MASK'))
     _FBP_OBJECT_RNA.fbp_square_mask_feather = FloatProperty(
         name="Feather", description="Dissolve the Square Shape Mask progressively inward without revealing its rectangular texture bounds",
-        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_square_mask_feather_cb)
+        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SQUARE_MASK'))
     _FBP_OBJECT_RNA.fbp_square_mask_follow_bounds = BoolProperty(
         name="Follow Layer Bounds", description="Preserve the helper's normalized position and size when Crop or Extend changes the layer bounds",
         default=True, update=update_square_mask_follow_bounds_cb)
@@ -7058,7 +6348,7 @@ def register_properties():
 
     _FBP_OBJECT_RNA.fbp_circle_mask_object = PointerProperty(
         name="Mask Shape", description="Editable Circle Shape Mask helper. Select it and enter Edit Mode to change the silhouette",
-        type=bpy.types.Object, update=update_circle_mask_object_cb)
+        type=bpy.types.Object, update=_effect_setting('CIRCLE_MASK'))
     _FBP_OBJECT_RNA.fbp_circle_mask_external_null = PointerProperty(
         name="External Null",
         description="External Empty whose world position drives this Circle Mask while preserving its layer-specific size",
@@ -7068,12 +6358,12 @@ def register_properties():
     )
     _FBP_OBJECT_RNA.fbp_circle_mask_factor = FloatProperty(
         name="Factor", description="Blend between the original alpha and the Circle Shape Mask result",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_circle_mask_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CIRCLE_MASK'))
     _FBP_OBJECT_RNA.fbp_circle_mask_invert = BoolProperty(
-        name="Invert", description="Invert the Circle Shape Mask", default=False, update=update_circle_mask_invert_cb)
+        name="Invert", description="Invert the Circle Shape Mask", default=False, update=_effect_setting('CIRCLE_MASK'))
     _FBP_OBJECT_RNA.fbp_circle_mask_feather = FloatProperty(
         name="Feather", description="Dissolve the Circle Shape Mask progressively inward without revealing its rectangular texture bounds",
-        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_circle_mask_feather_cb)
+        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CIRCLE_MASK'))
     _FBP_OBJECT_RNA.fbp_circle_mask_follow_bounds = BoolProperty(
         name="Follow Layer Bounds", description="Preserve the helper's normalized position and size when Crop or Extend changes the layer bounds",
         default=True, update=update_circle_mask_follow_bounds_cb)
@@ -7086,7 +6376,7 @@ def register_properties():
 
     _FBP_OBJECT_RNA.fbp_triangle_mask_object = PointerProperty(
         name="Mask Shape", description="Editable Triangle Shape Mask helper. Select it and enter Edit Mode to change the silhouette",
-        type=bpy.types.Object, update=update_triangle_mask_object_cb)
+        type=bpy.types.Object, update=_effect_setting('TRIANGLE_MASK'))
     _FBP_OBJECT_RNA.fbp_triangle_mask_external_null = PointerProperty(
         name="External Null",
         description="External Empty whose world position drives this Triangle Mask while preserving its layer-specific size",
@@ -7096,12 +6386,12 @@ def register_properties():
     )
     _FBP_OBJECT_RNA.fbp_triangle_mask_factor = FloatProperty(
         name="Factor", description="Blend between the original alpha and the Triangle Shape Mask result",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_triangle_mask_factor_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('TRIANGLE_MASK'))
     _FBP_OBJECT_RNA.fbp_triangle_mask_invert = BoolProperty(
-        name="Invert", description="Invert the Triangle Shape Mask", default=False, update=update_triangle_mask_invert_cb)
+        name="Invert", description="Invert the Triangle Shape Mask", default=False, update=_effect_setting('TRIANGLE_MASK'))
     _FBP_OBJECT_RNA.fbp_triangle_mask_feather = FloatProperty(
         name="Feather", description="Dissolve the Triangle Shape Mask progressively inward without revealing its rectangular texture bounds",
-        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_triangle_mask_feather_cb)
+        default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('TRIANGLE_MASK'))
     _FBP_OBJECT_RNA.fbp_triangle_mask_follow_bounds = BoolProperty(
         name="Follow Layer Bounds", description="Preserve the helper's normalized position and size when Crop or Extend changes the layer bounds",
         default=True, update=update_triangle_mask_follow_bounds_cb)
@@ -7112,200 +6402,200 @@ def register_properties():
         name="Lock to Plane", description="Keep G movement on the layer plane by locking local depth and off-plane rotation",
         default=True, update=update_triangle_mask_runtime_cb)
     _FBP_OBJECT_RNA.fbp_grain_strength = FloatProperty(description="Opacity and intensity of Film Grain layered over the source image.",
-        name="Intensity", default=0.2, min=0.0, max=1.0, subtype='FACTOR', update=update_grain_strength_cb)
+        name="Intensity", default=0.2, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GRAIN'))
     _FBP_OBJECT_RNA.fbp_grain_scale = FloatProperty(description="Spatial size of Film Grain. Higher values create finer grain; lower values create larger visible noise clusters.",
-        name="Grain Scale", default=180.0, min=0.01, soft_max=2000.0, precision=2, update=update_grain_scale_cb)
+        name="Grain Scale", default=180.0, min=0.01, soft_max=2000.0, precision=2, update=_effect_setting('GRAIN'))
     _FBP_OBJECT_RNA.fbp_grain_seed = FloatProperty(description="Deterministic phase or seed controlling the Film Grain pattern. Animate it to make the grain evolve over time.",
-        name="Animate (W)", default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, update=update_grain_seed_cb)
+        name="Animate (W)", default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, update=_effect_setting('GRAIN'))
     _FBP_OBJECT_RNA.fbp_digital_noise_luma = FloatProperty(
         name="Luminance Noise", description="Strength of luminance-only digital sensor noise added to the image. This simulates monochromatic high-ISO grain without color speckles.",
-        default=0.12, min=0.0, max=1.0, subtype='FACTOR', update=update_digital_noise_luma_cb)
+        default=0.12, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DIGITAL_NOISE'))
     _FBP_OBJECT_RNA.fbp_digital_noise_chroma = FloatProperty(
         name="Chroma Noise", description="Strength of independent RGB sensor noise. Higher values create colored speckles and can be more visually aggressive than monochromatic noise.",
-        default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_digital_noise_chroma_cb)
+        default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DIGITAL_NOISE'))
     _FBP_OBJECT_RNA.fbp_digital_noise_scale = FloatProperty(
         name="Noise Scale", description="Spatial scale of the digital noise pattern. Lower values produce larger blotches; higher values produce finer sensor-like grain.",
-        default=500.0, min=1.0, soft_max=3000.0, max=10000.0, precision=1, update=update_digital_noise_scale_cb)
+        default=500.0, min=1.0, soft_max=3000.0, max=10000.0, precision=1, update=_effect_setting('DIGITAL_NOISE'))
     _FBP_OBJECT_RNA.fbp_digital_noise_shadow_bias = FloatProperty(
         name="Shadow Bias", description="Bias that increases digital noise in shadows relative to highlights, approximating reduced signal quality in underexposed areas.",
-        default=0.65, min=0.0, max=2.0, update=update_digital_noise_shadow_bias_cb)
+        default=0.65, min=0.0, max=2.0, update=_effect_setting('DIGITAL_NOISE'))
     _FBP_OBJECT_RNA.fbp_digital_noise_seed = FloatProperty(
         name="Animate (W)", description="Temporal noise phase; animate or enable Evolve for moving sensor noise",
-        default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, update=update_digital_noise_seed_cb)
+        default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, update=_effect_setting('DIGITAL_NOISE'))
     _FBP_OBJECT_RNA.fbp_chroma_key_color = FloatVectorProperty(
         name="Key Color", description="Target RGBA key color removed by Chroma Key. Choose the screen color as closely as possible before adjusting tolerance and despill.",
-        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 1.0, 0.0, 1.0), update=update_chroma_key_color_cb)
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 1.0, 0.0, 1.0), update=_effect_setting('CHROMA_KEY'))
     _FBP_OBJECT_RNA.fbp_chroma_key_tolerance = FloatProperty(
         name="Tolerance", description="Distance from the key color that becomes transparent",
-        default=0.20, min=0.0, soft_max=1.0, max=1.732, update=update_chroma_key_tolerance_cb)
+        default=0.20, min=0.0, soft_max=1.0, max=1.732, update=_effect_setting('CHROMA_KEY'))
     _FBP_OBJECT_RNA.fbp_chroma_key_softness = FloatProperty(
         name="Softness", description="Soft transition width around the keyed color boundary. Increase it to reduce hard edges, but excessive values can erode the subject.",
-        default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_chroma_key_softness_cb)
+        default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CHROMA_KEY'))
     _FBP_OBJECT_RNA.fbp_chroma_key_despill = FloatProperty(
         name="Despill", description="Desaturate key-color contamination near transparent edges",
-        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_chroma_key_despill_cb)
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CHROMA_KEY'))
     _FBP_OBJECT_RNA.fbp_chroma_key_invert = BoolProperty(
         name="Invert", description="Keep the selected key color and remove the rest",
-        default=False, update=update_chroma_key_invert_cb)
+        default=False, update=_effect_setting('CHROMA_KEY'))
     _FBP_OBJECT_RNA.fbp_halftone_pattern = EnumProperty(
         name="Pattern", description="Halftone dot response. Dot keeps crisper newspaper cells, while Blended lets dots feather and merge more softly.",
         items=(("DOT", "Dot", "Crisp circular print dots"), ("BLENDED", "Blended", "Softer dots that blend into the print pattern")),
-        default="BLENDED", update=update_halftone_pattern_cb)
+        default="BLENDED", update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_color_mode = EnumProperty(
         name="Color Mode", description="Color separation style used by the Halftone pass.",
         items=(("CMYK", "CMYK", "Source-color print look for offset-style artwork"),
                ("RGB", "RGB", "Source-color digital screen look"),
                ("BW_LIGHT", "BW Light", "Black dots on light paper"),
                ("BW_DARK", "BW Dark", "Light dots on dark paper")),
-        default="CMYK", update=update_halftone_color_mode_cb)
+        default="CMYK", update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_scale = FloatProperty(
         name="Cell Scale", description="Number of Halftone cells across the plane width. Higher values create finer print dots.",
-        default=80.0, min=1.0, soft_max=500.0, max=2000.0, update=update_halftone_scale_cb)
+        default=80.0, min=1.0, soft_max=500.0, max=2000.0, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_dot_size = FloatProperty(description="Base size of Halftone dots inside each sampling cell.",
-        name="Dot Size", default=0.9, min=0.0, soft_max=1.2, max=1.5, update=update_halftone_dot_size_cb)
+        name="Dot Size", default=0.9, min=0.0, soft_max=1.2, max=1.5, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_dot_scale = FloatProperty(description="How much each dot can grow in darker regions. Lower values keep more white paper visible; higher values make dots merge sooner.",
-        name="Dot Scale", default=0.82, min=0.0, soft_max=1.5, max=3.0, update=update_halftone_dot_scale_cb)
+        name="Dot Scale", default=0.82, min=0.0, soft_max=1.5, max=3.0, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_blend = FloatProperty(description="Controls how much Blended Halftone dots melt into each other. 0 keeps crisp dot edges; 1 gives the soft Figma-style blended screen.",
-        name="Blend", default=0.65, min=0.0, max=1.0, subtype='FACTOR', update=update_halftone_blend_cb)
+        name="Blend", default=0.65, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_softness = FloatProperty(description="Feathering around dot edges. Use low values for crisp print dots and higher values for Figma-style blended halftone.",
-        name="Softness", default=0.44, min=0.0, max=1.0, subtype='FACTOR', update=update_halftone_softness_cb)
+        name="Softness", default=0.44, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_rotation = FloatProperty(description="Rotate the Halftone sampling grid to change the screen angle and moir\u00e9 direction.",
-        name="Rotation", subtype='ANGLE', default=0.0, soft_min=-3.141593, soft_max=3.141593, update=update_halftone_rotation_cb)
+        name="Rotation", subtype='ANGLE', default=0.0, soft_min=-3.141593, soft_max=3.141593, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_contrast = FloatProperty(description="Contrast applied before Halftone dot generation. Higher values produce harder separation between large and small dots.",
-        name="Contrast", default=1.4, min=0.0, soft_max=4.0, max=8.0, update=update_halftone_contrast_cb)
+        name="Contrast", default=1.4, min=0.0, soft_max=4.0, max=8.0, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_invert = BoolProperty(description="Invert luminance before generating Halftone dots, swapping dense dark regions with dense bright regions.",
-        name="Invert", default=False, update=update_halftone_invert_cb)
+        name="Invert", default=False, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_shape = EnumProperty(
         name="Shape", description="Geometric shape used for Halftone cells. Shape changes the printed texture while luminance still controls cell coverage.",
         items=(("CIRCLE", "Circle", "Circular dots"), ("SQUARE", "Square", "Square cells"),
                ("DIAMOND", "Diamond", "Diamond-shaped cells"), ("LINE", "Line", "Parallel print lines")),
-        default="CIRCLE", update=update_halftone_shape_cb)
+        default="CIRCLE", update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_use_source_color = BoolProperty(
         name="Use Source Color", description="Color Halftone cells from the source image. Disable it to use the custom foreground ink color instead.",
-        default=True, update=update_halftone_use_source_color_cb)
+        default=True, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_foreground = FloatVectorProperty(description="RGBA ink color used for Halftone dots when source-color mode is disabled.",
         name="Ink Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.0, 0.0, 0.0, 1.0), update=update_halftone_foreground_cb)
+        default=(0.0, 0.0, 0.0, 1.0), update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_background = FloatVectorProperty(description="RGBA paper color shown between Halftone dots when the background is not transparent.",
         name="Paper Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(1.0, 1.0, 1.0, 1.0), update=update_halftone_background_cb)
+        default=(1.0, 1.0, 1.0, 1.0), update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_transparent_background = BoolProperty(
         name="Transparent Background", description="Make the spaces between Halftone cells transparent instead of filling them with the configured background color.",
-        default=False, update=update_halftone_transparent_background_cb)
+        default=False, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_center_x = FloatProperty(
         name="X", description="Horizontal Halftone origin, matching the on-canvas center control used by design tools.",
-        default=0.5, min=-10.0, max=10.0, subtype='FACTOR', update=update_halftone_center_x_cb)
+        default=0.5, min=-10.0, max=10.0, subtype='FACTOR', update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_center_y = FloatProperty(
         name="Y", description="Vertical Halftone origin, matching the on-canvas center control used by design tools.",
-        default=0.5, min=-10.0, max=10.0, subtype='FACTOR', update=update_halftone_center_y_cb)
+        default=0.5, min=-10.0, max=10.0, subtype='FACTOR', update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_halftone_clip_alpha = BoolProperty(
         name="Clip to Alpha", description="Keep the Halftone result clipped to the source alpha instead of filling the whole plane bounds.",
-        default=True, update=update_halftone_clip_alpha_cb)
+        default=True, update=_effect_setting('HALFTONE'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_scale = FloatProperty(
         name="Cell Scale", description="Approximate number of Dot Matrix cells across the local plane width. Higher values increase detail and shader sampling frequency.",
-        default=64.0, min=1.0, soft_max=500.0, max=2000.0, update=update_dot_matrix_scale_cb)
+        default=64.0, min=1.0, soft_max=500.0, max=2000.0, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_dot_size = FloatProperty(description="Base diameter of Dot Matrix cells before luminance response and random size variation are applied.",
-        name="Dot Size", default=0.85, min=0.0, soft_max=1.2, max=1.5, update=update_dot_matrix_dot_size_cb)
+        name="Dot Size", default=0.85, min=0.0, soft_max=1.2, max=1.5, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_spacing = FloatProperty(
         name="Spacing", description="Fraction of each Dot Matrix cell reserved as empty spacing. Higher values separate elements and make the pattern less dense.",
-        default=0.10, min=0.0, max=0.95, subtype='FACTOR', update=update_dot_matrix_spacing_cb)
+        default=0.10, min=0.0, max=0.95, subtype='FACTOR', update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_contrast = FloatProperty(
         name="Contrast", description="Contrast used to derive dot radius and brightness from the source image",
-        default=1.0, min=0.0, soft_max=4.0, max=8.0, update=update_dot_matrix_contrast_cb)
+        default=1.0, min=0.0, soft_max=4.0, max=8.0, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_response = FloatProperty(
         name="Brightness Response",
         description="Shape the luminance-to-size response: below 1 lifts dark regions, above 1 concentrates dots in highlights",
-        default=1.0, min=0.1, soft_max=4.0, max=8.0, update=update_dot_matrix_response_cb)
+        default=1.0, min=0.1, soft_max=4.0, max=8.0, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_invert = BoolProperty(
         name="Invert", description="Invert source luminance before generating dot size and brightness",
-        default=False, update=update_dot_matrix_invert_cb)
+        default=False, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_random_size = FloatProperty(
         name="Random Size", description="Amount of deterministic per-cell size variation applied to Dot Matrix elements. Zero keeps every cell uniform.",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_dot_matrix_random_size_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_random_brightness = FloatProperty(
         name="Random Brightness", description="Amount of deterministic per-cell brightness variation applied to Dot Matrix elements without changing their source positions.",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_dot_matrix_random_brightness_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_seed = FloatProperty(
         name="Pattern Seed", description="Deterministic dot variation; animate or enable Evolve",
-        default=0.0, soft_min=-100000.0, soft_max=100000.0, precision=0, update=update_dot_matrix_seed_cb)
+        default=0.0, soft_min=-100000.0, soft_max=100000.0, precision=0, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_glow = FloatProperty(
         name="Glow", description="Soft anti-aliased edge around each dot; set to zero for a hard edge",
-        default=0.04, min=0.0, soft_max=0.2, max=0.5, update=update_dot_matrix_glow_cb)
+        default=0.04, min=0.0, soft_max=0.2, max=0.5, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_use_source_color = BoolProperty(
         name="Use Source Color", description="Sample the source image color for each Dot Matrix element. Disable it to use the custom foreground light color.",
-        default=True, update=update_dot_matrix_use_source_color_cb)
+        default=True, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_foreground = FloatVectorProperty(description="RGBA color used for Dot Matrix lights when source-color mode is disabled.",
         name="Dot Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(1.0, 0.65, 0.15, 1.0), update=update_dot_matrix_foreground_cb)
+        default=(1.0, 0.65, 0.15, 1.0), update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_background = FloatVectorProperty(description="RGBA background color shown behind Dot Matrix lights when transparency is disabled.",
         name="Background Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.0, 0.0, 0.0, 1.0), update=update_dot_matrix_background_cb)
+        default=(0.0, 0.0, 0.0, 1.0), update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_transparent_background = BoolProperty(
         name="Transparent Background", description="Show only the dots and preserve transparent gaps",
-        default=True, update=update_dot_matrix_transparent_background_cb)
+        default=True, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_shape = EnumProperty(
         name="Shape", description="Geometry used for each Dot Matrix element: circle, square, diamond or horizontal bar. Luminance continues to control visible size.",
         items=(("CIRCLE", "Circle", "Circular lights"), ("SQUARE", "Square", "Square lights"),
                ("DIAMOND", "Diamond", "Diamond lights"), ("LINE", "Line", "Horizontal light bars")),
-        default="CIRCLE", update=update_dot_matrix_shape_cb)
+        default="CIRCLE", update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_min_size = FloatProperty(
         name="Minimum Size", description="Smallest Dot Matrix element size allowed after luminance mapping. Raise it to keep faint elements visible in dark areas.",
-        default=0.0, min=0.0, max=1.5, update=update_dot_matrix_min_size_cb)
+        default=0.0, min=0.0, max=1.5, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_max_size = FloatProperty(
         name="Maximum Size", description="Maximum visible element size in bright regions",
-        default=1.0, min=0.0, max=1.5, update=update_dot_matrix_max_size_cb)
+        default=1.0, min=0.0, max=1.5, update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_dead_pixels = FloatProperty(
         name="Dead Pixels", description="Random fraction of permanently disabled elements",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_dot_matrix_dead_pixels_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DOT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_dot_matrix_flicker = FloatProperty(
         name="Flicker", description="Random brightness variation driven by Seed and Evolve",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_dot_matrix_flicker_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DOT_MATRIX'))
 
     _FBP_OBJECT_RNA.fbp_ascii_scale = FloatProperty(
         name="Cell Scale", description="Number of character cells across the plane width",
-        default=48.0, min=1.0, soft_max=300.0, max=1000.0, update=update_ascii_scale_cb)
+        default=48.0, min=1.0, soft_max=300.0, max=1000.0, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_contrast = FloatProperty(description="Contrast used to map source luminance to Textellation glyph density. Higher values use the lightest and densest characters more aggressively.",
-        name="Contrast", default=1.3, min=0.0, soft_max=4.0, max=8.0, update=update_ascii_contrast_cb)
+        name="Contrast", default=1.3, min=0.0, soft_max=4.0, max=8.0, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_gamma = FloatProperty(
         name="Gamma", description="Bias midtones before Textellation chooses a glyph; values above one favor denser characters",
-        default=1.0, min=0.05, soft_max=3.0, max=5.0, update=update_ascii_gamma_cb)
+        default=1.0, min=0.05, soft_max=3.0, max=5.0, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_glyph_scale = FloatProperty(
         name="Glyph Scale", description="Scale characters inside each Textellation cell without changing grid resolution",
-        default=1.0, min=0.25, soft_max=1.5, max=2.5, update=update_ascii_glyph_scale_cb)
+        default=1.0, min=0.25, soft_max=1.5, max=2.5, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_glyph_width = FloatProperty(
         name="Glyph Width", description="Compress or widen Textellation characters inside each cell",
-        default=1.0, min=0.25, soft_max=1.5, max=2.5, update=update_ascii_glyph_width_cb)
-    _FBP_OBJECT_RNA.fbp_ascii_invert = BoolProperty(description="Reverse the Textellation luminance mapping so bright areas use dense glyphs and dark areas use light glyphs.", name="Invert", default=False, update=update_ascii_invert_cb)
+        default=1.0, min=0.25, soft_max=1.5, max=2.5, update=_effect_setting('ASCII_MATRIX'))
+    _FBP_OBJECT_RNA.fbp_ascii_invert = BoolProperty(description="Reverse the Textellation luminance mapping so bright areas use dense glyphs and dark areas use light glyphs.", name="Invert", default=False, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_colorize = BoolProperty(
         name="Use Source Color", description="Color each glyph with the source image instead of Text Color",
-        default=True, update=update_ascii_colorize_cb)
+        default=True, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_foreground = FloatVectorProperty(description="RGBA glyph color used by Textellation when source-color mode is disabled.",
         name="Text Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.1, 1.0, 0.2, 1.0), update=update_ascii_foreground_cb)
+        default=(0.1, 1.0, 0.2, 1.0), update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_background = FloatVectorProperty(description="RGBA background color used by Textellation when transparent background is disabled.",
         name="Background Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.0, 0.0, 0.0, 1.0), update=update_ascii_background_cb)
+        default=(0.0, 0.0, 0.0, 1.0), update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_transparent_background = BoolProperty(
         name="Transparent Background", description="Replace the source image with glyphs on transparent gaps",
-        default=True, update=update_ascii_transparent_background_cb)
+        default=True, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_variation = FloatProperty(
         name="Character Variation", description="Vary neighboring glyph choices while preserving luminance",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_ascii_variation_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_random_seed = FloatProperty(
         name="Character Seed", description="Deterministic glyph variation; animate or enable Evolve",
-        default=0.0, soft_min=-100000.0, soft_max=100000.0, precision=0, update=update_ascii_random_seed_cb)
+        default=0.0, soft_min=-100000.0, soft_max=100000.0, precision=0, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_charset = EnumProperty(
         name="Character Set", description="Character gradient used to map image luminance",
-        items=ascii_enum_items(), default='CLASSIC', update=update_ascii_charset_cb)
+        items=ascii_enum_items(), default='CLASSIC', update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_character_count = IntProperty(
         name="Character Count", description="Number of luminance levels used from the selected character set",
-        default=16, min=2, max=ASCII_ATLAS_COLUMNS, update=update_ascii_character_count_cb)
+        default=16, min=2, max=ASCII_ATLAS_COLUMNS, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_edge_boost = FloatProperty(
         name="Edge Boost", description="Emphasize image edges before choosing glyph density",
-        default=0.0, min=0.0, max=2.0, update=update_ascii_edge_boost_cb)
+        default=0.0, min=0.0, max=2.0, update=_effect_setting('ASCII_MATRIX'))
     _FBP_OBJECT_RNA.fbp_ascii_dither = FloatProperty(
         name="Dither", description="Add ordered cell variation to preserve gradients",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_ascii_dither_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('ASCII_MATRIX'))
 
     _FBP_OBJECT_RNA.fbp_text_matrix_quality = EnumProperty(
         name="Quality", description="Quick viewport/render column presets; rows return to Auto",
@@ -7316,307 +6606,307 @@ def register_properties():
         default="PREVIEW", update=update_text_matrix_quality_cb)
     _FBP_OBJECT_RNA.fbp_text_matrix_viewport_columns = IntProperty(
         name="Viewport Columns", description="Number of real Text Matrix columns generated at viewport quality. Lower values improve interaction speed and do not change render-quality columns.",
-        default=48, min=2, soft_max=96, max=256, update=update_text_matrix_viewport_columns_cb)
+        default=48, min=2, soft_max=96, max=256, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_viewport_rows = IntProperty(
         name="Viewport Rows",
         description="Text rows used in the viewport; 0 derives rows automatically from plane and font aspect",
-        default=0, min=0, soft_max=128, max=512, update=update_text_matrix_viewport_rows_cb)
+        default=0, min=0, soft_max=128, max=512, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_render_columns = IntProperty(
         name="Render Columns", description="Text columns temporarily used for final rendering",
-        default=96, min=2, soft_max=192, max=512, update=update_text_matrix_render_columns_cb)
+        default=96, min=2, soft_max=192, max=512, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_render_rows = IntProperty(
         name="Render Rows",
         description="Text rows used for final rendering; 0 derives rows automatically from plane and font aspect",
-        default=0, min=0, soft_max=256, max=512, update=update_text_matrix_render_rows_cb)
+        default=0, min=0, soft_max=256, max=512, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_auto_playback_limit = BoolProperty(
         name="Limit During Playback",
         description="Temporarily lower Text Matrix grid density while timeline playback is running",
-        default=True, update=update_text_matrix_auto_playback_limit_cb)
+        default=True, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_playback_columns = IntProperty(
         name="Playback Columns",
         description="Maximum Text Matrix columns used during timeline playback",
-        default=24, min=2, soft_max=64, max=128, update=update_text_matrix_playback_columns_cb)
+        default=24, min=2, soft_max=64, max=128, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_playback_rows = IntProperty(
         name="Playback Rows",
         description="Maximum explicit Text Matrix rows during playback; 0 keeps automatic rows",
-        default=0, min=0, soft_max=64, max=128, update=update_text_matrix_playback_rows_cb)
+        default=0, min=0, soft_max=64, max=128, update=_effect_setting('TEXT_MATRIX'))
 
     # Terminal-style Ascii effect based on Blender-Image-To-ASCII assets.
     _FBP_OBJECT_RNA.fbp_terminal_ascii_scale = FloatProperty(
         name="Cell Scale", description="Approximate number of terminal character cells placed across the local plane width. Higher values preserve more image detail but increase texture sampling frequency.",
-        default=64.0, min=1.0, soft_max=300.0, max=1000.0, update=update_terminal_ascii_scale_cb)
+        default=64.0, min=1.0, soft_max=300.0, max=1000.0, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_contrast = FloatProperty(
         name="Contrast", description="Contrast applied before Terminal Ascii maps source luminance to fill glyph density. Higher values separate dark and bright character choices more strongly.",
-        default=1.25, min=0.0, soft_max=4.0, max=8.0, update=update_terminal_ascii_contrast_cb)
+        default=1.25, min=0.0, soft_max=4.0, max=8.0, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_invert = BoolProperty(
         name="Invert", description="Reverse Terminal Ascii density mapping so bright regions use dense glyphs and dark regions use sparse glyphs.",
-        default=False, update=update_terminal_ascii_invert_cb)
+        default=False, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_fill_strength = FloatProperty(
         name="Fill Strength", description="Multiply the source-luminance contribution used to choose fill glyphs. Higher values favor denser terminal characters before thresholding.",
-        default=1.0, min=0.0, soft_max=2.0, max=4.0, update=update_terminal_ascii_fill_strength_cb)
+        default=1.0, min=0.0, soft_max=2.0, max=4.0, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_fill_threshold = FloatProperty(
         name="Fill Threshold", description="Threshold below which Terminal Ascii fill glyphs are suppressed, leaving more background or edge characters visible.",
-        default=0.0, min=0.0, max=0.95, subtype='FACTOR', update=update_terminal_ascii_fill_threshold_cb)
+        default=0.0, min=0.0, max=0.95, subtype='FACTOR', update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_use_edges = BoolProperty(
         name="Use Edges", description="Enable directional slash, dash and bar glyphs where local luminance gradients detect an edge. Disable it to render only tonal fill characters.",
-        default=True, update=update_terminal_ascii_use_edges_cb)
+        default=True, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_edge_strength = FloatProperty(
         name="Edge Strength", description="Multiply local luminance gradients before edge thresholding. Higher values reveal weaker contours but can introduce noisy edge glyphs.",
-        default=4.0, min=0.0, soft_max=12.0, max=32.0, update=update_terminal_ascii_edge_strength_cb)
+        default=4.0, min=0.0, soft_max=12.0, max=32.0, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_edge_threshold = FloatProperty(
         name="Edge Threshold", description="Minimum amplified local luminance difference required to replace a fill glyph with a directional edge glyph. Raise it to keep only strong contours.",
-        default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_terminal_ascii_edge_threshold_cb)
+        default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_edge_mix = FloatProperty(
         name="Edge Mix", description="Blend directional edge glyphs over the tonal fill result. Zero keeps only fill characters; one gives detected edges full priority.",
-        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_terminal_ascii_edge_mix_cb)
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_use_source_color = BoolProperty(
         name="Use Source Color", description="Sample the source image color for every generated fill and edge glyph. Disable it to use the uniform terminal Text Color.",
-        default=False, update=update_terminal_ascii_use_source_color_cb)
+        default=False, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_foreground = FloatVectorProperty(description="RGBA terminal-glyph color used by the Ascii effect when source-color mode is disabled.",
         name="Text Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.42, 1.0, 0.42, 1.0), update=update_terminal_ascii_foreground_cb)
+        default=(0.42, 1.0, 0.42, 1.0), update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_background = FloatVectorProperty(description="RGBA color placed behind Ascii fill and edge glyphs when transparent background is disabled.",
         name="Background Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.0, 0.0, 0.0, 1.0), update=update_terminal_ascii_background_cb)
+        default=(0.0, 0.0, 0.0, 1.0), update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_transparent_background = BoolProperty(
         name="Transparent Background", description="Keep only generated terminal glyphs and preserve transparent gaps between them. Disable it to fill those gaps with Background Color.",
-        default=True, update=update_terminal_ascii_transparent_background_cb)
+        default=True, update=_effect_setting('ASCII'))
     _FBP_OBJECT_RNA.fbp_terminal_ascii_seed = FloatProperty(
         name="Evolution Seed",
         description="Deterministic terminal-glyph variation. Animate it directly or enable Evolution for stepped non-repeating changes",
         default=0.0, soft_min=-100000.0, soft_max=100000.0, precision=0,
-        update=update_terminal_ascii_seed_cb)
+        update=_effect_setting('ASCII'))
 
     _FBP_OBJECT_RNA.fbp_text_matrix_character_count = IntProperty(
         name="Character Levels", description="Number of distinct glyph-density steps used by Text Matrix. More levels improve tonal detail but increase generated text complexity.",
-        default=16, min=2, max=ASCII_TEXT_GLYPH_LIMIT, update=update_text_matrix_character_count_cb)
+        default=16, min=2, max=ASCII_TEXT_GLYPH_LIMIT, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_character_aspect = FloatProperty(
         name="Character Aspect", description="Width-to-height compensation applied to each Text Matrix cell for the selected vector font. Adjust it when glyphs appear stretched or compressed.",
-        default=0.60, min=0.1, max=2.0, update=update_text_matrix_character_aspect_cb)
+        default=0.60, min=0.1, max=2.0, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_glyph_scale = FloatProperty(
         name="Glyph Scale", description="Scale each generated Text Matrix glyph inside its cell. Values below one increase spacing; values above one can overlap neighboring cells.",
-        default=0.88, min=0.05, max=2.0, update=update_text_matrix_glyph_scale_cb)
+        default=0.88, min=0.05, max=2.0, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_contrast = FloatProperty(description="Contrast used to map source luminance to real Text Matrix glyph density. Higher values emphasize the lightest and densest characters.",
-        name="Contrast", default=1.3, min=0.0, soft_max=4.0, max=8.0, update=update_text_matrix_contrast_cb)
+        name="Contrast", default=1.3, min=0.0, soft_max=4.0, max=8.0, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_invert = BoolProperty(description="Reverse Text Matrix luminance mapping so bright areas receive dense glyphs and dark areas receive light glyphs.",
-        name="Invert", default=False, update=update_text_matrix_invert_cb)
+        name="Invert", default=False, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_variation = FloatProperty(
         name="Character Variation", description="Randomly choose nearby glyphs while preserving luminance",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_text_matrix_variation_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_seed = FloatProperty(
         name="Character Seed", description="Deterministic glyph variation; animate or enable Evolve",
-        default=0.0, soft_min=-100000.0, soft_max=100000.0, precision=0, update=update_text_matrix_seed_cb)
+        default=0.0, soft_min=-100000.0, soft_max=100000.0, precision=0, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_alpha_threshold = FloatProperty(
         name="Alpha Threshold", description="Discard cells at or below this alpha value; zero keeps every non-transparent cell and reads partial alpha as lighter luminance",
-        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_text_matrix_alpha_threshold_cb)
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_transparent_background = BoolProperty(
         name="Transparent Background", description="Generate only text geometry without a background plane",
-        default=True, update=update_text_matrix_transparent_background_cb)
+        default=True, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_realize = BoolProperty(
         name="Realize Text Geometry", description="Convert glyph instances to mesh only when a later modifier needs real geometry",
-        default=False, update=update_text_matrix_realize_cb)
+        default=False, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_charset = EnumProperty(
         name="Character Set", description="Character gradient used to generate real text geometry",
-        items=ascii_enum_items(include_custom=True), default='CLASSIC', update=update_text_matrix_charset_cb)
+        items=ascii_enum_items(include_custom=True), default='CLASSIC', update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_custom_charset = StringProperty(
         name="Characters", description="Custom glyphs ordered from lightest to darkest",
-        default=" .:-=+*#%@", maxlen=256, update=update_text_matrix_custom_charset_cb)
+        default=" .:-=+*#%@", maxlen=256, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_font = PointerProperty(
         name="Font", description="Optional Blender Vector Font used to generate real Text Matrix geometry. Leave empty to use Blender's built-in font; changing it rebuilds glyph geometry.",
-        type=bpy.types.VectorFont, update=update_text_matrix_font_cb)
+        type=bpy.types.VectorFont, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_use_source_color = BoolProperty(
         name="Use Source Color",
         description="Color each vector glyph with the sampled source pixel instead of Text Color",
-        default=True, update=update_text_matrix_use_source_color_cb)
+        default=True, update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_text_color = FloatVectorProperty(description="RGBA color assigned to generated Text Matrix glyph geometry when source-color sampling is disabled.",
         name="Text Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.1, 1.0, 0.2, 1.0), update=update_text_matrix_text_color_cb)
+        default=(0.1, 1.0, 0.2, 1.0), update=_effect_setting('TEXT_MATRIX'))
     _FBP_OBJECT_RNA.fbp_text_matrix_background_color = FloatVectorProperty(description="RGBA background color generated behind Text Matrix glyphs when transparent background is disabled.",
         name="Background Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.0, 0.0, 0.0, 1.0), update=update_text_matrix_background_color_cb)
-    _FBP_OBJECT_RNA.fbp_hue_saturation_hue = FloatProperty(description="Hue rotation centered at the neutral value 0.5. Move below or above 0.5 to rotate colors in opposite directions.", name="Hue", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_hue_saturation_hue_cb)
-    _FBP_OBJECT_RNA.fbp_hue_saturation_saturation = FloatProperty(description="Multiply source saturation. Zero produces grayscale, one preserves the source, and values above one intensify color.", name="Saturation", default=1.0, min=0.0, soft_max=2.0, update=update_hue_saturation_saturation_cb)
-    _FBP_OBJECT_RNA.fbp_hue_saturation_value = FloatProperty(description="Multiply source brightness/value. One preserves the source; lower values darken and higher values brighten.", name="Value", default=1.0, min=0.0, soft_max=2.0, update=update_hue_saturation_value_cb)
-    _FBP_OBJECT_RNA.fbp_brightness_contrast_brightness = FloatProperty(description="Add or subtract brightness before the effect output. Zero leaves source brightness unchanged.", name="Brightness", default=0.0, soft_min=-1.0, soft_max=1.0, update=update_brightness_contrast_brightness_cb)
-    _FBP_OBJECT_RNA.fbp_brightness_contrast_contrast = FloatProperty(description="Increase or decrease separation around middle gray. Zero leaves source contrast unchanged.", name="Contrast", default=0.0, soft_min=-1.0, soft_max=1.0, update=update_brightness_contrast_contrast_cb)
-    _FBP_OBJECT_RNA.fbp_invert_factor = FloatProperty(description="Blend between the original image and its inverted colors. Zero is unchanged; one is fully inverted.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_invert_factor_cb)
-    _FBP_OBJECT_RNA.fbp_threshold_value = FloatProperty(description="Luminance cutoff used to separate pixels into black and white regions. Values below the threshold become dark.", name="Threshold", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_threshold_value_cb)
+        default=(0.0, 0.0, 0.0, 1.0), update=_effect_setting('TEXT_MATRIX'))
+    _FBP_OBJECT_RNA.fbp_hue_saturation_hue = FloatProperty(description="Hue rotation centered at the neutral value 0.5. Move below or above 0.5 to rotate colors in opposite directions.", name="Hue", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('HUE_SATURATION'))
+    _FBP_OBJECT_RNA.fbp_hue_saturation_saturation = FloatProperty(description="Multiply source saturation. Zero produces grayscale, one preserves the source, and values above one intensify color.", name="Saturation", default=1.0, min=0.0, soft_max=2.0, update=_effect_setting('HUE_SATURATION'))
+    _FBP_OBJECT_RNA.fbp_hue_saturation_value = FloatProperty(description="Multiply source brightness/value. One preserves the source; lower values darken and higher values brighten.", name="Value", default=1.0, min=0.0, soft_max=2.0, update=_effect_setting('HUE_SATURATION'))
+    _FBP_OBJECT_RNA.fbp_brightness_contrast_brightness = FloatProperty(description="Add or subtract brightness before the effect output. Zero leaves source brightness unchanged.", name="Brightness", default=0.0, soft_min=-1.0, soft_max=1.0, update=_effect_setting('BRIGHTNESS_CONTRAST'))
+    _FBP_OBJECT_RNA.fbp_brightness_contrast_contrast = FloatProperty(description="Increase or decrease separation around middle gray. Zero leaves source contrast unchanged.", name="Contrast", default=0.0, soft_min=-1.0, soft_max=1.0, update=_effect_setting('BRIGHTNESS_CONTRAST'))
+    _FBP_OBJECT_RNA.fbp_invert_factor = FloatProperty(description="Blend between the original image and its inverted colors. Zero is unchanged; one is fully inverted.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('INVERT'))
+    _FBP_OBJECT_RNA.fbp_threshold_value = FloatProperty(description="Luminance cutoff used to separate pixels into black and white regions. Values below the threshold become dark.", name="Threshold", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('THRESHOLD'))
     _FBP_OBJECT_RNA.fbp_posterize_steps = FloatProperty(description="Number of discrete color levels retained per channel by Posterize. Lower values create stronger graphic banding.",
-        name="Color Steps", default=4.0, min=2.0, soft_max=64.0, precision=0, update=update_posterize_steps_cb)
+        name="Color Steps", default=4.0, min=2.0, soft_max=64.0, precision=0, update=_effect_setting('POSTERIZE'))
     _FBP_OBJECT_RNA.fbp_solarize_threshold = FloatProperty(
         description="Luminance level above which Solarize begins to invert the image.",
-        name="Threshold", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_solarize_threshold_cb)
+        name="Threshold", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SOLARIZE'))
     _FBP_OBJECT_RNA.fbp_solarize_softness = FloatProperty(
         description="Width of the transition around the Solarize threshold. Zero produces a sharp photographic solarization boundary.",
-        name="Softness", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_solarize_softness_cb)
+        name="Softness", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SOLARIZE'))
     _FBP_OBJECT_RNA.fbp_solarize_factor = FloatProperty(
         description="Blend between the original image and the solarized result.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_solarize_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SOLARIZE'))
     _FBP_OBJECT_RNA.fbp_tritone_shadows = FloatVectorProperty(
         description="Color assigned to the darkest source luminance values by Tritone.",
         name="Shadows Tone", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.02, 0.03, 0.08, 1.0), update=update_tritone_shadows_cb)
+        default=(0.02, 0.03, 0.08, 1.0), update=_effect_setting('TRITONE'))
     _FBP_OBJECT_RNA.fbp_tritone_midtones = FloatVectorProperty(
         description="Color assigned around the editable Tritone midpoint.",
         name="Midtones Tone", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.55, 0.20, 0.22, 1.0), update=update_tritone_midtones_cb)
+        default=(0.55, 0.20, 0.22, 1.0), update=_effect_setting('TRITONE'))
     _FBP_OBJECT_RNA.fbp_tritone_highlights = FloatVectorProperty(
         description="Color assigned to the brightest source luminance values by Tritone.",
         name="Highlights Tone", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(1.0, 0.86, 0.55, 1.0), update=update_tritone_highlights_cb)
+        default=(1.0, 0.86, 0.55, 1.0), update=_effect_setting('TRITONE'))
     _FBP_OBJECT_RNA.fbp_tritone_midpoint = FloatProperty(
         description="Luminance position of the Tritone midtone color. Lower values expand highlights; higher values expand shadows.",
-        name="Midpoint", default=0.5, min=0.01, max=0.99, subtype='FACTOR', update=update_tritone_midpoint_cb)
+        name="Midpoint", default=0.5, min=0.01, max=0.99, subtype='FACTOR', update=_effect_setting('TRITONE'))
     _FBP_OBJECT_RNA.fbp_tritone_factor = FloatProperty(
         description="Blend between the original image and the Tritone mapping.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_tritone_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('TRITONE'))
     _FBP_OBJECT_RNA.fbp_film_fade_color = FloatVectorProperty(
         description="Color cast introduced by Film Fade. Warm brown, amber or faded cyan tones reproduce different aged-film stocks.",
         name="Fade Color", subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.72, 0.48, 0.28, 1.0), update=update_film_fade_color_cb)
+        default=(0.72, 0.48, 0.28, 1.0), update=_effect_setting('FILM_FADE'))
     _FBP_OBJECT_RNA.fbp_film_fade_amount = FloatProperty(
         description="Overall strength of Film Fade, including tint, desaturation and contrast compression.",
-        name="Amount", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=update_film_fade_amount_cb)
+        name="Amount", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILM_FADE'))
     _FBP_OBJECT_RNA.fbp_film_fade_desaturation = FloatProperty(
         description="How strongly Film Fade removes color as Amount increases.",
-        name="Desaturation", default=0.45, min=0.0, max=1.0, subtype='FACTOR', update=update_film_fade_desaturation_cb)
+        name="Desaturation", default=0.45, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILM_FADE'))
     _FBP_OBJECT_RNA.fbp_film_fade_contrast_loss = FloatProperty(
         description="How strongly Film Fade compresses highlights and shadows toward middle grey.",
-        name="Contrast Loss", default=0.30, min=0.0, max=1.0, subtype='FACTOR', update=update_film_fade_contrast_loss_cb)
-    _FBP_OBJECT_RNA.fbp_triangle_blur_radius = FloatProperty(name="Radius", description="Triangle Blur radius measured in source-image pixels.", default=8.0, min=0.0, soft_max=128.0, max=512.0, update=update_triangle_blur_radius_cb)
-    _FBP_OBJECT_RNA.fbp_triangle_blur_samples = IntProperty(name="Samples", description="Number of active Triangle Blur texture samples.", default=17, min=3, max=25, update=update_triangle_blur_samples_cb)
-    _FBP_OBJECT_RNA.fbp_triangle_blur_factor = FloatProperty(name="Factor", description="Blend between source and Triangle Blur.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_triangle_blur_factor_cb)
-    _FBP_OBJECT_RNA.fbp_tilt_shift_position = FloatProperty(name="Focus Position", description="Position of the sharp Tilt Shift band along its rotated normal axis.", default=0.5, min=-1.0, max=2.0, soft_min=0.0, soft_max=1.0, update=update_tilt_shift_position_cb)
-    _FBP_OBJECT_RNA.fbp_tilt_shift_width = FloatProperty(name="Focus Width", description="Width of the sharp Tilt Shift band measured perpendicular to its angle.", default=0.25, min=0.001, max=2.0, soft_max=1.0, update=update_tilt_shift_width_cb)
-    _FBP_OBJECT_RNA.fbp_tilt_shift_angle = FloatProperty(name="Focus Angle", description="Rotate the sharp Tilt Shift band across the image. The yellow center control and blue/orange boundary controls edit this value directly.", default=0.0, subtype='ANGLE', update=update_tilt_shift_angle_cb)
-    _FBP_OBJECT_RNA.fbp_tilt_shift_radius = FloatProperty(name="Blur Radius", description="Maximum Tilt Shift blur radius in source-image pixels.", default=16.0, min=0.0, soft_max=128.0, max=512.0, update=update_tilt_shift_radius_cb)
-    _FBP_OBJECT_RNA.fbp_tilt_shift_factor = FloatProperty(name="Factor", description="Blend between source and Tilt Shift result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_tilt_shift_factor_cb)
-    _FBP_OBJECT_RNA.fbp_unsharp_radius = FloatProperty(name="Radius", description="Neighbor sampling radius used by Unsharp Mask.", default=1.0, min=0.0, max=32.0, update=update_unsharp_radius_cb)
-    _FBP_OBJECT_RNA.fbp_unsharp_amount = FloatProperty(name="Amount", description="Strength of sharpened local detail.", default=1.0, min=0.0, max=4.0, update=update_unsharp_amount_cb)
-    _FBP_OBJECT_RNA.fbp_unsharp_factor = FloatProperty(name="Factor", description="Blend between source and sharpened image.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_unsharp_factor_cb)
-    _FBP_OBJECT_RNA.fbp_edge_detect_width = FloatProperty(name="Width", description="Edge sampling distance in source-image pixels.", default=1.0, min=0.0, max=32.0, update=update_edge_detect_width_cb)
-    _FBP_OBJECT_RNA.fbp_edge_detect_strength = FloatProperty(name="Strength", description="Multiplier applied to detected edge contrast.", default=2.0, min=0.0, max=10.0, update=update_edge_detect_strength_cb)
-    _FBP_OBJECT_RNA.fbp_edge_detect_threshold = FloatProperty(name="Threshold", description="Minimum Sobel edge magnitude retained.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_edge_detect_softness = FloatProperty(name="Softness", description="Smooth transition width around the edge threshold.", default=0.04, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_softness_cb)
-    _FBP_OBJECT_RNA.fbp_edge_detect_color = FloatVectorProperty(name="Edge Color", description="Color applied to detected edges.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0,0.0,0.0,1.0), update=update_edge_detect_color_cb)
-    _FBP_OBJECT_RNA.fbp_edge_detect_factor = FloatProperty(name="Factor", description="Blend between source and Edge Detect.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_detect_factor_cb)
-    _FBP_OBJECT_RNA.fbp_oil_paint_radius = FloatProperty(name="Radius", description="Brush size in source-image pixels. Larger radii give broader, flatter strokes.", default=6.0, min=0.0, soft_max=24.0, max=64.0, update=update_oil_paint_radius_cb)
-    _FBP_OBJECT_RNA.fbp_oil_paint_sharpness = FloatProperty(name="Sharpness", description="How strongly the calmest stroke direction wins. Low values blend directions softly; high values keep crisp paint edges.", default=8.0, min=0.0, max=32.0, update=update_oil_paint_sharpness_cb)
-    _FBP_OBJECT_RNA.fbp_oil_paint_anisotropy = FloatProperty(name="Anisotropy", description="Stretch strokes along the image's edges. 0 is the classic round Kuwahara filter.", default=1.0, min=0.0, max=4.0, update=update_oil_paint_anisotropy_cb)
-    _FBP_OBJECT_RNA.fbp_oil_paint_factor = FloatProperty(name="Factor", description="Blend between the source and the painted result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_oil_paint_factor_cb)
-    _FBP_OBJECT_RNA.fbp_riso_ink_1 = FloatVectorProperty(name="Ink 1", description="First spot ink. Riso fluorescent pink by default.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.27, 0.55, 1.0), update=update_riso_ink_1_cb)
-    _FBP_OBJECT_RNA.fbp_riso_ink_2 = FloatVectorProperty(name="Ink 2", description="Second spot ink. Riso medium blue by default.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.47, 0.75, 1.0), update=update_riso_ink_2_cb)
-    _FBP_OBJECT_RNA.fbp_riso_ink_3 = FloatVectorProperty(name="Ink 3", description="Optional third spot ink, used when Third Ink is on.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.9, 0.0, 1.0), update=update_riso_ink_3_cb)
-    _FBP_OBJECT_RNA.fbp_riso_use_ink_3 = BoolProperty(name="Third Ink", description="Print a third ink layer on top of the first two.", default=False, update=update_riso_use_ink_3_cb)
-    _FBP_OBJECT_RNA.fbp_riso_paper = FloatVectorProperty(name="Paper", description="Paper color the inks are printed on.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.96, 0.94, 0.89, 1.0), update=update_riso_paper_cb)
-    _FBP_OBJECT_RNA.fbp_riso_misregistration = FloatProperty(name="Misregistration", description="How far each ink drum drifts from the others, in source-image pixels.", default=4.0, min=0.0, soft_max=32.0, max=256.0, update=update_riso_misregistration_cb)
-    _FBP_OBJECT_RNA.fbp_riso_halftone = FloatProperty(name="Halftone", description="Blend from flat ink density (0) to rotated halftone dots (1).", default=0.6, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_halftone_cb)
-    _FBP_OBJECT_RNA.fbp_riso_dot_size = FloatProperty(name="Dot Size", description="Halftone cell size in source-image pixels.", default=6.0, min=1.0, soft_max=48.0, max=256.0, update=update_riso_dot_size_cb)
-    _FBP_OBJECT_RNA.fbp_riso_grain = FloatProperty(name="Grain", description="Uneven ink coverage that lets the paper show through.", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_grain_cb)
-    _FBP_OBJECT_RNA.fbp_riso_drift_angle = FloatProperty(name="Drift Angle", description="Direction the ink drums slip out of register.", subtype='ANGLE', default=0.0, update=update_riso_drift_angle_cb)
-    _FBP_OBJECT_RNA.fbp_riso_print_rotation = FloatProperty(name="Print Rotation", description="Rotate the halftone screen and the grain.", subtype='ANGLE', default=0.0, update=update_riso_print_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_riso_seed = FloatProperty(name="Seed", description="Reshuffle the grain and the halftone dots. Use Animate to change it over time.", default=0.0, min=0.0, max=1000.0, update=update_riso_seed_cb)
-    _FBP_OBJECT_RNA.fbp_riso_factor = FloatProperty(name="Factor", description="Blend between the source and the printed result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_riso_factor_cb)
-    _FBP_OBJECT_RNA.fbp_edge_distance_mask_distance = FloatProperty(name="Distance", description="Width of the ramp from the transparent edge inward, in source-image pixels.", default=32.0, min=1.0, soft_max=256.0, max=1024.0, update=update_edge_distance_mask_distance_cb)
-    _FBP_OBJECT_RNA.fbp_edge_distance_mask_threshold = FloatProperty(name="Threshold", description="Where the mask turns on along the ramp. Animate it for a grow-in reveal from the outline.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_edge_distance_mask_softness = FloatProperty(name="Softness", description="Transition width around Threshold. 1 keeps the whole linear ramp; 0 cuts a hard inner outline.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_softness_cb)
-    _FBP_OBJECT_RNA.fbp_edge_distance_mask_image_border = BoolProperty(name="Image Border", description="Treat the image's own border as an edge, so fully opaque pictures get a frame-shaped falloff.", default=True, update=update_edge_distance_mask_image_border_cb)
-    _FBP_OBJECT_RNA.fbp_edge_distance_mask_factor = FloatProperty(name="Factor", description="Blend between the unmasked result and Edge Distance Mask.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_distance_mask_factor_cb)
-    _FBP_OBJECT_RNA.fbp_edge_distance_mask_invert = BoolProperty(name="Invert", description="Keep the band along the edge instead of the interior.", default=False, update=update_edge_distance_mask_invert_cb)
-    _FBP_OBJECT_RNA.fbp_smooth_toon_levels = FloatProperty(name="Levels", description="Number of tonal bands retained by Smooth Toon.", default=6.0, min=2.0, max=64.0, precision=0, update=update_smooth_toon_levels_cb)
-    _FBP_OBJECT_RNA.fbp_smooth_toon_softness = FloatProperty(name="Softness", description="Blend quantized bands back toward the source for smoother transitions.", default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=update_smooth_toon_softness_cb)
-    _FBP_OBJECT_RNA.fbp_smooth_toon_factor = FloatProperty(name="Factor", description="Blend between source and Smooth Toon.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_smooth_toon_factor_cb)
-    _FBP_OBJECT_RNA.fbp_adaptive_threshold_radius = FloatProperty(name="Radius", description="Neighborhood radius used to calculate local luminance.", default=4.0, min=0.0, max=64.0, update=update_adaptive_threshold_radius_cb)
-    _FBP_OBJECT_RNA.fbp_adaptive_threshold_offset = FloatProperty(name="Offset", description="Bias added to local luminance before thresholding.", default=0.0, min=-1.0, max=1.0, update=update_adaptive_threshold_offset_cb)
-    _FBP_OBJECT_RNA.fbp_adaptive_threshold_softness = FloatProperty(name="Softness", description="Soft transition around the adaptive threshold.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_adaptive_threshold_softness_cb)
-    _FBP_OBJECT_RNA.fbp_adaptive_threshold_invert = BoolProperty(name="Invert", description="Swap black and white regions in the adaptive threshold result.", default=False, update=update_adaptive_threshold_invert_cb)
-    _FBP_OBJECT_RNA.fbp_adaptive_threshold_factor = FloatProperty(name="Factor", description="Blend between source and adaptive threshold result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_adaptive_threshold_factor_cb)
-    _FBP_OBJECT_RNA.fbp_false_color_dark = FloatVectorProperty(name="Dark Color", description="Color mapped to dark source luminance.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0,0.05,0.3,1.0), update=update_false_color_dark_cb)
-    _FBP_OBJECT_RNA.fbp_false_color_light = FloatVectorProperty(name="Light Color", description="Color mapped to bright source luminance.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0,0.65,0.05,1.0), update=update_false_color_light_cb)
-    _FBP_OBJECT_RNA.fbp_false_color_factor = FloatProperty(name="Factor", description="Blend between source and False Color mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_false_color_factor_cb)
-    _FBP_OBJECT_RNA.fbp_chromatic_aberration_distance = FloatProperty(name="Distance", description="Opposite red and blue channel offset measured in source-image pixels.", default=3.0, min=0.0, max=128.0, update=update_chromatic_aberration_distance_cb)
-    _FBP_OBJECT_RNA.fbp_chromatic_aberration_angle = FloatProperty(name="Angle", description="Direction of the chromatic channel separation.", default=0.0, subtype='ANGLE', update=update_chromatic_aberration_angle_cb)
-    _FBP_OBJECT_RNA.fbp_chromatic_aberration_factor = FloatProperty(name="Factor", description="Blend between source and Chromatic Aberration.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_chromatic_aberration_factor_cb)
-    _FBP_OBJECT_RNA.fbp_ink_width = FloatProperty(name="Width", description="Sobel sampling distance used to extract ink lines, measured in source-image pixels.", default=1.0, min=0.0, max=32.0, update=update_ink_width_cb)
-    _FBP_OBJECT_RNA.fbp_ink_threshold = FloatProperty(name="Threshold", description="Minimum edge magnitude converted into ink.", default=0.045, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_ink_softness = FloatProperty(name="Softness", description="Feather the ink threshold for smoother or rougher line transitions.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_softness_cb)
-    _FBP_OBJECT_RNA.fbp_ink_strength = FloatProperty(name="Strength", description="Multiply the detected edge response before thresholding.", default=2.5, min=0.0, max=16.0, update=update_ink_strength_cb)
-    _FBP_OBJECT_RNA.fbp_ink_color = FloatVectorProperty(name="Ink Color", description="Color applied to extracted ink lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.015,0.01,0.008,1.0), update=update_ink_color_cb)
-    _FBP_OBJECT_RNA.fbp_ink_paper_color = FloatVectorProperty(name="Paper Color", description="Base paper color used when Preserve Color is reduced.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.94,0.90,0.80,1.0), update=update_ink_paper_color_cb)
-    _FBP_OBJECT_RNA.fbp_ink_preserve_color = FloatProperty(name="Preserve Color", description="Blend the original image color into the paper base before applying ink lines.", default=0.20, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_preserve_color_cb)
-    _FBP_OBJECT_RNA.fbp_ink_factor = FloatProperty(name="Factor", description="Blend between the original image and the complete Ink treatment.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_ink_factor_cb)
-    _FBP_OBJECT_RNA.fbp_edge_work_radius = FloatProperty(name="Radius", description="Inner local-average radius used by Edge Work, measured in source-image pixels.", default=1.5, min=0.0, max=64.0, update=update_edge_work_radius_cb)
-    _FBP_OBJECT_RNA.fbp_edge_work_thickness = FloatProperty(name="Thickness", description="Distance between the inner and outer luminance scales used to form broad illustrated edges.", default=4.0, min=0.0, max=128.0, update=update_edge_work_thickness_cb)
-    _FBP_OBJECT_RNA.fbp_edge_work_strength = FloatProperty(name="Strength", description="Multiplier applied to the difference between the two local luminance scales.", default=5.0, min=0.0, max=32.0, update=update_edge_work_strength_cb)
-    _FBP_OBJECT_RNA.fbp_edge_work_threshold = FloatProperty(name="Threshold", description="Minimum Edge Work response retained.", default=0.025, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_work_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_edge_work_softness = FloatProperty(name="Softness", description="Feather the Edge Work threshold.", default=0.06, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_work_softness_cb)
-    _FBP_OBJECT_RNA.fbp_edge_work_color = FloatVectorProperty(name="Edge Color", description="Color applied to Edge Work lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02,0.015,0.01,1.0), update=update_edge_work_color_cb)
-    _FBP_OBJECT_RNA.fbp_edge_work_factor = FloatProperty(name="Factor", description="Blend between source and Edge Work.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_edge_work_factor_cb)
-    _FBP_OBJECT_RNA.fbp_pencil_sketch_radius = FloatProperty(name="Radius", description="Local luminance blur radius controlling Pencil Sketch line size.", default=6.0, min=0.0, max=128.0, update=update_pencil_sketch_radius_cb)
-    _FBP_OBJECT_RNA.fbp_pencil_sketch_contrast = FloatProperty(name="Contrast", description="Darken and strengthen generated graphite marks.", default=1.6, min=0.0, max=8.0, update=update_pencil_sketch_contrast_cb)
-    _FBP_OBJECT_RNA.fbp_pencil_sketch_graphite = FloatVectorProperty(name="Graphite Color", description="Color used for dark pencil marks.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.03,0.025,0.02,1.0), update=update_pencil_sketch_graphite_cb)
-    _FBP_OBJECT_RNA.fbp_pencil_sketch_paper = FloatVectorProperty(name="Paper Color", description="Color used for unmarked paper regions.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.96,0.93,0.84,1.0), update=update_pencil_sketch_paper_cb)
-    _FBP_OBJECT_RNA.fbp_pencil_sketch_color_amount = FloatProperty(name="Color Amount", description="Reintroduce source color beneath the graphite shading.", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_pencil_sketch_color_amount_cb)
-    _FBP_OBJECT_RNA.fbp_pencil_sketch_factor = FloatProperty(name="Factor", description="Blend between source and Pencil Sketch.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_pencil_sketch_factor_cb)
-    _FBP_OBJECT_RNA.fbp_poster_edges_levels = FloatProperty(name="Levels", description="Number of smooth color bands retained before outlines are applied.", default=5.0, min=2.0, max=64.0, precision=0, update=update_poster_edges_levels_cb)
-    _FBP_OBJECT_RNA.fbp_poster_edges_softness = FloatProperty(name="Band Softness", description="Transition softness between posterized color bands.", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_poster_edges_softness_cb)
-    _FBP_OBJECT_RNA.fbp_poster_edges_width = FloatProperty(name="Edge Width", description="Sobel edge sampling distance in source-image pixels.", default=1.0, min=0.0, max=32.0, update=update_poster_edges_width_cb)
-    _FBP_OBJECT_RNA.fbp_poster_edges_strength = FloatProperty(name="Edge Strength", description="Multiplier applied to Poster Edges outlines.", default=2.8, min=0.0, max=16.0, update=update_poster_edges_strength_cb)
-    _FBP_OBJECT_RNA.fbp_poster_edges_threshold = FloatProperty(name="Edge Threshold", description="Minimum Poster Edges outline magnitude retained.", default=0.045, min=0.0, max=1.0, subtype='FACTOR', update=update_poster_edges_threshold_cb)
-    _FBP_OBJECT_RNA.fbp_poster_edges_color = FloatVectorProperty(name="Edge Color", description="Outline color used by Poster Edges.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.01,0.008,0.006,1.0), update=update_poster_edges_color_cb)
-    _FBP_OBJECT_RNA.fbp_poster_edges_factor = FloatProperty(name="Factor", description="Blend between source and Poster Edges.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_poster_edges_factor_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_scale = FloatProperty(name="Scale", description="Density of procedural hatch lines across the source canvas.", default=72.0, min=1.0, soft_max=400.0, max=2000.0, update=update_crosshatch_scale_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_rotation = FloatProperty(name="Rotation", description="Rotate all Crosshatch directions around the image center.", default=0.0, subtype='ANGLE', update=update_crosshatch_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_line_width = FloatProperty(name="Line Width", description="Thickness of each hatch line inside its repeating cell.", default=0.10, min=0.001, max=0.49, subtype='FACTOR', update=update_crosshatch_line_width_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_levels = IntProperty(name="Levels", description="Maximum number of hatch directions used in progressively darker regions.", default=4, min=1, max=4, update=update_crosshatch_levels_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_ink = FloatVectorProperty(name="Ink Color", description="Color used for Crosshatch lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02,0.015,0.01,1.0), update=update_crosshatch_ink_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_paper = FloatVectorProperty(name="Paper Color", description="Base color used behind Crosshatch lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.95,0.91,0.80,1.0), update=update_crosshatch_paper_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_preserve_color = FloatProperty(name="Preserve Color", description="Blend original image color into the Crosshatch paper base.", default=0.10, min=0.0, max=1.0, subtype='FACTOR', update=update_crosshatch_preserve_color_cb)
-    _FBP_OBJECT_RNA.fbp_crosshatch_factor = FloatProperty(name="Factor", description="Blend between source and Crosshatch.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_crosshatch_factor_cb)
-    _FBP_OBJECT_RNA.fbp_emboss_angle = FloatProperty(name="Angle", description="Direction of the opposing samples that create the embossed relief.", default=0.78539816339, subtype='ANGLE', update=update_emboss_angle_cb)
-    _FBP_OBJECT_RNA.fbp_emboss_distance = FloatProperty(name="Distance", description="Distance between opposing Emboss samples in source-image pixels.", default=2.0, min=0.0, max=128.0, update=update_emboss_distance_cb)
-    _FBP_OBJECT_RNA.fbp_emboss_strength = FloatProperty(name="Strength", description="Contrast multiplier applied to directional relief.", default=2.0, min=-8.0, max=8.0, update=update_emboss_strength_cb)
-    _FBP_OBJECT_RNA.fbp_emboss_bias = FloatProperty(name="Bias", description="Middle-grey resting value of the embossed relief.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_emboss_bias_cb)
-    _FBP_OBJECT_RNA.fbp_emboss_color_amount = FloatProperty(name="Color Amount", description="Blend source color into the grayscale embossed relief.", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_emboss_color_amount_cb)
-    _FBP_OBJECT_RNA.fbp_emboss_factor = FloatProperty(name="Factor", description="Blend between source and Emboss.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_emboss_factor_cb)
+        name="Contrast Loss", default=0.30, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILM_FADE'))
+    _FBP_OBJECT_RNA.fbp_triangle_blur_radius = FloatProperty(name="Radius", description="Triangle Blur radius measured in source-image pixels.", default=8.0, min=0.0, soft_max=128.0, max=512.0, update=_effect_setting('TRIANGLE_BLUR'))
+    _FBP_OBJECT_RNA.fbp_triangle_blur_samples = IntProperty(name="Samples", description="Number of active Triangle Blur texture samples.", default=17, min=3, max=25, update=_effect_setting('TRIANGLE_BLUR'))
+    _FBP_OBJECT_RNA.fbp_triangle_blur_factor = FloatProperty(name="Factor", description="Blend between source and Triangle Blur.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('TRIANGLE_BLUR'))
+    _FBP_OBJECT_RNA.fbp_tilt_shift_position = FloatProperty(name="Focus Position", description="Position of the sharp Tilt Shift band along its rotated normal axis.", default=0.5, min=-1.0, max=2.0, soft_min=0.0, soft_max=1.0, update=_effect_setting('TILT_SHIFT'))
+    _FBP_OBJECT_RNA.fbp_tilt_shift_width = FloatProperty(name="Focus Width", description="Width of the sharp Tilt Shift band measured perpendicular to its angle.", default=0.25, min=0.001, max=2.0, soft_max=1.0, update=_effect_setting('TILT_SHIFT'))
+    _FBP_OBJECT_RNA.fbp_tilt_shift_angle = FloatProperty(name="Focus Angle", description="Rotate the sharp Tilt Shift band across the image. The yellow center control and blue/orange boundary controls edit this value directly.", default=0.0, subtype='ANGLE', update=_effect_setting('TILT_SHIFT'))
+    _FBP_OBJECT_RNA.fbp_tilt_shift_radius = FloatProperty(name="Blur Radius", description="Maximum Tilt Shift blur radius in source-image pixels.", default=16.0, min=0.0, soft_max=128.0, max=512.0, update=_effect_setting('TILT_SHIFT'))
+    _FBP_OBJECT_RNA.fbp_tilt_shift_factor = FloatProperty(name="Factor", description="Blend between source and Tilt Shift result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('TILT_SHIFT'))
+    _FBP_OBJECT_RNA.fbp_unsharp_radius = FloatProperty(name="Radius", description="Neighbor sampling radius used by Unsharp Mask.", default=1.0, min=0.0, max=32.0, update=_effect_setting('UNSHARP_MASK'))
+    _FBP_OBJECT_RNA.fbp_unsharp_amount = FloatProperty(name="Amount", description="Strength of sharpened local detail.", default=1.0, min=0.0, max=4.0, update=_effect_setting('UNSHARP_MASK'))
+    _FBP_OBJECT_RNA.fbp_unsharp_factor = FloatProperty(name="Factor", description="Blend between source and sharpened image.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('UNSHARP_MASK'))
+    _FBP_OBJECT_RNA.fbp_edge_detect_width = FloatProperty(name="Width", description="Edge sampling distance in source-image pixels.", default=1.0, min=0.0, max=32.0, update=_effect_setting('EDGE_DETECT'))
+    _FBP_OBJECT_RNA.fbp_edge_detect_strength = FloatProperty(name="Strength", description="Multiplier applied to detected edge contrast.", default=2.0, min=0.0, max=10.0, update=_effect_setting('EDGE_DETECT'))
+    _FBP_OBJECT_RNA.fbp_edge_detect_threshold = FloatProperty(name="Threshold", description="Minimum Sobel edge magnitude retained.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_DETECT'))
+    _FBP_OBJECT_RNA.fbp_edge_detect_softness = FloatProperty(name="Softness", description="Smooth transition width around the edge threshold.", default=0.04, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_DETECT'))
+    _FBP_OBJECT_RNA.fbp_edge_detect_color = FloatVectorProperty(name="Edge Color", description="Color applied to detected edges.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0,0.0,0.0,1.0), update=_effect_setting('EDGE_DETECT'))
+    _FBP_OBJECT_RNA.fbp_edge_detect_factor = FloatProperty(name="Factor", description="Blend between source and Edge Detect.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_DETECT'))
+    _FBP_OBJECT_RNA.fbp_oil_paint_radius = FloatProperty(name="Radius", description="Brush size in source-image pixels. Larger radii give broader, flatter strokes.", default=6.0, min=0.0, soft_max=24.0, max=64.0, update=_effect_setting('OIL_PAINT'))
+    _FBP_OBJECT_RNA.fbp_oil_paint_sharpness = FloatProperty(name="Sharpness", description="How strongly the calmest stroke direction wins. Low values blend directions softly; high values keep crisp paint edges.", default=8.0, min=0.0, max=32.0, update=_effect_setting('OIL_PAINT'))
+    _FBP_OBJECT_RNA.fbp_oil_paint_anisotropy = FloatProperty(name="Anisotropy", description="Stretch strokes along the image's edges. 0 is the classic round Kuwahara filter.", default=1.0, min=0.0, max=4.0, update=_effect_setting('OIL_PAINT'))
+    _FBP_OBJECT_RNA.fbp_oil_paint_factor = FloatProperty(name="Factor", description="Blend between the source and the painted result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('OIL_PAINT'))
+    _FBP_OBJECT_RNA.fbp_riso_ink_1 = FloatVectorProperty(name="Ink 1", description="First spot ink. Riso fluorescent pink by default.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.27, 0.55, 1.0), update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_ink_2 = FloatVectorProperty(name="Ink 2", description="Second spot ink. Riso medium blue by default.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.47, 0.75, 1.0), update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_ink_3 = FloatVectorProperty(name="Ink 3", description="Optional third spot ink, used when Third Ink is on.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.9, 0.0, 1.0), update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_use_ink_3 = BoolProperty(name="Third Ink", description="Print a third ink layer on top of the first two.", default=False, update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_paper = FloatVectorProperty(name="Paper", description="Paper color the inks are printed on.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.96, 0.94, 0.89, 1.0), update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_misregistration = FloatProperty(name="Misregistration", description="How far each ink drum drifts from the others, in source-image pixels.", default=4.0, min=0.0, soft_max=32.0, max=256.0, update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_halftone = FloatProperty(name="Halftone", description="Blend from flat ink density (0) to rotated halftone dots (1).", default=0.6, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_dot_size = FloatProperty(name="Dot Size", description="Halftone cell size in source-image pixels.", default=6.0, min=1.0, soft_max=48.0, max=256.0, update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_grain = FloatProperty(name="Grain", description="Uneven ink coverage that lets the paper show through.", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_drift_angle = FloatProperty(name="Drift Angle", description="Direction the ink drums slip out of register.", subtype='ANGLE', default=0.0, update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_print_rotation = FloatProperty(name="Print Rotation", description="Rotate the halftone screen and the grain.", subtype='ANGLE', default=0.0, update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_seed = FloatProperty(name="Seed", description="Reshuffle the grain and the halftone dots. Use Animate to change it over time.", default=0.0, min=0.0, max=1000.0, update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_riso_factor = FloatProperty(name="Factor", description="Blend between the source and the printed result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RISO_PRINT'))
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_distance = FloatProperty(name="Distance", description="Width of the ramp from the transparent edge inward, in source-image pixels.", default=32.0, min=1.0, soft_max=256.0, max=1024.0, update=_effect_setting('EDGE_DISTANCE_MASK'))
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_threshold = FloatProperty(name="Threshold", description="Where the mask turns on along the ramp. Animate it for a grow-in reveal from the outline.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_DISTANCE_MASK'))
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_softness = FloatProperty(name="Softness", description="Transition width around Threshold. 1 keeps the whole linear ramp; 0 cuts a hard inner outline.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_DISTANCE_MASK'))
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_image_border = BoolProperty(name="Image Border", description="Treat the image's own border as an edge, so fully opaque pictures get a frame-shaped falloff.", default=True, update=_effect_setting('EDGE_DISTANCE_MASK'))
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_factor = FloatProperty(name="Factor", description="Blend between the unmasked result and Edge Distance Mask.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_DISTANCE_MASK'))
+    _FBP_OBJECT_RNA.fbp_edge_distance_mask_invert = BoolProperty(name="Invert", description="Keep the band along the edge instead of the interior.", default=False, update=_effect_setting('EDGE_DISTANCE_MASK'))
+    _FBP_OBJECT_RNA.fbp_smooth_toon_levels = FloatProperty(name="Levels", description="Number of tonal bands retained by Smooth Toon.", default=6.0, min=2.0, max=64.0, precision=0, update=_effect_setting('SMOOTH_TOON'))
+    _FBP_OBJECT_RNA.fbp_smooth_toon_softness = FloatProperty(name="Softness", description="Blend quantized bands back toward the source for smoother transitions.", default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SMOOTH_TOON'))
+    _FBP_OBJECT_RNA.fbp_smooth_toon_factor = FloatProperty(name="Factor", description="Blend between source and Smooth Toon.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SMOOTH_TOON'))
+    _FBP_OBJECT_RNA.fbp_adaptive_threshold_radius = FloatProperty(name="Radius", description="Neighborhood radius used to calculate local luminance.", default=4.0, min=0.0, max=64.0, update=_effect_setting('ADAPTIVE_THRESHOLD'))
+    _FBP_OBJECT_RNA.fbp_adaptive_threshold_offset = FloatProperty(name="Offset", description="Bias added to local luminance before thresholding.", default=0.0, min=-1.0, max=1.0, update=_effect_setting('ADAPTIVE_THRESHOLD'))
+    _FBP_OBJECT_RNA.fbp_adaptive_threshold_softness = FloatProperty(name="Softness", description="Soft transition around the adaptive threshold.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('ADAPTIVE_THRESHOLD'))
+    _FBP_OBJECT_RNA.fbp_adaptive_threshold_invert = BoolProperty(name="Invert", description="Swap black and white regions in the adaptive threshold result.", default=False, update=_effect_setting('ADAPTIVE_THRESHOLD'))
+    _FBP_OBJECT_RNA.fbp_adaptive_threshold_factor = FloatProperty(name="Factor", description="Blend between source and adaptive threshold result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('ADAPTIVE_THRESHOLD'))
+    _FBP_OBJECT_RNA.fbp_false_color_dark = FloatVectorProperty(name="Dark Color", description="Color mapped to dark source luminance.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0,0.05,0.3,1.0), update=_effect_setting('FALSE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_false_color_light = FloatVectorProperty(name="Light Color", description="Color mapped to bright source luminance.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0,0.65,0.05,1.0), update=_effect_setting('FALSE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_false_color_factor = FloatProperty(name="Factor", description="Blend between source and False Color mapping.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FALSE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_chromatic_aberration_distance = FloatProperty(name="Distance", description="Opposite red and blue channel offset measured in source-image pixels.", default=3.0, min=0.0, max=128.0, update=_effect_setting('CHROMATIC_ABERRATION'))
+    _FBP_OBJECT_RNA.fbp_chromatic_aberration_angle = FloatProperty(name="Angle", description="Direction of the chromatic channel separation.", default=0.0, subtype='ANGLE', update=_effect_setting('CHROMATIC_ABERRATION'))
+    _FBP_OBJECT_RNA.fbp_chromatic_aberration_factor = FloatProperty(name="Factor", description="Blend between source and Chromatic Aberration.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CHROMATIC_ABERRATION'))
+    _FBP_OBJECT_RNA.fbp_ink_width = FloatProperty(name="Width", description="Sobel sampling distance used to extract ink lines, measured in source-image pixels.", default=1.0, min=0.0, max=32.0, update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_ink_threshold = FloatProperty(name="Threshold", description="Minimum edge magnitude converted into ink.", default=0.045, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_ink_softness = FloatProperty(name="Softness", description="Feather the ink threshold for smoother or rougher line transitions.", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_ink_strength = FloatProperty(name="Strength", description="Multiply the detected edge response before thresholding.", default=2.5, min=0.0, max=16.0, update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_ink_color = FloatVectorProperty(name="Ink Color", description="Color applied to extracted ink lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.015,0.01,0.008,1.0), update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_ink_paper_color = FloatVectorProperty(name="Paper Color", description="Base paper color used when Preserve Color is reduced.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.94,0.90,0.80,1.0), update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_ink_preserve_color = FloatProperty(name="Preserve Color", description="Blend the original image color into the paper base before applying ink lines.", default=0.20, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_ink_factor = FloatProperty(name="Factor", description="Blend between the original image and the complete Ink treatment.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('INK'))
+    _FBP_OBJECT_RNA.fbp_edge_work_radius = FloatProperty(name="Radius", description="Inner local-average radius used by Edge Work, measured in source-image pixels.", default=1.5, min=0.0, max=64.0, update=_effect_setting('EDGE_WORK'))
+    _FBP_OBJECT_RNA.fbp_edge_work_thickness = FloatProperty(name="Thickness", description="Distance between the inner and outer luminance scales used to form broad illustrated edges.", default=4.0, min=0.0, max=128.0, update=_effect_setting('EDGE_WORK'))
+    _FBP_OBJECT_RNA.fbp_edge_work_strength = FloatProperty(name="Strength", description="Multiplier applied to the difference between the two local luminance scales.", default=5.0, min=0.0, max=32.0, update=_effect_setting('EDGE_WORK'))
+    _FBP_OBJECT_RNA.fbp_edge_work_threshold = FloatProperty(name="Threshold", description="Minimum Edge Work response retained.", default=0.025, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_WORK'))
+    _FBP_OBJECT_RNA.fbp_edge_work_softness = FloatProperty(name="Softness", description="Feather the Edge Work threshold.", default=0.06, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_WORK'))
+    _FBP_OBJECT_RNA.fbp_edge_work_color = FloatVectorProperty(name="Edge Color", description="Color applied to Edge Work lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02,0.015,0.01,1.0), update=_effect_setting('EDGE_WORK'))
+    _FBP_OBJECT_RNA.fbp_edge_work_factor = FloatProperty(name="Factor", description="Blend between source and Edge Work.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EDGE_WORK'))
+    _FBP_OBJECT_RNA.fbp_pencil_sketch_radius = FloatProperty(name="Radius", description="Local luminance blur radius controlling Pencil Sketch line size.", default=6.0, min=0.0, max=128.0, update=_effect_setting('PENCIL_SKETCH'))
+    _FBP_OBJECT_RNA.fbp_pencil_sketch_contrast = FloatProperty(name="Contrast", description="Darken and strengthen generated graphite marks.", default=1.6, min=0.0, max=8.0, update=_effect_setting('PENCIL_SKETCH'))
+    _FBP_OBJECT_RNA.fbp_pencil_sketch_graphite = FloatVectorProperty(name="Graphite Color", description="Color used for dark pencil marks.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.03,0.025,0.02,1.0), update=_effect_setting('PENCIL_SKETCH'))
+    _FBP_OBJECT_RNA.fbp_pencil_sketch_paper = FloatVectorProperty(name="Paper Color", description="Color used for unmarked paper regions.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.96,0.93,0.84,1.0), update=_effect_setting('PENCIL_SKETCH'))
+    _FBP_OBJECT_RNA.fbp_pencil_sketch_color_amount = FloatProperty(name="Color Amount", description="Reintroduce source color beneath the graphite shading.", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('PENCIL_SKETCH'))
+    _FBP_OBJECT_RNA.fbp_pencil_sketch_factor = FloatProperty(name="Factor", description="Blend between source and Pencil Sketch.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('PENCIL_SKETCH'))
+    _FBP_OBJECT_RNA.fbp_poster_edges_levels = FloatProperty(name="Levels", description="Number of smooth color bands retained before outlines are applied.", default=5.0, min=2.0, max=64.0, precision=0, update=_effect_setting('POSTER_EDGES'))
+    _FBP_OBJECT_RNA.fbp_poster_edges_softness = FloatProperty(name="Band Softness", description="Transition softness between posterized color bands.", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('POSTER_EDGES'))
+    _FBP_OBJECT_RNA.fbp_poster_edges_width = FloatProperty(name="Edge Width", description="Sobel edge sampling distance in source-image pixels.", default=1.0, min=0.0, max=32.0, update=_effect_setting('POSTER_EDGES'))
+    _FBP_OBJECT_RNA.fbp_poster_edges_strength = FloatProperty(name="Edge Strength", description="Multiplier applied to Poster Edges outlines.", default=2.8, min=0.0, max=16.0, update=_effect_setting('POSTER_EDGES'))
+    _FBP_OBJECT_RNA.fbp_poster_edges_threshold = FloatProperty(name="Edge Threshold", description="Minimum Poster Edges outline magnitude retained.", default=0.045, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('POSTER_EDGES'))
+    _FBP_OBJECT_RNA.fbp_poster_edges_color = FloatVectorProperty(name="Edge Color", description="Outline color used by Poster Edges.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.01,0.008,0.006,1.0), update=_effect_setting('POSTER_EDGES'))
+    _FBP_OBJECT_RNA.fbp_poster_edges_factor = FloatProperty(name="Factor", description="Blend between source and Poster Edges.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('POSTER_EDGES'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_scale = FloatProperty(name="Scale", description="Density of procedural hatch lines across the source canvas.", default=72.0, min=1.0, soft_max=400.0, max=2000.0, update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_rotation = FloatProperty(name="Rotation", description="Rotate all Crosshatch directions around the image center.", default=0.0, subtype='ANGLE', update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_line_width = FloatProperty(name="Line Width", description="Thickness of each hatch line inside its repeating cell.", default=0.10, min=0.001, max=0.49, subtype='FACTOR', update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_levels = IntProperty(name="Levels", description="Maximum number of hatch directions used in progressively darker regions.", default=4, min=1, max=4, update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_ink = FloatVectorProperty(name="Ink Color", description="Color used for Crosshatch lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02,0.015,0.01,1.0), update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_paper = FloatVectorProperty(name="Paper Color", description="Base color used behind Crosshatch lines.", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.95,0.91,0.80,1.0), update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_preserve_color = FloatProperty(name="Preserve Color", description="Blend original image color into the Crosshatch paper base.", default=0.10, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_crosshatch_factor = FloatProperty(name="Factor", description="Blend between source and Crosshatch.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CROSSHATCH'))
+    _FBP_OBJECT_RNA.fbp_emboss_angle = FloatProperty(name="Angle", description="Direction of the opposing samples that create the embossed relief.", default=0.78539816339, subtype='ANGLE', update=_effect_setting('EMBOSS'))
+    _FBP_OBJECT_RNA.fbp_emboss_distance = FloatProperty(name="Distance", description="Distance between opposing Emboss samples in source-image pixels.", default=2.0, min=0.0, max=128.0, update=_effect_setting('EMBOSS'))
+    _FBP_OBJECT_RNA.fbp_emboss_strength = FloatProperty(name="Strength", description="Contrast multiplier applied to directional relief.", default=2.0, min=-8.0, max=8.0, update=_effect_setting('EMBOSS'))
+    _FBP_OBJECT_RNA.fbp_emboss_bias = FloatProperty(name="Bias", description="Middle-grey resting value of the embossed relief.", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EMBOSS'))
+    _FBP_OBJECT_RNA.fbp_emboss_color_amount = FloatProperty(name="Color Amount", description="Blend source color into the grayscale embossed relief.", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EMBOSS'))
+    _FBP_OBJECT_RNA.fbp_emboss_factor = FloatProperty(name="Factor", description="Blend between source and Emboss.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('EMBOSS'))
     _FBP_OBJECT_RNA.fbp_solid_mask_color = FloatVectorProperty(description="RGBA color blended over the source by Solid Mask.",
-        name="Mask Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.0, 1.0), update=update_solid_mask_color_cb)
+        name="Mask Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.0, 1.0), update=_effect_setting('SOLID_MASK'))
     _FBP_OBJECT_RNA.fbp_solid_mask_factor = FloatProperty(description="Blend amount between the original source and Solid Mask color. Zero keeps the source; one outputs only the mask color.",
-        name="Mask Factor", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_solid_mask_factor_cb)
-    _FBP_OBJECT_RNA.fbp_color_isolate_target = FloatVectorProperty(description="Color that Color Isolate keeps or emphasizes while suppressing colors outside the tolerance range.", name="Target Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.0, 0.0, 1.0), update=update_color_isolate_target_cb)
-    _FBP_OBJECT_RNA.fbp_color_isolate_tolerance = FloatProperty(description="Maximum color distance considered a match to the target color. Higher values include a broader range of hues.", name="Tolerance", default=0.12, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_tolerance_cb)
-    _FBP_OBJECT_RNA.fbp_color_isolate_falloff = FloatProperty(description="Soft transition width around the Color Isolate tolerance boundary. Higher values create smoother masks.", name="Falloff", default=0.1, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_falloff_cb)
-    _FBP_OBJECT_RNA.fbp_color_isolate_factor = FloatProperty(description="Blend between the original image and Color Isolate.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_color_isolate_factor_cb)
-    _FBP_OBJECT_RNA.fbp_replace_color_source = FloatVectorProperty(description="Color to replace. Use the eyedropper in the color picker to sample it from the viewport.", name="Source Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.0, 0.0, 1.0), update=update_replace_color_source_cb)
-    _FBP_OBJECT_RNA.fbp_replace_color_target = FloatVectorProperty(description="New color for the selected range.", name="Target Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.35, 1.0, 1.0), update=update_replace_color_target_cb)
-    _FBP_OBJECT_RNA.fbp_replace_color_tolerance = FloatProperty(description="How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.", name="Tolerance", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_tolerance_cb)
-    _FBP_OBJECT_RNA.fbp_replace_color_softness = FloatProperty(description="Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.", name="Softness", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_softness_cb)
-    _FBP_OBJECT_RNA.fbp_replace_color_preserve_shading = FloatProperty(description="Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.", name="Preserve Shading", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_preserve_shading_cb)
-    _FBP_OBJECT_RNA.fbp_replace_color_factor = FloatProperty(description="Blend between the original image and Replace Color.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_replace_color_factor_cb)
-    _FBP_OBJECT_RNA.fbp_white_balance_temperature = FloatProperty(name="Temperature", description="Shift white balance from cold blue at negative values to warm amber at positive values.", default=0.0, min=-1.0, max=1.0, update=update_white_balance_temperature_cb)
-    _FBP_OBJECT_RNA.fbp_white_balance_tint = FloatProperty(name="Tint", description="Shift white balance from green at negative values to magenta at positive values.", default=0.0, min=-1.0, max=1.0, update=update_white_balance_tint_cb)
-    _FBP_OBJECT_RNA.fbp_white_balance_factor = FloatProperty(name="Factor", description="Blend between the original image and White Balance correction.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_white_balance_factor_cb)
-    _FBP_OBJECT_RNA.fbp_curves_factor = FloatProperty(name="Factor", description="Blend between the original image and the RGB Curves result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_curves_factor_cb)
-    _FBP_OBJECT_RNA.fbp_duotone_shadows = FloatVectorProperty(description="RGBA color mapped to dark source values by Duotone.", name="Shadows Tone", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.2, 1.0), update=update_duotone_shadows_cb)
-    _FBP_OBJECT_RNA.fbp_duotone_highlights = FloatVectorProperty(description="RGBA color mapped to bright source values by Duotone.", name="Highlights Tone", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.8, 0.6, 1.0), update=update_duotone_highlights_cb)
+        name="Mask Factor", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SOLID_MASK'))
+    _FBP_OBJECT_RNA.fbp_color_isolate_target = FloatVectorProperty(description="Color that Color Isolate keeps or emphasizes while suppressing colors outside the tolerance range.", name="Target Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.0, 0.0, 1.0), update=_effect_setting('COLOR_ISOLATE'))
+    _FBP_OBJECT_RNA.fbp_color_isolate_tolerance = FloatProperty(description="Maximum color distance considered a match to the target color. Higher values include a broader range of hues.", name="Tolerance", default=0.12, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('COLOR_ISOLATE'))
+    _FBP_OBJECT_RNA.fbp_color_isolate_falloff = FloatProperty(description="Soft transition width around the Color Isolate tolerance boundary. Higher values create smoother masks.", name="Falloff", default=0.1, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('COLOR_ISOLATE'))
+    _FBP_OBJECT_RNA.fbp_color_isolate_factor = FloatProperty(description="Blend between the original image and Color Isolate.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('COLOR_ISOLATE'))
+    _FBP_OBJECT_RNA.fbp_replace_color_source = FloatVectorProperty(description="Color to replace. Use the eyedropper in the color picker to sample it from the viewport.", name="Source Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.0, 0.0, 1.0), update=_effect_setting('REPLACE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_replace_color_target = FloatVectorProperty(description="New color for the selected range.", name="Target Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.35, 1.0, 1.0), update=_effect_setting('REPLACE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_replace_color_tolerance = FloatProperty(description="How far a color may be from the Source Color and still be fully replaced. Higher values take in more nearby hues.", name="Tolerance", default=0.08, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('REPLACE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_replace_color_softness = FloatProperty(description="Feathered range beyond the Tolerance where the replacement fades out. Higher values give smoother edges.", name="Softness", default=0.05, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('REPLACE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_replace_color_preserve_shading = FloatProperty(description="Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.", name="Preserve Shading", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('REPLACE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_replace_color_factor = FloatProperty(description="Blend between the original image and Replace Color.", name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('REPLACE_COLOR'))
+    _FBP_OBJECT_RNA.fbp_white_balance_temperature = FloatProperty(name="Temperature", description="Shift white balance from cold blue at negative values to warm amber at positive values.", default=0.0, min=-1.0, max=1.0, update=_effect_setting('WHITE_BALANCE'))
+    _FBP_OBJECT_RNA.fbp_white_balance_tint = FloatProperty(name="Tint", description="Shift white balance from green at negative values to magenta at positive values.", default=0.0, min=-1.0, max=1.0, update=_effect_setting('WHITE_BALANCE'))
+    _FBP_OBJECT_RNA.fbp_white_balance_factor = FloatProperty(name="Factor", description="Blend between the original image and White Balance correction.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('WHITE_BALANCE'))
+    _FBP_OBJECT_RNA.fbp_curves_factor = FloatProperty(name="Factor", description="Blend between the original image and the RGB Curves result.", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CURVES'))
+    _FBP_OBJECT_RNA.fbp_duotone_shadows = FloatVectorProperty(description="RGBA color mapped to dark source values by Duotone.", name="Shadows Tone", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.2, 1.0), update=_effect_setting('DUOTONE'))
+    _FBP_OBJECT_RNA.fbp_duotone_highlights = FloatVectorProperty(description="RGBA color mapped to bright source values by Duotone.", name="Highlights Tone", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.8, 0.6, 1.0), update=_effect_setting('DUOTONE'))
     _FBP_OBJECT_RNA.fbp_recolor_factor = FloatProperty(
         description="Blend between the original source and the colors mapped through the editable Color Ramp.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_recolor_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RECOLOR'))
     _FBP_OBJECT_RNA.fbp_gradient_map_factor = FloatProperty(
         description="Blend between the original source and the Figma-style Gradient Map color ramp.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_gradient_map_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GRADIENT_MAP'))
     _FBP_OBJECT_RNA.fbp_channel_mixer_red = FloatProperty(
         description="Contribution of the source red channel in the Figma-style Channel Mixer.",
-        name="Red", default=1.0, min=-2.0, max=2.0, soft_min=0.0, soft_max=2.0, update=update_channel_mixer_red_cb)
+        name="Red", default=1.0, min=-2.0, max=2.0, soft_min=0.0, soft_max=2.0, update=_effect_setting('CHANNEL_MIXER'))
     _FBP_OBJECT_RNA.fbp_channel_mixer_green = FloatProperty(
         description="Contribution of the source green channel in the Figma-style Channel Mixer.",
-        name="Green", default=1.0, min=-2.0, max=2.0, soft_min=0.0, soft_max=2.0, update=update_channel_mixer_green_cb)
+        name="Green", default=1.0, min=-2.0, max=2.0, soft_min=0.0, soft_max=2.0, update=_effect_setting('CHANNEL_MIXER'))
     _FBP_OBJECT_RNA.fbp_channel_mixer_blue = FloatProperty(
         description="Contribution of the source blue channel in the Figma-style Channel Mixer.",
-        name="Blue", default=1.0, min=-2.0, max=2.0, soft_min=0.0, soft_max=2.0, update=update_channel_mixer_blue_cb)
+        name="Blue", default=1.0, min=-2.0, max=2.0, soft_min=0.0, soft_max=2.0, update=_effect_setting('CHANNEL_MIXER'))
     _FBP_OBJECT_RNA.fbp_channel_mixer_factor = FloatProperty(
         description="Blend between the original source and the mixed RGB channel result.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_channel_mixer_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CHANNEL_MIXER'))
     _FBP_OBJECT_RNA.fbp_dither_style = EnumProperty(
         name="Style",
         description="Real ordered dithering. Source luminance is compared against a threshold matrix.",
@@ -7627,66 +6917,66 @@ def register_properties():
             ('XPIXELS', "Threshold", "Plain one-bit threshold without a matrix", 'IPO_CONSTANT', 3),
             ('LINES', "Line screen", "Line-screen fallback based on source luminance", 'IPO_LINEAR', 4),
         ),
-        default='ORDERED', update=update_dither_style_cb)
+        default='ORDERED', update=_effect_setting('DITHER'))
     _FBP_OBJECT_RNA.fbp_dither_size = FloatProperty(
         description="Dither pixel size. Lower values create finer dithering, higher values make chunkier pixels.",
-        name="Pixel Size", default=3.0, min=1.0, soft_max=64.0, max=512.0, precision=1, update=update_dither_size_cb)
+        name="Pixel Size", default=3.0, min=1.0, soft_max=64.0, max=512.0, precision=1, update=_effect_setting('DITHER'))
     _FBP_OBJECT_RNA.fbp_dither_brightness = FloatProperty(
         description="Brightness multiplier applied before threshold comparison.",
-        name="Brightness", default=1.0, min=0.0, soft_max=3.0, max=8.0, subtype='FACTOR', update=update_dither_brightness_cb)
+        name="Brightness", default=1.0, min=0.0, soft_max=3.0, max=8.0, subtype='FACTOR', update=_effect_setting('DITHER'))
     _FBP_OBJECT_RNA.fbp_dither_contrast = FloatProperty(
         description="Pre-contrast applied before converting luminance into dithered pixels.",
-        name="Contrast", default=1.0, min=0.0, soft_max=3.0, max=8.0, precision=3, update=update_dither_contrast_cb)
+        name="Contrast", default=1.0, min=0.0, soft_max=3.0, max=8.0, precision=3, update=_effect_setting('DITHER'))
     _FBP_OBJECT_RNA.fbp_dither_mono = BoolProperty(
         description="Use Mono Color for the dithered ink. When disabled, future enhanced modes can preserve source color.",
-        name="Mono", default=True, update=update_dither_mono_cb)
+        name="Mono", default=True, update=_effect_setting('DITHER'))
     _FBP_OBJECT_RNA.fbp_dither_mono_color = FloatVectorProperty(
         description="Ink color used when Mono is enabled.",
-        name="Mono Color", subtype='COLOR', size=4, default=(0.0, 0.0, 0.0, 1.0), min=0.0, max=1.0, update=update_dither_mono_color_cb)
+        name="Mono Color", subtype='COLOR', size=4, default=(0.0, 0.0, 0.0, 1.0), min=0.0, max=1.0, update=_effect_setting('DITHER'))
     _FBP_OBJECT_RNA.fbp_dither_factor = FloatProperty(
         description="Blend between the original image and the Dither result.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_dither_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DITHER'))
 
     _FBP_OBJECT_RNA.fbp_bloom_threshold = FloatProperty(
         description="Luminance level that starts contributing to the Bloom glow.",
-        name="Threshold", default=0.72, min=0.0, max=1.0, subtype='FACTOR', update=update_bloom_threshold_cb)
+        name="Threshold", default=0.72, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('BLOOM'))
     _FBP_OBJECT_RNA.fbp_bloom_softness = FloatProperty(
         description="Soft transition around the Bloom threshold. Higher values create a broader glow region.",
-        name="Softness", default=0.18, min=0.001, max=1.0, subtype='FACTOR', update=update_bloom_softness_cb)
+        name="Softness", default=0.18, min=0.001, max=1.0, subtype='FACTOR', update=_effect_setting('BLOOM'))
     _FBP_OBJECT_RNA.fbp_bloom_intensity = FloatProperty(
         description="Strength of the added Bloom color in highlight regions.",
-        name="Intensity", default=0.65, min=0.0, soft_max=2.0, max=4.0, precision=3, update=update_bloom_intensity_cb)
+        name="Intensity", default=0.65, min=0.0, soft_max=2.0, max=4.0, precision=3, update=_effect_setting('BLOOM'))
     _FBP_OBJECT_RNA.fbp_bloom_color = FloatVectorProperty(
         description="Color added to bright regions by the Bloom effect.",
-        name="Glow Color", subtype='COLOR', size=4, default=(1.0, 0.82, 0.48, 1.0), min=0.0, max=1.0, update=update_bloom_color_cb)
+        name="Glow Color", subtype='COLOR', size=4, default=(1.0, 0.82, 0.48, 1.0), min=0.0, max=1.0, update=_effect_setting('BLOOM'))
     _FBP_OBJECT_RNA.fbp_bloom_factor = FloatProperty(
         description="Blend between the original image and the Bloom result.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_bloom_factor_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('BLOOM'))
     _FBP_OBJECT_RNA.fbp_filter_preset_sepia = FloatProperty(
         description="Blend in a sepia preset based on luminance.",
-        name="Sepia", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_filter_preset_sepia_cb)
+        name="Sepia", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILTER_PRESETS'))
     _FBP_OBJECT_RNA.fbp_filter_preset_warm = FloatProperty(
         description="Blend in a warm orange filter preset.",
-        name="Warm", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_filter_preset_warm_cb)
+        name="Warm", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILTER_PRESETS'))
     _FBP_OBJECT_RNA.fbp_filter_preset_cool = FloatProperty(
         description="Blend in a cool blue filter preset.",
-        name="Cool", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_filter_preset_cool_cb)
+        name="Cool", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILTER_PRESETS'))
     _FBP_OBJECT_RNA.fbp_filter_preset_noir = FloatProperty(
         description="Blend in a high-contrast monochrome noir preset.",
-        name="Noir", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=update_filter_preset_noir_cb)
+        name="Noir", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILTER_PRESETS'))
     _FBP_OBJECT_RNA.fbp_filter_preset_factor = FloatProperty(
         description="Overall intensity of the Figma-inspired Filter Presets stack.",
-        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_filter_preset_factor_cb)
-    _FBP_OBJECT_RNA.fbp_paper_fiber_scale = FloatProperty(description="Spatial frequency of Paper Fibers. Higher values produce finer, more numerous fibers.", name="Fiber Scale", default=140.0, min=0.01, soft_max=3000.0, precision=1, update=update_paper_fiber_scale_cb)
-    _FBP_OBJECT_RNA.fbp_paper_fiber_intensity = FloatProperty(description="Strength of Paper Fibers mixed into the source image.", name="Intensity", default=0.40, min=0.0, max=1.0, subtype='FACTOR', update=update_paper_fiber_intensity_cb)
-    _FBP_OBJECT_RNA.fbp_paper_fiber_phase = FloatProperty(description="Fourth-dimensional noise coordinate used to animate or select a different Paper Fibers pattern.", name="Animate (W)", default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, update=update_paper_fiber_phase_cb)
-    _FBP_OBJECT_RNA.fbp_gradient_light_center_x = FloatProperty(description="Horizontal center of the Gradient controller in source-image UV space. Move the paired viewport controls to reposition it freely across the cropped image.", name="Center X", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_gradient_light_center_x_cb)
-    _FBP_OBJECT_RNA.fbp_gradient_light_center_y = FloatProperty(description="Vertical center of the Gradient controller in source-image UV space. Move the paired viewport controls to reposition it freely across the cropped image.", name="Center Y", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=update_gradient_light_center_y_cb)
-    _FBP_OBJECT_RNA.fbp_gradient_light_angle = FloatProperty(description="Direction of Gradient Light across the plane, expressed as an angle.", name="Light Angle", default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_gradient_light_angle_cb)
-    _FBP_OBJECT_RNA.fbp_gradient_light_strength = FloatProperty(description="Blend between the original source and the directional Color Ramp lighting.", name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=update_gradient_light_strength_cb)
-    _FBP_OBJECT_RNA.fbp_gradient_shadow_position = FloatProperty(description="Offset of the Gradient Light shadow boundary across the plane.", name="Shadow Position", default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=update_gradient_shadow_position_cb)
-    _FBP_OBJECT_RNA.fbp_gradient_softness = FloatProperty(description="Width of the Gradient Light transition between lit and shadowed regions.", name="Softness", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_gradient_softness_cb)
-    _FBP_OBJECT_RNA.fbp_gradient_shadow_color = FloatVectorProperty(description="RGBA color mixed into the shadow side of Gradient Light.", name="Shadow Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.05, 1.0), update=update_gradient_shadow_color_cb)
+        name="Factor", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('FILTER_PRESETS'))
+    _FBP_OBJECT_RNA.fbp_paper_fiber_scale = FloatProperty(description="Spatial frequency of Paper Fibers. Higher values produce finer, more numerous fibers.", name="Fiber Scale", default=140.0, min=0.01, soft_max=3000.0, precision=1, update=_effect_setting('PAPER_FIBERS'))
+    _FBP_OBJECT_RNA.fbp_paper_fiber_intensity = FloatProperty(description="Strength of Paper Fibers mixed into the source image.", name="Intensity", default=0.40, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('PAPER_FIBERS'))
+    _FBP_OBJECT_RNA.fbp_paper_fiber_phase = FloatProperty(description="Fourth-dimensional noise coordinate used to animate or select a different Paper Fibers pattern.", name="Animate (W)", default=0.0, soft_min=-100.0, soft_max=100.0, precision=3, update=_effect_setting('PAPER_FIBERS'))
+    _FBP_OBJECT_RNA.fbp_gradient_light_center_x = FloatProperty(description="Horizontal center of the Gradient controller in source-image UV space. Move the paired viewport controls to reposition it freely across the cropped image.", name="Center X", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('GRADIENT_LIGHT'))
+    _FBP_OBJECT_RNA.fbp_gradient_light_center_y = FloatProperty(description="Vertical center of the Gradient controller in source-image UV space. Move the paired viewport controls to reposition it freely across the cropped image.", name="Center Y", default=0.5, soft_min=0.0, soft_max=1.0, min=-2.0, max=3.0, update=_effect_setting('GRADIENT_LIGHT'))
+    _FBP_OBJECT_RNA.fbp_gradient_light_angle = FloatProperty(description="Direction of Gradient Light across the plane, expressed as an angle.", name="Light Angle", default=0.0, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=_effect_setting('GRADIENT_LIGHT'))
+    _FBP_OBJECT_RNA.fbp_gradient_light_strength = FloatProperty(description="Blend between the original source and the directional Color Ramp lighting.", name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GRADIENT_LIGHT'))
+    _FBP_OBJECT_RNA.fbp_gradient_shadow_position = FloatProperty(description="Offset of the Gradient Light shadow boundary across the plane.", name="Shadow Position", default=0.0, soft_min=-2.0, soft_max=2.0, precision=3, update=_effect_setting('GRADIENT_LIGHT'))
+    _FBP_OBJECT_RNA.fbp_gradient_softness = FloatProperty(description="Width of the Gradient Light transition between lit and shadowed regions.", name="Softness", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GRADIENT_LIGHT'))
+    _FBP_OBJECT_RNA.fbp_gradient_shadow_color = FloatVectorProperty(description="RGBA color mixed into the shadow side of Gradient Light.", name="Shadow Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.0, 0.0, 0.05, 1.0), update=_effect_setting('GRADIENT_LIGHT'))
     _FBP_OBJECT_RNA.fbp_rim_mode = EnumProperty(
         name="Rim Type",
         description="Place the colored rim inside the alpha silhouette, outside it, or on both sides",
@@ -7695,7 +6985,7 @@ def register_properties():
             ('OUTER', 'Outer', 'Expand alpha and draw the rim outside the source silhouette'),
             ('BOTH', 'Both', 'Draw a continuous rim on both sides of the source edge'),
         ),
-        default='INNER', update=update_rim_mode_cb)
+        default='INNER', update=_effect_setting('RIM'))
     _FBP_OBJECT_RNA.fbp_rim_blend_mode = EnumProperty(
         name="Blend Mode",
         description="Blend Rim Color with the current layer color",
@@ -7709,16 +6999,16 @@ def register_properties():
             ('ADD', 'Add', 'Add Rim Color to the layer'),
             ('DIFFERENCE', 'Difference', 'Use the absolute color difference'),
         ),
-        default='NORMAL', update=update_rim_blend_mode_cb)
-    _FBP_OBJECT_RNA.fbp_rim_width = FloatProperty(description="Base UV distance used to select the source alpha edge.", name="Width", default=0.012, min=0.00001, soft_max=0.1, max=0.5, precision=5, update=update_rim_width_cb)
-    _FBP_OBJECT_RNA.fbp_rim_expand = FloatProperty(description="Grow positive or shrink negative the selected edge band without changing the source image.", name="Expand / Shrink", default=0.0, soft_min=-0.1, soft_max=0.1, min=-0.5, max=0.5, precision=4, update=update_rim_expand_cb)
-    _FBP_OBJECT_RNA.fbp_rim_offset_x = FloatProperty(description="Move the generated rim horizontally in UV space while preserving the source layer position.", name="Offset X", default=0.0, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, precision=4, update=update_rim_offset_x_cb)
-    _FBP_OBJECT_RNA.fbp_rim_offset_y = FloatProperty(description="Move the generated rim vertically in UV space while preserving the source layer position.", name="Offset Y", default=0.0, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, precision=4, update=update_rim_offset_y_cb)
-    _FBP_OBJECT_RNA.fbp_rim_rotation = FloatProperty(description="Rotate the Rim offset direction in the local space of the plane. This value is driven by rotating the viewport control.", name="Rotation", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=update_rim_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_rim_blur = FloatProperty(description="Spatial radius of the second alpha kernel. Increase it for a visibly broader, softer edge.", name="Blur Radius", default=0.015, min=0.0, soft_max=0.1, max=0.5, precision=4, update=update_rim_blur_cb)
-    _FBP_OBJECT_RNA.fbp_rim_softness = FloatProperty(description="Mix between the sharp Width kernel and the wider Blur Radius kernel.", name="Feather", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=update_rim_softness_cb)
-    _FBP_OBJECT_RNA.fbp_rim_intensity = FloatProperty(description="Opacity and strength of the colored rim.", name="Intensity", default=1.0, min=0.0, soft_max=2.0, max=2.0, update=update_rim_intensity_cb)
-    _FBP_OBJECT_RNA.fbp_rim_color = FloatVectorProperty(description="RGBA color applied to the generated rim.", name="Rim Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.35, 0.05, 1.0), update=update_rim_color_cb)
+        default='NORMAL', update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_width = FloatProperty(description="Base UV distance used to select the source alpha edge.", name="Width", default=0.012, min=0.00001, soft_max=0.1, max=0.5, precision=5, update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_expand = FloatProperty(description="Grow positive or shrink negative the selected edge band without changing the source image.", name="Expand / Shrink", default=0.0, soft_min=-0.1, soft_max=0.1, min=-0.5, max=0.5, precision=4, update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_offset_x = FloatProperty(description="Move the generated rim horizontally in UV space while preserving the source layer position.", name="Offset X", default=0.0, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, precision=4, update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_offset_y = FloatProperty(description="Move the generated rim vertically in UV space while preserving the source layer position.", name="Offset Y", default=0.0, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0, precision=4, update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_rotation = FloatProperty(description="Rotate the Rim offset direction in the local space of the plane. This value is driven by rotating the viewport control.", name="Rotation", default=0.0, min=-6.283185307, max=6.283185307, subtype='ANGLE', update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_blur = FloatProperty(description="Spatial radius of the second alpha kernel. Increase it for a visibly broader, softer edge.", name="Blur Radius", default=0.015, min=0.0, soft_max=0.1, max=0.5, precision=4, update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_softness = FloatProperty(description="Mix between the sharp Width kernel and the wider Blur Radius kernel.", name="Feather", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_intensity = FloatProperty(description="Opacity and strength of the colored rim.", name="Intensity", default=1.0, min=0.0, soft_max=2.0, max=2.0, update=_effect_setting('RIM'))
+    _FBP_OBJECT_RNA.fbp_rim_color = FloatVectorProperty(description="RGBA color applied to the generated rim.", name="Rim Color", subtype='COLOR', size=4, min=0.0, max=1.0, default=(1.0, 0.35, 0.05, 1.0), update=_effect_setting('RIM'))
     _FBP_OBJECT_RNA.fbp_shadow_mode = EnumProperty(
         name="Shadow Type",
         description="Choose whether the blurred offset alpha is drawn outside the source silhouette or carved inside its visible alpha",
@@ -7726,7 +7016,7 @@ def register_properties():
             ('OUTER', 'Outer', 'Place the shadow outside the source alpha silhouette'),
             ('INNER', 'Inner', 'Place the shadow inside the source alpha silhouette'),
         ],
-        default='OUTER', update=update_shadow_mode_cb,
+        default='OUTER', update=_effect_setting('SHADOW'),
     )
     _FBP_OBJECT_RNA.fbp_shadow_blend_mode = EnumProperty(
         name="Blend Mode",
@@ -7741,45 +7031,45 @@ def register_properties():
             ('ADD', 'Add', 'Add the shadow color to the layer'),
             ('DIFFERENCE', 'Difference', 'Use the absolute difference from the shadow color'),
         ],
-        default='NORMAL', update=update_shadow_blend_mode_cb,
+        default='NORMAL', update=_effect_setting('SHADOW'),
     )
     _FBP_OBJECT_RNA.fbp_shadow_offset_x = FloatProperty(
         name="Position X",
         description="Move the shadow horizontally in image UV space without moving the source layer",
         default=0.025, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0,
-        precision=4, update=update_shadow_offset_x_cb,
+        precision=4, update=_effect_setting('SHADOW'),
     )
     _FBP_OBJECT_RNA.fbp_shadow_offset_y = FloatProperty(
         name="Position Y",
         description="Move the shadow vertically in image UV space without moving the source layer",
         default=-0.025, soft_min=-0.25, soft_max=0.25, min=-1.0, max=1.0,
-        precision=4, update=update_shadow_offset_y_cb,
+        precision=4, update=_effect_setting('SHADOW'),
     )
     _FBP_OBJECT_RNA.fbp_shadow_blur = FloatProperty(
         name="Blur",
         description="Radius of the alpha sampling kernel used to soften the shadow edge",
         default=0.02, min=0.0, soft_max=0.12, max=0.5, precision=4,
-        update=update_shadow_blur_cb,
+        update=_effect_setting('SHADOW'),
     )
     _FBP_OBJECT_RNA.fbp_shadow_opacity = FloatProperty(
         name="Opacity",
         description="Maximum opacity of the generated inner or outer shadow",
-        default=0.65, min=0.0, max=1.0, subtype='FACTOR', update=update_shadow_opacity_cb,
+        default=0.65, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('SHADOW'),
     )
     _FBP_OBJECT_RNA.fbp_shadow_color = FloatVectorProperty(
         name="Shadow Color",
         description="Color used by the generated shadow. Overall transparency is controlled by Opacity",
         subtype='COLOR', size=4, min=0.0, max=1.0,
-        default=(0.0, 0.0, 0.0, 1.0), update=update_shadow_color_cb,
+        default=(0.0, 0.0, 0.0, 1.0), update=_effect_setting('SHADOW'),
     )
-    _FBP_OBJECT_RNA.fbp_gobo_pattern_scale = FloatProperty(description="Spatial scale of the procedural Gobo Shadows pattern. Higher values create smaller projected shapes.", name="Pattern Scale", default=10.0, min=0.001, soft_max=100.0, precision=3, update=update_gobo_pattern_scale_cb)
-    _FBP_OBJECT_RNA.fbp_gobo_rotation = FloatProperty(description="Rotate the Gobo Shadows pattern around the plane center.", name="Rotation Angle", default=0.5, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=update_gobo_rotation_cb)
-    _FBP_OBJECT_RNA.fbp_gobo_sharpness = FloatProperty(description="Hardness of Gobo Shadows pattern edges. Lower values blur transitions; higher values create crisp shapes.", name="Sharpness", default=0.8, min=0.0, max=1.0, subtype='FACTOR', update=update_gobo_sharpness_cb)
-    _FBP_OBJECT_RNA.fbp_crt_line_count = FloatProperty(description="Approximate number of horizontal CRT scanlines distributed across the image height.", name="Line Count", default=200.0, min=1.0, soft_max=2000.0, precision=0, update=update_crt_line_count_cb)
-    _FBP_OBJECT_RNA.fbp_crt_opacity = FloatProperty(description="Strength of dark CRT scanlines blended over the source image.", name="Opacity", default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=update_crt_opacity_cb)
-    _FBP_OBJECT_RNA.fbp_vignette_radius = FloatProperty(description="Distance from the image center before Vignette darkening becomes prominent.", name="Radius", default=0.5, min=0.0, soft_max=2.0, precision=3, update=update_vignette_radius_cb)
-    _FBP_OBJECT_RNA.fbp_vignette_smoothness = FloatProperty(description="Width and softness of the Vignette transition. Higher values create a broader gradual falloff.", name="Smoothness", default=0.2, min=0.0, max=1.0, subtype='FACTOR', update=update_vignette_smoothness_cb)
-    _FBP_OBJECT_RNA.fbp_vignette_strength = FloatProperty(description="Maximum amount of Vignette darkening applied near the image edges.", name="Strength", default=0.8, min=0.0, max=1.0, subtype='FACTOR', update=update_vignette_strength_cb)
+    _FBP_OBJECT_RNA.fbp_gobo_pattern_scale = FloatProperty(description="Spatial scale of the procedural Gobo Shadows pattern. Higher values create smaller projected shapes.", name="Pattern Scale", default=10.0, min=0.001, soft_max=100.0, precision=3, update=_effect_setting('GOBO_SHADOWS'))
+    _FBP_OBJECT_RNA.fbp_gobo_rotation = FloatProperty(description="Rotate the Gobo Shadows pattern around the plane center.", name="Rotation Angle", default=0.5, soft_min=-3.141593, soft_max=3.141593, subtype='ANGLE', update=_effect_setting('GOBO_SHADOWS'))
+    _FBP_OBJECT_RNA.fbp_gobo_sharpness = FloatProperty(description="Hardness of Gobo Shadows pattern edges. Lower values blur transitions; higher values create crisp shapes.", name="Sharpness", default=0.8, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('GOBO_SHADOWS'))
+    _FBP_OBJECT_RNA.fbp_crt_line_count = FloatProperty(description="Approximate number of horizontal CRT scanlines distributed across the image height.", name="Line Count", default=200.0, min=1.0, soft_max=2000.0, precision=0, update=_effect_setting('CRT_SCANLINES'))
+    _FBP_OBJECT_RNA.fbp_crt_opacity = FloatProperty(description="Strength of dark CRT scanlines blended over the source image.", name="Opacity", default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('CRT_SCANLINES'))
+    _FBP_OBJECT_RNA.fbp_vignette_radius = FloatProperty(description="Distance from the image center before Vignette darkening becomes prominent.", name="Radius", default=0.5, min=0.0, soft_max=2.0, precision=3, update=_effect_setting('VIGNETTE'))
+    _FBP_OBJECT_RNA.fbp_vignette_smoothness = FloatProperty(description="Width and softness of the Vignette transition. Higher values create a broader gradual falloff.", name="Smoothness", default=0.2, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('VIGNETTE'))
+    _FBP_OBJECT_RNA.fbp_vignette_strength = FloatProperty(description="Maximum amount of Vignette darkening applied near the image edges.", name="Strength", default=0.8, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('VIGNETTE'))
 
     _register_effect_animation_properties()
 

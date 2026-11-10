@@ -49,7 +49,6 @@ _TARGET_NAMES_CACHE = globals().get("_TARGET_NAMES_CACHE", {})
 _TARGET_NAMES_CACHE_SECONDS = 0.08
 _TARGET_NAMES_CACHE_LIMIT = 128
 _DIRTY_FLUSH_PENDING = False
-_DIRTY_FLUSH_PENDING_AT = 0.0
 _DIRTY_FLUSH_BATCH_LIMIT = 64
 _DIRTY_FLUSH_TIME_BUDGET_SECONDS = 0.004
 _DIRTY_METRICS = globals().get("_DIRTY_METRICS", {})
@@ -530,25 +529,18 @@ def dirty_queue_snapshot():
 
 
 def _schedule_flush():
-    global _DIRTY_FLUSH_PENDING, _DIRTY_FLUSH_PENDING_AT
-    try:
-        now = time.monotonic()
-    except (RuntimeError, TypeError, ValueError):
-        now = 0.0
+    global _DIRTY_FLUSH_PENDING
     # Always touch the shared scheduler. Undo/load can invalidate the facade
     # epoch while this local flag still says a timer is active; an early return
     # here stranded the first post-Undo slider edit with no consumer.
     try:
         if not schedule_once(_DIRTY_TIMER_KEY, flush_dirty, first_interval=0.0):
             _DIRTY_FLUSH_PENDING = False
-            _DIRTY_FLUSH_PENDING_AT = 0.0
             return False
         _DIRTY_FLUSH_PENDING = True
-        _DIRTY_FLUSH_PENDING_AT = now
         return True
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         _DIRTY_FLUSH_PENDING = False
-        _DIRTY_FLUSH_PENDING_AT = 0.0
         return False
 
 
@@ -754,17 +746,12 @@ def flush_dirty():
     Undo and render mutations remain guarded; generated-image publication keeps
     its separate conservative depsgraph barrier.
     """
-    global _DIRTY_FLUSH_PENDING, _DIRTY_FLUSH_PENDING_AT
+    global _DIRTY_FLUSH_PENDING
     if fbp_undo_guard_active() or fbp_render_mutation_blocked():
         _DIRTY_METRICS["deferred"] += 1
         _DIRTY_FLUSH_PENDING = True
-        try:
-            _DIRTY_FLUSH_PENDING_AT = time.monotonic()
-        except (RuntimeError, TypeError, ValueError):
-            _DIRTY_FLUSH_PENDING_AT = 0.0
         return 0.06
     _DIRTY_FLUSH_PENDING = False
-    _DIRTY_FLUSH_PENDING_AT = 0.0
     if not _DIRTY_EFFECT_SETTINGS and not _DIRTY_EFFECT_ANIMATION and not _DIRTY_GEOMETRY_CALLBACKS:
         return None
     try:
@@ -815,16 +802,12 @@ def flush_dirty():
     if _DIRTY_EFFECT_SETTINGS or _DIRTY_EFFECT_ANIMATION or _DIRTY_GEOMETRY_CALLBACKS:
         _DIRTY_METRICS["budget_yields"] += int(stop or processed >= _DIRTY_FLUSH_BATCH_LIMIT)
         _DIRTY_FLUSH_PENDING = True
-        try:
-            _DIRTY_FLUSH_PENDING_AT = time.monotonic()
-        except (RuntimeError, TypeError, ValueError):
-            _DIRTY_FLUSH_PENDING_AT = 0.0
         return 0.005
     return None
 
 
 def clear_dirty():
-    global _DIRTY_FLUSH_PENDING, _DIRTY_FLUSH_PENDING_AT
+    global _DIRTY_FLUSH_PENDING
     _DIRTY_EFFECT_SETTINGS.clear()
     _DIRTY_EFFECT_ANIMATION.clear()
     _DIRTY_GEOMETRY_CALLBACKS.clear()
@@ -832,7 +815,6 @@ def clear_dirty():
     _ANIM_STORAGE_PROP_CACHE.clear()
     _EFFECT_INSTANCE_SUPPORT_CACHE.clear()
     _DIRTY_FLUSH_PENDING = False
-    _DIRTY_FLUSH_PENDING_AT = 0.0
     return True
 
 

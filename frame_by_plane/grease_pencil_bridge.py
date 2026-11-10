@@ -8869,8 +8869,6 @@ def clear_grease_pencil_runtime_caches():
     Render visibility backups and the saved 3D Cursor are intentionally excluded:
     their dedicated restore paths must run before those states are discarded.
     """
-    global _GP_GEOMETRY_CACHE_BYTES, _GP_DISTANCE_CACHE_BYTES
-    global _GP_REVEAL_POSITION_CACHE_BYTES, _GP_RGBA_BUFFER_CACHE_BYTES
     _clear_gp_exposure_cache()
     _clear_gp_output_caches()
     _clear_gp_geometry_cache()

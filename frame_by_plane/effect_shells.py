@@ -12,8 +12,9 @@ Cycles.
 Every built-in image effect and mask gets a shell as soon as it is added, so
 Blender's Modifiers panel is the only effect stack, and the shell carries every
 setting of the effect panel: values the material reads, choices (dropdowns),
-settings Frame By Plane converts and the Animate section. Only curves, ramps,
-images and Grease Pencil editing stay in the Frame By Plane panel.
+settings Frame By Plane converts and the Animate section. Buttons, curves,
+ramps, images and Grease Pencil editing are drawn under the inputs by
+``native_effect_panel``.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ _SHELL_DERIVED_PROPERTIES = {
 _SHELL_CATEGORIES = {"BASE", "2D", "MASK"}
 # Layer effects that do not run in the material (Crop and Extend resize the
 # plane, Emission sets its surface, the others move or deform it). Their
-# modifier is a row only: order, eye, camera and delete; the settings stay in
-# the Frame By Plane panel, which shows them while the row is active.
+# modifier is a row for order, eye, camera and delete; the settings it cannot
+# hold as inputs are drawn under them by ``native_effect_panel``.
 FBP_SHELL_ROW_EFFECTS = (
     "CROP", "EXTEND", "EMISSION", "MOTION", "CAMERA_BILLBOARD", "LATTICE",
 )
@@ -259,7 +260,10 @@ def _build_shell_group(rig, effect_id, token):
 _SHELL_UI_KEY = "fbp_shell_ui"
 # 2: every panel control (choices, extra settings, Animate) is an input.
 # 3: variant, input, preview, mask operation, viewport control and sources.
-_SHELL_UI_VERSION = 3
+# 4: Actions is the first input, with the Lattice cage and handle actions.
+# 6: Action button rows rest with no button pressed.
+# 7: More effects get a Tools row (mask shapes, Gradient Light, Motion...).
+_SHELL_UI_VERSION = 7
 _SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
 _SHELL_USAGE_NODE_KEY = "fbp_shell_usage_node"
 _SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
@@ -356,14 +360,25 @@ def _virtual_settings(effect_id, definition):
             [(item[0], item[1]) for item in geo.FBP_MASK_STACK_OPERATIONS],
             "How this mask combines with the masks above it",
         )))
+    # Two rows of buttons at the top of the modifier: what the effect's
+    # handles and helpers can do, then Reset, Presets and Node Editor.
     actions = _effect_actions(effect_id, definition)
-    if actions:
+    tools = [(key, label) for key, label, _op, _kwargs in actions if key not in _EFFECT_ACTIONS]
+    general = [(key, label) for key, label, _op, _kwargs in actions if key in _EFFECT_ACTIONS]
+    if tools:
+        result.append(("@TOOLS", _VirtualSetting(
+            "@TOOLS", "Tools", [("NONE", "·")] + tools, "Run a tool of this effect",
+        )))
+    if general:
         result.append(("@ACTION", _VirtualSetting(
-            "@ACTION", "Actions",
-            [("NONE", "Choose…")] + [(key, label) for key, label, _op, _kwargs in actions],
-            "Run an action on this effect",
+            "@ACTION", "Effect", [("NONE", "·")] + general, "Reset this effect, load a preset or open its nodes",
         )))
     return result
+
+
+# Keys of the actions every effect has (second button row).
+_EFFECT_ACTIONS = frozenset({"RESET", "PRESETS", "NODES"})
+_ACTION_KEYS = ("@TOOLS", "@ACTION")
 
 
 def _effect_actions(effect_id, definition):
@@ -371,26 +386,59 @@ def _effect_actions(effect_id, definition):
     if bool(definition.get("custom", False)):
         return ()
     actions = [
-        ("RESET", "Reset to Defaults", "fbp.reset_active_effect", {"effect_id": effect_id}),
-        ("PRESETS", "Presets…", "fbp.open_effect_presets", {"effect_id": effect_id}),
+        ("RESET", "Reset", "fbp.reset_active_effect", {"effect_id": effect_id}),
+        ("PRESETS", "Presets", "fbp.open_effect_presets", {"effect_id": effect_id}),
     ]
     if definition.get("kind") in {"SHADER", "MASK", "GEOMETRY"}:
         # Color ramps and curves are edited in the node tree.
-        label = (
-            "Edit Ramp in Node Editor" if definition.get("color_ramp_role")
-            else "Edit Curves in Node Editor" if effect_id == "CURVES"
-            else "Open in Node Editor"
-        )
-        actions.append(("NODES", label, "fbp.open_effect_nodes", {"effect_id": effect_id}))
+        actions.append(("NODES", "Node Editor", "fbp.open_effect_nodes", {"effect_id": effect_id}))
     if _has_viewport_control(effect_id):
-        actions.append(("SELECT_CONTROL", "Select Viewport Control", "fbp.select_effect_control", {"effect_id": effect_id}))
-        actions.append(("RESET_CONTROL", "Reset Viewport Control", "fbp.reset_effect_control", {"effect_id": effect_id}))
+        actions.append(("SELECT_CONTROL", "Select Rig", "fbp.select_effect_control", {"effect_id": effect_id}))
+        actions.append(("RESET_CONTROL", "Reset Rig", "fbp.reset_effect_control", {"effect_id": effect_id}))
     if effect_id == "CROP":
         actions.append(("CROP_ALPHA", "Crop Alpha", "fbp.crop_alpha", {}))
         actions.append(("RESET_CROP", "Reset Crop", "fbp.reset_crop", {}))
     if effect_id == "SHADOW":
-        actions.append(("FIT_SHADOW", "Fit Shadow Canvas", "fbp.fit_shadow_canvas", {}))
+        actions.append(("FIT_SHADOW", "Fit Canvas", "fbp.fit_shadow_canvas", {}))
+    if effect_id == "GRADIENT_LIGHT":
+        actions.append(("LIGHT_CONTROLLER", "Light Controller", "fbp.gradient_light_controller", {}))
+    shape = _MASK_SHAPES.get(effect_id)
+    if shape:
+        shape_kwargs = {"rig_name": _RIG, "shape": shape}
+        actions.extend((
+            ("EDIT_SHAPE", "Edit Shape", "fbp.edit_object_mask_helper", shape_kwargs),
+            ("PERFECT_SHAPE", "Perfect Shape", "fbp.perfect_object_mask_shape", shape_kwargs),
+            ("RECREATE_SHAPE", "Recreate Shape", "fbp.recreate_object_mask_helper", shape_kwargs),
+        ))
+    if effect_id == "CAMERA_SCALE_LOCK":
+        actions.append(("CAPTURE_SCALE", "Capture Reference", "fbp.capture_camera_scale_reference", {}))
+    if effect_id == "MOTION":
+        actions.append(("CAPTURE_BASE", "Capture Base", "fbp.motion_capture_base", {}))
+    if effect_id == "LATTICE":
+        actions.extend((
+            ("SELECT_CAGE", "Select Cage", "fbp.select_lattice_helper", {"rig_name": _RIG}),
+            ("EDIT_CAGE", "Edit Cage", "fbp.edit_lattice_helper", {"rig_name": _RIG}),
+            ("FINISH_CAGE", "Back to Plane", "fbp.finish_lattice_editing", {"rig_name": _RIG}),
+            ("POINT_HANDLES", "Point Handles", "fbp.lattice_point_handles", {"rig_name": _RIG, "action": "ADD"}),
+        ))
     return tuple(actions)
+
+
+def fbp_shell_tool_operators(effect_id, key="@TOOLS"):
+    """Operators one of the effect's button rows runs."""
+    definition = _geo().fbp_effect_definition(effect_id) or {}
+    general = key != "@TOOLS"
+    return frozenset(
+        op for action, _label, op, _kwargs in _effect_actions(effect_id, definition)
+        if (action in _EFFECT_ACTIONS) == general
+    )
+
+
+# Object mask effects and the shape their helper operators take.
+_MASK_SHAPES = {"CIRCLE_MASK": "CIRCLE", "SQUARE_MASK": "SQUARE", "TRIANGLE_MASK": "TRIANGLE"}
+
+# Stands for the layer's name in an action's operator settings.
+_RIG = "\x00RIG"
 
 
 def _run_action(rig, effect_id, definition, key):
@@ -399,6 +447,10 @@ def _run_action(rig, effect_id, definition, key):
     if action is None:
         return False
     _key, _label, idname, kwargs = action
+    kwargs = {
+        prop: (str(getattr(rig, "name", "") or "") if value == _RIG else value)
+        for prop, value in kwargs.items()
+    }
     module, _dot, name = idname.partition(".")
     operator = getattr(getattr(bpy.ops, module), name)
     window = next(iter(bpy.context.window_manager.windows), None)
@@ -482,10 +534,12 @@ def _shell_layout_entries(effect_id, skip=()):
     if _has_viewport_control(effect_id):
         names.insert(0, "fbp_effect_controls_enabled")
     plain, animated = [], {}
-    trailing = []
+    leading = []
     for key, setting in _virtual_settings(effect_id, definition):
         entry = (key, "", setting, "VIRTUAL", setting.name, False)
-        (trailing if key == "@ACTION" else plain).append(entry)
+        # Actions opens the modifier: Select Rig, Edit Cage... come first.
+        (leading if key in _ACTION_KEYS else plain).append(entry)
+    plain[:0] = leading
     skip = set(skip or ())
     for prop_name in dict.fromkeys(str(name or "") for name in names):
         if prop_name in skip:
@@ -530,7 +584,6 @@ def _shell_layout_entries(effect_id, skip=()):
     plain.extend(
         animated[suffix] + ("Animate",) for suffix, _label in _SHELL_ANIMATE if suffix in animated
     )
-    plain.extend(entry + ("",) for entry in trailing)
     return plain
 
 
@@ -544,9 +597,13 @@ def _new_menu_input(group, rna, name, panel):
     switch[_SHELL_USAGE_NODE_KEY] = True
     switch.hide = True
     switch.enum_items.clear()
-    for item in rna.enum_items:
+    choices = tuple(rna.enum_items)
+    if rna.identifier in _ACTION_KEYS:
+        # No resting button: the input rests on a value with no item.
+        choices = tuple(item for item in choices if item.identifier != "NONE")
+    for item in choices:
         switch.enum_items.new(str(item.name))
-    for index, item_socket in enumerate(tuple(switch.inputs)[1:1 + len(rna.enum_items)]):
+    for index, item_socket in enumerate(tuple(switch.inputs)[1:1 + len(choices)]):
         try:
             item_socket.default_value = index
         except FBP_DATA_ERRORS:
@@ -613,11 +670,11 @@ def _menu_identifier(rna, name):
     return str(rna.enum_items[0].identifier) if len(rna.enum_items) else ""
 
 
-def _add_inputs(group, entries):
+def _add_inputs(group, entries, panels=None):
     """Create one input (in its section) per entry; return mapping and readers."""
     interface = group.interface
     mapping, layer_mapping, used, menus = [], [], [], []
-    panels = {}
+    panels = {} if panels is None else panels
     for prop_name, socket_name, rna, storage, label, animate, section in entries:
         panel = None
         if section:
@@ -754,11 +811,248 @@ def _populate_shell_group(group, effect_id):
     group["fbp_shell_mapping"] = ["\x1f".join(entry) for entry in mapping]
     group[_SHELL_LAYER_MAPPING_KEY] = ["\x1f".join(entry) for entry in layer_mapping]
     _wire_usage(group, used, group_input.outputs[0], group_output)
+    _actions_first(group)
     group[_SHELL_UI_KEY] = _SHELL_UI_VERSION
+    fbp_tidy_shell_group(group, effect_id=effect_id, force=True)
     return group
 
 
+def _shell_effect_label(group, effect_id=""):
+    geo = _geo()
+    if not effect_id:
+        try:
+            effect_id = geo._fbp_effect_ref_parts(str(group.get(_SHELL_TOKEN_KEY, "") or ""))[0]
+        except FBP_DATA_ERRORS:
+            effect_id = ""
+    if effect_id:
+        label = str(geo.fbp_effect_definition(effect_id).get("label", "") or "")
+        if label:
+            return label
+    return str(getattr(group, "name", "") or "").rsplit("•", 1)[-1].strip() or "Effect"
+
+
+def fbp_tidy_shell_group(group, *, effect_id="", force=False, annotate=None):
+    """Make an effect's modifier node tree readable.
+
+    The tree has no image work: its inputs are the effect's settings, read by
+    the layer material. Readers get the name of the setting they read, the
+    sum that keeps Blender from greying the inputs out is one compact column,
+    and frames plus an optional note say what each part is for.
+    """
+    from .node_layout import (
+        _PLACEMENTS,
+        _add_note,
+        _drop_unused_frames,
+        _flush_positions,
+        _new_view_frame,
+        _remove_view_frames,
+        _stamp_view,
+        node_height,
+        node_view_annotations_enabled,
+        node_view_is_current,
+    )
+
+    if group is None or getattr(group, "library", None) is not None:
+        return False
+    if annotate is None:
+        annotate = node_view_annotations_enabled()
+    if not force and node_view_is_current(group, annotate=annotate):
+        return True
+    try:
+        nodes, links = group.nodes, group.links
+        _PLACEMENTS.clear()
+        _remove_view_frames(group)
+        group_input = next((node for node in nodes if node.bl_idname == "NodeGroupInput"), None)
+        group_output = next((node for node in nodes if node.bl_idname == "NodeGroupOutput"), None)
+        if group_input is None or group_output is None:
+            return False
+        label = _shell_effect_label(group, effect_id)
+        readers, adds, passes = [], [], []
+        for node in nodes:
+            if not node.get(_SHELL_USAGE_NODE_KEY):
+                continue
+            if node.bl_idname == "ShaderNodeMath":
+                adds.append(node)
+            elif node.bl_idname in {"GeometryNodeStoreNamedAttribute", "GeometryNodeRemoveAttribute"}:
+                passes.append(node)
+            else:
+                readers.append(node)
+        for link in tuple(links):
+            node = link.to_node
+            if node in readers and link.from_node == group_input:
+                node.label = f"{'Choice' if node.bl_idname == 'GeometryNodeMenuSwitch' else 'Read'} · {link.from_socket.name}"[:63]
+        for node in adds:
+            node.label = "Keep input active"
+        for node in passes:
+            node.label = (
+                "Mark inputs as used" if node.bl_idname == "GeometryNodeStoreNamedAttribute"
+                else "Remove the marker"
+            )
+        passes.sort(key=lambda node: node.bl_idname != "GeometryNodeStoreNamedAttribute")
+        # Readers and adds were created in input order: keep that order.
+        readers.sort(key=lambda node: -float(node.location_absolute.y))
+        adds.sort(key=lambda node: -float(node.location_absolute.y))
+
+        y0 = 0.0
+        if annotate:
+            _add_note(
+                group,
+                f"Note · {label} modifier"[:63],
+                [
+                    f"These inputs are the {label} settings. The effect itself runs in the layer material, which reads them.",
+                    "The geometry passes through unchanged. The small sum only keeps Blender from greying the inputs out.",
+                ],
+                0.0,
+                0.0,
+                620.0,
+                bottom=y0 + 90.0,
+            )
+        inputs_frame = _new_view_frame(group, "Effect settings", (0.20, 0.20, 0.24), label_size=18)
+        group_input.parent = inputs_frame
+        _PLACEMENTS.append((group_input, 0.0, y0))
+        x = float(group_input.width) + 140.0
+        right = x
+        if readers or adds:
+            keep_frame = _new_view_frame(group, "Keep inputs active", (0.17, 0.22, 0.30), label_size=18)
+            cursor = y0
+            for node in readers:
+                node.parent = keep_frame
+                _PLACEMENTS.append((node, x, cursor))
+                cursor -= node_height(node) + 8.0
+            add_x = x + (max((float(node.width) for node in readers), default=0.0) + 60.0 if readers else 0.0)
+            cursor = y0
+            for node in adds:
+                node.parent = keep_frame
+                _PLACEMENTS.append((node, add_x, cursor))
+                cursor -= node_height(node) + 8.0
+            right = add_x + (max((float(node.width) for node in adds), default=140.0)) + 140.0
+        out_frame = _new_view_frame(group, "Geometry out (unchanged)", (0.24, 0.17, 0.17), label_size=18)
+        cursor_x = right
+        for node in passes:
+            node.parent = out_frame
+            _PLACEMENTS.append((node, cursor_x, y0))
+            cursor_x += float(node.width) + 60.0
+        group_output.parent = out_frame
+        _PLACEMENTS.append((group_output, cursor_x, y0))
+        _flush_positions(group)
+        _drop_unused_frames(group)
+        _stamp_view(group, annotate)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not tidy the effect modifier's nodes", exc)
+        return False
+    return True
+
+
+def _actions_first(group):
+    """Make the action button rows the modifier's first rows.
+
+    They go right after the Geometry input: a Geometry Nodes modifier feeds
+    its geometry into the group's first input.
+    """
+    identifiers = dict(
+        (entry[0], entry[2]) for entry in _shell_layer_mapping(group) if entry[0] in _ACTION_KEYS
+    )
+    interface = group.interface
+    offset = 1
+    for key in _ACTION_KEYS:
+        item = next((
+            other for other in interface.items_tree
+            if identifiers.get(key) and getattr(other, "identifier", "") == identifiers[key]
+        ), None)
+        if item is None:
+            continue
+        geometry = next((
+            index for index, other in enumerate(interface.items_tree)
+            if getattr(other, "in_out", "") == "INPUT"
+            and getattr(other, "socket_type", "") == "NodeSocketGeometry"
+        ), -1)
+        try:
+            # A row of buttons instead of a dropdown.
+            item.menu_expanded = True
+            interface.move(item, geometry + offset)
+            offset += 1
+        except FBP_DATA_ERRORS:
+            pass
+
+
 _GEOMETRY_INPUTS_KEY = "fbp_panel_inputs"
+
+
+def _describe_mapped_choices(interface, definition):
+    """Name the choices of a mesh effect's numbered inputs.
+
+    Some mesh effects read a choice (Pattern, Mode, ...) as a number input.
+    The modifier shows it as a plain number, so its tooltip lists what each
+    number means and its range stops at the last choice.
+    """
+    sockets = {
+        str(item.name): item for item in interface.items_tree
+        if getattr(item, "item_type", "") == "SOCKET" and getattr(item, "in_out", "") == "INPUT"
+    }
+    for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
+        rna = _object_rna(prop_name)
+        item = sockets.get(str(socket_name))
+        if rna is None or item is None or rna.type != "ENUM" or getattr(rna, "is_enum_flag", False):
+            continue
+        socket_type = getattr(item, "socket_type", "")
+        if socket_type == "NodeSocketFloat" and str(getattr(item, "description", "") or ""):
+            # A described number input maps the choice its own way (-1/+1).
+            continue
+        if socket_type not in {"NodeSocketInt", "NodeSocketFloat"}:
+            continue
+        try:
+            choices = tuple(rna.enum_items)
+            item.description = ", ".join(f"{index} {choice.name}" for index, choice in enumerate(choices))
+            item.min_value = 0
+            item.max_value = max(0, len(choices) - 1)
+        except FBP_DATA_ERRORS:
+            pass
+
+
+def _section_native_inputs(interface, effect_id, definition, entries):
+    """Put a mesh effect's own inputs in the sections of its panel.
+
+    The modifier then reads like the Frame By Plane panel (Quality, Depth,
+    Optics, ...) instead of one long list. Sockets keep their identifiers,
+    so values, keyframes and drivers are untouched. Returns the sections by
+    title for the panel settings added after them.
+    """
+    geo = _geo()
+    section_of = {}
+    order = []
+    for title, _icon, names in geo._FBP_EFFECT_UI_GROUPS.get(effect_id, ()):
+        order.append(title)
+        for name in names:
+            section_of.setdefault(name, title)
+    sockets = {
+        str(item.name): item for item in interface.items_tree
+        if getattr(item, "item_type", "") == "SOCKET"
+        and getattr(item, "in_out", "") == "INPUT"
+        and getattr(item, "parent", None) is not None
+        and not str(getattr(item.parent, "name", "") or "")
+    }
+    moves = []
+    for prop_name, socket_name in (definition.get("property_map", {}) or {}).items():
+        item = sockets.get(str(socket_name))
+        title = section_of.get(prop_name)
+        if item is not None and title and getattr(item, "socket_type", "") != "NodeSocketGeometry":
+            moves.append((title, item))
+    titles = set(title for title, _item in moves) | set(entry[6] for entry in entries if entry[6])
+    panels = {}
+    for title in [title for title in dict.fromkeys(order) if title in titles]:
+        panel = interface.new_panel(title, default_closed=False)
+        try:
+            panel.description = "fbp_panel_inputs"
+        except FBP_DATA_ERRORS:
+            pass
+        panels[title] = panel
+    for title, item in moves:
+        panel = panels[title]
+        try:
+            interface.move_to_parent(item, panel, len(panel.interface_items))
+        except FBP_DATA_ERRORS:
+            pass
+    return panels
 
 
 def fbp_extend_geometry_group(group, effect_id):
@@ -813,6 +1107,7 @@ def fbp_extend_geometry_group(group, effect_id):
             if not target.is_linked:
                 return False
             source = target.links[0].from_socket
+        _describe_mapped_choices(interface, definition)
         mapped_sockets = set((definition.get("property_map", {}) or {}).keys())
         entries = _shell_layout_entries(effect_id, skip=mapped_sockets)
         entries = [entry[:3] + ("RIG" if entry[3] == "MATERIAL" else entry[3],) + entry[4:] for entry in entries]
@@ -820,7 +1115,8 @@ def fbp_extend_geometry_group(group, effect_id):
         panels_before = {
             int(item.as_pointer()) for item in interface.items_tree if getattr(item, "item_type", "") == "PANEL"
         }
-        _mapping, layer_mapping, used = _add_inputs(group, entries)
+        panels = _section_native_inputs(interface, effect_id, definition, entries)
+        _mapping, layer_mapping, used = _add_inputs(group, entries, panels)
         for item in interface.items_tree:
             if getattr(item, "item_type", "") == "PANEL" and int(item.as_pointer()) not in panels_before:
                 try:
@@ -836,11 +1132,21 @@ def fbp_extend_geometry_group(group, effect_id):
             _wire_usage(group, used, source, group_output)
         elif not target.is_linked:
             links.new(source, target)
+        _actions_first(group)
         group[_GEOMETRY_INPUTS_KEY] = marker
+        geo.fbp_tidy_effect_group(group, effect_id, force=True)
         return True
     except FBP_DATA_ERRORS as exc:
         fbp_warn("Could not add the effect's panel settings to its modifier", exc)
         return False
+
+
+def _shell_view_stamped(group):
+    from .node_layout import NODE_VIEW_VERSION, NODE_VIEW_VERSION_KEY
+    try:
+        return group is None or int(group.get(NODE_VIEW_VERSION_KEY, 0) or 0) == NODE_VIEW_VERSION
+    except FBP_DATA_ERRORS:
+        return True
 
 
 def _shell_needs_rebuild(group):
@@ -850,15 +1156,20 @@ def _shell_needs_rebuild(group):
         return False
 
 
-def _shell_layer_mapping(group):
+def _stored_mapping(group, key):
+    """Rows of four fields stored under ``key`` on a shell node group."""
     try:
-        raw = tuple(group.get(_SHELL_LAYER_MAPPING_KEY, ()) or ())
+        raw = tuple(group.get(key, ()) or ())
     except FBP_DATA_ERRORS:
         return ()
     return tuple(
         tuple(parts) for parts in (str(entry).split("\x1f") for entry in raw)
         if len(parts) == 4
     )
+
+
+def _shell_layer_mapping(group):
+    return _stored_mapping(group, _SHELL_LAYER_MAPPING_KEY)
 
 
 def _layer_owner(rig, effect_id, instance_id, prop_name, storage):
@@ -894,7 +1205,7 @@ def _virtual_value(rig, effect_id, instance_id, key):
         return geo.fbp_effect_debug_mode(rig, effect_id)
     if key == "@MASKOP":
         return geo.fbp_mask_stack_operation(rig, effect_id)
-    if key == "@ACTION":
+    if key in _ACTION_KEYS:
         return "NONE"
     return None
 
@@ -917,7 +1228,7 @@ def _run_virtual(rig_name, effect_id, instance_id, key, value):
         elif key == "@MASKOP":
             from .mask_stack import fbp_set_mask_stack_operation
             fbp_set_mask_stack_operation(rig, effect_id, value, rebuild=True)
-        elif key == "@ACTION" and value != "NONE":
+        elif key in _ACTION_KEYS and value != "NONE":
             _run_action(rig, effect_id, geo.fbp_effect_definition(effect_id) or {}, value)
     except FBP_DATA_ERRORS as exc:
         fbp_warn(f"Could not apply {key[1:].title()} from the modifier", exc)
@@ -927,6 +1238,8 @@ def _run_virtual(rig_name, effect_id, instance_id, key, value):
 def _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind):
     """One layer setting as the value its modifier input holds."""
     if storage == "VIRTUAL":
+        if prop_name in _ACTION_KEYS:
+            return ""
         value = _virtual_value(rig, effect_id, instance_id, prop_name)
         return None if value is None else _menu_name(rna, str(value))
     owner, attr = _layer_owner(rig, effect_id, instance_id, prop_name, storage)
@@ -1022,7 +1335,10 @@ def _init_shell_values(rig, modifier, effect_id, instance_id, source=None):
         if value is None and kind not in _DATA_KINDS:
             continue
         try:
-            _geo()._fbp_modifier_input_set(modifier, identifier, _color4(value) if kind == "COLOR" else value)
+            if prop_name in _ACTION_KEYS:
+                _rest_action_input(modifier, identifier)
+            else:
+                _geo()._fbp_modifier_input_set(modifier, identifier, _color4(value) if kind == "COLOR" else value)
         except FBP_DATA_ERRORS as exc:
             fbp_warn(f"Could not set shell input {identifier}", exc)
     group[_SHELL_SYNCED_KEY] = _shell_snapshot(modifier)
@@ -1031,8 +1347,13 @@ def _init_shell_values(rig, modifier, effect_id, instance_id, source=None):
 def _shell_snapshot(modifier):
     group = modifier.node_group
     identifiers = [entry[2] for entry in _shell_mapping(group)]
-    identifiers.extend(entry[2] for entry in _shell_layer_mapping(group))
-    return {identifier: _storable(_modifier_input(modifier, identifier)) for identifier in identifiers}
+    identifiers.extend(entry[2] for entry in _shell_layer_mapping(group) if entry[0] not in _ACTION_KEYS)
+    snapshot = {identifier: _storable(_modifier_input(modifier, identifier)) for identifier in identifiers}
+    snapshot.update(
+        (entry[2], _action_input(modifier, entry[2]))
+        for entry in _shell_layer_mapping(group) if entry[0] in _ACTION_KEYS
+    )
+    return snapshot
 
 
 def _rebuild_shell(rig, token, modifier):
@@ -1075,16 +1396,14 @@ def _rebuild_shell(rig, token, modifier):
 
 
 def _shell_mapping(group):
-    try:
-        raw = tuple(group.get("fbp_shell_mapping", ()) or ())
-    except FBP_DATA_ERRORS:
-        return ()
-    result = []
-    for entry in raw:
-        parts = str(entry).split("\x1f")
-        if len(parts) == 4:
-            result.append(tuple(parts))
-    return tuple(result)
+    return _stored_mapping(group, "fbp_shell_mapping")
+
+
+def fbp_shell_covered_settings(group):
+    """Layer settings (and ``@`` panel controls) that are inputs of ``group``."""
+    return frozenset(
+        entry[0] for entry in _shell_mapping(group) + _shell_layer_mapping(group)
+    )
 
 
 def _effect_nodes(rig, effect_id, instance_id):
@@ -1188,6 +1507,10 @@ def fbp_shell_refresh_links(rig):
         mapping = _shell_mapping(modifier.node_group)
         for node in _effect_nodes(rig, effect_id, instance_id):
             linked += _link_effect_node(node, modifier, mapping, token)
+    if linked:
+        # New setting readers appeared in the materials: place them.
+        for material in geo._fbp_plane_materials(rig):
+            geo.fbp_tidy_layer_material(material)
     return linked
 
 
@@ -1310,6 +1633,9 @@ def fbp_shell_maintain(rig):
                 changed = bool(_rebuild_shell(rig, token, modifier)) or changed
             except FBP_DATA_ERRORS as exc:
                 fbp_warn("Could not update the effect's modifier inputs", exc)
+        elif not _shell_view_stamped(modifier.node_group):
+            # Shells saved before node views were tidied: lay them out once.
+            fbp_tidy_shell_group(modifier.node_group)
     if fbp_shell_modifiers(rig):
         changed = bool(fbp_shell_refresh_links(rig)) or changed
         changed = bool(fbp_shell_reposition(rig)) or changed
@@ -1486,6 +1812,18 @@ def _comparable(value):
         return None
 
 
+def _same_snapshot(stored, synced):
+    """True when the new sync snapshot equals the one already saved.
+
+    The saved snapshot comes back from the ID property with vectors and
+    colours as ``IDPropertyArray``, which never equals a tuple: a plain ``!=``
+    rewrote the snapshot on every sync, on every geometry update of the plane.
+    """
+    if stored.keys() != synced.keys():
+        return False
+    return all(_comparable(stored[key]) == _comparable(synced[key]) for key in stored)
+
+
 def _socket_as_modifier_value(rna, socket):
     value = socket.default_value
     if _is_color(rna):
@@ -1567,7 +1905,7 @@ def fbp_shell_sync_values(rig):
                 geo._fbp_sync_runtime_mutes(rig, effect_id, node)
             except FBP_DATA_ERRORS:
                 pass
-        if stored != synced:
+        if not _same_snapshot(stored, synced):
             try:
                 modifier.node_group[_SHELL_SYNCED_KEY] = stored
             except FBP_DATA_ERRORS:
@@ -1585,7 +1923,10 @@ def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
             continue
         if _geo()._fbp_modifier_input_handle(modifier, identifier) is None:
             continue
-        current = _modifier_input(modifier, identifier)
+        current = (
+            _action_input(modifier, identifier) if prop_name in _ACTION_KEYS
+            else _modifier_input(modifier, identifier)
+        )
         if current is None and kind not in _DATA_KINDS:
             continue
         layer = _layer_value(rig, effect_id, instance_id, prop_name, storage, rna, kind)
@@ -1597,13 +1938,52 @@ def _sync_layer_inputs(rig, modifier, effect_id, instance_id, synced, stored):
             ))
         elif (layer is not None or kind in _DATA_KINDS) and _comparable(layer) != _comparable(current):
             try:
-                geo._fbp_modifier_input_set(modifier, identifier, layer)
+                if prop_name in _ACTION_KEYS:
+                    _rest_action_input(modifier, identifier)
+                else:
+                    geo._fbp_modifier_input_set(modifier, identifier, layer)
             except FBP_DATA_ERRORS as exc:
                 fbp_warn(f"Could not set shell input {identifier}", exc)
-            current = _modifier_input(modifier, identifier)
+            current = (
+                _action_input(modifier, identifier) if prop_name in _ACTION_KEYS
+                else _modifier_input(modifier, identifier)
+            )
             moved += 1
         stored[identifier] = _storable(current)
     return moved
+
+
+def _action_input(modifier, identifier):
+    """The pressed button of a button row, or "" when none is.
+
+    Reads the stored number: reading ``value`` while it names no item makes
+    Blender print a warning every time.
+    """
+    handle = _geo()._fbp_modifier_input_handle(modifier, identifier)
+    if handle is None:
+        return None
+    try:
+        number = int(handle.get("value", -1))
+        items = handle.bl_rna.properties["value"].enum_items
+    except FBP_DATA_ERRORS:
+        return None
+    return next((str(item.name) for item in items if int(item.value) == number), "")
+
+
+def _rest_action_input(modifier, identifier):
+    """Put a button row back to no pressed button after it ran its action.
+
+    The menu value is stored as a number; one that names no item draws every
+    button unpressed.
+    """
+    handle = _geo()._fbp_modifier_input_handle(modifier, identifier)
+    if handle is None:
+        return
+    try:
+        used = {int(item.value) for item in handle.bl_rna.properties["value"].enum_items}
+    except FBP_DATA_ERRORS:
+        used = set()
+    handle["value"] = next(number for number in range(len(used) + 1) if number not in used)
 
 
 def fbp_shell_ensure(rig):

@@ -34,6 +34,7 @@ from .shortcut_runtime import (
 )
 from .ui_context import restore_modal_cursor
 from .ui_icons import floating_timeline_icon_kwargs
+from .common import rna_pointer as _rna_pointer
 
 
 _PREVIOUS_ACTIVE_OPERATOR = globals().get("_ACTIVE_OPERATOR")
@@ -745,13 +746,6 @@ def major_second_frames(minimum, maximum, fps):
     first_second = int(math.floor(left / rate)) - 1
     last_second = int(math.ceil(right / rate)) + 1
     return tuple(sorted({int(round(second * rate)) for second in range(first_second, last_second + 1) if left <= int(round(second * rate)) <= right}))
-
-
-def _rna_pointer(value):
-    try:
-        return int(value.as_pointer()) if value is not None else 0
-    except FBP_DATA_ERRORS:
-        return 0
 
 
 def _normalized_keyframe_type(value):
@@ -5289,7 +5283,6 @@ class FBP_OT_ToggleGreasePencilScrubSlider(Operator):
         return _scrub_header_available(context)
 
     def execute(self, context):
-        global _ACTIVE_OPERATOR
         active = _ACTIVE_OPERATOR
         try:
             area_pointer = int(context.area.as_pointer())

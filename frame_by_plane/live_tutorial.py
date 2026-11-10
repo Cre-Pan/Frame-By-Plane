@@ -34,6 +34,7 @@ from .interface_preferences import fbp_get_addon_preferences
 from .ui_style import configure_layout, section_header
 from .registration import register_interactive_classes, unregister_classes
 from .runtime import FBP_DATA_ERRORS
+from .tutorial_motion import Motion, bump, clamp01, ease_in_out_cubic, ease_out_back, ease_out_cubic
 
 
 _PREVIOUS_TUTORIAL_OPERATOR = globals().get("_ACTIVE_OPERATOR")
@@ -775,6 +776,13 @@ class TutorialState:
     offset: tuple[float, float] = (0.0, 0.0)
     collapsed: bool = False
     drag_origin: tuple[float, float, float, float] | None = None
+    # Animation clock plus what the last drawn frame showed, so the draw
+    # handler can tell a new step, a finished task or a finished guide apart.
+    motion: Motion = field(default_factory=Motion)
+    shown_content: tuple[Any, ...] | None = None
+    shown_done: frozenset[str] = frozenset()
+    shown_finished: bool = False
+    content_direction: float = 1.0
 
     def reset_baseline(self, context: bpy.types.Context) -> None:
         objects = tuple(context.scene.objects)
@@ -1442,16 +1450,51 @@ def _round_rect_points(x: float, y: float, w: float, h: float, radius: float, se
     return tuple(points)
 
 
+# Opacity multiplier applied by every primitive below. Animations fade whole
+# groups (the card, a sliding step, a chooser card) through ``_opacity``.
+_OPACITY = 1.0
+
+
+class _opacity:
+    """Multiply the opacity of everything drawn inside the ``with`` block."""
+
+    __slots__ = ("factor", "previous")
+
+    def __init__(self, factor: float) -> None:
+        self.factor = clamp01(float(factor))
+        self.previous = 1.0
+
+    def __enter__(self) -> None:
+        global _OPACITY
+        self.previous = _OPACITY
+        _OPACITY = self.previous * self.factor
+
+    def __exit__(self, *_exc) -> None:
+        global _OPACITY
+        _OPACITY = self.previous
+
+
+def _faded(color) -> tuple[float, float, float, float]:
+    alpha = color[3] if len(color) > 3 else 1.0
+    return (color[0], color[1], color[2], alpha * _OPACITY)
+
+
+def _fill(vertices, color, kind: str = "TRI_FAN") -> None:
+    color = _faded(color)
+    if color[3] <= 0.002:
+        return
+    shader = _color_shader()
+    batch = batch_for_shader(shader, kind, {"pos": vertices})
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
 def _draw_round_rect(x: float, y: float, w: float, h: float, radius: float, color) -> None:
     if w <= 0.0 or h <= 0.0:
         return
     perimeter = _round_rect_points(x, y, w, h, radius)
-    vertices = ((x + w * 0.5, y + h * 0.5), *perimeter, perimeter[0])
-    shader = _color_shader()
-    batch = batch_for_shader(shader, "TRI_FAN", {"pos": vertices})
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
+    _fill(((x + w * 0.5, y + h * 0.5), *perimeter, perimeter[0]), color)
 
 
 def _prepare_tutorial_icon_image(image: bpy.types.Image | None) -> bpy.types.Image | None:
@@ -1580,7 +1623,7 @@ def _draw_custom_icon(
     shader.bind()
     if _IMAGE_SHADER_SUPPORTS_TINT:
         try:
-            shader.uniform_float("color", tuple(float(value) for value in tint))
+            shader.uniform_float("color", tuple(float(value) for value in _faded(tint)))
         except (AttributeError, RuntimeError, TypeError, ValueError):
             pass
     try:
@@ -1624,7 +1667,7 @@ def _draw_text(
         tx -= width * 0.5
     elif align == "RIGHT":
         tx -= width
-    blf.color(0, *color)
+    blf.color(0, *_faded(color))
     blf.position(0, tx, y, 0)
     blf.draw(0, value)
     return width
@@ -1892,18 +1935,36 @@ _KEY_NAMES = frozenset({
 })
 
 
+def _unit_circle(segments: int) -> tuple[tuple[float, float], ...]:
+    cached = _UNIT_CIRCLES.get(segments)
+    if cached is None:
+        cached = tuple(
+            (math.cos(math.tau * index / segments), math.sin(math.tau * index / segments))
+            for index in range(segments + 1)
+        )
+        _UNIT_CIRCLES[segments] = cached
+    return cached
+
+
+_UNIT_CIRCLES: dict[int, tuple[tuple[float, float], ...]] = {}
+
+
 def _draw_circle(cx: float, cy: float, radius: float, color, segments: int = 24) -> None:
     if radius <= 0.0:
         return
-    vertices = [(cx, cy)]
-    for index in range(segments + 1):
-        angle = math.tau * index / segments
-        vertices.append((cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
-    shader = _color_shader()
-    batch = batch_for_shader(shader, "TRI_FAN", {"pos": vertices})
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
+    _fill(((cx, cy), *((cx + c * radius, cy + s * radius) for c, s in _unit_circle(segments))), color)
+
+
+def _draw_ring(cx: float, cy: float, radius: float, width: float, color, segments: int = 32) -> None:
+    """Circle outline: the ripple around a step that was just completed."""
+    inner = max(0.0, radius - width)
+    if radius <= 0.0 or width <= 0.0:
+        return
+    strip = []
+    for c, s in _unit_circle(segments):
+        strip.append((cx + c * radius, cy + s * radius))
+        strip.append((cx + c * inner, cy + s * inner))
+    _fill(strip, color, "TRI_STRIP")
 
 
 def _is_key_label(label: str) -> bool:
@@ -1918,7 +1979,14 @@ def _is_key_label(label: str) -> bool:
 _HUD_TOP_CLEARANCE = 44.0
 
 
-def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: TutorialState) -> dict[str, Any]:
+def _compute_hud(
+    context: bpy.types.Context, region: bpy.types.Region, state: TutorialState, *, animated: bool = False,
+) -> dict[str, Any]:
+    """Card layout. ``animated`` lets the height glide to its new size.
+
+    Only the draw handler animates; hit-testing and clamping use the final
+    size so a drop or a click never depends on where a glide currently is.
+    """
     scale = _ui_scale(context)
     region_w = max(1.0, float(region.width))
     region_h = max(1.0, float(region.height))
@@ -1949,6 +2017,10 @@ def _compute_hud(context: bpy.types.Context, region: bpy.types.Region, state: Tu
         height = header_h + _step_body_height(state, hud) + control_h + pad * 2.0
     width = min(width, max(1.0, region_w - margin * 2.0))
     height = min(height, max(1.0, region_h - margin * 2.0))
+    if animated:
+        # The top edge stays put (default_y below is measured from the top),
+        # so the card unrolls downwards and rolls back up on collapse.
+        height = max(min(header_h, height), state.motion.value("height", height, _CARD_RESIZE_SECONDS))
     header_h = min(header_h, height)
     default_x = (region_w - width) * 0.5
     default_y = region_h - height - _HUD_TOP_CLEARANCE * scale
@@ -2088,19 +2160,21 @@ def _draw_pill_button(
     """Capsule button: tinted for the main action, neutral otherwise."""
     palette = hud["palette"]
     scale = hud["scale"]
-    hovered = state.hover == key
+    hover = _hover_amount(state, key)
     state.hitboxes[key] = rect
     if primary:
-        fill = palette["tint_hover"] if hovered else palette["tint"]
+        fill = _mix_color(palette["tint"], palette["tint_hover"], hover)
         text_color = palette["on_tint"]
     elif quiet:
-        fill = palette["button_hover"] if hovered else None
-        text_color = palette["text"] if hovered else palette["secondary"]
+        fill = (*palette["button_hover"][:3], hover)
+        text_color = _mix_color(palette["secondary"], palette["text"], hover)
     else:
-        fill = palette["button_hover"] if hovered else palette["button"]
+        fill = _mix_color(palette["button"], palette["button_hover"], hover)
         text_color = palette["text"]
-    if fill is not None:
-        _draw_round_rect(*rect, rect[3] * 0.5, fill)
+    if hover > 0.0:
+        # Hover lifts the capsule a hair: a soft shadow grows underneath.
+        _draw_round_rect(rect[0], rect[1] - 1.5 * scale * hover, rect[2], rect[3], rect[3] * 0.5, (0.0, 0.0, 0.0, 0.22 * hover))
+    _draw_round_rect(*rect, rect[3] * 0.5, fill)
     size = hud["body_size"] if primary else hud["small_size"]
     _draw_text(
         _ellipsize(label, rect[2] - 16.0 * scale, size),
@@ -2175,13 +2249,148 @@ def _draw_icon_tile(ui_key: str, x: float, y: float, size: float, palette: dict[
     )
 
 
+# -----------------------------------------------------------------------------
+# Motion
+#
+# Every animation is short and runs only after something changed: the card
+# opening, a step sliding in, a task confirmed, a guide finished, a hover. The
+# operator redraws at frame rate while ``state.motion.busy()`` and stops the
+# frame timer the moment it is not, so an idle card never redraws the viewport.
+
+_CARD_OPEN_SECONDS = 0.34
+_CARD_RESIZE_SECONDS = 0.24
+_CONTENT_SECONDS = 0.36
+_CHOOSER_SECONDS = 0.62
+_HOVER_SECONDS = 0.14
+_PROGRESS_SECONDS = 0.6
+_DONE_SECONDS = 0.9
+_ATTENTION_SECONDS = 1.8
+_CELEBRATE_SECONDS = 2.0
+_FRAME_INTERVAL = 1.0 / 60.0
+
+
+def _hover_amount(state: TutorialState, key: str) -> float:
+    return state.motion.value("hover:" + key, 1.0 if state.hover == key else 0.0, _HOVER_SECONDS)
+
+
+def _content_signature(state: TutorialState) -> tuple[Any, ...]:
+    task = state.active_task
+    return (state.route_key, state.page_index, task.key if task is not None else "", state.collapsed)
+
+
+def _sync_motion(state: TutorialState) -> None:
+    """Start the animations for whatever changed since the last frame."""
+    motion = state.motion
+    content = _content_signature(state)
+    done = frozenset(state.completed | state.manual_completed)
+    finished = _route_is_finished(state)
+    previous = state.shown_content
+    if previous is not None and content != previous:
+        same_route = content[0] == previous[0]
+        backwards = (same_route and content[1] < previous[1]) or (content[0] is None and previous[0] is not None)
+        state.content_direction = -1.0 if backwards else 1.0
+        motion.trigger("content", _CONTENT_SECONDS)
+        if not same_route:
+            # A new guide starts its progress bar from zero, not from the
+            # previous guide's value.
+            motion.snap("progress", 0.0)
+            if content[0] is None:
+                motion.trigger("chooser", _CHOOSER_SECONDS)
+        if content[2] and content[2] != previous[2] and not content[3]:
+            motion.trigger("attention", _ATTENTION_SECONDS, delay=_CONTENT_SECONDS * 0.6)
+    if previous is not None and content[0] == previous[0] and done - state.shown_done:
+        motion.trigger("done", _DONE_SECONDS)
+    if previous is not None and finished and not state.shown_finished and content[0] == previous[0]:
+        motion.trigger("celebrate", _CELEBRATE_SECONDS)
+    state.shown_content = content
+    state.shown_done = done
+    state.shown_finished = finished
+
+
+def _content_motion(state: TutorialState, scale: float) -> tuple[float, float]:
+    """(opacity, x offset) of a step sliding in from the side it came from."""
+    phase = state.motion.phase("content")
+    if phase is None:
+        return 1.0, 0.0
+    eased = ease_out_cubic(phase)
+    return eased, (1.0 - eased) * 18.0 * scale * state.content_direction
+
+
+class _translated:
+    """Shift everything drawn inside the block (blf follows the GPU matrix)."""
+
+    __slots__ = ("dx", "dy", "_context")
+
+    def __init__(self, dx: float, dy: float) -> None:
+        self.dx, self.dy = dx, dy
+        self._context = None
+
+    def __enter__(self) -> None:
+        if self.dx or self.dy:
+            self._context = gpu.matrix.push_pop()
+            self._context.__enter__()
+            gpu.matrix.translate((self.dx, self.dy))
+
+    def __exit__(self, *exc) -> None:
+        if self._context is not None:
+            self._context.__exit__(*exc)
+            self._context = None
+
+
+# Confetti for a finished guide: fixed pseudo-random particles, so the burst
+# looks the same every time and costs one batch per colour per frame.
+_CONFETTI = tuple(
+    (
+        math.radians(90.0 + ((index * 73) % 140 - 70)),  # launch angle
+        0.55 + ((index * 37) % 100) / 220.0,  # speed factor
+        ((index * 53) % 100) / 100.0 * math.tau,  # spin start
+        (((index * 29) % 100) / 50.0 - 1.0) * 9.0,  # spin speed
+        index % 5,  # colour slot
+        0.75 + ((index * 17) % 100) / 200.0,  # size factor
+    )
+    for index in range(44)
+)
+
+
+def _draw_confetti(hud: dict[str, Any], phase: float) -> None:
+    scale = hud["scale"]
+    palette = hud["palette"]
+    colors = (*(tuple(tint) for tint in _ROUTE_TINTS.values()), palette["success"])
+    origin_x = hud["x"] + hud["width"] * 0.5
+    origin_y = hud["y"] + hud["height"] - hud["header_h"] * 1.6
+    elapsed = phase * _CELEBRATE_SECONDS
+    gravity = -620.0 * scale
+    speed = 430.0 * scale
+    fade = 1.0 - clamp01((phase - 0.55) / 0.45)
+    by_color: dict[int, list[tuple[float, float]]] = {}
+    for angle, power, spin0, spin_speed, slot, size in _CONFETTI:
+        vx = math.cos(angle) * speed * power * 0.75
+        vy = math.sin(angle) * speed * power
+        # Air drag keeps the burst compact around the card.
+        drag = 1.0 - math.exp(-2.2 * elapsed)
+        px = origin_x + vx * drag / 2.2
+        py = origin_y + vy * drag / 2.2 + 0.5 * gravity * elapsed * elapsed * 0.45
+        spin = spin0 + spin_speed * elapsed
+        half_w = 3.4 * scale * size
+        half_h = 1.7 * scale * size * (0.35 + 0.65 * abs(math.cos(spin * 1.7)))
+        c, s = math.cos(spin), math.sin(spin)
+        corners = [(px + c * dx - s * dy, py + s * dx + c * dy) for dx, dy in ((-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h))]
+        by_color.setdefault(slot, []).extend((corners[0], corners[1], corners[2], corners[0], corners[2], corners[3]))
+    with _opacity(fade):
+        for slot, vertices in by_color.items():
+            _fill(vertices, colors[slot % len(colors)], "TRIS")
+
+
 def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
     palette = hud["palette"]
     scale = hud["scale"]
     y, h = hud["y"], hud["height"]
     content_x, content_w = hud["content_x"], hud["content_w"]
     top = y + h - hud["header_h"] - 8.0 * scale - hud["title_size"]
-    _draw_text("What do you want to make?", content_x, top, hud["title_size"], palette["text"])
+    chooser = state.motion.phase("chooser")
+    elapsed = chooser * _CHOOSER_SECONDS if chooser is not None else None
+    with _opacity(ease_out_cubic(elapsed / 0.25) if elapsed is not None else 1.0):
+        _draw_text("What do you want to make?", content_x, top, hud["title_size"], palette["text"])
     gap = 6.0 * scale
     grid_top = top - 10.0 * scale
     grid_bottom = y + hud["pad"]
@@ -2197,33 +2406,41 @@ def _draw_route_chooser(state: TutorialState, hud: dict[str, Any]) -> None:
             card_h,
         )
         state.hitboxes[key] = rect
-        hovered = state.hover == key
+        # Cards rise into place one after another, then react to the pointer.
+        appear = 1.0 if elapsed is None else clamp01((elapsed - 0.06 - index * 0.07) / 0.32)
+        rise = (1.0 - ease_out_cubic(appear)) * -10.0 * scale
+        hover = _hover_amount(state, key)
+        lift = 2.0 * scale * hover
         tint = (*_ROUTE_TINTS[route_key][:3], 1.0)
         radius = 8.0 * scale
-        if hovered:
-            _draw_round_rect(rect[0] - 1.0, rect[1] - 1.0, rect[2] + 2.0, rect[3] + 2.0, radius + 1.0, tint)
-        _draw_round_rect(*rect, radius, palette["card_hover"] if hovered else palette["card"])
-        tile = min(26.0 * scale, rect[3] - 12.0 * scale)
-        tile_x = rect[0] + 8.0 * scale
-        tile_y = rect[1] + (rect[3] - tile) * 0.5
-        _draw_icon_tile(_ROUTE_ICON_UI_KEYS[route_key], tile_x, tile_y, tile, palette, tint)
-        text_x = tile_x + tile + 8.0 * scale
-        text_w = rect[0] + rect[2] - text_x - 6.0 * scale
-        middle = rect[1] + rect[3] * 0.5
-        _draw_text(
-            _ellipsize(_ROUTE_SHORT_LABELS[route_key], text_w, hud["body_size"]),
-            text_x,
-            middle + 2.0 * scale,
-            hud["body_size"],
-            palette["text"],
-        )
-        _draw_text(
-            _ellipsize(_ROUTE_CARD_DETAILS[route_key], text_w, hud["caption_size"]),
-            text_x,
-            middle - 11.0 * scale,
-            hud["caption_size"],
-            palette["secondary"],
-        )
+        with _opacity(ease_out_cubic(appear)), _translated(0.0, rise + lift):
+            if hover > 0.0:
+                _draw_round_rect(rect[0], rect[1] - 3.0 * scale, rect[2], rect[3], radius, (0.0, 0.0, 0.0, 0.25 * hover))
+                _draw_round_rect(rect[0] - 1.0, rect[1] - 1.0, rect[2] + 2.0, rect[3] + 2.0, radius + 1.0, (*tint[:3], hover))
+            _draw_round_rect(*rect, radius, _mix_color(palette["card"], palette["card_hover"], hover))
+            tile = min(26.0 * scale, rect[3] - 12.0 * scale)
+            pop = ease_out_back(clamp01((elapsed - 0.12 - index * 0.07) / 0.34)) if elapsed is not None else 1.0
+            tile_size = tile * (0.6 + 0.4 * pop) * (1.0 + 0.06 * hover)
+            tile_x = rect[0] + 8.0 * scale + (tile - tile_size) * 0.5
+            tile_y = rect[1] + (rect[3] - tile_size) * 0.5
+            _draw_icon_tile(_ROUTE_ICON_UI_KEYS[route_key], tile_x, tile_y, tile_size, palette, tint)
+            text_x = rect[0] + 8.0 * scale + tile + 8.0 * scale
+            text_w = rect[0] + rect[2] - text_x - 6.0 * scale
+            middle = rect[1] + rect[3] * 0.5
+            _draw_text(
+                _ellipsize(_ROUTE_SHORT_LABELS[route_key], text_w, hud["body_size"]),
+                text_x,
+                middle + 2.0 * scale,
+                hud["body_size"],
+                palette["text"],
+            )
+            _draw_text(
+                _ellipsize(_ROUTE_CARD_DETAILS[route_key], text_w, hud["caption_size"]),
+                text_x,
+                middle - 11.0 * scale,
+                hud["caption_size"],
+                palette["secondary"],
+            )
 
 
 def _draw_task_dots(state: TutorialState, hud: dict[str, Any], page: PageSpec, right: float, cy: float) -> None:
@@ -2237,10 +2454,51 @@ def _draw_task_dots(state: TutorialState, hud: dict[str, Any], page: PageSpec, r
         if state.task_is_done(task):
             _draw_circle(cx, cy, radius, palette["success"])
         elif active is not None and task.key == active.key:
-            _draw_circle(cx, cy, radius + 1.5 * scale, palette["tint"])
-            _draw_circle(cx, cy, radius - 0.5 * scale, palette["card"])
+            # The current dot grows in when its step slides in.
+            phase = state.motion.phase("content")
+            grow = ease_out_back(phase, 2.4) if phase is not None else 1.0
+            _draw_circle(cx, cy, (radius + 1.5 * scale) * grow, palette["tint"])
+            _draw_circle(cx, cy, max(0.0, (radius - 0.5 * scale) * grow), palette["card"])
         else:
             _draw_circle(cx, cy, radius, palette["pending"])
+
+
+def _draw_progress_bar(state: TutorialState, hud: dict[str, Any], bar_y: float) -> None:
+    palette = hud["palette"]
+    scale = hud["scale"]
+    content_x, content_w = hud["content_x"], hud["content_w"]
+    _current, _total, progress = _route_progress(state)
+    shown = state.motion.value("progress", progress, _PROGRESS_SECONDS, ease_in_out_cubic)
+    bar_h = 3.0 * scale
+    _draw_round_rect(content_x, bar_y, content_w, bar_h, bar_h * 0.5, palette["track"])
+    if shown <= 0.0:
+        return
+    fill_w = max(bar_h, content_w * shown)
+    done = state.motion.phase("done")
+    glow = bump(done) if done is not None else 0.0
+    color = _mix_color(palette["tint"], palette["success"], glow)
+    if glow > 0.0:
+        # A confirmed step makes the bar glow green while it fills.
+        _draw_round_rect(content_x - 2.0 * scale, bar_y - 2.0 * scale, fill_w + 4.0 * scale, bar_h + 4.0 * scale, bar_h, (*color[:3], 0.28 * glow))
+    _draw_round_rect(content_x, bar_y, fill_w, bar_h, bar_h * 0.5, color)
+    if glow > 0.0:
+        _draw_circle(content_x + fill_w - bar_h * 0.5, bar_y + bar_h * 0.5, bar_h * (1.0 + 1.2 * glow), (1.0, 1.0, 1.0, 0.75 * glow), 20)
+
+
+def _draw_attention(state: TutorialState, hud: dict[str, Any], rect) -> None:
+    """Two soft ripples around the main button when a new step appears."""
+    phase = state.motion.phase("attention")
+    if phase is None:
+        return
+    scale = hud["scale"]
+    tint = hud["palette"]["tint"]
+    for offset in (0.0, 0.5):
+        wave = phase * 2.0 - offset * 2.0
+        if not 0.0 <= wave <= 1.0:
+            continue
+        grow = ease_out_cubic(wave) * 7.0 * scale
+        alpha = 0.42 * (1.0 - wave)
+        _draw_round_rect(rect[0] - grow, rect[1] - grow, rect[2] + grow * 2.0, rect[3] + grow * 2.0, rect[3] * 0.5 + grow, (*tint[:3], alpha))
 
 
 def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
@@ -2253,38 +2511,49 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
     if route is None or page is None:
         return
 
-    # Thin progress bar across the whole guide.
-    current, total, progress = _route_progress(state)
+    # Thin progress bar across the whole guide. It stays still while the step
+    # below it slides, so the eye keeps a fixed reference.
     bar_h = 3.0 * scale
     bar_y = y + h - hud["header_h"] - 6.0 * scale - bar_h
-    _draw_round_rect(content_x, bar_y, content_w, bar_h, bar_h * 0.5, palette["track"])
-    if progress > 0.0:
-        _draw_round_rect(content_x, bar_y, max(bar_h, content_w * progress), bar_h, bar_h * 0.5, palette["tint"])
+    _draw_progress_bar(state, hud, bar_y)
 
     task = state.active_task
     title, guidance = _step_guidance(state)
     title_y = bar_y - 12.0 * scale - hud["heading_size"] * 0.8
-    if task is None:
-        badge = 16.0 * scale
-        _draw_circle(content_x + badge * 0.5, title_y + 4.0 * scale, badge * 0.5, palette["success"])
-        _draw_text("✓", content_x + badge * 0.5, title_y, hud["small_size"], (1.0, 1.0, 1.0, 1.0), align="CENTER")
-        _draw_text(title, content_x + badge + 8.0 * scale, title_y, hud["heading_size"], palette["text"])
-    else:
-        dots_w = len(page.tasks) * 12.0 * scale + 6.0 * scale
-        label = title + ("  · optional" if task.optional else "")
-        _draw_text(_ellipsize(label, content_w - dots_w, hud["heading_size"]), content_x, title_y, hud["heading_size"], palette["text"])
+    opacity, slide = _content_motion(state, scale)
+    with _opacity(opacity), _translated(slide, 0.0):
+        if task is None:
+            badge = 16.0 * scale
+            celebrate = state.motion.phase("celebrate")
+            pop = ease_out_back(clamp01(celebrate / 0.25), 2.6) if celebrate is not None else 1.0
+            cx, cy = content_x + badge * 0.5, title_y + 4.0 * scale
+            if celebrate is not None:
+                ripple = clamp01(celebrate / 0.45)
+                _draw_ring(cx, cy, badge * (0.5 + 0.9 * ease_out_cubic(ripple)), 2.0 * scale, (*palette["success"][:3], 0.6 * (1.0 - ripple)))
+            _draw_circle(cx, cy, badge * 0.5 * pop, palette["success"])
+            with _opacity(clamp01(pop)):
+                _draw_text("✓", cx, title_y, hud["small_size"], (1.0, 1.0, 1.0, 1.0), align="CENTER")
+            _draw_text(title, content_x + badge + 8.0 * scale, title_y, hud["heading_size"], palette["text"])
+        else:
+            dots_w = len(page.tasks) * 12.0 * scale + 6.0 * scale
+            label = title + ("  · optional" if task.optional else "")
+            _draw_text(_ellipsize(label, content_w - dots_w, hud["heading_size"]), content_x, title_y, hud["heading_size"], palette["text"])
+        lines = _wrap_measured(guidance, content_w, hud["small_size"], max_lines=2)
+        cursor = _draw_text_lines(lines, content_x, title_y - 17.0 * scale, hud["small_size"], palette["secondary"], hud["line_h"])
+        shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
+        if shortcut:
+            chip_h = 20.0 * scale
+            _draw_shortcut_chips(hud, shortcut, content_x, cursor - chip_h + 4.0 * scale, content_w)
+    if task is not None:
+        # Dots sit outside the slide: they belong to the page, not the step.
         _draw_task_dots(state, hud, page, content_x + content_w, title_y + 4.0 * scale)
-    lines = _wrap_measured(guidance, content_w, hud["small_size"], max_lines=2)
-    cursor = _draw_text_lines(lines, content_x, title_y - 17.0 * scale, hud["small_size"], palette["secondary"], hud["line_h"])
-    shortcut = _task_shortcut_text(bpy.context, task, page) if task is not None else ""
-    if shortcut:
-        chip_h = 20.0 * scale
-        _draw_shortcut_chips(hud, shortcut, content_x, cursor - chip_h + 4.0 * scale, content_w)
 
     action_rect = hud.get("action_rect")
     if task is not None and action_rect is not None:
         label = _TASK_ACTION_LABELS.get(task.key, "Do This Step")
-        _draw_pill_button(state, hud, "do_action", action_rect, label, primary=True)
+        _draw_attention(state, hud, action_rect)
+        with _opacity(0.35 + 0.65 * opacity):
+            _draw_pill_button(state, hud, "do_action", action_rect, label, primary=True)
 
 
 def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
@@ -2294,79 +2563,118 @@ def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
     if area is None or region is None or area.as_pointer() != operator._target_area_ptr or region.type != "WINDOW":
         return
     state = operator._state
-    hud = _compute_hud(context, region, state)
+    _sync_motion(state)
+    hud = _compute_hud(context, region, state, animated=True)
     operator._hud_layout = hud
     _draw_hud(state, hud)
 
 
 def _draw_round_control(state: TutorialState, hud: dict[str, Any], key: str, rect, label: str) -> None:
     palette = hud["palette"]
-    hovered = state.hover == key
+    hover = _hover_amount(state, key)
     state.hitboxes[key] = rect
-    _draw_circle(rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5, rect[2] * 0.5,
-                 palette["button_hover"] if hovered else palette["button"], 32)
+    _draw_circle(rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5, rect[2] * 0.5 * (1.0 + 0.08 * hover),
+                 _mix_color(palette["button"], palette["button_hover"], hover), 32)
     _draw_text(label, rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5 - hud["small_size"] * 0.38,
-               hud["small_size"], palette["text"] if hovered else palette["secondary"], align="CENTER")
+               hud["small_size"], _mix_color(palette["secondary"], palette["text"], hover), align="CENTER")
+
+
+def _draw_header_badge(state: TutorialState, hud: dict[str, Any], x: float, y: float, size: float) -> None:
+    """Route icon in the title bar; it flips to a green tick when a step is confirmed."""
+    palette = hud["palette"]
+    ui_key = _ROUTE_ICON_UI_KEYS.get(state.route.key, "menu.multiplane") if state.route is not None else "menu.multiplane"
+    tint = None if state.route is not None else palette["key_cap"]
+    done = state.motion.phase("done")
+    if done is None:
+        _draw_icon_tile(ui_key, x, y, size, palette, tint)
+        return
+    # 0 → 0.2: icon shrinks away, tick pops in; 0.75 → 1: icon returns.
+    tick = ease_out_back(clamp01(done / 0.3), 2.2) * (1.0 - ease_out_cubic(clamp01((done - 0.72) / 0.28)))
+    icon = 1.0 - tick
+    cx, cy = x + size * 0.5, y + size * 0.5
+    if icon > 0.0:
+        s = size * max(0.0, icon)
+        with _opacity(icon):
+            _draw_icon_tile(ui_key, cx - s * 0.5, cy - s * 0.5, s, palette, tint)
+    if tick > 0.0:
+        _draw_round_rect(cx - size * 0.5 * tick, cy - size * 0.5 * tick, size * tick, size * tick, size * 0.26 * tick, palette["success"])
+        with _opacity(clamp01(tick)):
+            _draw_text("✓", cx, cy - hud["small_size"] * 0.38, hud["small_size"], (1.0, 1.0, 1.0, 1.0), align="CENTER")
 
 
 def _draw_hud(state: TutorialState, hud: dict[str, Any]) -> None:
-    x, y, w, h, scale = hud["x"], hud["y"], hud["width"], hud["height"], hud["scale"]
-    palette = hud["palette"]
+    scale = hud["scale"]
+    motion = state.motion
 
+    opening = motion.phase("open")
+    appear = ease_out_cubic(opening) if opening is not None else 1.0
     gpu.state.blend_set("ALPHA")
     try:
-        outer_radius = 10.0 * scale
-        for spread, alpha in ((6.0, 0.06), (3.0, 0.10), (1.0, 0.16)):
-            grow = spread * scale
-            _draw_round_rect(x - grow, y - grow * 1.3, w + grow * 2.0, h + grow * 2.0, outer_radius + grow, (0.0, 0.0, 0.0, alpha))
-        _draw_round_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, outer_radius + 1.0, palette["hairline"])
-        _draw_round_rect(x, y, w, h, outer_radius, palette["surface"])
-        controls = hud["controls"]
-        state.hitboxes.clear()
-        state.hitboxes["drag_header"] = hud["drag_rect"]
-        header_y = y + h - hud["header_h"]
-        content_x = hud["content_x"]
-        tile = 18.0 * scale
-        tile_y = header_y + (hud["header_h"] - tile) * 0.5
-        if state.route is not None:
-            _draw_icon_tile(_ROUTE_ICON_UI_KEYS.get(state.route.key, "menu.multiplane"), content_x, tile_y, tile, palette)
-            header_label = _ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)
-            current, total, _progress = _route_progress(state)
-            if total:
-                header_label += f"  ·  {min(current, total)}/{total}"
-            task = state.active_task
-            if state.collapsed and task is not None:
-                header_label += f"  ·  {task.label}"
-        else:
-            _draw_icon_tile("menu.multiplane", content_x, tile_y, tile, palette, palette["key_cap"])
-            header_label = "Tutorials"
-        text_right = controls["help"][0] if state.route is not None else controls["collapse"][0]
-        _draw_text(
-            _ellipsize(header_label, text_right - content_x - tile - 14.0 * scale, hud["body_size"]),
-            content_x + tile + 8.0 * scale,
-            header_y + hud["header_h"] * 0.5 - hud["body_size"] * 0.36,
-            hud["body_size"],
-            palette["text"],
-        )
-        if not state.collapsed:
-            if state.route is None:
-                _draw_route_chooser(state, hud)
-            else:
-                _draw_step(state, hud)
-        _draw_round_control(state, hud, "control_close", controls["close"], "×")
-        _draw_round_control(state, hud, "control_collapse", controls["collapse"], "+" if state.collapsed else "–")
-        if state.route is not None:
-            _draw_round_control(state, hud, "control_help", controls["help"], "?")
-            if not state.collapsed:
-                task = state.active_task
-                _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
-                if task is not None:
-                    _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
-                else:
-                    next_label = "Guides" if _route_is_finished(state) else "Next  ›"
-                    _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
+        # The card drops a few pixels into place while it fades in.
+        with _opacity(appear), _translated(0.0, (1.0 - appear) * 12.0 * scale):
+            _draw_card(state, hud)
+        celebrate = motion.phase("celebrate")
+        if celebrate is not None:
+            _draw_confetti(hud, celebrate)
     finally:
         gpu.state.blend_set("NONE")
+
+
+def _draw_card(state: TutorialState, hud: dict[str, Any]) -> None:
+    x, y, w, h, scale = hud["x"], hud["y"], hud["width"], hud["height"], hud["scale"]
+    palette = hud["palette"]
+    outer_radius = 10.0 * scale
+    for spread, alpha in ((6.0, 0.06), (3.0, 0.10), (1.0, 0.16)):
+        grow = spread * scale
+        _draw_round_rect(x - grow, y - grow * 1.3, w + grow * 2.0, h + grow * 2.0, outer_radius + grow, (0.0, 0.0, 0.0, alpha))
+    _draw_round_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, outer_radius + 1.0, palette["hairline"])
+    _draw_round_rect(x, y, w, h, outer_radius, palette["surface"])
+    controls = hud["controls"]
+    state.hitboxes.clear()
+    state.hitboxes["drag_header"] = hud["drag_rect"]
+    header_y = y + h - hud["header_h"]
+    content_x = hud["content_x"]
+    tile = 18.0 * scale
+    tile_y = header_y + (hud["header_h"] - tile) * 0.5
+    _draw_header_badge(state, hud, content_x, tile_y, tile)
+    if state.route is not None:
+        header_label = _ROUTE_SHORT_LABELS.get(state.route.key, state.route.title)
+        current, total, _progress = _route_progress(state)
+        if total:
+            header_label += f"  ·  {min(current, total)}/{total}"
+        task = state.active_task
+        if state.collapsed and task is not None:
+            header_label += f"  ·  {task.label}"
+    else:
+        header_label = "Tutorials"
+    text_right = controls["help"][0] if state.route is not None else controls["collapse"][0]
+    _draw_text(
+        _ellipsize(header_label, text_right - content_x - tile - 14.0 * scale, hud["body_size"]),
+        content_x + tile + 8.0 * scale,
+        header_y + hud["header_h"] * 0.5 - hud["body_size"] * 0.36,
+        hud["body_size"],
+        palette["text"],
+    )
+    # While the card unrolls after Expand, the body waits until there is
+    # room for it instead of spilling over the title bar.
+    expanded = not state.collapsed and h > hud["header_h"] + 24.0 * scale
+    if expanded:
+        if state.route is None:
+            _draw_route_chooser(state, hud)
+        else:
+            _draw_step(state, hud)
+    _draw_round_control(state, hud, "control_close", controls["close"], "×")
+    _draw_round_control(state, hud, "control_collapse", controls["collapse"], "+" if state.collapsed else "–")
+    if state.route is not None:
+        _draw_round_control(state, hud, "control_help", controls["help"], "?")
+        if expanded:
+            task = state.active_task
+            _draw_pill_button(state, hud, "control_back", controls["back"], "‹  Back")
+            if task is not None:
+                _draw_pill_button(state, hud, "control_skip", controls["next"], "Skip")
+            else:
+                next_label = "Guides" if _route_is_finished(state) else "Next  ›"
+                _draw_pill_button(state, hud, "control_next", controls["next"], next_label, primary=True)
 
 
 # -----------------------------------------------------------------------------
@@ -2566,7 +2874,7 @@ def fbp_notify_tutorial_action(context: bpy.types.Context, *task_keys: str) -> b
     state.manual_completed.add(task.key)
     _capture_completion_anchors(context, state, task.key)
     _advance_completed_page(state)
-    _tag_area(operator._target_area_ptr)
+    operator._refresh()
     return True
 
 _ACTIVE_OPERATOR: "FBP_OT_live_tutorial_modal | None" = None
@@ -2762,6 +3070,8 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
 
     _draw_handle = None
     _timer = None
+    _frame_timer = None
+    _window = None
     _target_area_ptr: int = 0
     _scene_ptr: int = 0
     _state: TutorialState
@@ -2769,7 +3079,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event):
         del event
-        global _ACTIVE_OPERATOR, _RESUME_STATE, _RESUME_SCENE_PTR
+        global _ACTIVE_OPERATOR
         if _ACTIVE_OPERATOR is not None:
             _ACTIVE_OPERATOR._close(context)
 
@@ -2787,10 +3097,17 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
         self._target_area_ptr = area.as_pointer()
         self._hud_layout = {}
         self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(_draw_overlay, (self,), "WINDOW", "POST_PIXEL")
+        self._window = context.window
         self._timer = context.window_manager.event_timer_add(DETECTION_INTERVAL, window=context.window)
         context.window_manager.modal_handler_add(self)
         _ACTIVE_OPERATOR = self
-        _tag_area(self._target_area_ptr)
+        state = self._state
+        state.shown_content = None
+        state.motion.snap("height", 0.0)
+        state.motion.trigger("open", _CARD_OPEN_SECONDS)
+        if state.route is None:
+            state.motion.trigger("chooser", _CHOOSER_SECONDS)
+        self._refresh()
         return {"RUNNING_MODAL"}
 
     def _close(self, context: bpy.types.Context) -> None:
@@ -2807,6 +3124,8 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             except (ReferenceError, RuntimeError):
                 pass
             self._timer = None
+        self._stop_frames()
+        self._window = None
         _tag_area(self._target_area_ptr)
         _RESUME_STATE = self._state
         _RESUME_SCENE_PTR = self._scene_ptr or context.scene.as_pointer()
@@ -2815,6 +3134,27 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
 
     def cancel(self, context: bpy.types.Context) -> None:
         self._close(context)
+
+    def _refresh(self) -> None:
+        """Redraw the card and keep frames coming while anything animates."""
+        _tag_area(self._target_area_ptr)
+        if self._draw_handle is None:
+            return
+        self._state.motion.wake()
+        if self._frame_timer is None and self._window is not None:
+            try:
+                self._frame_timer = bpy.context.window_manager.event_timer_add(_FRAME_INTERVAL, window=self._window)
+            except (ReferenceError, RuntimeError, TypeError, ValueError):
+                self._frame_timer = None
+
+    def _stop_frames(self) -> None:
+        if self._frame_timer is None:
+            return
+        try:
+            bpy.context.window_manager.event_timer_remove(self._frame_timer)
+        except (ReferenceError, RuntimeError):
+            pass
+        self._frame_timer = None
 
     def _clamp_offset(self, context: bpy.types.Context) -> None:
         """Keep a dragged card reachable after a drop or a size change."""
@@ -2852,13 +3192,13 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                 task = state.active_task
                 label = task.label if task is not None else "this step"
                 self.report({"INFO"}, f"Select a compatible layer, then complete: {label}")
-            _tag_area(self._target_area_ptr)
+            self._refresh()
             return {"FINISHED"}
         if action == "RESTART":
             route = state.route
             if route is not None:
                 state.enter_route(context, route.key)
-            _tag_area(self._target_area_ptr)
+            self._refresh()
             return {"FINISHED"}
         if action == "HELP":
             if state.route is None:
@@ -2867,7 +3207,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                 bpy.ops.fbp.tutorial_help("INVOKE_DEFAULT")
             except RuntimeError:
                 pass
-            _tag_area(self._target_area_ptr)
+            self._refresh()
             return {"FINISHED"}
         if action == "BACK":
             if state.route is not None and state.page_index > 0:
@@ -2875,7 +3215,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             elif state.route is not None:
                 state.route_key = None
                 state.page_index = 0
-            _tag_area(self._target_area_ptr)
+            self._refresh()
             return {"FINISHED"}
         if action == "SKIP":
             task = state.active_task
@@ -2885,7 +3225,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             _capture_completion_anchors(context, state, task.key)
             _advance_completed_page(state)
             self.report({"INFO"}, f"Skipped tutorial step: {task.label}")
-            _tag_area(self._target_area_ptr)
+            self._refresh()
             return {"FINISHED"}
         if action == "NEXT":
             if state.route is None:
@@ -2894,19 +3234,19 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                 task = state.active_task
                 if task is not None and not task.optional:
                     self.report({'INFO'}, f"Complete this step first: {task.label}")
-                    _tag_area(self._target_area_ptr)
+                    self._refresh()
                     return {"FINISHED"}
                 if task is not None and task.optional:
                     state.manual_completed.add(task.key)
                     _advance_completed_page(state)
-                    _tag_area(self._target_area_ptr)
+                    self._refresh()
                     return {"FINISHED"}
                 if state.page_index < len(state.route.pages) - 1:
                     state.page_index += 1
                 else:
                     state.route_key = None
                     state.page_index = 0
-            _tag_area(self._target_area_ptr)
+            self._refresh()
             return {"FINISHED"}
         return {"CANCELLED"}
 
@@ -2914,7 +3254,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
         if self._draw_handle is None:
             return {"CANCELLED"}
 
-        if event.type == "TIMER" and getattr(event, "timer", self._timer) == self._timer:
+        if event.type == "TIMER":
             now = time.monotonic()
             if now - self._state.last_detection >= DETECTION_INTERVAL:
                 self._state.last_detection = now
@@ -2923,7 +3263,13 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                 # Redraw the viewport only when a step was completed: an idle
                 # card otherwise forced a full viewport redraw twice a second.
                 if _progress_signature(self._state) != before:
+                    self._refresh()
+            if self._frame_timer is not None:
+                # Frame rate only while something moves; then back to idle.
+                if self._state.motion.busy():
                     _tag_area(self._target_area_ptr)
+                else:
+                    self._stop_frames()
             return {"PASS_THROUGH"}
 
         in_target = context.area is not None and context.area.as_pointer() == self._target_area_ptr
@@ -2942,7 +3288,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
             if event.type in {"LEFTMOUSE", "ESC", "RIGHTMOUSE"} and event.value in {"RELEASE", "PRESS"}:
                 state.drag_origin = None
                 self._clamp_offset(context)
-                _tag_area(self._target_area_ptr)
+                self._refresh()
                 return {"RUNNING_MODAL"}
         if in_target and event.type == "MOUSEMOVE":
             hover = ""
@@ -2952,7 +3298,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                     break
             if hover != self._state.hover:
                 self._state.hover = hover
-                _tag_area(self._target_area_ptr)
+                self._refresh()
             return {"PASS_THROUGH"}
 
         if in_target and event.type == "LEFTMOUSE" and event.value == "PRESS":
@@ -2968,7 +3314,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                     state.collapsed = not state.collapsed
                     state.hover = ""
                     self._clamp_offset(context)
-                    _tag_area(self._target_area_ptr)
+                    self._refresh()
                     return {"RUNNING_MODAL"}
                 control_actions = {
                     "control_close": "CLOSE",
@@ -2985,7 +3331,7 @@ class FBP_OT_live_tutorial_modal(bpy.types.Operator):
                     route_key = key.removeprefix("route_")
                     if route_key in ROUTES:
                         self._state.enter_route(context, route_key)
-                        _tag_area(self._target_area_ptr)
+                        self._refresh()
                         return {"RUNNING_MODAL"}
                 if key == "do_action":
                     self.perform_action(context, "ACTION")
