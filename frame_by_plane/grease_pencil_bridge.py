@@ -4559,6 +4559,37 @@ def _schedule_gp_mask_full_quality_refresh(canvas, scene=None, source_resolution
     return scheduled
 
 
+def _gp_mask_full_quality_is_current(
+    canvas, image, old_signature, source_resolution,
+    surface, polygons, polylines, bounds, distance_signatures, frame_number,
+):
+    """Return True when the published buffer already shows this drawing at full quality."""
+    try:
+        if not old_signature or bool(canvas.get("fbp_gp_mask_live_preview", False)):
+            return False
+        if tuple(int(v) for v in image.size[:2]) != (source_resolution, source_resolution):
+            return False
+    except FBP_DATA_ERRORS:
+        return False
+    distance_signature = distance_signatures.get(source_resolution)
+    if not distance_signature:
+        distance_signature = _distance_geometry_signature(
+            canvas, polygons, polylines, source_resolution, bounds
+        )
+        distance_signatures[source_resolution] = distance_signature
+    full_signature = _geometry_signature(
+        canvas,
+        surface,
+        polygons,
+        polylines,
+        source_resolution,
+        bounds,
+        distance_signature=distance_signature,
+        frame_number=frame_number,
+    )
+    return full_signature == old_signature
+
+
 def refresh_gp_mask(canvas, *, force=False, scene=None, allow_edit_mode=False):
     if not is_gp_canvas(canvas):
         return None, False
@@ -4680,6 +4711,22 @@ def refresh_gp_mask(canvas, *, force=False, scene=None, allow_edit_mode=False):
     except FBP_DATA_ERRORS:
         old_signature = ""
         image = None
+    if (
+        live_preview
+        and image is not None
+        and signature != old_signature
+        and _gp_mask_full_quality_is_current(
+            canvas, image, old_signature, source_resolution,
+            surface, polygons, polylines, bounds, distance_signatures, frame_number,
+        )
+    ):
+        # Draw Mode keeps every refresh in live-preview quality, but the
+        # depsgraph update caused by publishing the full-quality buffer is not
+        # a new stroke. Downgrading the same drawing to the preview size here
+        # scheduled another full-quality pass, which published again and
+        # restarted the cycle forever: the viewport material kept switching
+        # between two image buffers for as long as Draw Mode stayed active.
+        signature = old_signature
     if not force and image is not None and signature == old_signature:
         try:
             canvas[KEY_MASK_DIRTY] = False
