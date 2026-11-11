@@ -268,6 +268,76 @@ def _is_shader(geo, token):
     return geo.fbp_effect_definition(effect_id).get("kind") in {"SHADER", "BASE"}
 
 
+def _native_copy_source(geo, rig, plane, modifier, token):
+    """Return the layer a native "Copy to Selected" copied ``modifier`` from.
+
+    Blender's copy shares the source modifier's node group, so the source is
+    the other layer plane whose stack owns ``token`` and uses the same group.
+    """
+    group = getattr(modifier, "node_group", None)
+    try:
+        if group is None or int(group.users) < 2:
+            return None
+    except FBP_DATA_ERRORS:
+        return None
+    from .layers import fbp_resolve_rig_from_any_object
+    for obj in tuple(bpy.data.objects):
+        try:
+            if obj == plane or not bool(getattr(obj, "is_fbp_plane", False)):
+                continue
+            if not any(getattr(item, "node_group", None) == group for item in obj.modifiers):
+                continue
+        except FBP_DATA_ERRORS:
+            continue
+        source = fbp_resolve_rig_from_any_object(obj)
+        if source is None or source == rig:
+            continue
+        if token in set(geo._fbp_mixed_effect_tokens(source)):
+            return source
+    return None
+
+
+def _adopt_native_copies(geo, rig, plane, previous):
+    """Turn rows Blender's "Copy to Selected" added into real effects.
+
+    The native copy only duplicates the modifier, which on its own is a row
+    the stack does not know (and would be dropped). Copy the effect and its
+    settings from the source layer instead, then remove the bare copy.
+    """
+    active = set(geo._fbp_mixed_effect_tokens(rig))
+    entries = list(fbp_native_modifier_entries(rig))
+    counts = {}
+    for token, _modifier in entries:
+        counts[token] = counts.get(token, 0) + 1
+    adopted = []
+    for token, modifier in entries:
+        if token in active:
+            # Already in this stack: only an extra row can be a copy, and
+            # never the one Frame By Plane knew.
+            if counts.get(token, 0) < 2:
+                continue
+            if int(modifier.as_pointer()) == previous.get(token, (0, True, True))[0]:
+                continue
+        source = _native_copy_source(geo, rig, plane, modifier, token)
+        if source is None:
+            continue
+        try:
+            plane.modifiers.remove(modifier)
+        except FBP_DATA_ERRORS:
+            continue
+        counts[token] = counts.get(token, 1) - 1
+        adopted.append((source, token))
+    for source, token in adopted:
+        effect_id = geo._fbp_effect_ref_effect_id(token)
+        try:
+            from .effect_operators import fbp_copy_effect_settings_to_rigs
+            fbp_copy_effect_settings_to_rigs(source, [rig], effect_id, bpy.context)
+            geo.fbp_sync_effect_items(rig)
+        except (ImportError, *FBP_DATA_ERRORS) as exc:
+            fbp_warn("Could not copy the effect from Copy to Selected", exc)
+    return adopted
+
+
 def fbp_sync_native_modifiers(rig):
     """Mirror artist edits made in Blender's Modifiers panel into the stack.
 
@@ -290,6 +360,12 @@ def fbp_sync_native_modifiers(rig):
         return report
     _SYNCING = True
     try:
+        # 0. Blender's Copy to Selected: adopt the copied rows as effects.
+        report["adopted"] = _adopt_native_copies(geo, rig, plane, previous)
+        if report["adopted"]:
+            fbp_native_remember(rig)
+            previous = _SNAPSHOTS.get(key, {})
+
         # 1. Native duplicates of an owned effect break the one-modifier
         # contract. Keep the row Frame By Plane knew, drop the copy.
         by_token = {}

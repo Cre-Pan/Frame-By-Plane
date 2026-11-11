@@ -587,10 +587,114 @@ def test_depsgraph_handler_only_reads():
         _remove(rig)
 
 
+def _native_copy(source_plane, target_planes, name):
+    selected = [source_plane, *target_planes]
+    with bpy.context.temp_override(
+        object=source_plane, active_object=source_plane,
+        selected_objects=selected, selected_editable_objects=selected,
+    ):
+        return bpy.ops.object.modifier_copy_to_selected(modifier=name)
+
+
+def test_native_copy_to_selected():
+    """Modifiers > Copy to Selected gives the targets the real effect."""
+    geo, native, _shells = _modules()
+    cases = (
+        ("CROP", {"fbp_crop_left": 0.2, "fbp_crop_top": 0.1}),
+        ("EXTEND", {"fbp_extend_left": 0.3}),
+        ("MESH_WIGGLE", {}),
+    )
+    for effect_id, values in cases:
+        source = _rig(f"Copy Source {effect_id}")
+        empty = _rig(f"Copy Empty {effect_id}")
+        existing = _rig(f"Copy Existing {effect_id}")
+        try:
+            _add(geo, source, effect_id)
+            _add(geo, existing, effect_id)
+            for name, value in values.items():
+                setattr(source, name, value)
+            planes = [geo._fbp_plane(rig) for rig in (source, empty, existing)]
+            for rig in (source, empty, existing):
+                native.fbp_sync_native_modifiers(rig)
+            modifier_name = next(
+                modifier.name for modifier in planes[0].modifiers
+                if geo._fbp_effect_ref_effect_id(native.fbp_native_modifier_token(source, modifier)) == effect_id
+            )
+            assert _native_copy(planes[0], planes[1:], modifier_name) == {"FINISHED"}
+            report = native.fbp_sync_native_modifiers(empty)
+            assert report.get("adopted"), report
+            native.fbp_sync_native_modifiers(existing)
+            native.fbp_sync_native_modifiers(source)
+            for rig, plane in zip((empty, existing), planes[1:]):
+                assert geo.fbp_effect_is_active(rig, effect_id), (rig.name, effect_id)
+                tokens = [
+                    token for token, _modifier in native.fbp_native_modifier_entries(rig)
+                    if geo._fbp_effect_ref_effect_id(token) == effect_id
+                ]
+                assert len(tokens) == 1, (rig.name, [m.name for m in plane.modifiers])
+                for name, value in values.items():
+                    assert abs(float(getattr(rig, name)) - value) < 1.0e-6, (rig.name, name)
+                # Shell rows own a per-layer group: the bare copy shared the
+                # source's. Mesh effects share one library group by design.
+                foreign = {
+                    modifier.node_group for modifier in planes[0].modifiers
+                    if getattr(modifier, "node_group", None) is not None
+                } if effect_id in {"CROP", "EXTEND"} else set()
+                assert not any(
+                    getattr(modifier, "node_group", None) in foreign for modifier in plane.modifiers
+                ), (rig.name, "the bare native copy must be replaced")
+            assert geo.fbp_effect_is_active(source, effect_id)
+        finally:
+            for rig in (source, empty, existing):
+                _remove(rig)
+
+
+def test_extend_after_crop_starts_at_crop_edge():
+    """Extend samples the cropped image, starting exactly at the crop edge."""
+    geo, _native, _shells = _modules()
+    builder = importlib.import_module(f"{PACKAGE_NAME}.builder")
+    rig = _rig("Extend After Crop")
+    try:
+        plane = geo._fbp_plane(rig)
+        crop_left = 0.4
+        u_crop = crop_left / 2.0
+        for mode in ("REPEAT", "MIRROR", "TRANSPARENT", "EDGE"):
+            builder.set_plane_mesh_extension(rig, 1.5, 0.0, 0.0, 0.0, mode, crop_left, 0.0, 0.0, 0.0)
+            mesh = plane.data
+            uv = mesh.uv_layers["UVMap"].data
+            base_x = builder.fbp_native_aspect_half_extents(rig)[0]
+            crop_edge = -base_x + crop_left * base_x
+            assert any(abs(vertex.co.x - crop_edge) < 1.0e-6 for vertex in mesh.vertices), mode
+            for polygon in mesh.polygons:
+                points = [
+                    (mesh.vertices[mesh.loops[index].vertex_index].co.x, uv[index].uv.x)
+                    for index in polygon.loop_indices
+                ]
+                if max(x for x, _u in points) > crop_edge + 1.0e-6:
+                    continue
+                values = [u for _x, u in points]
+                if mode == "TRANSPARENT":
+                    assert all(u < 0.0 for u in values), (mode, values)
+                else:
+                    # Never sample the pixels the crop removed.
+                    assert all(u >= u_crop - 1.0e-6 for u in values), (mode, values)
+                edge_values = [u for x, u in points if abs(x - crop_edge) < 1.0e-6]
+                if mode in {"MIRROR", "EDGE"} and edge_values:
+                    assert all(abs(u - u_crop) < 1.0e-6 for u in edge_values), (mode, edge_values)
+                if mode == "REPEAT" and edge_values:
+                    assert all(abs(u - 1.0) < 1.0e-6 for u in edge_values), (mode, edge_values)
+        # Without a crop the original 3x3 layout is kept.
+        builder.set_plane_mesh_extension(rig, 0.5, 0.5, 0.5, 0.5, "REPEAT", 0.0, 0.0, 0.0, 0.0)
+        assert len(plane.data.polygons) == 9
+    finally:
+        _remove(rig)
+
+
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
     test_add_image_modifier, test_effect_shells, test_shell_value_sync, test_row_effects,
     test_native_effect_controls, test_depsgraph_handler_only_reads,
+    test_native_copy_to_selected, test_extend_after_crop_starts_at_crop_edge,
 )
 
 failed = []
