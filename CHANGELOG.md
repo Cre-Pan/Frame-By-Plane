@@ -2,6 +2,22 @@
 
 All notable public changes to Frame By Plane are documented here.
 
+## [8.3.0] - Unreleased
+
+### Blender 5.3
+
+- Frame By Plane now requires **Blender 5.3** (`blender_version_min = "5.3.0"`). Blender 5.2 LTS keeps using 8.2.1.
+- The Z Pie shows **Lasso Select** and the new **Carver** while drawing on a Grease Pencil canvas (Draw Mode), so strokes can be selected, moved and cut without switching to Edit Mode, and a **Flip Canvas** toggle that mirrors the view.
+- Notes in the generated node trees (layer materials, effect groups, modifier shells) are Blender 5.3 **Comment** nodes with Markdown: one node per note instead of one frame per line. Saved files update their notes the next time the tree is laid out.
+- Project Doctor, Performance Dashboard, What's New and the Live Tutorial help use Blender 5.3's multi-line labels, so text wraps to the panel width instead of a fixed character count.
+- Scrub Bar keyframe outlines are drawn with the polyline shader, so they keep their width with Vulkan (Blender 5.3's default on Windows and Linux) and Metal.
+- The regression runners, CI and release gate run on Blender 5.3.0.
+
+### Fixes
+
+- **Modifiers > Copy to Selected** copied only a bare modifier, which the effect stack removed right away. The copy is now turned into the real effect with the source layer's settings; layers that already have the effect take the source values.
+- **Extend after Crop**: with a crop, Repeat, Repeat Flipped and Transparent extensions showed the pixels the crop had removed. Extension tiles now start at the crop edge and sample only the cropped image.
+
 ## [8.2.1] - Unreleased
 
 ### Layer selection and transform box

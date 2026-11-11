@@ -11621,7 +11621,7 @@ _FBP_NODE_VIEW_SOURCE_TYPES = {"ShaderNodeTexCoord", "ShaderNodeUVMap", "ShaderN
 def _fbp_node_view_owned(node):
     """True for nodes Frame By Plane generated in a layer material."""
     try:
-        if node.bl_idname == "NodeFrame":
+        if node.bl_idname in {"NodeFrame", "NodeComment"}:
             return False
         name = str(node.name or "")
         if name.startswith(("FBP", "fbp")) or str(node.label or "").startswith("Frame by Plane"):

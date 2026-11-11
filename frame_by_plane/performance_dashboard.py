@@ -1758,17 +1758,12 @@ def draw_performance_dashboard_ui(layout, context):
                 active.name,
                 icon="ERROR" if active.severity == "WARNING" else "INFO",
             )
-            for line in _wrap_text(active.message, 58):
-                detail.label(text=line)
+            detail.label_multiline(text=_safe_name(active.message))
             if active.action:
                 detail.separator(factor=0.25)
-                for line_index, line in enumerate(_wrap_text(active.action, 58)):
-                    row = detail.row(align=False)
-                    row.enabled = False
-                    row.label(
-                        text=line,
-                        icon="LIGHT" if line_index == 0 else "BLANK1",
-                    )
+                row = detail.row(align=False)
+                row.enabled = False
+                row.label_multiline(text=_safe_name(active.action), icon="LIGHT")
         if active.object_name:
             select = detail.operator(
                 "fbp.select_performance_item",
@@ -1781,13 +1776,6 @@ def draw_performance_dashboard_ui(layout, context):
         "Estimates compare layers; they are not OS/GPU memory accounting.",
         icon="INFO",
     )
-
-
-def _wrap_text(value, width):
-    import textwrap
-
-    text = _safe_name(value)
-    return tuple(textwrap.wrap(text, width=max(12, int(width)))) or (text,)
 
 
 _model_classes = (FBP_PerformanceRow,)

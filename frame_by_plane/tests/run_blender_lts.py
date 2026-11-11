@@ -181,7 +181,7 @@ def run_suite(binary: Path, suite: str, output: Path, *, timeout_seconds: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Frame By Plane Blender 5.2 LTS regression suites")
+    parser = argparse.ArgumentParser(description="Run Frame By Plane Blender 5.3 regression suites")
     parser.add_argument("--blender", required=True, type=Path)
     parser.add_argument("--all", action="store_true", help="Run background and interactive suites")
     parser.add_argument("--interactive", action="store_true", help="Run only the interactive UI suite")
@@ -194,9 +194,9 @@ def main():
     if not binary.is_file():
         raise SystemExit(f"Blender executable not found: {binary}")
     code, version, parsed_version, probe_error = blender_version(binary)
-    if code or parsed_version[:2] not in {(5, 2), (5, 3)}:
+    if code or parsed_version[:2] != (5, 3):
         detail = probe_error or version or "unavailable"
-        raise SystemExit(f"Expected Blender 5.2.x or 5.3.x, got: {detail}")
+        raise SystemExit(f"Expected Blender 5.3.x, got: {detail}")
 
     output = ns.output.expanduser().resolve()
     suites = ["background", "interactive"] if ns.all else (["interactive"] if ns.interactive else ["background"])

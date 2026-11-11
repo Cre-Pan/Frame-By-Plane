@@ -304,7 +304,7 @@ def organize_node_tree(node_tree, *, minimum_nodes=8, add_reroutes=True):
 # or relinked, so lookups by name and the evaluated result are unchanged.
 # ---------------------------------------------------------------------------
 
-NODE_VIEW_VERSION = 1
+NODE_VIEW_VERSION = 2
 NODE_VIEW_VERSION_KEY = "fbp_node_view_version"
 NODE_VIEW_SIGNATURE_KEY = "fbp_node_view_signature"
 _VIEW_FRAME_TAG = "fbp_node_view_frame"
@@ -316,7 +316,6 @@ _ROW_GAP = 34.0
 _FRAME_PAD = 46.0
 _SECTION_GAP = 150.0
 _NOTE_LINE_HEIGHT = 30.0
-_NOTE_COLOR = (0.15, 0.15, 0.13)
 _NOTE_CHARS = 58
 
 _VIEW_METRICS = {"layouts": 0, "skipped": 0, "failed": 0, "total_seconds": 0.0, "max_seconds": 0.0}
@@ -349,10 +348,14 @@ def node_view_annotations_enabled(context=None):
     return bool(getattr(prefs, "node_view_annotations", True)) if prefs is not None else True
 
 
+# Node-view helpers: frames and the Markdown Comment notes (Blender 5.3).
+_VIEW_HELPER_TYPES = frozenset({"NodeFrame", "NodeComment"})
+
+
 def is_node_view_helper(node):
-    """True for frames added by a node-view pass (never evaluated)."""
+    """True for frames and notes added by a node-view pass (never evaluated)."""
     try:
-        return node.bl_idname == "NodeFrame" and bool(
+        return node.bl_idname in _VIEW_HELPER_TYPES and bool(
             node.get(_VIEW_FRAME_TAG, False) or node.get(_VIEW_NOTE_TAG, False)
         )
     except _DATA_ERRORS:
@@ -378,7 +381,7 @@ def _remove_view_frames(tree):
     _FRAME_KEYS_USED.clear()
     for node in tuple(tree.nodes):
         try:
-            if node.bl_idname != "NodeFrame":
+            if node.bl_idname not in _VIEW_HELPER_TYPES:
                 continue
             if is_node_view_helper(node):
                 key = str(node.get(_VIEW_KEY, "") or "")
@@ -461,29 +464,55 @@ def _new_view_frame(tree, label, color, *, label_size=16, note=False, parent=Non
     return frame
 
 
-def _add_note(tree, title, lines, x, y, width, *, parent=None, bottom=None):
-    """Add a note: a titled frame holding one label per line of text.
+def _new_view_comment(tree, key_text, text, width, *, parent=None):
+    """Return a pooled Comment node showing ``text`` as Markdown."""
+    parent_key = str(parent.get(_VIEW_KEY, "") or "") if parent is not None else ""
+    base = f"C|{parent_key}|{str(key_text or '')[:63]}"
+    key = base
+    duplicate = 1
+    while key in _FRAME_KEYS_USED:
+        duplicate += 1
+        key = f"{base}|{duplicate}"
+    _FRAME_KEYS_USED.add(key)
+    comment = _FRAME_POOL.get(key)
+    if comment is not None and comment.bl_idname != "NodeComment":
+        try:
+            tree.nodes.remove(comment)
+        except _DATA_ERRORS:
+            pass
+        comment = None
+    if comment is None:
+        comment = tree.nodes.new("NodeComment")
+        comment.name = "FBP Note · " + str(key_text or "")[:48]
+        comment[_VIEW_NOTE_TAG] = True
+        comment[_VIEW_KEY] = key
+    _set_if_changed(comment, "text", str(text or ""))
+    _set_if_changed(comment, "width", float(width))
+    try:
+        if comment.parent != parent:
+            comment.parent = parent
+    except _DATA_ERRORS:
+        pass
+    return comment
 
-    Returns the height the note takes. Frames hold no data-block, so notes
-    leave nothing behind in Text Editor lists and cost nothing to evaluate.
+
+def _add_note(tree, title, lines, x, y, width, *, parent=None, bottom=None):
+    """Add a note: one Markdown Comment node with a bold title.
+
+    Returns the height the note takes. Comment nodes hold no data-block and
+    are never evaluated, so notes cost nothing at render time.
     """
-    rows = [line for text in lines for line in _wrap(text, max(24, min(60, int(width / 8.0))))]
-    if not rows:
+    paragraphs = [str(text).strip() for text in lines if str(text or "").strip()]
+    if not paragraphs:
         return 0.0
+    rows = [line for text in paragraphs for line in _wrap(text, max(24, min(60, int(width / 8.0))))]
     if bottom is not None:
         # Sit just above ``bottom`` whatever the number of lines.
         y = float(bottom) + 36.0 + _NOTE_LINE_HEIGHT * len(rows) + 60.0
-    note = _new_view_frame(tree, title, _NOTE_COLOR, label_size=15, note=True, parent=parent)
-    _set_if_changed(note, "shrink", True)
-    cursor = y - 36.0
-    for row in rows:
-        line = _new_view_frame(tree, row, _NOTE_COLOR, label_size=13, note=True, parent=note)
-        _set_if_changed(line, "shrink", False)
-        _set_if_changed(line, "width", float(width))
-        _set_if_changed(line, "height", _NOTE_LINE_HEIGHT)
-        _PLACEMENTS.append((line, x, cursor))
-        cursor -= _NOTE_LINE_HEIGHT
-    return (y - cursor) + _FRAME_PAD
+    text = f"**{title}**\n\n" + "\n\n".join(paragraphs)
+    note = _new_view_comment(tree, title, text, width, parent=parent)
+    _PLACEMENTS.append((note, x, y))
+    return 36.0 + _NOTE_LINE_HEIGHT * len(rows) + _FRAME_PAD
 
 
 def _visible_socket_count(sockets):
@@ -822,6 +851,7 @@ def tidy_effect_group(tree, *, title="", description="", annotate=None, force=Fa
         nodes = [
             node for node in tree.nodes
             if node.bl_idname != "NodeFrame"
+            and not is_node_view_helper(node)
             and (node.parent is None or is_node_view_helper(node.parent))
         ]
         if len(nodes) < int(minimum_nodes):
@@ -1016,12 +1046,8 @@ def layout_layer_material(tree, sections, *, title="", annotate=None, force=Fals
             hint_width = 400.0
             if annotate:
                 hint_rows = _wrap(hint, 50)
-                for row_index, row in enumerate(hint_rows):
-                    line = _new_view_frame(tree, row, color, label_size=13, note=True, parent=frame)
-                    _set_if_changed(line, "shrink", False)
-                    _set_if_changed(line, "width", hint_width)
-                    _set_if_changed(line, "height", _NOTE_LINE_HEIGHT)
-                    _PLACEMENTS.append((line, x0, y0 - row_index * _NOTE_LINE_HEIGHT))
+                hint_note = _new_view_comment(tree, f"{label} hint", hint, hint_width, parent=frame)
+                _PLACEMENTS.append((hint_note, x0, y0))
                 notes_offset = _NOTE_LINE_HEIGHT * len(hint_rows) + 24.0
             stacked = key in {"SOURCE", "IMAGE", "OUTPUT"} and len(blocks) > 1 and all(len(b[1]) == 1 for b in blocks)
             for label_text, block_nodes in blocks:

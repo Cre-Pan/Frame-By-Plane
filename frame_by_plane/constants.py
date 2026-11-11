@@ -14,16 +14,16 @@ from .support_policy import (
 
 # Release metadata lives here so the add-on header, preferences and local
 # What's New UI cannot silently drift apart during incremental releases.
-FBP_VERSION = (8, 2, 1)
+FBP_VERSION = (8, 3, 0)
 FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
 
 # Final LTS runtime policy. Keep these values aligned with blender_manifest.toml.
 FBP_RELEASE_CHANNEL = "LTS"
 FBP_RELEASE_CHANNEL_LABEL = "8 LTS"
 FBP_LTS_TARGET_VERSION = _FBP_LTS_TARGET_VERSION
-FBP_BLENDER_VERSION_MIN = (5, 2, 0)
+FBP_BLENDER_VERSION_MIN = (5, 3, 0)
 FBP_BLENDER_VERSION_MIN_STRING = ".".join(str(part) for part in FBP_BLENDER_VERSION_MIN)
-FBP_BLENDER_VERSION_SERIES_STRING = "5.2 LTS and 5.3"
+FBP_BLENDER_VERSION_SERIES_STRING = "5.3"
 FBP_BLENDER_VERSION_MAX_EXCLUSIVE = (5, 4, 0)
 FBP_SUPPORTED_PLATFORM_IDS = _FBP_LTS_PLATFORM_IDS
 FBP_SUPPORTED_PLATFORM_LABEL = _FBP_LTS_PLATFORM_LABEL
@@ -204,6 +204,7 @@ FBP_ICONS = {
     'MESH_CUBE': 'MESH_CUBE',
     'FONT_DATA': 'FONT_DATA',
     'BRUSH_DATA': 'BRUSH_DATA',
+    'BLENDER': 'BLENDER',  # What's New: Blender version support.
     'SPARKLES': 'LIGHT_SUN',  # Sparkle-style fallback available in Blender 5.2.
     'MOD_BOOLEAN': 'MOD_BOOLEAN',  # Crop tool icon.
     'NODE_TEXTURE': 'NODE_TEXTURE',  # Gradient / texture-node plane icon.  # Pending folder without files.

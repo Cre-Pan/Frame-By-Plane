@@ -5,12 +5,12 @@
 - Update `frame_by_plane/blender_manifest.toml`.
 - Update `frame_by_plane/constants.py` and `frame_by_plane/support_policy.py`.
 - Update `CHANGELOG.md`, `README.md`, user documentation and release notes.
-- Confirm that the repository description and GitHub topics describe the current Blender 5.2 image-sequence, Grease Pencil and 2.5D animation scope.
+- Confirm that the repository description and GitHub topics describe the current Blender 5.3 image-sequence, Grease Pencil and 2.5D animation scope.
 - Run `python tools/verify_repository.py`.
 
-## 2. Run Blender 5.2 regression tests
+## 2. Run Blender 5.3 regression tests
 
-Use an official Blender **5.2.x LTS** executable:
+Use an official Blender **5.3.x** executable:
 
 ```bash
 python frame_by_plane/tests/run_blender_lts.py \
@@ -57,7 +57,7 @@ Both scripts normalize ZIP metadata after Blender's build so identical source pr
 
 1. Commit source and documentation to a release branch.
 2. Open a pull request and let repository validation complete.
-3. Create the semantic tag `vX.Y.Z` (for example `v8.2.1`) on the tested release commit.
+3. Create the semantic tag `vX.Y.Z` (for example `v8.3.0`) on the tested release commit.
 4. Set the release title to `Frame By Plane X.Y.Z`.
 5. Paste `release-notes/X.Y.Z.md` into the GitHub Release.
 6. Attach all platform-specific ZIP files and `SHA256SUMS.txt`.
@@ -87,7 +87,7 @@ Run a validation-only pass first. The script locates the five platform-specific 
 
 ```powershell
 .\tools\publish_blender_extensions.ps1 `
-    -Version 8.2.1 `
+    -Version 8.3.0 `
     -PackageDirectory .\dist `
     -WhatIf
 ```
@@ -96,11 +96,11 @@ Perform the real upload with the same inputs:
 
 ```powershell
 .\tools\publish_blender_extensions.ps1 `
-    -Version 8.2.1 `
+    -Version 8.3.0 `
     -PackageDirectory .\dist
 ```
 
-The command always requires typing `UPLOAD 8.2.1` before it sends the first request. It uses only the official `https://extensions.blender.org/api/v1/extensions/frame_by_plane/versions/upload/` endpoint, never writes or prints the token, requires HTTP 201 plus the JSON object documented by the OpenAPI schema, validates package identity fields when the server returns them, and stops with a clear error if any platform upload is rejected. Remove the process variable afterwards:
+The command always requires typing `UPLOAD 8.3.0` before it sends the first request. It uses only the official `https://extensions.blender.org/api/v1/extensions/frame_by_plane/versions/upload/` endpoint, never writes or prints the token, requires HTTP 201 plus the JSON object documented by the OpenAPI schema, validates package identity fields when the server returns them, and stops with a clear error if any platform upload is rejected. Remove the process variable afterwards:
 
 ```powershell
 Remove-Item Env:BLENDER_EXTENSIONS_TOKEN

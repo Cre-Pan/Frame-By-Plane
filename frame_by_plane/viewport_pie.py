@@ -372,6 +372,40 @@ _GP_OBJECT_MODES = frozenset({
 })
 
 
+_GP_DRAW_MODE_TOOLS = (
+    # (tool id, icon) of the Blender 5.3 Draw Mode tools worth one click.
+    ("builtin.select_lasso", "GP_SELECT_STROKES"),
+    ("builtin.carver", "MOD_BOOLEAN"),
+)
+
+
+def _active_tool_id(context):
+    try:
+        tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+        return str(getattr(tool, "idname", "") or "")
+    except FBP_DATA_ERRORS:
+        return ""
+
+
+def _draw_gp_canvas_tools(row, context, space):
+    """Draw Mode selection, Carver and the mirrored canvas (Blender 5.3)."""
+    if str(getattr(context, "mode", "") or "") == "PAINT_GREASE_PENCIL":
+        active_tool = _active_tool_id(context)
+        for tool_id, icon in _GP_DRAW_MODE_TOOLS:
+            cell = _pie_icon_cell(row)
+            op = cell.operator(
+                "wm.tool_set_by_id",
+                text="",
+                icon=icon,
+                depress=active_tool == tool_id,
+            )
+            op.name = tool_id
+    region = getattr(space, "region_3d", None)
+    if region is not None and hasattr(region, "use_view_flip_x"):
+        cell = _pie_icon_cell(row)
+        cell.prop(region, "use_view_flip_x", text="", icon="MOD_MIRROR")
+
+
 def _gp_object_mode_active(context):
     """Return True while editing inside a Grease Pencil object."""
     obj = getattr(context, "active_object", None)
@@ -2257,6 +2291,8 @@ class FBP_MT_ViewportPie(Menu):
                         text="",
                         icon="ONIONSKIN_ON" if onion_active else "ONIONSKIN_OFF",
                     )
+                if _gp_object_mode_active(context):
+                    _draw_gp_canvas_tools(display, context, space)
 
             if plane_rigs or state["lock_memory_active"]:
                 layer = actions.row(align=True)

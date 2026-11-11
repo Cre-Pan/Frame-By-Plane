@@ -1,4 +1,4 @@
-name: Blender 5.2 native release gate
+name: Blender 5.3 native release gate
 
 on:
   workflow_dispatch:
@@ -30,25 +30,25 @@ jobs:
           - platform: linux_x64
             runner: ubuntu-24.04
             python_arch: x64
-            asset: blender-5.2.0-linux-x64.tar.xz
-            package: frame_by_plane-8.2.1-linux_x64.zip
+            asset: blender-5.3.0-linux-x64.tar.xz
+            package: frame_by_plane-8.3.0-linux_x64.zip
           - platform: macos_arm64
             runner: macos-15
             python_arch: arm64
-            asset: blender-5.2.0-macos-arm64.dmg
-            package: frame_by_plane-8.2.1-macos_arm64.zip
+            asset: blender-5.3.0-macos-arm64.dmg
+            package: frame_by_plane-8.3.0-macos_arm64.zip
           - platform: windows_arm64
             runner: windows-11-arm
             python_arch: arm64
-            asset: blender-5.2.0-windows-arm64.zip
-            package: frame_by_plane-8.2.1-windows_arm64.zip
+            asset: blender-5.3.0-windows-arm64.zip
+            package: frame_by_plane-8.3.0-windows_arm64.zip
           - platform: windows_x64
             runner: windows-2025
             python_arch: x64
-            asset: blender-5.2.0-windows-x64.zip
-            package: frame_by_plane-8.2.1-windows_x64.zip
+            asset: blender-5.3.0-windows-x64.zip
+            package: frame_by_plane-8.3.0-windows_x64.zip
     env:
-      BLENDER_VERSION: "5.2.0"
+      BLENDER_VERSION: "5.3.0"
       BLENDER_ASSET: ${{ matrix.asset }}
       BLENDER_PACKAGE: ${{ matrix.package }}
       # Job-level env expressions cannot use the runner context. Keep the
@@ -87,7 +87,7 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/$BLENDER_ASSET"
           checksums="$RUNNER_TEMP/blender-$BLENDER_VERSION.sha256"
-          base="https://download.blender.org/release/Blender5.2"
+          base="https://download.blender.org/release/Blender5.3"
           curl --fail --location --retry 3 "$base/$BLENDER_ASSET" --output "$archive"
           curl --fail --location --retry 3 "$base/blender-$BLENDER_VERSION.sha256" --output "$checksums"
           python tools/verify_blender_download.py "$archive" "$checksums"
@@ -103,7 +103,7 @@ jobs:
           archive="$RUNNER_TEMP/$BLENDER_ASSET"
           checksums="$RUNNER_TEMP/blender-$BLENDER_VERSION.sha256"
           mount_point="$RUNNER_TEMP/blender-mount"
-          base="https://download.blender.org/release/Blender5.2"
+          base="https://download.blender.org/release/Blender5.3"
           curl --fail --location --retry 3 "$base/$BLENDER_ASSET" --output "$archive"
           curl --fail --location --retry 3 "$base/blender-$BLENDER_VERSION.sha256" --output "$checksums"
           python tools/verify_blender_download.py "$archive" "$checksums"
@@ -120,7 +120,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $archive = Join-Path $env:RUNNER_TEMP $env:BLENDER_ASSET
           $checksums = Join-Path $env:RUNNER_TEMP "blender-$env:BLENDER_VERSION.sha256"
-          $base = "https://download.blender.org/release/Blender5.2"
+          $base = "https://download.blender.org/release/Blender5.3"
           Invoke-WebRequest -Uri "$base/$env:BLENDER_ASSET" -OutFile $archive
           Invoke-WebRequest -Uri "$base/blender-$env:BLENDER_VERSION.sha256" -OutFile $checksums
           python tools/verify_blender_download.py $archive $checksums
@@ -172,7 +172,7 @@ jobs:
         shell: bash
         run: >-
           "$BLENDER_BIN" --background --factory-startup --command extension validate
-          "dist/frame_by_plane-8.2.1-macos_x64.zip"
+          "dist/frame_by_plane-8.3.0-macos_x64.zip"
 
       - name: Validate native package on Windows
         if: runner.os == 'Windows'
@@ -294,7 +294,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: blender-5.2-${{ matrix.platform }}-evidence
+          name: blender-5.3-${{ matrix.platform }}-evidence
           if-no-files-found: error
           retention-days: 14
           path: |
@@ -305,7 +305,7 @@ jobs:
         if: matrix.platform == 'linux_x64'
         uses: actions/upload-artifact@v4
         with:
-          name: blender-5.2-macos_x64-package-only
+          name: blender-5.3-macos_x64-package-only
           if-no-files-found: error
           retention-days: 14
-          path: dist/frame_by_plane-8.2.1-macos_x64.zip
+          path: dist/frame_by_plane-8.3.0-macos_x64.zip

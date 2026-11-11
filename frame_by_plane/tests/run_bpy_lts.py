@@ -148,7 +148,7 @@ def run(python: Path, output: Path, *, timeout_seconds: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Frame By Plane background tests with the official bpy 5.2 module")
+    parser = argparse.ArgumentParser(description="Run Frame By Plane background tests with the official bpy 5.3 module")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--output", type=Path, default=ROOT / "tests" / "bpy_lts_test_report.json")
     parser.add_argument("--timeout", type=int, default=1200)
@@ -158,9 +158,9 @@ def main():
     if not python.is_file():
         raise SystemExit(f"Python executable not found: {python}")
     code, parsed_version, version, binary, probe_error = _bpy_version(python)
-    if code or parsed_version[:2] != (5, 2):
+    if code or parsed_version[:2] != (5, 3):
         detail = probe_error or version or "unavailable"
-        raise SystemExit(f"Expected the official bpy 5.2.x module, got: {detail}")
+        raise SystemExit(f"Expected the official bpy 5.3.x module, got: {detail}")
 
     report = run(python, ns.output.resolve(), timeout_seconds=ns.timeout)
     state = "PASS" if report.get("passed", False) else "FAIL"

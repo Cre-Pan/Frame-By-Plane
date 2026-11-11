@@ -3237,30 +3237,14 @@ def _help_icon_kwargs(kind: str) -> dict[str, Any]:
     return {"icon": _NATIVE_HELP_ICONS.get(key, "DOT")}
 
 
-def _help_wrap(text: str, width: int = 82) -> tuple[str, ...]:
-    words = " ".join(_plain_text(text).split()).split()
-    if not words:
-        return ()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        candidate = word if not current else f"{current} {word}"
-        if len(candidate) <= width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return tuple(lines)
-
-
-def _help_labels(layout: bpy.types.UILayout, text: str, *, icon: str | None = None, width: int = 82) -> None:
-    for index, line in enumerate(_help_wrap(text, width)):
-        if index == 0 and icon:
-            layout.label(text=line, icon=icon)
-        else:
-            layout.label(text=line)
+def _help_labels(layout: bpy.types.UILayout, text: str, *, icon: str | None = None) -> None:
+    text = " ".join(_plain_text(text).split())
+    if not text:
+        return
+    if icon:
+        layout.label_multiline(text=text, icon=icon)
+    else:
+        layout.label_multiline(text=text)
 
 
 # What each option of the creation dialogs does. Shown only from the "?"
@@ -3366,9 +3350,7 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
         configure_layout(guide)
         section_header(guide, "Step by Step", icon="QUESTION")
         for index, step in enumerate(page.help_steps, start=1):
-            for line_index, line in enumerate(_help_wrap(step, 88)):
-                prefix = f"{index}. " if line_index == 0 else "   "
-                guide.label(text=f"{prefix}{line}")
+            _help_labels(guide, f"{index}. {step}")
 
         dialog = next(
             (_DIALOG_OPTION_NOTES[task.key] for task in page.tasks if task.key in _DIALOG_OPTION_NOTES),
@@ -3380,7 +3362,7 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
             section_header(options, dialog[0], icon="PREFERENCES")
             for name, text in dialog[1]:
                 col = options.column(align=True)
-                _help_labels(col, f"{name}: {text}", icon="DOT", width=78)
+                _help_labels(col, f"{name}: {text}", icon="DOT")
 
         help_notes = page.help_notes
         if _plane_material_panel_registered() and any(task.key in _LAYER_SETTINGS_TASKS for task in page.tasks):
@@ -3391,13 +3373,13 @@ class FBP_OT_tutorial_help(bpy.types.Operator):
             section_header(notes, "Notes", icon="INFO")
             for note in help_notes:
                 col = notes.column(align=True)
-                _help_labels(col, note, icon="DOT", width=78)
+                _help_labels(col, note, icon="DOT")
 
         if page.pro_tip:
             pro = layout.box()
             configure_layout(pro)
             section_header(pro, "PRO Tip", icon="SOLO_ON")
-            _help_labels(pro, page.pro_tip, width=80)
+            _help_labels(pro, page.pro_tip)
 
 
 class FBP_OT_live_tutorial_modal(bpy.types.Operator):

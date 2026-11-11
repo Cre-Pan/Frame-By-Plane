@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "frame_by_plane"
-version = "8.2.1"
+version = "8.3.0"
 name = "Frame By Plane"
 tagline = "Image sequences, Grease Pencil and 2.5D animation"
 maintainer = "Alessandro Pannoli <pannoli312@gmail.com>"
@@ -15,7 +15,7 @@ platforms = [
   "macos-arm64",
   "linux-x64",
 ]
-blender_version_min = "5.2.0"
+blender_version_min = "5.3.0"
 blender_version_max = "5.4.0"
 
 license = [

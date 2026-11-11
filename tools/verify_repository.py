@@ -108,8 +108,8 @@ def main() -> None:
     if not 0 < notes_length <= 1024:
         fail(f"Blender Extensions release notes must fit the publisher's 1024-character limit; found {notes_length}")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    if manifest_version not in readme or "Blender 5.2" not in readme:
-        fail("README does not advertise the current release and Blender 5.2 support")
+    if manifest_version not in readme or "Blender 5.3" not in readme:
+        fail("README does not advertise the current release and Blender 5.3 support")
 
     platforms = set(data.get("platforms", []))
     if platforms != EXPECTED_PLATFORMS:

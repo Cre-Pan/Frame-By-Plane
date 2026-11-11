@@ -1,6 +1,6 @@
-name: Blender 5.2 regression tests
+name: Blender 5.3 regression tests
 
-# Runs the background regression suite in a real Blender 5.2 on every pull
+# Runs the background regression suite in a real Blender 5.3 on every pull
 # request and every push to main, so a broken effect, panel or handler shows
 # up on the PR instead of in a hand-made build. The full four-platform release
 # gate (packages, install smoke, interactive UI) stays in
@@ -25,8 +25,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      BLENDER_VERSION: "5.2.0"
-      BLENDER_ASSET: blender-5.2.0-linux-x64.tar.xz
+      BLENDER_VERSION: "5.3.0"
+      BLENDER_ASSET: blender-5.3.0-linux-x64.tar.xz
       FBP_CI_RESULTS: ${{ github.workspace }}/work/fbp-results
       BLENDER_USER_CONFIG: ${{ github.workspace }}/work/fbp-user/config
       BLENDER_USER_SCRIPTS: ${{ github.workspace }}/work/fbp-user/scripts
@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/$BLENDER_ASSET"
           checksums="$RUNNER_TEMP/blender-$BLENDER_VERSION.sha256"
-          base="https://download.blender.org/release/Blender5.2"
+          base="https://download.blender.org/release/Blender5.3"
           curl --fail --location --retry 3 "$base/$BLENDER_ASSET" --output "$archive"
           curl --fail --location --retry 3 "$base/blender-$BLENDER_VERSION.sha256" --output "$checksums"
           python tools/verify_blender_download.py "$archive" "$checksums"

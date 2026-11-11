@@ -182,7 +182,7 @@ def unregister_addon(module):
 
 
 def test_version():
-    assert bpy.app.version[:2] in {(5, 2), (5, 3)}, bpy.app.version_string
+    assert bpy.app.version[:2] == (5, 3), bpy.app.version_string
     return bpy.app.version_string
 
 
@@ -263,10 +263,10 @@ def test_feedback_update_popup_contract(_module):
 
     titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     assert titles == (
-        "Magnetic Scrub Bar",
-        "Every Selected Color",
-        "Material in Edit Mode",
-        "Fewer Popups",
+        "Blender 5.3",
+        "Lasso and Carver",
+        "Flip Canvas",
+        "Node Notes",
         "Bug Fixes",
     )
     assert all("7.1" not in item[1] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)

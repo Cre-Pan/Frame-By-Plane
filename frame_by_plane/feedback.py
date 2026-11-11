@@ -7,7 +7,6 @@ automatically. No telemetry, project data or automatic messages are sent.
 
 from __future__ import annotations
 
-import textwrap
 import time
 from pathlib import Path
 
@@ -136,28 +135,28 @@ FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS = 0.50
 # not in the first screen shown after an update.
 FBP_PUBLIC_RELEASE_ITEMS = (
     (
-        "Magnetic Scrub Bar",
-        "Release < and the playhead snaps back to where you started.",
-        "TIME",
+        "Blender 5.3",
+        "Frame By Plane now runs on Blender 5.3.",
+        "BLENDER",
     ),
     (
-        "Every Selected Color",
-        "Each Stroke and Fill color as its own swatch in Edit Mode.",
-        "COLOR",
+        "Lasso and Carver",
+        "Select and cut strokes in Draw Mode from the Z Pie.",
+        "MOD_BOOLEAN",
     ),
     (
-        "Material in Edit Mode",
-        "Pick the material slot without leaving Edit Mode.",
-        "BRUSH_DATA",
+        "Flip Canvas",
+        "Mirror the view from the Z Pie to check a drawing.",
+        "MOD_MIRROR",
     ),
     (
-        "Fewer Popups",
-        "Settings in the file browser and the Adjust panel.",
-        "IMAGE_PLANE",
+        "Node Notes",
+        "Markdown Comment notes in the generated node trees.",
+        "TEXT",
     ),
     (
         "Bug Fixes",
-        "Based on user reviews. Rate Frame By Plane and give feedback!",
+        "Copy to Selected in Modifiers and Extend after Crop.",
         "GHOST_DISABLED",
     ),
 )
@@ -1944,16 +1943,14 @@ class FBP_OT_WhatsNewPrompt(Operator):
             even_rows=False,
             align=False,
         )
-        wrap_width = 34 if int(columns or 1) > 1 else 60
         for title, description, icon_key in items:
             card = grid.column(align=False)
             title_row = card.row(align=False)
             title_row.scale_y = 1.08
             title_row.label(text=title, icon=fbp_icon(icon_key))
-            for line_text in textwrap.wrap(str(description), width=wrap_width) or (str(description),):
-                detail = card.row(align=False)
-                detail.enabled = False
-                detail.label(text=line_text)
+            detail = card.row(align=False)
+            detail.enabled = False
+            detail.label_multiline(text=str(description))
             card.separator(factor=0.25)
 
     @staticmethod
