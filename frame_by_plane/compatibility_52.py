@@ -211,7 +211,7 @@ def blender_52_runtime_contract(*, refresh=False):
     version_cycle = str(build.get("version_cycle", "") or "").strip().lower()
     if version_cycle and version_cycle not in {"release", "lts"}:
         warnings.append(
-            f"Blender build cycle is {version_cycle}; production validation targets an official 5.2 LTS release"
+            f"Blender build cycle is {version_cycle}; production validation targets an official 5.2 LTS or 5.3 release"
         )
 
     capabilities["supported_blender_series"] = (

@@ -2373,6 +2373,32 @@ def _draw_uniform_batch(shader, batch_for_shader, primitive, vertices, color):
     batch.draw(shader)
 
 
+_POLYLINE_SHADER = None
+
+
+def _draw_polyline_batch(batch_for_shader, vertices, color, width, viewport_size):
+    """Draw LINES with a real pixel width.
+
+    ``gpu.state.line_width_set`` is ignored by the Vulkan and Metal backends
+    (Vulkan is the default on Windows and Linux from Blender 5.3), so
+    keyframe borders use the builtin polyline shader instead.
+    """
+    global _POLYLINE_SHADER
+    if not vertices:
+        return
+    import gpu
+
+    if _POLYLINE_SHADER is None:
+        _POLYLINE_SHADER = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+    shader = _POLYLINE_SHADER
+    batch = batch_for_shader(shader, "LINES", {"pos": tuple(vertices)})
+    shader.bind()
+    shader.uniform_float("viewportSize", tuple(float(value) for value in viewport_size))
+    shader.uniform_float("lineWidth", float(width))
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
 def _append_circle_triangles(vertices, cx, cy, radius, *, segments=10):
     radius = max(0.25, float(radius))
     segments = max(6, int(segments))
@@ -4089,8 +4115,14 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
             border_selected = palette["keyframe_border_selected"]
 
             gpu.state.blend_set("ALPHA")
-            gpu.state.line_width_set(max(0.5, float(self._line_width) * max(0.75, self._ui_scale)))
+            line_width = max(0.5, float(self._line_width) * max(0.75, self._ui_scale))
+            gpu.state.line_width_set(line_width)
             shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+            draw_region = getattr(bpy.context, "region", None) or self._region
+            viewport_size = (
+                float(getattr(draw_region, "width", 1) or 1),
+                float(getattr(draw_region, "height", 1) or 1),
+            )
             window_center = self._window_center()
             hold_window = (
                 self._hold_window_active()
@@ -4364,7 +4396,7 @@ class FBP_OT_GreasePencilFrameScrub(Operator):
                 bucket[1].extend(_diamond_lines(x, y, radius))
             for (fill, key_border), (triangles, lines) in grouped.items():
                 _draw_uniform_batch(shader, batch_for_shader, "TRIS", triangles, fill)
-                _draw_uniform_batch(shader, batch_for_shader, "LINES", lines, key_border)
+                _draw_polyline_batch(batch_for_shader, lines, key_border, line_width, viewport_size)
 
             if layout["vertical"]:
                 top_frame, bottom_frame = (left, right) if self._invert_vertical else (right, left)

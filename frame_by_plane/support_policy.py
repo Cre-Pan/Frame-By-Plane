@@ -17,7 +17,7 @@ FBP_LTS_PLATFORM_LABEL = (
     "Windows x64/ARM64, macOS Intel/Apple Silicon and Linux x64"
 )
 FBP_LTS_SUPPORT_STATEMENT = (
-    "Frame By Plane 8 LTS is supported on Blender 5.2.x for Windows "
+    "Frame By Plane 8 LTS is supported on Blender 5.2.x LTS and 5.3.x for Windows "
     "x64/ARM64, macOS Intel/Apple Silicon and Linux x64."
 )
 

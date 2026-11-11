@@ -194,9 +194,9 @@ def main():
     if not binary.is_file():
         raise SystemExit(f"Blender executable not found: {binary}")
     code, version, parsed_version, probe_error = blender_version(binary)
-    if code or parsed_version[:2] != (5, 2):
+    if code or parsed_version[:2] not in {(5, 2), (5, 3)}:
         detail = probe_error or version or "unavailable"
-        raise SystemExit(f"Expected Blender 5.2.x, got: {detail}")
+        raise SystemExit(f"Expected Blender 5.2.x or 5.3.x, got: {detail}")
 
     output = ns.output.expanduser().resolve()
     suites = ["background", "interactive"] if ns.all else (["interactive"] if ns.interactive else ["background"])

@@ -182,7 +182,7 @@ def unregister_addon(module):
 
 
 def test_version():
-    assert bpy.app.version[:2] == (5, 2), bpy.app.version_string
+    assert bpy.app.version[:2] in {(5, 2), (5, 3)}, bpy.app.version_string
     return bpy.app.version_string
 
 
@@ -1900,6 +1900,9 @@ def test_scrub_bar_regressions(_module):
         (None, FakeKeyframe("BREAKDOWN")),
     )) == "KEYFRAME"
 
+    # Blender 5.3 no longer extends VIEW3D_HT_header before add-ons do, so
+    # make sure the dynamic draw wrapper exists before taking the reference.
+    bpy.types.VIEW3D_HT_header._dyn_ui_initialize()
     native_header_draw = bpy.types.VIEW3D_HT_header.draw
     assert not bool(getattr(native_header_draw, "_fbp_scrub_header_patch", False))
     from bl_ui import space_view3d as native_view3d
