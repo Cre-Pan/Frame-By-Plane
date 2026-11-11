@@ -3431,6 +3431,104 @@ class FBP_OT_CopyCustomEffectValuesToSelected(Operator):
         return {"FINISHED"}
 
 
+def fbp_copy_effect_settings_to_rigs(source, targets, effect_id, context=None):
+    """Copy one effect and its settings from ``source`` to ``targets``.
+
+    Targets without the effect get it first; targets that already have it
+    take the source values. Returns how many targets were updated. Shared by
+    Copy Effect to Selected and Blender's native Modifiers > Copy to Selected.
+    """
+    effect_id = fbp_normalize_effect_id(effect_id)
+    definition = fbp_effect_definition(effect_id)
+    if not definition or source is None:
+        return 0
+    prop_names = list(definition.get("property_map", {}))
+    prop_names.extend(definition.get("extra_properties", ()))
+    if effect_id == FBP_EFFECT_MESH_WIGGLE:
+        prop_names.extend(("fbp_mesh_wiggle_seed", "fbp_mesh_wiggle_unique_seed"))
+    animation_keys = ()
+    if definition.get("evolve_property"):
+        animation_keys = tuple(
+            _fbp_animation_key(effect_id, suffix)
+            for suffix in ("evolve", "step", "seed", "unique", "amount")
+        ) + (_fbp_effect_evolution_speed_property(effect_id, definition),)
+
+    copied = 0
+    source_custom_inputs = _fbp_capture_custom_effect_inputs(source, effect_id)
+    source_visible = fbp_effect_visible_state(source, effect_id)
+    source_render_visible = fbp_effect_render_visible_state(source, effect_id)
+    for target in targets:
+        if not fbp_effect_is_active(target, effect_id) and not fbp_add_effect(target, effect_id):
+            continue
+        for prop_name in dict.fromkeys((*prop_names, *animation_keys)):
+            if not hasattr(source, prop_name) or not hasattr(target, prop_name):
+                continue
+            try:
+                if not fbp_set_rna_property_silent(
+                    target, prop_name, getattr(source, prop_name)
+                ):
+                    continue
+            except FBP_DATA_ERRORS:
+                continue
+        target_instance_id = (
+            next(
+                (
+                    _fbp_effect_ref_parts(token)[1]
+                    for token in _fbp_mixed_effect_tokens(target)
+                    if _fbp_effect_ref_effect_id(token) == effect_id
+                ),
+                "",
+            )
+            if _fbp_effect_uses_multi_instances(effect_id) else ""
+        )
+        if target_instance_id:
+            # A concrete instance reads its own channels, not the layer
+            # settings: copy the values there too.
+            for prop_name in prop_names:
+                if hasattr(source, prop_name):
+                    fbp_update_effect_instance_setting_value(
+                        target, effect_id, target_instance_id, prop_name,
+                        getattr(source, prop_name),
+                    )
+        if definition.get("kind") == "BASE":
+            try:
+                from .core import update_object_padding_cb
+                update_object_padding_cb(target, context or bpy.context)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
+        elif definition.get("kind") == "GEOMETRY":
+            fbp_update_geometry_effect(target, effect_id)
+        else:
+            fbp_update_shader_effect(target, effect_id)
+        _fbp_apply_custom_effect_inputs(target, effect_id, source_custom_inputs)
+
+        if effect_id == FBP_EFFECT_MESH_WIGGLE:
+            if bool(getattr(target, "fbp_mesh_wiggle_unique_seed", False)):
+                fbp_assign_mesh_wiggle_layer_seed(target, force=True)
+                fbp_update_geometry_effect(target, effect_id)
+            unique_key = _fbp_animation_key(effect_id, "unique")
+            if bool(getattr(target, unique_key, False)):
+                fbp_assign_effect_layer_seed(target, effect_id, force=True)
+                fbp_update_geometry_effect(target, effect_id)
+        elif definition.get("supports_seed"):
+            unique_key = _fbp_animation_key(effect_id, "unique")
+            if bool(getattr(target, unique_key, False)):
+                fbp_assign_effect_layer_seed(target, effect_id, force=True)
+                if definition.get("kind") == "GEOMETRY":
+                    fbp_update_geometry_effect(target, effect_id)
+                else:
+                    fbp_update_shader_effect(target, effect_id)
+
+        _fbp_copy_effect_stack_position(source, target, effect_id)
+        fbp_set_effect_visible(target, effect_id, source_visible)
+        fbp_set_effect_render_visible(target, effect_id, source_render_visible)
+        fbp_set_effect_input_source(target, effect_id, fbp_effect_input_source(source, effect_id))
+        fbp_set_effect_debug_mode(target, effect_id, fbp_effect_debug_mode(source, effect_id))
+        copied += 1
+
+    return copied
+
+
 class FBP_OT_CopyEffectToSelected(Operator):
     bl_idname = "fbp.copy_effect_to_selected"
     bl_label = "Copy Effect to Selected"
@@ -3461,90 +3559,7 @@ class FBP_OT_CopyEffectToSelected(Operator):
             )
             return {"CANCELLED"}
 
-        prop_names = list(definition.get("property_map", {}))
-        prop_names.extend(definition.get("extra_properties", ()))
-        if effect_id == FBP_EFFECT_MESH_WIGGLE:
-            prop_names.extend(("fbp_mesh_wiggle_seed", "fbp_mesh_wiggle_unique_seed"))
-        animation_keys = ()
-        if definition.get("evolve_property"):
-            animation_keys = tuple(
-                _fbp_animation_key(effect_id, suffix)
-                for suffix in ("evolve", "step", "seed", "unique", "amount")
-            ) + (_fbp_effect_evolution_speed_property(effect_id, definition),)
-
-        copied = 0
-        source_custom_inputs = _fbp_capture_custom_effect_inputs(source, effect_id)
-        source_visible = fbp_effect_visible_state(source, effect_id)
-        source_render_visible = fbp_effect_render_visible_state(source, effect_id)
-        for target in targets:
-            if not fbp_add_effect(target, effect_id):
-                continue
-            for prop_name in dict.fromkeys((*prop_names, *animation_keys)):
-                if not hasattr(source, prop_name) or not hasattr(target, prop_name):
-                    continue
-                try:
-                    if not fbp_set_rna_property_silent(
-                        target, prop_name, getattr(source, prop_name)
-                    ):
-                        continue
-                except FBP_DATA_ERRORS:
-                    continue
-            target_instance_id = (
-                next(
-                    (
-                        _fbp_effect_ref_parts(token)[1]
-                        for token in _fbp_mixed_effect_tokens(target)
-                        if _fbp_effect_ref_effect_id(token) == effect_id
-                    ),
-                    "",
-                )
-                if _fbp_effect_uses_multi_instances(effect_id) else ""
-            )
-            if target_instance_id:
-                # A concrete instance reads its own channels, not the layer
-                # settings: copy the values there too.
-                for prop_name in prop_names:
-                    if hasattr(source, prop_name):
-                        fbp_update_effect_instance_setting_value(
-                            target, effect_id, target_instance_id, prop_name,
-                            getattr(source, prop_name),
-                        )
-            if definition.get("kind") == "BASE":
-                try:
-                    from .core import update_object_padding_cb
-                    update_object_padding_cb(target, context)
-                except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-                    pass
-            elif definition.get("kind") == "GEOMETRY":
-                fbp_update_geometry_effect(target, effect_id)
-            else:
-                fbp_update_shader_effect(target, effect_id)
-            _fbp_apply_custom_effect_inputs(target, effect_id, source_custom_inputs)
-
-            if effect_id == FBP_EFFECT_MESH_WIGGLE:
-                if bool(getattr(target, "fbp_mesh_wiggle_unique_seed", False)):
-                    fbp_assign_mesh_wiggle_layer_seed(target, force=True)
-                    fbp_update_geometry_effect(target, effect_id)
-                unique_key = _fbp_animation_key(effect_id, "unique")
-                if bool(getattr(target, unique_key, False)):
-                    fbp_assign_effect_layer_seed(target, effect_id, force=True)
-                    fbp_update_geometry_effect(target, effect_id)
-            elif definition.get("supports_seed"):
-                unique_key = _fbp_animation_key(effect_id, "unique")
-                if bool(getattr(target, unique_key, False)):
-                    fbp_assign_effect_layer_seed(target, effect_id, force=True)
-                    if definition.get("kind") == "GEOMETRY":
-                        fbp_update_geometry_effect(target, effect_id)
-                    else:
-                        fbp_update_shader_effect(target, effect_id)
-
-            _fbp_copy_effect_stack_position(source, target, effect_id)
-            fbp_set_effect_visible(target, effect_id, source_visible)
-            fbp_set_effect_render_visible(target, effect_id, source_render_visible)
-            fbp_set_effect_input_source(target, effect_id, fbp_effect_input_source(source, effect_id))
-            fbp_set_effect_debug_mode(target, effect_id, fbp_effect_debug_mode(source, effect_id))
-            copied += 1
-
+        copied = fbp_copy_effect_settings_to_rigs(source, targets, effect_id, context)
         if rigs:
             fbp_sync_effect_items(rigs[0], rigs)
         if copied == 0:

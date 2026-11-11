@@ -1,6 +1,6 @@
 # Installation
 
-Frame By Plane 7.2 requires **Blender 5.2.x LTS**. Blender 5.1 and earlier are outside the supported runtime contract. Version 7.2.0 is initially distributed as a GitHub pre-release for production validation.
+Frame By Plane 8.3 requires **Blender 5.3.x**. On Blender 5.2 LTS use Frame By Plane 8.2.1; earlier Blender versions are outside the supported runtime contract.
 
 ## Recommended installation
 
@@ -26,7 +26,7 @@ In Blender:
 
 The universal package contains every supported wheel and is larger. Platform-specific packages are recommended.
 
-The Intel package remains available for compatible Blender 5.2 x64 installations. Blender's official 5.2.0 checksum list currently contains only a macOS ARM64 image, so `macos_x64` is structurally validated but cannot be smoke-tested against an official 5.2.0 Intel distribution in the release gate.
+The Intel package remains available for compatible Blender 5.3 x64 installations. Blender's official 5.3.0 checksum list currently contains only a macOS ARM64 image, so `macos_x64` is structurally validated but cannot be smoke-tested against an official 5.3.0 Intel distribution in the release gate.
 
 ## Updating an existing installation
 
@@ -39,7 +39,7 @@ Frame By Plane 7.2.0 does not change the project schema and requires no manual m
 
 ## Verify the installed version
 
-Open **Edit → Preferences → Get Extensions**, search for **Frame By Plane**, and confirm that the displayed version matches the downloaded release. The add-on supports Blender 5.2.x only.
+Open **Edit → Preferences → Get Extensions**, search for **Frame By Plane**, and confirm that the displayed version matches the downloaded release. The add-on supports Blender 5.3.x only.
 
 ## Source archives
 

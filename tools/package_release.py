@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-VERSION = "8.2.1"
+VERSION = "8.3.0"
 ARCHIVE_PREFIX = f"frame_by_plane-{VERSION}"
 PLATFORMS = (
     "linux_x64",
@@ -244,8 +244,8 @@ def markdown_report(
 ## Outcome
 
 - **Blender native extension validation:** PASS on all five platform archives
-- **Blender 5.2 background regression suite:** PASS
-- **Blender 5.2 interactive UI stress suite:** PASS (300 redraws)
+- **Blender 5.3 background regression suite:** PASS
+- **Blender 5.3 interactive UI stress suite:** PASS (300 redraws)
 - **Isolated Windows x64 install and reopen test:** PASS
 - **Static source audit and Python compilation:** PASS
 - **Package CRC, manifest and path validation:** PASS

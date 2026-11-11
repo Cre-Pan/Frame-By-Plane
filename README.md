@@ -100,7 +100,16 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 
 ---
 
-## Prepared update: 8.2.1
+## Prepared update: 8.3.0
+
+- **Requires Blender 5.3.** Blender 5.2 keeps using 8.2.1.
+- **Draw Mode tools in the Z Pie:** Lasso Select and the new Carver while drawing, plus **Flip Canvas**.
+- Markdown **Comment** notes in the generated node trees, and panel text that wraps to the panel width.
+- Fixes for **Modifiers > Copy to Selected** and **Extend after Crop**.
+
+See the [8.3.0 release notes](release-notes/8.3.0.md). It also includes everything from 8.2.1:
+
+### 8.2.1
 
 - **Lattice as a puppet rig:** Grid with Point Handles, Corner Pin, Bones with IK and Puppet Pins, all in one Controls armature.
 - **Minimal viewport controls:** thin white handles always drawn in front, Figma-style gradient stops, no relationship lines, following tilted and Lattice-deformed layers.
@@ -142,7 +151,7 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 ## Requirements
 
-- **Blender 5.2.x LTS**
+- **Blender 5.3.x** (Blender 5.2 LTS: use Frame By Plane 8.2.1)
 - Windows x64 or ARM64, macOS Intel or Apple Silicon, or Linux x64
 
 ## Install Frame By Plane
@@ -155,16 +164,16 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.2.1-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.2.1-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.2.1-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.2.1-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.2.1-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.3.0-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.3.0-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.3.0-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.3.0-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.3.0-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
 
-The `macos_x64` package is provided for Intel Blender 5.2 installations. Because Blender's official 5.2.0 release checksum list currently contains only the Apple Silicon image, this package receives structural validation rather than an official-distribution runtime smoke test.
+The `macos_x64` package is provided for Intel Blender 5.3 installations. Because Blender's official 5.3.0 release checksum list currently contains only the Apple Silicon image, this package receives structural validation rather than an official-distribution runtime smoke test.
 
 For a clean update or architecture details, read the [installation guide](docs/INSTALLATION.md).
 
@@ -180,7 +189,7 @@ For a clean update or architecture details, read the [installation guide](docs/I
 
 - [Feature guide](docs/FEATURES.md)
 - [Installation and updates](docs/INSTALLATION.md)
-- [Blender 5.2 troubleshooting](docs/TROUBLESHOOTING.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Release process](docs/RELEASING.md)
 - [GitHub Wiki](../../wiki)
 - [Bug reports and feature requests](../../issues)
@@ -208,7 +217,7 @@ blender --command extension build \
   --split-platforms
 ```
 
-Run the native Blender 5.2 regression suites:
+Run the native Blender 5.3 regression suites:
 
 ```bash
 python frame_by_plane/tests/run_blender_lts.py \

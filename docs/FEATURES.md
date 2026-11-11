@@ -1,6 +1,6 @@
 # Frame By Plane feature guide
 
-Frame By Plane is a Blender 5.2 LTS extension for image-sequence animation, Grease Pencil drawing, layered artwork and 2.5D multiplane compositing.
+Frame By Plane is a Blender 5.3 extension for image-sequence animation, Grease Pencil drawing, layered artwork and 2.5D multiplane compositing.
 
 ## Supported sources
 

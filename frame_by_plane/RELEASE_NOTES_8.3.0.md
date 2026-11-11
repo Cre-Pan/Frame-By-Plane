@@ -1,6 +1,21 @@
-# 🎞️ Frame By Plane — 8.2.1
+# 🎞️ Frame By Plane — 8.3.0
 
-Frame By Plane 8 LTS for Blender 5.2 LTS. 8.2.1 turns the Lattice into a puppet rig (Grid, Corner Pin, Bones and Pins), redraws every viewport control in one minimal style, gives every effect its own icon, makes Frame Stack follow image sequence playback, merges Chroma Key into Color Key, extends Riso Print, reorganizes the Z Pie and fixes several effects. Everything from 8.0.1 and 8.0.0 is listed below.
+Frame By Plane 8.3.0 moves to **Blender 5.3** and uses what it adds: Draw Mode selection and the Carver in the Z Pie, a mirrored drawing canvas, Markdown notes in the node trees and panel text that wraps to the panel width. It also fixes Copy to Selected in the Modifiers panel and Extend after Crop. Everything from 8.2.1, 8.0.1 and 8.0.0 is listed below.
+
+## 🆕 New in 8.3.0
+
+- 🧭 **Requires Blender 5.3.** Blender 5.2 keeps using Frame By Plane 8.2.1.
+- ✏️ **Draw Mode tools in the Z Pie:** while drawing on a Grease Pencil canvas the pie has **Lasso Select** and the new **Carver**, so strokes can be selected, moved or cut without switching to Edit Mode.
+- 🪞 **Flip Canvas:** one button in the Z Pie mirrors the view while you draw, to check proportions.
+- 📝 **Notes in the node trees** are Blender 5.3 **Comment** nodes with Markdown, one per note instead of a stack of frames.
+- 📏 **Panel text wraps to the panel:** Project Doctor, Performance Dashboard, What's New and the tutorial help use Blender's new multi-line labels.
+- 🖊️ **Scrub Bar** keyframe outlines keep their width with Vulkan, now Blender's default on Windows and Linux.
+
+### 🛠️ Fixes in 8.3.0
+
+- **Modifiers > Copy to Selected** now copies the real effect and its settings (Crop, Extend, image effects and mesh effects) instead of a modifier that disappeared right away. Layers that already have the effect take the source values.
+- **Extend after Crop** starts exactly at the crop edge: Repeat, Repeat Flipped and Transparent no longer show the pixels the crop removed.
+
 
 ## 🆕 New in 8.2.1
 
@@ -184,4 +199,4 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 
 Install the ZIP through **Edit > Preferences > Get Extensions > Install from Disk**. Do not install GitHub's automatically generated Source code ZIP.
 
-> Requires **Blender 5.2.x LTS**. Projects from 7.x open without manual migration.
+> Requires **Blender 5.3.x**. Projects from 7.x open without manual migration.

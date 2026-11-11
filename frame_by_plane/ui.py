@@ -1,6 +1,5 @@
 """Panels, UILists, Shift+A menu entries and render menu hooks."""
 
-import textwrap
 
 import bpy
 from bpy.types import Panel, UIList, Menu, Operator
@@ -3178,16 +3177,13 @@ class FBP_PT_ProjectDoctor(Panel):
                 if location:
                     header.label(text=location)
                 message = str(getattr(issue, "message", "") or "")
-                for line in textwrap.wrap(message, width=58) or (message,):
-                    detail.label(text=line)
+                detail.label_multiline(text=message)
                 hint = str(getattr(issue, "repair_hint", "") or "")
                 if hint:
                     detail.separator(factor=0.25)
-                    hint_lines = textwrap.wrap(hint, width=58) or [hint]
-                    for line_index, line in enumerate(hint_lines):
-                        hint_line = detail.row(align=False)
-                        hint_line.enabled = False
-                        hint_line.label(text=line, icon="TOOL_SETTINGS" if line_index == 0 else "BLANK1")
+                    hint_line = detail.row(align=False)
+                    hint_line.enabled = False
+                    hint_line.label_multiline(text=hint, icon="TOOL_SETTINGS")
                 fix_action = str(getattr(issue, "fix_action", "") or "")
                 fix_description = str(
                     getattr(issue, "fix_description", "") or ""
@@ -3203,13 +3199,10 @@ class FBP_PT_ProjectDoctor(Panel):
                         ),
                         icon="TOOL_SETTINGS",
                     )
-                    for line in (
-                        textwrap.wrap(fix_description, width=56)
-                        or [fix_description]
-                    ):
+                    if fix_description:
                         description_row = action_box.row(align=False)
                         description_row.enabled = False
-                        description_row.label(text=line)
+                        description_row.label_multiline(text=fix_description)
                     fix = action_box.operator(
                         "fbp.fix_project_health_issue",
                         text=str(

@@ -1,4 +1,4 @@
-"""Cached Blender 5.2 LTS runtime contract for Frame By Plane.
+"""Cached Blender 5.3 runtime contract for Frame By Plane.
 
 The probes in this module are context-free and non-destructive. They validate
 both API capabilities and the explicit pre-LTS release scope before any mutable
@@ -122,14 +122,6 @@ def _runtime_policy(version, build):
         "version_cycle": str(build.get("version_cycle", "") or ""),
     }
 
-def _build_date_number(value):
-    text = "".join(ch for ch in _app_text(value) if ch.isdigit())
-    try:
-        return int(text[:8]) if len(text) >= 8 else 0
-    except (TypeError, ValueError):
-        return 0
-
-
 def _blender_build_info():
     app = getattr(bpy, "app", None)
     return {
@@ -171,7 +163,7 @@ def _action_channelbag_available():
 
 
 def blender_52_runtime_contract(*, refresh=False):
-    """Return a cached, non-destructive report for Blender 5.2 APIs used by FBP."""
+    """Return a cached, non-destructive report for Blender 5.3 APIs used by FBP."""
     global _CONTRACT_CACHE, _CONTRACT_CACHE_VERSION
     version = tuple(getattr(bpy.app, "version", (0, 0, 0)))[:3]
     if (
@@ -211,7 +203,7 @@ def blender_52_runtime_contract(*, refresh=False):
     version_cycle = str(build.get("version_cycle", "") or "").strip().lower()
     if version_cycle and version_cycle not in {"release", "lts"}:
         warnings.append(
-            f"Blender build cycle is {version_cycle}; production validation targets an official 5.2 LTS release"
+            f"Blender build cycle is {version_cycle}; production validation targets an official 5.3 release"
         )
 
     capabilities["supported_blender_series"] = (
@@ -337,18 +329,7 @@ def blender_52_runtime_contract(*, refresh=False):
         ("Action channelbags", "action_channelbags"),
     ):
         if not capabilities.get(key, False):
-            warnings.append(f"Optional Blender 5.2 capability unavailable: {label}")
-
-    build_date = _build_date_number(build.get("build_commit_date", ""))
-    if version[:2] == (5, 2) and build_date:
-        if build_date < 20260703:
-            warnings.append(
-                "This Blender 5.2 build predates the Geometry Nodes Grease Pencil Cycles/background-render fix"
-            )
-        if build_date < 20260713:
-            warnings.append(
-                "This Blender 5.2 build predates the Grease Pencil hidden-material visibility fix"
-            )
+            warnings.append(f"Optional Blender 5.3 capability unavailable: {label}")
 
     report = {
         "version": version,
