@@ -647,6 +647,60 @@ def _sync_modifier_values(rig):
         fbp_warn("Could not sync an effect modifier with its layer", exc)
 
 
+_OBJECT_COUNT = [-1]
+
+
+def fbp_purge_unused_effect_groups():
+    """Remove Frame By Plane node groups nothing uses any more.
+
+    Deleting an effect's modifier or a whole layer leaves its node groups
+    (modifier shells, material stages, mesh effect trees) with no users; drop
+    them now instead of at the next save and reload, then the inner groups
+    they were the last user of. Fake-user groups (templates) are kept.
+    """
+    removed = 0
+    for _pass in range(8):
+        orphans = []
+        for group in tuple(bpy.data.node_groups):
+            try:
+                if (
+                    str(group.name).startswith("FBP")
+                    and int(group.users) == 0
+                    and not bool(group.use_fake_user)
+                    and group.library is None
+                ):
+                    orphans.append(group)
+            except FBP_DATA_ERRORS:
+                continue
+        if not orphans:
+            break
+        for group in orphans:
+            try:
+                bpy.data.node_groups.remove(group)
+                removed += 1
+            except FBP_DATA_ERRORS:
+                continue
+    return removed
+
+
+def _run_purge():
+    if fbp_undo_guard_active():
+        return None
+    try:
+        fbp_purge_unused_effect_groups()
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not remove unused effect node groups", exc)
+    return None
+
+
+def _schedule_purge():
+    try:
+        from .safe_tasks import schedule_once
+        schedule_once("native_modifiers.purge", _run_purge, first_interval=0.2)
+    except (ImportError, *FBP_DATA_ERRORS) as exc:
+        fbp_warn("Could not schedule the unused node group cleanup", exc)
+
+
 def _run_pending_sync():
     value_names = tuple(_PENDING_VALUE_RIGS)
     _PENDING_VALUE_RIGS.clear()
@@ -666,6 +720,9 @@ def _run_pending_sync():
             fbp_sync_native_modifiers(rig)
         except FBP_DATA_ERRORS as exc:
             fbp_warn("Could not apply a Modifiers panel edit to the effect stack", exc)
+    if names:
+        # A stack change may have deleted an effect: drop its node groups.
+        _schedule_purge()
     return None
 
 
@@ -681,6 +738,14 @@ def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
     """
     if _SYNCING or _playing_or_rendering() or fbp_undo_guard_active():
         return
+    try:
+        # Fewer objects: a layer (or a plane) may have been deleted.
+        count = len(bpy.data.objects)
+        if 0 <= _OBJECT_COUNT[0] and count < _OBJECT_COUNT[0]:
+            _schedule_purge()
+        _OBJECT_COUNT[0] = count
+    except FBP_DATA_ERRORS:
+        pass
     try:
         updates = tuple(depsgraph.updates)
     except FBP_DATA_ERRORS:
