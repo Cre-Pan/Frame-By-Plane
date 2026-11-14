@@ -146,7 +146,7 @@ FBP_PUBLIC_RELEASE_ITEMS = (
     ),
     (
         "Flip Canvas",
-        "Mirror the view from the bottom of the Z Pie (Blender 5.3).",
+        "Mirror the camera view from the bottom of the Z Pie (Blender 5.3).",
         "MOD_MIRROR",
     ),
     (

@@ -499,16 +499,17 @@ def test_native_effect_controls():
             assert not (drawn & covered), (effect_id, drawn & covered)
             return layout.calls
 
-        def button_rows(effect_id):
+        def button_rows(effect_id, count=2):
             group = shells.fbp_shell_modifier(rig, effect_id).node_group
             inputs = [item for item in group.interface.items_tree if getattr(item, "in_out", "") == "INPUT"]
             assert inputs[0].socket_type == "NodeSocketGeometry", effect_id
-            rows = [item for item in inputs[1:3] if getattr(item, "menu_expanded", False)]
+            rows = [item for item in inputs[1:1 + count] if getattr(item, "menu_expanded", False)]
             return [item.name for item in rows]
 
         # Tools and Effect are the first two inputs, drawn as button rows.
         assert button_rows("GRADIENT_MASK") == ["Tools", "Effect"]
-        assert button_rows("CROP") == ["Tools", "Effect"]
+        # Crop's four tools take two rows: rig, then crop.
+        assert button_rows("CROP", 3) == ["Tools", "More Tools", "Effect"]
         # No button stays pressed: a press runs and the row goes back to rest.
         modifier = shells.fbp_shell_modifier(rig, "CROP")
         tools = next(
@@ -690,11 +691,42 @@ def test_extend_after_crop_starts_at_crop_edge():
         _remove(rig)
 
 
+def test_unused_effect_groups_purged():
+    """Deleting an effect modifier or a layer drops its unused node groups."""
+    geo, native, shells = _modules()
+    rig = _rig("FBP Native Purge")
+    _add(geo, rig, "HUE_SATURATION", "MESH_WIGGLE", "CROP")
+    shells.fbp_shell_ensure(rig)
+    plane = geo._fbp_plane(rig)
+    groups = {modifier.node_group.name for modifier in plane.modifiers if modifier.node_group is not None}
+    assert any(name.startswith("FBP Shell") for name in groups), groups
+    keep = bpy.data.node_groups.new("FBP Artist Template", "GeometryNodeTree")
+    keep.use_fake_user = True
+    try:
+        wiggle = next(m for m in plane.modifiers if "Wiggle" in m.name)
+        wiggle_group = wiggle.node_group.name
+        plane.modifiers.remove(wiggle)
+        native.fbp_purge_unused_effect_groups()
+        assert bpy.data.node_groups.get(wiggle_group) is None, wiggle_group
+        _remove(rig)
+        rig = None
+        native.fbp_purge_unused_effect_groups()
+        left = [name for name in groups if bpy.data.node_groups.get(name) is not None
+                and bpy.data.node_groups[name].users == 0]
+        assert not left, left
+        assert bpy.data.node_groups.get("FBP Artist Template") is not None
+    finally:
+        bpy.data.node_groups.remove(keep)
+        if rig is not None:
+            _remove(rig)
+
+
 TESTS = (
     test_modifier_add_menu, test_native_round_trip, test_mask_panel, test_toggle_foldouts,
     test_add_image_modifier, test_effect_shells, test_shell_value_sync, test_row_effects,
     test_native_effect_controls, test_depsgraph_handler_only_reads,
     test_native_copy_to_selected, test_extend_after_crop_starts_at_crop_edge,
+    test_unused_effect_groups_purged,
 )
 
 failed = []

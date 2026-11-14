@@ -7,7 +7,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Blender 5.2 LTS and 5.3
 
 - One package installs and runs on both **Blender 5.2 LTS** and **Blender 5.3** (`blender_version_min = "5.2.0"`, `blender_version_max = "5.4.0"`). The 5.3-only features below check for Blender 5.3 at runtime; on 5.2 the add-on keeps the 8.2.1 behaviour.
-- The Z Pie always has a **Flip Canvas** toggle in its South actions, next to Overlays, that mirrors the view (Blender 5.3; on 5.2 the button is not shown).
+- The Z Pie has a **Flip Canvas** toggle in its South actions, next to Overlays, while you look through the camera: it mirrors the camera view (Blender 5.3; on 5.2 the button is not shown). The Onion Skin button keeps one icon; its pressed state shows whether it is on.
 - Notes in the generated node trees (layer materials, effect groups, modifier shells) are Blender 5.3 **Comment** nodes with Markdown: one node per note instead of one frame per line. On Blender 5.2 notes stay one frame per line. A file opened in the other version gets its notes rebuilt the next time the tree is laid out.
 - Project Doctor, Performance Dashboard, What's New and the Live Tutorial help use Blender 5.3's multi-line labels, so text wraps to the panel width instead of a fixed character count; on Blender 5.2 they wrap at a fixed width as before.
 - Scrub Bar keyframe outlines are drawn with the polyline shader, so they keep their width with Vulkan (Blender 5.3's default on Windows and Linux) and Metal.
@@ -17,6 +17,8 @@ All notable public changes to Frame By Plane are documented here.
 
 - **Crop and Extend rig**, drawn like the layer transform box: a thin frame on the bounds the effect sets, the size it started from as a **dashed outline** (the whole image for Crop, the cropped image for Extend), dots on the corners and short bars on the sides. Dots and bars keep **one size on screen** whatever the distance from the view, appear when the cursor comes near and light up under the cursor, and the selected one stays in the accent colour. Dragging, Esc, undo and the click-to-select for G work as before. The handle objects no longer draw a mesh of their own, so no world-sized L corner or bar shows under the rig in Solid shading; saved files update on open.
 - **Properties > Modifiers is no longer pinned.** When you select a layer, its image plane becomes the active object (without being selected, so G/R/S still move the layer), so the Modifiers tab shows the layer's effects natively. A pin left on a layer plane by an earlier version is released when the file opens. The "Modifiers Follow Layer" preference is gone.
+- **Crop > Tools** takes two rows: Select Rig and Reset Rig, then Crop Alpha and Reset Crop.
+- Deleting an effect's modifier or a layer also deletes the Frame By Plane node groups nothing else uses any more (modifier shells, material stages, mesh effect trees), instead of leaving them until the file is saved and reopened.
 
 ### Fixes
 

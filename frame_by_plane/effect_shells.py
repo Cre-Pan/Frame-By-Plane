@@ -263,7 +263,8 @@ _SHELL_UI_KEY = "fbp_shell_ui"
 # 4: Actions is the first input, with the Lattice cage and handle actions.
 # 6: Action button rows rest with no button pressed.
 # 7: More effects get a Tools row (mask shapes, Gradient Light, Motion...).
-_SHELL_UI_VERSION = 7
+# 8: Crop's Tools take two rows (@TOOLS2).
+_SHELL_UI_VERSION = 8
 _SHELL_USAGE_ATTRIBUTE = "fbp_shell_usage"
 _SHELL_USAGE_NODE_KEY = "fbp_shell_usage_node"
 _SHELL_LAYER_MAPPING_KEY = "fbp_shell_layer_mapping"
@@ -365,9 +366,15 @@ def _virtual_settings(effect_id, definition):
     actions = _effect_actions(effect_id, definition)
     tools = [(key, label) for key, label, _op, _kwargs in actions if key not in _EFFECT_ACTIONS]
     general = [(key, label) for key, label, _op, _kwargs in actions if key in _EFFECT_ACTIONS]
+    # Crop has four tools: two rows (rig, then crop) instead of one cramped row.
+    split = 2 if effect_id in _TWO_ROW_TOOLS and len(tools) > 2 else len(tools)
     if tools:
         result.append(("@TOOLS", _VirtualSetting(
-            "@TOOLS", "Tools", [("NONE", "·")] + tools, "Run a tool of this effect",
+            "@TOOLS", "Tools", [("NONE", "·")] + tools[:split], "Run a tool of this effect",
+        )))
+    if tools[split:]:
+        result.append(("@TOOLS2", _VirtualSetting(
+            "@TOOLS2", "More Tools", [("NONE", "·")] + tools[split:], "Run a tool of this effect",
         )))
     if general:
         result.append(("@ACTION", _VirtualSetting(
@@ -378,7 +385,9 @@ def _virtual_settings(effect_id, definition):
 
 # Keys of the actions every effect has (second button row).
 _EFFECT_ACTIONS = frozenset({"RESET", "PRESETS", "NODES"})
-_ACTION_KEYS = ("@TOOLS", "@ACTION")
+_ACTION_KEYS = ("@TOOLS", "@TOOLS2", "@ACTION")
+# Effects whose Tools buttons take two rows.
+_TWO_ROW_TOOLS = frozenset({"CROP"})
 
 
 def _effect_actions(effect_id, definition):
@@ -427,7 +436,7 @@ def _effect_actions(effect_id, definition):
 def fbp_shell_tool_operators(effect_id, key="@TOOLS"):
     """Operators one of the effect's button rows runs."""
     definition = _geo().fbp_effect_definition(effect_id) or {}
-    general = key != "@TOOLS"
+    general = key == "@ACTION"
     return frozenset(
         op for action, _label, op, _kwargs in _effect_actions(effect_id, definition)
         if (action in _EFFECT_ACTIONS) == general
