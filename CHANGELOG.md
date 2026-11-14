@@ -15,6 +15,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Changes
 
+- **Crop and Extend rig**, drawn like the layer transform box: a thin frame on the bounds the effect sets, the size it started from as a **dashed outline** (the whole image for Crop, the cropped image for Extend), dots on the corners and short bars on the sides. Dots and bars keep **one size on screen** whatever the distance from the view, appear when the cursor comes near and light up under the cursor, and the selected one stays in the accent colour. Dragging, Esc, undo and the click-to-select for G work as before. The handle objects no longer draw a mesh of their own, so no world-sized L corner or bar shows under the rig in Solid shading; saved files update on open.
 - **Properties > Modifiers is no longer pinned.** When you select a layer, its image plane becomes the active object (without being selected, so G/R/S still move the layer), so the Modifiers tab shows the layer's effects natively. A pin left on a layer plane by an earlier version is released when the file opens. The "Modifiers Follow Layer" preference is gone.
 
 ### Fixes

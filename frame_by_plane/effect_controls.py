@@ -843,7 +843,7 @@ def _control_mesh_signature(rig, mode, role, spec=None, control=None):
     parameters = _control_mesh_parameters(rig, mode, role, spec, control)
     for key in sorted(parameters):
         extra += f":{key}={_format_parameter(parameters[key])}"
-    return f"fbp_handle_v11:{mode}:{role}:{size:.6f}{extra}"
+    return f"fbp_handle_v12:{mode}:{role}:{size:.6f}{extra}"
 
 
 def _control_mesh_geometry(rig, mode, role, spec=None, control=None):

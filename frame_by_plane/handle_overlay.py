@@ -301,11 +301,6 @@ def handle_screen_scale(obj, region, region_data, ui_scale=1.0):
     if pixels <= 1.0e-6:
         return None
     factor = HANDLE_SCREEN_SIZE_PX * float(ui_scale) / pixels
-    if mode == "CROP_EXTEND":
-        # Blender also draws the handle mesh itself in Solid shading. The L
-        # corners and side bars do not sit on their centre like a dot, so
-        # never draw them smaller than that mesh: it stays hidden under them.
-        factor = max(factor, 1.0)
     return anchor, factor
 
 
@@ -431,15 +426,8 @@ _BOUNDS_CORNERS = ("TOP_LEFT", "TOP_RIGHT", "BOTTOM_RIGHT", "BOTTOM_LEFT")
 
 
 def _bounds_role(obj):
-    """``(frame key, role)`` of a Crop/Extend or Shape Mask bounds handle."""
+    """``(frame key, role)`` of a Shape Mask bounds handle (Crop/Extend draw a rig)."""
     try:
-        from .effect_controls import KEY_EFFECT_ID, KEY_MODE, KEY_ROLE
-        mode = str(obj.get(KEY_MODE, "") or "").upper()
-        if mode == "CROP_EXTEND":
-            from .viewport_handles import attached_plane
-            role = str(obj.get(KEY_ROLE, "") or "").upper()
-            owner = attached_plane(obj)
-            return (("CROP", getattr(owner, "name", ""), str(obj.get(KEY_EFFECT_ID, "") or "")), role)
         from .object_masks import KEY_HANDLE_HELPER_NAME, KEY_HANDLE_ROLE, is_object_mask_bounds_handle
         if is_object_mask_bounds_handle(obj):
             role = str(obj.get(KEY_HANDLE_ROLE, "") or "").upper()
@@ -447,6 +435,266 @@ def _bounds_role(obj):
     except (ImportError, *FBP_DATA_ERRORS):
         return None
     return None
+
+
+# --- Crop / Extend rig ------------------------------------------------------
+#
+# Crop and Extend are edited with a rig drawn like the layer transform box:
+# a thin frame on the bounds they set, the size they started from (the whole
+# image for Crop, the cropped image for Extend) as a dashed outline, and the
+# eight handles as dots on the corners and short bars on the sides. All of it
+# keeps one size on screen, whatever the distance from the view. As on the
+# box, the dots and bars appear when the cursor comes near; a selected or
+# hovered handle always shows. Each handle object holds one loose vertex on
+# its bound, which the rig reads from the evaluated mesh, so it follows the
+# Lattice deformation too.
+
+_CROP_CORNERS = ("BOTTOM_LEFT", "BOTTOM_RIGHT", "TOP_RIGHT", "TOP_LEFT")
+_CROP_SIDES = {
+    "BOTTOM": ("BOTTOM_LEFT", "BOTTOM_RIGHT"),
+    "RIGHT": ("BOTTOM_RIGHT", "TOP_RIGHT"),
+    "TOP": ("TOP_RIGHT", "TOP_LEFT"),
+    "LEFT": ("TOP_LEFT", "BOTTOM_LEFT"),
+}
+_CROP_DOT_PX = 3.8          # Corner dot radius, as the layer box.
+_CROP_BAR_WIDTH_PX = 3.0    # Side bar thickness.
+_CROP_BAR_FRACTION = 0.4    # Side bar length, as a fraction of its side...
+_CROP_BAR_MAX_PX = 90.0     # ...up to this many pixels.
+_CROP_DASH_PX = 6.0
+_CROP_GAP_PX = 4.0
+_CROP_FRAME_ALPHA = 0.9
+_CROP_ORIGINAL_ALPHA = 0.7
+
+
+def is_crop_rig_handle(obj):
+    try:
+        from .effect_controls import KEY_MODE
+        return obj is not None and str(obj.get(KEY_MODE, "") or "").upper() == "CROP_EXTEND"
+    except (ImportError,) + FBP_DATA_ERRORS:
+        return False
+
+
+def _crop_anchor(obj, depsgraph):
+    """World position of a Crop/Extend handle, Lattice deformation included."""
+    matrix, topology = handle_mesh(obj, depsgraph)
+    vertices = topology["vertices"]
+    if len(vertices) == 1:
+        return matrix @ vertices[0]
+    # A mesh from an older file (L corner, side bar) until it is rebuilt.
+    return matrix.translation.copy()
+
+
+def _crop_space(obj):
+    """Matrix of the plane space a handle's location lives in."""
+    return obj.matrix_world @ obj.matrix_basis.inverted_safe()
+
+
+def _crop_rig_groups(handles, depsgraph):
+    """Visible Crop/Extend handles grouped per layer and effect."""
+    try:
+        from .effect_controls import KEY_EFFECT_ID, KEY_ROLE, effect_control_owner
+    except ImportError:
+        return {}
+    groups = {}
+    for obj in handles:
+        if not is_crop_rig_handle(obj):
+            continue
+        try:
+            owner = effect_control_owner(obj)
+            if owner is None:
+                continue
+            effect_id = str(obj.get(KEY_EFFECT_ID, "") or "").upper()
+            role = str(obj.get(KEY_ROLE, "") or "").upper()
+            anchor = _crop_anchor(obj, depsgraph)
+        except FBP_DATA_ERRORS:
+            continue
+        group = groups.setdefault((owner.name, effect_id), {
+            "owner": owner, "effect": effect_id, "handles": {}, "anchors": {}, "sample": obj,
+        })
+        group["handles"][role] = obj
+        group["anchors"][role] = anchor
+    return groups
+
+
+def crop_rig_groups(handles, depsgraph):
+    """Crop/Extend handles among ``handles``, grouped per layer and effect."""
+    return _crop_rig_groups(handles, depsgraph)
+
+
+def _crop_group_of(handle, groups):
+    for group in groups.values():
+        if handle in group["handles"].values():
+            return group
+    return None
+
+
+def _world_per_pixel(region, region_data, point, direction):
+    start = location_3d_to_region_2d(region, region_data, point)
+    end = location_3d_to_region_2d(region, region_data, point + direction)
+    if start is None or end is None:
+        return None
+    length = (end - start).length
+    return 1.0 / length if length > 1.0e-6 else None
+
+
+def _crop_axes(group):
+    space = _crop_space(group["sample"])
+    axis_x = space.col[0].xyz
+    axis_y = space.col[1].xyz
+    if axis_x.length <= 1.0e-9 or axis_y.length <= 1.0e-9:
+        return None
+    return axis_x.normalized(), axis_y.normalized()
+
+
+def _crop_side_bar(group, role, region, region_data, ui_scale):
+    """World end points of a side handle's bar, or None."""
+    anchor = group["anchors"].get(role)
+    ends = _CROP_SIDES.get(role)
+    if anchor is None or ends is None:
+        return None
+    start, end = (group["anchors"].get(name) for name in ends)
+    if start is None or end is None:
+        return None
+    along = end - start
+    length = along.length
+    if length <= 1.0e-9:
+        return None
+    along /= length
+    unit = _world_per_pixel(region, region_data, anchor, along)
+    if unit is None:
+        return None
+    half = min(length * _CROP_BAR_FRACTION, _CROP_BAR_MAX_PX * ui_scale * unit) * 0.5
+    return anchor - along * half, anchor + along * half
+
+
+def crop_handle_screen_distance(handle, point, region, region_data, groups, ui_scale=1.0):
+    """Pixels from ``point`` to a Crop/Extend handle as the rig draws it.
+
+    ``groups`` comes from ``crop_rig_groups``. 0 inside a dot or a bar; None
+    when the handle is off screen.
+    """
+    group = _crop_group_of(handle, groups)
+    if group is None:
+        return None
+    from .effect_controls import KEY_ROLE
+    role = str(handle.get(KEY_ROLE, "") or "").upper()
+    point = Vector((float(point[0]), float(point[1])))
+    if role in _CROP_SIDES:
+        bar = _crop_side_bar(group, role, region, region_data, ui_scale)
+        if bar is None:
+            return None
+        a = location_3d_to_region_2d(region, region_data, bar[0])
+        b = location_3d_to_region_2d(region, region_data, bar[1])
+        if a is None or b is None:
+            return None
+        segment = b - a
+        t = 0.0 if segment.length_squared <= 1.0e-12 else max(0.0, min(1.0, (point - a).dot(segment) / segment.length_squared))
+        distance = (point - (a + segment * t)).length
+        return max(0.0, distance - _CROP_BAR_WIDTH_PX * 0.5 * ui_scale)
+    anchor = group["anchors"].get(role)
+    screen = location_3d_to_region_2d(region, region_data, anchor) if anchor is not None else None
+    if screen is None:
+        return None
+    return max(0.0, (point - screen).length - _CROP_DOT_PX * ui_scale)
+
+
+def _crop_original_rect(group):
+    """World corners of the size the effect started from, or None."""
+    try:
+        from .builder import fbp_plane_reference_bounds
+        source, cropped, _extended, _uv = fbp_plane_reference_bounds(group["owner"])
+        sample = group["sample"]
+        depth = float(sample.location.z)
+        space = _crop_space(sample)
+    except (ImportError,) + FBP_DATA_ERRORS:
+        return None
+    min_x, max_x, min_y, max_y = source if group["effect"] == "CROP" else cropped
+    return [
+        space @ Vector((x, y, depth))
+        for x, y in ((min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y))
+    ]
+
+
+def _dashed_segments(corners, region, region_data, ui_scale):
+    """A closed outline through ``corners`` as dash segments of fixed screen size."""
+    segments = []
+    for index, start in enumerate(corners):
+        end = corners[(index + 1) % len(corners)]
+        edge = end - start
+        length = edge.length
+        if length <= 1.0e-9:
+            continue
+        direction = edge / length
+        unit = _world_per_pixel(region, region_data, (start + end) * 0.5, direction)
+        if unit is None:
+            continue
+        dash = _CROP_DASH_PX * ui_scale * unit
+        period = dash + _CROP_GAP_PX * ui_scale * unit
+        count = min(int(length / period) + 1, 2000)
+        for step in range(count):
+            a = step * period
+            if a >= length:
+                break
+            segments.extend((start + direction * a, start + direction * min(a + dash, length)))
+    return segments
+
+
+def _crop_rig_drawing(context, region, groups, ui_scale, hovered, selected_color, hover_color):
+    """Lines ``[(segments, colour, width)]`` and fills ``[(triangles, colour)]``."""
+    from .layer_cage import _disc, proximity_near
+
+    region_data = context.region_data
+    lines, fills = [], []
+    white = HANDLE_COLOR[:3]
+    shadow = (0.0, 0.0, 0.0)
+    for key, group in groups.items():
+        anchors = group["anchors"]
+        try:
+            axes = _crop_axes(group)
+        except FBP_DATA_ERRORS:
+            axes = None
+        if axes is None:
+            continue
+        axis_x, axis_y = axes
+        original = _crop_original_rect(group)
+        if original is not None:
+            dashed = _dashed_segments(original, region, region_data, ui_scale)
+            lines.append((dashed, (*shadow, 0.35), 2.6))
+            lines.append((dashed, (*white, _CROP_ORIGINAL_ALPHA), 1.0))
+        corners = [anchors.get(role) for role in _CROP_CORNERS]
+        if all(corner is not None for corner in corners):
+            frame = []
+            for index in range(4):
+                frame.extend((corners[index], corners[(index + 1) % 4]))
+            lines.append((frame, (*shadow, 0.35), 2.6))
+            lines.append((frame, (*white, _CROP_FRAME_ALPHA), 1.0))
+        screen = [location_3d_to_region_2d(region, region_data, point) for point in anchors.values()]
+        near = proximity_near(("crop", key), region, screen)
+        for role, obj in group["handles"].items():
+            try:
+                selected = bool(obj.select_get())
+            except FBP_DATA_ERRORS:
+                selected = False
+            hover = bool(hovered) and obj.name == hovered
+            if not (near or selected or hover):
+                continue
+            color = (*(selected_color[:3] if selected else hover_color[:3] if hover else white), 1.0)
+            if role in _CROP_SIDES:
+                bar = _crop_side_bar(group, role, region, region_data, ui_scale)
+                if bar is None:
+                    continue
+                width = _CROP_BAR_WIDTH_PX + (1.5 if (selected or hover) else 0.0)
+                lines.append((list(bar), (*shadow, 0.5), width + 2.0))
+                lines.append((list(bar), color, width))
+                continue
+            anchor = anchors[role]
+            unit = _world_per_pixel(region, region_data, anchor, axis_y)
+            if unit is None:
+                continue
+            radius = _CROP_DOT_PX * ui_scale * unit
+            fills.append((_disc(anchor, axis_x, axis_y, radius + 1.2 * ui_scale * unit), (*shadow, 0.5)))
+            fills.append((_disc(anchor, axis_x, axis_y, radius), color))
+    return lines, fills
 
 
 def _triangles_center(triangles):
@@ -531,7 +779,10 @@ def _draw_handles():
         shapes.append(([(hovered_bone, hover_color)], []))
     hover_guides = list(plane_hover_guides)
     frames = {}
+    crop_handles = [obj for obj in handles if is_crop_rig_handle(obj)]
     for obj in handles:
+        if crop_handles and obj in crop_handles:
+            continue
         try:
             triangles, rim, handle_guides = _handle_geometry(obj, depsgraph)
             fixed = handle_screen_scale(obj, region, context.region_data, scale)
@@ -547,9 +798,6 @@ def _draw_handles():
         if not triangles:
             continue
         bounds = _bounds_role(obj)
-        if bounds is not None and bounds[0][0] == "CROP":
-            # Crop/Expand draw their own L corners and side bars, all shown.
-            bounds = None
         if bounds is not None:
             frame = frames.setdefault(bounds[0], {"corners": {}, "sides": []})
             center = _triangles_center(triangles)
@@ -586,7 +834,16 @@ def _draw_handles():
         if near:
             for triangles, rim, _center in frame["sides"]:
                 shapes.append(([(triangles[part], HANDLE_COLOR) for part in triangles], rim))
-    if not shapes and not guides and not hover_guides:
+    crop_lines, crop_fills = [], []
+    if crop_handles:
+        try:
+            crop_lines, crop_fills = _crop_rig_drawing(
+                context, region, _crop_rig_groups(crop_handles, depsgraph),
+                scale, hovered, selected_color, hover_color,
+            )
+        except (ImportError, *FBP_DATA_ERRORS):
+            crop_lines, crop_fills = [], []
+    if not shapes and not guides and not hover_guides and not crop_lines and not crop_fills:
         return
     gpu.state.blend_set("ALPHA")
     gpu.state.depth_test_set("NONE")
@@ -609,6 +866,15 @@ def _draw_handles():
         fill_shader.bind()
         for fills, _rim in shapes:
             for triangles, color in fills:
+                fill_shader.uniform_float("color", color)
+                batch_for_shader(fill_shader, "TRIS", {"pos": triangles}).draw(fill_shader)
+        if crop_lines or crop_fills:
+            # The Crop/Extend rig: outlines first, then its dots on top.
+            line_shader.bind()
+            for segments, color, width in crop_lines:
+                _draw_lines(line_shader, segments, width * scale, color)
+            fill_shader.bind()
+            for triangles, color in crop_fills:
                 fill_shader.uniform_float("color", color)
                 batch_for_shader(fill_shader, "TRIS", {"pos": triangles}).draw(fill_shader)
     finally:

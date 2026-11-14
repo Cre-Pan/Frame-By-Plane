@@ -225,7 +225,23 @@ def fbp_handle_under_cursor(context, coord, radius):
         xy[:, 1] = height_half + height_half * (clip[:, 1] / safe)
         return xy, valid
 
+    from .handle_overlay import crop_handle_screen_distance, crop_rig_groups, is_crop_rig_handle
+
+    crop_groups = None
     for handle in handles:
+        if is_crop_rig_handle(handle):
+            # Crop/Extend: picked on the rig's dots and side bars.
+            try:
+                if crop_groups is None:
+                    crop_groups = crop_rig_groups(handles, depsgraph)
+                pixels = crop_handle_screen_distance(handle, point, region, region_data, crop_groups, ui_scale)
+            except (*FBP_DATA_ERRORS, IndexError, ValueError):
+                pixels = None
+            if pixels is not None:
+                distance = pixels * pixels
+                if distance <= limit and (best is None or distance < best[0]):
+                    best = (distance, handle)
+            continue
         try:
             matrix, topology = handle_mesh(handle, depsgraph)
         except (*FBP_DATA_ERRORS, IndexError):
