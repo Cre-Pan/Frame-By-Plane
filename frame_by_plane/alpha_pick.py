@@ -418,16 +418,27 @@ class FBP_OT_SelectThroughAlpha(Operator):
 
     def _select(self, context, rig):
         view_layer = context.view_layer
+        # The layer's plane takes the active slot (unselected), so Properties
+        # > Modifiers shows the layer's effects; handles and other objects
+        # keep themselves active.
+        plane = getattr(rig, "fbp_plane_target", None) if getattr(rig, "is_fbp_control", False) else None
+        try:
+            if plane is not None and plane.name not in view_layer.objects:
+                plane = None
+        except FBP_DATA_ERRORS:
+            plane = None
+        target = plane or rig
         if self.toggle:
-            if rig.select_get() and view_layer.objects.active == rig:
+            active = view_layer.objects.active
+            if rig.select_get() and active in {rig, target}:
                 rig.select_set(False)
             else:
                 rig.select_set(True)
-                view_layer.objects.active = rig
+                view_layer.objects.active = target
         else:
             for obj in tuple(context.selected_objects):
                 if obj != rig:
                     obj.select_set(False)
             rig.select_set(True)
-            view_layer.objects.active = rig
+            view_layer.objects.active = target
         return {'FINISHED'}

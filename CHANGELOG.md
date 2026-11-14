@@ -13,6 +13,10 @@ All notable public changes to Frame By Plane are documented here.
 - Scrub Bar keyframe outlines are drawn with the polyline shader, so they keep their width with Vulkan (Blender 5.3's default on Windows and Linux) and Metal.
 - The regression runners accept Blender 5.2.x and 5.3.x; CI runs the regression suite on both 5.2 and 5.3.
 
+### Changes
+
+- **Properties > Modifiers is no longer pinned.** When you select a layer, its image plane becomes the active object (without being selected, so G/R/S still move the layer), so the Modifiers tab shows the layer's effects natively. A pin left on a layer plane by an earlier version is released when the file opens. The "Modifiers Follow Layer" preference is gone.
+
 ### Fixes
 
 - **Modifiers > Copy to Selected** copied only a bare modifier, which the effect stack removed right away. The copy is now turned into the real effect with the source layer's settings; layers that already have the effect take the source values.

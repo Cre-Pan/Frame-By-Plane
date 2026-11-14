@@ -2274,6 +2274,12 @@ def get_selected_fbp_roots(context):
     roots = []
     selected = tuple(getattr(context, "selected_objects", ()) or ())
     active = getattr(context, "object", None)
+    if active is not None and active not in selected and bool(getattr(active, "is_fbp_plane", False)):
+        # A selected layer's plane is the active object (unselected) so the
+        # Modifiers tab shows its effects: its rig leads the selection.
+        owner = fbp_resolve_rig_from_any_object(active, context)
+        if owner is not None:
+            active = owner
     # Blender can keep context.object pointing at the former active object after
     # Select None.  This function promises selected roots only; callers that
     # intentionally want an active-object fallback use get_selected_or_active_rigs().
