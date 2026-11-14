@@ -140,13 +140,13 @@ FBP_PUBLIC_RELEASE_ITEMS = (
         "BLENDER",
     ),
     (
-        "Lasso and Carver",
-        "Select and cut strokes in Draw Mode from the Z Pie (Blender 5.3).",
-        "MOD_BOOLEAN",
+        "Wrapped Text",
+        "Panel text wraps to the panel width (Blender 5.3).",
+        "ALIGN_JUSTIFY",
     ),
     (
         "Flip Canvas",
-        "Mirror the view from the Z Pie to check a drawing (Blender 5.3).",
+        "Mirror the view from the bottom of the Z Pie (Blender 5.3).",
         "MOD_MIRROR",
     ),
     (

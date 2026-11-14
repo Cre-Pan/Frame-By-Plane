@@ -264,7 +264,7 @@ def test_feedback_update_popup_contract(_module):
     titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     assert titles == (
         "Blender 5.2 and 5.3",
-        "Lasso and Carver",
+        "Wrapped Text",
         "Flip Canvas",
         "Node Notes",
         "Bug Fixes",

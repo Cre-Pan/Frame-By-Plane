@@ -103,7 +103,7 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 ## Prepared update: 8.3.0
 
 - **One package for Blender 5.2 LTS and Blender 5.3.**
-- **Draw Mode tools in the Z Pie:** Lasso Select and the new Carver while drawing, plus **Flip Canvas** (Blender 5.3).
+- **Flip Canvas** always at the bottom of the Z Pie (Blender 5.3).
 - Markdown **Comment** notes in the generated node trees, and panel text that wraps to the panel width.
 - Fixes for **Modifiers > Copy to Selected** and **Extend after Crop**.
 

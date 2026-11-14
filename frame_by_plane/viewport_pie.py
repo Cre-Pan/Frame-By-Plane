@@ -372,39 +372,12 @@ _GP_OBJECT_MODES = frozenset({
 })
 
 
-_GP_DRAW_MODE_TOOLS = (
-    # (tool id, icon) of the Blender 5.3 Draw Mode tools worth one click.
-    ("builtin.select_lasso", "GP_SELECT_STROKES"),
-    ("builtin.carver", "MOD_BOOLEAN"),
-)
+def _draw_flip_canvas(row, space):
+    """Flip Canvas: mirror the view (Blender 5.3 RegionView3D.use_view_flip_x).
 
-
-def _active_tool_id(context):
-    try:
-        tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
-        return str(getattr(tool, "idname", "") or "")
-    except FBP_DATA_ERRORS:
-        return ""
-
-
-def _draw_gp_canvas_tools(row, context, space):
-    """Draw Mode selection, Carver and the mirrored canvas (Blender 5.3 only;
-    on Blender 5.2 the pie simply leaves these buttons out)."""
-    # Blender 5.2 Draw Mode has neither selection tools nor the Carver.
-    if (
-        tuple(bpy.app.version[:2]) >= (5, 3)
-        and str(getattr(context, "mode", "") or "") == "PAINT_GREASE_PENCIL"
-    ):
-        active_tool = _active_tool_id(context)
-        for tool_id, icon in _GP_DRAW_MODE_TOOLS:
-            cell = _pie_icon_cell(row)
-            op = cell.operator(
-                "wm.tool_set_by_id",
-                text="",
-                icon=icon,
-                depress=active_tool == tool_id,
-            )
-            op.name = tool_id
+    Always in the South actions; Blender 5.2 has no flipped view, so the
+    button is simply left out there.
+    """
     region = getattr(space, "region_3d", None)
     if region is not None and hasattr(region, "use_view_flip_x"):
         cell = _pie_icon_cell(row)
@@ -2296,8 +2269,7 @@ class FBP_MT_ViewportPie(Menu):
                         text="",
                         icon="ONIONSKIN_ON" if onion_active else "ONIONSKIN_OFF",
                     )
-                if _gp_object_mode_active(context):
-                    _draw_gp_canvas_tools(display, context, space)
+                _draw_flip_canvas(display, space)
 
             if plane_rigs or state["lock_memory_active"]:
                 layer = actions.row(align=True)

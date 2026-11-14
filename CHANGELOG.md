@@ -7,7 +7,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Blender 5.2 LTS and 5.3
 
 - One package installs and runs on both **Blender 5.2 LTS** and **Blender 5.3** (`blender_version_min = "5.2.0"`, `blender_version_max = "5.4.0"`). The 5.3-only features below check for Blender 5.3 at runtime; on 5.2 the add-on keeps the 8.2.1 behaviour.
-- The Z Pie shows **Lasso Select** and the new **Carver** while drawing on a Grease Pencil canvas (Draw Mode), so strokes can be selected, moved and cut without switching to Edit Mode, and a **Flip Canvas** toggle that mirrors the view (Blender 5.3; on 5.2 these buttons are not shown).
+- The Z Pie always has a **Flip Canvas** toggle in its South actions, next to Overlays, that mirrors the view (Blender 5.3; on 5.2 the button is not shown).
 - Notes in the generated node trees (layer materials, effect groups, modifier shells) are Blender 5.3 **Comment** nodes with Markdown: one node per note instead of one frame per line. On Blender 5.2 notes stay one frame per line. A file opened in the other version gets its notes rebuilt the next time the tree is laid out.
 - Project Doctor, Performance Dashboard, What's New and the Live Tutorial help use Blender 5.3's multi-line labels, so text wraps to the panel width instead of a fixed character count; on Blender 5.2 they wrap at a fixed width as before.
 - Scrub Bar keyframe outlines are drawn with the polyline shader, so they keep their width with Vulkan (Blender 5.3's default on Windows and Linux) and Metal.
