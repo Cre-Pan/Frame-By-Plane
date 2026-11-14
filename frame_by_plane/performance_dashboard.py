@@ -29,7 +29,7 @@ from .registration import (
     unregister_type_properties,
 )
 from .runtime import FBP_DATA_ERRORS, fbp_runtime_get, fbp_runtime_set
-from .ui_style import configure_layout, empty_state, hint_row, section_header
+from .ui_style import configure_layout, empty_state, hint_row, label_multiline, section_header
 from .ui_list_state import mark_ui_list_draw
 from .interface_preferences import (
     fbp_draw_uilist_spacer,
@@ -1758,12 +1758,12 @@ def draw_performance_dashboard_ui(layout, context):
                 active.name,
                 icon="ERROR" if active.severity == "WARNING" else "INFO",
             )
-            detail.label_multiline(text=_safe_name(active.message))
+            label_multiline(detail, _safe_name(active.message))
             if active.action:
                 detail.separator(factor=0.25)
                 row = detail.row(align=False)
                 row.enabled = False
-                row.label_multiline(text=_safe_name(active.action), icon="LIGHT")
+                label_multiline(row, _safe_name(active.action), icon="LIGHT")
         if active.object_name:
             select = detail.operator(
                 "fbp.select_performance_item",

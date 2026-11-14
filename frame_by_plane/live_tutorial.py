@@ -31,7 +31,7 @@ from .layers import (
 )
 from .materials import rig_holdout_is_active
 from .interface_preferences import fbp_get_addon_preferences
-from .ui_style import configure_layout, section_header
+from .ui_style import configure_layout, label_multiline, section_header
 from .registration import register_interactive_classes, unregister_classes
 from .runtime import FBP_DATA_ERRORS
 from .tutorial_motion import Motion, bump, clamp01, ease_in_out_cubic, ease_out_back, ease_out_cubic
@@ -3241,10 +3241,7 @@ def _help_labels(layout: bpy.types.UILayout, text: str, *, icon: str | None = No
     text = " ".join(_plain_text(text).split())
     if not text:
         return
-    if icon:
-        layout.label_multiline(text=text, icon=icon)
-    else:
-        layout.label_multiline(text=text)
+    label_multiline(layout, text, icon=icon, width=82)
 
 
 # What each option of the creation dialogs does. Shown only from the "?"

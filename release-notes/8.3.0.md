@@ -1,13 +1,13 @@
 # 🎞️ Frame By Plane — 8.3.0
 
-Frame By Plane 8.3.0 moves to **Blender 5.3** and uses what it adds: Draw Mode selection and the Carver in the Z Pie, a mirrored drawing canvas, Markdown notes in the node trees and panel text that wraps to the panel width. It also fixes Copy to Selected in the Modifiers panel and Extend after Crop. Everything from 8.2.1, 8.0.1 and 8.0.0 is listed below.
+Frame By Plane 8.3.0 installs on both **Blender 5.2 LTS** and **Blender 5.3**, and on 5.3 it uses what the new version adds: Draw Mode selection and the Carver in the Z Pie, a mirrored drawing canvas, Markdown notes in the node trees and panel text that wraps to the panel width. It also fixes Copy to Selected in the Modifiers panel and Extend after Crop. Everything from 8.2.1, 8.0.1 and 8.0.0 is listed below.
 
 ## 🆕 New in 8.3.0
 
-- 🧭 **Requires Blender 5.3.** Blender 5.2 keeps using Frame By Plane 8.2.1.
+- 🧭 **One package for Blender 5.2 LTS and 5.3.** The 5.3 features below turn on by themselves in Blender 5.3; in 5.2 everything else works as in 8.2.1.
 - ✏️ **Draw Mode tools in the Z Pie:** while drawing on a Grease Pencil canvas the pie has **Lasso Select** and the new **Carver**, so strokes can be selected, moved or cut without switching to Edit Mode.
 - 🪞 **Flip Canvas:** one button in the Z Pie mirrors the view while you draw, to check proportions.
-- 📝 **Notes in the node trees** are Blender 5.3 **Comment** nodes with Markdown, one per note instead of a stack of frames.
+- 📝 **Notes in the node trees** are Blender 5.3 **Comment** nodes with Markdown, one per note instead of a stack of frames (Blender 5.3; in 5.2 notes stay frames).
 - 📏 **Panel text wraps to the panel:** Project Doctor, Performance Dashboard, What's New and the tutorial help use Blender's new multi-line labels.
 - 🖊️ **Scrub Bar** keyframe outlines keep their width with Vulkan, now Blender's default on Windows and Linux.
 
@@ -199,4 +199,4 @@ Drawing Timing keeps **Plane → GP**, **GP → Plane**, Offset and Auto Sync.
 
 Install the ZIP through **Edit > Preferences > Get Extensions > Install from Disk**. Do not install GitHub's automatically generated Source code ZIP.
 
-> Requires **Blender 5.3.x**. Projects from 7.x open without manual migration.
+> Requires **Blender 5.2.x LTS or 5.3.x**. Projects from 7.x open without manual migration.

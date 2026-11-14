@@ -1,6 +1,6 @@
-name: Blender 5.3 regression tests
+name: Blender 5.2 / 5.3 regression tests
 
-# Runs the background regression suite in a real Blender 5.3 on every pull
+# Runs the background regression suite in real Blender 5.2 LTS and 5.3 on every pull
 # request and every push to main, so a broken effect, panel or handler shows
 # up on the PR instead of in a hand-made build. The full four-platform release
 # gate (packages, install smoke, interactive UI) stays in
@@ -21,12 +21,20 @@ concurrency:
 
 jobs:
   linux-background:
-    name: Linux background suite
+    name: Linux background suite (Blender ${{ matrix.blender }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - blender: "5.2.0"
+            series: "5.2"
+          - blender: "5.3.0"
+            series: "5.3"
     env:
-      BLENDER_VERSION: "5.3.0"
-      BLENDER_ASSET: blender-5.3.0-linux-x64.tar.xz
+      BLENDER_VERSION: ${{ matrix.blender }}
+      BLENDER_ASSET: blender-${{ matrix.blender }}-linux-x64.tar.xz
       FBP_CI_RESULTS: ${{ github.workspace }}/work/fbp-results
       BLENDER_USER_CONFIG: ${{ github.workspace }}/work/fbp-user/config
       BLENDER_USER_SCRIPTS: ${{ github.workspace }}/work/fbp-user/scripts
@@ -60,7 +68,7 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/$BLENDER_ASSET"
           checksums="$RUNNER_TEMP/blender-$BLENDER_VERSION.sha256"
-          base="https://download.blender.org/release/Blender5.3"
+          base="https://download.blender.org/release/Blender${{ matrix.series }}"
           curl --fail --location --retry 3 "$base/$BLENDER_ASSET" --output "$archive"
           curl --fail --location --retry 3 "$base/blender-$BLENDER_VERSION.sha256" --output "$checksums"
           python tools/verify_blender_download.py "$archive" "$checksums"
@@ -86,6 +94,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: blender-background-results
+          name: blender-${{ matrix.series }}-background-results
           path: work/fbp-results
           if-no-files-found: ignore

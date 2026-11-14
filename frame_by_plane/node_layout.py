@@ -304,7 +304,20 @@ def organize_node_tree(node_tree, *, minimum_nodes=8, add_reroutes=True):
 # or relinked, so lookups by name and the evaluated result are unchanged.
 # ---------------------------------------------------------------------------
 
-NODE_VIEW_VERSION = 2
+def _node_comments_supported():
+    """Blender 5.3 added Markdown Comment nodes; Blender 5.2 has frames only."""
+    try:
+        import bpy
+        return hasattr(bpy.types, "NodeComment")
+    except ImportError:
+        return False
+
+
+# Notes are Comment nodes on Blender 5.3 (view version 2) and one frame per
+# line on Blender 5.2 (view version 1), so a file saved in one version gets
+# its notes rebuilt the first time its trees are tidied in the other.
+_NODE_COMMENTS = _node_comments_supported()
+NODE_VIEW_VERSION = 2 if _NODE_COMMENTS else 1
 NODE_VIEW_VERSION_KEY = "fbp_node_view_version"
 NODE_VIEW_SIGNATURE_KEY = "fbp_node_view_signature"
 _VIEW_FRAME_TAG = "fbp_node_view_frame"
@@ -317,6 +330,7 @@ _FRAME_PAD = 46.0
 _SECTION_GAP = 150.0
 _NOTE_LINE_HEIGHT = 30.0
 _NOTE_CHARS = 58
+_NOTE_COLOR = (0.15, 0.15, 0.13)
 
 _VIEW_METRICS = {"layouts": 0, "skipped": 0, "failed": 0, "total_seconds": 0.0, "max_seconds": 0.0}
 
@@ -496,11 +510,25 @@ def _new_view_comment(tree, key_text, text, width, *, parent=None):
     return comment
 
 
-def _add_note(tree, title, lines, x, y, width, *, parent=None, bottom=None):
-    """Add a note: one Markdown Comment node with a bold title.
+def _add_frame_lines(tree, rows, color, x, y, width, *, parent):
+    """Blender 5.2 notes: one shrink-off frame label per wrapped line."""
+    cursor = y
+    for row in rows:
+        line = _new_view_frame(tree, row, color, label_size=13, note=True, parent=parent)
+        _set_if_changed(line, "shrink", False)
+        _set_if_changed(line, "width", float(width))
+        _set_if_changed(line, "height", _NOTE_LINE_HEIGHT)
+        _PLACEMENTS.append((line, x, cursor))
+        cursor -= _NOTE_LINE_HEIGHT
+    return cursor
 
-    Returns the height the note takes. Comment nodes hold no data-block and
-    are never evaluated, so notes cost nothing at render time.
+
+def _add_note(tree, title, lines, x, y, width, *, parent=None, bottom=None):
+    """Add a note: a Markdown Comment node with a bold title (Blender 5.3),
+    or a titled frame holding one label per line of text (Blender 5.2).
+
+    Returns the height the note takes. Neither holds a data-block and neither
+    is evaluated, so notes cost nothing at render time.
     """
     paragraphs = [str(text).strip() for text in lines if str(text or "").strip()]
     if not paragraphs:
@@ -509,6 +537,11 @@ def _add_note(tree, title, lines, x, y, width, *, parent=None, bottom=None):
     if bottom is not None:
         # Sit just above ``bottom`` whatever the number of lines.
         y = float(bottom) + 36.0 + _NOTE_LINE_HEIGHT * len(rows) + 60.0
+    if not _NODE_COMMENTS:
+        note = _new_view_frame(tree, title, _NOTE_COLOR, label_size=15, note=True, parent=parent)
+        _set_if_changed(note, "shrink", True)
+        cursor = _add_frame_lines(tree, rows, _NOTE_COLOR, x, y - 36.0, width, parent=note)
+        return (y - cursor) + _FRAME_PAD
     text = f"**{title}**\n\n" + "\n\n".join(paragraphs)
     note = _new_view_comment(tree, title, text, width, parent=parent)
     _PLACEMENTS.append((note, x, y))
@@ -1046,8 +1079,11 @@ def layout_layer_material(tree, sections, *, title="", annotate=None, force=Fals
             hint_width = 400.0
             if annotate:
                 hint_rows = _wrap(hint, 50)
-                hint_note = _new_view_comment(tree, f"{label} hint", hint, hint_width, parent=frame)
-                _PLACEMENTS.append((hint_note, x0, y0))
+                if _NODE_COMMENTS:
+                    hint_note = _new_view_comment(tree, f"{label} hint", hint, hint_width, parent=frame)
+                    _PLACEMENTS.append((hint_note, x0, y0))
+                else:
+                    _add_frame_lines(tree, hint_rows, color, x0, y0, hint_width, parent=frame)
                 notes_offset = _NOTE_LINE_HEIGHT * len(hint_rows) + 24.0
             stacked = key in {"SOURCE", "IMAGE", "OUTPUT"} and len(blocks) > 1 and all(len(b[1]) == 1 for b in blocks)
             for label_text, block_nodes in blocks:

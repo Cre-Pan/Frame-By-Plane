@@ -388,8 +388,13 @@ def _active_tool_id(context):
 
 
 def _draw_gp_canvas_tools(row, context, space):
-    """Draw Mode selection, Carver and the mirrored canvas (Blender 5.3)."""
-    if str(getattr(context, "mode", "") or "") == "PAINT_GREASE_PENCIL":
+    """Draw Mode selection, Carver and the mirrored canvas (Blender 5.3 only;
+    on Blender 5.2 the pie simply leaves these buttons out)."""
+    # Blender 5.2 Draw Mode has neither selection tools nor the Carver.
+    if (
+        tuple(bpy.app.version[:2]) >= (5, 3)
+        and str(getattr(context, "mode", "") or "") == "PAINT_GREASE_PENCIL"
+    ):
         active_tool = _active_tool_id(context)
         for tool_id, icon in _GP_DRAW_MODE_TOOLS:
             cell = _pie_icon_cell(row)

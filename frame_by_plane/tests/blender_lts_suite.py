@@ -182,7 +182,7 @@ def unregister_addon(module):
 
 
 def test_version():
-    assert bpy.app.version[:2] == (5, 3), bpy.app.version_string
+    assert bpy.app.version[:2] in {(5, 2), (5, 3)}, bpy.app.version_string
     return bpy.app.version_string
 
 
@@ -263,7 +263,7 @@ def test_feedback_update_popup_contract(_module):
 
     titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     assert titles == (
-        "Blender 5.3",
+        "Blender 5.2 and 5.3",
         "Lasso and Carver",
         "Flip Canvas",
         "Node Notes",

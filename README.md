@@ -102,8 +102,8 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 
 ## Prepared update: 8.3.0
 
-- **Requires Blender 5.3.** Blender 5.2 keeps using 8.2.1.
-- **Draw Mode tools in the Z Pie:** Lasso Select and the new Carver while drawing, plus **Flip Canvas**.
+- **One package for Blender 5.2 LTS and Blender 5.3.**
+- **Draw Mode tools in the Z Pie:** Lasso Select and the new Carver while drawing, plus **Flip Canvas** (Blender 5.3).
 - Markdown **Comment** notes in the generated node trees, and panel text that wraps to the panel width.
 - Fixes for **Modifiers > Copy to Selected** and **Extend after Crop**.
 
@@ -151,7 +151,7 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 ## Requirements
 
-- **Blender 5.3.x** (Blender 5.2 LTS: use Frame By Plane 8.2.1)
+- **Blender 5.2.x LTS or Blender 5.3.x**
 - Windows x64 or ARM64, macOS Intel or Apple Silicon, or Linux x64
 
 ## Install Frame By Plane
@@ -173,7 +173,7 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
 
-The `macos_x64` package is provided for Intel Blender 5.3 installations. Because Blender's official 5.3.0 release checksum list currently contains only the Apple Silicon image, this package receives structural validation rather than an official-distribution runtime smoke test.
+The `macos_x64` package is provided for Intel Blender 5.2 and 5.3 installations. Because Blender's official release checksum lists currently contains only the Apple Silicon image, this package receives structural validation rather than an official-distribution runtime smoke test.
 
 For a clean update or architecture details, read the [installation guide](docs/INSTALLATION.md).
 
@@ -217,7 +217,7 @@ blender --command extension build \
   --split-platforms
 ```
 
-Run the native Blender 5.3 regression suites:
+Run the native Blender 5.2 or 5.3 regression suites:
 
 ```bash
 python frame_by_plane/tests/run_blender_lts.py \

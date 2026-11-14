@@ -25,6 +25,36 @@ def configure_layout(layout, *, property_split=False, decorate=False):
     return layout
 
 
+def label_multiline(layout, text, *, icon=None, width=58):
+    """Draw ``text`` wrapped to the region width.
+
+    Blender 5.3 wraps the label itself (``UILayout.label_multiline``); Blender
+    5.2 has no such call, so the text is split into ``width``-character lines
+    with the icon on the first one and a blank icon on the others.
+    """
+    text = " ".join(str(text or "").split())
+    if not text:
+        return
+    native = getattr(layout, "label_multiline", None)
+    if native is not None:
+        if icon:
+            native(text=text, icon=icon)
+        else:
+            native(text=text)
+        return
+    import textwrap
+
+    lines = textwrap.wrap(text, width=max(12, int(width))) or [text]
+    if len(lines) > 1:
+        # One label per line: stack them even when ``layout`` is a row.
+        layout = layout.column(align=True)
+    for index, line in enumerate(lines):
+        if not icon:
+            layout.label(text=line)
+        else:
+            layout.label(text=line, icon=icon if index == 0 else "BLANK1")
+
+
 def section_gap(layout, factor=FBP_UI_GAP_SECTION):
     """Insert the standard vertical gap between logical sections."""
     layout.separator(factor=float(factor))

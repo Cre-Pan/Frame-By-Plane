@@ -15,7 +15,7 @@ platforms = [
   "macos-arm64",
   "linux-x64",
 ]
-blender_version_min = "5.3.0"
+blender_version_min = "5.2.0"
 blender_version_max = "5.4.0"
 
 license = [

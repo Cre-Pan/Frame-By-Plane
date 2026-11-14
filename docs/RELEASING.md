@@ -5,12 +5,12 @@
 - Update `frame_by_plane/blender_manifest.toml`.
 - Update `frame_by_plane/constants.py` and `frame_by_plane/support_policy.py`.
 - Update `CHANGELOG.md`, `README.md`, user documentation and release notes.
-- Confirm that the repository description and GitHub topics describe the current Blender 5.3 image-sequence, Grease Pencil and 2.5D animation scope.
+- Confirm that the repository description and GitHub topics describe the current Blender 5.2 LTS / 5.3 image-sequence, Grease Pencil and 2.5D animation scope.
 - Run `python tools/verify_repository.py`.
 
-## 2. Run Blender 5.3 regression tests
+## 2. Run Blender 5.2 and 5.3 regression tests
 
-Use an official Blender **5.3.x** executable:
+Use official Blender **5.2.x LTS** and **5.3.x** executables (run the suites once with each):
 
 ```bash
 python frame_by_plane/tests/run_blender_lts.py \

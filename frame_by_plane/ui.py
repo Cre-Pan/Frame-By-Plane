@@ -76,7 +76,7 @@ from .ui_icons import (
     ui_icon_value,
 )
 from .interface_preferences import UILIST_COLUMN_DEFINITIONS, clear_interface_preferences_cache, fbp_get_addon_preferences, fbp_draw_uilist_header, fbp_draw_uilist_profile_preview, fbp_clear_uilist_drag_preview, fbp_set_uilist_drag_preview, fbp_uilist_column_icon_kwargs, fbp_set_uilist_profile_order, fbp_set_uilist_profile_visibility, fbp_uilist_icon_flags, fbp_uilist_icon_order, fbp_uilist_label_alignment, fbp_uilist_fixed_row_layouts, fbp_uilist_row_layouts, fbp_uilist_profile_definition, fbp_uilist_profile_columns, fbp_uilist_is_spacer, fbp_draw_uilist_spacer, fbp_uilist_visible_columns, fbp_template_list, fbp_uilist_pass_memo
-from .ui_style import FBP_UI_LIST_MIN_ROWS, adaptive_row, configure_layout, empty_state, hint_row, is_compact, list_rows, section_gap, section_header, selection_status
+from .ui_style import FBP_UI_LIST_MIN_ROWS, adaptive_row, configure_layout, empty_state, hint_row, is_compact, label_multiline, list_rows, section_gap, section_header, selection_status
 
 
 _FBP_UILIST_DRAG_ACTIVE = {"profile": "", "column_key": ""}
@@ -3177,13 +3177,13 @@ class FBP_PT_ProjectDoctor(Panel):
                 if location:
                     header.label(text=location)
                 message = str(getattr(issue, "message", "") or "")
-                detail.label_multiline(text=message)
+                label_multiline(detail, message)
                 hint = str(getattr(issue, "repair_hint", "") or "")
                 if hint:
                     detail.separator(factor=0.25)
                     hint_line = detail.row(align=False)
                     hint_line.enabled = False
-                    hint_line.label_multiline(text=hint, icon="TOOL_SETTINGS")
+                    label_multiline(hint_line, hint, icon="TOOL_SETTINGS")
                 fix_action = str(getattr(issue, "fix_action", "") or "")
                 fix_description = str(
                     getattr(issue, "fix_description", "") or ""
@@ -3202,7 +3202,7 @@ class FBP_PT_ProjectDoctor(Panel):
                     if fix_description:
                         description_row = action_box.row(align=False)
                         description_row.enabled = False
-                        description_row.label_multiline(text=fix_description)
+                        label_multiline(description_row, fix_description, width=56)
                     fix = action_box.operator(
                         "fbp.fix_project_health_issue",
                         text=str(

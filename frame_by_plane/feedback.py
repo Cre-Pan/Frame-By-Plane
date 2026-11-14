@@ -27,7 +27,7 @@ from .runtime import (
     fbp_warn,
 )
 from .safe_tasks import schedule_once, scheduled_task_pending
-from .ui_style import configure_layout
+from .ui_style import configure_layout, label_multiline
 from .common import rna_pointer as _feedback_pointer
 
 
@@ -135,23 +135,23 @@ FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS = 0.50
 # not in the first screen shown after an update.
 FBP_PUBLIC_RELEASE_ITEMS = (
     (
-        "Blender 5.3",
-        "Frame By Plane now runs on Blender 5.3.",
+        "Blender 5.2 and 5.3",
+        "One package for Blender 5.2 LTS and Blender 5.3.",
         "BLENDER",
     ),
     (
         "Lasso and Carver",
-        "Select and cut strokes in Draw Mode from the Z Pie.",
+        "Select and cut strokes in Draw Mode from the Z Pie (Blender 5.3).",
         "MOD_BOOLEAN",
     ),
     (
         "Flip Canvas",
-        "Mirror the view from the Z Pie to check a drawing.",
+        "Mirror the view from the Z Pie to check a drawing (Blender 5.3).",
         "MOD_MIRROR",
     ),
     (
         "Node Notes",
-        "Markdown Comment notes in the generated node trees.",
+        "Readable notes in the generated node trees, as Markdown Comments on 5.3.",
         "TEXT",
     ),
     (
@@ -1950,7 +1950,7 @@ class FBP_OT_WhatsNewPrompt(Operator):
             title_row.label(text=title, icon=fbp_icon(icon_key))
             detail = card.row(align=False)
             detail.enabled = False
-            detail.label_multiline(text=str(description))
+            label_multiline(detail, str(description), width=34 if int(columns or 1) > 1 else 60)
             card.separator(factor=0.25)
 
     @staticmethod
