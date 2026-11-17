@@ -42,6 +42,7 @@ from .common import (
 
 
 _DRAW_HANDLE = None
+_LABEL_HANDLE = None
 _LINE_SHADER = None
 _OUTLINE_WIDTH = 1.5
 _GUIDE_WIDTH = 1.4
@@ -264,15 +265,53 @@ def _handle_hover_color(context):
 
 # Effect handles keep one size on screen, as Blender's gizmos do: the mesh is
 # built at a plane-relative size and drawn scaled about its origin so that
-# size reads as this many pixels. Guides (radius circles, gradient lines)
-# keep their real size. Direction arrows are not scaled: their length is the
-# effect distance.
+# size reads as this many pixels. They also face the view: a knob on a layer
+# seen at a steep angle, or edge-on in Top or Side view, is still a round dot
+# and not a squashed sliver. Guides (radius circles, gradient lines) keep
+# their real size and place. Direction arrows are not changed: their length
+# is the effect distance.
 HANDLE_SCREEN_SIZE_PX = 15.0
 _UNSCALED_MODES = {"DIRECTION"}
 
 
+def _facing_turn(matrix, region_data):
+    """3x3 turn that lays ``matrix``'s XY plane flat on the view.
+
+    The knob keeps the in-plane direction its X axis shows on screen, so a
+    square or an arrow-shaped grip still points the way the layer does.
+    """
+    from .common import view_axes
+
+    axis_x = matrix.col[0].xyz
+    axis_y = matrix.col[1].xyz
+    normal = axis_x.cross(axis_y)
+    if axis_x.length <= 1.0e-12 or normal.length <= 1.0e-12:
+        return None
+    axis_x = axis_x.normalized()
+    normal = normal.normalized()
+    axis_y = normal.cross(axis_x)
+    right, up, toward = view_axes(region_data)
+    flat_x, flat_y = axis_x.dot(right), axis_x.dot(up)
+    if math.hypot(flat_x, flat_y) >= 0.2:
+        angle = math.atan2(flat_y, flat_x)
+    else:
+        flat_x, flat_y = axis_y.dot(right), axis_y.dot(up)
+        angle = math.atan2(flat_y, flat_x) - math.pi * 0.5 if math.hypot(flat_x, flat_y) >= 0.2 else 0.0
+    cos, sin = math.cos(angle), math.sin(angle)
+    target_x = right * cos + up * sin
+    target_y = right * -sin + up * cos
+    target_z = toward
+    if normal.dot(toward) < 0.0:
+        # Seen from behind: mirrored, as the layer itself is.
+        target_y, target_z = -target_y, -target_z
+    source = Matrix((axis_x, axis_y, normal))           # rows: world -> plane
+    target = Matrix((target_x, target_y, target_z)).transposed()   # plane -> view
+    return target @ source
+
+
 def handle_screen_scale(obj, region, region_data, ui_scale=1.0):
-    """``(anchor, factor)`` that brings ``obj``'s knob to its screen size, or None."""
+    """``(anchor, matrix)`` that brings ``obj``'s knob to its screen size,
+    facing the view, or None. Points map as ``anchor + matrix @ (p - anchor)``."""
     try:
         from .effect_controls import KEY_MODE
         from .viewport_handles import KEY_HANDLE_NOMINAL_SIZE, LATTICE_FOLLOW_MODIFIER
@@ -293,6 +332,7 @@ def handle_screen_scale(obj, region, region_data, ui_scale=1.0):
         right = region_data.view_matrix.inverted().col[0].xyz.normalized()
         start = location_3d_to_region_2d(region, region_data, anchor)
         end = location_3d_to_region_2d(region, region_data, anchor + right * world)
+        turn = _facing_turn(matrix, region_data)
     except (*FBP_DATA_ERRORS, ZeroDivisionError):
         return None
     if start is None or end is None:
@@ -301,11 +341,13 @@ def handle_screen_scale(obj, region, region_data, ui_scale=1.0):
     if pixels <= 1.0e-6:
         return None
     factor = HANDLE_SCREEN_SIZE_PX * float(ui_scale) / pixels
-    return anchor, factor
+    if turn is None:
+        turn = Matrix.Identity(3)
+    return anchor, turn * factor
 
 
-def _scaled(points, anchor, factor):
-    return [anchor + (point - anchor) * factor for point in points]
+def _scaled(points, anchor, matrix):
+    return [anchor + matrix @ (point - anchor) for point in points]
 
 
 # Local-space topology of each handle mesh, keyed by the mesh and a digest of
@@ -567,6 +609,28 @@ def _crop_side_bar(group, role, region, region_data, ui_scale):
     return anchor - along * half, anchor + along * half
 
 
+def _crop_edge_on_role(group, role, region, region_data):
+    """For a Crop/Extend rig seen edge-on: "DOT" for a side that sits at an
+    end of the line it draws, "HIDE" for corners and the sides along the
+    line, None when the rig is not edge-on."""
+    from .common import edge_on
+
+    corners = [group["anchors"].get(name) for name in _CROP_CORNERS]
+    if any(corner is None for corner in corners):
+        return None
+    normal = (corners[1] - corners[0]).cross(corners[3] - corners[0])
+    centre = sum(corners, Vector()) / 4.0
+    if normal.length <= 1.0e-12 or not edge_on(region_data, centre, normal):
+        return None
+    ends = _CROP_SIDES.get(role)
+    if ends is None:
+        return "HIDE"
+    a, b = (location_3d_to_region_2d(region, region_data, group["anchors"][name]) for name in ends)
+    if a is None or b is None:
+        return "HIDE"
+    return "DOT" if (b - a).length <= 4.0 else "HIDE"
+
+
 def crop_handle_screen_distance(handle, point, region, region_data, groups, ui_scale=1.0):
     """Pixels from ``point`` to a Crop/Extend handle as the rig draws it.
 
@@ -579,6 +643,15 @@ def crop_handle_screen_distance(handle, point, region, region_data, groups, ui_s
     from .effect_controls import KEY_ROLE
     role = str(handle.get(KEY_ROLE, "") or "").upper()
     point = Vector((float(point[0]), float(point[1])))
+    flat = _crop_edge_on_role(group, role, region, region_data)
+    if flat == "HIDE":
+        return None
+    if flat == "DOT":
+        anchor = group["anchors"].get(role)
+        screen = location_3d_to_region_2d(region, region_data, anchor) if anchor is not None else None
+        if screen is None:
+            return None
+        return max(0.0, (point - screen).length - _CROP_DOT_PX * ui_scale)
     if role in _CROP_SIDES:
         bar = _crop_side_bar(group, role, region, region_data, ui_scale)
         if bar is None:
@@ -643,7 +716,10 @@ def _crop_rig_drawing(context, region, groups, ui_scale, hovered, selected_color
     """Lines ``[(segments, colour, width)]`` and fills ``[(triangles, colour)]``."""
     from .layer_cage import _disc, proximity_near
 
+    from .common import view_axes, world_per_pixel as _pixel_size
+
     region_data = context.region_data
+    view_x, view_y, _toward = view_axes(region_data)
     lines, fills = [], []
     white = HANDLE_COLOR[:3]
     shadow = (0.0, 0.0, 0.0)
@@ -679,7 +755,12 @@ def _crop_rig_drawing(context, region, groups, ui_scale, hovered, selected_color
             if not (near or selected or hover):
                 continue
             color = (*(selected_color[:3] if selected else hover_color[:3] if hover else white), 1.0)
-            if role in _CROP_SIDES:
+            # Edge-on (Top or Side view) the rig is a line: only the sides
+            # at its two ends are left, as dots.
+            flat = _crop_edge_on_role(group, role, region, region_data)
+            if flat == "HIDE":
+                continue
+            if role in _CROP_SIDES and flat != "DOT":
                 bar = _crop_side_bar(group, role, region, region_data, ui_scale)
                 if bar is None:
                     continue
@@ -688,12 +769,13 @@ def _crop_rig_drawing(context, region, groups, ui_scale, hovered, selected_color
                 lines.append((list(bar), color, width))
                 continue
             anchor = anchors[role]
-            unit = _world_per_pixel(region, region_data, anchor, axis_y)
+            # Dots face the view and keep one size on screen at any angle.
+            unit = _pixel_size(region, region_data, anchor)
             if unit is None:
                 continue
             radius = _CROP_DOT_PX * ui_scale * unit
-            fills.append((_disc(anchor, axis_x, axis_y, radius + 1.2 * ui_scale * unit), (*shadow, 0.5)))
-            fills.append((_disc(anchor, axis_x, axis_y, radius), color))
+            fills.append((_disc(anchor, view_x, view_y, radius + 1.2 * ui_scale * unit), (*shadow, 0.5)))
+            fills.append((_disc(anchor, view_x, view_y, radius), color))
     return lines, fills
 
 
@@ -737,6 +819,129 @@ def _follow_theme(context):
     bpy.app.timers.register(refresh, first_interval=0.0)
 
 
+# --- Plane outlines in Top and Side views ------------------------------------
+#
+# A layer that faces the camera is a bare line in Top view and in the side
+# views, easy to lose among the others. In those views (orthographic, along
+# an axis) every visible layer's plane is outlined, with its name beside it,
+# so it is clear where each one sits in depth.
+
+_OUTLINE_COLOR = (0.82, 0.82, 0.82, 0.55)
+_OUTLINE_SELECTED_COLOR = (1.0, 1.0, 1.0, 0.9)
+_OUTLINE_HALO_COLOR = (0.0, 0.0, 0.0, 0.35)
+_LABEL_OFFSET_PX = 6.0
+_LABEL_SIZE_PX = 11.0
+
+
+def _axis_view(context):
+    """True in an orthographic view along an axis (Top, Front, Right...)."""
+    region_data = getattr(context, "region_data", None)
+    try:
+        return region_data is not None and bool(region_data.is_orthographic_side_view)
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _plane_outlines(context, depsgraph=None):
+    """``[(corners, selected, active, name)]`` of the visible layers' planes."""
+    try:
+        from .layer_cage import layer_cage_rect
+    except ImportError:
+        return []
+    active = getattr(context, "active_object", None)
+    outlines = []
+    for rig in tuple(getattr(context, "visible_objects", ()) or ()):
+        try:
+            if not bool(getattr(rig, "is_fbp_control", False)):
+                continue
+            plane = getattr(rig, "fbp_plane_target", None)
+            if plane is None or not plane.visible_get():
+                continue
+            rect = layer_cage_rect(rig, depsgraph)
+            if rect is None:
+                continue
+            center, size = rect
+            world = rig.matrix_world
+            corners = [
+                world @ Vector((center.x + dx * size.x * 0.5, center.y + dy * size.y * 0.5, center.z))
+                for dx, dy in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+            ]
+            outlines.append((corners, bool(rig.select_get()), rig == active, str(rig.name)))
+        except FBP_DATA_ERRORS:
+            continue
+    return outlines
+
+
+def _draw_plane_outlines(context, region, line_shader, scale):
+    if not _axis_view(context):
+        return
+    try:
+        depsgraph = context.evaluated_depsgraph_get()
+    except FBP_DATA_ERRORS:
+        depsgraph = None
+    outlines = _plane_outlines(context, depsgraph)
+    if not outlines:
+        return
+    plain, chosen = [], []
+    for corners, selected, _active, _name in outlines:
+        segments = []
+        for index in range(4):
+            segments.extend((corners[index], corners[(index + 1) % 4]))
+        (chosen if selected else plain).extend(segments)
+    line_shader.bind()
+    line_shader.uniform_float("viewportSize", (region.width, region.height))
+    _draw_lines(line_shader, plain + chosen, 3.0 * scale, _OUTLINE_HALO_COLOR)
+    _draw_lines(line_shader, plain, 1.0 * scale, _OUTLINE_COLOR)
+    _draw_lines(line_shader, chosen, 1.0 * scale, _OUTLINE_SELECTED_COLOR)
+
+
+def _draw_plane_labels():
+    """Layer names beside their outlines, in Top and Side views."""
+    context = bpy.context
+    region = getattr(context, "region", None)
+    region_data = getattr(context, "region_data", None)
+    try:
+        if region is None or region_data is None or not bool(context.space_data.overlay.show_overlays):
+            return
+    except FBP_DATA_ERRORS:
+        return
+    if not _axis_view(context):
+        return
+    try:
+        depsgraph = context.evaluated_depsgraph_get()
+    except FBP_DATA_ERRORS:
+        depsgraph = None
+    outlines = _plane_outlines(context, depsgraph)
+    if not outlines:
+        return
+    import blf
+
+    scale = _ui_scale(context)
+    font = 0
+    blf.size(font, _LABEL_SIZE_PX * scale)
+    accent = handle_selected_color(context)
+    for corners, selected, active, name in outlines:
+        points = [location_3d_to_region_2d(region, region_data, corner) for corner in corners]
+        points = [point for point in points if point is not None]
+        if not points:
+            continue
+        # Right of the outline, level with its top on screen.
+        x = max(point.x for point in points) + _LABEL_OFFSET_PX * scale
+        y = max(point.y for point in points) - _LABEL_SIZE_PX * scale
+        if active:
+            color = (*accent[:3], 1.0)
+        elif selected:
+            color = _OUTLINE_SELECTED_COLOR
+        else:
+            color = _OUTLINE_COLOR
+        blf.color(font, *color)
+        blf.enable(font, blf.SHADOW)
+        blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.8)
+        blf.position(font, x, y, 0.0)
+        blf.draw(font, name)
+        blf.disable(font, blf.SHADOW)
+
+
 def _draw_handles():
     context = bpy.context
     space = getattr(context, "space_data", None)
@@ -749,6 +954,18 @@ def _draw_handles():
     except FBP_DATA_ERRORS:
         return
     _follow_theme(context)
+    fill_shader, line_shader = _shaders()
+    scale = _ui_scale(context)
+    if _axis_view(context):
+        gpu.state.blend_set("ALPHA")
+        gpu.state.depth_test_set("NONE")
+        gpu.state.depth_mask_set(False)
+        try:
+            _draw_plane_outlines(context, region, line_shader, scale)
+        finally:
+            gpu.state.depth_mask_set(True)
+            gpu.state.depth_test_set("LESS_EQUAL")
+            gpu.state.blend_set("NONE")
     handles = _visible_handles(context)
     mask_guides = _mask_guides(context)
     lattice_guides = _lattice_guides(context)
@@ -765,8 +982,6 @@ def _draw_handles():
         depsgraph = context.evaluated_depsgraph_get()
     except FBP_DATA_ERRORS:
         return
-    fill_shader, line_shader = _shaders()
-    scale = _ui_scale(context)
     guides = list(lattice_guides) + plane_guides
     for solid, _dashed in mask_guides:
         guides.extend(solid)
@@ -979,6 +1194,28 @@ def _gradient_stops(rig, effect_id, in_control, out_control):
             t = (float(element.position) - first) / span if abs(span) > 1.0e-9 else 0.5
         stops.append((key, t, controls._display_color(element.color)))
     return stops
+
+
+def _screen_line_basis(region, region_data, start, end):
+    """4x4 rotation whose X runs along ``start``-``end`` as seen on screen,
+    Y beside it on its upper side and Z toward the viewer."""
+    from .common import view_axes
+
+    right, up, toward = view_axes(region_data)
+    a = location_3d_to_region_2d(region, region_data, start)
+    b = location_3d_to_region_2d(region, region_data, end)
+    if a is None or b is None:
+        return None
+    along = b - a
+    if along.length <= 1.0e-3:
+        along = Vector((1.0, 0.0))
+    along.normalize()
+    axis = right * along.x + up * along.y
+    side = toward.cross(axis)
+    if side.dot(up) < -1.0e-6:
+        side = -side
+    normal = axis.cross(side)
+    return Matrix((axis, side, normal)).transposed().to_4x4()
 
 
 def _fit_gizmos(gizmos, count, idname):
@@ -1939,17 +2176,11 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
                 items = _gradient_stops(rig, effect_id, in_control, out_control)
             except (ImportError,) + FBP_DATA_ERRORS:
                 continue
-            axis = (end - start).normalized()
-            side = normal.cross(axis)
-            if side.length <= 1.0e-6:
+            # The circles face the view and sit beside the line as it runs
+            # on screen, on its upper side, at any angle.
+            basis = _screen_line_basis(region, view, start, end)
+            if basis is None:
                 continue
-            side.normalize()
-            # The circles go on the side of the line that is up on screen.
-            foot = location_3d_to_region_2d(region, view, start)
-            tip = location_3d_to_region_2d(region, view, start + side * (end - start).length * 0.25)
-            if foot is not None and tip is not None and (tip - foot).y < 0.0:
-                side, normal = -side, -normal
-            basis = Matrix((axis, side, normal)).transposed().to_4x4()
             for key, t, color in items:
                 stops.append((rig.name, effect_id, str(key), start, end, start.lerp(end, t), basis, color))
         try:
@@ -2153,10 +2384,11 @@ _GIZMO_CLASSES = (
 
 
 def register():
-    global _DRAW_HANDLE
+    global _DRAW_HANDLE, _LABEL_HANDLE
     if bpy.app.background or _DRAW_HANDLE is not None:
         return
     _DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(_draw_handles, (), "WINDOW", "POST_VIEW")
+    _LABEL_HANDLE = bpy.types.SpaceView3D.draw_handler_add(_draw_plane_labels, (), "WINDOW", "POST_PIXEL")
     for cls in _GIZMO_CLASSES:
         try:
             bpy.utils.register_class(cls)
@@ -2165,11 +2397,14 @@ def register():
 
 
 def unregister():
-    global _DRAW_HANDLE, _LINE_SHADER
-    handle = _DRAW_HANDLE
+    global _DRAW_HANDLE, _LABEL_HANDLE, _LINE_SHADER
+    handles = (_DRAW_HANDLE, _LABEL_HANDLE)
     _DRAW_HANDLE = None
+    _LABEL_HANDLE = None
     _LINE_SHADER = None
-    if handle is not None:
+    for handle in handles:
+        if handle is None:
+            continue
         try:
             bpy.types.SpaceView3D.draw_handler_remove(handle, "WINDOW")
         except (ValueError, RuntimeError):

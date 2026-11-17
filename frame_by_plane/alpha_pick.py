@@ -274,9 +274,10 @@ def fbp_handle_under_cursor(context, coord, radius):
             # Picked where it is drawn: knobs keep one size on screen.
             fixed = handle_screen_scale(handle, region, region_data, ui_scale)
             if fixed is not None:
-                anchor, factor = fixed
+                anchor, turn = fixed
                 anchor = np.array(tuple(anchor), dtype=np.float64)
-                world = anchor + (world - anchor) * float(factor)
+                turn = np.array([tuple(row) for row in turn], dtype=np.float64)
+                world = anchor + (world - anchor) @ turn.T
             screen, valid = project(world)
             # Only the filled faces are picked, so only their corners count;
             # a cursor away from all of them skips the triangle tests.
