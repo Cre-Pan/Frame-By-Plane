@@ -4888,6 +4888,18 @@ def test_frame_stack_samples_earlier_frames(_module):
             found = {}
             if cells is None:
                 return found
+            # Solid view in Texture mode draws the atlas through UVMap, so the
+            # slice UVs point into the slice's own cell; the plane UV is kept.
+            atlas_uv = mesh.attributes.get("UVMap")
+            plane_uv = mesh.attributes.get("fbp_frame_stack_uv")
+            assert atlas_uv is not None and plane_uv is not None
+            for loop in mesh.loops:
+                u0, v0, du, dv = cells.data[loop.vertex_index].color
+                if du <= 0.0:
+                    continue
+                u, v = atlas_uv.data[loop.index].vector
+                pu, pv = plane_uv.data[loop.index].vector
+                assert abs(u - (u0 + pu * du)) < 1e-4 and abs(v - (v0 + pv * dv)) < 1e-4, (u, v, pu, pv, u0, v0, du, dv)
             for vertex, cell, alpha in zip(mesh.vertices, cells.data, alphas.data):
                 if alpha.value <= 0.5:
                     continue

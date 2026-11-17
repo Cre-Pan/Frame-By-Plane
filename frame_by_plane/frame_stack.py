@@ -34,7 +34,7 @@ from .runtime import FBP_DATA_ERRORS, fbp_warn
 
 
 FBP_FRAME_STACK_EFFECT_ID = "FRAME_STACK"
-FBP_FRAME_STACK_MATERIAL_VERSION = 2
+FBP_FRAME_STACK_MATERIAL_VERSION = 3
 # Pixels of one atlas; larger stacks get smaller cells. Renders may use more.
 _ATLAS_PIXEL_BUDGET = 8 * 1024 * 1024
 _RENDER_ATLAS_PIXEL_BUDGET = 16 * 1024 * 1024
@@ -551,7 +551,7 @@ def _build_material(material):
             item.inputs[1].default_value = b
         return item
 
-    uv = attribute("UVMap", "FBP Frame Stack UV", 400.0)
+    uv = attribute("fbp_frame_stack_uv", "FBP Frame Stack UV", 400.0)
     rect = attribute("fbp_frame_stack_cell", "FBP Frame Stack Cell", 100.0)
     color_attr = attribute("fbp_frame_stack_color", "FBP Frame Stack Color", -200.0)
     alpha_attr = attribute("fbp_frame_stack_alpha", "FBP Frame Stack Alpha", -400.0)

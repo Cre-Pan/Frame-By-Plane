@@ -126,7 +126,7 @@ _BUILTIN_EFFECT_CONTRACTS = {
     "PAPER_SHARDS": ("frame_by_plane.paper_shards", 2),
     "FIBER_TUFTS": ("frame_by_plane.fiber_tufts", 2),
     "CROSSHATCH": ("frame_by_plane.shader.crosshatch", 2),
-    "FRAME_STACK": ("frame_by_plane.frame_stack", 4),
+    "FRAME_STACK": ("frame_by_plane.frame_stack", 5),
     "GLASS": ("frame_by_plane.broken_glass", 2),
 }
 
@@ -9416,7 +9416,50 @@ def _create_frame_stack(name):
     atlas_flag.inputs["Name"].default_value = "fbp_frame_stack_atlas"
     atlas_flag.inputs["Value"].default_value = 1.0
     links.new(realize.outputs["Geometry"], atlas_flag.inputs["Geometry"])
-    atlas_slices = atlas_flag.outputs["Geometry"]
+    # The material reads the plane UV from its own attribute. UVMap itself is
+    # pointed into the slice's atlas cell, so Solid view in Texture color mode,
+    # which draws the active image through UVMap, shows each slice's drawing
+    # instead of the whole atlas.
+    slice_uv = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack Slice UV", 3340, ay - 400)
+    slice_uv.data_type = "FLOAT_VECTOR"
+    slice_uv.inputs["Name"].default_value = "UVMap"
+    keep_uv = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Plane UV", 3560, ay)
+    keep_uv.data_type = "FLOAT2"
+    keep_uv.domain = "CORNER"
+    keep_uv.inputs["Name"].default_value = "fbp_frame_stack_uv"
+    links.new(atlas_flag.outputs["Geometry"], keep_uv.inputs["Geometry"])
+    links.new(slice_uv.outputs["Attribute"], keep_uv.inputs["Value"])
+    cell = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack Slice Cell", 3340, ay - 600)
+    cell.data_type = "FLOAT_COLOR"
+    cell.inputs["Name"].default_value = "fbp_frame_stack_cell"
+    cell_parts = _node(group, "FunctionNodeSeparateColor", "Frame Stack Slice Cell Parts", 3560, ay - 600)
+    links.new(cell.outputs["Attribute"], cell_parts.inputs["Color"])
+    cell_origin = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Slice Cell Origin", 3780, ay - 500)
+    links.new(cell_parts.outputs["Red"], cell_origin.inputs["X"])
+    links.new(cell_parts.outputs["Green"], cell_origin.inputs["Y"])
+    cell_size = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Slice Cell Size", 3780, ay - 700)
+    links.new(cell_parts.outputs["Blue"], cell_size.inputs["X"])
+    links.new(cell_parts.outputs["Alpha"], cell_size.inputs["Y"])
+    clamped_uv = _node(group, "ShaderNodeVectorMath", "Frame Stack Slice UV Clamp", 3560, ay - 400)
+    clamped_uv.operation = "MAXIMUM"
+    links.new(slice_uv.outputs["Attribute"], clamped_uv.inputs[0])
+    clamped_uv.inputs[1].default_value = (0.0, 0.0, 0.0)
+    clamped_uv_top = _node(group, "ShaderNodeVectorMath", "Frame Stack Slice UV Clamp Top", 3780, ay - 300)
+    clamped_uv_top.operation = "MINIMUM"
+    links.new(clamped_uv.outputs["Vector"], clamped_uv_top.inputs[0])
+    clamped_uv_top.inputs[1].default_value = (1.0, 1.0, 0.0)
+    cell_uv = _node(group, "ShaderNodeVectorMath", "Frame Stack Slice Atlas UV", 4000, ay - 400)
+    cell_uv.operation = "MULTIPLY_ADD"
+    links.new(clamped_uv_top.outputs["Vector"], cell_uv.inputs[0])
+    links.new(cell_size.outputs["Vector"], cell_uv.inputs[1])
+    links.new(cell_origin.outputs["Vector"], cell_uv.inputs[2])
+    atlas_uv = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Atlas UVMap", 4220, ay)
+    atlas_uv.data_type = "FLOAT2"
+    atlas_uv.domain = "CORNER"
+    atlas_uv.inputs["Name"].default_value = "UVMap"
+    links.new(keep_uv.outputs["Geometry"], atlas_uv.inputs["Geometry"])
+    links.new(cell_uv.outputs["Vector"], atlas_uv.inputs["Value"])
+    atlas_slices = atlas_uv.outputs["Geometry"]
 
     # ---- Video path: one decoded movie frame per slice, per vertex. ----
     vy = -1200
@@ -9656,8 +9699,8 @@ def _create_frame_stack(name):
     links.new(join.outputs["Geometry"], out.inputs["Geometry"])
     out.location = (4700, 400)
     group["fbp_hidden_inputs"] = list(FBP_FRAME_STACK_RUNTIME_INPUTS)
-    group["fbp_frame_stack_contract_version"] = 4
-    group["fbp_effect_contract_version"] = 4
+    group["fbp_frame_stack_contract_version"] = 5
+    group["fbp_effect_contract_version"] = 5
     return group
 
 
