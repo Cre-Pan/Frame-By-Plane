@@ -82,19 +82,38 @@ def _cage_layers(context):
 
 
 def layer_cage_rect(rig, depsgraph=None):
-    """``(center, size)`` of the layer's visible plane in rig space (XY).
+    """``(center, size)`` of the layer's original image plane in rig space (XY).
 
-    Uses the evaluated plane, so Crop, Extend and mesh effects are included.
+    The box always hugs the original plane: effects that grow or move the
+    evaluated mesh (Frame Stack slices, Extend, mesh effects) do not change
+    it, whatever the layer's scale or its sign. Falls back to the evaluated
+    plane bounds when the layer has no reference size.
     """
     plane = getattr(rig, "fbp_plane_target", None)
     if plane is None:
         return None
     try:
-        source = plane.evaluated_get(depsgraph) if depsgraph is not None else plane
-        relation = rig.matrix_world.inverted_safe() @ source.matrix_world
-        corners = [relation @ Vector(corner) for corner in source.bound_box]
-    except (*FBP_DATA_ERRORS, IndexError):
+        relation = rig.matrix_world.inverted_safe() @ plane.matrix_world
+    except FBP_DATA_ERRORS:
         return None
+    corners = None
+    try:
+        from .builder import fbp_plane_reference_bounds
+        min_x, max_x, min_y, max_y = fbp_plane_reference_bounds(rig)[0]
+        if max_x - min_x > 1.0e-9 and max_y - min_y > 1.0e-9:
+            corners = [
+                relation @ Vector((x, y, 0.0))
+                for x in (min_x, max_x) for y in (min_y, max_y)
+            ]
+    except (ImportError, TypeError, ValueError, IndexError) + FBP_DATA_ERRORS:
+        corners = None
+    if corners is None:
+        try:
+            source = plane.evaluated_get(depsgraph) if depsgraph is not None else plane
+            relation = rig.matrix_world.inverted_safe() @ source.matrix_world
+            corners = [relation @ Vector(corner) for corner in source.bound_box]
+        except (*FBP_DATA_ERRORS, IndexError):
+            return None
     xs = [corner.x for corner in corners]
     ys = [corner.y for corner in corners]
     size = Vector((max(xs) - min(xs), max(ys) - min(ys)))
