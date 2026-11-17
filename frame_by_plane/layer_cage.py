@@ -22,6 +22,12 @@ Mask...) shows those instead of the box, so they receive the drag.
 
 As in Grease Pencil's box, the edge and corner dots appear only when the
 cursor comes near; the knob on top and the anchor cross stay visible.
+
+Dots, the knob and the anchor face the view and keep one size on screen,
+whatever the angle. A layer seen edge-on (Top or Side view of a layer that
+faces the camera) draws as a line: only its outline and the two end dots
+that stretch it stay, the line moves the layer in the view's plane (so in
+Top view it also changes the depth), and rotation steps aside.
 """
 
 from __future__ import annotations
@@ -32,6 +38,10 @@ from mathutils import Matrix, Vector
 from .runtime import FBP_DATA_ERRORS
 from .viewport_handles import handle_selected_color
 from .common import (
+    edge_on as _edge_on,
+    view_axes as _view_axes,
+    view_plane_point as _view_plane_point,
+    world_per_pixel as _world_per_pixel,
     view_plane_hit as _plane_hit,
     ui_scale as _ui_scale,
     undo_push as _undo_push,
@@ -454,35 +464,67 @@ def _build_box_frame(world, center, size, region, region_data, anchor_local):
     def point(dx, dy):
         return world @ Vector((center.x + dx * hx, center.y + dy * hy, center.z))
 
-    corners = [point(*signs) for signs in _CORNER_SIGNS]
-    edges = [point(*signs) for signs in _EDGE_SIGNS]
-    top = edges[2]
-    per_unit = _pixels_per_unit(region, region_data, top, axis_y)
-    if per_unit is None:
-        return None
-    knob = top + axis_y * (_ROTATE_OFFSET_PX / per_unit)
-    bottom = edges[0]
-    bottom_unit = _pixels_per_unit(region, region_data, bottom, axis_y) or per_unit
-    orient = bottom - axis_y * (_ROTATE_OFFSET_PX / bottom_unit)
-    anchor = (world @ anchor_local) if anchor_local is not None else world.translation.copy()
-    # The anchor sits on the layer: drop it on the box plane.
-    normal = axis_x.cross(axis_y)
-    if normal.length > 1.0e-9:
-        normal.normalize()
-        anchor -= normal * (anchor - corners[0]).dot(normal)
-    targets = [point(dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
-
     def screen(value):
         return location_3d_to_region_2d(region, region_data, value)
 
+    corners = [point(*signs) for signs in _CORNER_SIGNS]
+    edges = [point(*signs) for signs in _EDGE_SIGNS]
+    middle = point(0, 0)
+    normal = axis_x.cross(axis_y)
+    if normal.length <= 1.0e-9:
+        return None
+    normal.normalize()
+    view_right, view_up, _toward = _view_axes(region_data)
+    edge_on = _edge_on(region_data, middle, normal)
+    top = edges[2]
+    bottom = edges[0]
+
+    def beside(start, direction, pixels):
+        """``start`` moved ``pixels`` on screen the way ``direction`` points."""
+        a, b = screen(start), screen(start + direction)
+        unit = _world_per_pixel(region, region_data, start)
+        if a is None or b is None or unit is None:
+            return None
+        along = b - a
+        if along.length <= 1.0e-6:
+            return None
+        along.normalize()
+        return start + (view_right * along.x + view_up * along.y) * (pixels * unit)
+
+    # The knob and the square sit a fixed distance off the box on screen,
+    # whatever the angle; an edge-on layer has neither.
+    knob = None if edge_on else beside(top, axis_y, _ROTATE_OFFSET_PX)
+    orient = None if edge_on else beside(bottom, -axis_y, _ROTATE_OFFSET_PX)
+    if not edge_on and (knob is None or orient is None):
+        return None
+    anchor = (world @ anchor_local) if anchor_local is not None else world.translation.copy()
+    # The anchor sits on the layer: drop it on the box plane.
+    anchor -= normal * (anchor - corners[0]).dot(normal)
+    targets = [point(dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
+    s_corners = [screen(value) for value in corners]
+    s_edges = [screen(value) for value in edges]
+    # Edge-on, the box is a line: its two ends are the sides that still
+    # stretch the layer (left/right in Top view, top/bottom in Side view).
+    ends = ()
+    if edge_on:
+        valid = [value for value in s_corners if value is not None]
+        if len(valid) < 4:
+            return None
+        span_x = (s_edges[1] - s_edges[3]).length if s_edges[1] is not None and s_edges[3] is not None else 0.0
+        span_y = (s_edges[2] - s_edges[0]).length if s_edges[2] is not None and s_edges[0] is not None else 0.0
+        if max(span_x, span_y) <= 2.0:
+            return None
+        ends = (1, 3) if span_x >= span_y else (0, 2)
+
     return {
         "axis_x": axis_x, "axis_y": axis_y, "normal": normal,
+        "view_x": view_right, "view_y": view_up, "edge_on": edge_on, "ends": ends,
         "corners": corners, "edges": edges, "top": top, "knob": knob,
-        "bottom": bottom, "orient": orient, "s_orient": screen(orient),
-        "anchor": anchor, "targets": targets, "center": point(0, 0),
-        "s_corners": [screen(value) for value in corners],
-        "s_edges": [screen(value) for value in edges],
-        "s_knob": screen(knob), "s_top": screen(top), "s_anchor": screen(anchor),
+        "bottom": bottom, "orient": orient, "s_orient": screen(orient) if orient is not None else None,
+        "anchor": anchor, "targets": targets, "center": middle,
+        "s_corners": s_corners, "s_edges": s_edges,
+        "s_knob": screen(knob) if knob is not None else None,
+        "s_top": screen(top), "s_anchor": screen(anchor),
         "s_targets": [screen(value) for value in targets],
     }
 
@@ -516,6 +558,19 @@ def _hit_part(frame, location, scale, rig_name):
     def near(screen_point, radius=dot):
         return screen_point is not None and (mouse - screen_point).length <= radius
 
+    if frame.get("edge_on"):
+        # A line: its end dots stretch, the line itself moves.
+        for index in frame["ends"]:
+            if near(frame["s_edges"][index]):
+                return f"E{index}"
+        corners = frame["s_corners"]
+        for index in range(4):
+            a, b = corners[index], corners[(index + 1) % 4]
+            if _segment_distance(mouse, a, b) <= _PICK_EDGE_PX * scale:
+                return "MOVE"
+        if _point_in_polygon(mouse, corners):
+            return "MOVE"
+        return None
     if anchor_mode(rig_name) and near(frame["s_anchor"], (_ANCHOR_RING_PX + 3.0) * scale):
         return "ANCHOR"
     if near(frame["s_knob"]):
@@ -709,7 +764,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
     __slots__ = (
         "fbp_rig_name", "fbp_center", "fbp_size", "fbp_active", "fbp_part",
         "fbp_initial", "fbp_press", "fbp_start", "fbp_anchor_preview", "fbp_snap",
-        "fbp_hover", "fbp_children", "fbp_turn",
+        "fbp_hover", "fbp_children", "fbp_turn", "fbp_free",
     )
 
     def setup(self):
@@ -726,6 +781,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_hover = ""
         self.fbp_children = None
         self.fbp_turn = None
+        self.fbp_free = False
         self.use_draw_scale = False
         # Keep drawing while dragged, so the box follows the layer.
         self.use_draw_modal = True
@@ -774,11 +830,12 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         anchor_preview = get(self, "fbp_anchor_preview")
         snap_index = get(self, "fbp_snap")
         showing = anchor_mode(rig_name)
-        axis_x, axis_y = frame["axis_x"], frame["axis_y"]
+        # Dots face the view and keep one size on screen at any angle.
+        axis_x, axis_y = frame["view_x"], frame["view_y"]
+        edge_on = frame.get("edge_on", False)
 
         def unit(point):
-            per = _pixels_per_unit(region, region_data, point, axis_y)
-            return 1.0 / per if per else None
+            return _world_per_pixel(region, region_data, point)
 
         fills = []      # (triangles, colour, alpha)
         lines = []      # (points as segment pairs, colour, alpha, width)
@@ -798,7 +855,16 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         # Corner and edge dots: near the cursor, or while one is dragged.
         screen_points = [*frame["s_corners"], *frame["s_edges"], frame["s_knob"]]
         near = proximity_near(("cage", rig_name), region, screen_points)
-        if (near and not modal) or active_part[:1] in {"C", "E"}:
+        if edge_on:
+            # Seen edge-on the box is a line: the dots at its ends stretch
+            # the layer; corners, knob and anchor would all pile up.
+            if (near and not modal) or active_part[:1] == "E":
+                for index in frame["ends"]:
+                    part = f"E{index}"
+                    if modal and part != active_part:
+                        continue
+                    dot(frame["edges"][index], accent if part == active_part else white, _MARK_RADIUS_PX + (0.8 if part == active_part else 0.0))
+        elif (near and not modal) or active_part[:1] in {"C", "E"}:
             for index, point in enumerate(corners):
                 part = f"C{index}"
                 if not modal or part == active_part:
@@ -811,10 +877,12 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                     continue
                 along = corners[(index + 1) % 4] - corners[index]
                 length = along.length
-                u = unit(point)
-                if length <= 1.0e-9 or u is None:
+                if length <= 1.0e-9:
                     continue
-                half = min(length * _EDGE_BAR_FRACTION, _EDGE_BAR_MAX_PX * u) * 0.5
+                per = _pixels_per_unit(region, region_data, point, along / length)
+                if per is None:
+                    continue
+                half = min(length * _EDGE_BAR_FRACTION, _EDGE_BAR_MAX_PX / per) * 0.5
                 along = along / length
                 bar = [point - along * half, point + along * half]
                 width = _EDGE_BAR_WIDTH_PX + (1.5 if part == active_part else 0.0)
@@ -822,13 +890,13 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 lines.append((bar, accent if part == active_part else white, 1.0, width))
 
         # The knob on its stem above the top edge.
-        if not modal or active_part == "ROTATE":
+        if frame["knob"] is not None and (not modal or active_part == "ROTATE"):
             lines.append(([frame["top"], frame["knob"]], white, 0.8, 1.0))
             knob_color = accent if active_part == "ROTATE" or showing else white
             dot(frame["knob"], knob_color, _ROTATE_RADIUS_PX)
 
         # The orientation square on its stem below the bottom edge.
-        if not modal or active_part == "ORIENT":
+        if frame["orient"] is not None and (not modal or active_part == "ORIENT"):
             lines.append(([frame["bottom"], frame["orient"]], white, 0.8, 1.0))
             u = unit(frame["orient"])
             if u is not None:
@@ -841,7 +909,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         anchor = frame["anchor"]
         if active_part == "ANCHOR" and anchor_preview is not None:
             anchor = Vector(anchor_preview)
-        u = unit(anchor)
+        u = None if edge_on else unit(anchor)
         if u is not None:
             cross_color = accent if (showing or active_part in {"ROTATE", "ANCHOR"}) else white
             if showing:
@@ -936,7 +1004,13 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             # Pivot (screen and world), last cursor angle and the turn so far.
             self.fbp_turn = [frame["s_anchor"].copy(), frame["anchor"].copy(), self.fbp_start, 0.0]
         else:
-            hit = _plane_hit(context.region, context.region_data, self.fbp_press, frame["corners"][0], frame["normal"])
+            # Edge-on, the line moves in the view's plane: in Top view that
+            # slides the layer sideways and in depth.
+            self.fbp_free = bool(frame.get("edge_on")) and part == "MOVE"
+            if self.fbp_free:
+                hit = _view_plane_point(context.region, context.region_data, self.fbp_press, frame["center"])
+            else:
+                hit = _plane_hit(context.region, context.region_data, self.fbp_press, frame["corners"][0], frame["normal"])
             if hit is None:
                 return {"CANCELLED"}
             self.fbp_start = tuple(hit)
@@ -976,6 +1050,11 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
 
     def _hit(self, context, event):
         initial = self.fbp_initial
+        if self.fbp_free:
+            return _view_plane_point(
+                context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
+                Vector(self.fbp_start),
+            )
         normal = (initial.to_3x3() @ Vector((0.0, 0.0, 1.0)))
         if normal.length <= 1.0e-9:
             return None
@@ -1124,6 +1203,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_part = ""
         self.fbp_children = None
         self.fbp_turn = None
+        self.fbp_free = False
         self.fbp_anchor_preview = None
         self.fbp_snap = -1
         context.area.tag_redraw()

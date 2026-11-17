@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "operation_id": "aa59d418afd343818739e1a71513b80b",
+  "created_at": "2026-11-17T12:49:43.546437+00:00",
+  "timezone": "UTC",
+  "status": "PLANNED",
+  "finalized_at": "",
+  "note": "Blender Undo cannot restore filesystem names. Rename target back to source to roll back.",
+  "files": [
+    {
+      "source": "old one.png",
+      "target": "shot_0001.png"
+    },
+    {
+      "source": "old two.png",
+      "target": "shot_0002.png"
+    }
+  ]
+}

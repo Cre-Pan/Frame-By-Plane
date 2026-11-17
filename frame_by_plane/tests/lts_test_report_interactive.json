@@ -1,0 +1,74 @@
+{
+  "suite": "interactive",
+  "run_id": "30c063c1f7a942d1a0451fdb153a0e9e",
+  "blender": "5.3.0",
+  "addon_release": "8.5.0",
+  "results": [
+    {
+      "name": "blender_version",
+      "status": "PASS",
+      "seconds": 4.07900006393902e-06,
+      "detail": "5.3.0"
+    },
+    {
+      "name": "register",
+      "status": "PASS",
+      "seconds": 0.2818058289999499,
+      "detail": "registered"
+    },
+    {
+      "name": "undo_redo_20_cycles",
+      "status": "PASS",
+      "seconds": 0.16366020899999967,
+      "detail": {
+        "pushes": 20,
+        "undo": 20,
+        "redo": 20,
+        "interactive_20_cycle_requirement": true
+      }
+    },
+    {
+      "name": "icon_runtime_contract",
+      "status": "PASS",
+      "seconds": 0.004314212000053885,
+      "detail": {
+        "preloaded": 12,
+        "duplicate_alias_ids": [
+          1145,
+          1145,
+          1145
+        ],
+        "alias_hits": 2,
+        "filesystem_checks": 13
+      }
+    },
+    {
+      "name": "generation_lock_two_windows",
+      "status": "PASS",
+      "seconds": 0.48084608399994977,
+      "detail": {
+        "windows": 2,
+        "same_operator_refused": true,
+        "different_operator_refused": true,
+        "blocked_job_never_became_owner": true,
+        "owner_continued": true,
+        "rollback_verified": true
+      }
+    },
+    {
+      "name": "scrub_header_native_center_contract",
+      "status": "PASS",
+      "seconds": 0.00010901999985435396,
+      "detail": {
+        "native_draw_preserved": true,
+        "centered_first_spacer_hook": true,
+        "viewports": 1
+      }
+    }
+  ],
+  "passed": false,
+  "in_progress": true,
+  "failed": 0,
+  "skipped": 0,
+  "workdir": "/home/user/Frame-By-Plane/frame_by_plane/tests/lts_test_report_interactive_artifacts_30c063c1f7a9/work"
+}

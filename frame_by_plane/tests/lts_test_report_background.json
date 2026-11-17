@@ -1,0 +1,951 @@
+{
+  "suite": "background",
+  "run_id": "83a822b35c8b471dba76185631facbf9",
+  "blender": "5.3.0",
+  "addon_release": "8.5.0",
+  "results": [
+    {
+      "name": "blender_version",
+      "status": "PASS",
+      "seconds": 5.106999878989882e-06,
+      "detail": "5.3.0"
+    },
+    {
+      "name": "register_unregister_reload",
+      "status": "PASS",
+      "seconds": 7.460767589999932,
+      "detail": "3 clean reloads plus 1 in-place extension reload; scheduler quiescent"
+    },
+    {
+      "name": "release_metadata_sync",
+      "status": "PASS",
+      "seconds": 1.0437999890200444e-05,
+      "detail": "8.5.0"
+    },
+    {
+      "name": "feedback_update_popup_contract",
+      "status": "PASS",
+      "seconds": 0.017078383999887592,
+      "detail": {
+        "preferences_detected": true,
+        "deadline_suspended": true,
+        "release_items": 6,
+        "fresh_image_decoded_once": true
+      }
+    },
+    {
+      "name": "control_panel_and_camera_contract",
+      "status": "PASS",
+      "seconds": 0.05852147999985391,
+      "detail": {
+        "data_panel": "FBP_PT_image_plane_data",
+        "tool_panels": [
+          "FBP_PT_tool_layer_stack",
+          "FBP_PT_tool_grease_pencil_stack",
+          "FBP_PT_tool_sequence"
+        ],
+        "n_panel_root_panels": 1,
+        "camera_projection": "PERSP",
+        "camera_lens": 63.0,
+        "camera_ratio": [
+          1920,
+          1080
+        ]
+      }
+    },
+    {
+      "name": "camera_output_format",
+      "status": "PASS",
+      "seconds": 0.0054218699999637465,
+      "detail": {
+        "presets": {
+          "SD": [
+            720,
+            405
+          ],
+          "HD": [
+            1920,
+            1080
+          ],
+          "2K": [
+            2048,
+            1152
+          ],
+          "4K": [
+            3840,
+            2160
+          ],
+          "8K": [
+            7680,
+            4320
+          ]
+        },
+        "aspect_presets": 10,
+        "landscape_default_and_swap": true,
+        "responsive_pixel_fields": true,
+        "native_icons_valid": true,
+        "non_square_pixel_swap": true,
+        "native_output_edits_reflected": true,
+        "draw_read_only": true
+      }
+    },
+    {
+      "name": "camera_pixels_and_presets",
+      "status": "PASS",
+      "seconds": 0.007845777999818893,
+      "detail": {
+        "linked_default": true,
+        "both_axes_and_orientations": true,
+        "unlinked_custom_aspect": true,
+        "non_square_pixels": true,
+        "bounds_atomic": true,
+        "preset_save_apply_remove_persistence": true
+      }
+    },
+    {
+      "name": "effect_evolution_handler_lifecycle",
+      "status": "PASS",
+      "seconds": 0.035851199999797245,
+      "detail": {
+        "phase": "frame_change_post",
+        "before_repair": {
+          "pre": 2,
+          "post": 1
+        },
+        "after_repair": {
+          "pre": 0,
+          "post": 1
+        }
+      }
+    },
+    {
+      "name": "registration_failure_transaction",
+      "status": "PASS",
+      "seconds": 0.06446743700007573,
+      "detail": {
+        "register_failure_state": "FAILED",
+        "rollback_modules": 15,
+        "handlers_after_rollback": 0,
+        "teardown_failure_state": "FAILED_UNSAFE",
+        "reenabled": true
+      }
+    },
+    {
+      "name": "generation_timer_deadline",
+      "status": "PASS",
+      "seconds": 5.870900008630997e-05,
+      "detail": {
+        "deadline_seconds": 0.2,
+        "foreign_timer_before_deadline": "ignored",
+        "single_claim": true,
+        "cancelled_claim": false,
+        "foreign_1ms_timer_ignored": true,
+        "one_step_per_deadline": true,
+        "reentrancy_guard": true
+      }
+    },
+    {
+      "name": "generation_progress_and_rollback",
+      "status": "PASS",
+      "seconds": 0.001433540999869365,
+      "detail": {
+        "progress_steps": 2,
+        "rollback_restored": true,
+        "datablock_types": [
+          "images",
+          "materials",
+          "meshes",
+          "node_groups",
+          "objects"
+        ]
+      }
+    },
+    {
+      "name": "incremental_generation_owner_contract",
+      "status": "PASS",
+      "seconds": 0.0009235540001100162,
+      "detail": {
+        "exclusive_owner": true,
+        "owner_token": "uuid",
+        "foreign_datablock_preserved": true,
+        "rollback_verified": true
+      }
+    },
+    {
+      "name": "incremental_progress_owner_contract",
+      "status": "PASS",
+      "seconds": 6.592599993382464e-05,
+      "detail": {
+        "begin_calls": 1,
+        "end_calls": 1,
+        "monotonic_updates": [
+          0.0,
+          50.0,
+          50.0,
+          100.0
+        ],
+        "updates_after_end": 0
+      }
+    },
+    {
+      "name": "fast_import_preserves_global_undo",
+      "status": "PASS",
+      "seconds": 3.906300003109209e-05,
+      "detail": {
+        "initial_true_preserved": true,
+        "initial_false_preserved": true,
+        "depth": 0
+      }
+    },
+    {
+      "name": "incremental_user_state_rollback",
+      "status": "PASS",
+      "seconds": 0.0013423160000911594,
+      "detail": {
+        "selection": "restored",
+        "active_object": "restored",
+        "camera_cursor_pivot": "restored",
+        "resolution_aspect": "restored",
+        "last_directory": "restored"
+      }
+    },
+    {
+      "name": "incremental_lifecycle_and_deep_rollback",
+      "status": "PASS",
+      "seconds": 0.011457256999847232,
+      "detail": {
+        "different_scene_refused": true,
+        "nested_collection_depth": 20,
+        "foreign_material_preserved": true,
+        "foreign_image_preserved": true,
+        "failure_after_yield": "verified rollback",
+        "load_pre": "retired",
+        "reload_scripts": "retired",
+        "unregister": "retired"
+      }
+    },
+    {
+      "name": "synchronous_media_generation",
+      "status": "PASS",
+      "seconds": 0.11266562600008001,
+      "detail": {
+        "fixture": "/home/user/Frame-By-Plane/frame_by_plane/tests/lts_test_report_background_artifacts_83a822b35c8b/work/fbp_generation_fixture.png",
+        "generated_rigs": 1,
+        "background_mode": true,
+        "rollback_restored": true,
+        "partial_registration_guard": true,
+        "stale_scene_guard": true
+      }
+    },
+    {
+      "name": "scheduler_rna_capture_guard",
+      "status": "PASS",
+      "seconds": 0.0006882870000026742,
+      "detail": "RNA captures, inconclusive payloads and post-registration facade mutations rejected; bounded primitive payload accepted"
+    },
+    {
+      "name": "collections_and_layer_tree",
+      "status": "PASS",
+      "seconds": 0.011870423999880586,
+      "detail": "managed create/reparent/toggle/delete plus scalar Layer Tree snapshots"
+    },
+    {
+      "name": "undo_redo",
+      "status": "PASS",
+      "seconds": 0.1501999629999773,
+      "detail": {
+        "pushes": 20,
+        "undo": 19,
+        "redo": 19,
+        "interactive_20_cycle_requirement": false
+      }
+    },
+    {
+      "name": "scrub_bar_regressions",
+      "status": "PASS",
+      "seconds": 0.08832568599996193,
+      "detail": {
+        "magnet_outer_offset": 28.598958546885896,
+        "direct_scrub_factor": 1.0,
+        "range_50": [
+          25,
+          74
+        ],
+        "frame_zero": 0,
+        "preferences_icon": "icon_FLOATINGTIMELINE_paste.png"
+      }
+    },
+    {
+      "name": "gp_effect_support",
+      "status": "PASS",
+      "seconds": 0.0003456060001099104,
+      "detail": {
+        "removed_types": 5,
+        "removed_operators": 11
+      }
+    },
+    {
+      "name": "gp_runtime_cache_cleanup",
+      "status": "PASS",
+      "seconds": 3.963499989367847e-05,
+      "detail": {
+        "rgba_bytes": 0,
+        "grid_bytes": 0,
+        "reload_cleanup": true
+      }
+    },
+    {
+      "name": "felt_fuzz_canonical_contract",
+      "status": "PASS",
+      "seconds": 0.22507758300002934,
+      "detail": {
+        "nodes": 48,
+        "canonical_upgrade_once": true
+      }
+    },
+    {
+      "name": "effect_stack_reorder_contract",
+      "status": "PASS",
+      "seconds": 0.8842818620000799,
+      "detail": {
+        "effects": 8,
+        "sort_stage_rebuilds": 2
+      }
+    },
+    {
+      "name": "effect_mixed_stack_contract",
+      "status": "PASS",
+      "seconds": 0.15898939599992445,
+      "detail": {
+        "stage_modifiers": 4,
+        "mirrored_composites": 1
+      }
+    },
+    {
+      "name": "effect_node_views_contract",
+      "status": "PASS",
+      "seconds": 0.28208034299996143,
+      "detail": {
+        "materials": 1,
+        "shells": 4,
+        "check_ms": 0.113
+      }
+    },
+    {
+      "name": "effect_mixed_stack_keyed_composites",
+      "status": "PASS",
+      "seconds": 0.08573085699981675,
+      "detail": {
+        "keyed_channels": 3,
+        "compared": 6
+      }
+    },
+    {
+      "name": "effect_stack_evaluation_order",
+      "status": "PASS",
+      "seconds": 0.3486736429999837,
+      "detail": {
+        "mesh_inputs": 1
+      }
+    },
+    {
+      "name": "effect_render_visibility_contract",
+      "status": "PASS",
+      "seconds": 0.27495755699987967,
+      "detail": {
+        "render_backup_entries": 4
+      }
+    },
+    {
+      "name": "effect_render_visibility_cycles",
+      "status": "PASS",
+      "seconds": 0.27934537199985243,
+      "detail": {
+        "inverted": [
+          0.769,
+          0.745,
+          0.643,
+          1.0
+        ],
+        "hidden": [
+          0.227,
+          0.447,
+          0.725,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "remesh_effects_keep_image_material",
+      "status": "PASS",
+      "seconds": 0.29862887399985993,
+      "detail": {
+        "ACCORDION_FOLD": 1,
+        "KINETIC_TILES": 1,
+        "SCULPT_WAVES": 1,
+        "IMAGE_RELIEF": 1
+      }
+    },
+    {
+      "name": "effect_global_mask_hide_cycles",
+      "status": "PASS",
+      "seconds": 0.2861067040000762,
+      "detail": {
+        "alpha": 0.502,
+        "viewport_hidden": 0.502,
+        "render_hidden": 0.502
+      }
+    },
+    {
+      "name": "effect_bake_cycles",
+      "status": "PASS",
+      "seconds": 0.045200660000091375,
+      "detail": {
+        "pixel": [
+          0.984,
+          0.937,
+          0.663,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "effect_bake_straight_alpha",
+      "status": "PASS",
+      "seconds": 0.02565282099999422,
+      "detail": {
+        "pixel": [
+          0.196,
+          0.4,
+          0.796,
+          0.502
+        ]
+      }
+    },
+    {
+      "name": "effect_bake_eevee_camera",
+      "status": "PASS",
+      "seconds": 0.018100426000046355,
+      "detail": {
+        "framed": true
+      }
+    },
+    {
+      "name": "effect_bake_switch_off",
+      "status": "PASS",
+      "seconds": 0.03389650100007202,
+      "detail": {
+        "switched_off": true
+      }
+    },
+    {
+      "name": "effect_family_variant_keeps_position",
+      "status": "PASS",
+      "seconds": 3.1444346300002053,
+      "detail": {
+        "order": [
+          "VIGNETTE",
+          "MIRROR",
+          "HEX_PIXELATE",
+          "SWIRL",
+          "LENS_WARP",
+          "HUE_SATURATION"
+        ]
+      }
+    },
+    {
+      "name": "effect_duplicate_placement",
+      "status": "PASS",
+      "seconds": 0.5344490690001749,
+      "detail": {
+        "rows": 7
+      }
+    },
+    {
+      "name": "effect_remove_masked_uv_instance",
+      "status": "PASS",
+      "seconds": 0.24449358800006848,
+      "detail": {
+        "materials": 1
+      }
+    },
+    {
+      "name": "effect_controls_roundtrip",
+      "status": "PASS",
+      "seconds": 4.833968192000157,
+      "detail": {
+        "effects": 31
+      }
+    },
+    {
+      "name": "gradient_handles_cycles",
+      "status": "PASS",
+      "seconds": 0.7583308449998185,
+      "detail": {
+        "across": [
+          0.522,
+          0.494,
+          0.514,
+          0.482
+        ],
+        "ring": [
+          0.467,
+          0.482,
+          0.569,
+          0.506
+        ]
+      }
+    },
+    {
+      "name": "lattice_poses_contract",
+      "status": "PASS",
+      "seconds": 0.3051678520000678,
+      "detail": {
+        "width": 2.0
+      }
+    },
+    {
+      "name": "lattice_pins_contract",
+      "status": "PASS",
+      "seconds": 0.3790234729999611,
+      "detail": {
+        "grid": [
+          24,
+          12
+        ]
+      }
+    },
+    {
+      "name": "lattice_pin_names_contract",
+      "status": "PASS",
+      "seconds": 0.15677637299995695,
+      "detail": ""
+    },
+    {
+      "name": "pose_mode_shows_effect_handles",
+      "status": "PASS",
+      "seconds": 0.6785392659999161,
+      "detail": {
+        "handles": 10
+      }
+    },
+    {
+      "name": "lattice_types_contract",
+      "status": "PASS",
+      "seconds": 0.44484772499981773,
+      "detail": {
+        "types": [
+          "GRID",
+          "BONES",
+          "PINS",
+          "CORNER_PIN"
+        ]
+      }
+    },
+    {
+      "name": "effect_operator_cleanup_contract",
+      "status": "PASS",
+      "seconds": 0.7226369410000189,
+      "detail": {
+        "operators_registered": 102
+      }
+    },
+    {
+      "name": "effect_stack_copy_preset_fidelity",
+      "status": "PASS",
+      "seconds": 2.626771885000153,
+      "detail": {
+        "rows": 7,
+        "grouped": 2
+      }
+    },
+    {
+      "name": "audited_operator_tooltips",
+      "status": "PASS",
+      "seconds": 0.0012717069998871011,
+      "detail": {
+        "audited": 40,
+        "preview_descriptions": 14
+      }
+    },
+    {
+      "name": "preview_scope_policy",
+      "status": "PASS",
+      "seconds": 0.011080365999987407,
+      "detail": {
+        "features": 3,
+        "used_features": 3,
+        "doctor_preview_issues": 1
+      }
+    },
+    {
+      "name": "irreversible_action_contracts",
+      "status": "PASS",
+      "seconds": 0.007106299000042782,
+      "detail": {
+        "preset_backup": "effect_presets.backup.json",
+        "preset_atomic_write": true,
+        "preset_corrupt_recovery": true,
+        "preset_corrupt_fail_closed": true,
+        "preset_read_only_preserved": true,
+        "preset_save_delete_undo_warning": true,
+        "rename_manifest": ".fbp_sequence_rename_20261117T124943Z-0f7dbcd91e8c45339cf0b2eff0db9cbb.json",
+        "rename_manifest_uuid": true,
+        "rename_manifest_finalized": true,
+        "filesystem_undo_advertised": false,
+        "targeted_repair_internal": true
+      }
+    },
+    {
+      "name": "generic_mesh_matrix",
+      "status": "PASS",
+      "seconds": 0.00010345299983782752,
+      "detail": {
+        "total": 26,
+        "supported": 17
+      }
+    },
+    {
+      "name": "generic_mesh_topology_profiles",
+      "status": "PASS",
+      "seconds": 0.008865532000072562,
+      "detail": {
+        "closed": "CLOSED_MANIFOLD",
+        "open": "OPEN_SURFACE",
+        "wire": "WIRE",
+        "non_manifold": "NON_MANIFOLD"
+      }
+    },
+    {
+      "name": "generic_mesh_group_contracts",
+      "status": "PASS",
+      "seconds": 1.4656570080001075,
+      "detail": {
+        "checked": 17,
+        "missing": []
+      }
+    },
+    {
+      "name": "generic_mesh_artist_modifier_preservation",
+      "status": "PASS",
+      "seconds": 0.024197449999974197,
+      "detail": {
+        "effect": "MIRROR",
+        "artist_modifier_preserved": true,
+        "duplicate_repair": true,
+        "atomic_batch_rollback": true
+      }
+    },
+    {
+      "name": "compositor_artist_graph",
+      "status": "PASS",
+      "seconds": 0.05453136500000255,
+      "detail": {
+        "artist_nodes": 3,
+        "artist_links": 1,
+        "issues": 3,
+        "duplicate_scene": "FBP Duplicate Scene"
+      }
+    },
+    {
+      "name": "compositor_scene_copy_isolation",
+      "status": "PASS",
+      "seconds": 0.19715398700009246,
+      "detail": {
+        "managed_layers": 2
+      }
+    },
+    {
+      "name": "compositor_refresh_contract",
+      "status": "PASS",
+      "seconds": 0.5772577760001241,
+      "detail": {
+        "rebuilds": 3
+      }
+    },
+    {
+      "name": "compositor_off_restores_render_setup",
+      "status": "PASS",
+      "seconds": 0.19495487599988337,
+      "detail": {
+        "native_layers": 1
+      }
+    },
+    {
+      "name": "drop_import_camera_modes",
+      "status": "PASS",
+      "seconds": 0.41909657799988054,
+      "detail": {
+        "SINGLE_KEEP": 2,
+        "SINGLE_ADAPT": 2,
+        "SINGLE_NEW": 3,
+        "MULTI_KEEP": 4,
+        "MULTI_ADAPT": 4,
+        "MULTI_NEW": 5,
+        "dialog_width": 560
+      }
+    },
+    {
+      "name": "render_checked_popup_contract",
+      "status": "PASS",
+      "seconds": 0.001983818999860887,
+      "detail": {
+        "renders": 3,
+        "keymap_items": 2
+      }
+    },
+    {
+      "name": "frame_stack_samples_earlier_frames",
+      "status": "PASS",
+      "seconds": 2.6102174200000263,
+      "detail": {
+        "slices": 4,
+        "sequences": 3
+      }
+    },
+    {
+      "name": "playback_light_and_native_sample_timing",
+      "status": "PASS",
+      "seconds": 1.3114755710000736,
+      "detail": {
+        "samples": 25
+      }
+    },
+    {
+      "name": "knit_crochet_stitches",
+      "status": "PASS",
+      "seconds": 0.18269929799998863,
+      "detail": {
+        "knit": 190,
+        "crochet": 126
+      }
+    },
+    {
+      "name": "effect_audit_fixes_contract",
+      "status": "PASS",
+      "seconds": 1.7088631999999961,
+      "detail": {
+        "OIL_PAINT": 194,
+        "EDGE_DISTANCE_MASK": 133
+      }
+    },
+    {
+      "name": "effect_audit_followup_contract",
+      "status": "PASS",
+      "seconds": 0.6074570139999196,
+      "detail": {
+        "volume_surfaces": 1,
+        "array_surfaces": 40
+      }
+    },
+    {
+      "name": "composite_materials_skip_static_frames",
+      "status": "PASS",
+      "seconds": 0.6333696459998919,
+      "detail": {
+        "composites": 2
+      }
+    },
+    {
+      "name": "rigless_gesture_select_dense_mesh",
+      "status": "PASS",
+      "seconds": 0.43638087599993014,
+      "detail": {
+        "polygons": 1100,
+        "seconds": 0.116
+      }
+    },
+    {
+      "name": "blur_samples_skip_disabled_taps",
+      "status": "PASS",
+      "seconds": 2.5775467840001056,
+      "detail": {
+        "GAUSSIAN_BLUR:5": 20,
+        "GAUSSIAN_BLUR:17": 8,
+        "GAUSSIAN_BLUR:25": 0,
+        "TRIANGLE_BLUR:5": 16,
+        "TRIANGLE_BLUR:17": 4,
+        "TRIANGLE_BLUR:25": 0,
+        "triangle_keyed_muted": 0,
+        "riso:0,0.6,0.35": 4,
+        "riso:1,0.6,0.35": 0,
+        "riso:0,0.0,0.0": 10
+      }
+    },
+    {
+      "name": "ui_draw_pass_contract",
+      "status": "PASS",
+      "seconds": 0.10863423799992233,
+      "detail": ""
+    },
+    {
+      "name": "frame_path_lookup_contract",
+      "status": "PASS",
+      "seconds": 0.23118625899996914,
+      "detail": ""
+    },
+    {
+      "name": "playback_cache_contract",
+      "status": "PASS",
+      "seconds": 0.17803700000013123,
+      "detail": ""
+    },
+    {
+      "name": "color_key_merges_chroma_key",
+      "status": "PASS",
+      "seconds": 0.3224167789999228,
+      "detail": {
+        "migrated": 1
+      }
+    },
+    {
+      "name": "print_paint_and_edge_distance_cycles",
+      "status": "PASS",
+      "seconds": 1.590437953999981,
+      "detail": {
+        "oil": [
+          0.227,
+          0.447,
+          0.725
+        ],
+        "riso": [
+          0.231,
+          0.447,
+          0.725
+        ],
+        "border": 0.082,
+        "inside": 1.0
+      }
+    },
+    {
+      "name": "toon_boom_contract",
+      "status": "PASS",
+      "seconds": 2.1580000066023786e-05,
+      "detail": {
+        "raster_export_folder": true,
+        "numbered_exposure_gaps": true,
+        "native_xstage_import": false,
+        "vector_to_grease_pencil": false,
+        "palette_nodes": false,
+        "peg_hierarchy": false,
+        "drawing_substitutions": false,
+        "round_trip_export": false
+      }
+    },
+    {
+      "name": "projector_contract",
+      "status": "PASS",
+      "seconds": 0.5819482839999637,
+      "detail": [
+        ".avi",
+        ".m4v",
+        ".mkv",
+        ".mov",
+        ".mp4",
+        ".mpeg",
+        ".mpg",
+        ".mxf",
+        ".ogv",
+        ".webm"
+      ]
+    },
+    {
+      "name": "performance_profile_contract",
+      "status": "PASS",
+      "seconds": 0.007696829999986221,
+      "detail": {
+        "measured_frames": 12,
+        "handler_samples": 12,
+        "timing_tracemalloc": false,
+        "memory_run_separate": true,
+        "estimated_overhead_percent": 3.4232837735334183,
+        "concurrency_guards": [
+          "playback",
+          "render",
+          "generation",
+          "undo_load",
+          "active_profiler",
+          "external_tracemalloc",
+          "background_operator"
+        ],
+        "state_restored": true,
+        "json_serializable": true
+      }
+    },
+    {
+      "name": "gizmo_fit_keeps_dragged_gizmo",
+      "status": "PASS",
+      "seconds": 0.002459601000055045,
+      "detail": "dragged gizmo kept, spares hidden then trimmed"
+    },
+    {
+      "name": "color_plane_gradient_line_perpendicular",
+      "status": "PASS",
+      "seconds": 0.23353117300007398,
+      "detail": "5 angles perpendicular on a 4.35x2.00 plane"
+    },
+    {
+      "name": "effect_panel_sections_and_hints",
+      "status": "PASS",
+      "seconds": 0.0004508100000748527,
+      "detail": "sections, hints and auto rows"
+    },
+    {
+      "name": "mesh_effect_modifier_sections",
+      "status": "PASS",
+      "seconds": 0.2660267850001219,
+      "detail": "sections and choices on the Crystal modifier"
+    },
+    {
+      "name": "icon_runtime_contract",
+      "status": "PASS",
+      "seconds": 0.004781341000125394,
+      "detail": {
+        "preloaded": 12,
+        "duplicate_alias_ids": [
+          0,
+          0,
+          0
+        ],
+        "alias_hits": 0,
+        "filesystem_checks": 13
+      }
+    },
+    {
+      "name": "icon_rebuild_skips_thumbnail_cache",
+      "status": "PASS",
+      "seconds": 0.002530783999873165,
+      "detail": "Scrub Bar icon rebuilt from the PNG"
+    },
+    {
+      "name": "layer_box_animated_orientation_guard",
+      "status": "PASS",
+      "seconds": 0.05803924300016661,
+      "detail": "keyed layers keep their box orientation; Reset honours locks"
+    },
+    {
+      "name": "save_reopen",
+      "status": "PASS",
+      "seconds": 0.2980847009998797,
+      "detail": "/home/user/Frame-By-Plane/frame_by_plane/tests/lts_test_report_background_artifacts_83a822b35c8b/work/fbp_8_5_0_regression.blend"
+    }
+  ],
+  "passed": false,
+  "in_progress": true,
+  "failed": 0,
+  "skipped": 0,
+  "workdir": "/home/user/Frame-By-Plane/frame_by_plane/tests/lts_test_report_background_artifacts_83a822b35c8b/work",
+  "exit_code": -6,
+  "timed_out": false,
+  "timeout_termination": "",
+  "command": [
+    "/opt/blender/blender-5.3.0-linux-x64/blender",
+    "--factory-startup",
+    "--background",
+    "--python",
+    "/home/user/Frame-By-Plane/frame_by_plane/tests/blender_lts_suite.py"
+  ],
+  "artifacts": "/home/user/Frame-By-Plane/frame_by_plane/tests/lts_test_report_background_artifacts_83a822b35c8b",
+  "stdout_log": "/home/user/Frame-By-Plane/frame_by_plane/tests/lts_test_report_background_artifacts_83a822b35c8b/stdout.log",
+  "stderr_log": "/home/user/Frame-By-Plane/frame_by_plane/tests/lts_test_report_background_artifacts_83a822b35c8b/stderr.log"
+}
