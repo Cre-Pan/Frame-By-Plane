@@ -135,29 +135,34 @@ FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS = 0.50
 # not in the first screen shown after an update.
 FBP_PUBLIC_RELEASE_ITEMS = (
     (
-        "Blender 5.2 and 5.3",
-        "One package for Blender 5.2 LTS and Blender 5.3.",
+        "Lattice Puppet Rig",
+        "Bend any drawing with Pins, Bones and Corner Pin.",
+        "PINNED",
+    ),
+    (
+        "New Transform Box",
+        "Move, scale and rotate layers around the anchor point.",
+        "PIVOT_BOUNDBOX",
+    ),
+    (
+        "Native Modifiers Panel",
+        "Every effect is a geo-node modifier you can edit.",
+        "MODIFIER",
+    ),
+    (
+        "New Effects",
+        "Frame Stack, Broken Glass, Riso Print, Knit & Crochet, Oil Paint...",
+        "SHADERFX",
+    ),
+    (
+        "Fewer Popups",
+        "Smoother Playback and Stability Improvements.",
+        "TIME",
+    ),
+    (
+        "Blender 5.2 LTS and 5.3",
+        "One package for both versions.",
         "BLENDER",
-    ),
-    (
-        "Wrapped Text",
-        "Panel text wraps to the panel width (Blender 5.3).",
-        "ALIGN_JUSTIFY",
-    ),
-    (
-        "Flip Canvas",
-        "Mirror the camera view from the bottom of the Z Pie (Blender 5.3).",
-        "MOD_MIRROR",
-    ),
-    (
-        "Node Notes",
-        "Readable notes in the generated node trees, as Markdown Comments on 5.3.",
-        "TEXT",
-    ),
-    (
-        "Bug Fixes",
-        "Copy to Selected in Modifiers and Extend after Crop.",
-        "GHOST_DISABLED",
     ),
 )
 

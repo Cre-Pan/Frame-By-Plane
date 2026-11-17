@@ -1,6 +1,6 @@
 # Installation
 
-Frame By Plane 8.3 requires **Blender 5.2.x LTS or Blender 5.3.x**: the same package installs on both. Earlier Blender versions are outside the supported runtime contract.
+Frame By Plane 8.5 requires **Blender 5.2.x LTS or Blender 5.3.x**: the same package installs on both. Earlier Blender versions are outside the supported runtime contract.
 
 ## Recommended installation
 

@@ -14,7 +14,7 @@ from .support_policy import (
 
 # Release metadata lives here so the add-on header, preferences and local
 # What's New UI cannot silently drift apart during incremental releases.
-FBP_VERSION = (8, 3, 0)
+FBP_VERSION = (8, 5, 0)
 FBP_VERSION_STRING = ".".join(str(part) for part in FBP_VERSION)
 
 # Final LTS runtime policy. Keep these values aligned with blender_manifest.toml.
@@ -205,6 +205,10 @@ FBP_ICONS = {
     'FONT_DATA': 'FONT_DATA',
     'BRUSH_DATA': 'BRUSH_DATA',
     'BLENDER': 'BLENDER',  # What's New: Blender version support.
+    'PINNED': 'PINNED',  # What's New: Lattice Puppet Rig.
+    'PIVOT_BOUNDBOX': 'PIVOT_BOUNDBOX',  # What's New: Transform Box.
+    'SHADERFX': 'SHADERFX',  # What's New: New Effects.
+    'TIME': 'TIME',  # What's New: Fewer Popups / Smoother Playback.
     'SPARKLES': 'LIGHT_SUN',  # Sparkle-style fallback available in Blender 5.2.
     'MOD_BOOLEAN': 'MOD_BOOLEAN',  # Crop tool icon.
     'NODE_TEXTURE': 'NODE_TEXTURE',  # Gradient / texture-node plane icon.  # Pending folder without files.

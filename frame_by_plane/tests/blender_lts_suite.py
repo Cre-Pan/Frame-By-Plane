@@ -263,11 +263,12 @@ def test_feedback_update_popup_contract(_module):
 
     titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     assert titles == (
-        "Blender 5.2 and 5.3",
-        "Wrapped Text",
-        "Flip Canvas",
-        "Node Notes",
-        "Bug Fixes",
+        "Lattice Puppet Rig",
+        "New Transform Box",
+        "Native Modifiers Panel",
+        "New Effects",
+        "Fewer Popups",
+        "Blender 5.2 LTS and 5.3",
     )
     assert all("7.1" not in item[1] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     # Fresh assets must be decoded once; reused assets still refresh on update.

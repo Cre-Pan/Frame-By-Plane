@@ -1,8 +1,8 @@
-# 🎞️ Frame By Plane — 8.3.0
+# 🎞️ Frame By Plane — 8.5.0
 
-Frame By Plane 8.3.0 installs on both **Blender 5.2 LTS** and **Blender 5.3**, and on 5.3 it uses what the new version adds: a Flip Canvas button in the Z Pie, Markdown notes in the node trees and panel text that wraps to the panel width. It also fixes Copy to Selected in the Modifiers panel and Extend after Crop. Everything from 8.2.1, 8.0.1 and 8.0.0 is listed below.
+Frame By Plane 8.5.0 installs on both **Blender 5.2 LTS** and **Blender 5.3**, and on 5.3 it uses what the new version adds: a Flip Canvas button in the Z Pie, Markdown notes in the node trees and panel text that wraps to the panel width. It also fixes Copy to Selected in the Modifiers panel and Extend after Crop. Everything from 8.2.1, 8.0.1 and 8.0.0 is listed below.
 
-## 🆕 New in 8.3.0
+## 🆕 New in 8.5.0
 
 - 🧭 **One package for Blender 5.2 LTS and 5.3.** The 5.3 features below turn on by themselves in Blender 5.3; in 5.2 everything else works as in 8.2.1.
 - ✂️ **Crop and Extend rig:** the same style as the layer transform box, with the original size as a dashed outline and dots and side bars that keep one size on screen at any distance. They appear when the cursor comes near.
@@ -11,7 +11,7 @@ Frame By Plane 8.3.0 installs on both **Blender 5.2 LTS** and **Blender 5.3**, a
 - 📏 **Panel text wraps to the panel:** Project Doctor, Performance Dashboard, What's New and the tutorial help use Blender's new multi-line labels.
 - 🖊️ **Scrub Bar** keyframe outlines keep their width with Vulkan, now Blender's default on Windows and Linux.
 
-### 🛠️ Fixes in 8.3.0
+### 🛠️ Fixes in 8.5.0
 
 - **Modifiers > Copy to Selected** now copies the real effect and its settings (Crop, Extend, image effects and mesh effects) instead of a modifier that disappeared right away. Layers that already have the effect take the source values.
 - **Extend after Crop** starts exactly at the crop edge: Repeat, Repeat Flipped and Transparent no longer show the pixels the crop removed.
