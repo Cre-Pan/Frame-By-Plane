@@ -16580,6 +16580,10 @@ def _fbp_material_base_alpha_source(material, image_node):
     try:
         color = tuple(material.get("fbp_color_value", (1.0, 1.0, 1.0, 1.0)))
         value = float(color[3]) if len(color) > 3 else 1.0
+        # Solid Color Planes carry the layer Opacity here: once this source
+        # feeds the Mix Factor / Principled Alpha, nothing else applies it.
+        if bool(material.get("fbp_color_material", False)):
+            value *= max(0.0, min(1.0, float(material.get("fbp_opacity", 1.0))))
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, IndexError):
         pass
     try:

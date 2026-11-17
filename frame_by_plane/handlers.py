@@ -1319,6 +1319,18 @@ def fbp_deferred_load_post_rebuild():
             exc,
         )
 
+    try:
+        # Keyframed Opacity on Color Planes saved by an earlier version.
+        from .materials import fbp_bind_animated_color_plane_opacity
+        for scene in tuple(getattr(bpy.data, "scenes", ()) or ()):
+            fbp_bind_animated_color_plane_opacity(scene)
+    except (ImportError,) + FBP_DATA_ERRORS as exc:
+        fbp_warn_once(
+            "color_plane_opacity_load_bind",
+            "Could not bind keyframed Color Plane opacity",
+            exc,
+        )
+
     fbp_subscribe_scene_msgbus()
     fbp_reload_custom_ui_icons_after_main_replacement()
     fbp_register_timer_once(fbp_deferred_scene_sync, 0.12)

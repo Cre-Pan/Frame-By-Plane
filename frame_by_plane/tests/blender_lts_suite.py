@@ -6600,6 +6600,84 @@ def test_color_plane_color_reaches_render_source(_module):
     return f"{len(checked)} colors reached the render source"
 
 
+def test_color_plane_opacity_static_and_keyframed(_module):
+    """Standing check: Color Plane Opacity works in renders, static and keyframed.
+
+    Covers Solid (Emission and Principled) and Gradient planes: a static 50%,
+    a colour change after it, keyframes set with the slider, keyframes added
+    without the slider (bound by the depsgraph observer) and keys removed.
+    """
+    from types import SimpleNamespace
+    _skip_unless_cycles_render()
+    procedural = importlib.import_module(f"{PACKAGE}.operator_procedural")
+    materials = importlib.import_module(f"{PACKAGE}.materials")
+    runtime = importlib.import_module(f"{PACKAGE}.runtime")
+    scene = bpy.context.scene
+    previous_color = tuple(scene.fbp_color_plane_color)
+    previous_frame = int(scene.frame_current)
+    previous_cursor = tuple(scene.cursor.location)
+    checked = []
+
+    def near(value, target, tolerance=0.2):
+        return abs(float(value) - float(target)) <= tolerance
+
+    try:
+        scene.cursor.location = (0.0, 0.0, 0.0)
+        for kind, emission in (("CUSTOM", True), ("CUSTOM", False), ("GRADIENT", True)):
+            scene.fbp_color_plane_color = (0.0, 0.0, 0.0, 1.0)
+            scene.frame_set(1)
+            rig = procedural.fbp_create_color_plane(bpy.context, kind)
+            rig.fbp_color_plane_emission = emission
+            label = f"{kind}/{'emission' if emission else 'principled'}"
+            with _cycles_center_renderer(f"FBP Opacity {kind} {int(emission)}", [rig, *rig.children_recursive]) as render_center:
+                scene.cycles.samples = 32
+                assert near(render_center()[3], 1.0, 0.05), (label, "opaque")
+                rig.fbp_opacity = 0.5
+                assert near(render_center()[3], 0.5), (label, "static 50%")
+                if kind == "CUSTOM":
+                    rig.fbp_color_plane_color = (0.2, 0.4, 0.9, 1.0)
+                    assert near(render_center()[3], 0.5), (label, "50% after colour change")
+                # Keyframes set with the slider.
+                scene.frame_set(1)
+                rig.fbp_opacity = 0.0
+                rig.keyframe_insert("fbp_opacity", frame=1)
+                scene.frame_set(11)
+                rig.fbp_opacity = 1.0
+                rig.keyframe_insert("fbp_opacity", frame=11)
+                for frame, target, tolerance in ((1, 0.0, 0.05), (6, 0.5, 0.2), (11, 1.0, 0.05)):
+                    scene.frame_set(frame)
+                    alpha = render_center()[3]
+                    assert near(alpha, target, tolerance), (label, frame, alpha)
+                    material = rig.fbp_plane_target.data.materials[0]
+                    assert near(material.diffuse_color[3], target, 0.05), (label, "Solid view", frame)
+                if kind == "CUSTOM":
+                    rig.fbp_color_plane_color = (0.9, 0.1, 0.1, 1.0)
+                    scene.frame_set(6)
+                    assert near(render_center()[3], 0.5), (label, "keyed after colour change")
+                # Keys removed: back to a static value.
+                rig.animation_data_clear()
+                rig.fbp_opacity = 1.0
+                scene.frame_set(1)
+                assert near(render_center()[3], 1.0, 0.05), (label, "after removing keys")
+                # Keys added without touching the slider (Dope Sheet, paste...).
+                runtime.fbp_set_rna_property_silent(rig, "fbp_opacity", 0.0)
+                rig.keyframe_insert("fbp_opacity", frame=1)
+                runtime.fbp_set_rna_property_silent(rig, "fbp_opacity", 1.0)
+                rig.keyframe_insert("fbp_opacity", frame=11)
+                assert materials.fbp_color_plane_opacity_depsgraph_update(
+                    scene, None, updates=(SimpleNamespace(id=rig),)
+                ), (label, "observer missed new keys")
+                materials._fbp_run_pending_opacity_bind()
+                scene.frame_set(6)
+                assert near(render_center()[3], 0.5), (label, "keys added without slider")
+            checked.append(label)
+    finally:
+        scene.fbp_color_plane_color = previous_color
+        scene.cursor.location = previous_cursor
+        scene.frame_set(previous_frame)
+    return ", ".join(checked)
+
+
 def test_effect_panel_sections_and_hints(_module):
     """Auto sections match whole words; heavy effects explain what helps."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -7117,6 +7195,7 @@ def run_background():
             ("gizmo_fit_keeps_dragged_gizmo", test_gizmo_fit_keeps_dragged_gizmo),
             ("color_plane_gradient_line_perpendicular", test_color_plane_gradient_line_perpendicular),
             ("color_plane_color_reaches_render_source", test_color_plane_color_reaches_render_source),
+            ("color_plane_opacity_static_and_keyframed", test_color_plane_opacity_static_and_keyframed),
             ("effect_panel_sections_and_hints", test_effect_panel_sections_and_hints),
             ("mesh_effect_modifier_sections", test_mesh_effect_modifier_sections),
             ("icon_runtime_contract", test_icon_runtime_contract),

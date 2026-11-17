@@ -384,7 +384,8 @@ def do_update_opacity(rig):
         return
     opacity = max(0.0, min(1.0, float(getattr(rig, "fbp_opacity", 1.0))))
     try:
-        plane.show_transparent = opacity < 1.0
+        animated = bool(getattr(rig, "fbp_is_color_plane", False)) and fbp_rig_opacity_is_animated(rig)
+        plane.show_transparent = animated or opacity < 1.0
     except FBP_DATA_IO_ERRORS:
         pass
 
@@ -395,7 +396,7 @@ def do_update_opacity(rig):
         if is_procedural and getattr(mat, "node_tree", None):
             # The procedural updater already writes metadata and render settings.
             # Avoid configuring the same material twice for every slider event.
-            update_fbp_procedural_material_opacity(mat, opacity)
+            update_fbp_procedural_material_opacity(mat, opacity, rig=rig)
             continue
         try:
             if abs(float(mat.get("fbp_opacity", 1.0)) - opacity) > 1e-6:
@@ -820,9 +821,13 @@ def fbp_sync_procedural_color_sources(mat, color):
     alpha = tree.nodes.get("FBP_Procedural_Alpha_Source")
     if alpha is not None and getattr(alpha, "type", "") == "VALUE":
         try:
+            opacity = max(0.0, min(1.0, float(mat.get("fbp_opacity", 1.0))))
+        except FBP_DATA_ERRORS:
+            opacity = 1.0
+        try:
             socket = alpha.outputs[0]
-            if abs(float(socket.default_value) - color[3]) > 1.0e-6:
-                socket.default_value = color[3]
+            if abs(float(socket.default_value) - color[3] * opacity) > 1.0e-6:
+                socket.default_value = color[3] * opacity
                 changed = True
         except FBP_DATA_IO_ERRORS:
             pass
@@ -1043,6 +1048,11 @@ def fbp_rebuild_color_plane_material(rig):
             )
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
             fbp_warn("Could not restore effects after rebuilding procedural material", exc)
+    # A colour or mode change rebuilds the material from the colour alone;
+    # put the layer Opacity (and its keyframes) back on it.
+    opacity = max(0.0, min(1.0, float(getattr(rig, 'fbp_opacity', 1.0))))
+    if opacity < 0.999 or fbp_rig_opacity_is_animated(rig):
+        update_fbp_procedural_material_opacity(mat, opacity, rig=rig)
     return True
 
 
@@ -1367,11 +1377,267 @@ def fbp_active_surface_chain(mat):
     return out, shader, mix, transparent
 
 
-def update_fbp_procedural_material_opacity(mat, opacity=1.0):
-    """Apply the layer opacity slider to solid/gradient procedural materials."""
+def fbp_rig_opacity_is_animated(rig):
+    """Return True when the layer Opacity has keyframes or a driver."""
+    if rig is None:
+        return False
+    try:
+        if fbp_find_action_fcurve(rig, "fbp_opacity") is not None:
+            return True
+        anim = getattr(rig, "animation_data", None)
+        drivers = getattr(anim, "drivers", None) if anim is not None else None
+        return bool(drivers is not None and drivers.find("fbp_opacity") is not None)
+    except FBP_DATA_ERRORS:
+        return False
+
+
+_FBP_OPACITY_DRIVEN_KEY = "fbp_opacity_driven_paths"
+
+
+def _fbp_clear_procedural_opacity_drivers(mat):
+    """Remove the Opacity drivers this module added to a procedural material."""
+    paths = []
+    try:
+        paths = [str(path) for path in tuple(mat.get(_FBP_OPACITY_DRIVEN_KEY, ()) or ())]
+    except FBP_DATA_ERRORS:
+        paths = []
+    if not paths:
+        return False
+    for entry in paths:
+        owner_kind, _sep, rest = entry.partition(":")
+        path, _sep, index = rest.rpartition("|")
+        owner = mat.node_tree if owner_kind == "TREE" else mat
+        try:
+            if owner is not None:
+                owner.driver_remove(path, int(index))
+        except (*FBP_DATA_ERRORS, KeyError, IndexError):
+            pass
+    try:
+        del mat[_FBP_OPACITY_DRIVEN_KEY]
+    except (KeyError, *FBP_DATA_ERRORS):
+        pass
+    return True
+
+
+def _fbp_add_opacity_driver(owner, data_path, index, rig, base):
+    """Drive one value with ``base * rig.fbp_opacity`` (simple expression).
+
+    Simple expressions are evaluated without Python, so the driver also works
+    when the file is opened with Auto Run Python Scripts disabled.
+    """
+    try:
+        curve = owner.driver_add(data_path, index)
+    except (*FBP_DATA_ERRORS, KeyError, IndexError):
+        return False
+    try:
+        for modifier in list(curve.modifiers):
+            curve.modifiers.remove(modifier)
+        driver = curve.driver
+        driver.type = "SCRIPTED"
+        base = max(0.0, min(1.0, float(base)))
+        driver.expression = "opacity" if base >= 0.999999 else f"opacity * {base:.6g}"
+        while driver.variables:
+            driver.variables.remove(driver.variables[0])
+        variable = driver.variables.new()
+        variable.name = "opacity"
+        variable.type = "SINGLE_PROP"
+        target = variable.targets[0]
+        target.id_type = "OBJECT"
+        target.id = rig
+        target.data_path = "fbp_opacity"
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def fbp_bind_procedural_opacity_drivers(mat, rig, intrinsic_alpha=1.0):
+    """Let keyframed layer Opacity reach a Color/Gradient plane material.
+
+    Property update callbacks never run during playback or rendering, so the
+    values the Opacity slider writes stay frozen when Opacity is animated.
+    Drivers on those values follow the animated property everywhere: viewport
+    playback, Material Preview, Solid shading and final renders.
+    """
+    tree = getattr(mat, "node_tree", None) if mat else None
+    if tree is None or rig is None:
+        return False
+    _fbp_clear_procedural_opacity_drivers(mat)
+    driven = []
+
+    def drive(owner_kind, socket_or_owner, path, index, base):
+        owner = tree if owner_kind == "TREE" else mat
+        try:
+            full_path = socket_or_owner.path_from_id(path) if owner_kind == "TREE" else path
+        except FBP_DATA_ERRORS:
+            return
+        if _fbp_add_opacity_driver(owner, full_path, index, rig, base):
+            driven.append(f"{owner_kind}:{full_path}|{index}")
+
+    drive("MAT", mat, "diffuse_color", 3, intrinsic_alpha)
+    if bool(mat.get('fbp_gradient_material', False)):
+        opacity_node = next(
+            (
+                node for node in tree.nodes
+                if getattr(node, 'type', '') == 'MATH'
+                and bool(node.get('fbp_internal_opacity_node', False))
+            ),
+            None,
+        )
+        if opacity_node is not None:
+            drive("TREE", opacity_node.inputs[1], "default_value", -1, 1.0)
+    else:
+        _out, shader, mix, _transparent = fbp_active_surface_chain(mat)
+        if mix is not None and not mix.inputs[0].is_linked:
+            drive("TREE", mix.inputs[0], "default_value", -1, intrinsic_alpha)
+        alpha_sock = safe_get_socket(shader, ['alpha']) if shader is not None else None
+        if alpha_sock is not None and not alpha_sock.is_linked:
+            drive("TREE", alpha_sock, "default_value", -1, intrinsic_alpha)
+        alpha_source = tree.nodes.get("FBP_Procedural_Alpha_Source")
+        if alpha_source is not None and getattr(alpha_source, "type", "") == "VALUE" and alpha_source.outputs[0].is_linked:
+            # An effect chain reads alpha from here instead of the Mix factor.
+            drive("TREE", alpha_source.outputs[0], "default_value", -1, intrinsic_alpha)
+    if driven:
+        try:
+            mat[_FBP_OPACITY_DRIVEN_KEY] = driven
+        except FBP_DATA_ERRORS:
+            pass
+    return bool(driven)
+
+
+_FBP_PENDING_OPACITY_BIND = set()
+
+
+def _fbp_color_plane_opacity_binding_stale(rig):
+    """True when keyframed Opacity and the material drivers disagree."""
+    plane = getattr(rig, "fbp_plane_target", None)
+    if plane is None or getattr(plane, "data", None) is None:
+        return False
+    animated = fbp_rig_opacity_is_animated(rig)
+    for mat in tuple(getattr(plane.data, "materials", ()) or ()):
+        if mat is None or bool(mat.get("fbp_holdout_material", False)):
+            continue
+        try:
+            driven = bool(tuple(mat.get(_FBP_OPACITY_DRIVEN_KEY, ()) or ()))
+        except FBP_DATA_ERRORS:
+            driven = False
+        if driven != animated:
+            return True
+    return False
+
+
+def _fbp_run_pending_opacity_bind():
+    names = tuple(_FBP_PENDING_OPACITY_BIND)
+    _FBP_PENDING_OPACITY_BIND.clear()
+    for name in names:
+        rig = bpy.data.objects.get(name)
+        if rig is None or not bool(getattr(rig, "fbp_is_color_plane", False)):
+            continue
+        try:
+            if _fbp_color_plane_opacity_binding_stale(rig):
+                do_update_opacity(rig)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not bind animated Color Plane opacity", exc)
+    return None
+
+
+def fbp_bind_animated_color_plane_opacity(scene=None):
+    """Bind or release Opacity drivers on every Color Plane in ``scene``.
+
+    Runs after a file is opened, so keyframes saved by an older version (or
+    added without touching the slider) also play back.
+    """
+    scene = scene or getattr(bpy.context, "scene", None)
+    count = 0
+    for obj in tuple(getattr(scene, "objects", ()) or ()):
+        try:
+            if not bool(getattr(obj, "fbp_is_color_plane", False)) or not bool(getattr(obj, "is_fbp_control", False)):
+                continue
+            if _fbp_color_plane_opacity_binding_stale(obj):
+                do_update_opacity(obj)
+                count += 1
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not bind animated Color Plane opacity", exc)
+    return count
+
+
+def fbp_color_plane_opacity_depsgraph_update(_scene, _depsgraph, updates=()):
+    """Notice keyframes added to or removed from a Color Plane's Opacity.
+
+    Only reads here; the material is changed later from a safe task. Inserting
+    or deleting a key in the Timeline, Dope Sheet or Graph Editor never runs
+    the Opacity update callback, so this is what binds the drivers then.
+    """
+    rigs = []
+    actions = []
+    for update in tuple(updates or ()):
+        datablock = getattr(update, "id", None)
+        original = getattr(datablock, "original", datablock)
+        if isinstance(original, bpy.types.Object):
+            if bool(getattr(original, "fbp_is_color_plane", False)) and bool(getattr(original, "is_fbp_control", False)):
+                rigs.append(original)
+        elif isinstance(original, bpy.types.Action):
+            actions.append(original)
+    if actions:
+        scene = getattr(bpy.context, "scene", None)
+        for obj in tuple(getattr(scene, "objects", ()) or ()):
+            try:
+                if not bool(getattr(obj, "fbp_is_color_plane", False)) or not bool(getattr(obj, "is_fbp_control", False)):
+                    continue
+                anim = getattr(obj, "animation_data", None)
+                if anim is not None and getattr(anim, "action", None) in actions:
+                    rigs.append(obj)
+            except FBP_DATA_ERRORS:
+                continue
+    found = False
+    for rig in rigs:
+        try:
+            if _fbp_color_plane_opacity_binding_stale(rig):
+                _FBP_PENDING_OPACITY_BIND.add(rig.name)
+                found = True
+        except FBP_DATA_ERRORS:
+            continue
+    if found:
+        try:
+            _safe_tasks.schedule_once(
+                "materials.color_plane_opacity_bind",
+                _fbp_run_pending_opacity_bind,
+                first_interval=0.0,
+            )
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not schedule the Color Plane opacity binding", exc)
+    return found
+
+
+def update_fbp_procedural_material_opacity(mat, opacity=1.0, rig=None, animated=None):
+    """Apply the layer opacity slider to solid/gradient procedural materials.
+
+    With ``rig`` given and its Opacity keyframed, the alpha branch is kept even
+    at 100% and its values are driven by the rig, so animation plays back.
+    """
     if not mat or not getattr(mat, 'node_tree', None):
         return False
     opacity = max(0.0, min(1.0, float(opacity)))
+    if animated is None:
+        animated = fbp_rig_opacity_is_animated(rig)
+    animated = bool(animated and rig is not None)
+    result = _fbp_update_procedural_material_opacity(mat, opacity, keep_alpha_branch=animated)
+    if animated and not bool(mat.get('fbp_holdout_material', False)):
+        try:
+            intrinsic = float(mat.get("fbp_base_alpha", 1.0))
+        except FBP_DATA_ERRORS:
+            intrinsic = 1.0
+        if bool(mat.get('fbp_gradient_material', False)):
+            intrinsic = 1.0
+        fbp_bind_procedural_opacity_drivers(mat, rig, intrinsic)
+    else:
+        _fbp_clear_procedural_opacity_drivers(mat)
+    return result
+
+
+def _fbp_update_procedural_material_opacity(mat, opacity=1.0, keep_alpha_branch=False):
+    """Write static opacity values into a procedural material."""
+    if not mat or not getattr(mat, 'node_tree', None):
+        return False
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     intrinsic_alpha = 1.0
@@ -1421,7 +1687,7 @@ def update_fbp_procedural_material_opacity(mat, opacity=1.0):
             ),
             None,
         )
-        if opacity < 0.999:
+        if opacity < 0.999 or keep_alpha_branch:
             if not opacity_node or opacity_node.type != 'MATH':
                 if opacity_node:
                     try:
@@ -1487,8 +1753,17 @@ def update_fbp_procedural_material_opacity(mat, opacity=1.0):
                     alpha_sock.default_value = effective_alpha
                 except FBP_DATA_IO_ERRORS:
                     pass
+        # Once an effect chain has run, Mix Factor / Principled Alpha are
+        # linked from this source and their own values are ignored.
+        alpha_source = nodes.get("FBP_Procedural_Alpha_Source")
+        if alpha_source is not None and getattr(alpha_source, "type", "") == "VALUE":
+            try:
+                if abs(float(alpha_source.outputs[0].default_value) - effective_alpha) > 1.0e-6:
+                    alpha_source.outputs[0].default_value = effective_alpha
+            except FBP_DATA_IO_ERRORS:
+                pass
         if getattr(shader, 'type', '') == 'EMISSION' and out:
-            if effective_alpha < 0.999:
+            if effective_alpha < 0.999 or keep_alpha_branch:
                 if transparent is None:
                     transparent = nodes.new(type='ShaderNodeBsdfTransparent')
                     transparent.name = 'FBP_Transparent'
@@ -1563,14 +1838,14 @@ def fbp_rebuild_procedural_material_for_emission(mat, rig, use_emission):
         except FBP_DATA_IO_ERRORS:
             pass
         apply_fbp_gradient_mapping_to_material(rig, new_mat)
-        update_fbp_procedural_material_opacity(new_mat, opacity)
+        update_fbp_procedural_material_opacity(new_mat, opacity, rig=rig)
         return new_mat
     if bool(mat.get('fbp_color_material', False)):
         color = tuple(fbp_material_color_value(mat, (1.0, 1.0, 1.0, 1.0)))
         new_mat = create_fbp_color_material(
             mat.name, color, bool(use_emission), False
         )
-        update_fbp_procedural_material_opacity(new_mat, opacity)
+        update_fbp_procedural_material_opacity(new_mat, opacity, rig=rig)
         return new_mat
     return mat
 

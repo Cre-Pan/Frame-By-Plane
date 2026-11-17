@@ -2433,6 +2433,7 @@ def _fbp_shared_depsgraph_observers():
         from . import effect_controls
         from . import grease_pencil_bridge
         from . import grease_pencil_workflow
+        from . import materials
         from . import motion_runtime
 
         _FBP_SHARED_DEPSGRAPH_OBSERVERS = (
@@ -2462,6 +2463,13 @@ def _fbp_shared_depsgraph_observers():
                 "scene_sync.depsgraph_observer.effect_controls",
                 effect_controls.effect_controls_depsgraph_update,
                 _FBP_DG_OBJECT | _FBP_DG_MESH | _FBP_DG_LATTICE | _FBP_DG_CAMERA,
+                False,
+            ),
+            (
+                "Color Plane opacity keyframes",
+                "scene_sync.depsgraph_observer.color_plane_opacity",
+                materials.fbp_color_plane_opacity_depsgraph_update,
+                _FBP_DG_OBJECT | _FBP_DG_OTHER,
                 False,
             ),
             (
