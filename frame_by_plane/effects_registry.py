@@ -952,21 +952,21 @@ FBP_EFFECT_REGISTRY = {
         "source_names": (), "canonical_name": "FBP_GN_Frame_Stack_800",
         "modifier_name": "FBP • Frame Stack", "asset_id": "frame_by_plane.frame_stack.800",
         "enabled_key": "fbp_effect_frame_stack", "builtin": True,
-        # The tagged Image Texture receives the plane's sequence or movie; the
-        # runtime writes the playback position and, for sequences, a timing
-        # table so slices follow the layer's order, holds and loops. Both
-        # images live in the group, so every layer needs its own copy.
+        # The tagged Image Texture receives the plane's movie; for sequences
+        # the runtime fills a frame atlas (in the layer's Frame Stack
+        # material) and a timing table (in the group) so slices follow the
+        # layer's order, holds and loops. The table lives in the group, so
+        # every layer needs its own copy.
         "image_aware": True, "private_group": True,
         "supports": ("SEQUENCE", "VIDEO"),
         "required_input_sockets": (
-            "Geometry", "Slices", "Frame Step", "Source Frame", "Fixed Start", "Start Frame",
-            "Detail", "Offset X", "Offset Y", "Spacing", "Scale Step", "Rotation X",
-            "Rotation Y", "Twist", "Front Slices", "Front Opacity", "Back Opacity",
-            "Depth Fade", "Luminance Opacity", "Show Plane", "Outline", "Outline Width",
-            "Outline Color", "Glow", "Stack Material", "Stack Position", "Cycle Length",
-            "Loop", "Frame Base", "Use Timing Table", "Table Rows",
-            "Use Stack Image", "Stack Columns", "Stack Rows", "Stack Cells",
-            "Cell Width", "Cell Height",
+            "Geometry", "Slices", "Frame Step", "Fixed Start", "Start Frame", "Show Plane",
+            "Spacing", "Offset X", "Offset Y", "Scale Step", "Rotation X", "Rotation Y",
+            "Twist", "Glow", "Front Slices", "Front Opacity", "Back Opacity", "Depth Fade",
+            "Luminance Opacity", "Outline", "Outline Width", "Outline Color", "Detail",
+            "Stack Material", "Source Frame", "Stack Position", "Start Position",
+            "Cycle Length", "Loop", "Use Atlas", "Atlas Columns", "Atlas Rows",
+            "Atlas Width", "Atlas Height", "Cell Width", "Cell Height", "Table Rows",
         ),
         "property_map": {
             "fbp_frame_stack_slices": "Slices",
@@ -2503,7 +2503,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_SCULPT_WAVES: ("3D", "MEDIUM", "Sculpt an aspect-balanced triangular grid with radial, moiré or spiral fields. Remesh level controls most of the cost."),
     FBP_EFFECT_KINETIC_TILES: ("3D", "MEDIUM", "Split an aspect-balanced grid into near-square individually extruded tiles. Remesh level controls tile count and evaluation cost."),
     FBP_EFFECT_KNIT_CROCHET: ("3D", "MEDIUM", "Instance one shared stitch mesh per column and row. Columns sets the stitch count; render columns can be raised independently."),
-    FBP_EFFECT_FRAME_STACK: ("3D", "MEDIUM", "Image sequences read one small cached thumbnail per slice and build every slice at once; videos sample one earlier frame per slice. Slices times Detail sets the cost."),
+    FBP_EFFECT_FRAME_STACK: ("3D", "MEDIUM", "Image sequences: each slice is a copy of the plane reading a reduced drawing from a per-layer atlas, filled once in the background; Detail sets the drawing size. Videos sample one earlier frame per slice on a grid of Detail."),
     FBP_EFFECT_LAYERED_ECHO: ("3D", "LIGHT", "Array the textured plane with per-axis offset, rotation, scale, twist and animated wave controls. Layer count is the main cost."),
     FBP_EFFECT_LATTICE: ("3D", "LIGHT", "Deform the linked plane through a planar control grid with one selectable point per intersection, or bake its 3D perspective into a camera-parallel surface while preserving the same camera appearance."),
 }

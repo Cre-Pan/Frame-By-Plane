@@ -188,11 +188,14 @@ def fbp_native_hide_inputs(rig):
             continue
         group = getattr(modifier, "node_group", None)
         try:
+            # Inputs the effect's runtime writes (Frame Stack) stay hidden.
+            kept_hidden = set(group.get("fbp_hidden_inputs", ()) or ()) if group is not None else set()
             for item in (group.interface.items_tree if group is not None else ()):
                 if (
                     getattr(item, "item_type", "") == "SOCKET"
                     and getattr(item, "in_out", "") == "INPUT"
                     and bool(getattr(item, "hide_in_modifier", False))
+                    and str(getattr(item, "name", "") or "") not in kept_hidden
                 ):
                     item.hide_in_modifier = False
                     changed = True

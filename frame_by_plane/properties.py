@@ -5410,13 +5410,13 @@ def register_properties():
         name="Render", description="Number of frame slices evaluated for final rendering",
         default=24, min=1, soft_max=128, max=512, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_detail = IntProperty(
-        name="Viewport", description="Grid detail of every earlier slice while editing. Each level doubles the grid on both sides",
+        name="Viewport", description="Size of the earlier drawings while editing: 256 px on the long side at 5, each level doubles it. Videos use it as the sampling grid",
         default=5, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_playback_detail = IntProperty(
-        name="Playback", description="Maximum slice grid detail during timeline playback",
+        name="Playback", description="Maximum size of the earlier drawings during timeline playback",
         default=4, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_render_detail = IntProperty(
-        name="Render", description="Slice grid detail for final rendering. The plane itself always keeps full resolution",
+        name="Render", description="Size of the earlier drawings for final rendering: 1024 px on the long side at 7. The plane itself always keeps full resolution",
         default=7, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_step = IntProperty(
         name="Frame Step", description="Playback frames between two slices: drawings of an image sequence in its timing order, frames of a video. Negative values stack upcoming frames instead of earlier ones",
