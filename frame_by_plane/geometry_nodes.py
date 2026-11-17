@@ -9899,6 +9899,18 @@ def _fbp_procedural_color_source(material, *, create=False):
 
     source = nodes.get("FBP_Procedural_Color_Source")
     if source and getattr(source, "type", "") == "RGB":
+        # Files saved before the color sync fix can hold a stale source color:
+        # the solid material's stored color is the one the user picked.
+        try:
+            if bool(material.get("fbp_color_material", False)) and not bool(material.get("fbp_holdout_material", False)):
+                stored = tuple(float(v) for v in tuple(material.get("fbp_color_value", ()))[:4])
+                if len(stored) == 4 and any(
+                    abs(float(a) - b) > 1.0e-6
+                    for a, b in zip(tuple(source.outputs[0].default_value), stored, strict=True)
+                ):
+                    source.outputs[0].default_value = stored
+        except (*FBP_DATA_ERRORS, TypeError, ValueError):
+            pass
         return _fbp_node_socket(source.outputs, "Color", 0)
     if not create:
         return None

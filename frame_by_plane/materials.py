@@ -786,8 +786,47 @@ def create_fbp_color_material(name, color=(1.0, 1.0, 1.0, 1.0), use_emission=Tru
                 except FBP_DATA_IO_ERRORS:
                     pass
 
+    if not holdout:
+        fbp_sync_procedural_color_sources(mat, color)
     configure_fbp_material_surface(mat, color[3], has_alpha=color[3] < 0.999)
     return mat
+
+
+def fbp_sync_procedural_color_sources(mat, color):
+    """Push a solid color into the effect-pipeline source nodes, if present.
+
+    Once an effect pipeline has run on a Color Plane, the shader color input is
+    linked from ``FBP_Procedural_Color_Source`` (and alpha from
+    ``FBP_Procedural_Alpha_Source``). The shader's own default value is then
+    ignored by renders, so a new color must be written to those sources too,
+    otherwise the render keeps the color the plane had when they were created.
+    """
+    tree = getattr(mat, "node_tree", None) if mat else None
+    if tree is None:
+        return False
+    changed = False
+    color = tuple(float(value) for value in tuple(color)[:4])
+    if len(color) < 4:
+        color = color + (1.0,) * (4 - len(color))
+    source = tree.nodes.get("FBP_Procedural_Color_Source")
+    if source is not None and getattr(source, "type", "") == "RGB":
+        try:
+            socket = source.outputs[0]
+            if any(abs(float(a) - float(b)) > 1.0e-6 for a, b in zip(tuple(socket.default_value), color, strict=True)):
+                socket.default_value = color
+                changed = True
+        except FBP_DATA_IO_ERRORS:
+            pass
+    alpha = tree.nodes.get("FBP_Procedural_Alpha_Source")
+    if alpha is not None and getattr(alpha, "type", "") == "VALUE":
+        try:
+            socket = alpha.outputs[0]
+            if abs(float(socket.default_value) - color[3]) > 1.0e-6:
+                socket.default_value = color[3]
+                changed = True
+        except FBP_DATA_IO_ERRORS:
+            pass
+    return changed
 
 
 def create_fbp_gradient_material(name, mode='LINEAR', kind='COLOR', color_a=(1.0, 0.3686274509803922, 0.596078431372549, 1.0), color_b=(0.058823529411764705, 0.12941176470588237, 0.24313725490196078, 1.0), reverse=False, use_emission=True):

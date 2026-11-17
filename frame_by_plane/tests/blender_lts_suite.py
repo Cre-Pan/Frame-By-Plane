@@ -6555,6 +6555,51 @@ def test_color_plane_gradient_line_perpendicular(_module):
     return f"{checked} angles perpendicular on a {ex.length:.2f}x{ey.length:.2f} plane"
 
 
+def test_color_plane_color_reaches_render_source(_module):
+    """Changing a Color Plane's color updates the linked source the render uses.
+
+    The effect pipeline links ``FBP_Procedural_Color_Source`` into the shader,
+    so a white plane recoloured black used to keep rendering white.
+    """
+    procedural = importlib.import_module(f"{PACKAGE}.operator_procedural")
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scene = bpy.context.scene
+    previous = tuple(scene.fbp_color_plane_color)
+    scene.fbp_color_plane_color = (1.0, 1.0, 1.0, 1.0)
+    rig = procedural.fbp_create_color_plane(bpy.context, "CUSTOM")
+    owned = [rig, *rig.children_recursive]
+    try:
+        checked = []
+        for emission in (True, False):
+            rig.fbp_color_plane_emission = emission
+            for color in ((0.0, 0.0, 0.0, 1.0), (0.8, 0.1, 0.2, 1.0), (0.0, 0.0, 0.0, 0.5)):
+                rig.fbp_color_plane_color = color
+                mat = rig.fbp_plane_target.data.materials[0]
+                source = mat.node_tree.nodes.get("FBP_Procedural_Color_Source")
+                assert source is not None, "effect color source missing"
+                got = tuple(source.outputs[0].default_value)
+                assert all(abs(a - b) < 1.0e-5 for a, b in zip(got, color, strict=True)), (emission, color, got)
+                alpha = mat.node_tree.nodes.get("FBP_Procedural_Alpha_Source")
+                if alpha is not None:
+                    assert abs(alpha.outputs[0].default_value - color[3]) < 1.0e-5, (emission, color)
+                checked.append(color)
+        # A file saved with a stale source heals when the effect chain resolves it.
+        rig.fbp_color_plane_color = (0.0, 0.0, 0.0, 1.0)
+        mat = rig.fbp_plane_target.data.materials[0]
+        source = mat.node_tree.nodes["FBP_Procedural_Color_Source"]
+        source.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
+        geo._fbp_procedural_color_source(mat)
+        assert tuple(source.outputs[0].default_value)[:3] == (0.0, 0.0, 0.0)
+    finally:
+        scene.fbp_color_plane_color = previous
+        for obj in owned:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return f"{len(checked)} colors reached the render source"
+
+
 def test_effect_panel_sections_and_hints(_module):
     """Auto sections match whole words; heavy effects explain what helps."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -7071,6 +7116,7 @@ def run_background():
             ("performance_profile_contract", test_performance_profile_contract),
             ("gizmo_fit_keeps_dragged_gizmo", test_gizmo_fit_keeps_dragged_gizmo),
             ("color_plane_gradient_line_perpendicular", test_color_plane_gradient_line_perpendicular),
+            ("color_plane_color_reaches_render_source", test_color_plane_color_reaches_render_source),
             ("effect_panel_sections_and_hints", test_effect_panel_sections_and_hints),
             ("mesh_effect_modifier_sections", test_mesh_effect_modifier_sections),
             ("icon_runtime_contract", test_icon_runtime_contract),

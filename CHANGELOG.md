@@ -29,6 +29,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- **Color Plane colour in renders**: after a Color Plane's colour was changed (for example from white to black), renders kept the old colour while the viewport showed the new one. The colour now reaches the node the render reads, In a file saved with the old colour, pick the colour again once (or add or change an effect on the layer) to fix it.
 - **Frame Stack** can be edited from Properties > Modifiers again. Its panel showed about fifteen internal inputs (Stack Position, Cycle Length, the timing table...), many greyed out, and Slices, Frame Step, Fixed Start, Start Frame and Detail changed there only took effect at the next frame change. The internal inputs are hidden now and every input applies at once.
 - **Modifiers > Copy to Selected** copied only a bare modifier, which the effect stack removed right away. The copy is now turned into the real effect with the source layer's settings; layers that already have the effect take the source values.
 - **Extend after Crop**: with a crop, Repeat, Repeat Flipped and Transparent extensions showed the pixels the crop had removed. Extension tiles now start at the crop edge and sample only the cropped image.
