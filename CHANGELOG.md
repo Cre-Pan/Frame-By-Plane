@@ -2,14 +2,14 @@
 
 All notable public changes to Frame By Plane are documented here.
 
-## [8.5.0] - Unreleased
+## [8.5.1] - Unreleased
 
-8.5.0 LTS is the public release after 8.0.1. It collects the work prepared as 8.2.1 and 8.3.0 (below) with a new release splash.
+8.5.1 LTS is the public release after 8.0.1. It collects the work prepared as 8.2.1 and 8.3.0 (below) with a new release splash.
 
 ### Release
 
 - New **8.5 LTS** release splash and What's New: Lattice Puppet Rig, Transform Box, native Modifiers panel, new effects, fewer popups and smoother playback.
-- Version 8.5.0 in the manifest, runtime contract, packaging and publishing tools.
+- Version 8.5.1 in the manifest, runtime contract, packaging and publishing tools, and in the small version label of the splash (the large "8.5 LTS" title is unchanged).
 
 ### Blender 5.2 LTS and 5.3
 

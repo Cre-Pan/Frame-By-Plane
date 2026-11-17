@@ -100,14 +100,14 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 
 ---
 
-## Prepared update: 8.5.0
+## Prepared update: 8.5.1
 
 - **One package for Blender 5.2 LTS and Blender 5.3.**
 - **Flip Canvas** at the bottom of the Z Pie when you look through the camera (Blender 5.3).
 - Markdown **Comment** notes in the generated node trees, and panel text that wraps to the panel width.
 - Fixes for **Modifiers > Copy to Selected** and **Extend after Crop**.
 
-See the [8.5.0 release notes](release-notes/8.5.0.md). It also includes everything from 8.2.1:
+See the [8.5.1 release notes](release-notes/8.5.1.md). It also includes everything from 8.2.1:
 
 ### 8.2.1
 
@@ -164,11 +164,11 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.5.0-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.5.0-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.5.0-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.5.0-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.5.0-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-8.5.1-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-8.5.1-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-8.5.1-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-8.5.1-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-8.5.1-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
