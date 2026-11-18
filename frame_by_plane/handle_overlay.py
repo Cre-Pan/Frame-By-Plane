@@ -170,12 +170,38 @@ def _lattice_guides(context):
 # Lattice handles are pose bones with custom shapes, which Blender draws. The
 # overlay only adds the hover state the other handles have: the shape under
 # the cursor is drawn again on top in the hover colour.
+#
+# The shapes lie flat on the drawing, so a layer seen edge-on (a front-facing
+# layer in Top or Side view) squashes them into one line where no handle can
+# be told apart or clicked. There the overlay draws every handle again facing
+# the view, around its own point, and picks it where it is drawn; the Pose
+# Mode gizmo (pose_handles) then selects and drags it.
 
 LATTICE_HOVER_PREFIX = "BONE:"
 
 
-def _lattice_shape_triangles(armature, pose_bone):
-    """World triangles of one Lattice handle's custom shape, as Blender draws it."""
+def lattice_edge_on(armature, region_data):
+    """Whether the drawing plane of a Controls armature is seen edge-on."""
+    if region_data is None:
+        return False
+    try:
+        from .common import GRAZING_COSINE, view_direction_at
+        world = armature.matrix_world
+        normal = world.col[2].xyz
+        if normal.length <= 1.0e-12:
+            return False
+        direction = view_direction_at(region_data, world.translation)
+        return abs(normal.normalized().dot(direction)) < GRAZING_COSINE
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+
+
+def _lattice_shape_triangles(armature, pose_bone, region_data=None):
+    """World triangles of one Lattice handle's custom shape, as Blender draws it.
+
+    With ``region_data`` of a view that sees the drawing edge-on, the shape is
+    turned to face that view around the handle's point, as the overlay draws it.
+    """
     shape = pose_bone.custom_shape
     mesh = getattr(shape, "data", None)
     if mesh is None or not mesh.polygons:
@@ -193,6 +219,12 @@ def _lattice_shape_triangles(armature, pose_bone):
     )
     mesh.calc_loop_triangles()
     vertices = [matrix @ vertex.co for vertex in mesh.vertices]
+    if region_data is not None and lattice_edge_on(armature, region_data):
+        bone_world = armature.matrix_world @ pose_bone.matrix
+        turn = _facing_turn(bone_world, region_data)
+        if turn is not None:
+            anchor = bone_world.translation.copy()
+            vertices = [anchor + turn @ (vertex - anchor) for vertex in vertices]
     return [vertices[index] for tri in mesh.loop_triangles for index in tri.vertices]
 
 
@@ -213,9 +245,13 @@ def _visible_lattice_handles(context):
             continue
 
 
-def lattice_handle_under_cursor(context, coord, radius):
+def lattice_handle_under_cursor(context, coord, radius, *, edge_on_only=False, posed_only=False):
     """Hover key (``LATTICE_HOVER_PREFIX`` + armature and bone) of the Lattice
-    handle under ``coord``, or ""."""
+    handle under ``coord``, or "".
+
+    ``edge_on_only`` keeps only handles of layers seen edge-on, ``posed_only``
+    only handles of armatures in Pose Mode.
+    """
     try:
         from .alpha_pick import _screen_distance_to_triangle_sq
     except ImportError:
@@ -224,19 +260,41 @@ def lattice_handle_under_cursor(context, coord, radius):
     point = (float(coord[0]), float(coord[1]))
     limit = float(radius) * float(radius)
     best = None
+    edge_on = {}
     for armature, pose_bone in _visible_lattice_handles(context):
         try:
-            triangles = _lattice_shape_triangles(armature, pose_bone)
+            if posed_only and str(armature.mode) != "POSE":
+                continue
+            if armature.name not in edge_on:
+                edge_on[armature.name] = lattice_edge_on(armature, view)
+            if edge_on_only and not edge_on[armature.name]:
+                continue
+            triangles = _lattice_shape_triangles(armature, pose_bone, view)
+            head = (
+                location_3d_to_region_2d(region, view, armature.matrix_world @ pose_bone.head)
+                if edge_on[armature.name] else None
+            )
         except (*FBP_DATA_ERRORS, IndexError):
             continue
         projected = [location_3d_to_region_2d(region, view, corner) for corner in triangles]
+        key = f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}"
+        if head is not None:
+            # Seen edge-on the overlay's click takes the whole handle, the
+            # hole of a ring included (Blender's own click there is gone).
+            extent = max(
+                ((corner - head).length for corner in projected if corner is not None),
+                default=0.0,
+            )
+            if (Vector(point) - head).length <= extent:
+                best = (0.0, key) if best is None or best[0] > 0.0 else best
+                continue
         for index in range(0, len(projected) - 2, 3):
             corners = projected[index:index + 3]
             if any(corner is None for corner in corners):
                 continue
             distance = _screen_distance_to_triangle_sq(point, *corners)
             if distance <= limit and (best is None or distance < best[0]):
-                best = (distance, f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}")
+                best = (distance, key)
     return "" if best is None else best[1]
 
 
@@ -252,9 +310,40 @@ def _hovered_lattice_triangles(hovered):
         # A selected handle already shows the selection colour in Pose Mode.
         if str(armature.mode) == "POSE" and bool(getattr(pose_bone, "select", False)):
             return []
+        view = getattr(bpy.context, "region_data", None)
+        if lattice_edge_on(armature, view):
+            # Drawn with every handle of its layer, facing the view.
+            return []
         return _lattice_shape_triangles(armature, pose_bone)
     except (*FBP_DATA_ERRORS, IndexError):
         return []
+
+
+def _edge_on_lattice_shapes(context, hovered, selected_color, hover_color):
+    """``(triangles, colour)`` of every Lattice handle on a layer seen edge-on,
+    drawn facing the view: Blender's own shapes are a flat line there."""
+    view = getattr(context, "region_data", None)
+    if view is None or not len(bpy.data.armatures):
+        return []
+    shapes = []
+    edge_on = {}
+    for armature, pose_bone in _visible_lattice_handles(context):
+        try:
+            if armature.name not in edge_on:
+                edge_on[armature.name] = lattice_edge_on(armature, view)
+            if not edge_on[armature.name]:
+                continue
+            triangles = _lattice_shape_triangles(armature, pose_bone, view)
+            if not triangles:
+                continue
+            posed = str(armature.mode) == "POSE"
+            selected = posed and bool(getattr(pose_bone, "select", False))
+            key = f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}"
+            color = selected_color if selected else hover_color if hovered == key else HANDLE_COLOR
+            shapes.append((triangles, color))
+        except (*FBP_DATA_ERRORS, IndexError):
+            continue
+    return shapes
 
 
 def _handle_hover_color(context):
@@ -976,7 +1065,10 @@ def _draw_handles():
     except ImportError:
         hovered = ""
     hovered_bone = _hovered_lattice_triangles(hovered)
-    if not handles and not mask_guides and not lattice_guides and not hovered_bone and not plane_guides and not plane_hover_guides:
+    selected_color = handle_selected_color(context)
+    hover_color = _handle_hover_color(context)
+    edge_on_bones = _edge_on_lattice_shapes(context, hovered, selected_color, hover_color)
+    if not handles and not mask_guides and not lattice_guides and not hovered_bone and not plane_guides and not plane_hover_guides and not edge_on_bones:
         return
     try:
         depsgraph = context.evaluated_depsgraph_get()
@@ -987,11 +1079,11 @@ def _draw_handles():
         guides.extend(solid)
     for _solid, dashed in mask_guides:
         guides.extend(dashed)
-    selected_color = handle_selected_color(context)
-    hover_color = _handle_hover_color(context)
     shapes = []
     if hovered_bone:
         shapes.append(([(hovered_bone, hover_color)], []))
+    if edge_on_bones:
+        shapes.append((edge_on_bones, []))
     hover_guides = list(plane_hover_guides)
     frames = {}
     crop_handles = [obj for obj in handles if is_crop_rig_handle(obj)]

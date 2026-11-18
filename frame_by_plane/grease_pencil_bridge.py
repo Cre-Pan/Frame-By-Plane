@@ -8615,6 +8615,11 @@ def fbp_gp_frame_change(scene, _depsgraph=None):
     del _depsgraph
     if fbp_undo_guard_active() or fbp_render_mutation_blocked():
         return
+    if not _FRAME_SENSITIVE_MASKS:
+        # No GP mask changes with the frame: nothing to publish, so no idle
+        # task is queued on every frame of playback.
+        _GP_FRAME_STATE.clear()
+        return
     scene_pointer = _canvas_pointer(scene)
     if not scene_pointer:
         return
