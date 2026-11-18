@@ -1100,7 +1100,10 @@ def fbp_native_source_path_at_frame(rig, timeline_frame):
     timing = fbp_native_playback_timing(mat)
     if not timing or not timing.get("files"):
         return "", True
-    directory, files = _source_sequence_from_material(mat)
+    # Only the file shown now is checked on disk: validating the whole
+    # sequence here cost one disk probe per frame of every layer, on every
+    # click and box select over the viewport.
+    directory, files = _decode_sequence_json(mat.get("fbp_native_source_sequence_json", ""))
     if not directory or not files:
         return "", True
     position = fbp_native_playback_position(timing, timeline_frame)
@@ -1111,7 +1114,10 @@ def fbp_native_source_path_at_frame(rig, timeline_frame):
         return "", True
     if source_index < 0 or source_index >= len(files):
         return "", True
-    return os.path.abspath(str(_media_path(directory, files[source_index]))), visible
+    shown = _valid_files(directory, [files[source_index]])
+    if not shown:
+        return "", visible
+    return os.path.abspath(str(_media_path(directory, shown[0]))), visible
 
 
 def fbp_native_playback_position(timing, timeline_frame):

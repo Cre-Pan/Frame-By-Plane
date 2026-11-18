@@ -354,6 +354,9 @@ class FBP_OT_GestureSelect(Operator):
                     self._mode = 'SUB'
                 self._start = self._end = point
                 self._path = [point]
+                return {'RUNNING_MODAL'}
+            if event.type in _PASS_EVENTS or event.type.startswith(("TIMER", "NDOF_")):
+                return {'PASS_THROUGH'}
             return {'RUNNING_MODAL'}
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             self._end = point
@@ -367,6 +370,17 @@ class FBP_OT_GestureSelect(Operator):
             self._end = point
             self._finish(context)
             return self._apply(context)
+        if event.type == self._button and event.value == 'PRESS':
+            # The release never arrived (Blender was busy or lost focus while
+            # the button went up): end the gesture instead of holding every
+            # click, key and scroll of the viewport from now on.
+            self._finish(context)
+            return {'CANCELLED', 'PASS_THROUGH'}
+        if event.type == 'WINDOW_DEACTIVATE':
+            self._finish(context)
+            return {'CANCELLED'}
+        if event.type in _PASS_EVENTS or event.type.startswith(("TIMER", "NDOF_")):
+            return {'PASS_THROUGH'}
         return {'RUNNING_MODAL'}
 
     def cancel(self, context):
@@ -400,6 +414,14 @@ class FBP_OT_GestureSelect(Operator):
         if hits and (active is None or not active.select_get()):
             context.view_layer.objects.active = hits[0]
         return {'FINISHED'}
+
+
+# Events a gesture in progress leaves to Blender: scrolling, trackpad gestures
+# and timers (a gesture that swallowed them froze the whole viewport).
+_PASS_EVENTS = frozenset((
+    'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'WHEELINMOUSE', 'WHEELOUTMOUSE',
+    'TRACKPADPAN', 'TRACKPADZOOM', 'MOUSEROTATE', 'MOUSESMARTZOOM',
+))
 
 
 # Default gesture bindings this operator mirrors: (keymap, gesture, type,
