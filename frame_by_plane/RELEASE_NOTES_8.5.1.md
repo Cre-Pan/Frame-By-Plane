@@ -14,6 +14,7 @@ Frame By Plane 8.5.1 installs on both **Blender 5.2 LTS** and **Blender 5.3**, a
 ### 🛠️ Fixes in 8.5.1
 
 - **Modifiers > Copy to Selected** now copies the real effect and its settings (Crop, Extend, image effects and mesh effects) instead of a modifier that disappeared right away. Layers that already have the effect take the source values.
+- **Transparent (Alpha) frames** stay transparent in Solid view and Material Preview too, also after adding a PNG with Import Frame. Before, they could show the first drawing of the sequence.
 - **Extend after Crop** starts exactly at the crop edge: Repeat, Repeat Flipped and Transparent no longer show the pixels the crop removed.
 
 
