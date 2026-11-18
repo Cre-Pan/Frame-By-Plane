@@ -1,8 +1,8 @@
-# Frame By Plane troubleshooting for Blender 5.2
+# Frame By Plane troubleshooting for Blender 5.2 and 5.3
 
 ## The add-on does not install
 
-Confirm that Blender reports version **5.2.x** and that the downloaded asset matches the computer architecture. Install the ZIP directly through **Edit → Preferences → Get Extensions → Install from Disk**; do not extract it first.
+Confirm that Blender reports version **5.2.x** or **5.3.x** and that the downloaded asset matches the computer architecture. Install the ZIP directly through **Edit → Preferences → Get Extensions → Install from Disk**; do not extract it first.
 
 Do not use GitHub's automatically generated **Source code (zip)** file. A valid release asset contains `blender_manifest.toml` at the root and has a platform suffix such as `windows_x64`.
 

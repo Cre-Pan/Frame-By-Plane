@@ -182,7 +182,7 @@ def unregister_addon(module):
 
 
 def test_version():
-    assert bpy.app.version[:2] == (5, 2), bpy.app.version_string
+    assert bpy.app.version[:2] in {(5, 2), (5, 3)}, bpy.app.version_string
     return bpy.app.version_string
 
 
@@ -263,11 +263,12 @@ def test_feedback_update_popup_contract(_module):
 
     titles = tuple(item[0] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     assert titles == (
-        "Magnetic Scrub Bar",
-        "Every Selected Color",
-        "Material in Edit Mode",
+        "Lattice Puppet Rig",
+        "New Transform Box",
+        "Native Modifiers Panel",
+        "New Effects",
         "Fewer Popups",
-        "Bug Fixes",
+        "Blender 5.2 LTS and 5.3",
     )
     assert all("7.1" not in item[1] for item in feedback.FBP_PUBLIC_RELEASE_ITEMS)
     # Fresh assets must be decoded once; reused assets still refresh on update.
@@ -1900,6 +1901,9 @@ def test_scrub_bar_regressions(_module):
         (None, FakeKeyframe("BREAKDOWN")),
     )) == "KEYFRAME"
 
+    # Blender 5.3 no longer extends VIEW3D_HT_header before add-ons do, so
+    # make sure the dynamic draw wrapper exists before taking the reference.
+    bpy.types.VIEW3D_HT_header._dyn_ui_initialize()
     native_header_draw = bpy.types.VIEW3D_HT_header.draw
     assert not bool(getattr(native_header_draw, "_fbp_scrub_header_patch", False))
     from bl_ui import space_view3d as native_view3d
@@ -4810,6 +4814,7 @@ def test_frame_stack_samples_earlier_frames(_module):
     """Every Frame Stack slice shows its own earlier frame of the playback."""
     builder = importlib.import_module(f"{PACKAGE}.builder")
     geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    frame_stack = importlib.import_module(f"{PACKAGE}.frame_stack")
     scene = bpy.context.scene
     red, green, blue, yellow = (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0)
 
@@ -4833,6 +4838,21 @@ def test_frame_stack_samples_earlier_frames(_module):
     previous = (scene.fbp_pre_duration, scene.fbp_pre_loop_mode, scene.frame_current)
     owned = []
 
+    def stack_modifier(rig):
+        return next(
+            modifier for modifier in geometry._fbp_plane(rig).modifiers
+            if modifier.name.startswith("FBP • Frame Stack")
+        )
+
+    def set_input(rig, name, value):
+        modifier = stack_modifier(rig)
+        identifier = geometry._fbp_interface_input_identifier(modifier.node_group, name)
+        geometry._fbp_modifier_input_set(modifier, identifier, value)
+        # The Modifiers panel edit reaches the runtime through the depsgraph.
+        geometry._fbp_plane(rig).update_tag()
+        bpy.context.view_layer.update()
+        _flush_fbp_safe_tasks()
+
     def build(name, folder, names, duration, loop_mode):
         scene.fbp_pre_duration = duration
         scene.fbp_pre_loop_mode = loop_mode
@@ -4846,27 +4866,58 @@ def test_frame_stack_samples_earlier_frames(_module):
         )
         rig.fbp_frame_stack_slices = 4
         rig.fbp_frame_stack_step = 1
-        rig.fbp_frame_stack_detail = 1
         rig.fbp_frame_stack_spacing = -0.1
         _flush_fbp_safe_tasks()
         return rig
 
-    def slices(rig, frame):
-        scene.frame_set(frame)
+    def slices(rig, frame=None):
+        if frame is not None:
+            scene.frame_set(frame)
         _flush_fbp_safe_tasks()
         plane = geometry._fbp_plane(rig)
+        material = frame_stack.fbp_frame_stack_material(rig)
+        texture = frame_stack._material_node(material, "fbp_frame_stack_atlas_node")
+        atlas = texture.image
+        width, height = atlas.size
+        pixels = list(atlas.pixels)
         evaluated = plane.evaluated_get(bpy.context.evaluated_depsgraph_get())
         mesh = evaluated.to_mesh()
         try:
-            color = mesh.attributes.get("fbp_frame_stack_color")
-            alpha = mesh.attributes.get("fbp_frame_stack_alpha")
+            cells = mesh.attributes.get("fbp_frame_stack_cell")
+            alphas = mesh.attributes.get("fbp_frame_stack_alpha")
             found = {}
-            for vertex, color_value, alpha_value in zip(mesh.vertices, color.data, alpha.data):
-                if alpha_value.value > 0.5:
-                    found[round(vertex.co.z, 3)] = tuple(round(value) for value in color_value.color[:3])
+            if cells is None:
+                return found
+            # Solid view in Texture mode draws the atlas through UVMap, so the
+            # slice UVs point into the slice's own cell; the plane UV is kept.
+            atlas_uv = mesh.attributes.get("UVMap")
+            plane_uv = mesh.attributes.get("fbp_frame_stack_uv")
+            assert atlas_uv is not None and plane_uv is not None
+            for loop in mesh.loops:
+                u0, v0, du, dv = cells.data[loop.vertex_index].color
+                if du <= 0.0:
+                    continue
+                u, v = atlas_uv.data[loop.index].vector
+                pu, pv = plane_uv.data[loop.index].vector
+                assert abs(u - (u0 + pu * du)) < 1e-4 and abs(v - (v0 + pv * dv)) < 1e-4, (u, v, pu, pv, u0, v0, du, dv)
+            for vertex, cell, alpha in zip(mesh.vertices, cells.data, alphas.data):
+                if alpha.value <= 0.5:
+                    continue
+                u0, v0, du, dv = cell.color
+                x = int((u0 + 0.5 * du) * width)
+                y = int((v0 + 0.5 * dv) * height)
+                offset = (y * width + x) * 4
+                found[round(vertex.co.z, 3)] = tuple(round(value) for value in pixels[offset:offset + 3])
             return found
         finally:
             evaluated.to_mesh_clear()
+
+    def hidden_inputs(rig):
+        group = stack_modifier(rig).node_group
+        return {
+            item.name for item in group.interface.items_tree
+            if getattr(item, "in_out", "") == "INPUT" and bool(getattr(item, "hide_in_modifier", False))
+        }
 
     start = scene.frame_start
     try:
@@ -4874,36 +4925,24 @@ def test_frame_stack_samples_earlier_frames(_module):
         rig = build("FBP Frame Stack Test", folder, names, 1, "NONE")
         # Frame 4 (yellow) is the plane; slices behind show frames 3, 2 and 1.
         assert slices(rig, start + 3) == {-0.1: blue, -0.2: green, -0.3: red}, slices(rig, start + 3)
-        # Sequences take the light path: thumbnails in one stack image, no
-        # full-resolution frame decoded per slice.
-        modifier = next(
-            modifier for modifier in geometry._fbp_plane(rig).modifiers
-            if modifier.name.startswith("FBP • Frame Stack")
-        )
-
-        def light_path():
-            identifier = geometry._fbp_interface_input_identifier(modifier.node_group, "Use Stack Image")
-            return bool(geometry._fbp_modifier_input_get(modifier, identifier))
-
-        assert light_path()
-        # Without thumbnails the Repeat Zone path gives the same slices.
-        cells_image = geometry._fbp_frame_stack_cells_image
-        geometry._fbp_frame_stack_cells_image = lambda *args, **kwargs: None
-        try:
-            scene.frame_set(start)
-            assert slices(rig, start + 3) == {-0.1: blue, -0.2: green, -0.3: red}, slices(rig, start + 3)
-            assert not light_path()
-        finally:
-            geometry._fbp_frame_stack_cells_image = cells_image
+        # Slices are copies of the plane, not a remeshed grid.
+        evaluated = geometry._fbp_plane(rig).evaluated_get(bpy.context.evaluated_depsgraph_get())
+        assert len(evaluated.data.vertices) <= 4 * 8, len(evaluated.data.vertices)
+        # The Modifiers panel shows the artist's inputs only.
+        hidden = hidden_inputs(rig)
+        assert {"Stack Position", "Use Atlas", "Atlas Columns", "Table Rows", "Stack Material"} <= hidden, hidden
+        assert not hidden & {"Slices", "Frame Step", "Fixed Start", "Start Frame", "Detail", "Spacing"}, hidden
         # One Shot: nothing played before the first frame, so those slices stay empty.
         assert slices(rig, start + 1) == {-0.1: red}, slices(rig, start + 1)
 
-        rig.fbp_frame_stack_fixed_start = True
-        rig.fbp_frame_stack_start_frame = start + 1
-        rig.fbp_frame_stack_show_plane = False
-        _flush_fbp_safe_tasks()
-        # Fixed range from the second frame: slices 0 and 1 hold frames 2 and 1.
-        assert slices(rig, start + 3) == {0.0: green, -0.1: red}, slices(rig, start + 3)
+        # Edited on the modifier itself, Fixed Start and Start Frame apply at once.
+        set_input(rig, "Show Plane", False)
+        set_input(rig, "Fixed Start", True)
+        set_input(rig, "Start Frame", start + 1)
+        assert slices(rig) == {0.0: green, -0.1: red}, slices(rig)
+        set_input(rig, "Start Frame", start + 3)
+        set_input(rig, "Frame Step", 2)
+        assert slices(rig) == {0.0: yellow, -0.1: green}, slices(rig)
         assert geometry.fbp_remove_effect(rig, "FRAME_STACK")
 
         # A looping sequence numbered from 0100, two frames per drawing: slices
@@ -4912,7 +4951,7 @@ def test_frame_stack_samples_earlier_frames(_module):
         looped = build("FBP Frame Stack Loop", folder, names, 2, "REPEAT")
         assert slices(looped, start + 6) == {-0.1: blue, -0.2: green, -0.3: red}, slices(looped, start + 6)
         assert slices(looped, start + 8) == {-0.1: yellow, -0.2: blue, -0.3: green}, slices(looped, start + 8)
-        # Fixed Range reads a timeline frame: frame 5 shows the third drawing.
+        # Fixed Start reads a timeline frame: frame 5 shows the third drawing.
         looped.fbp_frame_stack_fixed_start = True
         looped.fbp_frame_stack_start_frame = start + 4
         looped.fbp_frame_stack_show_plane = False
@@ -4923,13 +4962,8 @@ def test_frame_stack_samples_earlier_frames(_module):
         # way the plane came.
         pingpong = build("FBP Frame Stack Ping-Pong", folder, names, 1, "PINGPONG")
         assert slices(pingpong, start + 4) == {-0.1: yellow, -0.2: blue, -0.3: green}, slices(pingpong, start + 4)
-        # Each layer keeps its own group, because the group holds its images.
-        groups = [
-            modifier.node_group
-            for layer in (looped, pingpong)
-            for modifier in geometry._fbp_plane(layer).modifiers
-            if modifier.name.startswith("FBP • Frame Stack")
-        ]
+        # Each layer keeps its own group (it holds the timing table) and atlas.
+        groups = [stack_modifier(layer).node_group for layer in (looped, pingpong)]
         assert len(groups) == 2 and groups[0] is not groups[1], groups
     finally:
         scene.fbp_pre_duration, scene.fbp_pre_loop_mode = previous[0], previous[1]
@@ -6521,6 +6555,129 @@ def test_color_plane_gradient_line_perpendicular(_module):
     return f"{checked} angles perpendicular on a {ex.length:.2f}x{ey.length:.2f} plane"
 
 
+def test_color_plane_color_reaches_render_source(_module):
+    """Changing a Color Plane's color updates the linked source the render uses.
+
+    The effect pipeline links ``FBP_Procedural_Color_Source`` into the shader,
+    so a white plane recoloured black used to keep rendering white.
+    """
+    procedural = importlib.import_module(f"{PACKAGE}.operator_procedural")
+    geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
+    scene = bpy.context.scene
+    previous = tuple(scene.fbp_color_plane_color)
+    scene.fbp_color_plane_color = (1.0, 1.0, 1.0, 1.0)
+    rig = procedural.fbp_create_color_plane(bpy.context, "CUSTOM")
+    owned = [rig, *rig.children_recursive]
+    try:
+        checked = []
+        for emission in (True, False):
+            rig.fbp_color_plane_emission = emission
+            for color in ((0.0, 0.0, 0.0, 1.0), (0.8, 0.1, 0.2, 1.0), (0.0, 0.0, 0.0, 0.5)):
+                rig.fbp_color_plane_color = color
+                mat = rig.fbp_plane_target.data.materials[0]
+                source = mat.node_tree.nodes.get("FBP_Procedural_Color_Source")
+                assert source is not None, "effect color source missing"
+                got = tuple(source.outputs[0].default_value)
+                assert all(abs(a - b) < 1.0e-5 for a, b in zip(got, color, strict=True)), (emission, color, got)
+                alpha = mat.node_tree.nodes.get("FBP_Procedural_Alpha_Source")
+                if alpha is not None:
+                    assert abs(alpha.outputs[0].default_value - color[3]) < 1.0e-5, (emission, color)
+                checked.append(color)
+        # A file saved with a stale source heals when the effect chain resolves it.
+        rig.fbp_color_plane_color = (0.0, 0.0, 0.0, 1.0)
+        mat = rig.fbp_plane_target.data.materials[0]
+        source = mat.node_tree.nodes["FBP_Procedural_Color_Source"]
+        source.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
+        geo._fbp_procedural_color_source(mat)
+        assert tuple(source.outputs[0].default_value)[:3] == (0.0, 0.0, 0.0)
+    finally:
+        scene.fbp_color_plane_color = previous
+        for obj in owned:
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except (ReferenceError, RuntimeError):
+                pass
+    return f"{len(checked)} colors reached the render source"
+
+
+def test_color_plane_opacity_static_and_keyframed(_module):
+    """Standing check: Color Plane Opacity works in renders, static and keyframed.
+
+    Covers Solid (Emission and Principled) and Gradient planes: a static 50%,
+    a colour change after it, keyframes set with the slider, keyframes added
+    without the slider (bound by the depsgraph observer) and keys removed.
+    """
+    from types import SimpleNamespace
+    _skip_unless_cycles_render()
+    procedural = importlib.import_module(f"{PACKAGE}.operator_procedural")
+    materials = importlib.import_module(f"{PACKAGE}.materials")
+    runtime = importlib.import_module(f"{PACKAGE}.runtime")
+    scene = bpy.context.scene
+    previous_color = tuple(scene.fbp_color_plane_color)
+    previous_frame = int(scene.frame_current)
+    previous_cursor = tuple(scene.cursor.location)
+    checked = []
+
+    def near(value, target, tolerance=0.2):
+        return abs(float(value) - float(target)) <= tolerance
+
+    try:
+        scene.cursor.location = (0.0, 0.0, 0.0)
+        for kind, emission in (("CUSTOM", True), ("CUSTOM", False), ("GRADIENT", True)):
+            scene.fbp_color_plane_color = (0.0, 0.0, 0.0, 1.0)
+            scene.frame_set(1)
+            rig = procedural.fbp_create_color_plane(bpy.context, kind)
+            rig.fbp_color_plane_emission = emission
+            label = f"{kind}/{'emission' if emission else 'principled'}"
+            with _cycles_center_renderer(f"FBP Opacity {kind} {int(emission)}", [rig, *rig.children_recursive]) as render_center:
+                scene.cycles.samples = 32
+                assert near(render_center()[3], 1.0, 0.05), (label, "opaque")
+                rig.fbp_opacity = 0.5
+                assert near(render_center()[3], 0.5), (label, "static 50%")
+                if kind == "CUSTOM":
+                    rig.fbp_color_plane_color = (0.2, 0.4, 0.9, 1.0)
+                    assert near(render_center()[3], 0.5), (label, "50% after colour change")
+                # Keyframes set with the slider.
+                scene.frame_set(1)
+                rig.fbp_opacity = 0.0
+                rig.keyframe_insert("fbp_opacity", frame=1)
+                scene.frame_set(11)
+                rig.fbp_opacity = 1.0
+                rig.keyframe_insert("fbp_opacity", frame=11)
+                for frame, target, tolerance in ((1, 0.0, 0.05), (6, 0.5, 0.2), (11, 1.0, 0.05)):
+                    scene.frame_set(frame)
+                    alpha = render_center()[3]
+                    assert near(alpha, target, tolerance), (label, frame, alpha)
+                    material = rig.fbp_plane_target.data.materials[0]
+                    assert near(material.diffuse_color[3], target, 0.05), (label, "Solid view", frame)
+                if kind == "CUSTOM":
+                    rig.fbp_color_plane_color = (0.9, 0.1, 0.1, 1.0)
+                    scene.frame_set(6)
+                    assert near(render_center()[3], 0.5), (label, "keyed after colour change")
+                # Keys removed: back to a static value.
+                rig.animation_data_clear()
+                rig.fbp_opacity = 1.0
+                scene.frame_set(1)
+                assert near(render_center()[3], 1.0, 0.05), (label, "after removing keys")
+                # Keys added without touching the slider (Dope Sheet, paste...).
+                runtime.fbp_set_rna_property_silent(rig, "fbp_opacity", 0.0)
+                rig.keyframe_insert("fbp_opacity", frame=1)
+                runtime.fbp_set_rna_property_silent(rig, "fbp_opacity", 1.0)
+                rig.keyframe_insert("fbp_opacity", frame=11)
+                assert materials.fbp_color_plane_opacity_depsgraph_update(
+                    scene, None, updates=(SimpleNamespace(id=rig),)
+                ), (label, "observer missed new keys")
+                materials._fbp_run_pending_opacity_bind()
+                scene.frame_set(6)
+                assert near(render_center()[3], 0.5), (label, "keys added without slider")
+            checked.append(label)
+    finally:
+        scene.fbp_color_plane_color = previous_color
+        scene.cursor.location = previous_cursor
+        scene.frame_set(previous_frame)
+    return ", ".join(checked)
+
+
 def test_effect_panel_sections_and_hints(_module):
     """Auto sections match whole words; heavy effects explain what helps."""
     geo = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -7037,6 +7194,8 @@ def run_background():
             ("performance_profile_contract", test_performance_profile_contract),
             ("gizmo_fit_keeps_dragged_gizmo", test_gizmo_fit_keeps_dragged_gizmo),
             ("color_plane_gradient_line_perpendicular", test_color_plane_gradient_line_perpendicular),
+            ("color_plane_color_reaches_render_source", test_color_plane_color_reaches_render_source),
+            ("color_plane_opacity_static_and_keyframed", test_color_plane_opacity_static_and_keyframed),
             ("effect_panel_sections_and_hints", test_effect_panel_sections_and_hints),
             ("mesh_effect_modifier_sections", test_mesh_effect_modifier_sections),
             ("icon_runtime_contract", test_icon_runtime_contract),

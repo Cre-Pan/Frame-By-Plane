@@ -92,6 +92,21 @@ def _fbp_requested_procedural_frame_kind(rig):
     return stable if stable in {'SOLID', 'GRADIENT', 'HOLDOUT'} else 'SOLID'
 
 
+
+def _active_layer_rig(context, *, layer_objects=False):
+    """The active layer's rig, also when its plane holds the active slot."""
+    obj = getattr(context, "object", None)
+    if obj is None:
+        return None
+    if bool(getattr(obj, "is_fbp_plane", False)):
+        parent = getattr(obj, "parent", None)
+        if parent is not None and bool(getattr(parent, "is_fbp_control", False)):
+            obj = parent
+    if layer_objects:
+        return obj if is_fbp_layer_object(obj) else None
+    return obj if bool(getattr(obj, "is_fbp_control", False)) else None
+
+
 class FBP_OT_SetColorPlaneMode(Operator):
     bl_idname = "fbp.set_color_plane_mode"
     bl_label = "Set Procedural Type"
@@ -101,7 +116,7 @@ class FBP_OT_SetColorPlaneMode(Operator):
     mode: StringProperty(description="Procedural plane mode to activate", default="SOLID")
 
     def execute(self, context):
-        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        rig = _active_layer_rig(context)
         if not rig:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
@@ -130,8 +145,8 @@ class FBP_OT_GradientController(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def _rig(self, context):
-        active = getattr(context, "object", None)
-        if active is not None and bool(getattr(active, "is_fbp_control", False)):
+        active = _active_layer_rig(context)
+        if active is not None:
             return active
         rigs = get_selected_rigs(context)
         return rigs[0] if rigs else None
@@ -976,7 +991,7 @@ class FBP_OT_ConvertColorPlaneToAnimation(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        rig = _active_layer_rig(context)
         if not rig:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
@@ -1062,7 +1077,7 @@ class FBP_OT_InsertImagesAfterSelected(Operator):
     )
 
     def execute(self, context):
-        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        rig = _active_layer_rig(context)
         if not rig:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
@@ -1168,7 +1183,7 @@ class FBP_OT_InsertLinkedImageAfterSelected(Operator):
 
     def invoke(self, context, event):
         del event
-        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        rig = _active_layer_rig(context)
         if not rig:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
@@ -1202,7 +1217,7 @@ class FBP_OT_InsertLinkedImageAfterSelected(Operator):
             bpy.data.objects, self.rig_key, self.rig_name,
         ) if self.rig_key else None
         if not rig and not self.rig_key:
-            rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+            rig = _active_layer_rig(context)
         if not rig and not self.rig_key:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
@@ -1293,7 +1308,7 @@ class FBP_OT_InsertTransparentFrame(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+        rig = _active_layer_rig(context)
         if not rig:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
@@ -1396,7 +1411,7 @@ class FBP_OT_LinkImageFrame(Operator):
             bpy.data.objects, self.rig_key, self.rig_name,
         ) if self.rig_key else (bpy.data.objects.get(self.rig_name) if self.rig_name else None)
         if (not rig or not getattr(rig, "is_fbp_control", False)) and not self.rig_key:
-            rig = context.object if context.object and getattr(context.object, "is_fbp_control", False) else None
+            rig = _active_layer_rig(context)
         if not rig and not self.rig_key:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None
@@ -1973,8 +1988,8 @@ class FBP_OT_OptimizeSequenceFrames(Operator):
 
     @staticmethod
     def _active_rig(context):
-        obj = getattr(context, "object", None)
-        if obj and getattr(obj, "is_fbp_control", False):
+        obj = _active_layer_rig(context)
+        if obj is not None:
             return obj
         rigs = get_selected_rigs(context)
         return rigs[0] if rigs else None
@@ -2436,7 +2451,7 @@ class FBP_OT_SplitSelectedImagesToNewPlane(Operator):
             fbp_warn("Could not remove partial split rig", exc)
 
     def execute(self, context):
-        rig = context.object if context.object and is_fbp_layer_object(context.object) else None
+        rig = _active_layer_rig(context, layer_objects=True)
         if not rig:
             rigs = get_selected_rigs(context)
             rig = rigs[0] if rigs else None

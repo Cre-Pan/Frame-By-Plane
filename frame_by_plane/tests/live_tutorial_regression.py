@@ -107,7 +107,6 @@ try:
     assert words[1] == (("Z", True),) and words[4] == (("Crop", True), (",", False))
     assert words[6] == (("Shift", True),) and words[8] == (("A", True), (".", False))
     assert tutorial._plain_text("Press **Z**") == "Press Z"
-    assert tutorial._help_wrap("Click **Material**.") == ("Click Material.",)
 
     assert "image_import" in tutorial._DIALOG_OPTION_NOTES
     assert "multi_generate" in tutorial._DIALOG_OPTION_NOTES

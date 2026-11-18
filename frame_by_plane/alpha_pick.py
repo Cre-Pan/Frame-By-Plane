@@ -225,7 +225,23 @@ def fbp_handle_under_cursor(context, coord, radius):
         xy[:, 1] = height_half + height_half * (clip[:, 1] / safe)
         return xy, valid
 
+    from .handle_overlay import crop_handle_screen_distance, crop_rig_groups, is_crop_rig_handle
+
+    crop_groups = None
     for handle in handles:
+        if is_crop_rig_handle(handle):
+            # Crop/Extend: picked on the rig's dots and side bars.
+            try:
+                if crop_groups is None:
+                    crop_groups = crop_rig_groups(handles, depsgraph)
+                pixels = crop_handle_screen_distance(handle, point, region, region_data, crop_groups, ui_scale)
+            except (*FBP_DATA_ERRORS, IndexError, ValueError):
+                pixels = None
+            if pixels is not None:
+                distance = pixels * pixels
+                if distance <= limit and (best is None or distance < best[0]):
+                    best = (distance, handle)
+            continue
         try:
             matrix, topology = handle_mesh(handle, depsgraph)
         except (*FBP_DATA_ERRORS, IndexError):
@@ -258,9 +274,10 @@ def fbp_handle_under_cursor(context, coord, radius):
             # Picked where it is drawn: knobs keep one size on screen.
             fixed = handle_screen_scale(handle, region, region_data, ui_scale)
             if fixed is not None:
-                anchor, factor = fixed
+                anchor, turn = fixed
                 anchor = np.array(tuple(anchor), dtype=np.float64)
-                world = anchor + (world - anchor) * float(factor)
+                turn = np.array([tuple(row) for row in turn], dtype=np.float64)
+                world = anchor + (world - anchor) @ turn.T
             screen, valid = project(world)
             # Only the filled faces are picked, so only their corners count;
             # a cursor away from all of them skips the triangle tests.
@@ -418,16 +435,27 @@ class FBP_OT_SelectThroughAlpha(Operator):
 
     def _select(self, context, rig):
         view_layer = context.view_layer
+        # The layer's plane takes the active slot (unselected), so Properties
+        # > Modifiers shows the layer's effects; handles and other objects
+        # keep themselves active.
+        plane = getattr(rig, "fbp_plane_target", None) if getattr(rig, "is_fbp_control", False) else None
+        try:
+            if plane is not None and plane.name not in view_layer.objects:
+                plane = None
+        except FBP_DATA_ERRORS:
+            plane = None
+        target = plane or rig
         if self.toggle:
-            if rig.select_get() and view_layer.objects.active == rig:
+            active = view_layer.objects.active
+            if rig.select_get() and active in {rig, target}:
                 rig.select_set(False)
             else:
                 rig.select_set(True)
-                view_layer.objects.active = rig
+                view_layer.objects.active = target
         else:
             for obj in tuple(context.selected_objects):
                 if obj != rig:
                     obj.select_set(False)
             rig.select_set(True)
-            view_layer.objects.active = rig
+            view_layer.objects.active = target
         return {'FINISHED'}

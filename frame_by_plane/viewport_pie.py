@@ -372,6 +372,23 @@ _GP_OBJECT_MODES = frozenset({
 })
 
 
+def _draw_flip_canvas(row, space):
+    """Flip Canvas: mirror the view (Blender 5.3 RegionView3D.use_view_flip_x).
+
+    In the South actions while looking through the camera; Blender 5.2 has no
+    flipped view, so the button is simply left out there.
+    """
+    region = getattr(space, "region_3d", None)
+    # Only while looking through the camera: the flip mirrors the camera view.
+    if (
+        region is not None
+        and hasattr(region, "use_view_flip_x")
+        and str(getattr(region, "view_perspective", "") or "") == "CAMERA"
+    ):
+        cell = _pie_icon_cell(row)
+        cell.prop(region, "use_view_flip_x", text="", icon="MOD_MIRROR")
+
+
 def _gp_object_mode_active(context):
     """Return True while editing inside a Grease Pencil object."""
     obj = getattr(context, "active_object", None)
@@ -2249,14 +2266,15 @@ class FBP_MT_ViewportPie(Menu):
                     _gp_object_mode_active(context)
                     and hasattr(overlay, "use_gpencil_onion_skin")
                 ):
-                    onion_active = bool(overlay.use_gpencil_onion_skin)
                     cell = _pie_icon_cell(display)
                     cell.prop(
                         overlay,
                         "use_gpencil_onion_skin",
                         text="",
-                        icon="ONIONSKIN_ON" if onion_active else "ONIONSKIN_OFF",
+                        # One icon; the pressed (blue) state shows on/off.
+                        icon="ONIONSKIN_ON",
                     )
+                _draw_flip_canvas(display, space)
 
             if plane_rigs or state["lock_memory_active"]:
                 layer = actions.row(align=True)

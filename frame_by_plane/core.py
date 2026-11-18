@@ -1801,10 +1801,15 @@ def update_layer_stack_index_cb(self, context):
         if 0 <= idx < len(self.fbp_layers):
             obj = self.fbp_layers[idx].obj
             if obj and is_fbp_layer_object(obj):
-                if context.view_layer.objects.active != obj:
+                # The layer's plane stands in for its rig as the active
+                # object (Properties > Modifiers then shows its effects).
+                plane = getattr(obj, "fbp_plane_target", None) if getattr(obj, "is_fbp_control", False) else None
+                if plane is not None and plane.name not in context.view_layer.objects:
+                    plane = None
+                if context.view_layer.objects.active not in {obj, plane}:
                     # Keep previous selections alive so the layer list can support multi-select painting.
                     obj.select_set(True)
-                    context.view_layer.objects.active = obj
+                    context.view_layer.objects.active = plane or obj
     except Exception as exc:
         fbp_warn("Layer stack selection update skipped", exc)
 

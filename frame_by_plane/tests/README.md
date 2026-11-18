@@ -1,6 +1,6 @@
-# Frame By Plane — Blender 5.2 LTS regression runner
+# Frame By Plane — Blender 5.3 regression runner
 
-Use an official Blender **5.2.x Stable** executable. The launcher rejects other major/minor versions.
+Use an official Blender **5.3.x Stable** executable. The launcher rejects other major/minor versions.
 
 ```bash
 python tests/run_blender_lts.py --blender /path/to/blender --all
@@ -10,7 +10,7 @@ On Windows:
 
 ```powershell
 py tests\run_blender_lts.py `
-  --blender "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" `
+  --blender "C:\Program Files\Blender Foundation\Blender 5.3\blender.exe" `
   --all
 ```
 
@@ -48,14 +48,14 @@ On headless Linux, the interactive suite automatically uses `xvfb-run` when avai
 
 ## Native release gate
 
-The repository-level `Blender 5.2 native release gate` workflow runs the real Blender executable on Linux x64, macOS ARM64 and Windows ARM64/x64. It builds, validates, installs and smoke-tests the package matching each runner. Linux also runs this interactive suite through Xvfb and performs the package-only validation for the fifth macOS x64 ZIP, for which Blender's official 5.2.0 checksum list currently contains no Intel runtime image.
+The repository-level `Blender 5.3 native release gate` workflow runs the real Blender executable on Linux x64, macOS ARM64 and Windows ARM64/x64. It builds, validates, installs and smoke-tests the package matching each runner. Linux also runs this interactive suite through Xvfb and performs the package-only validation for the fifth macOS x64 ZIP, for which Blender's official 5.3.0 checksum list currently contains no Intel runtime image.
 
 See `docs/BLENDER_5_2_RELEASE_GATE.md` for triggers, runner labels, checksum verification and the publication rule.
 
-## Official `bpy 5.2` module
+## Official `bpy 5.3` module
 
 The background suite can also run without the Blender desktop executable when
-the official Blender Foundation `bpy==5.2.0` wheel is installed in Python 3.13:
+the official Blender Foundation `bpy==5.3.0` wheel is installed in Python 3.13:
 
 ```bash
 python tests/run_bpy_lts.py

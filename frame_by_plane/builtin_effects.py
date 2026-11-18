@@ -126,7 +126,7 @@ _BUILTIN_EFFECT_CONTRACTS = {
     "PAPER_SHARDS": ("frame_by_plane.paper_shards", 2),
     "FIBER_TUFTS": ("frame_by_plane.fiber_tufts", 2),
     "CROSSHATCH": ("frame_by_plane.shader.crosshatch", 2),
-    "FRAME_STACK": ("frame_by_plane.frame_stack", 3),
+    "FRAME_STACK": ("frame_by_plane.frame_stack", 5),
     "GLASS": ("frame_by_plane.broken_glass", 2),
 }
 
@@ -9089,348 +9089,244 @@ def _frame_stack_transform(group, index_socket, inp, *, prefix, x, y):
     links.new(scale_delta.outputs[0], scale_value.inputs[0])
     safe_scale = _math(group, "MAXIMUM", f"{prefix} Safe Scale", x + 440, y - 200, value_2=0.01)
     links.new(scale_value.outputs[0], safe_scale.inputs[0])
-    return translation.outputs["Vector"], rotation.outputs["Rotation"], safe_scale.outputs[0]
+    scale = _node(group, "ShaderNodeCombineXYZ", f"{prefix} Scale Vector", x + 660, y - 200)
+    for axis in ("X", "Y", "Z"):
+        links.new(safe_scale.outputs[0], scale.inputs[axis])
+    return translation.outputs["Vector"], rotation.outputs["Rotation"], safe_scale.outputs[0], scale.outputs[0]
 
 
-def _frame_stack_slice_alpha(group, inp, index_socket, color_socket, alpha_socket, shown_socket, last_index_socket, *, prefix, x, y):
-    """Return the slice alpha: front/back opacity, depth fade and luminance key.
-
-    ``index_socket`` is the slice number (0 is the plane position); it may be
-    a single value inside the Repeat Zone or a per-point field.
-    """
+def _frame_stack_opacity(group, inp, index_socket, last_index_socket, *, prefix, x, y):
+    """Front/back opacity times depth fade for slice ``index_socket``."""
     links = group.links
     is_front = _math(group, "LESS_THAN", f"{prefix} Is Front", x, y)
     links.new(index_socket, is_front.inputs[0])
     links.new(inp.outputs["Front Slices"], is_front.inputs[1])
-    layer_opacity = _node(group, "GeometryNodeSwitch", f"{prefix} Layer Opacity", x + 220, y)
-    layer_opacity.input_type = "FLOAT"
-    links.new(is_front.outputs[0], layer_opacity.inputs["Switch"])
-    links.new(inp.outputs["Back Opacity"], layer_opacity.inputs["False"])
-    links.new(inp.outputs["Front Opacity"], layer_opacity.inputs["True"])
-    depth_span = _math(group, "MAXIMUM", f"{prefix} Depth Span", x, y - 220, value_2=1.0)
-    links.new(last_index_socket, depth_span.inputs[0])
-    depth_position = _math(group, "DIVIDE", f"{prefix} Depth Position", x + 220, y - 220)
-    links.new(index_socket, depth_position.inputs[0])
-    links.new(depth_span.outputs[0], depth_position.inputs[1])
-    depth_loss = _math(group, "MULTIPLY", f"{prefix} Depth Loss", x + 440, y - 220)
-    links.new(depth_position.outputs[0], depth_loss.inputs[0])
-    links.new(inp.outputs["Depth Fade"], depth_loss.inputs[1])
-    depth_keep = _math(group, "SUBTRACT", f"{prefix} Depth Keep", x + 660, y - 220, value_1=1.0)
-    links.new(depth_loss.outputs[0], depth_keep.inputs[1])
-
-    luminance = _vector_math(group, "DOT_PRODUCT", f"{prefix} Luminance", x, y + 460)
-    luminance.inputs[1].default_value = (0.2126, 0.7152, 0.0722)
-    links.new(color_socket, luminance.inputs[0])
-    inverse_luminance = _math(group, "SUBTRACT", f"{prefix} Dark Key", x + 220, y + 360, value_1=1.0)
-    links.new(luminance.outputs["Value"], inverse_luminance.inputs[1])
-    key_is_bright = _math(group, "GREATER_THAN", f"{prefix} Bright Key", x + 220, y + 560, value_2=0.0)
-    links.new(inp.outputs["Luminance Opacity"], key_is_bright.inputs[0])
-    key = _node(group, "GeometryNodeSwitch", f"{prefix} Luminance Key", x + 440, y + 460)
-    key.input_type = "FLOAT"
-    links.new(key_is_bright.outputs[0], key.inputs["Switch"])
-    links.new(inverse_luminance.outputs[0], key.inputs["False"])
-    links.new(luminance.outputs["Value"], key.inputs["True"])
-    key_amount = _math(group, "ABSOLUTE", f"{prefix} Key Amount", x + 440, y + 660)
-    links.new(inp.outputs["Luminance Opacity"], key_amount.inputs[0])
-    key_minus_one = _math(group, "SUBTRACT", f"{prefix} Key Offset", x + 660, y + 460, value_2=1.0)
-    links.new(key.outputs["Output"], key_minus_one.inputs[0])
-    key_scaled = _math(group, "MULTIPLY", f"{prefix} Key Scaled", x + 880, y + 460)
-    links.new(key_minus_one.outputs[0], key_scaled.inputs[0])
-    links.new(key_amount.outputs[0], key_scaled.inputs[1])
-    key_factor = _math(group, "ADD", f"{prefix} Key Factor", x + 1100, y + 460, value_2=1.0)
-    links.new(key_scaled.outputs[0], key_factor.inputs[0])
-
-    alpha = _math(group, "MULTIPLY", f"{prefix} Alpha Opacity", x + 880, y)
-    links.new(alpha_socket, alpha.inputs[0])
-    links.new(layer_opacity.outputs["Output"], alpha.inputs[1])
-    alpha_depth = _math(group, "MULTIPLY", f"{prefix} Alpha Depth", x + 1100, y)
-    links.new(alpha.outputs[0], alpha_depth.inputs[0])
-    links.new(depth_keep.outputs[0], alpha_depth.inputs[1])
-    keyed_alpha = _math(group, "MULTIPLY", f"{prefix} Keyed Alpha", x + 1320, y)
-    keyed_alpha.use_clamp = True
-    links.new(alpha_depth.outputs[0], keyed_alpha.inputs[0])
-    links.new(key_factor.outputs[0], keyed_alpha.inputs[1])
-    final_alpha = _math(group, "MULTIPLY", f"{prefix} Alpha", x + 1540, y)
-    links.new(keyed_alpha.outputs[0], final_alpha.inputs[0])
-    links.new(shown_socket, final_alpha.inputs[1])
-    return final_alpha.outputs[0]
+    opacity = _node(group, "GeometryNodeSwitch", f"{prefix} Opacity", x + 220, y)
+    opacity.input_type = "FLOAT"
+    links.new(is_front.outputs[0], opacity.inputs["Switch"])
+    links.new(inp.outputs["Back Opacity"], opacity.inputs["False"])
+    links.new(inp.outputs["Front Opacity"], opacity.inputs["True"])
+    span = _math(group, "MAXIMUM", f"{prefix} Depth Span", x, y - 200, value_2=1.0)
+    links.new(last_index_socket, span.inputs[0])
+    depth = _math(group, "DIVIDE", f"{prefix} Depth Position", x + 220, y - 200)
+    links.new(index_socket, depth.inputs[0])
+    links.new(span.outputs[0], depth.inputs[1])
+    loss = _math(group, "MULTIPLY", f"{prefix} Depth Loss", x + 440, y - 200)
+    links.new(depth.outputs[0], loss.inputs[0])
+    links.new(inp.outputs["Depth Fade"], loss.inputs[1])
+    keep = _math(group, "SUBTRACT", f"{prefix} Depth Keep", x + 660, y - 200, value_1=1.0)
+    links.new(loss.outputs[0], keep.inputs[1])
+    result = _math(group, "MULTIPLY", f"{prefix} Slice Opacity", x + 880, y)
+    result.use_clamp = True
+    links.new(opacity.outputs["Output"], result.inputs[0])
+    links.new(keep.outputs[0], result.inputs[1])
+    return result.outputs[0]
 
 
-def _frame_stack_store(group, inp, geometry_socket, color_socket, alpha_socket, *, prefix, x, y):
-    """Write the slice colour, alpha and Glow attributes read by the material."""
+def _frame_stack_position(group, inp, index_socket, *, prefix, x, y):
+    """Playback position of slice ``index_socket`` and whether it exists.
+
+    Fixed Start reads the position the runtime computed for Start Frame.
+    Looping layers wrap around the cycle; otherwise a position before the
+    first frame or past the last one stays empty.
+    """
     links = group.links
-    store_color = _node(group, "GeometryNodeStoreNamedAttribute", f"Store {prefix} Color", x, y)
-    store_color.data_type = "FLOAT_COLOR"
-    store_color.domain = "POINT"
-    store_color.inputs["Name"].default_value = "fbp_frame_stack_color"
-    links.new(geometry_socket, store_color.inputs["Geometry"])
-    links.new(color_socket, store_color.inputs["Value"])
-    store_alpha = _node(group, "GeometryNodeStoreNamedAttribute", f"Store {prefix} Alpha", x + 220, y)
-    store_alpha.data_type = "FLOAT"
-    store_alpha.domain = "POINT"
-    store_alpha.inputs["Name"].default_value = "fbp_frame_stack_alpha"
-    links.new(store_color.outputs["Geometry"], store_alpha.inputs["Geometry"])
-    links.new(alpha_socket, store_alpha.inputs["Value"])
-    store_glow = _node(group, "GeometryNodeStoreNamedAttribute", f"Store {prefix} Glow", x + 440, y)
-    store_glow.data_type = "FLOAT"
-    store_glow.domain = "POINT"
-    store_glow.inputs["Name"].default_value = "fbp_frame_stack_glow"
-    links.new(store_alpha.outputs["Geometry"], store_glow.inputs["Geometry"])
-    links.new(inp.outputs["Glow"], store_glow.inputs["Value"])
-    return store_glow.outputs["Geometry"]
+    base = _node(group, "GeometryNodeSwitch", f"{prefix} Base Position", x, y)
+    base.input_type = "INT"
+    links.new(inp.outputs["Fixed Start"], base.inputs["Switch"])
+    links.new(inp.outputs["Stack Position"], base.inputs["False"])
+    links.new(inp.outputs["Start Position"], base.inputs["True"])
+    delta = _math(group, "MULTIPLY", f"{prefix} Frame Delta", x, y - 200)
+    links.new(index_socket, delta.inputs[0])
+    links.new(inp.outputs["Frame Step"], delta.inputs[1])
+    position = _math(group, "SUBTRACT", f"{prefix} Position", x + 220, y)
+    links.new(base.outputs["Output"], position.inputs[0])
+    links.new(delta.outputs[0], position.inputs[1])
+    has_cycle = _math(group, "GREATER_THAN", f"{prefix} Has Cycle", x + 220, y - 400, value_2=0.5)
+    links.new(inp.outputs["Cycle Length"], has_cycle.inputs[0])
+    safe_cycle = _math(group, "MAXIMUM", f"{prefix} Safe Cycle", x + 220, y - 600, value_2=1.0)
+    links.new(inp.outputs["Cycle Length"], safe_cycle.inputs[0])
+    wrapped = _math(group, "FLOORED_MODULO", f"{prefix} Wrapped", x + 440, y - 200)
+    links.new(position.outputs[0], wrapped.inputs[0])
+    links.new(safe_cycle.outputs[0], wrapped.inputs[1])
+    wrap_on = _math(group, "MULTIPLY", f"{prefix} Wrap On", x + 440, y - 400)
+    links.new(inp.outputs["Loop"], wrap_on.inputs[0])
+    links.new(has_cycle.outputs[0], wrap_on.inputs[1])
+    q = _node(group, "GeometryNodeSwitch", f"{prefix} Cycle Position", x + 660, y)
+    q.input_type = "FLOAT"
+    links.new(wrap_on.outputs[0], q.inputs["Switch"])
+    links.new(position.outputs[0], q.inputs["False"])
+    links.new(wrapped.outputs[0], q.inputs["True"])
+    after_start = _math(group, "GREATER_THAN", f"{prefix} After Start", x + 880, y - 200, value_2=-0.5)
+    links.new(q.outputs["Output"], after_start.inputs[0])
+    before_end = _math(group, "LESS_THAN", f"{prefix} Before End", x + 880, y - 400)
+    links.new(q.outputs["Output"], before_end.inputs[0])
+    links.new(inp.outputs["Cycle Length"], before_end.inputs[1])
+    open_end = _math(group, "SUBTRACT", f"{prefix} Open End", x + 880, y - 600, value_1=1.0)
+    links.new(has_cycle.outputs[0], open_end.inputs[1])
+    in_end = _math(group, "MAXIMUM", f"{prefix} In End", x + 1100, y - 400)
+    links.new(before_end.outputs[0], in_end.inputs[0])
+    links.new(open_end.outputs[0], in_end.inputs[1])
+    in_range = _math(group, "MULTIPLY", f"{prefix} In Range", x + 1320, y - 300)
+    links.new(after_start.outputs[0], in_range.inputs[0])
+    links.new(in_end.outputs[0], in_range.inputs[1])
+    return q.outputs["Output"], in_range.outputs[0]
+
+
+def _frame_stack_socket_subtype(socket, subtype):
+    try:
+        socket.subtype = subtype
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+
+# Inputs the runtime writes on every sync. They are hidden from the
+# Modifiers panel: the artist edits the inputs above them.
+FBP_FRAME_STACK_RUNTIME_INPUTS = (
+    "Stack Material", "Source Frame", "Stack Position", "Start Position",
+    "Cycle Length", "Loop", "Use Atlas", "Atlas Columns", "Atlas Rows",
+    "Atlas Width", "Atlas Height", "Cell Width", "Cell Height", "Table Rows",
+)
 
 
 def _create_frame_stack(name):
     """Stack earlier frames of the plane's sequence or video in depth.
 
-    Image sequences take the light path: the runtime writes one small
-    thumbnail per slice into a stack image (``Use Stack Image``), sized to the
-    slice grid, and the group builds every slice at once as instances of one
-    aspect-balanced grid that sample their own cell. No source frame is
-    decoded at full resolution for the slices, and nothing loops.
+    Image sequences: every slice is one instance of the plane itself (no
+    remesh, a handful of vertices). The runtime keeps small copies of the
+    frames in an atlas image owned by the layer's Frame Stack material and
+    writes a timing table, one pixel per playback position, holding the
+    atlas cell of that position. Here each slice finds its position from
+    Stack Position, Frame Step and the loop, reads its cell from the table
+    and stores the cell rectangle; the material samples the atlas per pixel.
+    Changing any visible input therefore only re-evaluates this cheap tree.
 
-    Movies, and sequences without timing metadata, keep the Repeat Zone path:
-    the Geometry Image Texture node evaluates a single Frame per call, so each
-    iteration samples its own source frame. Each slice becomes an instance and
-    all of them are realized once after the loop, so the loop cost stays
-    linear in the slice count.
-
-    Both paths write ``fbp_frame_stack_color`` / ``fbp_frame_stack_alpha``;
-    the plane itself stays the full-resolution current frame. Slices step
-    through playback positions, not file numbers.
+    Videos (and sequences without timing metadata) cannot be read by the
+    runtime, so the Geometry Image Texture node samples one movie frame per
+    slice on a grid of ``Detail`` and stores the colour per vertex.
     """
     group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    # Sockets are created in the order of the earlier builds, so the socket
+    # identifiers of saved modifiers keep their values when a file upgrades,
+    # and moved into display order afterwards.
     _socket(group, "Geometry", "INPUT", "NodeSocketGeometry")
-    _socket(group, "Slices", "INPUT", "NodeSocketInt", default=16, minimum=1, maximum=512)
+    _socket(group, "Slices", "INPUT", "NodeSocketInt", default=12, minimum=1, maximum=512)
     _socket(group, "Frame Step", "INPUT", "NodeSocketInt", default=2, minimum=-1000, maximum=1000)
     _socket(group, "Source Frame", "INPUT", "NodeSocketInt", default=1, minimum=-1000000, maximum=1000000)
     _socket(group, "Fixed Start", "INPUT", "NodeSocketBool", default=False)
     _socket(group, "Start Frame", "INPUT", "NodeSocketInt", default=1, minimum=-1000000, maximum=1000000)
     _socket(group, "Detail", "INPUT", "NodeSocketInt", default=5, minimum=0, maximum=8)
-    _socket(group, "Offset X", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0)
-    _socket(group, "Offset Y", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0)
-    _socket(group, "Spacing", "INPUT", "NodeSocketFloat", default=-0.04, minimum=-10.0, maximum=10.0)
+    _frame_stack_socket_subtype(
+        _socket(group, "Offset X", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0), "DISTANCE")
+    _frame_stack_socket_subtype(
+        _socket(group, "Offset Y", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0), "DISTANCE")
+    _frame_stack_socket_subtype(
+        _socket(group, "Spacing", "INPUT", "NodeSocketFloat", default=-0.04, minimum=-10.0, maximum=10.0), "DISTANCE")
     _socket(group, "Scale Step", "INPUT", "NodeSocketFloat", default=0.0, minimum=-10.0, maximum=10.0)
-    _socket(group, "Rotation X", "INPUT", "NodeSocketFloat", default=0.0, minimum=-100.0, maximum=100.0)
-    _socket(group, "Rotation Y", "INPUT", "NodeSocketFloat", default=0.0, minimum=-100.0, maximum=100.0)
-    _socket(group, "Twist", "INPUT", "NodeSocketFloat", default=0.0, minimum=-100.0, maximum=100.0)
+    for label in ("Rotation X", "Rotation Y", "Twist"):
+        _frame_stack_socket_subtype(
+            _socket(group, label, "INPUT", "NodeSocketFloat", default=0.0, minimum=-100.0, maximum=100.0), "ANGLE")
     _socket(group, "Front Slices", "INPUT", "NodeSocketInt", default=0, minimum=0, maximum=512)
-    _socket(group, "Front Opacity", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=1.0)
-    _socket(group, "Back Opacity", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Depth Fade", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
-    _socket(group, "Luminance Opacity", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0)
+    for label, default in (("Front Opacity", 0.15), ("Back Opacity", 1.0), ("Depth Fade", 0.0)):
+        _frame_stack_socket_subtype(
+            _socket(group, label, "INPUT", "NodeSocketFloat", default=default, minimum=0.0, maximum=1.0), "FACTOR")
+    _frame_stack_socket_subtype(
+        _socket(group, "Luminance Opacity", "INPUT", "NodeSocketFloat", default=0.0, minimum=-1.0, maximum=1.0), "FACTOR")
     _socket(group, "Show Plane", "INPUT", "NodeSocketBool", default=True)
     _socket(group, "Outline", "INPUT", "NodeSocketBool", default=False)
-    _socket(group, "Outline Width", "INPUT", "NodeSocketFloat", default=0.004, minimum=0.00001, maximum=1.0)
+    _frame_stack_socket_subtype(
+        _socket(group, "Outline Width", "INPUT", "NodeSocketFloat", default=0.004, minimum=0.00001, maximum=1.0), "DISTANCE")
     _socket(group, "Outline Color", "INPUT", "NodeSocketColor", default=(1.0, 1.0, 1.0, 1.0))
     _socket(group, "Glow", "INPUT", "NodeSocketBool", default=False)
     _socket(group, "Stack Material", "INPUT", "NodeSocketMaterial")
     _socket(group, "Stack Position", "INPUT", "NodeSocketInt", default=0, minimum=-1000000, maximum=1000000)
     _socket(group, "Cycle Length", "INPUT", "NodeSocketInt", default=0, minimum=0, maximum=1000000)
     _socket(group, "Loop", "INPUT", "NodeSocketBool", default=False)
-    _socket(group, "Frame Base", "INPUT", "NodeSocketInt", default=1, minimum=-1000000, maximum=1000000)
-    _socket(group, "Use Timing Table", "INPUT", "NodeSocketBool", default=False)
-    _socket(group, "Table Rows", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=100000)
-    _socket(group, "Use Stack Image", "INPUT", "NodeSocketBool", default=False)
-    _socket(group, "Stack Columns", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=4096)
-    _socket(group, "Stack Rows", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=4096)
-    _socket(group, "Stack Cells", "INPUT", "NodeSocketInt", default=0, minimum=0, maximum=100000)
-    _socket(group, "Cell Width", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=16384)
-    _socket(group, "Cell Height", "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=16384)
+    _socket(group, "Start Position", "INPUT", "NodeSocketInt", default=0, minimum=-1000000, maximum=1000000)
+    _socket(group, "Use Atlas", "INPUT", "NodeSocketBool", default=False)
+    for label in ("Atlas Columns", "Atlas Rows", "Atlas Width", "Atlas Height", "Cell Width", "Cell Height", "Table Rows"):
+        _socket(group, label, "INPUT", "NodeSocketInt", default=1, minimum=1, maximum=65536)
     _socket(group, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    display_order = (
+        "Geometry", "Slices", "Frame Step", "Fixed Start", "Start Frame", "Show Plane",
+        "Spacing", "Offset X", "Offset Y", "Scale Step", "Rotation X", "Rotation Y", "Twist",
+        "Glow", "Front Slices", "Front Opacity", "Back Opacity", "Depth Fade", "Luminance Opacity",
+        "Outline", "Outline Width", "Outline Color", "Detail",
+    )
+    interface = group.interface
+    for position, label in enumerate(display_order):
+        item = next(
+            (entry for entry in interface.items_tree
+             if getattr(entry, "in_out", "") == "INPUT" and entry.name == label),
+            None,
+        )
+        if item is None:
+            continue
+        current = [entry for entry in interface.items_tree if getattr(entry, "in_out", "") == "INPUT"]
+        if current.index(item) != position:
+            try:
+                interface.move(item, item.position - (current.index(item) - position))
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+    for item in group.interface.items_tree:
+        if getattr(item, "in_out", "") == "INPUT" and item.name in FBP_FRAME_STACK_RUNTIME_INPUTS:
+            try:
+                item.hide_in_modifier = True
+            except (AttributeError, TypeError, ValueError):
+                pass
     inp, out = _group_io(group)
+    inp.location = (-3200, 0)
     links = group.links
 
-    slice_mesh = _aspect_remesh(
-        group, inp.outputs["Geometry"], inp.outputs["Detail"],
-        prefix="Frame Stack", x=-2600, y=400, triangulate=False,
-    )
     # Slice 0 is the plane itself unless Show Plane is off.
-    first_index = _node(group, "GeometryNodeSwitch", "Frame Stack First Index", -2600, -200)
+    first_index = _node(group, "GeometryNodeSwitch", "Frame Stack First Index", -2900, -200)
     first_index.input_type = "INT"
     first_index.inputs["False"].default_value = 0
     first_index.inputs["True"].default_value = 1
     links.new(inp.outputs["Show Plane"], first_index.inputs["Switch"])
-    iterations = _math(group, "SUBTRACT", "Frame Stack Iterations", -2380, -200)
-    links.new(inp.outputs["Slices"], iterations.inputs[0])
-    links.new(first_index.outputs["Output"], iterations.inputs[1])
-    safe_iterations = _math(group, "MAXIMUM", "Frame Stack Safe Iterations", -2160, -200, value_2=0.0)
-    links.new(iterations.outputs[0], safe_iterations.inputs[0])
-    # Source Frame, Fixed Start and Start Frame stay in the interface for the
-    # property contract; the runtime folds them into Stack Position.
-    last_index = _math(group, "SUBTRACT", "Frame Stack Last Index", -2380, -620, value_2=1.0)
+    count = _math(group, "SUBTRACT", "Frame Stack Count", -2680, -200)
+    links.new(inp.outputs["Slices"], count.inputs[0])
+    links.new(first_index.outputs["Output"], count.inputs[1])
+    safe_count = _math(group, "MAXIMUM", "Frame Stack Safe Count", -2460, -200, value_2=0.0)
+    links.new(count.outputs[0], safe_count.inputs[0])
+    last_index = _math(group, "SUBTRACT", "Frame Stack Last Index", -2680, -420, value_2=1.0)
     links.new(inp.outputs["Slices"], last_index.inputs[0])
 
-    # ---- Light path: every slice at once from the runtime stack image. ----
-    sy = 3400
-    slice_instance = _node(group, "GeometryNodeGeometryToInstance", "Frame Stack Cell Instance", -1900, sy)
-    links.new(slice_mesh, slice_instance.inputs["Geometry"])
-    duplicates = _node(group, "GeometryNodeDuplicateElements", "Frame Stack Cell Slices", -1680, sy)
+    # ---- Atlas path: instances of the plane, one atlas cell each. ----
+    ay = 2400
+    proto = _node(group, "GeometryNodeGeometryToInstance", "Frame Stack Slice", -2460, ay)
+    links.new(inp.outputs["Geometry"], proto.inputs["Geometry"])
+    duplicates = _node(group, "GeometryNodeDuplicateElements", "Frame Stack Slices", -2240, ay)
     duplicates.domain = "INSTANCE"
-    links.new(slice_instance.outputs["Instances"], duplicates.inputs["Geometry"])
-    links.new(safe_iterations.outputs[0], duplicates.inputs["Amount"])
-    cell_index = _math(group, "ADD", "Frame Stack Cell Index", -1460, sy - 300)
-    links.new(duplicates.outputs["Duplicate Index"], cell_index.inputs[0])
-    links.new(first_index.outputs["Output"], cell_index.inputs[1])
-    c_translation, c_rotation, c_scale = _frame_stack_transform(
-        group, cell_index.outputs[0], inp, prefix="Frame Stack Cell", x=-1460, y=sy - 700,
-    )
-    c_scale_vector = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Cell Scale", -800, sy - 900)
-    for axis in ("X", "Y", "Z"):
-        links.new(c_scale, c_scale_vector.inputs[axis])
-    c_transform = _node(group, "FunctionNodeCombineTransform", "Frame Stack Cell Transform", -580, sy - 700)
-    links.new(c_translation, c_transform.inputs["Translation"])
-    links.new(c_rotation, c_transform.inputs["Rotation"])
-    links.new(c_scale_vector.outputs[0], c_transform.inputs["Scale"])
-    place_cells = _node(group, "GeometryNodeSetInstanceTransform", "Place Frame Stack Cells", -360, sy)
-    links.new(duplicates.outputs["Geometry"], place_cells.inputs["Instances"])
-    links.new(c_transform.outputs["Transform"], place_cells.inputs["Transform"])
-    realize_cells = _node(group, "GeometryNodeRealizeInstances", "Realize Frame Stack Cells", -140, sy)
-    links.new(place_cells.outputs["Instances"], realize_cells.inputs["Geometry"])
-
-    # Cell lookup: slice n reads cell n of a Columns x Rows grid, inset by
-    # half a texel so linear filtering never bleeds into a neighbour.
-    cell_uv_attr = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack Cell UVMap", -140, sy - 400)
-    cell_uv_attr.data_type = "FLOAT_VECTOR"
-    cell_uv_attr.inputs["Name"].default_value = "UVMap"
-    cell_uv_parts = _node(group, "ShaderNodeSeparateXYZ", "Frame Stack Cell UV Parts", 80, sy - 400)
-    links.new(cell_uv_attr.outputs["Attribute"], cell_uv_parts.inputs[0])
-    cell_column = _math(group, "FLOORED_MODULO", "Frame Stack Cell Column", 80, sy - 700)
-    links.new(cell_index.outputs[0], cell_column.inputs[0])
-    links.new(inp.outputs["Stack Columns"], cell_column.inputs[1])
-    cell_row_raw = _math(group, "DIVIDE", "Frame Stack Cell Row Raw", 80, sy - 900)
-    links.new(cell_index.outputs[0], cell_row_raw.inputs[0])
-    links.new(inp.outputs["Stack Columns"], cell_row_raw.inputs[1])
-    cell_row = _math(group, "FLOOR", "Frame Stack Cell Row", 300, sy - 900)
-    links.new(cell_row_raw.outputs[0], cell_row.inputs[0])
-
-    def cell_axis(part, size_socket, cell_socket, count_socket, label, y):
-        clamped = _math(group, "MINIMUM", f"Frame Stack Cell {label} Clamp High", 300, y, value_2=1.0)
-        links.new(part, clamped.inputs[0])
-        clamped_low = _math(group, "MAXIMUM", f"Frame Stack Cell {label} Clamp", 520, y, value_2=0.0)
-        links.new(clamped.outputs[0], clamped_low.inputs[0])
-        texel = _math(group, "DIVIDE", f"Frame Stack Cell {label} Texel", 300, y - 160, value_1=1.0)
-        links.new(size_socket, texel.inputs[1])
-        span = _math(group, "SUBTRACT", f"Frame Stack Cell {label} Span", 520, y - 160, value_1=1.0)
-        links.new(texel.outputs[0], span.inputs[1])
-        half = _math(group, "MULTIPLY", f"Frame Stack Cell {label} Half Texel", 740, y - 160, value_2=0.5)
-        links.new(texel.outputs[0], half.inputs[0])
-        local = _math(group, "MULTIPLY_ADD", f"Frame Stack Cell {label} Local", 740, y)
-        links.new(clamped_low.outputs[0], local.inputs[0])
-        links.new(span.outputs[0], local.inputs[1])
-        links.new(half.outputs[0], local.inputs[2])
-        offset = _math(group, "ADD", f"Frame Stack Cell {label} Offset", 960, y)
-        links.new(local.outputs[0], offset.inputs[0])
-        links.new(cell_socket, offset.inputs[1])
-        normalized = _math(group, "DIVIDE", f"Frame Stack Cell {label}", 1180, y)
-        links.new(offset.outputs[0], normalized.inputs[0])
-        links.new(count_socket, normalized.inputs[1])
-        return normalized.outputs[0]
-
-    cell_u = cell_axis(
-        cell_uv_parts.outputs["X"], inp.outputs["Cell Width"], cell_column.outputs[0],
-        inp.outputs["Stack Columns"], "U", sy - 1200,
-    )
-    cell_v = cell_axis(
-        cell_uv_parts.outputs["Y"], inp.outputs["Cell Height"], cell_row.outputs[0],
-        inp.outputs["Stack Rows"], "V", sy - 1500,
-    )
-    cell_uv = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Cell UV", 1400, sy - 1300)
-    links.new(cell_u, cell_uv.inputs["X"])
-    links.new(cell_v, cell_uv.inputs["Y"])
-    cells_image = _node(group, "GeometryNodeImageTexture", "Frame Stack Cells", 1620, sy - 1300)
-    cells_image["fbp_frame_stack_cells_node"] = True
-    try:
-        cells_image.extension = "EXTEND"
-        cells_image.interpolation = "Linear"
-    except (AttributeError, TypeError, ValueError):
-        pass
-    links.new(cell_uv.outputs[0], cells_image.inputs["Vector"])
-    cell_written = _math(group, "LESS_THAN", "Frame Stack Cell Written", 1620, sy - 1700)
-    links.new(cell_index.outputs[0], cell_written.inputs[0])
-    links.new(inp.outputs["Stack Cells"], cell_written.inputs[1])
-    cell_alpha = _frame_stack_slice_alpha(
-        group, inp, cell_index.outputs[0], cells_image.outputs["Color"], cells_image.outputs["Alpha"],
-        cell_written.outputs[0], last_index.outputs[0], prefix="Frame Stack Cell", x=1840, y=sy - 1500,
-    )
-    cell_slices = _frame_stack_store(
-        group, inp, realize_cells.outputs["Geometry"], cells_image.outputs["Color"], cell_alpha,
-        prefix="Frame Stack Cell", x=3600, y=sy,
-    )
-    cell_material = _node(group, "GeometryNodeSetMaterial", "Frame Stack Cell Material", 4300, sy)
-    links.new(cell_slices, cell_material.inputs["Geometry"])
-    links.new(inp.outputs["Stack Material"], cell_material.inputs["Material"])
-
-    # ---- Repeat Zone path: one decoded source frame per slice. ----
-    repeat_in = _node(group, "GeometryNodeRepeatInput", "Frame Stack Repeat", -1900, 200)
-    repeat_out = _node(group, "GeometryNodeRepeatOutput", "Frame Stack Repeat End", 2600, 200)
-    repeat_in.pair_with_output(repeat_out)
-    links.new(safe_iterations.outputs[0], repeat_in.inputs["Iterations"])
-
-    index = _math(group, "ADD", "Frame Stack Slice Index", -1660, -40)
-    links.new(repeat_in.outputs["Iteration"], index.inputs[0])
+    links.new(proto.outputs["Instances"], duplicates.inputs["Geometry"])
+    links.new(safe_count.outputs[0], duplicates.inputs["Amount"])
+    index = _math(group, "ADD", "Frame Stack Index", -2020, ay - 300)
+    links.new(duplicates.outputs["Duplicate Index"], index.inputs[0])
     links.new(first_index.outputs["Output"], index.inputs[1])
-    frame_delta = _math(group, "MULTIPLY", "Frame Stack Frame Delta", -1440, -40)
-    links.new(index.outputs[0], frame_delta.inputs[0])
-    links.new(inp.outputs["Frame Step"], frame_delta.inputs[1])
-    position = _math(group, "SUBTRACT", "Frame Stack Slice Position", -1220, -40)
-    links.new(inp.outputs["Stack Position"], position.inputs[0])
-    links.new(frame_delta.outputs[0], position.inputs[1])
+    q, in_range = _frame_stack_position(group, inp, index.outputs[0], prefix="Frame Stack", x=-1800, y=ay - 300)
 
-    # Looping layers wrap earlier positions around the cycle; otherwise a
-    # position before the first frame or past the last one stays empty.
-    has_cycle = _math(group, "GREATER_THAN", "Frame Stack Has Cycle", -1220, -760, value_2=0.5)
-    links.new(inp.outputs["Cycle Length"], has_cycle.inputs[0])
-    safe_cycle = _math(group, "MAXIMUM", "Frame Stack Safe Cycle", -1220, -960, value_2=1.0)
-    links.new(inp.outputs["Cycle Length"], safe_cycle.inputs[0])
-    wrapped = _math(group, "FLOORED_MODULO", "Frame Stack Wrapped Position", -1000, -960)
-    links.new(position.outputs[0], wrapped.inputs[0])
-    links.new(safe_cycle.outputs[0], wrapped.inputs[1])
-    wrap_on = _math(group, "MULTIPLY", "Frame Stack Wrap On", -1000, -760)
-    links.new(inp.outputs["Loop"], wrap_on.inputs[0])
-    links.new(has_cycle.outputs[0], wrap_on.inputs[1])
-    slice_position = _node(group, "GeometryNodeSwitch", "Frame Stack Cycle Position", -780, -860)
-    slice_position.input_type = "FLOAT"
-    links.new(wrap_on.outputs[0], slice_position.inputs["Switch"])
-    links.new(position.outputs[0], slice_position.inputs["False"])
-    links.new(wrapped.outputs[0], slice_position.inputs["True"])
-    q = slice_position.outputs["Output"]
-    after_start = _math(group, "GREATER_THAN", "Frame Stack After Start", -560, -760, value_2=-0.5)
-    links.new(q, after_start.inputs[0])
-    before_end = _math(group, "LESS_THAN", "Frame Stack Before End", -560, -960)
-    links.new(q, before_end.inputs[0])
-    links.new(inp.outputs["Cycle Length"], before_end.inputs[1])
-    open_end = _math(group, "SUBTRACT", "Frame Stack Open End", -560, -1160, value_1=1.0)
-    links.new(has_cycle.outputs[0], open_end.inputs[1])
-    in_end = _math(group, "MAXIMUM", "Frame Stack In End", -340, -960)
-    links.new(before_end.outputs[0], in_end.inputs[0])
-    links.new(open_end.outputs[0], in_end.inputs[1])
-    in_range = _math(group, "MULTIPLY", "Frame Stack In Range", -120, -860)
-    links.new(after_start.outputs[0], in_range.inputs[0])
-    links.new(in_end.outputs[0], in_range.inputs[1])
-
-    # Timing table lookup, read back as single values through a one-point
-    # Sample Index because the image Frame input takes no field.
+    # Timing table: one pixel per playback position, R = atlas cell, G = 1
+    # once that cell holds the position's frame.
     table_width = float(FBP_FRAME_STACK_TABLE_WIDTH)
-    table_column = _math(group, "FLOORED_MODULO", "Frame Stack Table Column", -780, -1400, value_2=table_width)
-    links.new(q, table_column.inputs[0])
-    table_u = _math(group, "MULTIPLY_ADD", "Frame Stack Table U", -560, -1400)
+    column = _math(group, "FLOORED_MODULO", "Frame Stack Table Column", -400, ay - 300, value_2=table_width)
+    links.new(q, column.inputs[0])
+    table_u = _math(group, "MULTIPLY_ADD", "Frame Stack Table U", -180, ay - 300)
     table_u.inputs[1].default_value = 1.0 / table_width
     table_u.inputs[2].default_value = 0.5 / table_width
-    links.new(table_column.outputs[0], table_u.inputs[0])
-    table_row_raw = _math(group, "DIVIDE", "Frame Stack Table Row Raw", -780, -1600, value_2=table_width)
-    links.new(q, table_row_raw.inputs[0])
-    table_row = _math(group, "FLOOR", "Frame Stack Table Row", -560, -1600)
-    links.new(table_row_raw.outputs[0], table_row.inputs[0])
-    table_row_center = _math(group, "ADD", "Frame Stack Table Row Center", -340, -1600, value_2=0.5)
-    links.new(table_row.outputs[0], table_row_center.inputs[0])
-    table_v = _math(group, "DIVIDE", "Frame Stack Table V", -120, -1600)
-    links.new(table_row_center.outputs[0], table_v.inputs[0])
+    links.new(column.outputs[0], table_u.inputs[0])
+    row_raw = _math(group, "DIVIDE", "Frame Stack Table Row Raw", -400, ay - 500, value_2=table_width)
+    links.new(q, row_raw.inputs[0])
+    row = _math(group, "FLOOR", "Frame Stack Table Row", -180, ay - 500)
+    links.new(row_raw.outputs[0], row.inputs[0])
+    row_center = _math(group, "ADD", "Frame Stack Table Row Center", 40, ay - 500, value_2=0.5)
+    links.new(row.outputs[0], row_center.inputs[0])
+    table_v = _math(group, "DIVIDE", "Frame Stack Table V", 260, ay - 500)
+    links.new(row_center.outputs[0], table_v.inputs[0])
     links.new(inp.outputs["Table Rows"], table_v.inputs[1])
-    table_uv = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Table UV", 100, -1500)
+    table_uv = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Table UV", 480, ay - 400)
     links.new(table_u.outputs[0], table_uv.inputs["X"])
     links.new(table_v.outputs[0], table_uv.inputs["Y"])
-    table = _node(group, "GeometryNodeImageTexture", "Frame Stack Timing Table", 320, -1500)
+    table = _node(group, "GeometryNodeImageTexture", "Frame Stack Timing Table", 700, ay - 400)
     table["fbp_frame_stack_table_node"] = True
     try:
         table.extension = "EXTEND"
@@ -9438,40 +9334,153 @@ def _create_frame_stack(name):
     except (AttributeError, TypeError, ValueError):
         pass
     links.new(table_uv.outputs[0], table.inputs["Vector"])
-    table_point = _node(group, "GeometryNodePoints", "Frame Stack Table Point", 320, -1800)
-    table_point.inputs["Count"].default_value = 1
-    table_sample = _node(group, "GeometryNodeSampleIndex", "Frame Stack Table Sample", 540, -1600)
-    table_sample.data_type = "FLOAT_COLOR"
-    table_sample.domain = "POINT"
-    links.new(table_point.outputs["Points"], table_sample.inputs["Geometry"])
-    links.new(table.outputs["Color"], table_sample.inputs["Value"])
-    table_channels = _node(group, "FunctionNodeSeparateColor", "Frame Stack Table Channels", 760, -1600)
-    links.new(table_sample.outputs["Value"], table_channels.inputs["Color"])
+    channels = _node(group, "FunctionNodeSeparateColor", "Frame Stack Table Channels", 920, ay - 400)
+    links.new(table.outputs["Color"], channels.inputs["Color"])
+    ready = _math(group, "MULTIPLY", "Frame Stack Slice Ready", 1140, ay - 200)
+    links.new(in_range, ready.inputs[0])
+    links.new(channels.outputs["Green"], ready.inputs[1])
+    hidden = _math(group, "LESS_THAN", "Frame Stack Slice Hidden", 1360, ay - 200, value_2=0.5)
+    links.new(ready.outputs[0], hidden.inputs[0])
 
-    direct_frame = _math(group, "ADD", "Frame Stack Direct Frame", 100, -1200)
-    links.new(q, direct_frame.inputs[0])
-    links.new(inp.outputs["Frame Base"], direct_frame.inputs[1])
-    source_frame = _node(group, "GeometryNodeSwitch", "Frame Stack Source Frame", 980, -1300)
-    source_frame.input_type = "FLOAT"
-    links.new(inp.outputs["Use Timing Table"], source_frame.inputs["Switch"])
-    links.new(direct_frame.outputs[0], source_frame.inputs["False"])
-    links.new(table_channels.outputs["Red"], source_frame.inputs["True"])
-    table_visible = _node(group, "GeometryNodeSwitch", "Frame Stack Table Visible", 980, -1500)
-    table_visible.input_type = "FLOAT"
-    table_visible.inputs["False"].default_value = 1.0
-    links.new(inp.outputs["Use Timing Table"], table_visible.inputs["Switch"])
-    links.new(table_channels.outputs["Green"], table_visible.inputs["True"])
-    slice_shown = _math(group, "MULTIPLY", "Frame Stack Slice Shown", 1200, -1400)
-    links.new(in_range.outputs[0], slice_shown.inputs[0])
-    links.new(table_visible.outputs["Output"], slice_shown.inputs[1])
-    frame = _node(group, "FunctionNodeFloatToInt", "Frame Stack Slice Frame", 1200, -1200)
-    frame.rounding_mode = "ROUND"
-    links.new(source_frame.outputs["Output"], frame.inputs[0])
+    # Cell rectangle in atlas UV: origin at the first texel centre, span
+    # to the last one, so linear filtering never reads a neighbour.
+    cell = _node(group, "FunctionNodeFloatToInt", "Frame Stack Cell", 1140, ay - 700)
+    cell.rounding_mode = "ROUND"
+    links.new(channels.outputs["Red"], cell.inputs[0])
+    cell_column = _math(group, "FLOORED_MODULO", "Frame Stack Cell Column", 1360, ay - 600)
+    links.new(cell.outputs[0], cell_column.inputs[0])
+    links.new(inp.outputs["Atlas Columns"], cell_column.inputs[1])
+    cell_row_raw = _math(group, "DIVIDE", "Frame Stack Cell Row Raw", 1360, ay - 800)
+    links.new(cell.outputs[0], cell_row_raw.inputs[0])
+    links.new(inp.outputs["Atlas Columns"], cell_row_raw.inputs[1])
+    cell_row = _math(group, "FLOOR", "Frame Stack Cell Row", 1580, ay - 800)
+    links.new(cell_row_raw.outputs[0], cell_row.inputs[0])
 
-    uv = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack UVMap", -1440, 420)
+    def cell_axis(cell_socket, size_socket, atlas_socket, label, y):
+        start = _math(group, "MULTIPLY_ADD", f"Frame Stack Cell {label} Start", 1800, y)
+        links.new(cell_socket, start.inputs[0])
+        links.new(size_socket, start.inputs[1])
+        start.inputs[2].default_value = 0.5
+        origin = _math(group, "DIVIDE", f"Frame Stack Cell {label} Origin", 2020, y)
+        links.new(start.outputs[0], origin.inputs[0])
+        links.new(atlas_socket, origin.inputs[1])
+        inner = _math(group, "SUBTRACT", f"Frame Stack Cell {label} Inner", 1800, y - 160, value_2=1.0)
+        links.new(size_socket, inner.inputs[0])
+        span = _math(group, "DIVIDE", f"Frame Stack Cell {label} Span", 2020, y - 160)
+        links.new(inner.outputs[0], span.inputs[0])
+        links.new(atlas_socket, span.inputs[1])
+        return origin.outputs[0], span.outputs[0]
+
+    u0, du = cell_axis(cell_column.outputs[0], inp.outputs["Cell Width"], inp.outputs["Atlas Width"], "U", ay - 600)
+    v0, dv = cell_axis(cell_row.outputs[0], inp.outputs["Cell Height"], inp.outputs["Atlas Height"], "V", ay - 1000)
+    rect = _node(group, "FunctionNodeCombineColor", "Frame Stack Cell Rect", 2240, ay - 800)
+    links.new(u0, rect.inputs["Red"])
+    links.new(v0, rect.inputs["Green"])
+    links.new(du, rect.inputs["Blue"])
+    links.new(dv, rect.inputs["Alpha"])
+
+    keep = _node(group, "GeometryNodeDeleteGeometry", "Frame Stack Drop Empty Slices", 1580, ay)
+    keep.domain = "INSTANCE"
+    links.new(duplicates.outputs["Geometry"], keep.inputs["Geometry"])
+    links.new(hidden.outputs[0], keep.inputs["Selection"])
+    store_rect = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Cell", 2460, ay)
+    store_rect.data_type = "FLOAT_COLOR"
+    store_rect.domain = "INSTANCE"
+    store_rect.inputs["Name"].default_value = "fbp_frame_stack_cell"
+    links.new(keep.outputs["Geometry"], store_rect.inputs["Geometry"])
+    links.new(rect.outputs["Color"], store_rect.inputs["Value"])
+    atlas_opacity = _frame_stack_opacity(
+        group, inp, index.outputs[0], last_index.outputs[0], prefix="Frame Stack", x=1800, y=ay + 600,
+    )
+    store_opacity = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Opacity", 2680, ay)
+    store_opacity.data_type = "FLOAT"
+    store_opacity.domain = "INSTANCE"
+    store_opacity.inputs["Name"].default_value = "fbp_frame_stack_alpha"
+    links.new(store_rect.outputs["Geometry"], store_opacity.inputs["Geometry"])
+    links.new(atlas_opacity, store_opacity.inputs["Value"])
+    a_translation, a_rotation, _a_scale, a_scale_vector = _frame_stack_transform(
+        group, index.outputs[0], inp, prefix="Frame Stack Slice", x=1800, y=ay + 1200,
+    )
+    a_transform = _node(group, "FunctionNodeCombineTransform", "Frame Stack Slice Transform", 2680, ay + 1000)
+    links.new(a_translation, a_transform.inputs["Translation"])
+    links.new(a_rotation, a_transform.inputs["Rotation"])
+    links.new(a_scale_vector, a_transform.inputs["Scale"])
+    place = _node(group, "GeometryNodeSetInstanceTransform", "Place Frame Stack Slices", 2900, ay)
+    links.new(store_opacity.outputs["Geometry"], place.inputs["Instances"])
+    links.new(a_transform.outputs["Transform"], place.inputs["Transform"])
+    realize = _node(group, "GeometryNodeRealizeInstances", "Realize Frame Stack Slices", 3120, ay)
+    links.new(place.outputs["Instances"], realize.inputs["Geometry"])
+    atlas_flag = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Atlas Flag", 3340, ay)
+    atlas_flag.data_type = "FLOAT"
+    atlas_flag.domain = "POINT"
+    atlas_flag.inputs["Name"].default_value = "fbp_frame_stack_atlas"
+    atlas_flag.inputs["Value"].default_value = 1.0
+    links.new(realize.outputs["Geometry"], atlas_flag.inputs["Geometry"])
+    # The material reads the plane UV from its own attribute. UVMap itself is
+    # pointed into the slice's atlas cell, so Solid view in Texture color mode,
+    # which draws the active image through UVMap, shows each slice's drawing
+    # instead of the whole atlas.
+    slice_uv = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack Slice UV", 3340, ay - 400)
+    slice_uv.data_type = "FLOAT_VECTOR"
+    slice_uv.inputs["Name"].default_value = "UVMap"
+    keep_uv = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Plane UV", 3560, ay)
+    keep_uv.data_type = "FLOAT2"
+    keep_uv.domain = "CORNER"
+    keep_uv.inputs["Name"].default_value = "fbp_frame_stack_uv"
+    links.new(atlas_flag.outputs["Geometry"], keep_uv.inputs["Geometry"])
+    links.new(slice_uv.outputs["Attribute"], keep_uv.inputs["Value"])
+    cell = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack Slice Cell", 3340, ay - 600)
+    cell.data_type = "FLOAT_COLOR"
+    cell.inputs["Name"].default_value = "fbp_frame_stack_cell"
+    cell_parts = _node(group, "FunctionNodeSeparateColor", "Frame Stack Slice Cell Parts", 3560, ay - 600)
+    links.new(cell.outputs["Attribute"], cell_parts.inputs["Color"])
+    cell_origin = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Slice Cell Origin", 3780, ay - 500)
+    links.new(cell_parts.outputs["Red"], cell_origin.inputs["X"])
+    links.new(cell_parts.outputs["Green"], cell_origin.inputs["Y"])
+    cell_size = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Slice Cell Size", 3780, ay - 700)
+    links.new(cell_parts.outputs["Blue"], cell_size.inputs["X"])
+    links.new(cell_parts.outputs["Alpha"], cell_size.inputs["Y"])
+    clamped_uv = _node(group, "ShaderNodeVectorMath", "Frame Stack Slice UV Clamp", 3560, ay - 400)
+    clamped_uv.operation = "MAXIMUM"
+    links.new(slice_uv.outputs["Attribute"], clamped_uv.inputs[0])
+    clamped_uv.inputs[1].default_value = (0.0, 0.0, 0.0)
+    clamped_uv_top = _node(group, "ShaderNodeVectorMath", "Frame Stack Slice UV Clamp Top", 3780, ay - 300)
+    clamped_uv_top.operation = "MINIMUM"
+    links.new(clamped_uv.outputs["Vector"], clamped_uv_top.inputs[0])
+    clamped_uv_top.inputs[1].default_value = (1.0, 1.0, 0.0)
+    cell_uv = _node(group, "ShaderNodeVectorMath", "Frame Stack Slice Atlas UV", 4000, ay - 400)
+    cell_uv.operation = "MULTIPLY_ADD"
+    links.new(clamped_uv_top.outputs["Vector"], cell_uv.inputs[0])
+    links.new(cell_size.outputs["Vector"], cell_uv.inputs[1])
+    links.new(cell_origin.outputs["Vector"], cell_uv.inputs[2])
+    atlas_uv = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Atlas UVMap", 4220, ay)
+    atlas_uv.data_type = "FLOAT2"
+    atlas_uv.domain = "CORNER"
+    atlas_uv.inputs["Name"].default_value = "UVMap"
+    links.new(keep_uv.outputs["Geometry"], atlas_uv.inputs["Geometry"])
+    links.new(cell_uv.outputs["Vector"], atlas_uv.inputs["Value"])
+    atlas_slices = atlas_uv.outputs["Geometry"]
+
+    # ---- Video path: one decoded movie frame per slice, per vertex. ----
+    vy = -1200
+    grid = _aspect_remesh(group, inp.outputs["Geometry"], inp.outputs["Detail"], prefix="Frame Stack", x=-2460, y=vy, triangulate=False)
+    repeat_in = _node(group, "GeometryNodeRepeatInput", "Frame Stack Repeat", -2020, vy)
+    repeat_out = _node(group, "GeometryNodeRepeatOutput", "Frame Stack Repeat End", 2900, vy)
+    repeat_in.pair_with_output(repeat_out)
+    links.new(safe_count.outputs[0], repeat_in.inputs["Iterations"])
+    v_index = _math(group, "ADD", "Frame Stack Video Index", -1800, vy - 300)
+    links.new(repeat_in.outputs["Iteration"], v_index.inputs[0])
+    links.new(first_index.outputs["Output"], v_index.inputs[1])
+    v_q, v_in_range = _frame_stack_position(group, inp, v_index.outputs[0], prefix="Frame Stack Video", x=-1580, y=vy - 300)
+    v_frame_float = _math(group, "ADD", "Frame Stack Video Frame Number", 0, vy - 300, value_2=1.0)
+    links.new(v_q, v_frame_float.inputs[0])
+    v_frame = _node(group, "FunctionNodeFloatToInt", "Frame Stack Video Frame", 220, vy - 300)
+    v_frame.rounding_mode = "ROUND"
+    links.new(v_frame_float.outputs[0], v_frame.inputs[0])
+    uv = _node(group, "GeometryNodeInputNamedAttribute", "Frame Stack UVMap", 0, vy + 300)
     uv.data_type = "FLOAT_VECTOR"
     uv.inputs["Name"].default_value = "UVMap"
-    image = _node(group, "GeometryNodeImageTexture", "Frame Stack Image", -1000, 420)
+    image = _node(group, "GeometryNodeImageTexture", "Frame Stack Image", 440, vy + 200)
     image["fbp_alpha_image_node"] = True
     try:
         image.extension = "EXTEND"
@@ -9479,95 +9488,136 @@ def _create_frame_stack(name):
     except (AttributeError, TypeError, ValueError):
         pass
     links.new(uv.outputs["Attribute"], image.inputs["Vector"])
-    links.new(frame.outputs[0], image.inputs["Frame"])
-
-    final_alpha = _frame_stack_slice_alpha(
-        group, inp, index.outputs[0], image.outputs["Color"], image.outputs["Alpha"],
-        slice_shown.outputs[0], last_index.outputs[0], prefix="Frame Stack", x=-1000, y=-300,
+    links.new(v_frame.outputs[0], image.inputs["Frame"])
+    # Luminance key on the sampled colour (the atlas path keys in the material).
+    luminance = _vector_math(group, "DOT_PRODUCT", "Frame Stack Video Luminance", 660, vy + 600)
+    luminance.inputs[1].default_value = (0.2126, 0.7152, 0.0722)
+    links.new(image.outputs["Color"], luminance.inputs[0])
+    dark_key = _math(group, "SUBTRACT", "Frame Stack Video Dark Key", 880, vy + 700, value_1=1.0)
+    links.new(luminance.outputs["Value"], dark_key.inputs[1])
+    bright = _math(group, "GREATER_THAN", "Frame Stack Video Bright Key", 880, vy + 900, value_2=0.0)
+    links.new(inp.outputs["Luminance Opacity"], bright.inputs[0])
+    key = _node(group, "GeometryNodeSwitch", "Frame Stack Video Key", 1100, vy + 700)
+    key.input_type = "FLOAT"
+    links.new(bright.outputs[0], key.inputs["Switch"])
+    links.new(dark_key.outputs[0], key.inputs["False"])
+    links.new(luminance.outputs["Value"], key.inputs["True"])
+    key_amount = _math(group, "ABSOLUTE", "Frame Stack Video Key Amount", 1100, vy + 900)
+    links.new(inp.outputs["Luminance Opacity"], key_amount.inputs[0])
+    key_factor = _math(group, "MULTIPLY_ADD", "Frame Stack Video Key Factor", 1320, vy + 700)
+    key_offset = _math(group, "SUBTRACT", "Frame Stack Video Key Offset", 1320, vy + 900, value_2=1.0)
+    links.new(key.outputs["Output"], key_offset.inputs[0])
+    links.new(key_offset.outputs[0], key_factor.inputs[0])
+    links.new(key_amount.outputs[0], key_factor.inputs[1])
+    key_factor.inputs[2].default_value = 1.0
+    v_opacity = _frame_stack_opacity(
+        group, inp, v_index.outputs[0], last_index.outputs[0], prefix="Frame Stack Video", x=660, y=vy - 900,
     )
-    stored = _frame_stack_store(
-        group, inp, slice_mesh, image.outputs["Color"], final_alpha,
-        prefix="Frame Stack", x=760, y=400,
+    v_alpha = _math(group, "MULTIPLY", "Frame Stack Video Alpha", 1540, vy + 300)
+    links.new(image.outputs["Alpha"], v_alpha.inputs[0])
+    links.new(v_opacity, v_alpha.inputs[1])
+    v_keyed = _math(group, "MULTIPLY", "Frame Stack Video Keyed Alpha", 1760, vy + 300)
+    v_keyed.use_clamp = True
+    links.new(v_alpha.outputs[0], v_keyed.inputs[0])
+    links.new(key_factor.outputs[0], v_keyed.inputs[1])
+    v_shown = _math(group, "MULTIPLY", "Frame Stack Video Shown Alpha", 1980, vy + 300)
+    links.new(v_keyed.outputs[0], v_shown.inputs[0])
+    links.new(v_in_range, v_shown.inputs[1])
+    v_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Video Color", 1540, vy)
+    v_color.data_type = "FLOAT_COLOR"
+    v_color.domain = "POINT"
+    v_color.inputs["Name"].default_value = "fbp_frame_stack_color"
+    links.new(grid, v_color.inputs["Geometry"])
+    links.new(image.outputs["Color"], v_color.inputs["Value"])
+    v_store_alpha = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Video Alpha", 2200, vy)
+    v_store_alpha.data_type = "FLOAT"
+    v_store_alpha.domain = "POINT"
+    v_store_alpha.inputs["Name"].default_value = "fbp_frame_stack_alpha"
+    links.new(v_color.outputs["Geometry"], v_store_alpha.inputs["Geometry"])
+    links.new(v_shown.outputs[0], v_store_alpha.inputs["Value"])
+    v_translation, v_rotation, _v_scale, v_scale_vector = _frame_stack_transform(
+        group, v_index.outputs[0], inp, prefix="Frame Stack Video Slice", x=1540, y=vy - 1500,
     )
-    translation, rotation, scale = _frame_stack_transform(
-        group, index.outputs[0], inp, prefix="Frame Stack Slice", x=760, y=-700,
-    )
-    transform = _node(group, "GeometryNodeTransform", "Place Frame Stack Slice", 1420, 400)
-    links.new(stored, transform.inputs["Geometry"])
-    links.new(translation, transform.inputs["Translation"])
-    links.new(rotation, transform.inputs["Rotation"])
-    scale_vector = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Slice Scale", 1200, -900)
-    for axis in ("X", "Y", "Z"):
-        links.new(scale, scale_vector.inputs[axis])
-    links.new(scale_vector.outputs[0], transform.inputs["Scale"])
-    material = _node(group, "GeometryNodeSetMaterial", "Frame Stack Material", 1640, 400)
-    links.new(transform.outputs["Geometry"], material.inputs["Geometry"])
-    links.new(inp.outputs["Stack Material"], material.inputs["Material"])
-    # Joining instances only copies references, so the loop stays linear;
-    # the slices are realized once after the loop.
-    slice_as_instance = _node(group, "GeometryNodeGeometryToInstance", "Frame Stack Slice Instance", 1860, 600)
-    links.new(material.outputs["Geometry"], slice_as_instance.inputs["Geometry"])
-    join_slices = _node(group, "GeometryNodeJoinGeometry", "Join Frame Stack Slices", 2080, 400)
-    links.new(slice_as_instance.outputs["Instances"], join_slices.inputs["Geometry"])
-    links.new(repeat_in.outputs["Geometry"], join_slices.inputs["Geometry"])
-    links.new(join_slices.outputs["Geometry"], repeat_out.inputs["Geometry"])
-    realize_slices = _node(group, "GeometryNodeRealizeInstances", "Realize Frame Stack Slices", 2820, 200)
-    links.new(repeat_out.outputs["Geometry"], realize_slices.inputs["Geometry"])
+    v_place = _node(group, "GeometryNodeTransform", "Place Frame Stack Video Slice", 2420, vy)
+    links.new(v_store_alpha.outputs["Geometry"], v_place.inputs["Geometry"])
+    links.new(v_translation, v_place.inputs["Translation"])
+    links.new(v_rotation, v_place.inputs["Rotation"])
+    links.new(v_scale_vector, v_place.inputs["Scale"])
+    v_instance = _node(group, "GeometryNodeGeometryToInstance", "Frame Stack Video Slice Instance", 2640, vy + 200)
+    links.new(v_place.outputs["Geometry"], v_instance.inputs["Geometry"])
+    v_join = _node(group, "GeometryNodeJoinGeometry", "Join Frame Stack Video Slices", 2760, vy)
+    links.new(v_instance.outputs["Instances"], v_join.inputs["Geometry"])
+    links.new(repeat_in.outputs["Geometry"], v_join.inputs["Geometry"])
+    links.new(v_join.outputs["Geometry"], repeat_out.inputs["Geometry"])
+    v_realize = _node(group, "GeometryNodeRealizeInstances", "Realize Frame Stack Video Slices", 3120, vy)
+    links.new(repeat_out.outputs["Geometry"], v_realize.inputs["Geometry"])
 
-    # Only the selected path is evaluated.
-    slices_switch = _node(group, "GeometryNodeSwitch", "Frame Stack Slice Path", 4600, 800)
-    slices_switch.input_type = "GEOMETRY"
-    links.new(inp.outputs["Use Stack Image"], slices_switch.inputs["Switch"])
-    links.new(realize_slices.outputs["Geometry"], slices_switch.inputs["False"])
-    links.new(cell_material.outputs["Geometry"], slices_switch.inputs["True"])
+    # Only the selected path is evaluated (the Switch node is lazy).
+    path = _node(group, "GeometryNodeSwitch", "Frame Stack Slice Path", 3560, 600)
+    path.input_type = "GEOMETRY"
+    links.new(inp.outputs["Use Atlas"], path.inputs["Switch"])
+    links.new(v_realize.outputs["Geometry"], path.inputs["False"])
+    links.new(atlas_slices, path.inputs["True"])
+    glow = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Glow", 3780, 600)
+    glow.data_type = "FLOAT"
+    glow.domain = "POINT"
+    glow.inputs["Name"].default_value = "fbp_frame_stack_glow"
+    links.new(path.outputs["Output"], glow.inputs["Geometry"])
+    links.new(inp.outputs["Glow"], glow.inputs["Value"])
+    key_store = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Key", 4000, 600)
+    key_store.data_type = "FLOAT"
+    key_store.domain = "POINT"
+    key_store.inputs["Name"].default_value = "fbp_frame_stack_key"
+    links.new(glow.outputs["Geometry"], key_store.inputs["Geometry"])
+    links.new(inp.outputs["Luminance Opacity"], key_store.inputs["Value"])
+    slice_material = _node(group, "GeometryNodeSetMaterial", "Frame Stack Material", 4220, 600)
+    links.new(key_store.outputs["Geometry"], slice_material.inputs["Geometry"])
+    links.new(inp.outputs["Stack Material"], slice_material.inputs["Material"])
 
-    # Outline: the frame of the last slice, the frame of slice 0 and the four
-    # corner lines.
-    neighbors = _node(group, "GeometryNodeInputMeshEdgeNeighbors", "Frame Stack Edge Neighbors", 2800, -1000)
-    boundary = _math(group, "LESS_THAN", "Frame Stack Boundary", 3020, -1000, value_2=1.5)
+    # ---- Outline: the frame of slice 0 and of the last slice, and the
+    # four corner lines through every slice. ----
+    oy = -4200
+    neighbors = _node(group, "GeometryNodeInputMeshEdgeNeighbors", "Frame Stack Edge Neighbors", -400, oy)
+    boundary = _math(group, "LESS_THAN", "Frame Stack Boundary", -180, oy, value_2=1.5)
     links.new(neighbors.outputs["Face Count"], boundary.inputs[0])
-    first_frame = _node(group, "GeometryNodeMeshToCurve", "Frame Stack First Frame", 3240, -1200)
-    links.new(slice_mesh, first_frame.inputs["Mesh"])
+    first_frame = _node(group, "GeometryNodeMeshToCurve", "Frame Stack First Frame", 40, oy)
+    links.new(inp.outputs["Geometry"], first_frame.inputs["Mesh"])
     links.new(boundary.outputs[0], first_frame.inputs["Selection"])
-    l_translation, l_rotation, l_scale = _frame_stack_transform(
-        group, last_index.outputs[0], inp, prefix="Frame Stack Last", x=2800, y=-600,
+    l_translation, l_rotation, _l_scale, l_scale_vector = _frame_stack_transform(
+        group, last_index.outputs[0], inp, prefix="Frame Stack Last", x=-400, y=oy - 400,
     )
-    l_scale_vector = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Last Scale", 3460, -800)
-    for axis in ("X", "Y", "Z"):
-        links.new(l_scale, l_scale_vector.inputs[axis])
-    last_frame = _node(group, "GeometryNodeTransform", "Frame Stack Last Frame Place", 3460, -1000)
+    last_frame = _node(group, "GeometryNodeTransform", "Frame Stack Last Frame Place", 480, oy)
     links.new(first_frame.outputs["Curve"], last_frame.inputs["Geometry"])
     links.new(l_translation, last_frame.inputs["Translation"])
     links.new(l_rotation, last_frame.inputs["Rotation"])
-    links.new(l_scale_vector.outputs[0], last_frame.inputs["Scale"])
-    emit_frame = _math(group, "GREATER_THAN", "Frame Stack Emit Frame", 3460, -1350, value_2=0.5)
-    links.new(last_index.outputs[0], emit_frame.inputs[0])
-    frame_switch = _node(group, "GeometryNodeSwitch", "Frame Stack Last Frame", 3680, -1000)
-    frame_switch.input_type = "GEOMETRY"
-    links.new(emit_frame.outputs[0], frame_switch.inputs["Switch"])
-    links.new(last_frame.outputs["Geometry"], frame_switch.inputs["True"])
+    links.new(l_scale_vector, last_frame.inputs["Scale"])
+    emit_last = _math(group, "GREATER_THAN", "Frame Stack Emit Last Frame", 480, oy - 300, value_2=0.5)
+    links.new(last_index.outputs[0], emit_last.inputs[0])
+    last_switch = _node(group, "GeometryNodeSwitch", "Frame Stack Last Frame", 700, oy)
+    last_switch.input_type = "GEOMETRY"
+    links.new(emit_last.outputs[0], last_switch.inputs["Switch"])
+    links.new(last_frame.outputs["Geometry"], last_switch.inputs["True"])
 
-    # Corner lines: 4 x Slices points grouped per corner into 4 curves.
-    bounds = _node(group, "GeometryNodeBoundBox", "Frame Stack Bounds", 2800, -1600)
-    links.new(slice_mesh, bounds.inputs["Geometry"])
-    corner_count = _math(group, "MULTIPLY", "Frame Stack Corner Count", 2800, -1850, value_2=4.0)
+    bounds = _node(group, "GeometryNodeBoundBox", "Frame Stack Bounds", -400, oy - 1200)
+    links.new(inp.outputs["Geometry"], bounds.inputs["Geometry"])
+    corner_count = _math(group, "MULTIPLY", "Frame Stack Corner Count", -400, oy - 1450, value_2=4.0)
     links.new(inp.outputs["Slices"], corner_count.inputs[0])
-    corner_points = _node(group, "GeometryNodePoints", "Frame Stack Corner Points", 3020, -1850)
+    corner_points = _node(group, "GeometryNodePoints", "Frame Stack Corner Points", -180, oy - 1450)
     links.new(corner_count.outputs[0], corner_points.inputs["Count"])
-    point_index = _node(group, "GeometryNodeInputIndex", "Frame Stack Corner Index", 2800, -2100)
-    corner_id = _math(group, "FLOORED_MODULO", "Frame Stack Corner Id", 3020, -2100, value_2=4.0)
+    point_index = _node(group, "GeometryNodeInputIndex", "Frame Stack Corner Index", -400, oy - 1700)
+    corner_id = _math(group, "FLOORED_MODULO", "Frame Stack Corner Id", -180, oy - 1700, value_2=4.0)
     links.new(point_index.outputs["Index"], corner_id.inputs[0])
-    corner_slice = _math(group, "DIVIDE", "Frame Stack Corner Slice Raw", 3020, -2300, value_2=4.0)
-    links.new(point_index.outputs["Index"], corner_slice.inputs[0])
-    corner_slice_floor = _math(group, "FLOOR", "Frame Stack Corner Slice", 3240, -2300)
-    links.new(corner_slice.outputs[0], corner_slice_floor.inputs[0])
-    use_max_x = _math(group, "COMPARE", "Frame Stack Corner Right", 3240, -2100, value_2=1.5)
+    corner_slice_raw = _math(group, "DIVIDE", "Frame Stack Corner Slice Raw", -180, oy - 1900, value_2=4.0)
+    links.new(point_index.outputs["Index"], corner_slice_raw.inputs[0])
+    corner_slice = _math(group, "FLOOR", "Frame Stack Corner Slice", 40, oy - 1900)
+    links.new(corner_slice_raw.outputs[0], corner_slice.inputs[0])
+    use_max_x = _math(group, "COMPARE", "Frame Stack Corner Right", 40, oy - 1700, value_2=1.5)
     use_max_x.inputs[2].default_value = 0.6
     links.new(corner_id.outputs[0], use_max_x.inputs[0])
-    use_max_y = _math(group, "GREATER_THAN", "Frame Stack Corner Top", 3240, -1950, value_2=1.5)
+    use_max_y = _math(group, "GREATER_THAN", "Frame Stack Corner Top", 40, oy - 1550, value_2=1.5)
     links.new(corner_id.outputs[0], use_max_y.inputs[0])
-    corner_x = _node(group, "GeometryNodeSwitch", "Frame Stack Corner X", 3460, -2100)
-    corner_y = _node(group, "GeometryNodeSwitch", "Frame Stack Corner Y", 3460, -1950)
+    corner_x = _node(group, "GeometryNodeSwitch", "Frame Stack Corner X", 260, oy - 1700)
+    corner_y = _node(group, "GeometryNodeSwitch", "Frame Stack Corner Y", 260, oy - 1550)
     corner_x.input_type = "VECTOR"
     corner_y.input_type = "VECTOR"
     links.new(use_max_x.outputs[0], corner_x.inputs["Switch"])
@@ -9576,81 +9626,81 @@ def _create_frame_stack(name):
     links.new(use_max_y.outputs[0], corner_y.inputs["Switch"])
     links.new(bounds.outputs["Min"], corner_y.inputs["False"])
     links.new(bounds.outputs["Max"], corner_y.inputs["True"])
-    split_x = _node(group, "ShaderNodeSeparateXYZ", "Frame Stack Corner X Parts", 3680, -2100)
-    split_y = _node(group, "ShaderNodeSeparateXYZ", "Frame Stack Corner Y Parts", 3680, -1950)
+    split_x = _node(group, "ShaderNodeSeparateXYZ", "Frame Stack Corner X Parts", 480, oy - 1700)
+    split_y = _node(group, "ShaderNodeSeparateXYZ", "Frame Stack Corner Y Parts", 480, oy - 1550)
     links.new(corner_x.outputs["Output"], split_x.inputs[0])
     links.new(corner_y.outputs["Output"], split_y.inputs[0])
-    corner = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Corner", 3900, -2000)
+    corner = _node(group, "ShaderNodeCombineXYZ", "Frame Stack Corner", 700, oy - 1600)
     links.new(split_x.outputs["X"], corner.inputs["X"])
     links.new(split_y.outputs["Y"], corner.inputs["Y"])
     links.new(split_x.outputs["Z"], corner.inputs["Z"])
-    k_translation, k_rotation, k_scale = _frame_stack_transform(
-        group, corner_slice_floor.outputs[0], inp, prefix="Frame Stack Corner", x=3240, y=-2700,
+    k_translation, k_rotation, k_scale, _k_scale_vector = _frame_stack_transform(
+        group, corner_slice.outputs[0], inp, prefix="Frame Stack Corner", x=40, y=oy - 2400,
     )
-    scaled_corner = _vector_math(group, "SCALE", "Frame Stack Scaled Corner", 4120, -2000)
+    scaled_corner = _vector_math(group, "SCALE", "Frame Stack Scaled Corner", 920, oy - 1600)
     links.new(corner.outputs[0], scaled_corner.inputs[0])
     links.new(k_scale, scaled_corner.inputs["Scale"])
-    rotated_corner = _node(group, "FunctionNodeRotateVector", "Frame Stack Rotated Corner", 4340, -2000)
+    rotated_corner = _node(group, "FunctionNodeRotateVector", "Frame Stack Rotated Corner", 1140, oy - 1600)
     links.new(scaled_corner.outputs["Vector"], rotated_corner.inputs["Vector"])
     links.new(k_rotation, rotated_corner.inputs["Rotation"])
-    placed_corner = _vector_math(group, "ADD", "Frame Stack Placed Corner", 4560, -2000)
+    placed_corner = _vector_math(group, "ADD", "Frame Stack Placed Corner", 1360, oy - 1600)
     links.new(rotated_corner.outputs[0], placed_corner.inputs[0])
     links.new(k_translation, placed_corner.inputs[1])
-    corner_position = _node(group, "GeometryNodeSetPosition", "Frame Stack Corner Position", 4780, -1850)
+    corner_position = _node(group, "GeometryNodeSetPosition", "Frame Stack Corner Position", 1580, oy - 1450)
     links.new(corner_points.outputs["Points"], corner_position.inputs["Geometry"])
     links.new(placed_corner.outputs["Vector"], corner_position.inputs["Position"])
-    corner_curves = _node(group, "GeometryNodePointsToCurves", "Frame Stack Corner Lines", 5000, -1850)
+    corner_curves = _node(group, "GeometryNodePointsToCurves", "Frame Stack Corner Lines", 1800, oy - 1450)
     links.new(corner_position.outputs["Geometry"], corner_curves.inputs["Points"])
     links.new(corner_id.outputs[0], corner_curves.inputs["Curve Group ID"])
-    links.new(corner_slice_floor.outputs[0], corner_curves.inputs["Weight"])
+    links.new(corner_slice.outputs[0], corner_curves.inputs["Weight"])
 
-    all_outline = _node(group, "GeometryNodeJoinGeometry", "Frame Stack Outline Curves", 5220, -1300)
-    links.new(frame_switch.outputs["Output"], all_outline.inputs["Geometry"])
+    all_outline = _node(group, "GeometryNodeJoinGeometry", "Frame Stack Outline Curves", 2020, oy)
+    links.new(last_switch.outputs["Output"], all_outline.inputs["Geometry"])
     links.new(first_frame.outputs["Curve"], all_outline.inputs["Geometry"])
     links.new(corner_curves.outputs["Curves"], all_outline.inputs["Geometry"])
-    outline_radius = _math(group, "MULTIPLY", "Frame Stack Outline Radius", 5220, -1600, value_2=0.5)
+    outline_radius = _math(group, "MULTIPLY", "Frame Stack Outline Radius", 2020, oy - 300, value_2=0.5)
     links.new(inp.outputs["Outline Width"], outline_radius.inputs[0])
-    outline_profile = _node(group, "GeometryNodeCurvePrimitiveCircle", "Frame Stack Outline Profile", 5440, -1600)
+    outline_profile = _node(group, "GeometryNodeCurvePrimitiveCircle", "Frame Stack Outline Profile", 2240, oy - 300)
     outline_profile.inputs["Resolution"].default_value = 6
     links.new(outline_radius.outputs[0], outline_profile.inputs["Radius"])
-    outline_mesh = _node(group, "GeometryNodeCurveToMesh", "Frame Stack Outline Mesh", 5660, -1300)
+    outline_mesh = _node(group, "GeometryNodeCurveToMesh", "Frame Stack Outline Mesh", 2460, oy)
     links.new(all_outline.outputs["Geometry"], outline_mesh.inputs["Curve"])
     links.new(outline_profile.outputs["Curve"], outline_mesh.inputs["Profile Curve"])
-    # The outline shares the slice material: opaque, never glowing, coloured
-    # through the same attributes.
-    outline_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Outline Color", 5880, -1100)
+    # The outline shares the slice material: opaque, never glowing.
+    outline_color = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Outline Color", 2680, oy)
     outline_color.data_type = "FLOAT_COLOR"
     outline_color.domain = "POINT"
     outline_color.inputs["Name"].default_value = "fbp_frame_stack_color"
     links.new(outline_mesh.outputs["Mesh"], outline_color.inputs["Geometry"])
     links.new(inp.outputs["Outline Color"], outline_color.inputs["Value"])
-    outline_alpha = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Outline Alpha", 6100, -1100)
+    outline_alpha = _node(group, "GeometryNodeStoreNamedAttribute", "Store Frame Stack Outline Alpha", 2900, oy)
     outline_alpha.data_type = "FLOAT"
     outline_alpha.domain = "POINT"
     outline_alpha.inputs["Name"].default_value = "fbp_frame_stack_alpha"
     outline_alpha.inputs["Value"].default_value = 1.0
     links.new(outline_color.outputs["Geometry"], outline_alpha.inputs["Geometry"])
-    outline_material = _node(group, "GeometryNodeSetMaterial", "Frame Stack Outline Material", 6320, -1300)
+    outline_material = _node(group, "GeometryNodeSetMaterial", "Frame Stack Outline Material", 3120, oy)
     links.new(outline_alpha.outputs["Geometry"], outline_material.inputs["Geometry"])
     links.new(inp.outputs["Stack Material"], outline_material.inputs["Material"])
-    outline_switch = _node(group, "GeometryNodeSwitch", "Frame Stack Show Outline", 6540, -1300)
+    outline_switch = _node(group, "GeometryNodeSwitch", "Frame Stack Show Outline", 3340, oy)
     outline_switch.input_type = "GEOMETRY"
     links.new(inp.outputs["Outline"], outline_switch.inputs["Switch"])
     links.new(outline_material.outputs["Geometry"], outline_switch.inputs["True"])
 
-    plane_switch = _node(group, "GeometryNodeSwitch", "Frame Stack Show Plane", 5000, 600)
+    plane_switch = _node(group, "GeometryNodeSwitch", "Frame Stack Show Plane", 3780, 1200)
     plane_switch.input_type = "GEOMETRY"
     links.new(inp.outputs["Show Plane"], plane_switch.inputs["Switch"])
     links.new(inp.outputs["Geometry"], plane_switch.inputs["True"])
-    join = _node(group, "GeometryNodeJoinGeometry", "Join Frame Stack", 6760, 400)
+    join = _node(group, "GeometryNodeJoinGeometry", "Join Frame Stack", 4460, 400)
     join["fbp_preserve_unmasked_geometry"] = True
     links.new(plane_switch.outputs["Output"], join.inputs["Geometry"])
-    links.new(slices_switch.outputs["Output"], join.inputs["Geometry"])
+    links.new(slice_material.outputs["Geometry"], join.inputs["Geometry"])
     links.new(outline_switch.outputs["Output"], join.inputs["Geometry"])
     links.new(join.outputs["Geometry"], out.inputs["Geometry"])
-    out.location = (7000, 400)
-    group["fbp_frame_stack_contract_version"] = 3
-    group["fbp_effect_contract_version"] = 3
+    out.location = (4700, 400)
+    group["fbp_hidden_inputs"] = list(FBP_FRAME_STACK_RUNTIME_INPUTS)
+    group["fbp_frame_stack_contract_version"] = 5
+    group["fbp_effect_contract_version"] = 5
     return group
 
 

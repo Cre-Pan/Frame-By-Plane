@@ -896,11 +896,6 @@ class FBP_AddonPreferences(AddonPreferences):
         default='TOP',
         update=update_shift_a_menu_position_cb,
     )
-    modifiers_follow_layer: BoolProperty(
-        name="Modifiers Follow Layer",
-        description="When a Frame By Plane layer is selected, Properties > Modifiers shows the modifiers of its image plane, so mesh effects can be reordered, hidden and removed natively",
-        default=True,
-    )
     node_view_annotations: BoolProperty(
         name="Notes in Node Views",
         description="Add short note frames to the node trees Frame By Plane generates for effects (layer materials, effect groups, effect modifiers). Display only: the result is the same either way",
@@ -2267,7 +2262,6 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'show_panel_layers', text='Layers', toggle=True, icon='RENDERLAYERS')
                 row.prop(self, 'show_panel_grease_pencil', text='Grease Pencil', toggle=True, icon='OUTLINER_OB_GREASEPENCIL')
                 row.prop(self, 'show_panel_layer_settings', text='Layer Settings', toggle=True, icon='TOOL_SETTINGS')
-                body.prop(self, 'modifiers_follow_layer', icon='MODIFIER')
                 body.prop(self, 'node_view_annotations', icon='NODETREE')
                 if not any_location:
                     hint_row(body, 'Both control-panel locations are disabled. Shift+A, Modifiers, Output and Camera tools remain available.', icon='HIDE_ON')
@@ -5416,13 +5410,13 @@ def register_properties():
         name="Render", description="Number of frame slices evaluated for final rendering",
         default=24, min=1, soft_max=128, max=512, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_detail = IntProperty(
-        name="Viewport", description="Grid detail of every earlier slice while editing. Each level doubles the grid on both sides",
+        name="Viewport", description="Size of the earlier drawings while editing: 256 px on the long side at 5, each level doubles it. Videos use it as the sampling grid",
         default=5, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_playback_detail = IntProperty(
-        name="Playback", description="Maximum slice grid detail during timeline playback",
+        name="Playback", description="Maximum size of the earlier drawings during timeline playback",
         default=4, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_render_detail = IntProperty(
-        name="Render", description="Slice grid detail for final rendering. The plane itself always keeps full resolution",
+        name="Render", description="Size of the earlier drawings for final rendering: 1024 px on the long side at 7. The plane itself always keeps full resolution",
         default=7, min=0, max=8, update=_effect_setting('FRAME_STACK'))
     _FBP_OBJECT_RNA.fbp_frame_stack_step = IntProperty(
         name="Frame Step", description="Playback frames between two slices: drawings of an image sequence in its timing order, frames of a video. Negative values stack upcoming frames instead of earlier ones",

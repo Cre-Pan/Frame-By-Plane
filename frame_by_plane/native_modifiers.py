@@ -42,10 +42,7 @@ _SHELL_SNAPSHOTS = {}
 _SIGNATURES = {}
 # Properties spaces pinned by Frame By Plane, by space pointer, and spaces
 # whose pin the artist turned off (kept until another layer is selected).
-_AUTO_PINNED = {}
-_RELEASED = {}
 _SYNCING = False
-_MSGBUS_OWNER = object()
 
 
 def _geo():
@@ -191,11 +188,14 @@ def fbp_native_hide_inputs(rig):
             continue
         group = getattr(modifier, "node_group", None)
         try:
+            # Inputs the effect's runtime writes (Frame Stack) stay hidden.
+            kept_hidden = set(group.get("fbp_hidden_inputs", ()) or ()) if group is not None else set()
             for item in (group.interface.items_tree if group is not None else ()):
                 if (
                     getattr(item, "item_type", "") == "SOCKET"
                     and getattr(item, "in_out", "") == "INPUT"
                     and bool(getattr(item, "hide_in_modifier", False))
+                    and str(getattr(item, "name", "") or "") not in kept_hidden
                 ):
                     item.hide_in_modifier = False
                     changed = True
@@ -268,6 +268,76 @@ def _is_shader(geo, token):
     return geo.fbp_effect_definition(effect_id).get("kind") in {"SHADER", "BASE"}
 
 
+def _native_copy_source(geo, rig, plane, modifier, token):
+    """Return the layer a native "Copy to Selected" copied ``modifier`` from.
+
+    Blender's copy shares the source modifier's node group, so the source is
+    the other layer plane whose stack owns ``token`` and uses the same group.
+    """
+    group = getattr(modifier, "node_group", None)
+    try:
+        if group is None or int(group.users) < 2:
+            return None
+    except FBP_DATA_ERRORS:
+        return None
+    from .layers import fbp_resolve_rig_from_any_object
+    for obj in tuple(bpy.data.objects):
+        try:
+            if obj == plane or not bool(getattr(obj, "is_fbp_plane", False)):
+                continue
+            if not any(getattr(item, "node_group", None) == group for item in obj.modifiers):
+                continue
+        except FBP_DATA_ERRORS:
+            continue
+        source = fbp_resolve_rig_from_any_object(obj)
+        if source is None or source == rig:
+            continue
+        if token in set(geo._fbp_mixed_effect_tokens(source)):
+            return source
+    return None
+
+
+def _adopt_native_copies(geo, rig, plane, previous):
+    """Turn rows Blender's "Copy to Selected" added into real effects.
+
+    The native copy only duplicates the modifier, which on its own is a row
+    the stack does not know (and would be dropped). Copy the effect and its
+    settings from the source layer instead, then remove the bare copy.
+    """
+    active = set(geo._fbp_mixed_effect_tokens(rig))
+    entries = list(fbp_native_modifier_entries(rig))
+    counts = {}
+    for token, _modifier in entries:
+        counts[token] = counts.get(token, 0) + 1
+    adopted = []
+    for token, modifier in entries:
+        if token in active:
+            # Already in this stack: only an extra row can be a copy, and
+            # never the one Frame By Plane knew.
+            if counts.get(token, 0) < 2:
+                continue
+            if int(modifier.as_pointer()) == previous.get(token, (0, True, True))[0]:
+                continue
+        source = _native_copy_source(geo, rig, plane, modifier, token)
+        if source is None:
+            continue
+        try:
+            plane.modifiers.remove(modifier)
+        except FBP_DATA_ERRORS:
+            continue
+        counts[token] = counts.get(token, 1) - 1
+        adopted.append((source, token))
+    for source, token in adopted:
+        effect_id = geo._fbp_effect_ref_effect_id(token)
+        try:
+            from .effect_operators import fbp_copy_effect_settings_to_rigs
+            fbp_copy_effect_settings_to_rigs(source, [rig], effect_id, bpy.context)
+            geo.fbp_sync_effect_items(rig)
+        except (ImportError, *FBP_DATA_ERRORS) as exc:
+            fbp_warn("Could not copy the effect from Copy to Selected", exc)
+    return adopted
+
+
 def fbp_sync_native_modifiers(rig):
     """Mirror artist edits made in Blender's Modifiers panel into the stack.
 
@@ -290,6 +360,12 @@ def fbp_sync_native_modifiers(rig):
         return report
     _SYNCING = True
     try:
+        # 0. Blender's Copy to Selected: adopt the copied rows as effects.
+        report["adopted"] = _adopt_native_copies(geo, rig, plane, previous)
+        if report["adopted"]:
+            fbp_native_remember(rig)
+            previous = _SNAPSHOTS.get(key, {})
+
         # 1. Native duplicates of an owned effect break the one-modifier
         # contract. Keep the row Frame By Plane knew, drop the copy.
         by_token = {}
@@ -574,6 +650,60 @@ def _sync_modifier_values(rig):
         fbp_warn("Could not sync an effect modifier with its layer", exc)
 
 
+_OBJECT_COUNT = [-1]
+
+
+def fbp_purge_unused_effect_groups():
+    """Remove Frame By Plane node groups nothing uses any more.
+
+    Deleting an effect's modifier or a whole layer leaves its node groups
+    (modifier shells, material stages, mesh effect trees) with no users; drop
+    them now instead of at the next save and reload, then the inner groups
+    they were the last user of. Fake-user groups (templates) are kept.
+    """
+    removed = 0
+    for _pass in range(8):
+        orphans = []
+        for group in tuple(bpy.data.node_groups):
+            try:
+                if (
+                    str(group.name).startswith("FBP")
+                    and int(group.users) == 0
+                    and not bool(group.use_fake_user)
+                    and group.library is None
+                ):
+                    orphans.append(group)
+            except FBP_DATA_ERRORS:
+                continue
+        if not orphans:
+            break
+        for group in orphans:
+            try:
+                bpy.data.node_groups.remove(group)
+                removed += 1
+            except FBP_DATA_ERRORS:
+                continue
+    return removed
+
+
+def _run_purge():
+    if fbp_undo_guard_active():
+        return None
+    try:
+        fbp_purge_unused_effect_groups()
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not remove unused effect node groups", exc)
+    return None
+
+
+def _schedule_purge():
+    try:
+        from .safe_tasks import schedule_once
+        schedule_once("native_modifiers.purge", _run_purge, first_interval=0.2)
+    except (ImportError, *FBP_DATA_ERRORS) as exc:
+        fbp_warn("Could not schedule the unused node group cleanup", exc)
+
+
 def _run_pending_sync():
     value_names = tuple(_PENDING_VALUE_RIGS)
     _PENDING_VALUE_RIGS.clear()
@@ -593,6 +723,9 @@ def _run_pending_sync():
             fbp_sync_native_modifiers(rig)
         except FBP_DATA_ERRORS as exc:
             fbp_warn("Could not apply a Modifiers panel edit to the effect stack", exc)
+    if names:
+        # A stack change may have deleted an effect: drop its node groups.
+        _schedule_purge()
     return None
 
 
@@ -608,6 +741,14 @@ def fbp_native_modifiers_depsgraph_post(_scene, depsgraph):
     """
     if _SYNCING or _playing_or_rendering() or fbp_undo_guard_active():
         return
+    try:
+        # Fewer objects: a layer (or a plane) may have been deleted.
+        count = len(bpy.data.objects)
+        if 0 <= _OBJECT_COUNT[0] and count < _OBJECT_COUNT[0]:
+            _schedule_purge()
+        _OBJECT_COUNT[0] = count
+    except FBP_DATA_ERRORS:
+        pass
     try:
         updates = tuple(depsgraph.updates)
     except FBP_DATA_ERRORS:
@@ -648,32 +789,21 @@ def fbp_native_modifiers_reset(*_args):
     fbp_native_forget_all()
     _PENDING_RIGS.clear()
     _PENDING_VALUE_RIGS.clear()
-    _AUTO_PINNED.clear()
-    _RELEASED.clear()
-    # Properties editors are not undone and a .blend stores their pin, so a
-    # pin set before Ctrl+Z or before saving is still there. Claim it again,
-    # or it would look like an artist pin and stay on the old plane.
-    _adopt_plane_pins()
-    _subscribe_msgbus()
-    # A loaded file keeps its active layer: nothing else asks the Modifiers
-    # tab to show its plane (the Frame By Plane section used to, when drawn).
-    if not bool(getattr(bpy.app, "background", False)):
-        _deferred_follow()
 
 
 # --------------------------------------------------------------------------
-# Properties editor follows the selected layer onto its plane
+# The selected layer's plane is the active object
 # --------------------------------------------------------------------------
+# A layer is its rig (what you click and transform) plus an unselectable
+# image plane that holds the effects as modifiers. When a rig becomes the
+# active object, its plane takes the active slot instead (without being
+# selected, so transforms still move only the rig), and Properties >
+# Modifiers shows the effects natively, with no pin.
+#
+# Earlier versions pinned the Modifiers tab instead and a .blend stores the
+# pin, so on load release Modifiers-tab pins that point at a layer plane.
 
-def _follow_enabled(context=None):
-    context = context or bpy.context
-    try:
-        from .interface_preferences import fbp_get_addon_preferences
-        prefs = fbp_get_addon_preferences(context)
-    except (ImportError, *FBP_DATA_ERRORS):
-        prefs = None
-    return bool(getattr(prefs, "modifiers_follow_layer", True)) if prefs else True
-
+_MSGBUS_OWNER = object()
 
 def _layer_plane(obj):
     if obj is None:
@@ -697,8 +827,7 @@ def _is_layer_plane(id_block):
     return plane is not None and plane == id_block
 
 
-def _adopt_plane_pins():
-    """Treat Modifiers-tab pins on a layer plane as set by Frame By Plane."""
+def _release_legacy_plane_pins():
     try:
         wm = bpy.context.window_manager
     except FBP_DATA_ERRORS:
@@ -713,75 +842,50 @@ def _adopt_plane_pins():
                 continue
             try:
                 space = area.spaces.active
-                if space.use_pin_id and _is_layer_plane(space.pin_id):
-                    _AUTO_PINNED[int(space.as_pointer())] = space.pin_id.name
+                if (
+                    space.use_pin_id
+                    and space.context == "MODIFIER"
+                    and _is_layer_plane(space.pin_id)
+                ):
+                    space.use_pin_id = False
+                    space.pin_id = None
+                    area.tag_redraw()
             except FBP_DATA_ERRORS:
                 continue
 
 
-def fbp_follow_properties_pins(context=None):
-    """Pin Modifiers tabs to the active layer's plane and release our pins."""
+def _activate_layer_plane(context=None):
+    """Hand the active slot from a layer rig to its plane. Returns the plane."""
     context = context or bpy.context
-    wm = getattr(context, "window_manager", None)
-    if wm is None:
-        return False
-    enabled = _follow_enabled(context)
-    changed = False
-    for window in tuple(getattr(wm, "windows", ()) or ()):
-        try:
-            view_layer = window.view_layer
-            active = view_layer.objects.active if view_layer else None
-            screen = window.screen
-        except FBP_DATA_ERRORS:
-            continue
-        rig, plane = _layer_plane(active)
-        for area in tuple(getattr(screen, "areas", ()) or ()):
-            if area.type != "PROPERTIES":
-                continue
-            space = area.spaces.active
-            key = int(space.as_pointer())
-            ours = key in _AUTO_PINNED
-            if ours and not space.use_pin_id:
-                # The artist clicked the pin off: respect it for this layer.
-                _RELEASED[key] = _AUTO_PINNED.pop(key)
-                ours = False
-            if _RELEASED.get(key) and _RELEASED[key] != getattr(plane, "name", ""):
-                _RELEASED.pop(key, None)
-            wants = bool(
-                enabled and plane is not None and space.context == "MODIFIER"
-                and _RELEASED.get(key) != plane.name
-            )
-            try:
-                if wants and (ours or not space.use_pin_id):
-                    if space.pin_id != plane or not space.use_pin_id:
-                        space.pin_id = plane
-                        space.use_pin_id = True
-                        area.tag_redraw()
-                        changed = True
-                    _AUTO_PINNED[key] = plane.name
-                elif ours and not wants:
-                    # Leave an artist pin alone: only release the one we set.
-                    pinned = space.pin_id
-                    if space.use_pin_id and (
-                        getattr(pinned, "name", "") == _AUTO_PINNED[key]
-                        or _is_layer_plane(pinned)
-                    ):
-                        space.use_pin_id = False
-                        space.pin_id = None
-                        area.tag_redraw()
-                        changed = True
-                    _AUTO_PINNED.pop(key, None)
-            except FBP_DATA_ERRORS:
-                _AUTO_PINNED.pop(key, None)
-    return changed
+    view_layer = getattr(context, "view_layer", None)
+    if view_layer is None:
+        return None
+    try:
+        active = view_layer.objects.active
+    except FBP_DATA_ERRORS:
+        return None
+    if active is None or str(getattr(active, "mode", "OBJECT") or "OBJECT") != "OBJECT":
+        return None
+    if not bool(getattr(active, "is_fbp_control", False)):
+        return None
+    rig, plane = _layer_plane(active)
+    if rig is None or plane is None or rig != active:
+        return None
+    try:
+        if plane.name not in view_layer.objects:
+            return None
+        view_layer.objects.active = plane
+    except FBP_DATA_ERRORS:
+        return None
+    return plane
 
 
-def _deferred_follow(*_args):
+def _deferred_activate_plane(*_args):
     def run():
         try:
-            fbp_follow_properties_pins()
+            _activate_layer_plane()
         except FBP_DATA_ERRORS as exc:
-            fbp_warn("Could not update the Modifiers tab for the selected layer", exc)
+            fbp_warn("Could not make the layer plane active", exc)
         return None
     try:
         bpy.app.timers.register(run, first_interval=0.0)
@@ -794,34 +898,72 @@ def _subscribe_msgbus():
         bpy.msgbus.clear_by_owner(_MSGBUS_OWNER)
         bpy.msgbus.subscribe_rna(
             key=(bpy.types.LayerObjects, "active"),
-            owner=_MSGBUS_OWNER, args=(), notify=_deferred_follow,
-        )
-        bpy.msgbus.subscribe_rna(
-            key=(bpy.types.SpaceProperties, "context"),
-            owner=_MSGBUS_OWNER, args=(), notify=_deferred_follow,
+            owner=_MSGBUS_OWNER, args=(), notify=_deferred_activate_plane,
         )
     except FBP_DATA_ERRORS as exc:
         fbp_warn("Could not watch layer selection for the Modifiers tab", exc)
 
 
-def _release_all_pins():
-    try:
-        wm = bpy.context.window_manager
-    except FBP_DATA_ERRORS:
+class FBP_OT_ShowLayerEffects(bpy.types.Operator):
+    """Show the effects of the active layer in the Modifiers tab"""
+
+    bl_idname = "fbp.show_layer_effects"
+    bl_label = "Show Layer Effects"
+    bl_description = "Make the layer's image plane the active object, so Modifiers shows its effects"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context):
+        active = getattr(context, "active_object", None)
+        rig, plane = _layer_plane(active)
+        if plane is None:
+            return {"CANCELLED"}
+        try:
+            context.view_layer.objects.active = plane
+        except FBP_DATA_ERRORS:
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class FBP_PT_LayerEffectsHint(bpy.types.Panel):
+    """Shown in Modifiers when a layer's rig, not its plane, is active."""
+
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "modifier"
+    bl_label = "Layer Effects"
+    bl_options = {"HIDE_HEADER"}
+    bl_order = -1
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, "object", None)
+        if obj is None or not bool(getattr(obj, "is_fbp_control", False)):
+            return False
+        rig, plane = _layer_plane(obj)
+        return plane is not None and rig == obj
+
+    def draw(self, context):
+        row = self.layout.row()
+        row.scale_y = 1.3
+        row.operator(FBP_OT_ShowLayerEffects.bl_idname, text="Show Layer Effects", icon="MODIFIER")
+
+
+@bpy.app.handlers.persistent
+def fbp_native_modifiers_load_post(*_args):
+    if bool(getattr(bpy.app, "background", False)):
         return
-    for window in tuple(getattr(wm, "windows", ()) or ()):
-        for area in tuple(getattr(window.screen, "areas", ()) or ()):
-            if area.type != "PROPERTIES":
-                continue
-            space = area.spaces.active
-            key = int(space.as_pointer())
-            if key in _AUTO_PINNED:
-                try:
-                    space.use_pin_id = False
-                    space.pin_id = None
-                except FBP_DATA_ERRORS:
-                    pass
-    _AUTO_PINNED.clear()
+    # A file load clears every message-bus subscription.
+    _subscribe_msgbus()
+
+    def run():
+        _release_legacy_plane_pins()
+        _activate_layer_plane()
+        return None
+
+    try:
+        bpy.app.timers.register(run, first_interval=0.0)
+    except FBP_DATA_ERRORS:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -1136,6 +1278,8 @@ classes = (
     FBP_MT_ModifierAddMesh,
     FBP_MT_ModifierAddMask,
     FBP_MT_ModifierAddImage,
+    FBP_OT_ShowLayerEffects,
+    FBP_PT_LayerEffectsHint,
 )
 
 
@@ -1161,8 +1305,9 @@ def register():
         bpy.app.handlers.load_post,
     ):
         append_handler_once(handler_list, fbp_native_modifiers_reset, module_suffix=_MODULE_SUFFIX)
-    _subscribe_msgbus()
-    _deferred_follow()
+    append_handler_once(bpy.app.handlers.load_post, fbp_native_modifiers_load_post, module_suffix=_MODULE_SUFFIX)
+    # The open file may hold a pin from an earlier version too.
+    fbp_native_modifiers_load_post()
 
 
 def unregister():
@@ -1173,7 +1318,6 @@ def unregister():
         bpy.msgbus.clear_by_owner(_MSGBUS_OWNER)
     except FBP_DATA_ERRORS:
         pass
-    _release_all_pins()
     for handler_list in (
         bpy.app.handlers.depsgraph_update_post,
         bpy.app.handlers.undo_post,
@@ -1184,6 +1328,7 @@ def unregister():
             handler_list,
             "fbp_native_modifiers_depsgraph_post",
             "fbp_native_modifiers_reset",
+            "fbp_native_modifiers_load_post",
             module_suffix=_MODULE_SUFFIX,
         )
     menu = getattr(bpy.types, "OBJECT_MT_modifier_add", None)

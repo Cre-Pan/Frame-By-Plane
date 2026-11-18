@@ -265,38 +265,17 @@ def bounds_handle_geometry(size, role):
 
 
 def crop_bounds_handle_geometry(size, role):
-    """An L on a corner or a short bar on a side of the Crop/Expand frame.
+    """The mesh of a Crop/Extend handle: one loose vertex on its bound.
 
-    Corners open towards the inside of the rectangle, so they read as the
-    corners of the bounds they edit; sides are a bar along their edge.
+    Crop and Extend are edited with a rig drawn like the layer transform box
+    (``handle_overlay``): a thin frame, dots on the corners, short bars on the
+    sides and the original size as a dashed outline, all at one size on
+    screen. Blender draws nothing for a loose vertex in Object Mode, so the
+    helper never shows a second, world-sized shape under that rig; the vertex
+    still carries the Lattice deformation the rig follows.
     """
-    role = str(role or "").upper()
-    size = max(float(size), 1.0e-6)
-    thickness = max(size * 0.2, 1.0e-6)
-    side_length = size * 2.4
-    corner_length = size * 1.4
-    verts, faces = [], []
-    if role in {"TOP", "BOTTOM"}:
-        append_rect_geometry(verts, faces, 0.0, 0.0, side_length, thickness)
-    elif role in {"LEFT", "RIGHT"}:
-        append_rect_geometry(verts, faces, 0.0, 0.0, thickness, side_length)
-    else:
-        sx = -1.0 if "RIGHT" in role else 1.0
-        sy = -1.0 if "TOP" in role else 1.0
-        half = thickness * 0.5
-        points = [
-            (-sx * half, -sy * half),
-            (sx * corner_length, -sy * half),
-            (sx * corner_length, sy * half),
-            (sx * half, sy * half),
-            (sx * half, sy * corner_length),
-            (-sx * half, sy * corner_length),
-        ]
-        if sx * sy < 0:
-            # Keep the outline counter-clockwise for the mirrored corners.
-            points.reverse()
-        append_polygon_geometry(verts, faces, points)
-    return verts, faces
+    del size, role
+    return [(0.0, 0.0, 0.0)], []
 
 
 def point_handle_geometry(size, *, with_angle=False):

@@ -7,7 +7,6 @@ automatically. No telemetry, project data or automatic messages are sent.
 
 from __future__ import annotations
 
-import textwrap
 import time
 from pathlib import Path
 
@@ -28,7 +27,7 @@ from .runtime import (
     fbp_warn,
 )
 from .safe_tasks import schedule_once, scheduled_task_pending
-from .ui_style import configure_layout
+from .ui_style import configure_layout, label_multiline
 from .common import rna_pointer as _feedback_pointer
 
 
@@ -136,29 +135,34 @@ FBP_AUTO_PROMPT_PREFERENCES_POLL_SECONDS = 0.50
 # not in the first screen shown after an update.
 FBP_PUBLIC_RELEASE_ITEMS = (
     (
-        "Magnetic Scrub Bar",
-        "Release < and the playhead snaps back to where you started.",
-        "TIME",
+        "Lattice Puppet Rig",
+        "Bend any drawing with Pins, Bones and Corner Pin.",
+        "PINNED",
     ),
     (
-        "Every Selected Color",
-        "Each Stroke and Fill color as its own swatch in Edit Mode.",
-        "COLOR",
+        "New Transform Box",
+        "Move, scale and rotate layers around the anchor point.",
+        "PIVOT_BOUNDBOX",
     ),
     (
-        "Material in Edit Mode",
-        "Pick the material slot without leaving Edit Mode.",
-        "BRUSH_DATA",
+        "Native Modifiers Panel",
+        "Every effect is a geo-node modifier you can edit.",
+        "MODIFIER",
+    ),
+    (
+        "New Effects",
+        "Frame Stack, Broken Glass, Riso Print, Knit & Crochet, Oil Paint...",
+        "SHADERFX",
     ),
     (
         "Fewer Popups",
-        "Settings in the file browser and the Adjust panel.",
-        "IMAGE_PLANE",
+        "Smoother Playback and Stability Improvements.",
+        "TIME",
     ),
     (
-        "Bug Fixes",
-        "Based on user reviews. Rate Frame By Plane and give feedback!",
-        "GHOST_DISABLED",
+        "Blender 5.2 LTS and 5.3",
+        "One package for both versions.",
+        "BLENDER",
     ),
 )
 
@@ -1944,16 +1948,14 @@ class FBP_OT_WhatsNewPrompt(Operator):
             even_rows=False,
             align=False,
         )
-        wrap_width = 34 if int(columns or 1) > 1 else 60
         for title, description, icon_key in items:
             card = grid.column(align=False)
             title_row = card.row(align=False)
             title_row.scale_y = 1.08
             title_row.label(text=title, icon=fbp_icon(icon_key))
-            for line_text in textwrap.wrap(str(description), width=wrap_width) or (str(description),):
-                detail = card.row(align=False)
-                detail.enabled = False
-                detail.label(text=line_text)
+            detail = card.row(align=False)
+            detail.enabled = False
+            label_multiline(detail, str(description), width=34 if int(columns or 1) > 1 else 60)
             card.separator(factor=0.25)
 
     @staticmethod

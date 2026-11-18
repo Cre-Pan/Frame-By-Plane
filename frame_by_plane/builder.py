@@ -21,7 +21,7 @@ from .materials import (
 from .runtime import fbp_warn as _fbp_warn, fbp_set_rna_property_silent, fbp_creation_start_frame, FBP_DATA_ERRORS, FBP_DATA_IO_ERRORS
 
 
-FBP_CROP_EXTEND_CONTRACT_VERSION = 3
+FBP_CROP_EXTEND_CONTRACT_VERSION = 4
 
 
 # SECTION 02 - Mesh / Object creation #
@@ -1039,6 +1039,76 @@ def build_fbp_color_rig(context, name, color, use_emission=True, holdout=False, 
     return rig
 
 # SECTION 04 - Plane Extension / Crop Geometry #
+_FBP_EXTEND_MAX_TILES = 64
+
+
+def _fbp_extend_axis_segments(low, high, u_low, u_high, before, after, world_per_uv, mode):
+    """Return ``(positions, uv_pairs)`` for one axis of the Extend grid.
+
+    ``positions`` are the vertex coordinates along the axis and ``uv_pairs``
+    the ``(uv_at_start, uv_at_end)`` of every segment between them. Extension
+    segments sample the *cropped* image: Repeat tiles it, Repeat Flipped
+    alternates mirrored tiles starting at the crop edge, Transparent stays
+    outside the image and Edge Pixel holds the crop-edge pixel. The texture's
+    own wrapping cannot do this once the image is cropped, because the pixels
+    just past the crop edge are the ones the crop removed.
+    """
+    width = max(u_high - u_low, 1.0e-9)
+    mode = str(mode or "MIRROR").upper()
+
+    def outward(amount, edge_uv, far_uv, outside_uv):
+        # Segments from the crop edge outward, nearest first; each item is
+        # (uv length, uv at the inner end, uv at the outer end).
+        if amount <= 1.0e-8:
+            return []
+        if mode == "TRANSPARENT":
+            return [(amount, outside_uv, outside_uv)]
+        if mode not in {"REPEAT", "MIRROR"}:
+            return [(amount, edge_uv, edge_uv)]
+        tiles = int(math.ceil(amount / width - 1.0e-9))
+        if tiles > _FBP_EXTEND_MAX_TILES:
+            return [(amount, edge_uv, edge_uv)]
+        direction = 1.0 if far_uv > edge_uv else -1.0
+        result = []
+        remaining = amount
+        for index in range(tiles):
+            length = min(width, remaining)
+            remaining -= length
+            fraction = length / width
+            if mode == "MIRROR" and index % 2 == 0:
+                inner = edge_uv
+                outer = edge_uv + direction * width * fraction
+            elif mode == "MIRROR":
+                inner = far_uv
+                outer = far_uv - direction * width * fraction
+            else:
+                # Repeat: the tile next to the edge ends with the far side.
+                inner = far_uv
+                outer = far_uv - direction * width * fraction
+            result.append((length, inner, outer))
+        return result
+
+    positions = [low]
+    uv_pairs = []
+    left_segments = outward(before, u_low, u_high, -1.0)
+    cursor = low
+    left_positions = []
+    left_pairs = []
+    for length, inner, outer in left_segments:
+        outer_position = cursor - length * world_per_uv
+        left_positions.append(outer_position)
+        left_pairs.append((outer, inner))
+        cursor = outer_position
+    positions = list(reversed(left_positions)) + [low, high]
+    uv_pairs = list(reversed(left_pairs)) + [(u_low, u_high)]
+    cursor = high
+    for length, inner, outer in outward(after, u_high, u_low, 2.0):
+        cursor = cursor + length * world_per_uv
+        positions.append(cursor)
+        uv_pairs.append((inner, outer))
+    return positions, uv_pairs
+
+
 def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode='MIRROR', crop_left=0.0, crop_right=0.0, crop_bottom=0.0, crop_top=0.0):
     """Extend plane borders without scaling/deforming the center image.
 
@@ -1103,6 +1173,14 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
     base_x, base_y = fbp_native_aspect_half_extents(rig)
     no_extension = left <= 1e-8 and right <= 1e-8 and bottom <= 1e-8 and top <= 1e-8
     expected_polygon_count = 1 if no_extension else 9
+    if not no_extension and max(crop_left, crop_right, crop_bottom, crop_top) > 1e-8:
+        column_count = len(_fbp_extend_axis_segments(
+            0.0, 1.0, crop_left / 2.0, 1.0 - crop_right / 2.0, left / 2.0, right / 2.0, 1.0, mode,
+        )[0]) - 1
+        row_count = len(_fbp_extend_axis_segments(
+            0.0, 1.0, crop_bottom / 2.0, 1.0 - crop_top / 2.0, bottom / 2.0, top / 2.0, 1.0, mode,
+        )[0]) - 1
+        expected_polygon_count = column_count * row_count
     mesh = plane.data
     signature = "|".join((
         str(FBP_CROP_EXTEND_CONTRACT_VERSION),
@@ -1169,17 +1247,41 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
 
         fbp_update_rig_frame_mesh_to_bounds(rig, x0, x1, y0, y1)
     else:
-        xs = [x0 - (left * base_x), x0, x1, x1 + (right * base_x)]
-        ys = [y0 - (bottom * base_y), y0, y1, y1 + (top * base_y)]
+        u0 = crop_left / 2.0
+        u1 = 1.0 - (crop_right / 2.0)
+        v0 = crop_bottom / 2.0
+        v1 = 1.0 - (crop_top / 2.0)
+        cropped = max(crop_left, crop_right, crop_bottom, crop_top) > 1e-8
+        if cropped:
+            # Extension starts exactly at the crop edge and samples only the
+            # cropped image (see _fbp_extend_axis_segments).
+            xs, x_uvs = _fbp_extend_axis_segments(
+                x0, x1, u0, u1, left / 2.0, right / 2.0, 2.0 * base_x, mode,
+            )
+            ys, y_uvs = _fbp_extend_axis_segments(
+                y0, y1, v0, v1, bottom / 2.0, top / 2.0, 2.0 * base_y, mode,
+            )
+        else:
+            xs = [x0 - (left * base_x), x0, x1, x1 + (right * base_x)]
+            ys = [y0 - (bottom * base_y), y0, y1, y1 + (top * base_y)]
+            if mode in {'REPEAT', 'MIRROR', 'TRANSPARENT'}:
+                ux = [u0 - left / 2.0, u0, u1, u1 + right / 2.0]
+                uy = [v0 - bottom / 2.0, v0, v1, v1 + top / 2.0]
+            else:
+                ux = [u0, u0, u1, u1]
+                uy = [v0, v0, v1, v1]
+            x_uvs = [(ux[index], ux[index + 1]) for index in range(3)]
+            y_uvs = [(uy[index], uy[index + 1]) for index in range(3)]
+        columns = len(xs)
         verts = [(x, y, 0.0) for y in ys for x in xs]
 
         def vid(ix, iy):
-            return iy * 4 + ix
+            return iy * columns + ix
 
         faces = []
         face_cells = []
-        for iy in range(3):
-            for ix in range(3):
+        for iy in range(len(ys) - 1):
+            for ix in range(columns - 1):
                 faces.append((vid(ix, iy), vid(ix + 1, iy), vid(ix + 1, iy + 1), vid(ix, iy + 1)))
                 face_cells.append((ix, iy))
 
@@ -1193,20 +1295,11 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
 
         uv_layer = fbp_ensure_render_uv_map(mesh, "UVMap")
 
-        u0 = crop_left / 2.0
-        u1 = 1.0 - (crop_right / 2.0)
-        v0 = crop_bottom / 2.0
-        v1 = 1.0 - (crop_top / 2.0)
-        if mode in {'REPEAT', 'MIRROR', 'TRANSPARENT'}:
-            ux = [u0 - left / 2.0, u0, u1, u1 + right / 2.0]
-            uy = [v0 - bottom / 2.0, v0, v1, v1 + top / 2.0]
-        else:
-            ux = [u0, u0, u1, u1]
-            uy = [v0, v0, v1, v1]
-
         # Blender's primitive plane UV orientation is local XY. Assign per face loop.
         for poly, (ix, iy) in zip(mesh.polygons, face_cells, strict=True):
-            coords = ((ux[ix], uy[iy]), (ux[ix + 1], uy[iy]), (ux[ix + 1], uy[iy + 1]), (ux[ix], uy[iy + 1]))
+            ua, ub = x_uvs[ix]
+            va, vb = y_uvs[iy]
+            coords = ((ua, va), (ub, va), (ub, vb), (ua, vb))
             for loop_index, uv in zip(poly.loop_indices, coords, strict=True):
                 uv_layer.data[loop_index].uv = uv
             poly.material_index = current_material_index

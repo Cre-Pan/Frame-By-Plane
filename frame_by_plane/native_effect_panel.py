@@ -213,7 +213,7 @@ def _hidden_test(rig, effect_id, instance_id, covered):
         _VIRTUAL_CONTROLS[key] for key in covered if key in _VIRTUAL_CONTROLS
     }
     from .effect_shells import fbp_shell_tool_operators
-    for key in ("@TOOLS", "@ACTION"):
+    for key in ("@TOOLS", "@TOOLS2", "@ACTION"):
         if key in covered:
             # The button rows at the top replace the same buttons down here.
             hidden_calls.update(("operator", op) for op in fbp_shell_tool_operators(effect_id, key))
