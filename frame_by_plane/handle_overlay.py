@@ -984,6 +984,189 @@ def _draw_plane_outlines(context, region, line_shader, scale):
     _draw_lines(line_shader, chosen, 1.0 * scale, _OUTLINE_SELECTED_COLOR)
 
 
+# --- Layer names in Top and Side views ---------------------------------------
+#
+# A layer seen edge-on is a line. Its name sits at one end of the line, in the
+# colour of the layer's tag: layers in depth order take turns, one name on the right
+# and the next on the left (above and below for upright lines), so close
+# layers already share the room. Names on the same side that would still
+# overlap move apart around where they belong, with a thin line back to their
+# layer. A click on a name selects that layer (see
+# ``plane_label_under_cursor`` and ``fbp.select_plane_label``).
+
+PLANE_LABEL_HOVER_PREFIX = "LABEL:"
+_LABEL_PAD_PX = 2.0
+_LABEL_GAP_PX = 2.0
+_LABEL_MIN_LUMINANCE = 0.42
+
+
+def _label_text_color(rig):
+    """The layer's colour tag as Blender's theme shows it (the swatches of the
+    colour tag menu), white without a tag; lifted when it is too dark to read
+    on the viewport."""
+    tag = str(getattr(rig, "fbp_color_tag", "NONE") or "NONE").upper()
+    color = (1.0, 1.0, 1.0)
+    if tag.startswith("COLOR_"):
+        try:
+            index = int(tag[6:]) - 1
+            swatches = bpy.context.preferences.themes[0].strip_color
+            if 0 <= index < len(swatches):
+                color = tuple(float(value) for value in tuple(swatches[index].color)[:3])
+        except (ValueError, TypeError, IndexError, *FBP_DATA_ERRORS):
+            pass
+    red, green, blue = (max(0.0, min(1.0, value)) for value in color)
+    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    if luminance < _LABEL_MIN_LUMINANCE:
+        mix = (_LABEL_MIN_LUMINANCE - luminance) / max(1.0e-6, 1.0 - luminance)
+        red, green, blue = (value + (1.0 - value) * mix for value in (red, green, blue))
+    return (red, green, blue)
+
+
+def _rects_overlap(first, second, gap):
+    return not (
+        first[2] + gap <= second[0] or second[2] + gap <= first[0]
+        or first[3] + gap <= second[1] or second[3] + gap <= first[1]
+    )
+
+
+def spread_label_rects(rects, axis=1, gap=_LABEL_GAP_PX):
+    """Move screen rects ``(x0, y0, x1, y1)`` along ``axis`` (0: x, 1: y)
+    until none overlaps another, each staying as close as it can to where it
+    was: overlapping names spread evenly around their wanted places, not
+    all to one side. Returns the moved rects in the order given."""
+    rects = [list(rect) for rect in rects]
+    lo, hi = axis, axis + 2
+    for _round in range(64):
+        moved = False
+        for first in range(len(rects)):
+            for second in range(first + 1, len(rects)):
+                a, b = rects[first], rects[second]
+                if not _rects_overlap(a, b, gap):
+                    continue
+                # Push the pair apart, half each, along the axis.
+                if (a[lo] + a[hi]) <= (b[lo] + b[hi]):
+                    push = (a[hi] + gap - b[lo]) * 0.5
+                    a[lo] -= push; a[hi] -= push
+                    b[lo] += push; b[hi] += push
+                else:
+                    push = (b[hi] + gap - a[lo]) * 0.5
+                    b[lo] -= push; b[hi] -= push
+                    a[lo] += push; a[hi] += push
+                moved = True
+        if not moved:
+            break
+    return [tuple(rect) for rect in rects]
+
+
+def plane_label_layout(context, region=None, region_data=None):
+    """Names of the visible layers in a Top or Side view, as drawn.
+
+    ``[(rig_name, rect, anchor, attach, colour, selected, active)]``: ``rect``
+    is the name's screen box ``(x0, y0, x1, y1)``. For a name moved away from
+    its place, ``anchor`` is the end of the layer's line and ``attach`` the
+    point of the box nearest to it (both None otherwise). Empty outside
+    those views.
+    """
+    region = region or getattr(context, "region", None)
+    region_data = region_data or getattr(context, "region_data", None)
+    if region is None or region_data is None or not _axis_view(context):
+        return []
+    try:
+        depsgraph = context.evaluated_depsgraph_get()
+    except FBP_DATA_ERRORS:
+        depsgraph = None
+    outlines = _plane_outlines(context, depsgraph)
+    if not outlines:
+        return []
+    import blf
+
+    scale = _ui_scale(context)
+    font = 0
+    blf.size(font, _LABEL_SIZE_PX * scale)
+    height = _LABEL_SIZE_PX * scale + 2.0 * _LABEL_PAD_PX * scale
+    offset = _LABEL_OFFSET_PX * scale
+    lines = []
+    for corners, selected, active, name in outlines:
+        points = [location_3d_to_region_2d(region, region_data, corner) for corner in corners]
+        points = [point for point in points if point is not None]
+        if not points:
+            continue
+        min_x = min(point.x for point in points)
+        max_x = max(point.x for point in points)
+        min_y = min(point.y for point in points)
+        max_y = max(point.y for point in points)
+        # A line across the screen gets its names left and right, an upright
+        # one above and below.
+        across = (max_x - min_x) >= (max_y - min_y)
+        lines.append((across, (min_x, min_y, max_x, max_y), name, selected, active))
+    groups = {}
+    for across in (True, False):
+        # Depth order: down the screen for lines across, left to right else.
+        ordered = sorted(
+            (line for line in lines if line[0] == across),
+            key=lambda line: (-(line[1][1] + line[1][3]) if across else (line[1][0] + line[1][2]), line[2]),
+        )
+        for index, (_across, (min_x, min_y, max_x, max_y), name, selected, active) in enumerate(ordered):
+            width = blf.dimensions(font, name)[0] + 2.0 * _LABEL_PAD_PX * scale
+            first_side = index % 2 == 0
+            if across:
+                middle_y = (min_y + max_y) * 0.5
+                if first_side:
+                    anchor = (max_x, middle_y)
+                    rect = (max_x + offset, middle_y - height * 0.5, max_x + offset + width, middle_y + height * 0.5)
+                else:
+                    anchor = (min_x, middle_y)
+                    rect = (min_x - offset - width, middle_y - height * 0.5, min_x - offset, middle_y + height * 0.5)
+            else:
+                middle_x = (min_x + max_x) * 0.5
+                if first_side:
+                    anchor = (middle_x, max_y)
+                    rect = (middle_x - width * 0.5, max_y + offset, middle_x + width * 0.5, max_y + offset + height)
+                else:
+                    anchor = (middle_x, min_y)
+                    rect = (middle_x - width * 0.5, min_y - offset - height, middle_x + width * 0.5, min_y - offset)
+            groups.setdefault((across, first_side), []).append((name, rect, anchor, selected, active))
+    try:
+        rigs = {name: bpy.data.objects.get(name) for _across, _rect, name, *_rest in lines}
+    except FBP_DATA_ERRORS:
+        rigs = {}
+    layout = []
+    for (across, first_side), entries in groups.items():
+        placed = spread_label_rects(
+            [entry[1] for entry in entries], axis=1 if across else 0, gap=_LABEL_GAP_PX * scale,
+        )
+        for (name, wanted, anchor, selected, active), rect in zip(entries, placed):
+            moved = max(abs(a - b) for a, b in zip(wanted, rect)) > 0.5
+            if not moved:
+                attach = None
+            elif across:
+                attach = (rect[0] if first_side else rect[2], (rect[1] + rect[3]) * 0.5)
+            else:
+                attach = ((rect[0] + rect[2]) * 0.5, rect[1] if first_side else rect[3])
+            if attach is None:
+                anchor = None
+            rig = rigs.get(name)
+            color = _label_text_color(rig) if rig is not None else (1.0, 1.0, 1.0)
+            layout.append((name, rect, anchor, attach, color, selected, active))
+    return layout
+
+
+def plane_label_under_cursor(context, coord):
+    """Name of the rig whose label is under ``coord`` in a Top or Side view, or ""."""
+    try:
+        if not bool(context.space_data.overlay.show_overlays):
+            return ""
+        layout = plane_label_layout(context)
+    except (AttributeError, *FBP_DATA_ERRORS):
+        return ""
+    x, y = float(coord[0]), float(coord[1])
+    # Later labels are drawn on top: they win.
+    for name, (x0, y0, x1, y1), *_rest in reversed(layout):
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return name
+    return ""
+
+
 def _draw_plane_labels():
     """Layer names beside their outlines, in Top and Side views."""
     context = bpy.context
@@ -994,41 +1177,57 @@ def _draw_plane_labels():
             return
     except FBP_DATA_ERRORS:
         return
-    if not _axis_view(context):
-        return
-    try:
-        depsgraph = context.evaluated_depsgraph_get()
-    except FBP_DATA_ERRORS:
-        depsgraph = None
-    outlines = _plane_outlines(context, depsgraph)
-    if not outlines:
+    layout = plane_label_layout(context, region, region_data)
+    if not layout:
         return
     import blf
 
     scale = _ui_scale(context)
-    font = 0
-    blf.size(font, _LABEL_SIZE_PX * scale)
-    accent = handle_selected_color(context)
-    for corners, selected, active, name in outlines:
-        points = [location_3d_to_region_2d(region, region_data, corner) for corner in corners]
-        points = [point for point in points if point is not None]
-        if not points:
-            continue
-        # Right of the outline, level with its top on screen.
-        x = max(point.x for point in points) + _LABEL_OFFSET_PX * scale
-        y = max(point.y for point in points) - _LABEL_SIZE_PX * scale
-        if active:
-            color = (*accent[:3], 1.0)
-        elif selected:
-            color = _OUTLINE_SELECTED_COLOR
-        else:
-            color = _OUTLINE_COLOR
-        blf.color(font, *color)
+    pad = _LABEL_PAD_PX * scale
+    try:
+        from .layer_cage import hovered_handle_name
+        hovered = hovered_handle_name(region)
+    except ImportError:
+        hovered = ""
+    _fill_shader_unused, line_shader = _shaders()
+    gpu.state.blend_set("ALPHA")
+    try:
+        # A line back to the layer, only for names moved away from it.
+        segments = []
+        for _name, _rect, anchor, attach, color, _selected, _active in layout:
+            if anchor is not None and attach is not None:
+                segments.append(((*anchor, 0.0), (*attach, 0.0), color))
+        # Under the name of every selected layer a line in its colour,
+        # thicker for the active one; a fainter one under the name below
+        # the cursor.
+        underlines = []
+        for name, rect, _anchor, _attach, color, selected, active in layout:
+            hover = hovered == PLANE_LABEL_HOVER_PREFIX + name
+            if not (selected or hover):
+                continue
+            y = rect[1] + pad * 0.5
+            width = (2.0 if active else 1.0) * scale
+            underlines.append((((rect[0] + pad, y, 0.0), (rect[2] - pad, y, 0.0)), width, (*color, 1.0 if selected else 0.5)))
+        line_shader.bind()
+        line_shader.uniform_float("viewportSize", (region.width, region.height))
+        for start, end, color in segments:
+            _draw_lines(line_shader, [start, end], 1.0 * scale, (*color, 0.5))
+        for segment, width, color in underlines:
+            _draw_lines(line_shader, list(segment), width, color)
+        font = 0
+        blf.size(font, _LABEL_SIZE_PX * scale)
         blf.enable(font, blf.SHADOW)
-        blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.8)
-        blf.position(font, x, y, 0.0)
-        blf.draw(font, name)
+        blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.9)
+        for name, rect, _anchor, _attach, color, selected, active in layout:
+            hover = hovered == PLANE_LABEL_HOVER_PREFIX + name
+            if hover:
+                color = tuple(value + (1.0 - value) * 0.35 for value in color)
+            blf.color(font, *color, 1.0 if selected or hover or active else 0.85)
+            blf.position(font, rect[0] + pad, rect[1] + pad + 0.2 * _LABEL_SIZE_PX * scale, 0.0)
+            blf.draw(font, name)
         blf.disable(font, blf.SHADOW)
+    finally:
+        gpu.state.blend_set("NONE")
 
 
 def _draw_handles():

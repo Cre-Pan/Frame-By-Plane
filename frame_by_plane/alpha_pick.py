@@ -434,28 +434,64 @@ class FBP_OT_SelectThroughAlpha(Operator):
         return self._select(context, rig)
 
     def _select(self, context, rig):
-        view_layer = context.view_layer
-        # The layer's plane takes the active slot (unselected), so Properties
-        # > Modifiers shows the layer's effects; handles and other objects
-        # keep themselves active.
-        plane = getattr(rig, "fbp_plane_target", None) if getattr(rig, "is_fbp_control", False) else None
-        try:
-            if plane is not None and plane.name not in view_layer.objects:
-                plane = None
-        except FBP_DATA_ERRORS:
+        return fbp_select_layer_rig(context, rig, toggle=self.toggle)
+
+
+def fbp_select_layer_rig(context, rig, *, toggle=False):
+    """Select a layer by its rig, as a click on it does."""
+    view_layer = context.view_layer
+    # The layer's plane takes the active slot (unselected), so Properties
+    # > Modifiers shows the layer's effects; handles and other objects
+    # keep themselves active.
+    plane = getattr(rig, "fbp_plane_target", None) if getattr(rig, "is_fbp_control", False) else None
+    try:
+        if plane is not None and plane.name not in view_layer.objects:
             plane = None
-        target = plane or rig
-        if self.toggle:
-            active = view_layer.objects.active
-            if rig.select_get() and active in {rig, target}:
-                rig.select_set(False)
-            else:
-                rig.select_set(True)
-                view_layer.objects.active = target
+    except FBP_DATA_ERRORS:
+        plane = None
+    target = plane or rig
+    if toggle:
+        active = view_layer.objects.active
+        if rig.select_get() and active in {rig, target}:
+            rig.select_set(False)
         else:
-            for obj in tuple(context.selected_objects):
-                if obj != rig:
-                    obj.select_set(False)
             rig.select_set(True)
             view_layer.objects.active = target
-        return {'FINISHED'}
+    else:
+        for obj in tuple(context.selected_objects):
+            if obj != rig:
+                obj.select_set(False)
+        rig.select_set(True)
+        view_layer.objects.active = target
+    return {'FINISHED'}
+
+
+class FBP_OT_SelectPlaneLabel(Operator):
+    """Select a layer by clicking its name in a Top or Side view."""
+
+    bl_idname = "fbp.select_plane_label"
+    bl_label = "Select Layer by Name"
+    bl_description = "Select the layer whose name is under the cursor in a Top or Side view"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    toggle: BoolProperty(name="Toggle", default=False, options={'SKIP_SAVE'})
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            getattr(context, "mode", "") == 'OBJECT'
+            and getattr(getattr(context, "area", None), "type", "") == 'VIEW_3D'
+            and getattr(context, "region_data", None) is not None
+        )
+
+    def invoke(self, context, event):
+        try:
+            import bpy
+            from .handle_overlay import plane_label_under_cursor
+            name = plane_label_under_cursor(context, (event.mouse_region_x, event.mouse_region_y))
+            rig = bpy.data.objects.get(name) if name else None
+            if rig is None or rig.name not in context.view_layer.objects:
+                return {'PASS_THROUGH'}
+        except (ImportError, *FBP_DATA_ERRORS):
+            return {'PASS_THROUGH'}
+        return fbp_select_layer_rig(context, rig, toggle=self.toggle)

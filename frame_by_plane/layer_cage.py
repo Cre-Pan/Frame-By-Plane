@@ -382,6 +382,11 @@ def _update_hover(context, xy):
         if not name:
             from .handle_overlay import lattice_handle_under_cursor
             name = lattice_handle_under_cursor(context, xy, radius)
+        if not name and context.mode == "OBJECT":
+            # Layer names in Top and Side views light up too: a click selects.
+            from .handle_overlay import PLANE_LABEL_HOVER_PREFIX, plane_label_under_cursor
+            label = plane_label_under_cursor(context, xy)
+            name = PLANE_LABEL_HOVER_PREFIX + label if label else ""
     except (ImportError, *FBP_DATA_ERRORS):
         name = ""
     set_hovered_handle(context, name)
@@ -419,6 +424,14 @@ class FBP_GT_cursor_probe(bpy.types.Gizmo):
 def _proximity_wanted(context):
     if _cage_layers(context):
         return True
+    try:
+        from .handle_overlay import _axis_view
+        if _axis_view(context) and any(
+            bool(getattr(obj, "is_fbp_control", False)) for obj in tuple(context.visible_objects or ())
+        ):
+            return True
+    except (ImportError, *FBP_DATA_ERRORS):
+        pass
     try:
         from .handle_overlay import _visible_lattice_handles
         if next(_visible_lattice_handles(context), None) is not None:
