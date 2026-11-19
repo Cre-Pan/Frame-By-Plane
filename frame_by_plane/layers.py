@@ -2343,6 +2343,9 @@ def invalidate_preview_path(image_path):
             _FBP_COMPOSITE_PREVIEW_KEYS.clear()
             _FBP_COMPOSITE_PREVIEW_KEYS.extend(retained)
     _FBP_PREVIEW_MISS_CACHE.pop(abs_path, None)
+    passthrough_prefix = f"{abs_path}|"
+    for key in [key for key in _FBP_PREVIEW_PASSTHROUGH if key.startswith(passthrough_prefix)]:
+        _FBP_PREVIEW_PASSTHROUGH.pop(key, None)
     return changed
 
 
@@ -2350,6 +2353,7 @@ def clear_previews():
     """Release layer thumbnails without touching unrelated UI icon collections."""
     _FBP_COMPOSITE_PREVIEW_KEYS.clear()
     _FBP_RAW_PREVIEW_KEYS.clear()
+    _FBP_PREVIEW_PASSTHROUGH.clear()
     for key in ("fbp_previews", _FBP_COMPOSITE_PREVIEW_COLLECTION):
         pcoll = preview_collections.pop(key, None)
         if pcoll is None:
@@ -2557,43 +2561,122 @@ def _load_raw_preview(image_path):
     return None, abs_path
 
 
-def _square_preview_pixels(width, height, pixels, *, background_enabled, background):
-    """Letterbox a small Blender thumbnail without touching source Image pixels."""
+_FBP_THUMBNAIL_ALPHA_THRESHOLD = 0.01
+_FBP_THUMBNAIL_CROP_PADDING = 0.06
+_FBP_PREVIEW_PASSTHROUGH_LIMIT = 1024
+_FBP_PREVIEW_PASSTHROUGH = {}
+
+
+def thumbnail_crop_alpha_enabled(scene=None):
+    """Return whether thumbnails frame the visible subject instead of the canvas."""
+    if scene is None:
+        try:
+            scene = bpy.context.scene
+        except (AttributeError, ReferenceError, RuntimeError):
+            scene = None
+    if scene is None:
+        return True
+    return bool(getattr(scene, "fbp_thumbnail_crop_alpha", True))
+
+
+def _alpha_bounds(alpha, threshold=_FBP_THUMBNAIL_ALPHA_THRESHOLD):
+    """Return ``(x0, y0, x1, y1)`` of pixels above ``threshold`` or ``None``.
+
+    ``alpha`` is a ``(height, width)`` array; the end bounds are exclusive.
+    """
+    import numpy as np
+
+    mask = alpha > threshold
+    rows = np.flatnonzero(mask.any(axis=1))
+    if rows.size == 0:
+        return None
+    cols = np.flatnonzero(mask.any(axis=0))
+    return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
+
+
+def _square_preview_pixels(
+    width, height, pixels, *, background_enabled, background, crop_alpha=False,
+):
+    """Letterbox a small Blender thumbnail without touching source Image pixels.
+
+    With ``crop_alpha`` the fully transparent border is trimmed first, so the
+    visible subject fills the square thumbnail with a small uniform margin.
+    Returns ``(side, flat_rgba)`` or ``None`` when nothing needs compositing.
+    """
+    import numpy as np
+
     width = max(1, int(width))
     height = max(1, int(height))
-    side = max(width, height)
-    output = [0.0] * (side * side * 4)
-    br, bg, bb = background[:3]
-    if background_enabled:
-        for offset in range(0, len(output), 4):
-            output[offset:offset + 4] = (br, bg, bb, 1.0)
+    source = np.asarray(pixels, dtype=np.float32).reshape(height, width, 4)
 
-    x_offset = (side - width) // 2
-    y_offset = (side - height) // 2
-    for y in range(height):
-        source_row = y * width * 4
-        target_row = (y + y_offset) * side * 4
-        for x in range(width):
-            source = source_row + x * 4
-            target = target_row + (x + x_offset) * 4
-            red, green, blue, alpha = pixels[source:source + 4]
-            alpha = max(0.0, min(1.0, float(alpha)))
-            if background_enabled:
-                output[target] = float(red) * alpha + br * (1.0 - alpha)
-                output[target + 1] = float(green) * alpha + bg * (1.0 - alpha)
-                output[target + 2] = float(blue) * alpha + bb * (1.0 - alpha)
-                output[target + 3] = 1.0
-            else:
-                output[target:target + 4] = (float(red), float(green), float(blue), alpha)
-    return side, output
+    x0, y0, x1, y1 = 0, 0, width, height
+    padding = 0
+    if crop_alpha:
+        bounds = _alpha_bounds(source[:, :, 3])
+        if bounds is not None and bounds != (0, 0, width, height):
+            x0, y0, x1, y1 = bounds
+            padding = int(round(max(x1 - x0, y1 - y0) * _FBP_THUMBNAIL_CROP_PADDING))
+    source = source[y0:y1, x0:x1]
+    crop_height, crop_width = source.shape[:2]
+    side = max(crop_width, crop_height) + padding * 2
+
+    if (
+        side == width == height
+        and (x0, y0, x1, y1) == (0, 0, width, height)
+        and not background_enabled
+    ):
+        return None
+
+    output = np.zeros((side, side, 4), dtype=np.float32)
+    x_offset = (side - crop_width) // 2
+    y_offset = (side - crop_height) // 2
+    region = output[y_offset:y_offset + crop_height, x_offset:x_offset + crop_width]
+    alpha = np.clip(source[:, :, 3:4], 0.0, 1.0)
+    if background_enabled:
+        color = np.asarray(background[:3], dtype=np.float32)
+        output[:, :, :3] = color
+        output[:, :, 3] = 1.0
+        region[:, :, :3] = source[:, :, :3] * alpha + color * (1.0 - alpha)
+    else:
+        region[:, :, :3] = source[:, :, :3]
+        region[:, :, 3:4] = alpha
+    return side, output.ravel()
+
+
+def _remember_passthrough(cache_key):
+    if len(_FBP_PREVIEW_PASSTHROUGH) >= _FBP_PREVIEW_PASSTHROUGH_LIMIT:
+        _FBP_PREVIEW_PASSTHROUGH.clear()
+    _FBP_PREVIEW_PASSTHROUGH[cache_key] = True
+
+
+def _read_preview_pixels(preview, count):
+    import numpy as np
+
+    pixels = np.empty(count, dtype=np.float32)
+    try:
+        preview.image_pixels_float.foreach_get(pixels)
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        values = list(preview.image_pixels_float)
+        if len(values) != count:
+            return None
+        pixels[:] = values
+    return pixels
+
+
+def _write_preview_pixels(preview, output):
+    try:
+        preview.image_pixels_float.foreach_set(output)
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        preview.image_pixels_float = output.tolist()
 
 
 def load_preview(image_path, scene=None, *, force_square=False):
-    """Return a cached thumbnail with optional global background and letterboxing.
+    """Return a cached thumbnail with alpha crop, background and letterboxing.
 
     Full-resolution Image pixels are never read. Compositing operates only on
     Blender's small preview buffer and is cached independently from the source
-    thumbnail, keeping normal UI redraws cheap.
+    thumbnail, keeping normal UI redraws cheap. By default the transparent
+    border is cropped so the subject is shown instead of the empty canvas.
     """
     if not image_path:
         return None
@@ -2601,7 +2684,8 @@ def load_preview(image_path, scene=None, *, force_square=False):
     if base is None:
         return None
     background_enabled, background = thumbnail_background_state(scene)
-    if not background_enabled and not force_square:
+    crop_alpha = thumbnail_crop_alpha_enabled(scene)
+    if not background_enabled and not force_square and not crop_alpha:
         return base
 
     try:
@@ -2611,33 +2695,42 @@ def load_preview(image_path, scene=None, *, force_square=False):
     if width <= 0 or height <= 0:
         return base
     # A square source already fits a square custom icon. Without a background
-    # there is nothing to composite, so avoid copying its preview pixels.
-    if force_square and not background_enabled and width == height:
+    # or alpha crop there is nothing to composite, so avoid copying pixels.
+    if force_square and not background_enabled and not crop_alpha and width == height:
         return base
 
     color_key = tuple(round(value, 4) for value in background[:3])
-    square_output = bool(background_enabled or force_square)
-    cache_key = f"{abs_path}|{int(getattr(base, 'icon_id', 0) or 0)}|bg{int(background_enabled)}|{color_key}|square{int(square_output)}|v3"
+    cache_key = (
+        f"{abs_path}|{int(getattr(base, 'icon_id', 0) or 0)}|{width}x{height}"
+        f"|bg{int(background_enabled)}|{color_key}|crop{int(crop_alpha)}|v4"
+    )
+    if cache_key in _FBP_PREVIEW_PASSTHROUGH:
+        return base
     pcoll = _get_composite_preview_collection()
     if cache_key in pcoll:
         return pcoll[cache_key]
     try:
-        pixels = list(base.image_pixels_float)
-        if len(pixels) != width * height * 4:
+        pixels = _read_preview_pixels(base, width * height * 4)
+        if pixels is None:
             return base
-        side, output = _square_preview_pixels(
+        result = _square_preview_pixels(
             width,
             height,
             pixels,
             background_enabled=background_enabled,
             background=background,
+            crop_alpha=crop_alpha,
         )
+        if result is None:
+            _remember_passthrough(cache_key)
+            return base
+        side, output = result
         preview = pcoll.new(cache_key)
         preview.image_size = (side, side)
-        preview.image_pixels_float = output
+        _write_preview_pixels(preview, output)
         _remember_composite_preview(pcoll, cache_key)
         return preview
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError):
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError, IndexError):
         try:
             del pcoll[cache_key]
         except (KeyError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):

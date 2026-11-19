@@ -571,6 +571,15 @@ def update_show_previews_cb(self, context):
         fbp_warn("Could not clear Frame By Plane thumbnail previews", exc)
 
 
+def update_thumbnail_crop_alpha_cb(self, context):
+    """Re-queue progressive Cutout thumbnails after the alpha crop changes."""
+    try:
+        from .drawing_plane import clear_drawing_preview_runtime_state
+        clear_drawing_preview_runtime_state()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not refresh Frame By Plane thumbnails", exc)
+
+
 def update_alpha_render_method_cb(self, context):
     """Apply the selected alpha method to every owned FBP material in this Scene."""
     if fbp_is_silent_property_update(self) or fbp_undo_guard_active():
@@ -3895,6 +3904,12 @@ def register_properties():
         description="Show thumbnails inside layer, frame and Cutout library lists; the large active Cutout preview always remains visible",
         default=False,
         update=update_show_previews_cb,
+    )
+    _FBP_SCENE_RNA.fbp_thumbnail_crop_alpha = BoolProperty(
+        name="Crop Transparent Edges",
+        description="Trim the transparent border of image thumbnails so the drawn subject fills the preview instead of the empty canvas",
+        default=True,
+        update=update_thumbnail_crop_alpha_cb,
     )
     _FBP_SCENE_RNA.fbp_thumbnail_background_enabled = BoolProperty(
         name="Thumbnail Background",
