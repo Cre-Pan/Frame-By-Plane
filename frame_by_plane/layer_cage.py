@@ -32,6 +32,7 @@ Top view it also changes the depth), and rotation steps aside.
 
 from __future__ import annotations
 
+import math
 import bpy
 from mathutils import Matrix, Vector
 
@@ -73,14 +74,22 @@ def _whole_groups(context):
 def _cage_layers(context):
     """Selected, visible, selectable layers (rigs with an image plane).
 
-    Layers selected as a whole plane group show the group's box instead.
+    Only Digital layers show the box: a Legacy layer keeps its coloured wire
+    alone, selected or not. Layers selected as a whole plane group show the
+    group's box instead.
     """
+    from .rig_style import rig_style
+
     layers = []
-    grouped = _whole_groups(context)
+    grouped = None
     for obj in tuple(getattr(context, "selected_objects", ()) or ()):
         try:
             if not bool(getattr(obj, "is_fbp_control", False)):
                 continue
+            if rig_style(obj) == "LEGACY":
+                continue
+            if grouped is None:
+                grouped = _whole_groups(context)
             if obj.name in grouped:
                 continue
             if getattr(obj, "fbp_plane_target", None) is None:
@@ -216,6 +225,15 @@ def box_shape(rig, center, size):
     if is_outline_shape(shape):
         return box_center, box_size, tuple(outline), ()
     alpha = _alpha_box_segments(rig, center) if shape == "ALPHA" else ()
+    if alpha:
+        # The handles sit on the box around the visible pixels, not on the
+        # whole plane: a drawing in a corner of a large canvas gets a small
+        # box around the drawing.
+        xs = [point[0] for point in alpha]
+        ys = [point[1] for point in alpha]
+        if max(xs) - min(xs) > 1.0e-6 and max(ys) - min(ys) > 1.0e-6:
+            box_center = Vector(((max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5, center.z))
+            box_size = Vector((max(xs) - min(xs), max(ys) - min(ys)))
     return box_center, box_size, (), alpha
 
 
@@ -936,6 +954,10 @@ def _colored(parts):
     """Join ``(points, rgb, alpha)`` parts into one position and colour list."""
     positions, colors = [], []
     for points, rgb, alpha in parts:
+        # A point at infinity or NaN (a degenerate rig scale, a point behind
+        # the view) is never sent to the GPU: some drivers fault on it.
+        if not all(math.isfinite(value) for point in points for value in point):
+            continue
         positions.extend(points)
         colors.extend(((*rgb, alpha),) * len(points))
     return positions, colors
