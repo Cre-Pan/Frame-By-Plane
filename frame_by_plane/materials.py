@@ -593,6 +593,45 @@ def _fbp_set_material_opaque_override(mat, enabled):
     return changed
 
 
+# Solid shading with Material colour shows every image plane in one flat
+# viewport colour, where transparency alone is hard to read: a plane below
+# 100% opacity is also darkened there, down to this factor at 0%.
+FBP_SOLID_OPACITY_MIN_SHADE = 0.25
+FBP_SOLID_DEFAULT_RGB = (0.8, 0.8, 0.8)
+
+
+def _fbp_is_image_material(mat):
+    try:
+        return bool(mat.get("fbp_native_sequence", False) or mat.get("fbp_drawing_material", False))
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _fbp_solid_viewport_rgb(mat, current, alpha):
+    """Viewport colour of an image plane for ``alpha`` (Solid > Material)."""
+    try:
+        base = tuple(float(value) for value in mat.get("fbp_solid_base_rgb", ()))
+    except (TypeError, ValueError) + FBP_DATA_ERRORS:
+        base = ()
+    if len(base) != 3:
+        # First time: the colour shown so far is the full-opacity one,
+        # unless an earlier opacity already shaded it.
+        try:
+            previous_alpha = float(current[3])
+        except (TypeError, ValueError, IndexError):
+            previous_alpha = 1.0
+        if previous_alpha < 0.999:
+            base = FBP_SOLID_DEFAULT_RGB
+        else:
+            base = tuple(float(value) for value in current[:3])
+        try:
+            mat["fbp_solid_base_rgb"] = list(base)
+        except FBP_DATA_ERRORS:
+            pass
+    shade = FBP_SOLID_OPACITY_MIN_SHADE + (1.0 - FBP_SOLID_OPACITY_MIN_SHADE) * alpha
+    return tuple(value * shade for value in base)
+
+
 def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True, scene=None):
     if not mat:
         return
@@ -600,7 +639,11 @@ def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True, scene=None)
     alpha = max(0.0, min(1.0, float(opacity)))
     try:
         current = tuple(mat.diffuse_color)
-        target = (current[0], current[1], current[2], alpha)
+        rgb = (
+            _fbp_solid_viewport_rgb(mat, current, alpha)
+            if _fbp_is_image_material(mat) else current[:3]
+        )
+        target = (rgb[0], rgb[1], rgb[2], alpha)
         if any(abs(float(a) - float(b)) > 1e-6 for a, b in zip(current, target, strict=True)):
             mat.diffuse_color = target
             changed = True

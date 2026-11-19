@@ -143,13 +143,17 @@ try:
     assert all(material_opacity(rig) == [1.0] for rig in members), [material_opacity(r) for r in members]
     assert abs(float(outside.fbp_opacity) - 1.0) < 1e-6, "the layer's own Opacity never changes"
     # Solid > Material: the faded planes are darkened too, the group's are not.
+    materials = importlib.import_module(f"{PACKAGE_NAME}.materials")
     outside_mat = outside.fbp_plane_target.data.materials[0]
-    original_rgb = tuple(groups._SOLID_COLORS[outside_mat.name])
+    original_rgb = tuple(outside_mat["fbp_solid_base_rgb"])
+    shade = materials.FBP_SOLID_OPACITY_MIN_SHADE + (1.0 - materials.FBP_SOLID_OPACITY_MIN_SHADE) * groups.ISOLATION_FADE
     assert all(
-        abs(a - b * groups.ISOLATION_SOLID_DIM) < 1e-5
+        abs(a - b * shade) < 1e-5
         for a, b in zip(tuple(outside_mat.diffuse_color)[:3], original_rgb)
     ), (tuple(outside_mat.diffuse_color), original_rgb)
-    assert all(mat.name not in groups._SOLID_COLORS for rig in members for mat in rig.fbp_plane_target.data.materials)
+    for rig in members:
+        member_mat = rig.fbp_plane_target.data.materials[0]
+        assert abs(member_mat.diffuse_color[3] - 1.0) < 1e-6
 
     # 5. Save never stores the fade; it comes back afterwards.
     path = workdir / "groups.blend"
@@ -169,7 +173,13 @@ try:
     assert material_opacity(outside) == [1.0], material_opacity(outside)
     assert groups.selection_group(layers[1], scene) == group
     assert all(abs(a - b) < 1e-6 for a, b in zip(tuple(outside_mat.diffuse_color)[:3], original_rgb))
-    assert not groups._SOLID_COLORS
+    # The Opacity slider shades Solid the same way.
+    outside.fbp_opacity = 0.4
+    shade = materials.FBP_SOLID_OPACITY_MIN_SHADE + (1.0 - materials.FBP_SOLID_OPACITY_MIN_SHADE) * 0.4
+    assert abs(outside_mat.diffuse_color[3] - 0.4) < 1e-6
+    assert all(abs(a - b * shade) < 1e-5 for a, b in zip(tuple(outside_mat.diffuse_color)[:3], original_rgb))
+    outside.fbp_opacity = 1.0
+    assert all(abs(a - b) < 1e-6 for a, b in zip(tuple(outside_mat.diffuse_color)[:3], original_rgb))
 
     # 7. Nested groups open one level at a time.
     bpy.ops.object.select_all(action='DESELECT')

@@ -35,7 +35,7 @@ from .registration import (
 
 
 # Opacity of the planes outside the entered group, as a factor of their own.
-ISOLATION_FADE = 0.25
+ISOLATION_FADE = 0.1
 # Solid > Material: their viewport colour is darkened by this factor too.
 ISOLATION_SOLID_DIM = 0.35
 
@@ -309,6 +309,9 @@ def _dim_solid_color(rig, faded):
     Material shows every plane in its viewport colour, so the faded ones are
     also darkened there. The original colour is kept to restore it.
     """
+    if not bool(getattr(rig, "fbp_is_color_plane", False)):
+        # Image planes: the opacity itself shades their Solid colour.
+        return
     for mat in _plane_materials(rig):
         try:
             current = tuple(mat.diffuse_color)
