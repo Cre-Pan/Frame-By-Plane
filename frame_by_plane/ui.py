@@ -4476,6 +4476,19 @@ class FBP_OT_OpenEffectsMasks(Operator):
         return {'CANCELLED'}
 
 
+def _fbp_draw_thumbnail_toggles(layout, context):
+    """Thumbnail visibility and alpha crop, shared by the frame list menus."""
+    scene = getattr(context, "scene", None)
+    if scene is None or not hasattr(scene, "fbp_show_previews"):
+        return
+    show = bool(getattr(scene, "fbp_show_previews", False))
+    layout.prop(scene, "fbp_show_previews", text="Show Thumbnails")
+    if hasattr(scene, "fbp_thumbnail_crop_alpha"):
+        crop = layout.row()
+        crop.enabled = show
+        crop.prop(scene, "fbp_thumbnail_crop_alpha", text="Crop Transparent Edges")
+
+
 class FBP_MT_SequenceFrameActions(Menu):
     bl_idname = "FBP_MT_sequence_frame_actions"
     bl_label = "Frame List Actions"
@@ -4521,6 +4534,8 @@ class FBP_MT_SequenceFrameActions(Menu):
         split.rig_name = str(getattr(rig, "name", "") or "")
         layout.separator()
         if rig is not None and not bool(getattr(rig, "fbp_is_color_plane", False)):
+            _fbp_draw_thumbnail_toggles(layout, context)
+            layout.separator()
             refresh = layout.operator(
                 "fbp.refresh_media", text="Refresh Media", icon=ui_icon("action.refresh")
             )

@@ -2160,6 +2160,12 @@ class FBP_MT_DrawingListActions(Menu):
         remove = layout.row(align=True)
         remove.enabled = has_items
         remove.operator("fbp.remove_drawing", text="Remove Drawing", icon="TRASH")
+        layout.separator()
+        scene = getattr(context, "scene", None)
+        if scene is not None and hasattr(scene, "fbp_show_previews"):
+            layout.prop(scene, "fbp_show_previews", text="Show Thumbnails")
+            if hasattr(scene, "fbp_thumbnail_crop_alpha"):
+                layout.prop(scene, "fbp_thumbnail_crop_alpha", text="Crop Transparent Edges")
 
 
 class FBP_OT_RemoveDrawing(Operator):
