@@ -62,12 +62,26 @@ def cage_enabled(context=None):
         return True
 
 
+def _whole_groups(context):
+    try:
+        from .plane_groups import whole_group_selected_rigs
+        return whole_group_selected_rigs(context)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return set()
+
+
 def _cage_layers(context):
-    """Selected, visible, selectable layers (rigs with an image plane)."""
+    """Selected, visible, selectable layers (rigs with an image plane).
+
+    Layers selected as a whole plane group show the group's box instead.
+    """
     layers = []
+    grouped = _whole_groups(context)
     for obj in tuple(getattr(context, "selected_objects", ()) or ()):
         try:
             if not bool(getattr(obj, "is_fbp_control", False)):
+                continue
+            if obj.name in grouped:
                 continue
             if getattr(obj, "fbp_plane_target", None) is None:
                 continue

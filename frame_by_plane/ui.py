@@ -4120,6 +4120,9 @@ def _fbp_draw_layer_side_toolbar(layout, context, *, mode='PLANES'):
         op.action = 'IN'
         op.collection_name = active_collection.name
         op.list_mode = 'GP' if is_gp_mode else 'PLANES'
+        if not is_gp_mode and hasattr(active_collection, 'fbp_plane_group'):
+            group_rig = col.row(align=True)
+            group_rig.prop(active_collection, 'fbp_plane_group', text='', icon='MESH_CUBE')
     else:
         can_move = active_type in ({'GP_CANVAS'} if is_gp_mode else {'LAYER'})
         if not is_gp_mode:

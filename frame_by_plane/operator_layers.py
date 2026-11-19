@@ -3154,6 +3154,9 @@ class FBP_OT_CreateLayerCollection(Operator):
             collection.is_fbp_collection = True
             if hasattr(collection, "fbp_layer_list_domain"):
                 collection.fbp_layer_list_domain = resolved_mode
+            if resolved_mode == 'PLANES' and hasattr(collection, "fbp_plane_group"):
+                # An artist-made plane group: box rig, click and double click.
+                collection.fbp_plane_group = True
             collection.fbp_collapsed = False
             if closest_order is not None:
                 collection.fbp_layer_order = max(0.0, float(closest_order))
