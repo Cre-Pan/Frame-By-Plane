@@ -372,19 +372,30 @@ def set_fbp_material_transparency(mat, opacity=1.0):
     configure_fbp_material_surface(mat, opacity, has_alpha=True)
 
 
-def do_update_opacity(rig):
+def do_update_opacity(rig, opacity=None):
     """Update layer opacity in place without rebuilding image materials.
 
     Image planes use one lightweight alpha Multiply node only below 100%.
     It is updated in place and removed at 100%, without rebuilding materials,
     images or native-sequence proxy caches while the slider is dragged.
+
+    ``opacity`` overrides the layer's own Opacity for a view-only state (the
+    faded planes outside an entered plane group); keyframed Color Plane
+    opacity is then not driven until the layer's own value is restored.
     """
     plane = getattr(rig, "fbp_plane_target", None)
     if not plane:
         return
-    opacity = max(0.0, min(1.0, float(getattr(rig, "fbp_opacity", 1.0))))
+    override = opacity is not None
+    if not override:
+        opacity = getattr(rig, "fbp_opacity", 1.0)
+    opacity = max(0.0, min(1.0, float(opacity)))
     try:
-        animated = bool(getattr(rig, "fbp_is_color_plane", False)) and fbp_rig_opacity_is_animated(rig)
+        animated = (
+            not override
+            and bool(getattr(rig, "fbp_is_color_plane", False))
+            and fbp_rig_opacity_is_animated(rig)
+        )
         plane.show_transparent = animated or opacity < 1.0
     except FBP_DATA_IO_ERRORS:
         pass
@@ -396,7 +407,9 @@ def do_update_opacity(rig):
         if is_procedural and getattr(mat, "node_tree", None):
             # The procedural updater already writes metadata and render settings.
             # Avoid configuring the same material twice for every slider event.
-            update_fbp_procedural_material_opacity(mat, opacity, rig=rig)
+            update_fbp_procedural_material_opacity(
+                mat, opacity, rig=rig, animated=False if override else None,
+            )
             continue
         try:
             if abs(float(mat.get("fbp_opacity", 1.0)) - opacity) > 1e-6:
@@ -580,6 +593,45 @@ def _fbp_set_material_opaque_override(mat, enabled):
     return changed
 
 
+# Solid shading with Material colour shows every image plane in one flat
+# viewport colour, where transparency alone is hard to read: a plane below
+# 100% opacity is also darkened there, down to this factor at 0%.
+FBP_SOLID_OPACITY_MIN_SHADE = 0.25
+FBP_SOLID_DEFAULT_RGB = (0.8, 0.8, 0.8)
+
+
+def _fbp_is_image_material(mat):
+    try:
+        return bool(mat.get("fbp_native_sequence", False) or mat.get("fbp_drawing_material", False))
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _fbp_solid_viewport_rgb(mat, current, alpha):
+    """Viewport colour of an image plane for ``alpha`` (Solid > Material)."""
+    try:
+        base = tuple(float(value) for value in mat.get("fbp_solid_base_rgb", ()))
+    except (TypeError, ValueError) + FBP_DATA_ERRORS:
+        base = ()
+    if len(base) != 3:
+        # First time: the colour shown so far is the full-opacity one,
+        # unless an earlier opacity already shaded it.
+        try:
+            previous_alpha = float(current[3])
+        except (TypeError, ValueError, IndexError):
+            previous_alpha = 1.0
+        if previous_alpha < 0.999:
+            base = FBP_SOLID_DEFAULT_RGB
+        else:
+            base = tuple(float(value) for value in current[:3])
+        try:
+            mat["fbp_solid_base_rgb"] = list(base)
+        except FBP_DATA_ERRORS:
+            pass
+    shade = FBP_SOLID_OPACITY_MIN_SHADE + (1.0 - FBP_SOLID_OPACITY_MIN_SHADE) * alpha
+    return tuple(value * shade for value in base)
+
+
 def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True, scene=None):
     if not mat:
         return
@@ -587,7 +639,11 @@ def configure_fbp_material_surface(mat, opacity=1.0, has_alpha=True, scene=None)
     alpha = max(0.0, min(1.0, float(opacity)))
     try:
         current = tuple(mat.diffuse_color)
-        target = (current[0], current[1], current[2], alpha)
+        rgb = (
+            _fbp_solid_viewport_rgb(mat, current, alpha)
+            if _fbp_is_image_material(mat) else current[:3]
+        )
+        target = (rgb[0], rgb[1], rgb[2], alpha)
         if any(abs(float(a) - float(b)) > 1e-6 for a, b in zip(current, target, strict=True)):
             mat.diffuse_color = target
             changed = True

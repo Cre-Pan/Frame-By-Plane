@@ -154,7 +154,7 @@ from .operator_render import (
     FBP_OT_StopBackgroundRender,
     FBP_OT_BackgroundRenderStatus,
 )
-from .alpha_pick import FBP_OT_SelectThroughAlpha
+from .alpha_pick import FBP_OT_SelectPlaneLabel, FBP_OT_SelectThroughAlpha
 from .rig_gesture_select import FBP_GESTURE_BINDINGS, FBP_OT_GestureSelect
 from .operator_procedural import (
     FBP_OT_CreateColorPlane,
@@ -210,7 +210,10 @@ def _register_keymaps():
         'fbp.group_or_pass',
         'fbp.ungroup_or_pass',
         'fbp.select_through_alpha',
+        'fbp.select_plane_label',
         'fbp.gesture_select',
+        'fbp.enter_plane_group',
+        'fbp.exit_plane_group',
     }
     remove_matching_keymap_items(
         keymap,
@@ -256,6 +259,16 @@ def _register_keymaps():
         _addon_keymaps.append((keymap, ungroup_item))
 
 
+    # A click on a layer's name in a Top or Side view selects that layer;
+    # anywhere else the click goes on to the bindings below and to Blender.
+    mouse, value = _select_mouse_event()
+    for toggle in (False, True):
+        label_item = keymap.keymap_items.new(
+            'fbp.select_plane_label', type=mouse, value=value, shift=toggle,
+        )
+        label_item.properties.toggle = toggle
+        _addon_keymaps.append((keymap, label_item))
+
     if shortcut_enabled('shortcut_click_through_alpha'):
         select_mouse = 'LEFT'
         try:
@@ -271,7 +284,27 @@ def _register_keymaps():
             )
             pick_item.properties.toggle = toggle
             _addon_keymaps.append((keymap, pick_item))
+        # Plane groups: a double click enters a group, Esc leaves it (Esc
+        # passes through when no group is entered).
+        enter_item = keymap.keymap_items.new(
+            'fbp.enter_plane_group', type=mouse, value='DOUBLE_CLICK',
+        )
+        _addon_keymaps.append((keymap, enter_item))
+        exit_item = keymap.keymap_items.new('fbp.exit_plane_group', type='ESC', value='PRESS')
+        _addon_keymaps.append((keymap, exit_item))
         _register_gesture_keymaps()
+
+
+def _select_mouse_event():
+    """``(type, value)`` of a click select with the active keymap's select mouse."""
+    select_mouse = 'LEFT'
+    try:
+        keyconfig = bpy.context.window_manager.keyconfigs.active
+        select_mouse = str(getattr(getattr(keyconfig, 'preferences', None), 'select_mouse', 'LEFT') or 'LEFT')
+    except (AttributeError, ReferenceError, RuntimeError):
+        select_mouse = 'LEFT'
+    mouse = 'RIGHTMOUSE' if select_mouse == 'RIGHT' else 'LEFTMOUSE'
+    return mouse, ('PRESS' if mouse == 'RIGHTMOUSE' else 'CLICK')
 
 
 def _register_gesture_keymaps():
@@ -433,6 +466,7 @@ classes = (
     FBP_OT_ResetCrop,
     FBP_OT_CropAlpha,
     FBP_OT_SelectThroughAlpha,
+    FBP_OT_SelectPlaneLabel,
     FBP_OT_GestureSelect,
     FBP_OT_ResetExtend,
     FBP_OT_FocusCropExtend,

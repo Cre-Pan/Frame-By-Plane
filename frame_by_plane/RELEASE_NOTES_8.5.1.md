@@ -6,6 +6,7 @@ Frame By Plane 8.5.1 installs on both **Blender 5.2 LTS** and **Blender 5.3**, a
 
 - 🧭 **One package for Blender 5.2 LTS and 5.3.** The 5.3 features below turn on by themselves in Blender 5.3; in 5.2 everything else works as in 8.2.1.
 - ✂️ **Crop and Extend rig:** the same style as the layer transform box, with the original size as a dashed outline and dots and side bars that keep one size on screen at any distance. They appear when the cursor comes near.
+- 🏷️ **Layer names in Top and Side views** take turns left and right of their layer so they never overlap, use the layer's colour and select it with a click.
 - 🪞 **Flip Canvas:** while you look through the camera, one button at the bottom of the Z Pie mirrors the view to check proportions (Blender 5.3).
 - 📝 **Notes in the node trees** are Blender 5.3 **Comment** nodes with Markdown, one per note instead of a stack of frames (Blender 5.3; in 5.2 notes stay frames).
 - 📏 **Panel text wraps to the panel:** Project Doctor, Performance Dashboard, What's New and the tutorial help use Blender's new multi-line labels.
@@ -14,6 +15,7 @@ Frame By Plane 8.5.1 installs on both **Blender 5.2 LTS** and **Blender 5.3**, a
 ### 🛠️ Fixes in 8.5.1
 
 - **Modifiers > Copy to Selected** now copies the real effect and its settings (Crop, Extend, image effects and mesh effects) instead of a modifier that disappeared right away. Layers that already have the effect take the source values.
+- **Transparent (Alpha) frames** stay transparent in Solid view and Material Preview too, also after adding a PNG with Import Frame. Before, they could show the first drawing of the sequence.
 - **Extend after Crop** starts exactly at the crop edge: Repeat, Repeat Flipped and Transparent no longer show the pixels the crop removed.
 
 
@@ -42,7 +44,8 @@ Frame By Plane 8.5.1 installs on both **Blender 5.2 LTS** and **Blender 5.3**, a
 - ✂️ **Crop Alpha:** one button in Crop crops the selected layers to their visible pixels without moving them. Image sequences use the union of every frame.
 - 🔲 **Alpha Outline rig shape (default for new image layers):** the layer's controller follows the visible pixels of the image, **Smooth** (curves that keep sharp corners sharp) or **Pixel** (stepped), with a Detail slider. With **Follow Frame** an image sequence's outline follows the drawing shown on each frame. It updates with Crop and Expand.
 - 👆 **Rig hidden, click the image:** new layers hide their controller wire. Click an image's solid pixels to select its layer; clicks on transparent, faint (under 15% opacity) or scattered pixels reach the layer behind, also on rotated, scaled or distant planes and through orthographic views and cameras. **Use Rig** (Rig Shape popup) brings the wire back per layer, and layers that use it are picked from the wire only, unless **Rig Layers: Click Image Too** is on. Preferences > Shortcuts holds both options plus **Use Rig on New Layers**. Layers without a rig draw nothing and skip all outline work, and Follow Frame outlines wait until playback stops, so playback stays light. Box and lasso select (tools, B and Ctrl+right-drag) pick rig-less layers by their solid pixels too, with the usual Set, Extend, Subtract and Intersect modes.
-- 🔷 **Rig shapes:** the Shape menu now lists Alpha Outline, Rectangle, Polygon (3 to 50 sides) and Circle, plus Custom. Diamond, Hexagon and Octagon rigs open as Polygons.
+- 🔷 **Rig shapes:** the Shape menu now lists Rectangle, Circle, Triangle, Polygon (3 to 50 sides) and Alpha Outline, plus Custom. Diamond, Hexagon and Octagon rigs open as Polygons.
+- 🎛️ **Rig styles, Digital and Legacy:** the Rig Shape popup starts with the style. **Digital** (default) draws no wire: the selected layer's transform box takes the rig shape, a circle, triangle, polygon or the alpha outline, with its scale dots on the outline, the rotation knob and the orientation square. **Legacy** is the coloured wire, always visible, in the same shapes (it replaces Use Rig; layers that used the wire open as Legacy). **Perfect Shape** keeps a square, circle or regular polygon in both styles even when the layer is scaled or stretched, by hand or by keyframes. **Expand** goes much further both ways: up to 40 (2 plane units of border) and down to -18, which shrinks the rig inside the plane to 10% of its size.
 - 🗺️ **Readable effect node views:** the layer material reads left to right in framed sections (Source, UV effects, Layer image, Color effects, Masks & alpha, Output), and each effect sits in its own numbered frame, in stack order, with its settings beside it. Effect groups and effect modifiers get labelled steps from Inputs to Result, and readers carry the name of the setting they read. Short note frames explain each part; turn them off with **Notes in Node Views** in the preferences. Display only: nothing is relinked or renamed.
 
 ### 🛠️ Fixes in 8.2.1

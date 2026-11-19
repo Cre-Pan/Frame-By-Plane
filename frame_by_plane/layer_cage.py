@@ -62,12 +62,26 @@ def cage_enabled(context=None):
         return True
 
 
+def _whole_groups(context):
+    try:
+        from .plane_groups import whole_group_selected_rigs
+        return whole_group_selected_rigs(context)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return set()
+
+
 def _cage_layers(context):
-    """Selected, visible, selectable layers (rigs with an image plane)."""
+    """Selected, visible, selectable layers (rigs with an image plane).
+
+    Layers selected as a whole plane group show the group's box instead.
+    """
     layers = []
+    grouped = _whole_groups(context)
     for obj in tuple(getattr(context, "selected_objects", ()) or ()):
         try:
             if not bool(getattr(obj, "is_fbp_control", False)):
+                continue
+            if obj.name in grouped:
                 continue
             if getattr(obj, "fbp_plane_target", None) is None:
                 continue
@@ -82,12 +96,13 @@ def _cage_layers(context):
 
 
 def layer_cage_rect(rig, depsgraph=None):
-    """``(center, size)`` of the layer's original image plane in rig space (XY).
+    """``(center, size)`` of the layer's image plane in rig space (XY).
 
-    The box always hugs the original plane: effects that grow or move the
-    evaluated mesh (Frame Stack slices, Extend, mesh effects) do not change
-    it, whatever the layer's scale or its sign. Falls back to the evaluated
-    plane bounds when the layer has no reference size.
+    The box hugs the plane as Crop and Extend leave it: a cropped layer gets
+    a smaller box, an extended one a larger box. Effects that grow or move the
+    evaluated mesh (Frame Stack slices, mesh effects) do not change it,
+    whatever the layer's scale or its sign. Falls back to the evaluated plane
+    bounds when the layer has no reference size.
     """
     plane = getattr(rig, "fbp_plane_target", None)
     if plane is None:
@@ -99,7 +114,8 @@ def layer_cage_rect(rig, depsgraph=None):
     corners = None
     try:
         from .builder import fbp_plane_reference_bounds
-        min_x, max_x, min_y, max_y = fbp_plane_reference_bounds(rig)[0]
+        # Index 2: the cropped bounds grown by Extend, as the plane mesh is.
+        min_x, max_x, min_y, max_y = fbp_plane_reference_bounds(rig)[2]
         if max_x - min_x > 1.0e-9 and max_y - min_y > 1.0e-9:
             corners = [
                 relation @ Vector((x, y, 0.0))
@@ -121,6 +137,86 @@ def layer_cage_rect(rig, depsgraph=None):
         return None
     center = Vector(((max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5, 0.0))
     return center, size
+
+
+_ALPHA_OUTLINES = {}
+
+
+def _alpha_box_segments(rig, center):
+    """Rig-local segment points of a Digital Alpha Outline box, or ``()``.
+
+    Built from the same outline as the Legacy wire and kept until the
+    drawing, the outline settings or the Expand change.
+    """
+    try:
+        from . import builder
+        from .rig_style import expand_margin, shrink_factor
+        margin, shrink = expand_margin(rig), shrink_factor(rig)
+        key = (
+            builder.fbp_rig_alpha_frame_source(rig),
+            str(getattr(rig, "fbp_rig_shape_alpha_style", "")),
+            int(getattr(rig, "fbp_rig_shape_alpha_detail", 64) or 64),
+            round(margin, 6), round(shrink, 6), tuple(round(value, 6) for value in center),
+        )
+        pointer = rig.as_pointer()
+    except (ImportError, *FBP_DATA_ERRORS, TypeError, ValueError):
+        return ()
+    cached = _ALPHA_OUTLINES.get(pointer)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    if cached is not None:
+        # During playback the outline waits, as the Legacy wire does, and
+        # catches up on the first redraw after it stops.
+        try:
+            from .scene_sync import fbp_animation_playback_active
+            if fbp_animation_playback_active():
+                return cached[1]
+        except (ImportError, *FBP_DATA_ERRORS):
+            pass
+    segments = ()
+    try:
+        geometry = builder._fbp_alpha_rig_geometry(rig, margin)
+    except (*FBP_DATA_ERRORS, TypeError, ValueError):
+        geometry = None
+    if geometry is not None:
+        verts, edges = geometry
+        cx, cy = center.x, center.y
+        points = [
+            (cx + (x - cx) * shrink, cy + (y - cy) * shrink, z)
+            for x, y, z in verts
+        ]
+        segments = tuple(points[index] for edge in edges for index in edge)
+    if len(_ALPHA_OUTLINES) >= 64:
+        _ALPHA_OUTLINES.clear()
+    _ALPHA_OUTLINES[pointer] = (key, segments)
+    return segments
+
+
+def box_shape(rig, center, size):
+    """The box a layer shows in its rig shape: ``(center, size, outline, alpha)``.
+
+    ``outline`` is the closed rig-local XY curve of a Circle, Triangle or
+    Polygon box (empty for a rectangle); ``alpha`` the segment points of an
+    Alpha Outline. Expand grows or shrinks the box and Perfect Shape keeps it
+    regular on screen whatever the layer's scale. A Custom rig keeps the
+    plain box on the plane.
+    """
+    try:
+        from .rig_style import is_outline_shape, outline_box, rig_outline, rig_shape
+        shape = rig_shape(rig)
+        if shape == "CUSTOM":
+            return center, size, (), ()
+        half = (size.x * 0.5, size.y * 0.5)
+        outline = rig_outline(rig, (center.x, center.y), half)
+    except (ImportError, *FBP_DATA_ERRORS, TypeError, ValueError):
+        return center, size, (), ()
+    (cx, cy), (hx, hy) = outline_box(outline)
+    box_center = Vector((cx, cy, center.z))
+    box_size = Vector((max(1.0e-6, hx * 2.0), max(1.0e-6, hy * 2.0)))
+    if is_outline_shape(shape):
+        return box_center, box_size, tuple(outline), ()
+    alpha = _alpha_box_segments(rig, center) if shape == "ALPHA" else ()
+    return box_center, box_size, (), alpha
 
 
 def _rigs_with_handles(context):
@@ -300,6 +396,11 @@ def _update_hover(context, xy):
         if not name:
             from .handle_overlay import lattice_handle_under_cursor
             name = lattice_handle_under_cursor(context, xy, radius)
+        if not name and context.mode == "OBJECT":
+            # Layer names in Top and Side views light up too: a click selects.
+            from .handle_overlay import PLANE_LABEL_HOVER_PREFIX, plane_label_under_cursor
+            label = plane_label_under_cursor(context, xy)
+            name = PLANE_LABEL_HOVER_PREFIX + label if label else ""
     except (ImportError, *FBP_DATA_ERRORS):
         name = ""
     set_hovered_handle(context, name)
@@ -337,6 +438,14 @@ class FBP_GT_cursor_probe(bpy.types.Gizmo):
 def _proximity_wanted(context):
     if _cage_layers(context):
         return True
+    try:
+        from .handle_overlay import _axis_view
+        if _axis_view(context) and any(
+            bool(getattr(obj, "is_fbp_control", False)) for obj in tuple(context.visible_objects or ())
+        ):
+            return True
+    except (ImportError, *FBP_DATA_ERRORS):
+        pass
     try:
         from .handle_overlay import _visible_lattice_handles
         if next(_visible_lattice_handles(context), None) is not None:
@@ -443,7 +552,7 @@ def _pixels_per_unit(region, region_data, origin, direction):
 _FRAME_CACHE = {}
 
 
-def _box_frame(rig, center, size, region, region_data):
+def _box_frame(rig, center, size, region, region_data, outline=(), alpha=()):
     """World and screen points of a layer's box, or None off screen.
 
     The box is drawn on every redraw and hit-tested on every mouse move with
@@ -456,19 +565,41 @@ def _box_frame(rig, center, size, region, region_data):
         rig.as_pointer(), tuple(map(tuple, world)), tuple(center), tuple(size),
         None if anchor_local is None else tuple(anchor_local),
         tuple(map(tuple, region_data.perspective_matrix)), region.width, region.height,
+        outline, len(alpha), alpha[:1],
     )
     try:
         return _FRAME_CACHE[key]
     except KeyError:
         pass
-    frame = _build_box_frame(world, center, size, region, region_data, anchor_local)
+    frame = _build_box_frame(world, center, size, region, region_data, anchor_local, outline, alpha)
     if len(_FRAME_CACHE) >= 64:
         _FRAME_CACHE.clear()
     _FRAME_CACHE[key] = frame
     return frame
 
 
-def _build_box_frame(world, center, size, region, region_data, anchor_local):
+def local_handles(center, size, outline=()):
+    """Rig-local corner and side handle points of a box, as ``Vector`` lists.
+
+    A rectangle box has them on its corners and the middle of its sides; a
+    shaped box (circle, triangle, polygon) on its outline, along the
+    diagonals and the axes of its bounding box.
+    """
+    hx, hy = size.x * 0.5, size.y * 0.5
+    if outline:
+        from .rig_style import handle_points
+        corners, edges = handle_points(outline, (center.x, center.y), (hx, hy))
+        return (
+            [Vector((x, y, center.z)) for x, y in corners],
+            [Vector((x, y, center.z)) for x, y in edges],
+        )
+    return (
+        [Vector((center.x + dx * hx, center.y + dy * hy, center.z)) for dx, dy in _CORNER_SIGNS],
+        [Vector((center.x + dx * hx, center.y + dy * hy, center.z)) for dx, dy in _EDGE_SIGNS],
+    )
+
+
+def _build_box_frame(world, center, size, region, region_data, anchor_local, outline=(), alpha=()):
     from bpy_extras.view3d_utils import location_3d_to_region_2d
 
     world = world.copy()
@@ -486,9 +617,25 @@ def _build_box_frame(world, center, size, region, region_data, anchor_local):
     def screen(value):
         return location_3d_to_region_2d(region, region_data, value)
 
-    corners = [point(*signs) for signs in _CORNER_SIGNS]
-    edges = [point(*signs) for signs in _EDGE_SIGNS]
+    local_corners, local_edges = local_handles(center, size, outline)
+    corners = [world @ value for value in local_corners]
+    edges = [world @ value for value in local_edges]
     middle = point(0, 0)
+    # The drawn outline: the shape's curve, the alpha outline segments, or
+    # the four sides of the rectangle.
+    if outline:
+        shape_points = [world @ Vector((x, y, center.z)) for x, y in outline]
+        segments = []
+        for index in range(len(shape_points)):
+            segments.extend((shape_points[index], shape_points[(index + 1) % len(shape_points)]))
+    else:
+        shape_points = None
+        box_corners = [point(*signs) for signs in _CORNER_SIGNS]
+        segments = []
+        for index in range(4):
+            segments.extend((box_corners[index], box_corners[(index + 1) % 4]))
+    if alpha:
+        segments = [world @ Vector(value) for value in alpha]
     normal = axis_x.cross(axis_y)
     if normal.length <= 1.0e-9:
         return None
@@ -529,6 +676,11 @@ def _build_box_frame(world, center, size, region, region_data, anchor_local):
         valid = [value for value in s_corners if value is not None]
         if len(valid) < 4:
             return None
+        if shape_points is not None:
+            # Seen edge-on, a shaped box is the line through its bounds.
+            s_corners = [screen(point(*signs)) for signs in _CORNER_SIGNS]
+            if any(value is None for value in s_corners):
+                return None
         span_x = (s_edges[1] - s_edges[3]).length if s_edges[1] is not None and s_edges[3] is not None else 0.0
         span_y = (s_edges[2] - s_edges[0]).length if s_edges[2] is not None and s_edges[0] is not None else 0.0
         if max(span_x, span_y) <= 2.0:
@@ -545,6 +697,8 @@ def _build_box_frame(world, center, size, region, region_data, anchor_local):
         "s_knob": screen(knob) if knob is not None else None,
         "s_top": screen(top), "s_anchor": screen(anchor),
         "s_targets": [screen(value) for value in targets],
+        "segments": segments, "shaped": shape_points is not None,
+        "s_outline": [screen(value) for value in shape_points] if shape_points is not None else None,
     }
 
 
@@ -602,6 +756,17 @@ def _hit_part(frame, location, scale, rig_name):
     for index, screen_point in enumerate(frame["s_edges"]):
         if near(screen_point):
             return f"E{index}"
+    shape = frame.get("s_outline")
+    if shape is not None:
+        # A shaped box: the outline and the inside move the layer; its
+        # dots (above) scale it.
+        if any(value is None for value in shape):
+            return None
+        count = len(shape)
+        for index in range(count):
+            if _segment_distance(mouse, shape[index], shape[(index + 1) % count]) <= _PICK_EDGE_PX * scale:
+                return "MOVE"
+        return "MOVE" if _point_in_polygon(mouse, shape) else None
     corners = frame["s_corners"]
     if any(corner is None for corner in corners):
         return None
@@ -636,7 +801,10 @@ def layer_box_part_at(context, location):
         if state is None or state["hidden"]:
             continue
         try:
-            frame = _box_frame(rig, state["center"], state["size"], region, region_data)
+            frame = _box_frame(
+                rig, state["center"], state["size"], region, region_data,
+                state.get("outline", ()), state.get("alpha", ()),
+            )
         except FBP_DATA_ERRORS:
             continue
         if frame is None:
@@ -783,7 +951,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
     __slots__ = (
         "fbp_rig_name", "fbp_center", "fbp_size", "fbp_active", "fbp_part",
         "fbp_initial", "fbp_press", "fbp_start", "fbp_anchor_preview", "fbp_snap",
-        "fbp_hover", "fbp_children", "fbp_turn", "fbp_free",
+        "fbp_hover", "fbp_children", "fbp_turn", "fbp_free", "fbp_outline", "fbp_alpha",
     )
 
     def setup(self):
@@ -801,6 +969,8 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         self.fbp_children = None
         self.fbp_turn = None
         self.fbp_free = False
+        self.fbp_outline = ()
+        self.fbp_alpha = ()
         self.use_draw_scale = False
         # Keep drawing while dragged, so the box follows the layer.
         self.use_draw_modal = True
@@ -815,6 +985,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         try:
             return _box_frame(
                 rig, Vector(self.fbp_center), Vector(self.fbp_size), context.region, context.region_data,
+                self.fbp_outline, self.fbp_alpha,
             )
         except FBP_DATA_ERRORS:
             return None
@@ -834,7 +1005,10 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             return
         region, region_data = context.region, context.region_data
         try:
-            frame = _box_frame(rig, Vector(get(self, "fbp_center")), Vector(get(self, "fbp_size")), region, region_data)
+            frame = _box_frame(
+                rig, Vector(get(self, "fbp_center")), Vector(get(self, "fbp_size")), region, region_data,
+                get(self, "fbp_outline"), get(self, "fbp_alpha"),
+            )
         except FBP_DATA_ERRORS:
             frame = None
         if frame is None:
@@ -859,10 +1033,8 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         fills = []      # (triangles, colour, alpha)
         lines = []      # (points as segment pairs, colour, alpha, width)
         corners = frame["corners"]
-        outline = []
-        for index in range(4):
-            outline.extend((corners[index], corners[(index + 1) % 4]))
-        lines.append((outline, white, 0.9 if is_active else 0.6, 1.0))
+        shaped = frame.get("shaped", False)
+        lines.append((frame["segments"], white, 0.9 if is_active else 0.6, 1.0))
 
         def dot(point, color, radius, alpha=1.0):
             u = unit(point)
@@ -893,6 +1065,10 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             for index, point in enumerate(frame["edges"]):
                 part = f"E{index}"
                 if modal and part != active_part:
+                    continue
+                if shaped:
+                    # A curve has no straight side for a bar: a smaller dot.
+                    dot(point, accent if part == active_part else white, _MARK_RADIUS_PX * 0.8 + (0.8 if part == active_part else 0.0))
                     continue
                 along = corners[(index + 1) % 4] - corners[index]
                 length = along.length
@@ -985,7 +1161,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         try:
             frame = _box_frame(
                 rig, Vector(get(self, "fbp_center")), Vector(get(self, "fbp_size")),
-                context.region, context.region_data,
+                context.region, context.region_data, get(self, "fbp_outline"), get(self, "fbp_alpha"),
             )
         except FBP_DATA_ERRORS:
             frame = None
@@ -1096,15 +1272,19 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
         index = int(self.fbp_part[1])
         signs = _CORNER_SIGNS[index] if self.fbp_part[0] == "C" else _EDGE_SIGNS[index]
         centre, size = Vector(self.fbp_center), Vector(self.fbp_size)
-        half = Vector((size.x * 0.5, size.y * 0.5, 0.0))
         local = self.fbp_initial.inverted_safe() @ hit
-        handle = Vector((centre.x + signs[0] * half.x, centre.y + signs[1] * half.y, 0.0))
+        # The dragged dot and the one opposite it, on the box or its shape.
+        local_corners, local_edges = local_handles(centre, size, self.fbp_outline)
+        points = local_corners if self.fbp_part[0] == "C" else local_edges
+        handle = points[index].copy()
+        handle.z = 0.0
         # Alt: symmetric, around the box centre. Otherwise the opposite side
         # (or corner) stays where it is.
         if event.alt:
             fixed = Vector((centre.x, centre.y, 0.0))
         else:
-            fixed = Vector((centre.x - signs[0] * half.x, centre.y - signs[1] * half.y, 0.0))
+            fixed = points[(index + 2) % 4].copy()
+            fixed.z = 0.0
         factors = [1.0, 1.0]
         for axis in (0, 1):
             if signs[axis] == 0:
@@ -1427,7 +1607,7 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
                 gizmo.hide = True
                 _BOX_STATE.pop(rig.name, None)
                 continue
-            center, size = rect
+            center, size, outline, alpha = box_shape(rig, *rect)
             try:
                 plane = rig.fbp_plane_target
                 hidden = (
@@ -1442,11 +1622,16 @@ class FBP_GGT_layer_cage(bpy.types.GizmoGroup):
             gizmo.hide = hidden
             gizmo.fbp_center = tuple(center)
             gizmo.fbp_size = (size.x, size.y)
+            gizmo.fbp_outline = outline
+            gizmo.fbp_alpha = alpha
             # Thin white lines as in Grease Pencil; other selected layers
             # are a dimmer grey so the active one stands out.
             gizmo.fbp_active = rig == active
             gizmo.matrix_basis = rig.matrix_world.normalized()
-            _BOX_STATE[rig.name] = {"center": center.copy(), "size": size.copy(), "hidden": hidden}
+            _BOX_STATE[rig.name] = {
+                "center": center.copy(), "size": size.copy(), "hidden": hidden,
+                "outline": outline, "alpha": alpha,
+            }
 
 
 _CLASSES = (FBP_GT_cursor_probe, FBP_GGT_cursor_probe, FBP_GT_layer_box, FBP_GGT_layer_cage)

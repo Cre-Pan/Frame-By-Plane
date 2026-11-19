@@ -7609,5 +7609,10 @@
 "Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "Garde les lumières, les ombres et la texture des pixels remplacés. Zéro peint la Couleur cible unie.",
 "Blend between the original image and Replace Color.": "Mélange entre l'image d'origine et Remplacer la couleur.",
 "Add an Image effect or Mask to the selected layers. Mesh effects are in Modifiers > Add Modifier > Mesh.": "Ajoute un effet Image ou un Mask aux calques sélectionnés. Les effets Mesh sont dans Modificateurs > Ajouter un modificateur > Mesh.",
-"Open the Image and Mask effect libraries.": "Ouvre les bibliothèques d'effets Image et Mask."
+"Open the Image and Mask effect libraries.": "Ouvre les bibliothèques d'effets Image et Mask.",
+"Rig Style": "Style du rig",
+"Digital": "Numérique",
+"Legacy": "Classique",
+"Legacy Rig": "Rig classique",
+"Legacy Rig on New Layers": "Rig classique sur les nouveaux calques"
 }

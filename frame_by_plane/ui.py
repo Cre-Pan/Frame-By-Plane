@@ -4120,6 +4120,9 @@ def _fbp_draw_layer_side_toolbar(layout, context, *, mode='PLANES'):
         op.action = 'IN'
         op.collection_name = active_collection.name
         op.list_mode = 'GP' if is_gp_mode else 'PLANES'
+        if not is_gp_mode and hasattr(active_collection, 'fbp_plane_group'):
+            group_rig = col.row(align=True)
+            group_rig.prop(active_collection, 'fbp_plane_group', text='', icon='MESH_CUBE')
     else:
         can_move = active_type in ({'GP_CANVAS'} if is_gp_mode else {'LAYER'})
         if not is_gp_mode:
@@ -4378,22 +4381,21 @@ class FBP_OT_RigShapePopup(Operator):
         if rig is None:
             layout.label(text="Layer no longer exists", icon='ERROR')
             return
-        header = layout.row(align=True)
-        header.prop(rig, "fbp_rig_visible", text="Use Rig")
+        style_row = layout.row(align=True)
+        style_row.prop(rig, "fbp_rig_style", expand=True)
         shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT"))
         body = layout.column()
-        # Custom rigs always show their wire, so their controls stay live.
-        body.active = bool(getattr(rig, "fbp_rig_visible", True)) or shape == 'CUSTOM'
         body.prop(rig, "fbp_rig_shape", text="Shape")
         if shape == 'ALPHA':
             row = body.row(align=True)
             row.prop(rig, "fbp_rig_shape_alpha_style", expand=True)
             body.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
             body.prop(rig, "fbp_rig_shape_alpha_follow", text="Follow Frame")
-        else:
+        elif shape != 'CUSTOM':
             if shape == 'POLYGON':
                 body.prop(rig, "fbp_rig_shape_sides", text="Sides", slider=True)
-            body.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
+            row = body.row(align=True)
+            row.prop(rig, "fbp_rig_shape_fit_mode", expand=True)
         body.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
         if shape == 'CUSTOM':
             edit = body.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
@@ -4476,6 +4478,19 @@ class FBP_OT_OpenEffectsMasks(Operator):
         return {'CANCELLED'}
 
 
+def _fbp_draw_thumbnail_toggles(layout, context):
+    """Thumbnail visibility and alpha crop, shared by the frame list menus."""
+    scene = getattr(context, "scene", None)
+    if scene is None or not hasattr(scene, "fbp_show_previews"):
+        return
+    show = bool(getattr(scene, "fbp_show_previews", False))
+    layout.prop(scene, "fbp_show_previews", text="Show Thumbnails")
+    if hasattr(scene, "fbp_thumbnail_crop_alpha"):
+        crop = layout.row()
+        crop.enabled = show
+        crop.prop(scene, "fbp_thumbnail_crop_alpha", text="Crop Transparent Edges")
+
+
 class FBP_MT_SequenceFrameActions(Menu):
     bl_idname = "FBP_MT_sequence_frame_actions"
     bl_label = "Frame List Actions"
@@ -4521,6 +4536,8 @@ class FBP_MT_SequenceFrameActions(Menu):
         split.rig_name = str(getattr(rig, "name", "") or "")
         layout.separator()
         if rig is not None and not bool(getattr(rig, "fbp_is_color_plane", False)):
+            _fbp_draw_thumbnail_toggles(layout, context)
+            layout.separator()
             refresh = layout.operator(
                 "fbp.refresh_media", text="Refresh Media", icon=ui_icon("action.refresh")
             )

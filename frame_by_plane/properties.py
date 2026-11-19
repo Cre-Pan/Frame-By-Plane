@@ -364,11 +364,17 @@ INTERPOLATION_ITEMS = [
 ]
 
 RIG_SHAPE_ITEMS = [
-    ('ALPHA', "Alpha Outline", "Follow the visible pixels of the image instead of its rectangle", fbp_icon("IMAGE_ALPHA"), 7),
-    ('DEFAULT', "Rectangle", "Rectangle matching the visible plane", fbp_icon("MESH_PLANE"), 0),
-    ('POLYGON', "Polygon", "Regular polygon control; choose how many sides", fbp_icon("MESH_GRID"), 8),
+    ('DEFAULT', "Rectangle", "Rectangle matching the visible plane; a square with Perfect Shape", fbp_icon("MESH_PLANE"), 0),
     ('CIRCLE', "Circle", "Circular control, useful for suns, heads and round assets", fbp_icon("MESH_CIRCLE"), 2),
-    ('CUSTOM', "Custom", "Edit and keep the control-rig mesh itself", fbp_icon("TOOL_SETTINGS"), 6),
+    ('TRIANGLE', "Triangle", "Triangular control resting on a flat bottom edge", fbp_icon("MESH_CONE"), 9),
+    ('POLYGON', "Polygon", "Regular polygon control; choose how many sides", fbp_icon("MESH_GRID"), 8),
+    ('ALPHA', "Alpha Outline", "Follow the visible pixels of the image instead of its rectangle", fbp_icon("IMAGE_ALPHA"), 7),
+    ('CUSTOM', "Custom", "Edit and keep the control-rig mesh itself (Legacy wire)", fbp_icon("TOOL_SETTINGS"), 6),
+]
+
+RIG_STYLE_ITEMS = [
+    ('DIGITAL', "Digital", "Selected layers show a transform box in the rig shape, with handles to move, scale and rotate. No wire is drawn", fbp_icon("SELECT_SET"), 0),
+    ('LEGACY', "Legacy", "The rig shape is a coloured wire, always visible, that selects the layer when clicked", fbp_icon("MESH_DATA"), 1),
 ]
 
 # Shapes of earlier versions, stored as their enum values: Rectangle (1) is
@@ -569,6 +575,15 @@ def update_show_previews_cb(self, context):
         _fbp_layers_func("clear_previews")()
     except FBP_DATA_ERRORS as exc:
         fbp_warn("Could not clear Frame By Plane thumbnail previews", exc)
+
+
+def update_thumbnail_crop_alpha_cb(self, context):
+    """Re-queue progressive Cutout thumbnails after the alpha crop changes."""
+    try:
+        from .drawing_plane import clear_drawing_preview_runtime_state
+        clear_drawing_preview_runtime_state()
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not refresh Frame By Plane thumbnails", exc)
 
 
 def update_alpha_render_method_cb(self, context):
@@ -939,8 +954,8 @@ class FBP_AddonPreferences(AddonPreferences):
         update=update_shortcut_preferences_cb,
     )
     rig_show_on_new_layers: BoolProperty(
-        name="Use Rig on New Layers",
-        description="New layers show their controller wire; off keeps it hidden and you select layers by clicking their visible pixels",
+        name="Legacy Rig on New Layers",
+        description="New layers use the Legacy rig style, a coloured wire always visible; off uses the Digital style, a transform box with handles on selected layers, and you select layers by clicking their visible pixels",
         default=False,
     )
     show_layer_cage: BoolProperty(
@@ -2213,7 +2228,7 @@ class FBP_AddonPreferences(AddonPreferences):
                 row = _row(body)
                 row.prop(self, 'shortcut_click_through_alpha', text='Click · Through Transparency', toggle=True, icon='RESTRICT_SELECT_OFF')
                 row = _row(body)
-                row.prop(self, 'rig_show_on_new_layers', text='Use Rig on New Layers', toggle=True, icon='MOD_MESHDEFORM')
+                row.prop(self, 'rig_show_on_new_layers', text='Legacy Rig on New Layers', toggle=True, icon='MOD_MESHDEFORM')
                 row.prop(self, 'rig_select_by_image', text='Rig Layers: Click Image Too', toggle=True, icon='IMAGE_DATA')
                 row = _row(body)
                 row.prop(self, 'show_layer_cage', text='Transform Box on Selected Layers', toggle=True, icon='SELECT_SET')
@@ -2514,6 +2529,29 @@ def update_color_tag_cb(self, context):
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         pass
     return result
+
+def get_rig_style_cb(self):
+    try:
+        return 1 if bool(self.fbp_rig_visible) else 0
+    except (AttributeError, ReferenceError, RuntimeError):
+        return 0
+
+
+def set_rig_style_cb(self, value):
+    # The style is stored as Use Rig, so files of earlier versions keep
+    # their look: a layer that showed its wire opens as Legacy.
+    try:
+        legacy = int(value) == 1
+        if bool(self.fbp_rig_visible) != legacy:
+            self.fbp_rig_visible = legacy
+        if legacy:
+            # Legacy wires are drawn in the layer colour: make sure the
+            # viewports show object colours for wires.
+            from .layers import set_viewport_object_color
+            set_viewport_object_color(bpy.context)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        fbp_warn("Could not change the Frame By Plane rig style", exc)
+
 
 def update_rig_shape_cb(self, context):
     try:
@@ -3896,6 +3934,12 @@ def register_properties():
         default=False,
         update=update_show_previews_cb,
     )
+    _FBP_SCENE_RNA.fbp_thumbnail_crop_alpha = BoolProperty(
+        name="Crop Transparent Edges",
+        description="Trim the transparent border of image thumbnails so the drawn subject fills the preview instead of the empty canvas",
+        default=True,
+        update=update_thumbnail_crop_alpha_cb,
+    )
     _FBP_SCENE_RNA.fbp_thumbnail_background_enabled = BoolProperty(
         name="Thumbnail Background",
         description="Place all Frame By Plane image thumbnails over the selected background color",
@@ -4404,18 +4448,26 @@ def register_properties():
         default='DEFAULT',
         update=update_rig_shape_cb,
     )
+    _FBP_OBJECT_RNA.fbp_rig_style = EnumProperty(
+        name="Rig Style",
+        description="Digital: a transform box with handles in the rig shape, shown on selected layers. Legacy: a coloured wire in the rig shape, always visible",
+        items=RIG_STYLE_ITEMS,
+        get=get_rig_style_cb,
+        set=set_rig_style_cb,
+        options={'SKIP_SAVE'},
+    )
     _FBP_OBJECT_RNA.fbp_rig_shape_expand = FloatProperty(
         name="Expand",
-        description="Extra controller border around the visible plane; 0 matches the plane exactly, 1 uses the standard spacing and 2 doubles it",
-        default=1.0, min=0.0, max=2.0, soft_min=0.0, soft_max=2.0,
+        description="Border of the controller around the visible plane: 0 matches the plane, 1 is the standard spacing, higher values grow it (up to 2 plane units). Negative values shrink it inside the plane, down to 10%",
+        default=1.0, min=-18.0, max=40.0, soft_min=-18.0, soft_max=20.0,
         precision=2, update=update_rig_shape_cb,
     )
     _FBP_OBJECT_RNA.fbp_rig_shape_fit_mode = EnumProperty(
         name="Shape Fit",
-        description="Fit the chosen controller shape to the plane bounds or preserve perfect proportions",
+        description="Fit the chosen controller shape to the plane bounds or keep perfect proportions",
         items=(
             ('FIT_PLANE', "Fit to Plane", "Stretch the controller shape to the visible plane bounds", fbp_icon("FULLSCREEN_ENTER"), 0),
-            ('PERFECT', "Perfect Shape", "Preserve a square, circle or regular polygon", fbp_icon("MESH_CIRCLE"), 1),
+            ('PERFECT', "Perfect Shape", "Keep a square, circle or regular polygon, even when the layer is scaled or stretched", fbp_icon("MESH_CIRCLE"), 1),
         ),
         default='FIT_PLANE',
         update=update_rig_shape_cb,
@@ -4427,8 +4479,8 @@ def register_properties():
         update=update_rig_shape_cb,
     )
     _FBP_OBJECT_RNA.fbp_rig_visible = BoolProperty(
-        name="Use Rig",
-        description="Show this layer's controller wire and select the layer from it. Off hides the wire: click the visible pixels of the image to select the layer",
+        name="Legacy Rig",
+        description="Legacy rig style: show this layer's coloured controller wire and select the layer from it. Off is the Digital style: no wire, a transform box with handles on the selected layer, and you click the visible pixels of the image to select the layer",
         default=True,
         update=update_rig_shape_cb,
     )

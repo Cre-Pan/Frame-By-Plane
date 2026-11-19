@@ -7743,5 +7743,10 @@
 "Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "置き換えたピクセルのハイライト、影、テクスチャを保持します。0 ではターゲットカラーで平坦に塗ります。",
 "Blend between the original image and Replace Color.": "元の画像と色の置換の間でブレンド。",
 "Add an Image effect or Mask to the selected layers. Mesh effects are in Modifiers > Add Modifier > Mesh.": "選択したレイヤーに Image エフェクトまたは Mask を追加します。Mesh エフェクトはモディファイアー > モディファイアーを追加 > Mesh にあります。",
-"Open the Image and Mask effect libraries.": "Image と Mask のエフェクトライブラリを開きます。"
+"Open the Image and Mask effect libraries.": "Image と Mask のエフェクトライブラリを開きます。",
+"Rig Style": "リグのスタイル",
+"Digital": "デジタル",
+"Legacy": "クラシック",
+"Legacy Rig": "クラシックリグ",
+"Legacy Rig on New Layers": "新しいレイヤーにクラシックリグ"
 }

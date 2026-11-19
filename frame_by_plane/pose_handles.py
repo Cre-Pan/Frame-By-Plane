@@ -290,7 +290,279 @@ class FBP_GGT_pose_handles(bpy.types.GizmoGroup):
         self.gizmos.new(FBP_GT_pose_handle.bl_idname)
 
 
-_CLASSES = (FBP_GT_pose_handle, FBP_GGT_pose_handles)
+# --- Lattice handles seen edge-on --------------------------------------------
+#
+# Lattice handles are pose bones whose shapes lie flat on the drawing. On a
+# layer seen edge-on (a front-facing layer in Top or Side view) Blender draws
+# them as one line and its click picks almost at random, so the overlay draws
+# them facing the view (handle_overlay) and this gizmo takes the click there:
+# a click selects the handle (Shift adds or removes it), a drag moves it in the
+# layer's plane, following the line the layer draws on screen. Handles that
+# sit on the same spot of the line (a column of Grid points seen from above)
+# cannot be told apart there, so they are selected and moved together.
+
+_STACK_PX = 1.5
+
+
+def _stacked_bones(context, armature, pose_bone):
+    """Handles of ``armature`` drawn on the same spot as ``pose_bone``."""
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+    region, view = context.region, context.region_data
+    world = armature.matrix_world
+    spot = location_3d_to_region_2d(region, view, world @ pose_bone.head)
+    if spot is None:
+        return [pose_bone]
+    stack = [pose_bone]
+    for other in armature.pose.bones:
+        if other == pose_bone or other.custom_shape is None or other.bone.hide:
+            continue
+        point = location_3d_to_region_2d(region, view, world @ other.head)
+        if point is not None and (point - spot).length <= _STACK_PX * _ui_scale(context):
+            stack.append(other)
+    return stack
+
+
+def _edge_on_bone_under_cursor(context, coord):
+    """``(armature, pose_bone)`` of the edge-on Lattice handle under ``coord``."""
+    try:
+        from .handle_overlay import LATTICE_HOVER_PREFIX, lattice_handle_under_cursor
+        key = lattice_handle_under_cursor(
+            context, coord, _PICK_PX * _ui_scale(context), edge_on_only=True, posed_only=True,
+        )
+    except (ImportError, *FBP_DATA_ERRORS, ValueError):
+        return None
+    if not key:
+        return None
+    armature_name, _tab, bone_name = key[len(LATTICE_HOVER_PREFIX):].partition("\t")
+    armature = bpy.data.objects.get(armature_name)
+    try:
+        pose_bone = armature.pose.bones.get(bone_name) if armature is not None else None
+    except FBP_DATA_ERRORS:
+        return None
+    return (armature, pose_bone) if pose_bone is not None else None
+
+
+def _any_posed_edge_on(context):
+    try:
+        from .handle_overlay import lattice_edge_on
+        from .lattice_bones import is_bones_object
+        view = context.region_data
+        for armature in tuple(getattr(context, "objects_in_mode", ()) or ()):
+            if is_bones_object(armature) and lattice_edge_on(armature, view):
+                return True
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+    return False
+
+
+class FBP_GT_pose_lattice_edge_on(bpy.types.Gizmo):
+    """Invisible grip over the Lattice handles of a layer seen edge-on."""
+
+    bl_idname = "FBP_GT_pose_lattice_edge_on"
+    __slots__ = (
+        "fbp_hover", "fbp_target", "fbp_press", "fbp_moved", "fbp_hit",
+        "fbp_normal", "fbp_initial", "fbp_location", "fbp_stack",
+    )
+
+    def setup(self):
+        self.fbp_hover = ("", "")
+        self.fbp_target = ("", "")
+        self.fbp_press = None
+        self.fbp_moved = False
+        self.fbp_initial = None
+        self.fbp_stack = []
+        self.use_draw_hover = False
+
+    def draw(self, context):
+        del context
+
+    def test_select(self, context, location):
+        found = _edge_on_bone_under_cursor(context, location)
+        if found is None:
+            bpy.types.bpy_struct.__setattr__(self, "fbp_hover", ("", ""))
+            return -1
+        armature, pose_bone = found
+        bpy.types.bpy_struct.__setattr__(self, "fbp_hover", (armature.name, pose_bone.name))
+        try:
+            from .handle_overlay import LATTICE_HOVER_PREFIX
+            from .layer_cage import set_hovered_handle
+            set_hovered_handle(context, f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}")
+        except ImportError:
+            pass
+        return 0
+
+    def _target(self):
+        armature = bpy.data.objects.get(self.fbp_target[0] or "")
+        try:
+            pose_bone = armature.pose.bones.get(self.fbp_target[1]) if armature is not None else None
+        except FBP_DATA_ERRORS:
+            return None, None
+        return armature, pose_bone
+
+    def _stack(self, armature):
+        """``(pose_bone, initial matrix, initial location)`` of every moved handle."""
+        items = []
+        for name, matrix, location in self.fbp_stack or ():
+            try:
+                pose_bone = armature.pose.bones.get(name)
+            except FBP_DATA_ERRORS:
+                pose_bone = None
+            if pose_bone is not None:
+                items.append((pose_bone, Matrix(matrix), Vector(location)))
+        return items
+
+    def invoke(self, context, event):
+        armature = bpy.data.objects.get(self.fbp_hover[0] or "")
+        try:
+            pose_bone = armature.pose.bones.get(self.fbp_hover[1]) if armature is not None else None
+        except FBP_DATA_ERRORS:
+            pose_bone = None
+        if pose_bone is None:
+            return {"CANCELLED"}
+        self.fbp_target = (armature.name, pose_bone.name)
+        self.fbp_press = (event.mouse_region_x, event.mouse_region_y)
+        self.fbp_moved = False
+        try:
+            stack = _stacked_bones(context, armature, pose_bone)
+            # Select as a click on the handle would, Shift adding or removing it.
+            if event.shift:
+                state = not bool(pose_bone.select)
+                for item in stack:
+                    item.select = state
+            else:
+                for other in armature.pose.bones:
+                    other.select = other in stack
+            if bool(pose_bone.select):
+                armature.data.bones.active = pose_bone.bone
+            self.fbp_stack = [
+                (item.name, [tuple(row) for row in item.matrix], tuple(item.location))
+                for item in stack
+            ]
+            world = armature.matrix_world
+            normal = world.col[2].xyz
+            if normal.length <= 1.0e-9:
+                return {"CANCELLED"}
+            normal = normal.normalized()
+            head = world @ pose_bone.head
+            hit = _plane_hit(context.region, context.region_data, self.fbp_press, head, normal)
+            self.fbp_normal = tuple(normal)
+            self.fbp_hit = tuple(hit) if hit is not None else None
+            self.fbp_initial = [tuple(row) for row in pose_bone.matrix]
+            self.fbp_location = tuple(pose_bone.location)
+        except FBP_DATA_ERRORS:
+            return {"CANCELLED"}
+        context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event, tweak):
+        del tweak
+        armature, pose_bone = self._target()
+        if pose_bone is None or self.fbp_initial is None or self.fbp_hit is None:
+            return {"RUNNING_MODAL"}
+        if not self.fbp_moved:
+            dx = event.mouse_region_x - self.fbp_press[0]
+            dy = event.mouse_region_y - self.fbp_press[1]
+            if dx * dx + dy * dy < _CLICK_PX * _CLICK_PX:
+                return {"RUNNING_MODAL"}
+            self.fbp_moved = True
+        hit = _plane_hit(
+            context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
+            Vector(self.fbp_hit), Vector(self.fbp_normal),
+        )
+        if hit is None:
+            return {"RUNNING_MODAL"}
+        try:
+            to_armature = armature.matrix_world.inverted_safe().to_3x3()
+            offset = to_armature @ (hit - Vector(self.fbp_hit))
+            for item, initial, location in self._stack(armature):
+                matrix = initial.copy()
+                matrix.translation = matrix.translation + offset
+                item.matrix = matrix
+                # Locked channels stay where they were, as with G.
+                for axis in range(3):
+                    if bool(item.lock_location[axis]):
+                        item.location[axis] = location[axis]
+            context.area.header_text_set("Move Handle")
+        except FBP_DATA_ERRORS:
+            return {"RUNNING_MODAL"}
+        context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
+
+    def exit(self, context, cancel):
+        armature, pose_bone = self._target()
+        try:
+            context.area.header_text_set(None)
+        except FBP_DATA_ERRORS:
+            pass
+        self.fbp_initial = None
+        stack = self._stack(armature) if armature is not None else []
+        if pose_bone is not None:
+            try:
+                if cancel and self.fbp_moved:
+                    for item, _matrix, location in stack:
+                        item.location = location
+                elif self.fbp_moved:
+                    for item, _matrix, _location in stack:
+                        _autokey(context, item)
+                    _undo_push("Move Handle")
+                else:
+                    _undo_push("Select")
+            except FBP_DATA_ERRORS:
+                pass
+        self.fbp_target = ("", "")
+        self.fbp_stack = []
+        self.fbp_moved = False
+        try:
+            context.area.tag_redraw()
+        except FBP_DATA_ERRORS:
+            pass
+
+
+def _autokey(context, pose_bone):
+    """Key the moved handle when Auto Keying is on, as G does."""
+    try:
+        if not bool(context.scene.tool_settings.use_keyframe_insert_auto):
+            return
+        pose_bone.keyframe_insert("location", group=pose_bone.name)
+    except FBP_DATA_ERRORS:
+        pass
+
+
+class FBP_GGT_pose_lattice_edge_on(bpy.types.GizmoGroup):
+    bl_idname = "FBP_GGT_pose_lattice_edge_on"
+    bl_label = "Frame By Plane Lattice Handles Seen Edge-On"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"3D", "PERSISTENT"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            if context.mode != "POSE":
+                return False
+            space = context.space_data
+            if not space.overlay.show_overlays or not space.show_gizmo:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+        return _any_posed_edge_on(context)
+
+    @classmethod
+    def setup_keymap(cls, keyconfig):
+        # Click too: Blender's own click cannot pick a squashed handle.
+        return keyconfig.keymaps.new(
+            name="Generic Gizmo", space_type="EMPTY", region_type="WINDOW",
+        )
+
+    def setup(self, context):
+        del context
+        self.gizmos.new(FBP_GT_pose_lattice_edge_on.bl_idname)
+
+
+_CLASSES = (
+    FBP_GT_pose_handle, FBP_GGT_pose_handles,
+    FBP_GT_pose_lattice_edge_on, FBP_GGT_pose_lattice_edge_on,
+)
 
 
 def register():

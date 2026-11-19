@@ -1092,10 +1092,235 @@ class FBP_OT_ToggleSelectedVisibility(Operator):
         return {'FINISHED'} if changed else {'CANCELLED'}
 
 
+# Z Pie Solo is Blender's Local View. Local View lives on the 3D View, which
+# Undo does not restore, so the Solo state is mirrored in a scene property that
+# Undo does restore: {"<3D View pointer>": ["object", ...]}. After Undo/Redo the
+# 3D Views that Solo used enter or leave Local View to match it again.
+_SOLO_SCENE_KEY = "fbp_solo_views"
+_SOLO_SPACES = globals().get("_SOLO_SPACES", set())
+if not isinstance(_SOLO_SPACES, set):
+    _SOLO_SPACES = set()
+_SOLO_BEFORE_UNDO = {}
+_SOLO_PENDING = set()
+
+
+def _space_key(space):
+    try:
+        return str(int(space.as_pointer()))
+    except FBP_DATA_ERRORS:
+        return ""
+
+
+def _solo_records(scene):
+    try:
+        value = scene.get(_SOLO_SCENE_KEY) if scene is not None else None
+        return value.to_dict() if hasattr(value, "to_dict") else {}
+    except FBP_DATA_ERRORS:
+        return {}
+
+
+def _set_solo_record(scene, key, names):
+    if scene is None or not key:
+        return
+    records = _solo_records(scene)
+    if names is None:
+        if key not in records:
+            return
+        records.pop(key, None)
+    else:
+        records[key] = [str(name) for name in names]
+    try:
+        if records:
+            scene[_SOLO_SCENE_KEY] = records
+        elif _SOLO_SCENE_KEY in scene:
+            del scene[_SOLO_SCENE_KEY]
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not store the Solo state for Undo", exc)
+
+
+def _enter_solo(context, targets):
+    """Enter Local View with ``targets`` plus the visible lights."""
+    selected = list(getattr(context, "selected_objects", ()) or ())
+    active = getattr(context.view_layer.objects, "active", None)
+    original_hide_select = {}
+    temporary_selection = []
+    temporary_keys = set()
+    result = False
+    try:
+        for obj in selected:
+            try:
+                obj.select_set(False)
+            except FBP_DATA_IO_ERRORS:
+                continue
+
+        for obj in targets:
+            try:
+                original_hide_select[_object_runtime_key(obj)] = (
+                    obj,
+                    bool(getattr(obj, "hide_select", False)),
+                )
+                if bool(getattr(obj, "hide_select", False)):
+                    obj.hide_select = False
+                obj.select_set(True)
+                _append_unique_object(temporary_selection, temporary_keys, obj)
+            except FBP_DATA_IO_ERRORS:
+                continue
+
+        # Local View excludes unselected lights, so add only visible lights.
+        for obj in context.view_layer.objects:
+            try:
+                if getattr(obj, "type", None) != 'LIGHT' or obj.hide_get():
+                    continue
+                obj.select_set(True)
+                _append_unique_object(temporary_selection, temporary_keys, obj)
+            except FBP_DATA_IO_ERRORS:
+                continue
+
+        operator_result = bpy.ops.view3d.localview(frame_selected=False)
+        result = 'FINISHED' in operator_result
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not toggle selection solo", exc)
+    finally:
+        for obj, was_hidden in original_hide_select.values():
+            try:
+                obj.hide_select = was_hidden
+            except FBP_DATA_IO_ERRORS:
+                continue
+        for obj in temporary_selection:
+            try:
+                obj.select_set(False)
+            except FBP_DATA_IO_ERRORS:
+                continue
+        for obj in selected:
+            try:
+                obj.select_set(True)
+            except FBP_DATA_IO_ERRORS:
+                continue
+        if active is not None:
+            try:
+                context.view_layer.objects.active = active
+            except FBP_DATA_IO_ERRORS:
+                pass
+    return result
+
+
+def _leave_solo():
+    try:
+        return 'FINISHED' in bpy.ops.view3d.localview(frame_selected=False)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not leave selection solo", exc)
+        return False
+
+
+def _solo_view3d_areas():
+    """Yield (window, area, space, key) for the 3D Views Solo has used."""
+    if not _SOLO_SPACES:
+        return
+    try:
+        windows = tuple(bpy.context.window_manager.windows)
+    except FBP_DATA_ERRORS:
+        return
+    for window in windows:
+        try:
+            areas = tuple(window.screen.areas)
+        except FBP_DATA_ERRORS:
+            continue
+        for area in areas:
+            if getattr(area, "type", None) != 'VIEW_3D':
+                continue
+            space = area.spaces.active
+            key = _space_key(space)
+            if key in _SOLO_SPACES:
+                yield window, area, space, key
+
+
+@persistent
+def _solo_undo_pre(scene, *args):
+    del scene, args
+    _SOLO_BEFORE_UNDO.clear()
+    try:
+        for window, _area, _space, key in _solo_view3d_areas():
+            _SOLO_BEFORE_UNDO[key] = key in _solo_records(window.scene)
+    except FBP_DATA_ERRORS:
+        _SOLO_BEFORE_UNDO.clear()
+
+
+@persistent
+def _solo_undo_post(scene, *args):
+    del scene, args
+    changed = False
+    try:
+        for window, _area, _space, key in _solo_view3d_areas():
+            wanted = key in _solo_records(window.scene)
+            if key in _SOLO_BEFORE_UNDO and _SOLO_BEFORE_UNDO[key] != wanted:
+                _SOLO_PENDING.add(key)
+                changed = True
+    except FBP_DATA_ERRORS:
+        pass
+    _SOLO_BEFORE_UNDO.clear()
+    # Local View can be changed only once Undo has finished and Blender is
+    # back in its event loop.
+    if changed and not bpy.app.timers.is_registered(_solo_sync_timer):
+        bpy.app.timers.register(_solo_sync_timer, first_interval=0.0)
+
+
+def _solo_sync_timer():
+    """Make each 3D View match the Solo state Undo/Redo just restored."""
+    pending = set(_SOLO_PENDING)
+    _SOLO_PENDING.clear()
+    for window, area, space, key in tuple(_solo_view3d_areas()):
+        if key not in pending:
+            continue
+        names = _solo_records(window.scene).get(key)
+        in_solo = space.local_view is not None
+        region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+        if region is None or (names is not None) == in_solo:
+            continue
+        try:
+            with bpy.context.temp_override(window=window, area=area, region=region):
+                if names is None:
+                    _leave_solo()
+                else:
+                    objects = window.view_layer.objects
+                    targets = [objects[name] for name in names if name in objects]
+                    if targets:
+                        _enter_solo(bpy.context, targets)
+        except FBP_DATA_ERRORS as exc:
+            fbp_warn("Could not restore Solo after Undo", exc)
+    return None
+
+
+def _register_solo_undo_runtime():
+    for handler_list, callback in (
+        (bpy.app.handlers.undo_pre, _solo_undo_pre),
+        (bpy.app.handlers.redo_pre, _solo_undo_pre),
+        (bpy.app.handlers.undo_post, _solo_undo_post),
+        (bpy.app.handlers.redo_post, _solo_undo_post),
+    ):
+        if not append_handler_once(handler_list, callback, module_suffix="viewport_pie"):
+            raise RuntimeError("Could not register the Solo Undo handlers")
+
+
+def _unregister_solo_undo_runtime():
+    for handler_list, name in (
+        (bpy.app.handlers.undo_pre, "_solo_undo_pre"),
+        (bpy.app.handlers.redo_pre, "_solo_undo_pre"),
+        (bpy.app.handlers.undo_post, "_solo_undo_post"),
+        (bpy.app.handlers.redo_post, "_solo_undo_post"),
+    ):
+        remove_handlers_by_name(handler_list, name, module_suffix="viewport_pie")
+    if bpy.app.timers.is_registered(_solo_sync_timer):
+        bpy.app.timers.unregister(_solo_sync_timer)
+    _SOLO_PENDING.clear()
+    _SOLO_BEFORE_UNDO.clear()
+
+
 class FBP_OT_ToggleLocalViewWithLights(Operator):
     bl_idname = "fbp.toggle_local_view_with_lights"
     bl_label = "Toggle Solo"
     bl_description = "Show only the selected objects. Lights stay visible"
+    # Each Solo on/off is its own Undo step, so Ctrl+Z turns it back.
+    bl_options = {'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -1106,13 +1331,13 @@ class FBP_OT_ToggleLocalViewWithLights(Operator):
         space = _view3d_space(context)
         if space is None:
             return {'CANCELLED'}
+        key = _space_key(space)
         if space.local_view is not None:
-            try:
-                result = bpy.ops.view3d.localview(frame_selected=False)
-                return {'FINISHED'} if 'FINISHED' in result else {'CANCELLED'}
-            except FBP_DATA_ERRORS as exc:
-                fbp_warn("Could not leave selection solo", exc)
+            if not _leave_solo():
                 return {'CANCELLED'}
+            _SOLO_SPACES.add(key)
+            _set_solo_record(context.scene, key, None)
+            return {'FINISHED'}
 
         selected = list(getattr(context, "selected_objects", ()) or ())
         rigs = _selected_fbp_rigs(context)
@@ -1124,68 +1349,11 @@ class FBP_OT_ToggleLocalViewWithLights(Operator):
             _append_unique_object(targets, target_keys, obj)
         if not targets:
             return {'CANCELLED'}
-
-        active = getattr(context.view_layer.objects, "active", None)
-        original_hide_select = {}
-        temporary_selection = []
-        temporary_keys = set()
-        result = {'CANCELLED'}
-        try:
-            for obj in selected:
-                try:
-                    obj.select_set(False)
-                except FBP_DATA_IO_ERRORS:
-                    continue
-
-            for obj in targets:
-                try:
-                    original_hide_select[_object_runtime_key(obj)] = (
-                        obj,
-                        bool(getattr(obj, "hide_select", False)),
-                    )
-                    if bool(getattr(obj, "hide_select", False)):
-                        obj.hide_select = False
-                    obj.select_set(True)
-                    _append_unique_object(temporary_selection, temporary_keys, obj)
-                except FBP_DATA_IO_ERRORS:
-                    continue
-
-            # Local View excludes unselected lights, so add only visible lights.
-            for obj in context.view_layer.objects:
-                try:
-                    if getattr(obj, "type", None) != 'LIGHT' or obj.hide_get():
-                        continue
-                    obj.select_set(True)
-                    _append_unique_object(temporary_selection, temporary_keys, obj)
-                except FBP_DATA_IO_ERRORS:
-                    continue
-
-            operator_result = bpy.ops.view3d.localview(frame_selected=False)
-            result = {'FINISHED'} if 'FINISHED' in operator_result else {'CANCELLED'}
-        except FBP_DATA_ERRORS as exc:
-            fbp_warn("Could not toggle selection solo", exc)
-        finally:
-            for obj, was_hidden in original_hide_select.values():
-                try:
-                    obj.hide_select = was_hidden
-                except FBP_DATA_IO_ERRORS:
-                    continue
-            for obj in temporary_selection:
-                try:
-                    obj.select_set(False)
-                except FBP_DATA_IO_ERRORS:
-                    continue
-            for obj in selected:
-                try:
-                    obj.select_set(True)
-                except FBP_DATA_IO_ERRORS:
-                    continue
-            if active is not None:
-                try:
-                    context.view_layer.objects.active = active
-                except FBP_DATA_IO_ERRORS:
-                    pass
-        return result
+        if not _enter_solo(context, targets):
+            return {'CANCELLED'}
+        _SOLO_SPACES.add(key)
+        _set_solo_record(context.scene, key, [obj.name for obj in targets])
+        return {'FINISHED'}
 
 
 class FBP_OT_ToggleSelectedLock(Operator):
@@ -2928,9 +3096,11 @@ def register():
     register_classes(_CLASSES)
     try:
         _register_cursor_on_camera_runtime()
+        _register_solo_undo_runtime()
         _register_keymaps()
     except Exception:
         _unregister_keymaps()
+        _unregister_solo_undo_runtime()
         _unregister_cursor_on_camera_runtime()
         unregister_classes(_CLASSES)
         raise
@@ -2938,5 +3108,6 @@ def register():
 
 def unregister():
     _unregister_keymaps()
+    _unregister_solo_undo_runtime()
     _unregister_cursor_on_camera_runtime()
     unregister_classes(_CLASSES)
