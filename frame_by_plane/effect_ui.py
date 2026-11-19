@@ -2085,6 +2085,7 @@ def _draw_crop_settings(box, rig, effect_id, definition, labels, context, instan
     crop_actions = box.row(align=True)
     crop_actions.operator("fbp.crop_alpha", text="Crop Alpha", icon="IMAGE_ALPHA")
     crop_actions.operator("fbp.reset_crop", text="Reset", icon=ui_icon("action.reset"))
+    box.operator("fbp.layer_origin_set", text="Origin to Crop Centre", icon="OBJECT_ORIGIN").type = 'GEOMETRY'
     hint_row(
         box,
         "Crop trims the visible source without changing the layer transform.",

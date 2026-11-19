@@ -407,6 +407,7 @@ def _effect_actions(effect_id, definition):
     if effect_id == "CROP":
         actions.append(("CROP_ALPHA", "Crop Alpha", "fbp.crop_alpha", {}))
         actions.append(("RESET_CROP", "Reset Crop", "fbp.reset_crop", {}))
+        actions.append(("CROP_ORIGIN", "Origin to Centre", "fbp.layer_origin_set", {"type": "GEOMETRY"}))
     if effect_id == "SHADOW":
         actions.append(("FIT_SHADOW", "Fit Canvas", "fbp.fit_shadow_canvas", {}))
     if effect_id == "GRADIENT_LIGHT":

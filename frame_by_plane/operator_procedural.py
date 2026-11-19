@@ -161,6 +161,7 @@ def _draw_crop_extend_popup(operator, context, mode):
     section_gap(layout)
     if is_crop:
         layout.operator("fbp.crop_alpha", text="Crop Alpha", icon=fbp_icon("IMAGE_ALPHA"))
+        layout.operator("fbp.layer_origin_set", text="Origin to Crop Centre", icon=fbp_icon("OBJECT_ORIGIN")).type = 'GEOMETRY'
     layout.operator(
         "fbp.reset_crop" if is_crop else "fbp.reset_extend",
         text="Reset Crop" if is_crop else "Reset Extend",

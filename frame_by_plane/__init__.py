@@ -29,7 +29,7 @@ _MODULE_NAMES = (
     "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers", "rig_alpha_follow",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "operator_procedural", "effect_bake",
-    "performance_dashboard", "playback_cache", "project_health", "actionable_issues", "operator_project", "operators", "plane_groups", "ui_icons", "ui_layout", "ui", "compositor_layer_node", "viewport_pie", "tooltips", "native_modifiers", "native_effect_panel", "layer_transform_panel",
+    "performance_dashboard", "playback_cache", "project_health", "actionable_issues", "operator_project", "operators", "layer_origin", "plane_groups", "ui_icons", "ui_layout", "ui", "compositor_layer_node", "viewport_pie", "tooltips", "native_modifiers", "native_effect_panel", "layer_transform_panel",
 )
 if _IS_BACKGROUND:
     # Purely interactive modules are neither imported nor registered in a
@@ -42,7 +42,7 @@ if _IS_BACKGROUND:
             "procreate_import", "layered_import", "importer",
             "operator_layers", "operator_import", "operator_sequence",
             "operator_procedural", "performance_dashboard", "playback_cache", "project_health", "actionable_issues", "operator_project", "compositor_layer_node",
-            "operators",
+            "operators", "layer_origin",
         })
     _MODULE_NAMES = tuple(name for name in _MODULE_NAMES if name not in _BACKGROUND_SKIP_MODULES)
 
