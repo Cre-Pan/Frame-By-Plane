@@ -2535,7 +2535,12 @@ def set_rig_style_cb(self, value):
         legacy = int(value) == 1
         if bool(self.fbp_rig_visible) != legacy:
             self.fbp_rig_visible = legacy
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        if legacy:
+            # Legacy wires are drawn in the layer colour: make sure the
+            # viewports show object colours for wires.
+            from .layers import set_viewport_object_color
+            set_viewport_object_color(bpy.context)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         fbp_warn("Could not change the Frame By Plane rig style", exc)
 
 
