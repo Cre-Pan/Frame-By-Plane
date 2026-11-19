@@ -4201,7 +4201,17 @@ def _fbp_motion_frame_change(scene, _depsgraph=None):
     if _MOTION_HANDLER_GUARD or fbp_undo_guard_active():
         return
     render_guard_active = bool(fbp_runtime_get("fbp_render_guard_active", False))
-    if not render_guard_active and not _MOTION_DEFERRED_VIEWPORT_ACTIVE:
+    # Viewport playback and scrubbing evaluate Motion right here, on every
+    # frame. Deferring to an idle timer made every preset lag behind playback
+    # and only catch up every few frames, so smooth Motion (Infinite Rotation
+    # first of all) looked stepped. The idle path stays for the one case that
+    # must not write Object transforms now: an unmanaged render in progress.
+    defer_viewport = (
+        not render_guard_active
+        and not _MOTION_DEFERRED_VIEWPORT_ACTIVE
+        and fbp_render_mutation_blocked(include_guard=False)
+    )
+    if defer_viewport:
         scene_key = fbp_obj_runtime_key(scene)
         if scene_key is None:
             return
