@@ -28,6 +28,7 @@ Frame By Plane is a Blender 5.2 LTS and 5.3 extension for image-sequence animati
 ## Layer and effect workflow
 
 - Layer List folders, visibility, solo, locking, selection and color tags
+- Plane groups with a box rig (nearest and farthest plane joined at the corners): one click selects the group, a double click enters it and fades the planes outside
 - Blend modes, clipping, opacity and alpha-aware geometry
 - Reorderable, resettable non-destructive effect stacks
 - Distortion, blur, color, lighting, stylization and utility effects

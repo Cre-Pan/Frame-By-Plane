@@ -12,6 +12,7 @@ wire) unless the "Rig Layers: Click Image Too" preference is on. Anything else
 layer) is passed through to Blender's own selection untouched.
 """
 
+import bpy
 from bpy.props import BoolProperty
 from bpy.types import Operator
 from mathutils import Vector, geometry
@@ -74,14 +75,28 @@ def _uv_at_hit(obj_eval, matrix, world_location, polygon_index):
 
 
 def _select_by_image_allowed(rig, by_image_with_rig):
-    """Layers that show their rig are picked from the wire unless allowed."""
+    """Layers that show their rig are picked from the wire unless allowed.
+
+    A plane inside a closed plane group is picked by its image too: a click
+    anywhere on the group's content selects the group.
+    """
     from .builder import fbp_rig_wire_visible
 
-    return bool(by_image_with_rig) or not fbp_rig_wire_visible(rig)
+    if bool(by_image_with_rig) or not fbp_rig_wire_visible(rig):
+        return True
+    return _in_closed_group(rig)
 
 
-def _rig_wire_near_cursor(context, coord, radius):
-    """True when a visible rig wire passes within ``radius`` pixels of ``coord``.
+def _in_closed_group(rig):
+    try:
+        from .plane_groups import rig_in_closed_group
+        return rig_in_closed_group(rig, bpy.context.scene)
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+
+
+def _rig_wire_under_cursor(context, coord, radius):
+    """The rig whose visible wire passes nearest ``coord`` within ``radius`` pixels.
 
     Runs on every click, over every visible rig, so the wire edges are
     projected and measured in bulk with NumPy.
@@ -96,6 +111,7 @@ def _rig_wire_near_cursor(context, coord, radius):
     perspective = np.array(region_data.perspective_matrix, dtype=np.float64)
     cx, cy = float(coord[0]), float(coord[1])
     limit = float(radius) * float(radius)
+    best = None
     for obj in tuple(getattr(context, "visible_objects", ()) or ()):
         try:
             if not bool(getattr(obj, "is_fbp_control", False)) or not fbp_rig_wire_visible(obj):
@@ -130,11 +146,12 @@ def _rig_wire_near_cursor(context, coord, radius):
             t = np.clip(t, 0.0, 1.0)
             px = ax + dx * t - cx
             py = ay + dy * t - cy
-            if bool(np.any(px * px + py * py <= limit)):
-                return True
-        except (*FBP_DATA_ERRORS, IndexError):
+            distance = float(np.min(px * px + py * py))
+            if distance <= limit and (best is None or distance < best[0]):
+                best = (distance, obj)
+        except (*FBP_DATA_ERRORS, IndexError, ValueError):
             continue
-    return False
+    return None if best is None else best[1]
 
 
 def _point_segment_distance_sq(px, py, ax, ay, bx, by):
@@ -369,6 +386,41 @@ def _by_image_with_rig():
         return False
 
 
+def fbp_layer_under_cursor(context, coord):
+    """The layer under ``coord``: its rig wire first, then its visible pixels."""
+    rig = _rig_wire_under_cursor(context, coord, 8.0 * _ui_scale(context))
+    if rig is not None:
+        return rig
+    origin, direction = fbp_view_ray(context.region, context.region_data, coord)
+    rig, _crossed = fbp_pick_layer_through_alpha(
+        context, origin, direction, by_image_with_rig=True,
+    )
+    return rig
+
+
+def _plane_group_target(context, rig):
+    """The plane group a click on ``rig`` selects, or ``None``.
+
+    A click on a plane outside the entered group leaves the group first.
+    """
+    try:
+        from .plane_groups import exit_group, rig_outside_entered_group, selection_group
+    except ImportError:
+        return None
+    scene = context.scene
+    if rig_outside_entered_group(rig, scene):
+        exit_group(scene)
+    return selection_group(rig, scene)
+
+
+def _group_box_at(context, coord):
+    try:
+        from .plane_groups import group_box_under_cursor
+        return group_box_under_cursor(context, coord, 6.0 * _ui_scale(context))
+    except (ImportError, *FBP_DATA_ERRORS):
+        return None
+
+
 def _layer_box_part_at(context, coord):
     try:
         from .layer_cage import layer_box_part_at
@@ -417,9 +469,23 @@ class FBP_OT_SelectThroughAlpha(Operator):
                 # Nothing in the file changed: no empty Undo step. Cancelled
                 # still ends the click here, so Blender does not deselect.
                 return {'CANCELLED'}
-            # A click on (or right next to) a visible rig wire stays Blender's.
-            if _rig_wire_near_cursor(context, coord, 8.0 * _ui_scale(context)):
+            # A click on (or right next to) a visible rig wire stays Blender's,
+            # unless the rig belongs to a closed plane group: the click then
+            # selects the whole group.
+            wire_rig = _rig_wire_under_cursor(context, coord, 8.0 * _ui_scale(context))
+            if wire_rig is not None:
+                if _plane_group_target(context, wire_rig) is not None:
+                    return self._select(context, wire_rig)
                 return {'PASS_THROUGH'}
+            # A click on a group's box selects the group.
+            group = _group_box_at(context, coord)
+            if group is not None:
+                from .plane_groups import entered_group, exit_group, select_group
+                entered = entered_group(context.scene)
+                if entered is not None and group != entered and group not in tuple(entered.children_recursive):
+                    exit_group(context.scene)
+                select_group(context, group, toggle=self.toggle)
+                return {'FINISHED'}
             origin, direction = fbp_view_ray(region, region_data, coord)
             rig, _crossed_plane = fbp_pick_layer_through_alpha(
                 context, origin, direction, by_image_with_rig=_by_image_with_rig(),
@@ -434,6 +500,14 @@ class FBP_OT_SelectThroughAlpha(Operator):
         return self._select(context, rig)
 
     def _select(self, context, rig):
+        group = (
+            _plane_group_target(context, rig)
+            if getattr(rig, "is_fbp_control", False) else None
+        )
+        if group is not None:
+            from .plane_groups import select_group
+            if select_group(context, group, rig, toggle=self.toggle):
+                return {'FINISHED'}
         return fbp_select_layer_rig(context, rig, toggle=self.toggle)
 
 

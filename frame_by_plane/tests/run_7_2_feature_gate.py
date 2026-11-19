@@ -20,6 +20,7 @@ TESTS = (
     "split_sequence_planes_regression.py",
     "transparent_frame_runtime_regression.py",
     "camera_placement_delete_regression.py",
+    "plane_groups_regression.py",
     "gp_mask_edit_undo_regression.py",
     "gp_mask_crop_regression.py",
     "compositor_opt_in_regression.py",

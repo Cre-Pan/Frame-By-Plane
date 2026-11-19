@@ -212,6 +212,8 @@ def _register_keymaps():
         'fbp.select_through_alpha',
         'fbp.select_plane_label',
         'fbp.gesture_select',
+        'fbp.enter_plane_group',
+        'fbp.exit_plane_group',
     }
     remove_matching_keymap_items(
         keymap,
@@ -282,6 +284,14 @@ def _register_keymaps():
             )
             pick_item.properties.toggle = toggle
             _addon_keymaps.append((keymap, pick_item))
+        # Plane groups: a double click enters a group, Esc leaves it (Esc
+        # passes through when no group is entered).
+        enter_item = keymap.keymap_items.new(
+            'fbp.enter_plane_group', type=mouse, value='DOUBLE_CLICK',
+        )
+        _addon_keymaps.append((keymap, enter_item))
+        exit_item = keymap.keymap_items.new('fbp.exit_plane_group', type='ESC', value='PRESS')
+        _addon_keymaps.append((keymap, exit_item))
         _register_gesture_keymaps()
 
 
