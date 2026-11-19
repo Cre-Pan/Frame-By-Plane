@@ -186,6 +186,41 @@ try:
     assert native.fbp_native_rig_contract_issues(rig), "old material must be reported"
     assert native.fbp_repair_native_sequence_timing_scene(bpy.context.scene) == 1
     check_layer(native, rig, "repaired")
+
+    # The blank PNG deleted on disk (another Blender's cleanup, a synced or
+    # copied cache folder) showed magenta in Solid view: it is rewritten on load.
+    mat = native._native_material_from_rig(rig)
+    directory, files = native._runtime_sequence_from_material(mat)
+    blank_path = Path(directory) / files[-1]
+    blank_path.unlink()
+    assert native.fbp_native_rig_contract_issues(rig), "missing blank frame must be reported"
+    assert native.fbp_repair_native_sequence_timing_scene(bpy.context.scene) == 1
+    assert blank_path.is_file()
+    check_layer(native, rig, "blank restored")
+
+    # A whole runtime folder deleted on disk is rebuilt from the source frames.
+    import shutil
+    shutil.rmtree(directory)
+    assert native.fbp_repair_native_sequence_timing_scene(bpy.context.scene) == 1
+    check_layer(native, rig, "runtime folder rebuilt")
+
+    # Cleanup never deletes a proxy folder this session did not create or
+    # load: another Blender may still read it.
+    mat = native._native_material_from_rig(rig)
+    source_directory, source_files = native._source_sequence_from_material(mat)
+    foreign_directory, foreign_files = native._ensure_native_sequence_proxy(
+        source_directory, source_files[:2]
+    )
+    assert foreign_files and os.path.isdir(foreign_directory)
+    foreign_key = os.path.normcase(os.path.abspath(foreign_directory))
+    native._FBP_SESSION_PROXY_DIRS.discard(foreign_key)
+    root = str(Path(foreign_directory).parent)
+    native.fbp_cleanup_unused_proxy_caches([root])
+    assert os.path.isdir(foreign_directory), "foreign proxy folder was deleted"
+    native._FBP_SESSION_PROXY_DIRS.add(foreign_key)
+    native.fbp_cleanup_unused_proxy_caches([root])
+    assert not os.path.isdir(foreign_directory), "own unused proxy folder was kept"
+    check_layer(native, rig, "after cleanup")
     print("FBPTEST transparent_frame_runtime: PASS")
 except Exception:
     traceback.print_exc()

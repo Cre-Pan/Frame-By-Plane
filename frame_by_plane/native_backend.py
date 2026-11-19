@@ -42,6 +42,12 @@ _FBP_NATIVE_SOURCE_HEALTH_CACHE = globals().get("_FBP_NATIVE_SOURCE_HEALTH_CACHE
 if not isinstance(_FBP_NATIVE_SOURCE_HEALTH_CACHE, dict):
     _FBP_NATIVE_SOURCE_HEALTH_CACHE = {}
 _FBP_NATIVE_SOURCE_HEALTH_TTL = 2.0
+# Proxy folders this Blender session created or found in its own files. The
+# cleanup deletes only these: a second Blender (or a crashed session recovered
+# from an autosave) may still read another proxy folder of the same cache root.
+_FBP_SESSION_PROXY_DIRS = globals().get("_FBP_SESSION_PROXY_DIRS", set())
+if not isinstance(_FBP_SESSION_PROXY_DIRS, set):
+    _FBP_SESSION_PROXY_DIRS = set()
 _FBP_NATIVE_SOURCE_HEALTH_LIMIT = 256
 
 
@@ -454,6 +460,91 @@ def _write_transparent_png(path, width, height):
     Path(path).write_bytes(payload)
 
 
+def _normalized_proxy_dir(directory):
+    try:
+        return os.path.normcase(os.path.abspath(bpy.path.abspath(str(directory))))
+    except Exception:
+        return os.path.normcase(os.path.abspath(str(directory)))
+
+
+def _remember_session_proxy_dir(directory):
+    if directory:
+        _FBP_SESSION_PROXY_DIRS.add(_normalized_proxy_dir(directory))
+
+
+def fbp_remember_material_proxy_dirs(materials):
+    """Mark the runtime folders of loaded materials as owned by this session."""
+    for mat in list(materials or ()):
+        try:
+            if not mat or not bool(mat.get("fbp_native_sequence", False)):
+                continue
+            directory, _files = _decode_sequence_json(mat.get("fbp_native_runtime_sequence_json", ""))
+        except FBP_DATA_ERRORS:
+            continue
+        _remember_session_proxy_dir(directory)
+
+
+def fbp_restore_blank_runtime_frame(mat):
+    """Rewrite the transparent runtime PNG when it is missing from disk.
+
+    The blank frame lives in a generated cache folder. If that file is gone
+    (cleanup from another Blender session, a synced or copied folder, a
+    recovered autosave), Blender shows the missing-image colour on every
+    transparent row in Solid view. Returns True when the frame is present
+    afterwards or the material has no blank frame; False when it cannot be
+    restored here and the layer needs a rebuild.
+    """
+    try:
+        blank_index = _blank_runtime_index_from_material(mat)
+        directory, files = _runtime_sequence_from_material(mat)
+    except FBP_DATA_ERRORS:
+        return False
+    if blank_index < 0:
+        return True
+    if not directory or not (0 <= blank_index < len(files)):
+        return False
+    directory = os.path.abspath(_abspath(directory))
+    blank_path = Path(_media_path(directory, files[blank_index]))
+    if blank_path.is_file():
+        return True
+    if not os.path.isdir(directory):
+        return False
+    width, height = 0, 0
+    for name in files[:blank_index]:
+        width, height = _png_dimensions(str(_media_path(directory, name)))
+        if (width, height) != (0, 0):
+            break
+    if (width, height) == (0, 0):
+        try:
+            source_directory, source_files = _source_sequence_from_material(mat)
+            if source_files:
+                width, height = _png_dimensions(str(_media_path(source_directory, source_files[0])))
+        except FBP_DATA_ERRORS:
+            width, height = 0, 0
+    if (width, height) == (0, 0):
+        return False
+    temp_blank = blank_path.parent / f".{blank_path.name}.tmp_{os.getpid()}"
+    try:
+        _write_transparent_png(temp_blank, width, height)
+        os.replace(str(temp_blank), str(blank_path))
+    except (OSError, ValueError, struct.error) as exc:
+        try:
+            temp_blank.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _warn("Could not restore the transparent proxy frame", exc)
+        return False
+    # Blender keeps the missing-image texture of a frame it could not read.
+    for node in fbp_native_sequence_nodes(mat):
+        image = getattr(node, "image", None)
+        try:
+            if image is not None:
+                image.reload()
+        except FBP_DATA_ERRORS:
+            pass
+    return True
+
+
 def _native_blank_frame_supported(directory, files, *, is_video=False):
     """Transparent rows get a real blank runtime frame for PNG sequences.
 
@@ -584,6 +675,7 @@ def _ensure_native_sequence_proxy(directory, files, *, blank_frame=False):
             shutil.rmtree(cache_dir, ignore_errors=True)
         _warn("Could not write native sequence proxy manifest", exc)
         return "", []
+    _remember_session_proxy_dir(cache_dir)
     return str(cache_dir), proxy_files
 
 
@@ -1521,7 +1613,12 @@ def fbp_cleanup_unused_proxy_caches(candidate_roots=None):
                 normalized = os.path.normcase(os.path.abspath(str(child)))
                 if normalized in active_dirs:
                     continue
+                if normalized not in _FBP_SESSION_PROXY_DIRS:
+                    # Created by another Blender session, which may still
+                    # read it (or recover it from an autosave).
+                    continue
                 shutil.rmtree(child)
+                _FBP_SESSION_PROXY_DIRS.discard(normalized)
                 removed += 1
             except (OSError, RuntimeError, ValueError) as exc:
                 _warn('Could not remove unused native proxy cache', exc)
@@ -3751,6 +3848,9 @@ def fbp_refresh_native_sequence_from_rig(rig):
                 continue
             if int(mat.get("fbp_native_render_contract", 0) or 0) != FBP_NATIVE_RENDER_CONTRACT_REVISION:
                 continue
+            # One stat per layer: a blank frame deleted on disk would show
+            # the missing-image colour in Solid view on transparent rows.
+            fbp_restore_blank_runtime_frame(mat)
             # ImageUser animation belongs to the material node tree. A shared
             # native material would couple timing edits across multiple planes;
             # return False so the caller performs a transactional unique rebuild.
@@ -4055,10 +4155,22 @@ def fbp_repair_native_sequence_timing_scene(scene=None):
             mat = native_materials[0]
             if int(mat.get("fbp_native_render_contract", 0) or 0) != FBP_NATIVE_RENDER_CONTRACT_REVISION:
                 continue
+            fbp_remember_material_proxy_dirs((mat,))
             if bool(mat.get("fbp_native_video", False)) or bool(mat.get("fbp_native_static_image", False)):
                 continue
             nodes = fbp_native_sequence_nodes(mat)
             if len(nodes) != 1:
+                continue
+            if not _runtime_sequence_is_available(mat):
+                # Generated runtime files can disappear outside Blender. A
+                # missing blank frame is rewritten in place; anything else
+                # needs new proxies from the source frames.
+                if fbp_restore_blank_runtime_frame(mat) and _runtime_sequence_is_available(mat):
+                    repaired += 1
+                elif rebuild_native_sequence_from_rig(rig):
+                    repaired += 1
+                else:
+                    _warn(f"Could not restore native runtime media for {getattr(rig, 'name', 'layer')}")
                 continue
             node = nodes[0]
             animation_start = int(getattr(rig, "fbp_start_frame", 1) or 1)
