@@ -30,6 +30,7 @@ TESTS = (
     "ui_draw_sweep.py",
     "native_modifiers_regression.py",
     "rotation_layer_transform_regression.py",
+    "layer_origin_regression.py",
 )
 
 

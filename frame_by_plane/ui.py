@@ -5397,6 +5397,8 @@ class FBP_MT_ObjectLayerContext(Menu):
             layout.operator_menu_enum("fbp.fit_camera", "mode", text="Fit to Camera", icon="VIEW_CAMERA")
             layout.operator("fbp.transform", text="Horizontal / Vertical", icon="RENDER_SWAP_DIMENSIONS").mode = 'TOGGLE_ROT'
             layout.operator("fbp.transform", text="Place on Ground", icon="GRID").mode = 'TO_GROUND'
+            from .layer_origin import draw_layer_origin_menu
+            draw_layer_origin_menu(layout)
             layout.separator()
 
         group_targets = tuple(rigs) + drawing_gp_canvases
@@ -6157,6 +6159,11 @@ def draw_fbp_object_context_menu(self, context):
         text="Frame By Plane",
         icon="RENDERLAYERS",
     )
+    if get_selected_fbp_roots(context):
+        # Blender's own Set Origin acts on the rig wire; this one moves the
+        # layer origin and keeps the drawing in place.
+        from .layer_origin import draw_layer_origin_menu
+        draw_layer_origin_menu(self.layout)
     self.layout.separator()
 def draw_fbp_delete_menu(self, context):
     try:
