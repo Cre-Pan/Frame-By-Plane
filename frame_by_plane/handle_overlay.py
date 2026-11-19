@@ -879,6 +879,14 @@ def _triangles_center(triangles):
 
 
 def _draw_lines(shader, segments, width, color):
+    if segments and not all(math.isfinite(value) for point in segments for value in point):
+        # Drop whole segments with a NaN or infinite end: never sent to the GPU.
+        finite = []
+        for index in range(0, len(segments) - 1, 2):
+            pair = segments[index:index + 2]
+            if all(math.isfinite(value) for point in pair for value in point):
+                finite.extend(pair)
+        segments = finite
     if not segments:
         return
     shader.uniform_float("lineWidth", width)

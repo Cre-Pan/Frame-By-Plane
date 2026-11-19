@@ -6,7 +6,7 @@ Two styles:
   drawn in the rig shape (rectangle, circle, triangle, polygon, alpha
   outline) with its handles on the outline.
 * **Legacy**: the coloured wire of the rig mesh, always visible, in the same
-  shapes. Selected layers still show the box for dragging.
+  shapes, and nothing else: no transform box, not even when selected.
 
 Both use the same outline, built here in rig-local XY:
 

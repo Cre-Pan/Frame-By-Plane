@@ -11,6 +11,12 @@ All notable public changes to Frame By Plane are documented here.
 - **Opacity in Solid shading.** With Solid > Material colour every image plane is one flat colour, so transparency alone was hard to see: a plane below 100% Opacity is now also darkened there, in proportion to its opacity. The Opacity slider and the faded planes of an entered group use the same method.
 - The reduced opacity is a view state only: the layers' own Opacity never changes, Save and renders always get full opacity, and Undo keeps the planes outside faded while you are inside.
 
+### Rig fixes
+
+- **Legacy shows only its wire.** A Legacy layer no longer shows the Digital transform box, its handles or its knob, not even when it is selected or under the cursor: the coloured wire is the whole controller, as before the rig styles.
+- **Alpha Outline box around the drawing.** A Digital layer with the Alpha Outline shape had its corner and side handles, rotate knob and orientation square on the rectangle of the whole plane, far from a small drawing on a large canvas or left over after Crop. The box now sits around the visible pixels, with the outline inside it.
+- Viewport overlays never send a point that is not a finite number to the GPU.
+
 ## [8.5.1] - Unreleased
 
 8.5.1 LTS is the public release after 8.0.1. It collects the work prepared as 8.2.1 and 8.3.0 (below) with a new release splash.
