@@ -7744,5 +7744,10 @@
 "Keep the highlights, shadows and texture of the replaced pixels. Zero paints the flat Target Color.": "保留被替换像素的高光、阴影和纹理。为零时以纯目标颜色填充。",
 "Blend between the original image and Replace Color.": "在原始图像与替换颜色之间混合。",
 "Add an Image effect or Mask to the selected layers. Mesh effects are in Modifiers > Add Modifier > Mesh.": "为所选图层添加 Image 效果或 Mask。Mesh 效果位于 修改器 > 添加修改器 > Mesh。",
-"Open the Image and Mask effect libraries.": "打开 Image 和 Mask 效果库。"
+"Open the Image and Mask effect libraries.": "打开 Image 和 Mask 效果库。",
+"Rig Style": "绑定样式",
+"Digital": "数字",
+"Legacy": "经典",
+"Legacy Rig": "经典绑定",
+"Legacy Rig on New Layers": "新图层使用经典绑定"
 }

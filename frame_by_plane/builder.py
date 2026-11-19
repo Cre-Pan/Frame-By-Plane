@@ -246,57 +246,30 @@ def fbp_create_rect_mesh(name, size=2.0, with_face=True):
     return mesh
 
 
-def _fbp_rig_shape_sides(rig):
-    try:
-        return max(3, min(50, int(getattr(rig, "fbp_rig_shape_sides", 6) or 6)))
-    except (TypeError, ValueError):
-        return 6
+def fbp_rig_shape_margin(rig):
+    """Return the controller border in rig-local units (0 when shrinking)."""
+    from .rig_style import expand_margin
+    return expand_margin(rig)
 
 
-def _fbp_rig_shape_geometry(shape, size=2.1, *, half_extents=None, center=(0.0, 0.0), sides=6):
-    """Return local XY wire geometry for a non-rendering FBP control rig."""
-    shape = str(shape or "DEFAULT").upper()
-    radius = max(0.0001, float(size) * 0.5)
-    if shape in {"CIRCLE", "POLYGON"}:
-        count = 32 if shape == "CIRCLE" else max(3, min(50, int(sides)))
-        # Polygons rest on a flat bottom edge.
-        offset = 0.0 if shape == "CIRCLE" else (math.pi / count - math.pi * 0.5)
-        verts = [
-            (math.cos((math.tau * index) / count + offset) * radius,
-             math.sin((math.tau * index) / count + offset) * radius,
-             0.0)
-            for index in range(count)
-        ]
-    else:
-        verts = [(-radius, -radius, 0.0), (radius, -radius, 0.0), (radius, radius, 0.0), (-radius, radius, 0.0)]
-    if half_extents is not None and shape == "POLYGON":
-        # Fit to Plane: the polygon's bounding box spans the plane bounds.
-        xs = [x for x, _y, _z in verts]
-        ys = [y for _x, y, _z in verts]
-        mid_x, mid_y = (max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5
-        span_x = max(1e-6, (max(xs) - min(xs)) * 0.5)
-        span_y = max(1e-6, (max(ys) - min(ys)) * 0.5)
-        verts = [((x - mid_x) / span_x * radius, (y - mid_y) / span_y * radius, z) for x, y, z in verts]
-    if half_extents is not None:
-        hx, hy = half_extents
-        hx = max(0.0001, float(hx))
-        hy = max(0.0001, float(hy))
-        verts = [(x / radius * hx, y / radius * hy, z) for x, y, z in verts]
+def _fbp_shrink_wire(rig, verts, center):
+    """Scale wire vertices towards ``center`` for a negative Expand."""
+    from .rig_style import shrink_factor
+    factor = shrink_factor(rig)
+    if abs(factor - 1.0) <= 1.0e-9:
+        return verts
     cx, cy = center
-    if cx or cy:
-        verts = [(x + float(cx), y + float(cy), z) for x, y, z in verts]
+    return [(cx + (x - cx) * factor, cy + (y - cy) * factor, z) for x, y, z in verts]
+
+
+def _fbp_styled_wire(rig, shape, center, half_extents):
+    """Rig-space (verts, edges) of a preset shape around the plane box."""
+    from .rig_style import rig_outline
+    outline = rig_outline(rig, center, half_extents)
+    verts = [(float(x), float(y), 0.0) for x, y in outline]
     edges = [(index, (index + 1) % len(verts)) for index in range(len(verts))]
     return verts, edges
 
-
-
-def fbp_rig_shape_margin(rig):
-    """Return the controller border in plane-local units."""
-    try:
-        expand = max(0.0, min(2.0, float(getattr(rig, "fbp_rig_shape_expand", 1.0) or 0.0)))
-    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
-        expand = 1.0
-    return 0.05 * expand
 
 def _fbp_plane_to_rig_matrix(rig, plane):
     """Return the plane-local to rig-local matrix, or None when it is identity.
@@ -393,6 +366,33 @@ def _fbp_alpha_follow_key(rig):
         return int(rig.as_pointer())
     except (AttributeError, ReferenceError):
         return id(rig)
+
+
+def fbp_refresh_perfect_rigs(objects):
+    """Rebuild Legacy Perfect Shape wires whose rig X/Y scale ratio changed.
+
+    The wire lives in rig space, so stretching the layer would stretch a
+    circle into an ellipse; the rebuilt wire divides the scale out again.
+    """
+    from .rig_style import perfect_scale_key
+    refreshed = 0
+    for obj in tuple(objects or ()):
+        try:
+            if not bool(getattr(obj, "is_fbp_control", False)):
+                continue
+            key = perfect_scale_key(obj)
+            if key is None:
+                continue
+            mesh = getattr(obj, "data", None)
+            if mesh is None or not isinstance(mesh, bpy.types.Mesh):
+                continue
+            if abs(float(mesh.get("fbp_rig_perfect_key", 0.0) or 0.0) - key) <= 1.0e-5:
+                continue
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+        if fbp_apply_rig_shape(obj):
+            refreshed += 1
+    return refreshed
 
 
 def fbp_refresh_alpha_follow_rigs(scene):
@@ -676,40 +676,35 @@ def _fbp_write_rig_wire(rig, mesh, verts, edges):
         verts = [tuple(float(value) for value in vert) for vert in verts]
         edges = [tuple(int(value) for value in edge) for edge in edges]
         mesh.from_pydata(verts, edges, [])
+    # A Perfect Shape wire depends on the rig's X/Y scale ratio: remember the
+    # ratio it was built for, so a scale change rebuilds it.
+    try:
+        from .rig_style import perfect_scale_key
+        key = perfect_scale_key(rig)
+        mesh["fbp_rig_perfect_key"] = float(key) if key is not None else 0.0
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        pass
     mesh.update()
 
 
 def _fbp_rig_shape_wire(rig, shape):
     """Rig-space (verts, edges) for a preset or Alpha Outline shape."""
-    fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
-    half_extents = None
-    center = (0.0, 0.0)
     margin = fbp_rig_shape_margin(rig)
     bounds = _fbp_plane_mesh_bounds_in_rig_space(rig)
     if bounds is not None:
         min_x, max_x, min_y, max_y = bounds
-        # Both fit modes follow the visible (cropped) plane, so a cropped
+        # Every shape follows the visible (cropped) plane, so a cropped
         # layer or a moved origin never leaves the wire off the image.
         center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
-    if fit_mode == "FIT_PLANE" or shape in {"DEFAULT", "ALPHA"}:
-        if bounds is not None:
-            half_extents = (
-                max(0.0001, (max_x - min_x) * 0.5 + margin),
-                max(0.0001, (max_y - min_y) * 0.5 + margin),
-            )
-        else:
-            aspect_x, aspect_y = fbp_native_aspect_half_extents(rig)
-            half_extents = (
-                max(0.0001, aspect_x + margin),
-                max(0.0001, aspect_y + margin),
-            )
-    shape_size = max(0.0002, 2.0 + margin * 2.0)
+        half_extents = (max(0.0001, (max_x - min_x) * 0.5), max(0.0001, (max_y - min_y) * 0.5))
+    else:
+        center = (0.0, 0.0)
+        half_extents = fbp_native_aspect_half_extents(rig)
     alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == "ALPHA" else None
     if alpha_geometry is not None:
-        return alpha_geometry
-    verts, edges = _fbp_rig_shape_geometry(
-        shape, size=shape_size, half_extents=half_extents, center=center, sides=_fbp_rig_shape_sides(rig),
-    )
+        verts, edges = alpha_geometry
+        return _fbp_shrink_wire(rig, verts, center), edges
+    verts, edges = _fbp_styled_wire(rig, shape, center, half_extents)
     return _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig)), edges
 
 
@@ -907,23 +902,15 @@ def fbp_update_rig_frame_mesh_to_bounds(rig, min_x, max_x, min_y, max_y, margin=
         margin = fbp_rig_shape_margin(rig) if margin is None else max(0.0, float(margin))
         # Callers pass plane-local bounds; the wire lives in rig-local space.
         min_x, max_x, min_y, max_y = fbp_plane_bounds_in_rig_space(rig, min_x, max_x, min_y, max_y)
-        min_x, max_x = float(min_x) - margin, float(max_x) + margin
-        min_y, max_y = float(min_y) - margin, float(max_y) + margin
         mesh = rig.data
-        fit_mode = str(getattr(rig, "fbp_rig_shape_fit_mode", "FIT_PLANE") or "FIT_PLANE").upper()
-        half_extents = None
-        center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
-        if fit_mode == 'FIT_PLANE' or shape in {'DEFAULT', 'ALPHA'}:
-            half_extents = ((max_x - min_x) * 0.5, (max_y - min_y) * 0.5)
-        shape_size = max(0.0002, 2.0 + margin * 2.0)
+        center = ((float(max_x) + float(min_x)) * 0.5, (float(max_y) + float(min_y)) * 0.5)
+        half_extents = (max(0.0001, (float(max_x) - float(min_x)) * 0.5), max(0.0001, (float(max_y) - float(min_y)) * 0.5))
         alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == 'ALPHA' else None
         if alpha_geometry is not None:
             verts, edges = alpha_geometry
+            verts = _fbp_shrink_wire(rig, verts, center)
         else:
-            verts, edges = _fbp_rig_shape_geometry(
-                shape, size=shape_size, half_extents=half_extents, center=center,
-                sides=_fbp_rig_shape_sides(rig),
-            )
+            verts, edges = _fbp_styled_wire(rig, shape, center, half_extents)
             verts = _fbp_wire_at_depth(verts, _fbp_plane_depth_in_rig_space(rig))
         _fbp_write_rig_wire(rig, mesh, verts, edges)
         return True

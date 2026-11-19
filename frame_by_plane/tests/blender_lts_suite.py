@@ -5733,6 +5733,63 @@ def test_blur_samples_skip_disabled_taps(_module):
     return results
 
 
+def test_rig_styles_and_perfect_shape(_module):
+    """Digital and Legacy rigs share their shape; Perfect Shape survives scaling."""
+    layer_cage = importlib.import_module(f"{PACKAGE}.layer_cage")
+    rig = _effect_stack_fixture_rig("FBP Rig Styles")
+    owned = [rig, *rig.children_recursive]
+
+    def wire_extent():
+        bpy.context.view_layer.update()
+        points = [rig.matrix_world @ vertex.co for vertex in rig.data.vertices]
+        assert points, "Legacy wire is empty"
+        spans = [max(p[axis] for p in points) - min(p[axis] for p in points) for axis in range(3)]
+        spans.sort(reverse=True)
+        return spans[0], spans[1]
+
+    try:
+        rig.fbp_rig_style = 'DIGITAL'
+        assert not rig.fbp_rig_visible and len(rig.data.vertices) == 0
+        rig.fbp_rig_style = 'LEGACY'
+        assert rig.fbp_rig_visible and len(rig.data.vertices) == 4
+        rig.fbp_rig_shape = 'CIRCLE'
+        rig.fbp_rig_shape_fit_mode = 'PERFECT'
+        a, b = wire_extent()
+        assert abs(a - b) < 1.0e-4, (a, b)
+        # Stretching the layer keeps the Perfect circle round.
+        rig.scale = (2.5, 1.0, 1.0)
+        a, b = wire_extent()
+        assert abs(a - b) < 1.0e-4, ("perfect circle stretched", a, b)
+        # Expand grows well past the plane and shrinks inside it.
+        rig.fbp_rig_shape_expand = 40.0
+        big, _ = wire_extent()
+        rig.fbp_rig_shape_expand = -18.0
+        small, _ = wire_extent()
+        assert big > small * 10.0, (big, small)
+        rig.fbp_rig_shape_expand = 1.0
+        rig.fbp_rig_shape = 'TRIANGLE'
+        assert len(rig.data.vertices) == 3
+        # Digital boxes follow the shape with handles on the outline.
+        rig.fbp_rig_style = 'DIGITAL'
+        assert len(rig.data.vertices) == 0
+        for shape, points in (('CIRCLE', 64), ('TRIANGLE', 3), ('POLYGON', 6), ('DEFAULT', 0)):
+            rig.fbp_rig_shape = shape
+            center, size = layer_cage.layer_cage_rect(rig)
+            box_center, box_size, outline, _alpha = layer_cage.box_shape(rig, center, size)
+            assert len(outline) == points, (shape, len(outline))
+            corners, edges = layer_cage.local_handles(box_center, box_size, outline)
+            assert len(corners) == 4 and len(edges) == 4
+            if shape == 'CIRCLE':
+                world = rig.matrix_world
+                radii = [((world @ point) - (world @ box_center)).length for point in (*corners, *edges)]
+                assert max(radii) - min(radii) < 1.0e-4, ("digital circle handles off the circle", radii)
+    finally:
+        for obj in owned:
+            if obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
+    return "Digital/Legacy styles, Perfect Shape under non-uniform scale, wide Expand, shaped box handles"
+
+
 def test_rigless_gesture_select_dense_mesh(_module):
     """Box and lasso pick a rig-less layer quickly even with a dense Mesh effect."""
     geometry = importlib.import_module(f"{PACKAGE}.geometry_nodes")
@@ -7183,6 +7240,7 @@ def run_background():
             ("effect_audit_followup_contract", test_effect_audit_followup_contract),
             ("composite_materials_skip_static_frames", test_composite_materials_skip_static_frames),
             ("rigless_gesture_select_dense_mesh", test_rigless_gesture_select_dense_mesh),
+            ("rig_styles_and_perfect_shape", test_rig_styles_and_perfect_shape),
             ("blur_samples_skip_disabled_taps", test_blur_samples_skip_disabled_taps),
             ("ui_draw_pass_contract", test_ui_draw_pass_contract),
             ("frame_path_lookup_contract", test_frame_path_lookup_contract),

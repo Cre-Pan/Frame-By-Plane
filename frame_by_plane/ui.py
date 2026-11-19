@@ -4378,22 +4378,21 @@ class FBP_OT_RigShapePopup(Operator):
         if rig is None:
             layout.label(text="Layer no longer exists", icon='ERROR')
             return
-        header = layout.row(align=True)
-        header.prop(rig, "fbp_rig_visible", text="Use Rig")
+        style_row = layout.row(align=True)
+        style_row.prop(rig, "fbp_rig_style", expand=True)
         shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT"))
         body = layout.column()
-        # Custom rigs always show their wire, so their controls stay live.
-        body.active = bool(getattr(rig, "fbp_rig_visible", True)) or shape == 'CUSTOM'
         body.prop(rig, "fbp_rig_shape", text="Shape")
         if shape == 'ALPHA':
             row = body.row(align=True)
             row.prop(rig, "fbp_rig_shape_alpha_style", expand=True)
             body.prop(rig, "fbp_rig_shape_alpha_detail", text="Detail", slider=True)
             body.prop(rig, "fbp_rig_shape_alpha_follow", text="Follow Frame")
-        else:
+        elif shape != 'CUSTOM':
             if shape == 'POLYGON':
                 body.prop(rig, "fbp_rig_shape_sides", text="Sides", slider=True)
-            body.prop(rig, "fbp_rig_shape_fit_mode", text="Fit")
+            row = body.row(align=True)
+            row.prop(rig, "fbp_rig_shape_fit_mode", expand=True)
         body.prop(rig, "fbp_rig_shape_expand", text="Expand", slider=True)
         if shape == 'CUSTOM':
             edit = body.operator("fbp.edit_rig_shape", text="Edit Rig Mesh", icon='EDITMODE_HLT')
