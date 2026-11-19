@@ -2754,9 +2754,40 @@ def get_layer_thumbnail(obj, scene=None):
             return load_drawing_preview(obj, path, scene=scene) if path else None
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
+    middle_path = _fbp_middle_sequence_path(obj)
+    if middle_path:
+        return load_preview(middle_path, scene=scene)
     if not hasattr(obj, "fbp_preview_path") or not obj.fbp_preview_path:
         return None
     return load_preview(obj.fbp_preview_path, scene=scene)
+
+
+def _fbp_middle_sequence_path(obj):
+    """Return the media path of the frame nearest the middle of a sequence.
+
+    The first frame of an animation is often a blank or partial pose, so the
+    Layer View thumbnail uses the middle row instead. The search walks outward
+    from the centre, skipping transparent placeholders, so the cost stays O(1)
+    for normal sequences even when they hold thousands of rows.
+    """
+    try:
+        rows = getattr(obj, "fbp_images", None)
+        count = len(rows) if rows is not None else 0
+        if count < 2:
+            return ""
+        middle = (count - 1) // 2
+        for offset in range(count):
+            for index in (middle + offset, middle - offset) if offset else (middle,):
+                if 0 <= index < count:
+                    item = rows[index]
+                    if bool(getattr(item, "is_empty", False)):
+                        continue
+                    path = str(getattr(item, "filepath", "") or "")
+                    if path:
+                        return path
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, IndexError):
+        pass
+    return ""
 
 
 def set_viewport_object_color(context):
