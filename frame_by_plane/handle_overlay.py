@@ -908,7 +908,7 @@ _LABEL_PAD_X_PX = 4.0
 _LABEL_PAD_Y_PX = 2.5
 _LABEL_GAP_PX = 3.0
 _LABEL_MIN_LUMINANCE = 0.42
-_LABEL_BACKGROUND = (0.0, 0.0, 0.0, 0.55)
+_LABEL_BACKGROUND = (0.0, 0.0, 0.0, 0.7)
 
 
 def _label_text_color(rig):
@@ -1078,6 +1078,8 @@ def _draw_plane_labels():
                 (color[0] * 0.3, color[1] * 0.3, color[2] * 0.3, 0.8) if hover or active
                 else _LABEL_BACKGROUND
             )
+            # Text drawing leaves blending off: turn it on for every label.
+            gpu.state.blend_set("ALPHA")
             fill_shader.bind()
             fill_shader.uniform_float("color", background)
             batch_for_shader(fill_shader, "TRIS", {"pos": _label_rect_triangles(rect)}).draw(fill_shader)
