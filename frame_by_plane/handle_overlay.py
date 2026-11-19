@@ -898,7 +898,7 @@ def _draw_plane_outlines(context, region, line_shader, scale):
 # --- Layer names in Top and Side views ---------------------------------------
 #
 # A layer seen edge-on is a line. Its name sits at one end of the line, in the
-# layer's own colour: layers in depth order take turns, one name on the right
+# colour of the layer's tag: layers in depth order take turns, one name on the right
 # and the next on the left (above and below for upright lines), so close
 # layers already share the room. Names on the same side that would still
 # overlap move apart around where they belong, with a thin line back to their
@@ -912,12 +912,20 @@ _LABEL_MIN_LUMINANCE = 0.42
 
 
 def _label_text_color(rig):
-    """The layer's colour (the one its rig wire shows), lifted when it is too
-    dark to read on the viewport."""
-    try:
-        red, green, blue = (max(0.0, min(1.0, float(value))) for value in tuple(rig.color)[:3])
-    except (TypeError, ValueError, *FBP_DATA_ERRORS):
-        return (1.0, 1.0, 1.0)
+    """The layer's colour tag as Blender's theme shows it (the swatches of the
+    colour tag menu), white without a tag; lifted when it is too dark to read
+    on the viewport."""
+    tag = str(getattr(rig, "fbp_color_tag", "NONE") or "NONE").upper()
+    color = (1.0, 1.0, 1.0)
+    if tag.startswith("COLOR_"):
+        try:
+            index = int(tag[6:]) - 1
+            swatches = bpy.context.preferences.themes[0].strip_color
+            if 0 <= index < len(swatches):
+                color = tuple(float(value) for value in tuple(swatches[index].color)[:3])
+        except (ValueError, TypeError, IndexError, *FBP_DATA_ERRORS):
+            pass
+    red, green, blue = (max(0.0, min(1.0, value)) for value in color)
     luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
     if luminance < _LABEL_MIN_LUMINANCE:
         mix = (_LABEL_MIN_LUMINANCE - luminance) / max(1.0e-6, 1.0 - luminance)
@@ -965,9 +973,10 @@ def plane_label_layout(context, region=None, region_data=None):
     """Names of the visible layers in a Top or Side view, as drawn.
 
     ``[(rig_name, rect, anchor, attach, colour, selected, active)]``: ``rect``
-    is the name's screen box ``(x0, y0, x1, y1)``, ``anchor`` the end of the
-    layer's line it belongs to and ``attach`` the point of the box nearest to
-    it. Empty outside those views.
+    is the name's screen box ``(x0, y0, x1, y1)``. For a name moved away from
+    its place, ``anchor`` is the end of the layer's line and ``attach`` the
+    point of the box nearest to it (both None otherwise). Empty outside
+    those views.
     """
     region = region or getattr(context, "region", None)
     region_data = region_data or getattr(context, "region_data", None)
@@ -1037,11 +1046,16 @@ def plane_label_layout(context, region=None, region_data=None):
         placed = spread_label_rects(
             [entry[1] for entry in entries], axis=1 if across else 0, gap=_LABEL_GAP_PX * scale,
         )
-        for (name, _wanted, anchor, selected, active), rect in zip(entries, placed):
-            if across:
+        for (name, wanted, anchor, selected, active), rect in zip(entries, placed):
+            moved = max(abs(a - b) for a, b in zip(wanted, rect)) > 0.5
+            if not moved:
+                attach = None
+            elif across:
                 attach = (rect[0] if first_side else rect[2], (rect[1] + rect[3]) * 0.5)
             else:
                 attach = ((rect[0] + rect[2]) * 0.5, rect[1] if first_side else rect[3])
+            if attach is None:
+                anchor = None
             rig = rigs.get(name)
             color = _label_text_color(rig) if rig is not None else (1.0, 1.0, 1.0)
             layout.append((name, rect, anchor, attach, color, selected, active))
@@ -1089,11 +1103,11 @@ def _draw_plane_labels():
     _fill_shader_unused, line_shader = _shaders()
     gpu.state.blend_set("ALPHA")
     try:
-        # A short line from the layer to the start of its name; a name that
-        # moved away from its layer shows it most.
+        # A line back to the layer, only for names moved away from it.
         segments = []
         for _name, _rect, anchor, attach, color, _selected, _active in layout:
-            segments.append(((*anchor, 0.0), (*attach, 0.0), color))
+            if anchor is not None and attach is not None:
+                segments.append(((*anchor, 0.0), (*attach, 0.0), color))
         # Under the name of every selected layer a line in its colour,
         # thicker for the active one; a fainter one under the name below
         # the cursor.
