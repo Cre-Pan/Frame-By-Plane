@@ -6,7 +6,7 @@ Frame By Plane 8.5.1 installs on both **Blender 5.2 LTS** and **Blender 5.3**, a
 
 - 🧭 **One package for Blender 5.2 LTS and 5.3.** The 5.3 features below turn on by themselves in Blender 5.3; in 5.2 everything else works as in 8.2.1.
 - ✂️ **Crop and Extend rig:** the same style as the layer transform box, with the original size as a dashed outline and dots and side bars that keep one size on screen at any distance. They appear when the cursor comes near.
-- 🏷️ **Layer names in Top and Side views** never overlap, use each layer's colour and select the layer with a click.
+- 🏷️ **Layer names in Top and Side views** take turns left and right of their layer so they never overlap, use the layer's colour and select it with a click.
 - 🪞 **Flip Canvas:** while you look through the camera, one button at the bottom of the Z Pie mirrors the view to check proportions (Blender 5.3).
 - 📝 **Notes in the node trees** are Blender 5.3 **Comment** nodes with Markdown, one per note instead of a stack of frames (Blender 5.3; in 5.2 notes stay frames).
 - 📏 **Panel text wraps to the panel:** Project Doctor, Performance Dashboard, What's New and the tutorial help use Blender's new multi-line labels.
