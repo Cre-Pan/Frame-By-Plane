@@ -36,6 +36,8 @@ from .registration import (
 
 # Opacity of the planes outside the entered group, as a factor of their own.
 ISOLATION_FADE = 0.25
+# Solid > Material: their viewport colour is darkened by this factor too.
+ISOLATION_SOLID_DIM = 0.35
 
 _GROUP_LINE_WIDTH = 1.0
 _GROUP_SELECTED_WIDTH = 2.0
@@ -50,6 +52,8 @@ _LINE_SHADER = None
 _ENTERED = {}
 # Scene pointer -> names of the rigs currently faded by the isolation.
 _FADED = {}
+# Material name -> viewport colour (RGB) before the fade darkened it.
+_SOLID_COLORS = {}
 # Rigs restored before Save or a render, faded again right after.
 _SUSPENDED = {"active": False}
 
@@ -290,6 +294,38 @@ def whole_group_selected_rigs(context):
 
 # -- Isolation (reduced opacity outside the entered group) ------------------
 
+def _plane_materials(rig):
+    plane = getattr(rig, "fbp_plane_target", None)
+    try:
+        return [mat for mat in plane.data.materials if mat is not None] if plane is not None else []
+    except FBP_DATA_ERRORS:
+        return []
+
+
+def _dim_solid_color(rig, faded):
+    """Solid shading: darken the viewport colour of the faded planes.
+
+    Material Preview and Solid > Texture show the reduced opacity; Solid >
+    Material shows every plane in its viewport colour, so the faded ones are
+    also darkened there. The original colour is kept to restore it.
+    """
+    for mat in _plane_materials(rig):
+        try:
+            current = tuple(mat.diffuse_color)
+            if faded:
+                original = _SOLID_COLORS.setdefault(mat.name, current[:3])
+                target = (*(value * ISOLATION_SOLID_DIM for value in original), current[3])
+            else:
+                original = _SOLID_COLORS.pop(mat.name, None)
+                if original is None:
+                    continue
+                target = (*original, current[3])
+            if any(abs(a - b) > 1.0e-6 for a, b in zip(current, target)):
+                mat.diffuse_color = target
+        except FBP_DATA_ERRORS:
+            continue
+
+
 def _fade_rig(rig, faded):
     try:
         from .materials import do_update_opacity
@@ -298,6 +334,7 @@ def _fade_rig(rig, faded):
             do_update_opacity(rig, opacity=base * ISOLATION_FADE)
         else:
             do_update_opacity(rig)
+        _dim_solid_color(rig, faded)
     except (ImportError, *FBP_DATA_ERRORS) as exc:
         try:
             from .runtime import fbp_warn
@@ -420,6 +457,7 @@ def fbp_plane_group_resume(*_args):
 def fbp_plane_group_load_pre(*_args):
     _ENTERED.clear()
     _FADED.clear()
+    _SOLID_COLORS.clear()
     _SUSPENDED["active"] = False
 
 
@@ -685,35 +723,91 @@ def _draw_group_boxes():
         gpu.state.blend_set("NONE")
 
 
+def _cube_icon(x, y, size, color):
+    """A small box drawn like the group rig: two squares joined at the corners."""
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    from .common import uniform_color_shader
+
+    side = size * 0.72
+    off = size - side
+    front = ((x, y), (x + side, y), (x + side, y + side), (x, y + side))
+    back = tuple((px + off, py + off) for px, py in front)
+    segments = []
+    for square in (front, back):
+        for index in range(4):
+            segments.extend((square[index], square[(index + 1) % 4]))
+    for index in range(4):
+        segments.extend((front[index], back[index]))
+    shader = uniform_color_shader()
+    batch = batch_for_shader(shader, "LINES", {"pos": segments})
+    shader.bind()
+    shader.uniform_float("color", color)
+    gpu.state.line_width_set(1.0)
+    batch.draw(shader)
+
+
+def _solo_badge_shown(context, space):
+    try:
+        from .solo_overlay import solo_layer_count
+        return solo_layer_count(context.scene) > 0 or getattr(space, "local_view", None) is not None
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+
+
 def _draw_isolation_badge():
+    """A "GROUP" badge in the same place and style as the Solo badge.
+
+    When Solo is on too, the Group badge sits right under it.
+    """
     import blf
+    import gpu
 
     context = bpy.context
     scene = getattr(context, "scene", None)
     region = getattr(context, "region", None)
-    if scene is None or region is None:
+    area = getattr(context, "area", None)
+    space = getattr(context, "space_data", None)
+    if scene is None or region is None or area is None or space is None:
         return
-    entered = entered_group(scene)
-    if entered is None:
+    try:
+        if not bool(space.overlay.show_overlays):
+            return
+    except FBP_DATA_ERRORS:
+        return
+    if entered_group(scene) is None:
         return
     try:
         from .common import ui_scale
-        scale = ui_scale(context)
+        from .solo_overlay import _BADGE_FILL, _BADGE_TEXT, _pill, _top_inset
     except ImportError:
-        scale = 1.0
-    text = f"Group: {entered.name}  ·  Esc or double-click outside to exit"
-    font = 0
-    blf.size(font, 12.0 * scale)
-    width, height = blf.dimensions(font, text)
-    x = (region.width - width) * 0.5
-    y = region.height - 40.0 * scale - height
-    color = _group_color(context, entered)
-    blf.enable(font, blf.SHADOW)
-    blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.8)
-    blf.color(font, *color, 1.0)
-    blf.position(font, x, y, 0.0)
-    blf.draw(font, text)
-    blf.disable(font, blf.SHADOW)
+        return
+    scale = ui_scale(context)
+    text = "GROUP"
+    font_id = 0
+    blf.size(font_id, 12.0 * scale)
+    text_w, _text_h = blf.dimensions(font_id, text)
+    cap_h = blf.dimensions(font_id, "G")[1]
+    h = 24.0 * scale
+    icon = 12.0 * scale
+    pad = 10.0 * scale
+    gap = 6.0 * scale
+    w = pad + icon + gap + text_w + pad + 1.0 * scale
+    x = round((region.width - w) * 0.5)
+    y = round(region.height - _top_inset(area, region) - 10.0 * scale - h)
+    if _solo_badge_shown(context, space):
+        y -= round(h + 6.0 * scale)
+    if y < 0 or w > region.width:
+        return
+    gpu.state.blend_set("ALPHA")
+    try:
+        _pill(x, y, w, h, _BADGE_FILL)
+        _cube_icon(x + pad, y + (h - icon) * 0.5, icon, _BADGE_TEXT)
+        blf.color(font_id, *_BADGE_TEXT)
+        blf.position(font_id, x + pad + icon + gap, y + (h - cap_h) * 0.5, 0)
+        blf.draw(font_id, text)
+    finally:
+        gpu.state.blend_set("NONE")
 
 
 # -- Operators ----------------------------------------------------------------
@@ -864,6 +958,7 @@ def unregister():
         pass
     _ENTERED.clear()
     _FADED.clear()
+    _SOLID_COLORS.clear()
     for handle in (_DRAW_HANDLE, _BADGE_HANDLE):
         if handle is not None:
             try:

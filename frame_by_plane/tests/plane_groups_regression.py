@@ -142,6 +142,14 @@ try:
     assert material_opacity(outside) == [groups.ISOLATION_FADE], material_opacity(outside)
     assert all(material_opacity(rig) == [1.0] for rig in members), [material_opacity(r) for r in members]
     assert abs(float(outside.fbp_opacity) - 1.0) < 1e-6, "the layer's own Opacity never changes"
+    # Solid > Material: the faded planes are darkened too, the group's are not.
+    outside_mat = outside.fbp_plane_target.data.materials[0]
+    original_rgb = tuple(groups._SOLID_COLORS[outside_mat.name])
+    assert all(
+        abs(a - b * groups.ISOLATION_SOLID_DIM) < 1e-5
+        for a, b in zip(tuple(outside_mat.diffuse_color)[:3], original_rgb)
+    ), (tuple(outside_mat.diffuse_color), original_rgb)
+    assert all(mat.name not in groups._SOLID_COLORS for rig in members for mat in rig.fbp_plane_target.data.materials)
 
     # 5. Save never stores the fade; it comes back afterwards.
     path = workdir / "groups.blend"
@@ -160,6 +168,8 @@ try:
     assert groups.entered_group(scene) is None
     assert material_opacity(outside) == [1.0], material_opacity(outside)
     assert groups.selection_group(layers[1], scene) == group
+    assert all(abs(a - b) < 1e-6 for a, b in zip(tuple(outside_mat.diffuse_color)[:3], original_rgb))
+    assert not groups._SOLID_COLORS
 
     # 7. Nested groups open one level at a time.
     bpy.ops.object.select_all(action='DESELECT')
