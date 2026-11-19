@@ -29,6 +29,7 @@ TESTS = (
     "addon_lifecycle_regression.py",
     "ui_draw_sweep.py",
     "native_modifiers_regression.py",
+    "rotation_layer_transform_regression.py",
 )
 
 

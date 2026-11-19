@@ -17,6 +17,12 @@ All notable public changes to Frame By Plane are documented here.
 - **Alpha Outline box around the drawing.** A Digital layer with the Alpha Outline shape had its corner and side handles, rotate knob and orientation square on the rectangle of the whole plane, far from a small drawing on a large canvas or left over after Crop. The box now sits around the visible pixels, with the outline inside it.
 - Viewport overlays never send a point that is not a finite number to the GPU.
 
+### Rotation and layer transform
+
+- **Motion > Infinite Rotation is smooth.** Motion was written by an idle timer that waited for the viewport to calm down, so during playback it caught up only every few frames and every Motion preset looked stepped, whatever its Stepped value. The frame handler now writes Motion on every frame; renders that are not managed by Frame By Plane still wait, as before.
+- **The Infinite Rotation effect keeps the drawing's proportions.** On a layer scaled on one axis only, the effect turned the stretched plane, so the drawing sheared as it rotated. It now rotates the plane as a rigid card: the stretch stays on the drawing at every angle. Effects already in a file are upgraded when they are used.
+- **Layer Transform in Properties and in the sidebar.** A click on a layer makes its image plane the active object (so Properties > Modifiers shows the effects), and Blender's own Transform fields showed the plane, which sits at zero inside its rig: values typed or keyed there moved the plane away from the rig and the keys went to an object the Graph Editor hides. Properties > Object > Transform now starts with the layer's Location, Rotation and Scale (the rig), and the sidebar's Item tab gets a **Layer Transform** panel with the same fields. Type exact values, key them with I or the dot next to a field, and the keys show in the Graph Editor and Dope Sheet. Alt while editing a field, or right click > Copy All to Selected, gives every selected layer the same value. A warning shows when the plane itself has transform keys.
+
 ## [8.5.1] - Unreleased
 
 8.5.1 LTS is the public release after 8.0.1. It collects the work prepared as 8.2.1 and 8.3.0 (below) with a new release splash.

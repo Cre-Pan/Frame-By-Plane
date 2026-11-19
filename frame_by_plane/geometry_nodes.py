@@ -109,6 +109,7 @@ from .effects_registry import (
     FBP_EFFECT_THICKNESS,
     FBP_EFFECT_FELT_FUZZ,
     FBP_EFFECT_GRAIN,
+    FBP_EFFECT_INFINITE_ROTATION,
     FBP_EFFECT_FIBER_TUFTS,
     FBP_EFFECT_PAPER_SHARDS,
     FBP_EFFECT_SPHERE_SCREEN,
@@ -6402,6 +6403,68 @@ def _fbp_patch_grain_clamp(node_group):
     return node_group
 
 
+def _fbp_patch_infinite_rotation_scale(node_group):
+    """Turn Infinite Rotation as a rigid card under non-uniform scale.
+
+    The bundled group rotates the plane in object space. A layer whose rig
+    (or the plane itself) is stretched on one axis then turns a stretched
+    plane, so the stretch follows the rotation and the drawing shears. The
+    patch scales the geometry into world proportions, rotates it, then undoes
+    the scale: the object's own scale is applied again after the rotation and
+    the drawing keeps its proportions at every angle. Idempotent.
+    """
+    if node_group is None:
+        return node_group
+    try:
+        nodes = node_group.nodes
+        links = node_group.links
+        if nodes.get("FBP Rigid Scale In") is not None:
+            return node_group
+        rotate = nodes.get("Rotate Geometry")
+        if rotate is None or getattr(rotate, "bl_idname", "") != "GeometryNodeTransform":
+            return node_group
+        geometry_in = _fbp_node_socket(rotate.inputs, "Geometry", 0)
+        if geometry_in is None or not geometry_in.is_linked:
+            return node_group
+        source_socket = geometry_in.links[0].from_socket
+        rotate_out = _fbp_node_socket(rotate.outputs, "Geometry", 0)
+        targets = [link.to_socket for link in tuple(rotate_out.links)] if rotate_out is not None else []
+        x, y = float(rotate.location.x), float(rotate.location.y)
+
+        self_object = nodes.new("GeometryNodeSelfObject")
+        self_object.name = "FBP Rigid Self"
+        self_object.location = (x - 520.0, y - 260.0)
+        info = nodes.new("GeometryNodeObjectInfo")
+        info.name = "FBP Rigid Object Info"
+        info.transform_space = "ORIGINAL"
+        info.location = (x - 340.0, y - 260.0)
+        inverse = nodes.new("ShaderNodeVectorMath")
+        inverse.name = "FBP Rigid Inverse Scale"
+        inverse.operation = "DIVIDE"
+        inverse.inputs[0].default_value = (1.0, 1.0, 1.0)
+        inverse.location = (x + 40.0, y - 260.0)
+        scale_in = nodes.new("GeometryNodeTransform")
+        scale_in.name = "FBP Rigid Scale In"
+        scale_in.location = (x - 200.0, y)
+        scale_out = nodes.new("GeometryNodeTransform")
+        scale_out.name = "FBP Rigid Scale Out"
+        scale_out.location = (x + 220.0, y)
+
+        links.new(self_object.outputs[0], _fbp_node_socket(info.inputs, "Object", 0))
+        scale_socket = info.outputs.get("Scale")
+        links.new(scale_socket, _fbp_node_socket(scale_in.inputs, "Scale"))
+        links.new(scale_socket, inverse.inputs[1])
+        links.new(inverse.outputs[0], _fbp_node_socket(scale_out.inputs, "Scale"))
+        links.new(source_socket, _fbp_node_socket(scale_in.inputs, "Geometry", 0))
+        links.new(_fbp_node_socket(scale_in.outputs, "Geometry", 0), geometry_in)
+        links.new(rotate_out, _fbp_node_socket(scale_out.inputs, "Geometry", 0))
+        for socket in targets:
+            links.new(_fbp_node_socket(scale_out.outputs, "Geometry", 0), socket)
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn("Could not keep Infinite Rotation rigid under non-uniform scale", exc)
+    return node_group
+
+
 def _fbp_prepare_canonical_effect_group(effect_id, node_group):
     """Upgrade bundled contracts once, before per-rig private copies exist."""
     if node_group is None:
@@ -6410,6 +6473,8 @@ def _fbp_prepare_canonical_effect_group(effect_id, node_group):
         return None
     if effect_id == FBP_EFFECT_GRAIN:
         _fbp_patch_grain_clamp(node_group)
+    if effect_id == FBP_EFFECT_INFINITE_ROTATION:
+        _fbp_patch_infinite_rotation_scale(node_group)
     return node_group
 
 
@@ -9090,6 +9155,9 @@ def _fbp_ensure_geometry_effect_group(rig, effect_id, modifier):
     definition = fbp_effect_definition(effect_id)
     current = getattr(modifier, "node_group", None)
     if current and _fbp_group_matches(current, effect_id):
+        if effect_id == FBP_EFFECT_INFINITE_ROTATION:
+            # Groups saved before the rigid-scale patch upgrade in place.
+            _fbp_patch_infinite_rotation_scale(current)
         if not (definition.get("alpha_aware") or definition.get("private_group")):
             return current
         owned = _fbp_owned_geometry_group(rig, effect_id, current, current)
