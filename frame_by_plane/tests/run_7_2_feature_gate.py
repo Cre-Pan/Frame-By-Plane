@@ -18,6 +18,7 @@ TESTS = (
     "gp_draw_color_stability_regression.py",
     "live_tutorial_regression.py",
     "split_sequence_planes_regression.py",
+    "transparent_frame_runtime_regression.py",
     "camera_placement_delete_regression.py",
     "gp_mask_edit_undo_regression.py",
     "gp_mask_crop_regression.py",

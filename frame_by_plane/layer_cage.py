@@ -82,12 +82,13 @@ def _cage_layers(context):
 
 
 def layer_cage_rect(rig, depsgraph=None):
-    """``(center, size)`` of the layer's original image plane in rig space (XY).
+    """``(center, size)`` of the layer's image plane in rig space (XY).
 
-    The box always hugs the original plane: effects that grow or move the
-    evaluated mesh (Frame Stack slices, Extend, mesh effects) do not change
-    it, whatever the layer's scale or its sign. Falls back to the evaluated
-    plane bounds when the layer has no reference size.
+    The box hugs the plane as Crop and Extend leave it: a cropped layer gets
+    a smaller box, an extended one a larger box. Effects that grow or move the
+    evaluated mesh (Frame Stack slices, mesh effects) do not change it,
+    whatever the layer's scale or its sign. Falls back to the evaluated plane
+    bounds when the layer has no reference size.
     """
     plane = getattr(rig, "fbp_plane_target", None)
     if plane is None:
@@ -99,7 +100,8 @@ def layer_cage_rect(rig, depsgraph=None):
     corners = None
     try:
         from .builder import fbp_plane_reference_bounds
-        min_x, max_x, min_y, max_y = fbp_plane_reference_bounds(rig)[0]
+        # Index 2: the cropped bounds grown by Extend, as the plane mesh is.
+        min_x, max_x, min_y, max_y = fbp_plane_reference_bounds(rig)[2]
         if max_x - min_x > 1.0e-9 and max_y - min_y > 1.0e-9:
             corners = [
                 relation @ Vector((x, y, 0.0))

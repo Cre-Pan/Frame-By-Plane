@@ -20,7 +20,6 @@ import json
 import math
 import re
 import time
-import tempfile
 import uuid
 
 import bpy
@@ -29,12 +28,7 @@ from bpy.app.handlers import persistent
 from bpy.types import Menu, Operator, UIList
 from mathutils import Euler, Matrix, Vector
 
-from .constants import (
-    COLLECTION_COLOR_ENUM_ITEMS,
-    fbp_collection_color_icon,
-    fbp_layer_blend_label,
-    fbp_layer_blend_short,
-)
+from .constants import COLLECTION_COLOR_ENUM_ITEMS, fbp_layer_blend_label, fbp_layer_blend_short
 from .storage_keys import (
     fbp_compact_idproperty_key,
     fbp_effect_storage_key,
@@ -47,11 +41,9 @@ from .node_layout import (
     organize_node_tree,
     tidy_effect_group,
 )
-from .path_utils import natural_sort_key
 
-from .shortcut_runtime import alt_modifier_name
-from .ui_icons import effect_custom_icon_value, effect_enum_icon, effect_icon_kwargs, ui_icon, ui_icon_value
-from .ui_style import adaptive_row, configure_layout, hint_row, section_gap, section_header
+from .ui_icons import effect_custom_icon_value, effect_icon_kwargs, ui_icon
+from .ui_style import configure_layout, section_header
 from .ui_list_state import resolve_anchor_index, store_anchor
 from .ui_context import resolve_node_editor_area, restore_modal_cursor
 from .registration import (
@@ -65,7 +57,6 @@ from .interface_preferences import (
     fbp_uilist_icon_flags,
     fbp_uilist_icon_order,
     fbp_uilist_is_spacer,
-    fbp_uilist_row_layouts,
 )
 from .feature_scope import fbp_feature_enabled
 from .generic_mesh_metadata import (
@@ -76,15 +67,11 @@ from .generic_mesh_metadata import (
 from .transactions import FBPTransaction
 from .user_storage import fbp_legacy_config_file, fbp_migrate_legacy_user_file, fbp_user_data_dir
 
-from .custom_effects import (
-    find_custom_effect_group,
-    refresh_one_custom_effect_definition,
-)
+from .custom_effects import find_custom_effect_group
 from .matrix_presets import (
     ASCII_ATLAS_COLUMNS,
     ASCII_PRESET_ROWS,
     ASCII_TEXT_GLYPH_LIMIT,
-    ascii_gradient,
     ascii_level_gradient,
 )
 
@@ -108,8 +95,6 @@ from .effect_schema import (
     ensure_effect_instance_id,
     effect_group_id,
     effect_instance_id,
-    finalize_effect_registry,
-    new_effect_group_id,
     new_effect_instance_id,
 )
 
@@ -151,7 +136,6 @@ from .effects_registry import (
     FBP_EFFECT_KALEIDOSCOPE,
     FBP_EFFECT_HEX_PIXELATE,
     FBP_EFFECT_MOSAIC_JITTER,
-    FBP_EFFECT_SLICE_SHIFT,
     FBP_EFFECT_CURVES,
     FBP_EFFECT_GRADIENT_LIGHT,
     FBP_EFFECT_RIM,
@@ -159,11 +143,21 @@ from .effects_registry import (
     FBP_EFFECT_DEPTH_BLUR,
     FBP_EFFECT_GAUSSIAN_BLUR,
     FBP_EFFECT_DIRECTIONAL_BLUR,
-    FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_EDGE_DETECT,
-    FBP_EFFECT_SMOOTH_TOON, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_FALSE_COLOR, FBP_EFFECT_CHROMATIC_ABERRATION,
+    FBP_EFFECT_TRIANGLE_BLUR,
+    FBP_EFFECT_TILT_SHIFT,
+    FBP_EFFECT_UNSHARP_MASK,
+    FBP_EFFECT_EDGE_DETECT,
+    FBP_EFFECT_SMOOTH_TOON,
+    FBP_EFFECT_ADAPTIVE_THRESHOLD,
+    FBP_EFFECT_FALSE_COLOR,
+    FBP_EFFECT_CHROMATIC_ABERRATION,
     FBP_EFFECT_REPLACE_COLOR,
-    FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES,
-    FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS,
+    FBP_EFFECT_INK,
+    FBP_EFFECT_EDGE_WORK,
+    FBP_EFFECT_PENCIL_SKETCH,
+    FBP_EFFECT_POSTER_EDGES,
+    FBP_EFFECT_CROSSHATCH,
+    FBP_EFFECT_EMBOSS,
     FBP_EFFECT_ALPHA_MATTE,
     FBP_EFFECT_LUMA_MATTE,
     FBP_EFFECT_SQUARE_MASK,
@@ -184,7 +178,6 @@ from .effects_registry import (
     FBP_EFFECT_CRT_SCANLINES,
     FBP_EFFECT_DITHER,
     FBP_EFFECT_BLOOM,
-    FBP_EFFECT_FILTER_PRESETS,
     FBP_EFFECT_SOLARIZE,
     FBP_EFFECT_DUOTONE,
     FBP_EFFECT_TRITONE,
@@ -245,12 +238,10 @@ from .runtime import (
     fbp_obj_runtime_key,
     fbp_obj_runtime_token,
     fbp_rna_runtime_key,
-    fbp_modifier_runtime_key,
     fbp_find_id_by_runtime_key,
     fbp_unique_token_hex,
-    fbp_tag_redraw,
     fbp_depsgraph_quiet_for,
-    fbp_add_transform_driver_variable as _fbp_add_clipping_transform_variable
+    fbp_add_transform_driver_variable as _fbp_add_clipping_transform_variable,
 )
 from .ui_list_state import mark_ui_list_draw, ui_list_mutation_delay
 
@@ -24191,70 +24182,23 @@ from .effect_ui import (  # noqa: E402
     FBP_UL_EffectStack3D,
     FBP_UL_EffectStackMask,
     FBP_UL_EffectStackUnified,
-    _FBP_AUTO_UI_SECTIONS,
-    _FBP_CONTEXTUAL_EFFECT_SETTINGS,
-    _FBP_DEFAULT_EFFECT_MASK,
-    _FBP_EFFECT_DEFINITION_ID_CACHE,
-    _FBP_EFFECT_MASK_ENUM_CACHE,
     _FBP_EFFECT_NATIVE_VISIBILITY_CACHE,
     _FBP_EFFECT_RNA_METADATA_CACHE,
-    _FBP_EFFECT_UI_ACRONYMS,
     _FBP_EFFECT_UI_FULL_WIDTH_CACHE,
     _FBP_EFFECT_UI_GROUPS,
     _FBP_EFFECT_UI_ICON_CACHE,
     _FBP_EFFECT_UI_LABEL_CACHE,
     _FBP_EFFECT_UI_SLIDER_CACHE,
-    _FBP_GRADIENT_LIGHT_DRIVER_VARIABLE,
-    _fbp_add_gradient_light_driver,
     _fbp_auto_effect_ui_section,
-    _fbp_auto_ui_words,
-    _fbp_build_auto_effect_ui_groups,
-    _fbp_clean_effect_ui_label,
-    _fbp_custom_effect_ids_for_view,
-    _fbp_draw_compact_effect_properties,
-    _fbp_draw_custom_effect_inputs,
-    _fbp_draw_edge_box,
     _fbp_draw_effect_add_columns,
-    _fbp_draw_effect_image_slot,
-    _fbp_draw_effect_instance_properties,
-    _fbp_draw_effect_property,
-    _fbp_draw_effect_section,
-    _fbp_draw_icon_toggle,
-    _fbp_draw_matrix_character_preview,
-    _fbp_draw_mesh_wiggle_animate,
-    _fbp_draw_native_foldout,
-    _fbp_draw_quality_triplet,
-    _fbp_draw_registered_effect_properties,
-    _fbp_draw_toggle_foldout,
-    _fbp_draw_toggle_strip,
-    _fbp_draw_uv_transform,
     _fbp_effect_add_menu_state,
-    _fbp_effect_control_hidden_properties,
     _fbp_effect_display_label,
-    _fbp_effect_id_from_definition,
-    _fbp_effect_mask_enum_items,
-    _fbp_effect_node_target_key,
-    _fbp_effect_property_full_width,
-    _fbp_effect_property_icon,
     _fbp_effect_property_label,
-    _fbp_effect_property_native_visible,
-    _fbp_effect_property_uses_slider,
-    _fbp_effect_rna_metadata,
-    _fbp_find_driver,
-    _fbp_gradient_light_plane_bounds,
-    _fbp_open_effect_node_target,
-    _fbp_prepare_effect_node_target,
-    _fbp_remove_gradient_light_driver,
-    _fbp_select_effect_plane,
-    _fbp_tag_user_editable_effect_group,
     fbp_bind_gradient_light_controller,
     fbp_draw_effect_mask_editor,
     fbp_draw_effect_mask_panel,
     fbp_draw_effect_settings,
     fbp_effect_color_ramp_node,
-    fbp_effect_curve_node,
-    fbp_effect_node_targets,
-    fbp_effect_settings_ui_issues,
 )
 
 
@@ -24265,7 +24209,6 @@ from .effect_ui import (  # noqa: E402
 if f"{__package__}.effect_operators" in sys.modules:
     importlib.reload(sys.modules[f"{__package__}.effect_operators"])
 from .effect_operators import (  # noqa: E402
-    FBP_BUILTIN_EFFECT_PRESETS,
     FBP_EFFECT_STACK_PRESET_SCHEMA_VERSION,
     FBP_MT_EffectGroupTools,
     FBP_MT_EffectPresets,
@@ -24343,107 +24286,40 @@ from .effect_operators import (  # noqa: E402
     FBP_OT_ToggleEffectSolo,
     FBP_OT_UngroupSelectedEffects,
     FBP_OT_UpdateLatticeFlatten,
-    _FBPLatticeClickModal,
-    _FBP_LATTICE_BONE_ACTIONS,
-    _FBP_LATTICE_CORNER_ACTIONS,
-    _FBP_LATTICE_HANDLE_ACTIONS,
-    _FBP_LATTICE_PIN_ACTIONS,
     _FBP_MIXED_SHADER_STAGE_BASE,
-    _FBP_MIXED_SHADER_STAGE_GROUP_NAME,
-    _FBP_MIXED_SHADER_STAGE_TOKEN_KEY,
-    _FBP_VIEW3D_OVERLAP_REGIONS,
-    _fbp_apply_captured_stack_order,
-    _fbp_apply_effect_chain_order,
     _fbp_apply_effect_color_ramp,
-    _fbp_apply_effect_color_ramp_to_rigs,
-    _fbp_apply_effect_instance_properties,
-    _fbp_apply_effect_state,
-    _fbp_apply_geometry_chain_order_direct,
     _fbp_apply_mixed_effect_order,
-    _fbp_apply_preset_group_metadata,
-    _fbp_apply_preset_values,
-    _fbp_apply_shader_chain_order_direct,
     _fbp_backup_user_preset_library,
     _fbp_capture_effect_color_ramp,
-    _fbp_capture_effect_group_state,
-    _fbp_capture_effect_instance_properties,
-    _fbp_capture_effect_removal_selection,
-    _fbp_capture_effect_state,
-    _fbp_cleanup_mixed_stage_group,
-    _fbp_click_rest_point,
-    _fbp_copy_effect_stack_position,
     _fbp_deserialize_value,
     _fbp_effect_chain_key,
-    _fbp_effect_chain_snapshots,
     _fbp_effect_chain_tokens,
-    _fbp_effect_instance_animation_property_map,
-    _fbp_effect_property_names,
-    _fbp_ensure_mixed_shader_stage_group,
-    _fbp_geometry_modifier_for_token,
-    _fbp_group_effect_selection_impl,
-    _fbp_lattice_exit_edit,
-    _fbp_lattice_pins_target,
-    _fbp_lattice_pose_rig,
     _fbp_load_user_presets,
     _fbp_logical_effect_chain_tokens,
     _fbp_mixed_effect_tokens_uncached,
-    _fbp_mixed_selection_order,
     _fbp_mixed_shader_stage_modifiers,
     _fbp_mixed_shader_stage_token,
-    _fbp_mixed_shader_tokens_through,
-    _fbp_mixed_stage_material,
-    _fbp_move_effect_ref,
-    _fbp_move_effect_selection_on_rig,
-    _fbp_object_available_in_view_layer,
-    _fbp_parse_effect_color_ramp_state,
-    _fbp_persist_mixed_effect_order,
-    _fbp_point_on_layer,
     _fbp_prepare_user_preset_mutation,
-    _fbp_read_effect_property,
     _fbp_refine_lattice_cage,
     _fbp_refresh_mixed_pipeline,
     _fbp_refresh_mixed_shader_stage_materials,
     _fbp_relative_effect_order,
-    _fbp_relink_effect_shells,
-    _fbp_remap_preset_multi_instances,
-    _fbp_remove_mixed_shader_stage_modifier,
-    _fbp_remove_mixed_shader_stages,
-    _fbp_reset_effect_color_ramp,
-    _fbp_reset_effect_instance,
-    _fbp_restore_effect_chain_snapshots,
-    _fbp_restore_effect_group_state,
-    _fbp_restore_effect_group_transaction,
-    _fbp_restore_effect_removal_selection,
-    _fbp_restore_snapshot_mixed_order,
     _fbp_save_user_presets,
     _fbp_schedule_effect_color_ramp_sync,
     _fbp_select_only,
-    _fbp_selection_action_would_change,
     _fbp_serialize_value,
-    _fbp_snapshot_mixed_order,
     _fbp_sync_effect_shell_values,
     _fbp_sync_mixed_effect_pipeline,
-    _fbp_tag_view3d_redraw,
     _fbp_user_preset_path,
-    _fbp_user_preset_stamp,
-    _fbp_validate_effect_state_for_rig,
-    _fbp_view3d_under_mouse,
-    _fbp_write_effect_color_ramp_state,
-    _fbp_write_effect_property,
-    _fbp_write_recovery_copy,
     fbp_apply_effect_stack_snapshot,
     fbp_apply_effect_state_snapshot,
     fbp_can_move_effect,
     fbp_can_move_effect_selection,
     fbp_capture_effect_stack_snapshot,
     fbp_capture_effect_state_snapshot,
-    fbp_drag_effect_step_transactional,
-    fbp_group_effect_selection_transactional,
     fbp_move_effect_selection_relative_transactional,
-    fbp_move_effect_selection_transactional,
     fbp_set_effect_mask_type,
     fbp_sort_effect_stacks_transactional,
-    fbp_ungroup_effect_selection_transactional,
 )
 
 classes = (

@@ -6,7 +6,9 @@ import json
 import os
 import re
 import shutil
+import struct
 import time
+import zlib
 from pathlib import Path
 
 import bpy
@@ -25,7 +27,7 @@ from .user_storage import fbp_media_cache_roots, fbp_project_assets_dir, fbp_use
 FBP_NATIVE_HOLD_MARGIN = 500
 FBP_NATIVE_RENDER_CONTRACT_REVISION = 8
 FBP_NATIVE_MEDIA_CACHE_REVISION = 7
-FBP_NATIVE_TIMING_REVISION = 6
+FBP_NATIVE_TIMING_REVISION = 7
 FBP_NATIVE_VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm', '.mpeg', '.mpg', '.mxf', '.ogv'}
 _FBP_NATIVE_MEDIA_IMAGE_CACHE = globals().get("_FBP_NATIVE_MEDIA_IMAGE_CACHE", {})
 if not isinstance(_FBP_NATIVE_MEDIA_IMAGE_CACHE, dict):
@@ -409,13 +411,77 @@ def _native_proxy_cache_root(source_directory):
     return None
 
 
-def _ensure_native_sequence_proxy(directory, files):
+_FBP_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_FBP_BLANK_FRAME_MAX_SIDE = 16384
+
+
+def _png_dimensions(path):
+    """Read ``(width, height)`` from a PNG header, or ``(0, 0)``."""
+    try:
+        with open(path, "rb") as stream:
+            header = stream.read(24)
+    except OSError:
+        return 0, 0
+    if len(header) < 24 or header[:8] != _FBP_PNG_SIGNATURE or header[12:16] != b"IHDR":
+        return 0, 0
+    width, height = struct.unpack(">II", header[16:24])
+    return int(width), int(height)
+
+
+def _write_transparent_png(path, width, height):
+    """Write a fully transparent 8-bit RGBA PNG without loading it in Blender."""
+    width = max(1, min(_FBP_BLANK_FRAME_MAX_SIDE, int(width or 1)))
+    height = max(1, min(_FBP_BLANK_FRAME_MAX_SIDE, int(height or 1)))
+
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    compressor = zlib.compressobj(9)
+    row = b"\x00" * (1 + 4 * width)
+    parts = []
+    for _index in range(height):
+        piece = compressor.compress(row)
+        if piece:
+            parts.append(piece)
+    parts.append(compressor.flush())
+    payload = (
+        _FBP_PNG_SIGNATURE
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", b"".join(parts))
+        + chunk(b"IEND", b"")
+    )
+    Path(path).write_bytes(payload)
+
+
+def _native_blank_frame_supported(directory, files, *, is_video=False):
+    """Transparent rows get a real blank runtime frame for PNG sequences.
+
+    Solid view, Material Preview and Workbench renders show the texture node
+    without the visibility mask, so a mask alone left blank rows showing the
+    first image. A real transparent PNG at the end of the runtime sequence is
+    read by every viewport and engine.
+    """
+    if is_video or not files:
+        return False
+    try:
+        return all(
+            os.path.splitext(str(name))[1].lower() == ".png" for name in files
+        ) and _png_dimensions(str(_media_path(directory, files[0]))) != (0, 0)
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _ensure_native_sequence_proxy(directory, files, *, blank_frame=False):
     """Create a canonical native sequence without modifying source files.
 
     Blender Image Sequences require one stable filename pattern. Frame by Plane
     accepts broader naming schemes, including names with multiple changing number
     groups. For those cases, use hard-links when possible and copy only as a
     fallback. The logical source order remains unchanged.
+
+    ``blank_frame`` appends one fully transparent PNG after the source frames;
+    transparent logical rows point at it.
     """
     directory = str(directory or "")
     files = _valid_files(directory, files)
@@ -424,11 +490,15 @@ def _ensure_native_sequence_proxy(directory, files):
     extensions = {os.path.splitext(name)[1].lower() for name in files}
     if len(extensions) != 1:
         return "", []
+    if blank_frame and extensions != {".png"}:
+        return "", []
     root = _native_proxy_cache_root(directory)
     if root is None:
         return "", []
 
     signature_data = os.path.normcase(os.path.abspath(directory)) + "\0" + "\0".join(files)
+    if blank_frame:
+        signature_data += "\0fbp-blank-frame"
     digest = hashlib.sha1(signature_data.encode('utf-8', errors='surrogatepass')).hexdigest()[:16]
     cache_dir = root / digest
     try:
@@ -437,7 +507,7 @@ def _ensure_native_sequence_proxy(directory, files):
         return "", []
 
     extension = next(iter(extensions))
-    width = max(4, len(str(len(files))))
+    width = max(4, len(str(len(files) + (1 if blank_frame else 0))))
     manifest_path = cache_dir / 'fbp_proxy.json'
     proxy_files = []
     for index, name in enumerate(files, start=1):
@@ -478,11 +548,26 @@ def _ensure_native_sequence_proxy(directory, files):
             _warn("Could not create native sequence proxy", exc)
             return "", []
 
+    if blank_frame:
+        blank_name = f"FBP_{len(files) + 1:0{width}d}{extension}"
+        blank_target = cache_dir / blank_name
+        frame_width, frame_height = _png_dimensions(str(_media_path(directory, files[0])))
+        try:
+            if _png_dimensions(str(blank_target)) != (frame_width, frame_height):
+                temp_blank = cache_dir / f".{blank_name}.tmp_{os.getpid()}"
+                _write_transparent_png(temp_blank, frame_width, frame_height)
+                os.replace(str(temp_blank), str(blank_target))
+        except (OSError, ValueError, struct.error) as exc:
+            _warn("Could not create the transparent proxy frame", exc)
+            return "", []
+        proxy_files.append(blank_name)
+
     try:
         manifest = {
             "source_directory": os.path.abspath(directory),
             "source_files": files,
             "proxy_files": proxy_files,
+            "blank_frame": bool(blank_frame),
         }
         temp_manifest = cache_dir / f'.fbp_proxy_{os.getpid()}.tmp'
         temp_manifest.write_text(
@@ -657,6 +742,14 @@ def _native_frame_offset_curve_is_intact(
         ):
             return False
         frame_number_base = _material_frame_number_base(mat)
+        transparent_flags = _transparent_flags_from_material(mat, row_count)
+        if _native_blank_frame_missing(
+            mat, transparent_flags, is_video=bool(mat.get("fbp_native_video", False))
+        ):
+            return False
+        source_indices = _runtime_indices_for_rows(
+            source_indices, transparent_flags, _blank_runtime_index_from_material(mat)
+        )
     except FBP_DATA_ERRORS:
         return False
 
@@ -1100,7 +1193,10 @@ def fbp_native_source_path_at_frame(rig, timeline_frame):
     timing = fbp_native_playback_timing(mat)
     if not timing or not timing.get("files"):
         return "", True
-    directory, files = _source_sequence_from_material(mat)
+    # Only the file shown now is checked on disk: validating the whole
+    # sequence here cost one disk probe per frame of every layer, on every
+    # click and box select over the viewport.
+    directory, files = _decode_sequence_json(mat.get("fbp_native_source_sequence_json", ""))
     if not directory or not files:
         return "", True
     position = fbp_native_playback_position(timing, timeline_frame)
@@ -1111,7 +1207,10 @@ def fbp_native_source_path_at_frame(rig, timeline_frame):
         return "", True
     if source_index < 0 or source_index >= len(files):
         return "", True
-    return os.path.abspath(str(_media_path(directory, files[source_index]))), visible
+    shown = _valid_files(directory, [files[source_index]])
+    if not shown:
+        return "", visible
+    return os.path.abspath(str(_media_path(directory, shown[0]))), visible
 
 
 def fbp_native_playback_position(timing, timeline_frame):
@@ -1327,10 +1426,18 @@ def _owned_proxy_directory(cache_dir):
         proxy_files = data.get('proxy_files', [])
         if not source_directory or not isinstance(source_files, list) or not isinstance(proxy_files, list):
             return False
+        blank_frame = data.get('blank_frame', False) is True
+        if blank_frame:
+            if not proxy_files:
+                return False
+            blank_name = str(proxy_files[-1] or '')
+            if not re.fullmatch(r'FBP_\d{4,}\.png', blank_name):
+                return False
+            proxy_files = proxy_files[:-1]
         if not source_files or len(source_files) != len(proxy_files) or len(source_files) > 100000:
             return False
         clean_sources = []
-        clean_proxies = []
+        clean_proxies = [blank_name] if blank_frame else []
         for source_name, proxy_name in zip(source_files, proxy_files, strict=True):
             source_name = str(source_name or '')
             proxy_name = str(proxy_name or '')
@@ -1341,6 +1448,8 @@ def _owned_proxy_directory(cache_dir):
             clean_sources.append(source_name)
             clean_proxies.append(proxy_name)
         signature_data = os.path.normcase(os.path.abspath(source_directory)) + "\0" + "\0".join(clean_sources)
+        if blank_frame:
+            signature_data += "\0fbp-blank-frame"
         expected_digest = hashlib.sha1(
             signature_data.encode('utf-8', errors='surrogatepass')
         ).hexdigest()[:16]
@@ -1495,6 +1604,38 @@ def _transparent_flags_from_material(mat, count):
     if not str(raw or "").strip():
         return []
     return _decode_json_values(raw, count, False, bool)
+
+
+def _blank_runtime_index_from_material(mat):
+    """Runtime position of the transparent proxy frame, or -1."""
+    try:
+        return int(mat.get("fbp_native_blank_runtime_index", -1)) if mat else -1
+    except FBP_DATA_ERRORS:
+        return -1
+
+
+def _runtime_indices_for_rows(source_indices, transparent_flags, blank_index):
+    """Map logical rows to runtime frames; blank rows use the transparent frame."""
+    values = [int(value) for value in source_indices]
+    if int(blank_index) < 0:
+        return values
+    flags = list(transparent_flags or ())
+    return [
+        int(blank_index) if index < len(flags) and bool(flags[index]) else value
+        for index, value in enumerate(values)
+    ]
+
+
+def _native_blank_frame_missing(mat, transparent_flags, *, is_video=False):
+    """True when blank rows need a transparent runtime frame the material lacks."""
+    if not any(bool(value) for value in (transparent_flags or ())):
+        return False
+    blank_index = _blank_runtime_index_from_material(mat)
+    runtime_directory, runtime_files = _runtime_sequence_from_material(mat)
+    if 0 <= blank_index < len(runtime_files):
+        return False
+    source_directory, source_files = _source_sequence_from_material(mat)
+    return _native_blank_frame_supported(source_directory, source_files, is_video=is_video)
 
 
 def _discover_native_source_sequence(directory, row_paths):
@@ -3186,7 +3327,29 @@ def create_native_sequence_material(
     # ImageUser animation and a lightweight alpha mask. A disk proxy is created
     # only when the source filenames themselves are not Blender-safe (or frames
     # come from multiple folders). A single logical image bypasses proxy creation.
-    if not source_is_video and row_count == 1 and row_paths and row_paths[0]:
+    blank_runtime_index = -1
+    blank_directory, blank_files = "", []
+    if (
+        row_count > 1
+        and any(transparent_flags)
+        and _native_blank_frame_supported(
+            source_directory, source_files, is_video=source_is_video
+        )
+    ):
+        # Transparent rows point at a real blank PNG appended to a proxy
+        # sequence, so Solid view and Material Preview show them empty too.
+        blank_directory, blank_files = _ensure_native_sequence_proxy(
+            source_directory, source_files, blank_frame=True
+        )
+        if not blank_directory or len(blank_files) != len(source_files) + 1:
+            blank_directory, blank_files = "", []
+            _warn("Transparent frames fall back to the shader mask only")
+    if blank_files:
+        runtime_directory, runtime_files = blank_directory, blank_files
+        native_frame_base = 1
+        uses_proxy = True
+        blank_runtime_index = len(blank_files) - 1
+    elif not source_is_video and row_count == 1 and row_paths and row_paths[0]:
         single_path = os.path.abspath(_abspath(row_paths[0]))
         runtime_directory = os.path.dirname(single_path)
         runtime_files = [os.path.basename(single_path)]
@@ -3212,6 +3375,9 @@ def create_native_sequence_material(
         value < 0 or value >= len(runtime_files) for value in source_indices
     ):
         raise ValueError("Native source indices do not map to runtime media")
+    runtime_indices = _runtime_indices_for_rows(
+        source_indices, transparent_flags, blank_runtime_index
+    )
 
     first_path = str(_media_path(runtime_directory, runtime_files[0]))
     first_display_path = next((path for path in row_paths if path), first_path)
@@ -3262,6 +3428,7 @@ def create_native_sequence_material(
         mat["fbp_native_source_indices_json"] = json.dumps(source_indices)
         mat["fbp_native_transparent_flags_json"] = json.dumps(transparent_flags)
         mat["fbp_native_frame_number_base"] = int(native_frame_base)
+        mat["fbp_native_blank_runtime_index"] = int(blank_runtime_index)
         mat["fbp_native_timing_revision"] = FBP_NATIVE_TIMING_REVISION
         mat["fbp_image_path"] = first_display_path
         mat["fbp_interpolation"] = interp
@@ -3365,7 +3532,7 @@ def create_native_sequence_material(
                 durations=initial_durations,
                 loop_mode=str(loop_mode or 'NONE'),
                 frame_number_base=int(native_frame_base),
-                source_indices=source_indices,
+                source_indices=runtime_indices,
                 image_user_start=int(hold_in),
                 hold_start=hold_in,
                 hold_end=hold_out, scene=scene,
@@ -3654,6 +3821,12 @@ def fbp_refresh_native_sequence_from_rig(rig):
             )
             if source_indices is None or discovered_source_count <= 0:
                 return False
+            # Rows that turned transparent need the blank runtime frame; only
+            # a full rebuild can add it to the proxy sequence.
+            if _native_blank_frame_missing(
+                mat, transparent_flags, is_video=bool(mat.get("fbp_native_video", False))
+            ):
+                return False
             _runtime_directory, runtime_files = _runtime_sequence_from_material(mat)
             frame_number_base = _native_sequence_frame_base(runtime_files)
             is_video = bool(mat.get("fbp_native_video", False))
@@ -3720,7 +3893,11 @@ def fbp_refresh_native_sequence_from_rig(rig):
                         durations=durations,
                         loop_mode=loop_mode,
                         frame_number_base=frame_number_base,
-                        source_indices=source_indices,
+                        source_indices=_runtime_indices_for_rows(
+                            source_indices,
+                            transparent_flags,
+                            _blank_runtime_index_from_material(mat),
+                        ),
                         image_user_start=int(hold_in),
                         hold_start=hold_in,
                         hold_end=hold_out, scene=owner_scene,
@@ -3932,6 +4109,10 @@ def fbp_repair_native_sequence_timing_scene(scene=None):
                 mat["fbp_native_timing_revision"] = FBP_NATIVE_TIMING_REVISION
                 continue
             if fbp_refresh_native_sequence_from_rig(rig):
+                repaired += 1
+            elif rebuild_native_sequence_from_rig(rig):
+                # Files saved before transparent rows had a blank runtime
+                # frame need a new proxy sequence, not only new timing.
                 repaired += 1
             else:
                 _warn(f"Could not repair native sequence timing for {getattr(rig, 'name', 'layer')}")
