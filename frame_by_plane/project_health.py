@@ -1294,8 +1294,43 @@ def health_report_lines(scene, result, *, repair=False):
                 lines.append(
                     f"  Action: {action.get('fix_label', 'Fix Issue')}"
                 )
+    lines.extend(runtime_message_lines())
     lines.extend(("", "Result", "------"))
     lines.append("REVIEW REQUIRED" if stats.get("errors", 0) else ("WARNING" if stats.get("warnings", 0) else "PASS"))
+    return lines
+
+
+def runtime_message_lines(limit=40):
+    """Report lines for the errors and warnings Frame By Plane caught while
+    Blender was running (viewport drawing, frame changes...): they were only
+    printed to the console before. Not saved in the file: this session only."""
+    from .runtime import fbp_callback_failures, fbp_recent_diagnostics
+
+    lines = ["", "Runtime messages (this session)", "-------------------------------"]
+    failures = fbp_callback_failures()
+    records = fbp_recent_diagnostics(limit=limit)
+    if not failures and not records:
+        lines.append("- None")
+        return lines
+    for event in sorted(failures):
+        entry = failures[event]
+        lines.append(f"- WARNING · {event}: failed {entry['count']} time(s)")
+        for kind, count in sorted(entry["kinds"].items(), key=lambda item: -item[1]):
+            lines.append(f"  {count}x {kind}")
+    for record in records:
+        event = record.get("event") or "runtime"
+        if event in failures:
+            continue
+        message = str(record.get("message") or "")
+        if record.get("exception_type"):
+            message += f" ({record['exception_type']}: {record.get('exception', '')})"
+        lines.append(f"- {record.get('level', 'WARNING')} · {event}: {message}"[:400])
+    traces = [record for record in records if record.get("traceback")]
+    if traces:
+        lines.extend(("", "Tracebacks", "----------"))
+        for record in traces[-5:]:
+            lines.append(f"[{record.get('event') or 'runtime'}]")
+            lines.extend(str(record["traceback"]).rstrip().splitlines()[-12:])
     return lines
 
 

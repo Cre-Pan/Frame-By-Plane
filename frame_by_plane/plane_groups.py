@@ -25,6 +25,7 @@ from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
 from mathutils import Vector
 
+from .runtime import fbp_guarded
 from .runtime import FBP_DATA_ERRORS
 from .registration import (
     append_handler_once,
@@ -653,6 +654,7 @@ def _tag_viewports():
                 area.tag_redraw()
 
 
+@fbp_guarded("viewport.group_boxes")
 def _draw_group_boxes():
     global _LINE_SHADER
     import gpu
@@ -758,6 +760,7 @@ def _solo_badge_shown(context, space):
         return False
 
 
+@fbp_guarded("viewport.group_badge")
 def _draw_isolation_badge():
     """A "GROUP" badge in the same place and style as the Solo badge.
 

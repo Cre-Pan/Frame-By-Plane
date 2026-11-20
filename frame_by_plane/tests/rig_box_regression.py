@@ -29,6 +29,37 @@ PACKAGE_NAME = os.environ.get(
 )
 if not INSTALLED_PACKAGE:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+
+def use_bundled_pillow():
+    """From the source tree Pillow is not installed (the extension installs it
+    from ``wheels/``): unpack this platform's wheel so the Alpha Outline can
+    read the drawing's pixels."""
+    try:
+        import PIL  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import platform
+    import zipfile
+    tags = {
+        ("Linux", "x86_64"): "manylinux", ("Darwin", "arm64"): "macosx_11_0_arm64",
+        ("Darwin", "x86_64"): "macosx_10_13_x86_64", ("Windows", "AMD64"): "win_amd64",
+        ("Windows", "ARM64"): "win_arm64",
+    }
+    tag = tags.get((platform.system(), platform.machine()))
+    wheels = Path(__file__).resolve().parents[1] / "wheels"
+    for wheel in sorted(wheels.glob("pillow-*.whl")):
+        if tag and tag in wheel.name:
+            target = Path(tempfile.mkdtemp(prefix="fbp_pillow_"))
+            with zipfile.ZipFile(wheel) as archive:
+                archive.extractall(target)
+            sys.path.insert(0, str(target))
+            return
+
+
+if not INSTALLED_PACKAGE:
+    use_bundled_pillow()
 addon = importlib.import_module(PACKAGE_NAME)
 if not INSTALLED_PACKAGE:
     addon.register()

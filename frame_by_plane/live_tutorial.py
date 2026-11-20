@@ -20,6 +20,7 @@ import blf
 import gpu
 from gpu_extras.batch import batch_for_shader
 
+from .runtime import fbp_guarded
 from .effects_registry import fbp_effect_definition
 from .geometry_nodes import fbp_effect_ids_for_rig
 from .grease_pencil_bridge import gp_mask_canvas_for_rig
@@ -2812,6 +2813,7 @@ def _draw_step(state: TutorialState, hud: dict[str, Any]) -> None:
             _draw_pill_button(state, hud, "do_action", action_rect, label, primary=not reviewing)
 
 
+@fbp_guarded("viewport.live_tutorial")
 def _draw_overlay(operator: "FBP_OT_live_tutorial_modal") -> None:
     context = bpy.context
     area = context.area

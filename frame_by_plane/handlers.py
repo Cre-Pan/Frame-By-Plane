@@ -23,6 +23,7 @@ from .registration import register_handlers, remove_handlers_by_name
 
 from .runtime import (
     FBP_DATA_ERRORS,
+    fbp_bump_scene_stamp,
     FBP_DATA_IO_ERRORS,
     fbp_runtime_get,
     fbp_runtime_set,
@@ -737,6 +738,7 @@ def _fbp_history_post_handler():
     guard here prevents a permanently pending cleanup state.
     """
     now = time.monotonic()
+    fbp_bump_scene_stamp()
     if not fbp_undo_is_active():
         fbp_set_undo_guard(True, timeout=8.0)
     fbp_runtime_set("fbp_history_cleanup_pending", True)
@@ -1346,6 +1348,7 @@ def fbp_load_post_handler(_dummy):
     # Load callbacks may run while Blender is finalizing a Main replacement.
     # Keep this callback process-local: restore namespaces/watchdogs, then defer
     # every Scene, node-group, icon and message-bus operation to the idle loop.
+    fbp_bump_scene_stamp()
     fbp_set_undo_guard(False)
     fbp_runtime_set("fbp_pause_managed_timers", False)
     fbp_runtime_set("fbp_managed_timers_resume_after", time.monotonic() + 0.10)

@@ -8,6 +8,7 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 from mathutils.geometry import tessellate_polygon
 
+from .runtime import fbp_guarded
 from .grease_pencil_bridge import any_gp_canvas_solo, gp_canvas_solo_active
 from .fbp_index import iter_scene_gp_canvases
 from .runtime import FBP_DATA_ERRORS
@@ -204,6 +205,7 @@ def _top_inset(area, region):
     return inset
 
 
+@fbp_guarded("viewport.solo_badge")
 def _draw_badge():
     context = bpy.context
     space = getattr(context, "space_data", None)

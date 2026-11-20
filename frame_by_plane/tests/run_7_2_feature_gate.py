@@ -31,6 +31,9 @@ TESTS = (
     "native_modifiers_regression.py",
     "rotation_layer_transform_regression.py",
     "layer_origin_regression.py",
+    "rig_box_regression.py",
+    "thumbnail_crop_regression.py",
+    "overlay_performance_regression.py",
 )
 
 
