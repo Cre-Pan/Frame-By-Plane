@@ -201,6 +201,7 @@ def diagnostic_report_messages(text):
         "structural issues",
         "issues",
         "warnings",
+        "runtime messages (this session)",
     }
     lines = content.splitlines()
     collected = []

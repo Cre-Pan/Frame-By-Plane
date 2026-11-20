@@ -21,7 +21,8 @@ from bpy_extras.view3d_utils import location_3d_to_region_2d
 from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 
-from .runtime import FBP_DATA_ERRORS
+from .runtime import fbp_guarded
+from .runtime import FBP_DATA_ERRORS, fbp_scene_stamp
 from .viewport_handles import (
     GUIDE_COLOR,
     GUIDE_OUTLINE_COLOR,
@@ -878,8 +879,20 @@ def _triangles_center(triangles):
     return total / len(points)
 
 
+def _all_finite(points):
+    """True when every coordinate of ``points`` is a finite number.
+
+    One sum per point instead of a Python test per coordinate: NaN and
+    infinity survive a sum (a sum too large to represent fails too, and such
+    a point is no use on screen either)."""
+    try:
+        return math.isfinite(sum(map(math.fsum, points)))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
 def _draw_lines(shader, segments, width, color):
-    if segments and not all(math.isfinite(value) for point in segments for value in point):
+    if segments and not _all_finite(segments):
         # Drop whole segments with a NaN or infinite end: never sent to the GPU.
         finite = []
         for index in range(0, len(segments) - 1, 2):
@@ -939,8 +952,54 @@ def _axis_view(context):
         return False
 
 
+# Outlines and names are cached between redraws: while the scene stamp (bumped
+# on every depsgraph update, Undo and file load), the frame and the view stay
+# the same, nothing they show can have changed. Without the cache every redraw
+# and every mouse move in a Top view walked all layers and laid out every name
+# again, about 0.1 s with 100 layers.
+_OUTLINE_CACHE = {"key": None, "value": []}
+_LABEL_CACHE = {"key": None, "value": []}
+
+
+def _pointer(value):
+    try:
+        return int(value.as_pointer()) if value is not None else 0
+    except FBP_DATA_ERRORS:
+        return 0
+
+
+def _outline_cache_key(context):
+    try:
+        scene = context.scene
+        space = getattr(context, "space_data", None)
+        local = _pointer(space) if getattr(space, "local_view", None) is not None else 0
+        active = getattr(context, "active_object", None)
+        return (
+            fbp_scene_stamp(), int(scene.frame_current), _pointer(scene),
+            _pointer(context.view_layer), local, str(active.name) if active is not None else "",
+        )
+    except FBP_DATA_ERRORS:
+        return None
+
+
+def clear_overlay_caches():
+    """Forget cached outlines and names (tests, add-on reload)."""
+    _OUTLINE_CACHE.update(key=None, value=[])
+    _LABEL_CACHE.update(key=None, value=[])
+
+
 def _plane_outlines(context, depsgraph=None):
     """``[(corners, selected, active, name)]`` of the visible layers' planes."""
+    key = _outline_cache_key(context)
+    if key is not None and _OUTLINE_CACHE["key"] == key:
+        return _OUTLINE_CACHE["value"]
+    outlines = _compute_plane_outlines(context, depsgraph)
+    if key is not None:
+        _OUTLINE_CACHE.update(key=key, value=outlines)
+    return outlines
+
+
+def _compute_plane_outlines(context, depsgraph=None):
     try:
         from .layer_cage import layer_cage_rect
     except ImportError:
@@ -1041,29 +1100,65 @@ def spread_label_rects(rects, axis=1, gap=_LABEL_GAP_PX):
     """Move screen rects ``(x0, y0, x1, y1)`` along ``axis`` (0: x, 1: y)
     until none overlaps another, each staying as close as it can to where it
     was: overlapping names spread evenly around their wanted places, not
-    all to one side. Returns the moved rects in the order given."""
-    rects = [list(rect) for rect in rects]
+    all to one side. Returns the moved rects in the order given.
+
+    Names that cannot touch across the axis (side by side) are left alone.
+    The others are placed as runs: names that would overlap form a run, laid
+    out end to end with ``gap`` between them and centred on the average of
+    their wanted places; a run that reaches the next one joins it. This
+    always ends with no overlap, however many names are stacked (pushing
+    pairs apart a little at a time could stop with names still on top of
+    each other), and costs one sort per group."""
+    rects = [tuple(float(value) for value in rect) for rect in rects]
+    if len(rects) < 2:
+        return rects
     lo, hi = axis, axis + 2
-    for _round in range(64):
-        moved = False
-        for first in range(len(rects)):
-            for second in range(first + 1, len(rects)):
-                a, b = rects[first], rects[second]
-                if not _rects_overlap(a, b, gap):
-                    continue
-                # Push the pair apart, half each, along the axis.
-                if (a[lo] + a[hi]) <= (b[lo] + b[hi]):
-                    push = (a[hi] + gap - b[lo]) * 0.5
-                    a[lo] -= push; a[hi] -= push
-                    b[lo] += push; b[hi] += push
-                else:
-                    push = (b[hi] + gap - a[lo]) * 0.5
-                    b[lo] -= push; b[hi] -= push
-                    a[lo] += push; a[hi] += push
-                moved = True
-        if not moved:
-            break
-    return [tuple(rect) for rect in rects]
+    across_lo, across_hi = 1 - axis, 3 - axis
+    result = list(rects)
+    # Groups of names that overlap across the axis, directly or in a chain.
+    order = sorted(range(len(rects)), key=lambda index: (rects[index][across_lo], index))
+    groups, reach = [], None
+    for index in order:
+        start, end = rects[index][across_lo], rects[index][across_hi]
+        if reach is None or start >= reach + gap:
+            groups.append([index])
+            reach = end
+        else:
+            groups[-1].append(index)
+            reach = max(reach, end)
+    for group in groups:
+        group.sort(key=lambda index: ((rects[index][lo] + rects[index][hi]) * 0.5, index))
+        runs = []  # [indices, sizes, wanted centres, start]
+        for index in group:
+            size = rects[index][hi] - rects[index][lo]
+            run = [[index], [size], [(rects[index][lo] + rects[index][hi]) * 0.5], 0.0]
+            run[3] = run[2][0] - size * 0.5
+            while runs:
+                previous = runs[-1]
+                previous_end = previous[3] + sum(previous[1]) + gap * (len(previous[1]) - 1)
+                if previous_end + gap <= run[3] + 1.0e-9:
+                    break
+                runs.pop()
+                indices = previous[0] + run[0]
+                sizes = previous[1] + run[1]
+                wanted = previous[2] + run[2]
+                # Start that puts the run's centres, on average, on the
+                # centres the names wanted.
+                offsets, cursor = [], 0.0
+                for size_item in sizes:
+                    offsets.append(cursor + size_item * 0.5)
+                    cursor += size_item + gap
+                start = sum(centre - offset for centre, offset in zip(wanted, offsets)) / len(sizes)
+                run = [indices, sizes, wanted, start]
+            runs.append(run)
+        for indices, sizes, _wanted, start in runs:
+            cursor = start
+            for index, size in zip(indices, sizes):
+                rect = list(rects[index])
+                rect[lo], rect[hi] = cursor, cursor + size
+                result[index] = tuple(rect)
+                cursor += size + gap
+    return result
 
 
 def plane_label_layout(context, region=None, region_data=None):
@@ -1079,6 +1174,25 @@ def plane_label_layout(context, region=None, region_data=None):
     region_data = region_data or getattr(context, "region_data", None)
     if region is None or region_data is None or not _axis_view(context):
         return []
+    outline_key = _outline_cache_key(context)
+    key = None
+    if outline_key is not None:
+        try:
+            key = (
+                outline_key, _pointer(region), int(region.width), int(region.height),
+                tuple(tuple(row) for row in region_data.perspective_matrix), _ui_scale(context),
+            )
+        except FBP_DATA_ERRORS:
+            key = None
+    if key is not None and _LABEL_CACHE["key"] == key:
+        return _LABEL_CACHE["value"]
+    layout = _compute_plane_label_layout(context, region, region_data)
+    if key is not None:
+        _LABEL_CACHE.update(key=key, value=layout)
+    return layout
+
+
+def _compute_plane_label_layout(context, region, region_data):
     try:
         depsgraph = context.evaluated_depsgraph_get()
     except FBP_DATA_ERRORS:
@@ -1175,6 +1289,7 @@ def plane_label_under_cursor(context, coord):
     return ""
 
 
+@fbp_guarded("viewport.plane_labels")
 def _draw_plane_labels():
     """Layer names beside their outlines, in Top and Side views."""
     context = bpy.context
@@ -1238,6 +1353,7 @@ def _draw_plane_labels():
         gpu.state.blend_set("NONE")
 
 
+@fbp_guarded("viewport.handles")
 def _draw_handles():
     context = bpy.context
     space = getattr(context, "space_data", None)

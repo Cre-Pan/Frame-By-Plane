@@ -17,6 +17,7 @@ from bpy.props import EnumProperty
 from bpy.types import Operator
 from gpu_extras.batch import batch_for_shader
 
+from .runtime import fbp_guarded
 from .runtime import FBP_DATA_ERRORS
 from .common import uniform_color_shader as _shader
 
@@ -258,6 +259,7 @@ def _tool_mode(context, idname):
 
 
 
+@fbp_guarded("viewport.gesture_select")
 def _draw_gesture(operator):
     points = operator.feedback_points()
     if len(points) < 2:

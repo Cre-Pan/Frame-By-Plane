@@ -391,11 +391,7 @@ def do_update_opacity(rig, opacity=None):
         opacity = getattr(rig, "fbp_opacity", 1.0)
     opacity = max(0.0, min(1.0, float(opacity)))
     try:
-        animated = (
-            not override
-            and bool(getattr(rig, "fbp_is_color_plane", False))
-            and fbp_rig_opacity_is_animated(rig)
-        )
+        animated = not override and fbp_rig_opacity_is_animated(rig)
         plane.show_transparent = animated or opacity < 1.0
     except FBP_DATA_IO_ERRORS:
         pass
@@ -432,7 +428,7 @@ def do_update_opacity(rig, opacity=None):
                 fbp_schedule_clipping_mask_sync,
                 fbp_sync_layer_opacity_effect,
             )
-            fbp_sync_layer_opacity_effect(rig, opacity)
+            fbp_sync_layer_opacity_effect(rig, opacity, drive=not override)
             # Clipping Mask samples the visible alpha of its source layer.
             # Coalesce slider drags into one safe relation refresh.
             fbp_schedule_clipping_mask_sync(
@@ -1433,11 +1429,41 @@ def fbp_active_surface_chain(mat):
     return out, shader, mix, transparent
 
 
+def fbp_opacity_group_controllers(rig):
+    """Group controllers above ``rig`` in its parent chain, nearest first.
+
+    Their ``fbp_group_opacity`` multiplies the layer's own Opacity."""
+    controllers = []
+    current = getattr(rig, "parent", None) if rig is not None else None
+    for _depth in range(32):
+        if current is None:
+            break
+        try:
+            if bool(getattr(current, "fbp_is_group_controller", False)):
+                controllers.append(current)
+            current = current.parent
+        except FBP_DATA_ERRORS:
+            break
+    return controllers
+
+
+def fbp_opacity_driver_signature(rig):
+    """What the Opacity drivers of ``rig`` must read, as text ("" = none)."""
+    if not fbp_rig_opacity_is_animated(rig):
+        return ""
+    names = ",".join(str(controller.name) for controller in fbp_opacity_group_controllers(rig))
+    return f"opacity|{names}"
+
+
 def fbp_rig_opacity_is_animated(rig):
-    """Return True when the layer Opacity has keyframes or a driver."""
+    """Return True when the layer Opacity has keyframes or a driver, or the
+    layer is in a plane group with a controller (its Group Opacity can be
+    keyframed): the material then follows it through drivers."""
     if rig is None:
         return False
     try:
+        if fbp_opacity_group_controllers(rig):
+            return True
         if fbp_find_action_fcurve(rig, "fbp_opacity") is not None:
             return True
         anim = getattr(rig, "animation_data", None)
@@ -1448,6 +1474,8 @@ def fbp_rig_opacity_is_animated(rig):
 
 
 _FBP_OPACITY_DRIVEN_KEY = "fbp_opacity_driven_paths"
+# Material key: the ``fbp_opacity_driver_signature`` its drivers were built for.
+FBP_OPACITY_SIGNATURE_KEY = "fbp_opacity_driver_signature"
 
 
 def _fbp_clear_procedural_opacity_drivers(mat):
@@ -1468,14 +1496,15 @@ def _fbp_clear_procedural_opacity_drivers(mat):
                 owner.driver_remove(path, int(index))
         except (*FBP_DATA_ERRORS, KeyError, IndexError):
             pass
-    try:
-        del mat[_FBP_OPACITY_DRIVEN_KEY]
-    except (KeyError, *FBP_DATA_ERRORS):
-        pass
+    for key in (_FBP_OPACITY_DRIVEN_KEY, FBP_OPACITY_SIGNATURE_KEY):
+        try:
+            del mat[key]
+        except (KeyError, *FBP_DATA_ERRORS):
+            pass
     return True
 
 
-def _fbp_add_opacity_driver(owner, data_path, index, rig, base):
+def _fbp_add_opacity_driver(owner, data_path, index, rig, base, shade=None):
     """Drive one value with ``base * rig.fbp_opacity`` (simple expression).
 
     Simple expressions are evaluated without Python, so the driver also works
@@ -1491,7 +1520,6 @@ def _fbp_add_opacity_driver(owner, data_path, index, rig, base):
         driver = curve.driver
         driver.type = "SCRIPTED"
         base = max(0.0, min(1.0, float(base)))
-        driver.expression = "opacity" if base >= 0.999999 else f"opacity * {base:.6g}"
         while driver.variables:
             driver.variables.remove(driver.variables[0])
         variable = driver.variables.new()
@@ -1501,6 +1529,25 @@ def _fbp_add_opacity_driver(owner, data_path, index, rig, base):
         target.id_type = "OBJECT"
         target.id = rig
         target.data_path = "fbp_opacity"
+        factors = ["opacity"]
+        for index, controller in enumerate(fbp_opacity_group_controllers(rig)):
+            variable = driver.variables.new()
+            variable.name = f"group{index}"
+            variable.type = "SINGLE_PROP"
+            target = variable.targets[0]
+            target.id_type = "OBJECT"
+            target.id = controller
+            target.data_path = "fbp_group_opacity"
+            factors.append(variable.name)
+        if base < 0.999999:
+            factors.append(f"{base:.6g}")
+        product = " * ".join(factors)
+        if shade is None:
+            driver.expression = product
+        else:
+            # Solid > Material shading: colour * (min + (1 - min) * opacity).
+            low = float(FBP_SOLID_OPACITY_MIN_SHADE)
+            driver.expression = f"{float(shade):.6g} * ({low:.6g} + {1.0 - low:.6g} * {product})"
         return True
     except FBP_DATA_ERRORS:
         return False
@@ -1555,6 +1602,7 @@ def fbp_bind_procedural_opacity_drivers(mat, rig, intrinsic_alpha=1.0):
     if driven:
         try:
             mat[_FBP_OPACITY_DRIVEN_KEY] = driven
+            mat[FBP_OPACITY_SIGNATURE_KEY] = fbp_opacity_driver_signature(rig)
         except FBP_DATA_ERRORS:
             pass
     return bool(driven)
@@ -1564,19 +1612,22 @@ _FBP_PENDING_OPACITY_BIND = set()
 
 
 def _fbp_color_plane_opacity_binding_stale(rig):
-    """True when keyframed Opacity and the material drivers disagree."""
+    """True when the layer's Opacity drivers no longer match its keyframes
+    or its group controllers (Color Planes and image layers alike)."""
     plane = getattr(rig, "fbp_plane_target", None)
     if plane is None or getattr(plane, "data", None) is None:
         return False
-    animated = fbp_rig_opacity_is_animated(rig)
+    wanted = fbp_opacity_driver_signature(rig)
     for mat in tuple(getattr(plane.data, "materials", ()) or ()):
         if mat is None or bool(mat.get("fbp_holdout_material", False)):
             continue
+        if not fbp_material_is_owned(mat):
+            continue
         try:
-            driven = bool(tuple(mat.get(_FBP_OPACITY_DRIVEN_KEY, ()) or ()))
+            current = str(mat.get(FBP_OPACITY_SIGNATURE_KEY, "") or "")
         except FBP_DATA_ERRORS:
-            driven = False
-        if driven != animated:
+            current = ""
+        if current != wanted:
             return True
     return False
 
@@ -1586,7 +1637,7 @@ def _fbp_run_pending_opacity_bind():
     _FBP_PENDING_OPACITY_BIND.clear()
     for name in names:
         rig = bpy.data.objects.get(name)
-        if rig is None or not bool(getattr(rig, "fbp_is_color_plane", False)):
+        if rig is None or not bool(getattr(rig, "is_fbp_control", False)):
             continue
         try:
             if _fbp_color_plane_opacity_binding_stale(rig):
@@ -1606,7 +1657,7 @@ def fbp_bind_animated_color_plane_opacity(scene=None):
     count = 0
     for obj in tuple(getattr(scene, "objects", ()) or ()):
         try:
-            if not bool(getattr(obj, "fbp_is_color_plane", False)) or not bool(getattr(obj, "is_fbp_control", False)):
+            if not bool(getattr(obj, "is_fbp_control", False)):
                 continue
             if _fbp_color_plane_opacity_binding_stale(obj):
                 do_update_opacity(obj)
@@ -1629,7 +1680,7 @@ def fbp_color_plane_opacity_depsgraph_update(_scene, _depsgraph, updates=()):
         datablock = getattr(update, "id", None)
         original = getattr(datablock, "original", datablock)
         if isinstance(original, bpy.types.Object):
-            if bool(getattr(original, "fbp_is_color_plane", False)) and bool(getattr(original, "is_fbp_control", False)):
+            if bool(getattr(original, "is_fbp_control", False)):
                 rigs.append(original)
         elif isinstance(original, bpy.types.Action):
             actions.append(original)
@@ -1637,7 +1688,7 @@ def fbp_color_plane_opacity_depsgraph_update(_scene, _depsgraph, updates=()):
         scene = getattr(bpy.context, "scene", None)
         for obj in tuple(getattr(scene, "objects", ()) or ()):
             try:
-                if not bool(getattr(obj, "fbp_is_color_plane", False)) or not bool(getattr(obj, "is_fbp_control", False)):
+                if not bool(getattr(obj, "is_fbp_control", False)):
                     continue
                 anim = getattr(obj, "animation_data", None)
                 if anim is not None and getattr(anim, "action", None) in actions:

@@ -25,6 +25,7 @@ from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
 from mathutils import Vector
 
+from .runtime import fbp_guarded
 from .runtime import FBP_DATA_ERRORS
 from .registration import (
     append_handler_once,
@@ -218,10 +219,56 @@ def rig_in_closed_group(rig, scene) -> bool:
     return selection_group(rig, scene) is not None
 
 
+def _controller(collection):
+    try:
+        from .group_controller import group_controller
+        return group_controller(collection)
+    except ImportError:
+        return None
+
+
+def _select_controller(context, controller, *, toggle=False):
+    """A group with a controller is selected as its controller, so G, R, S
+    and I act on the whole group as one object."""
+    view_layer = getattr(context, "view_layer", None)
+    if toggle and controller.select_get():
+        controller.select_set(False)
+        return True
+    if not toggle:
+        for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+            if obj != controller:
+                try:
+                    obj.select_set(False)
+                except FBP_DATA_ERRORS:
+                    pass
+    try:
+        controller.select_set(True)
+        view_layer.objects.active = controller
+    except FBP_DATA_ERRORS:
+        return False
+    return True
+
+
+def group_selected(collection, scene=None) -> bool:
+    """True when the whole group is selected: its controller, or every layer."""
+    controller = _controller(collection)
+    try:
+        if controller is not None and controller.select_get():
+            return True
+    except FBP_DATA_ERRORS:
+        pass
+    rigs = group_rigs(collection, scene)
+    return bool(rigs) and all(rig.select_get() for rig in rigs)
+
+
 def select_group(context, collection, active_rig=None, *, toggle=False):
-    """Select every layer of ``collection``; ``active_rig`` becomes active."""
+    """Select every layer of ``collection``; ``active_rig`` becomes active.
+    A group with a controller selects its controller instead."""
     scene = getattr(context, "scene", None)
     view_layer = getattr(context, "view_layer", None)
+    controller = _controller(collection)
+    if controller is not None and view_layer is not None:
+        return _select_controller(context, controller, toggle=toggle)
     rigs = group_rigs(collection, scene)
     if not rigs or view_layer is None:
         return False
@@ -279,6 +326,16 @@ def whole_group_selected_rigs(context):
     result = set()
     checked = {}
     for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+        if bool(getattr(obj, "fbp_is_group_controller", False)):
+            # A selected controller stands for its whole group.
+            try:
+                from .group_controller import controlled_group
+                group = controlled_group(obj, scene)
+            except ImportError:
+                group = None
+            if group is not None:
+                result.update(rig.name for rig in group_rigs(group, scene))
+            continue
         if not bool(getattr(obj, "is_fbp_control", False)):
             continue
         group = selection_group(obj, scene, parent_map)
@@ -653,6 +710,7 @@ def _tag_viewports():
                 area.tag_redraw()
 
 
+@fbp_guarded("viewport.group_boxes")
 def _draw_group_boxes():
     global _LINE_SHADER
     import gpu
@@ -691,7 +749,7 @@ def _draw_group_boxes():
     draws = []
     for collection, segments in boxes:
         rigs = group_rigs(collection, scene)
-        selected = bool(rigs) and all(rig.select_get() for rig in rigs)
+        selected = group_selected(collection, scene)
         partly = any(rig.select_get() for rig in rigs)
         color = _group_color(context, collection)
         if collection == entered:
@@ -758,6 +816,7 @@ def _solo_badge_shown(context, space):
         return False
 
 
+@fbp_guarded("viewport.group_badge")
 def _draw_isolation_badge():
     """A "GROUP" badge in the same place and style as the Solo badge.
 

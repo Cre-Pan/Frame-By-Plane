@@ -6,6 +6,7 @@ from bisect import bisect_right
 
 import bpy
 
+from .runtime import fbp_guarded
 from .constants import STRIP_COLORS_DICT, fbp_icon
 from .path_utils import natural_sort_key
 from .materials import (
@@ -2728,6 +2729,7 @@ def _fbp_schedule_viewport_frame_sync(scene):
 
 
 @bpy.app.handlers.persistent
+@fbp_guarded("handler.frame_change")
 def fbp_frame_change_handler(scene):
     """Synchronize only FBP backends that require Python on frame changes."""
     if fbp_registration_busy():

@@ -309,11 +309,31 @@ _FBP_LAST_DEPSGRAPH_ACTIVITY = float(
 )
 
 
+_FBP_SCENE_STAMP = int(globals().get("_FBP_SCENE_STAMP", 0) or 0)
+
+
 def fbp_note_depsgraph_activity():
     """Record one evaluation tick without retaining RNA references."""
-    global _FBP_LAST_DEPSGRAPH_ACTIVITY
+    global _FBP_LAST_DEPSGRAPH_ACTIVITY, _FBP_SCENE_STAMP
     _FBP_LAST_DEPSGRAPH_ACTIVITY = time.monotonic()
+    _FBP_SCENE_STAMP += 1
     return _FBP_LAST_DEPSGRAPH_ACTIVITY
+
+
+def fbp_bump_scene_stamp():
+    """Invalidate viewport caches keyed on ``fbp_scene_stamp`` (Undo, file load)."""
+    global _FBP_SCENE_STAMP
+    _FBP_SCENE_STAMP += 1
+    return _FBP_SCENE_STAMP
+
+
+def fbp_scene_stamp():
+    """A counter that changes on every depsgraph update, Undo, Redo and load.
+
+    Viewport overlays key their caches on it: while it stays the same, nothing
+    in the scene has moved, been selected or been renamed since the last draw.
+    """
+    return _FBP_SCENE_STAMP
 
 
 def fbp_depsgraph_quiet_for(seconds=0.25):
@@ -461,11 +481,111 @@ def fbp_warn_once(key, message, exc=None, *, event="", context=None):
     return True
 
 
+# Viewport draw callbacks and frame handlers run many times a second. When one
+# raises, Blender prints the traceback to the console on every call and the
+# user sees nothing. ``fbp_guarded`` catches the error, records it once (with
+# its traceback) per callback and kind of error, and counts the repeats, so
+# Project Doctor can list what failed in this session.
+_FBP_CALLBACK_FAILURES = {}
+
+
+def fbp_note_callback_failure(event, exc):
+    """Record one failure of the callback ``event``; log it the first time."""
+    event_text = str(event or "callback")[:160]
+    kind = f"{type(exc).__name__}: {str(exc)[:240]}"
+    entry = _FBP_CALLBACK_FAILURES.get(event_text)
+    if entry is None:
+        entry = _FBP_CALLBACK_FAILURES[event_text] = {"count": 0, "kinds": {}}
+    entry["count"] += 1
+    if len(entry["kinds"]) < 8 or kind in entry["kinds"]:
+        entry["kinds"][kind] = entry["kinds"].get(kind, 0) + 1
+        if entry["kinds"][kind] == 1:
+            fbp_log(
+                f"{event_text} failed; it keeps running and later failures are only counted",
+                "WARNING",
+                exc,
+                event=event_text,
+                capture_traceback=True,
+            )
+    return entry["count"]
+
+
+def fbp_guarded(event):
+    """Decorate a draw callback or app handler so an error never escapes it.
+
+    The error is recorded by ``fbp_note_callback_failure`` and the callback
+    returns None. Name, module and the ``persistent`` mark of the callback are
+    kept, so handler registration still recognises it.
+    """
+    import functools
+
+    def decorate(function):
+        # Blender passes app handlers as many arguments as the function
+        # declares (``scene`` or ``scene, depsgraph``), so the wrapper keeps
+        # the exact number of positional parameters.
+        code = getattr(function, "__code__", None)
+        count = int(getattr(code, "co_argcount", -1)) if code is not None else -1
+        if code is not None and code.co_flags & 0x0C:
+            count = -1  # *args or **kwargs: pass everything through
+        if count == 0:
+            def guarded():
+                try:
+                    return function()
+                except Exception as exc:  # noqa: BLE001 - recorded, never silent
+                    fbp_note_callback_failure(event, exc)
+                    return None
+        elif count == 1:
+            def guarded(first):
+                try:
+                    return function(first)
+                except Exception as exc:  # noqa: BLE001
+                    fbp_note_callback_failure(event, exc)
+                    return None
+        elif count == 2:
+            def guarded(first, second):
+                try:
+                    return function(first, second)
+                except Exception as exc:  # noqa: BLE001
+                    fbp_note_callback_failure(event, exc)
+                    return None
+        else:
+            def guarded(*args, **kwargs):
+                try:
+                    return function(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    fbp_note_callback_failure(event, exc)
+                    return None
+        guarded = functools.wraps(function)(guarded)
+        # ``functools.wraps`` sets ``__wrapped__``; signature-reading code
+        # would then see the original, which is what we want, but Blender
+        # reads ``__code__``, which stays the wrapper's own.
+        guarded.fbp_unguarded = function
+        return guarded
+
+    return decorate
+
+
+def fbp_callback_failures():
+    """``{event: {"count": n, "kinds": {text: n}}}`` for this session."""
+    return {
+        event: {"count": int(entry["count"]), "kinds": dict(entry["kinds"])}
+        for event, entry in _FBP_CALLBACK_FAILURES.items()
+    }
+
+
+def fbp_recent_diagnostics(levels=("WARNING", "ERROR", "CRITICAL"), limit=40):
+    """The latest runtime warnings and errors, newest last, as plain dicts."""
+    wanted = {str(level).upper() for level in levels}
+    records = [dict(record) for record in tuple(_FBP_DIAGNOSTICS) if record.get("level") in wanted]
+    return records[-max(0, int(limit)):] if limit else records
+
+
 def fbp_clear_diagnostics():
     """Clear runtime diagnostics without touching other transient state."""
     global _FBP_DIAGNOSTIC_SEQUENCE
     _FBP_DIAGNOSTICS.clear()
     _FBP_WARNED_KEYS.clear()
+    _FBP_CALLBACK_FAILURES.clear()
     _FBP_DIAGNOSTIC_SEQUENCE = 0
 
 

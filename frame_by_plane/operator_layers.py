@@ -1637,6 +1637,14 @@ class FBP_OT_UngroupOrPass(Operator):
     bl_options = {'INTERNAL'}
 
     def invoke(self, context, event):
+        # A plane group selected as a whole is dissolved (Ungroup).
+        try:
+            from .group_controller import whole_group_selected
+            group = whole_group_selected(context)
+        except ImportError:
+            group = None
+        if group is not None:
+            return bpy.ops.fbp.dissolve_plane_group('EXEC_DEFAULT', group_name=group.name)
         targets = _fbp_groupable_shortcut_targets(context)
         if not targets:
             return {'PASS_THROUGH'}

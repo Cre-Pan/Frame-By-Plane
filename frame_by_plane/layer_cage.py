@@ -36,6 +36,7 @@ import math
 import bpy
 from mathutils import Matrix, Vector
 
+from .runtime import fbp_guarded
 from .runtime import FBP_DATA_ERRORS
 from .viewport_handles import handle_selected_color
 from .common import (
@@ -440,6 +441,7 @@ class FBP_GT_cursor_probe(bpy.types.Gizmo):
 
     bl_idname = "FBP_GT_cursor_probe"
 
+    @fbp_guarded("viewport.layer_box")
     def draw(self, context):
         del context
 
@@ -950,13 +952,21 @@ def _cross(center, axis_x, axis_y, half, width):
     return triangles
 
 
+def _all_finite(points):
+    """True when every coordinate of ``points`` is finite (one sum per point)."""
+    try:
+        return math.isfinite(sum(map(math.fsum, points)))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
 def _colored(parts):
     """Join ``(points, rgb, alpha)`` parts into one position and colour list."""
     positions, colors = [], []
     for points, rgb, alpha in parts:
         # A point at infinity or NaN (a degenerate rig scale, a point behind
         # the view) is never sent to the GPU: some drivers fault on it.
-        if not all(math.isfinite(value) for point in points for value in point):
+        if not _all_finite(points):
             continue
         positions.extend(points)
         colors.extend(((*rgb, alpha),) * len(points))
@@ -1014,6 +1024,7 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
 
     # --- Drawing ------------------------------------------------------------
 
+    @fbp_guarded("viewport.layer_box")
     def draw(self, context):
         import gpu
         from gpu_extras.batch import batch_for_shader

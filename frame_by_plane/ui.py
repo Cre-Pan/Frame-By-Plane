@@ -4123,6 +4123,14 @@ def _fbp_draw_layer_side_toolbar(layout, context, *, mode='PLANES'):
         if not is_gp_mode and hasattr(active_collection, 'fbp_plane_group'):
             group_rig = col.row(align=True)
             group_rig.prop(active_collection, 'fbp_plane_group', text='', icon='MESH_CUBE')
+            if bool(getattr(active_collection, 'fbp_plane_group', False)):
+                controller = getattr(active_collection, 'fbp_group_controller', None)
+                row = col.row(align=True)
+                if controller is None:
+                    op = row.operator('fbp.add_group_controller', text='', icon='EMPTY_AXIS')
+                else:
+                    op = row.operator('fbp.remove_group_controller', text='', icon='X')
+                op.group_name = active_collection.name
     else:
         can_move = active_type in ({'GP_CANVAS'} if is_gp_mode else {'LAYER'})
         if not is_gp_mode:
