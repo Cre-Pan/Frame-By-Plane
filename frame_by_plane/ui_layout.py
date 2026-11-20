@@ -71,6 +71,7 @@ from .layer_tree_snapshot import (
 
 _FBP_LAYER_TREE_LAST_CHECK = {}
 _FBP_LAYER_TREE_CHECK_INTERVAL = 0.75
+_FBP_LAYER_TREE_PLAYBACK_CHECK_INTERVAL = 3.0
 
 
 # SECTION 01 - Multiplane Setup: layout helpers #
@@ -1565,11 +1566,21 @@ def fbp_schedule_layer_tree_rebuild(context, *, tree_cache=None, force=False):
         signature_ready = False
     now = time.monotonic()
     last_check = float(_FBP_LAYER_TREE_LAST_CHECK.get(scene_key, 0.0) or 0.0)
+    interval = _FBP_LAYER_TREE_CHECK_INTERVAL
+    if not force and rows_ready and signature_ready:
+        # The sidebar redraws on every played frame, and the tree rarely
+        # changes while it plays: check it less often until playback stops.
+        try:
+            from .scene_sync import fbp_animation_playback_active
+            if fbp_animation_playback_active():
+                interval = _FBP_LAYER_TREE_PLAYBACK_CHECK_INTERVAL
+        except (ImportError, *FBP_DATA_ERRORS):
+            pass
     if (
         not force
         and rows_ready
         and signature_ready
-        and now - last_check < _FBP_LAYER_TREE_CHECK_INTERVAL
+        and now - last_check < interval
     ):
         return False
     _FBP_LAYER_TREE_LAST_CHECK[scene_key] = now
