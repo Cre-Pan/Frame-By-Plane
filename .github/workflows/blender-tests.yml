@@ -97,3 +97,93 @@ jobs:
           name: blender-${{ matrix.series }}-background-results
           path: work/fbp-results
           if-no-files-found: ignore
+
+  blender-next:
+    # Canary: the same tests on the latest daily build of the next Blender
+    # (5.4 alpha/beta). It never blocks a pull request; a red run here is an
+    # early warning to read before 5.4 is released and the manifest's
+    # blender_version_max is raised.
+    name: Linux canary (next Blender daily)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    continue-on-error: true
+    env:
+      BLENDER_NEXT_SERIES: "5.4"
+      FBP_ALLOW_UNVALIDATED_BLENDER: "1"
+      FBP_CI_RESULTS: ${{ github.workspace }}/work/fbp-results
+      BLENDER_USER_CONFIG: ${{ github.workspace }}/work/fbp-user/config
+      BLENDER_USER_SCRIPTS: ${{ github.workspace }}/work/fbp-user/scripts
+      FBP_TEST_SKIP_NATIVE_RENDER: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Linux runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libx11-6 libxi6 libxfixes3 libxrender1 libxkbcommon0 libsm6 libgl1
+
+      - name: Download the latest daily build
+        id: daily
+        shell: bash
+        run: |
+          set -euo pipefail
+          listing="$RUNNER_TEMP/daily.json"
+          curl --fail --location --retry 3 "https://builder.blender.org/download/daily/?format=json&v=1" --output "$listing"
+          url="$(python - "$listing" <<'PY'
+          import json, os, sys
+          series = os.environ["BLENDER_NEXT_SERIES"]
+          builds = [
+              build for build in json.load(open(sys.argv[1]))
+              if build.get("platform") == "linux" and build.get("architecture") == "x86_64"
+              and build.get("file_extension") == "xz" and str(build.get("version", "")).startswith(series + ".")
+          ]
+          builds.sort(key=lambda build: build.get("file_mtime", 0))
+          print(builds[-1]["url"] if builds else "")
+          PY
+          )"
+          if [ -z "$url" ]; then
+            echo "No Blender $BLENDER_NEXT_SERIES daily build is published yet."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Testing $url"
+          archive="$RUNNER_TEMP/blender-next.tar.xz"
+          curl --fail --location --retry 3 "$url" --output "$archive"
+          curl --fail --location --retry 3 "$url.sha256" --output "$archive.sha256"
+          expected="$(cut -d' ' -f1 "$archive.sha256")"
+          echo "$expected  $archive" | sha256sum --check -
+          mkdir -p "$RUNNER_TEMP/blender"
+          tar -xf "$archive" -C "$RUNNER_TEMP/blender" --strip-components=1
+          rm "$archive"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run background regression suite
+        if: steps.daily.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$FBP_CI_RESULTS" "$BLENDER_USER_CONFIG" "$BLENDER_USER_SCRIPTS"
+          python frame_by_plane/tests/run_blender_lts.py \
+            --blender "$RUNNER_TEMP/blender/blender" \
+            --output "$FBP_CI_RESULTS/background.json" \
+            --background-timeout 2400
+
+      - name: Run focused feature regressions
+        if: steps.daily.outputs.found == 'true'
+        shell: bash
+        run: python frame_by_plane/tests/run_7_2_feature_gate.py --blender "$RUNNER_TEMP/blender/blender"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-next-background-results
+          path: work/fbp-results
+          if-no-files-found: ignore

@@ -194,7 +194,11 @@ def main():
     if not binary.is_file():
         raise SystemExit(f"Blender executable not found: {binary}")
     code, version, parsed_version, probe_error = blender_version(binary)
-    if code or parsed_version[:2] not in {(5, 2), (5, 3)}:
+    accepted = {(5, 2), (5, 3)}
+    if os.environ.get("FBP_ALLOW_UNVALIDATED_BLENDER") == "1":
+        # CI canary on the next Blender's daily builds.
+        accepted.add((5, 4))
+    if code or parsed_version[:2] not in accepted:
         detail = probe_error or version or "unavailable"
         raise SystemExit(f"Expected Blender 5.2.x or 5.3.x, got: {detail}")
 

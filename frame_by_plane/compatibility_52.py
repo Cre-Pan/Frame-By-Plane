@@ -7,6 +7,7 @@ Frame By Plane subsystem is registered.
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 
@@ -198,7 +199,10 @@ def blender_52_runtime_contract(*, refresh=False):
             f"{FBP_BLENDER_VERSION_SERIES_STRING}; running "
             f"{'.'.join(str(part) for part in version)}"
         )
-        (issues if FBP_STRICT_RUNTIME_SCOPE else warnings).append(message)
+        # The CI canary job runs the tests on the next Blender's daily builds
+        # (FBP_ALLOW_UNVALIDATED_BLENDER=1); installed packages never set it.
+        preview = os.environ.get("FBP_ALLOW_UNVALIDATED_BLENDER") == "1"
+        (issues if FBP_STRICT_RUNTIME_SCOPE and not preview else warnings).append(message)
 
     runtime_platform = str(policy.get("runtime_platform", "") or "")
     if runtime_platform not in FBP_SUPPORTED_PLATFORM_IDS:

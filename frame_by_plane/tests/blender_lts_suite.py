@@ -182,7 +182,10 @@ def unregister_addon(module):
 
 
 def test_version():
-    assert bpy.app.version[:2] in {(5, 2), (5, 3)}, bpy.app.version_string
+    accepted = {(5, 2), (5, 3)}
+    if os.environ.get("FBP_ALLOW_UNVALIDATED_BLENDER") == "1":
+        accepted.add((5, 4))  # CI canary on the next Blender's daily builds
+    assert bpy.app.version[:2] in accepted, bpy.app.version_string
     return bpy.app.version_string
 
 
