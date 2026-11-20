@@ -9,11 +9,12 @@ import importlib
 
 
 class _LazyNumpy:
-    __slots__ = ()
-
     def __getattr__(self, name):
-        module = importlib.import_module("numpy")
-        return getattr(module, name)
+        # Only called for names not cached yet: keep each one on the instance
+        # so later lookups are plain attribute reads, not an import call.
+        value = getattr(importlib.import_module("numpy"), name)
+        self.__dict__[name] = value
+        return value
 
     def __repr__(self):
         return "<lazy numpy>"

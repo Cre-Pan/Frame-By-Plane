@@ -8,10 +8,11 @@
 * Several imports in a row frame the view once, with every imported layer.
 * The Alpha Outline cache keeps more than 64 layers and several drawings of
   one layer, least recently drawn first out.
-* ``region_grid`` and ``_source_index_resolver`` give the same results as the
-  per-cell and per-call code they replace.
+* ``region_grid``, ``_marching_squares_loops`` and ``_source_index_resolver``
+  give the same results as the per-cell and per-call code they replace.
 * Importing a 600-frame sequence stays within a generous time budget.
-* NumPy is not imported by loading the add-on.
+* NumPy is not imported by loading the add-on, and the lazy proxy keeps each
+  NumPy name after its first use.
 
 Run with Blender 5.2 or 5.3:
     blender -b --factory-startup --python-exit-code 1 \
@@ -96,6 +97,8 @@ def check_numpy_is_lazy():
     assert not NUMPY_LOADED_BY_ADDON, "loading the add-on imported numpy"
     lazy = module("lazy_numpy").np
     assert lazy.asarray([1, 2]).sum() == 3
+    import numpy
+    assert vars(lazy).get("asarray") is numpy.asarray, "lazy numpy did not keep the name"
 
 
 def check_primary_collection(work):
@@ -299,6 +302,102 @@ def check_region_grid():
         assert grid.shape == expected.shape and (grid == expected).all()
 
 
+def _reference_marching_squares(field, iso=0.5):
+    """The cell-by-cell contour tracer that the vectorised version replaced."""
+    import numpy as np
+    inside = field >= iso
+
+    def crossing(edge):
+        kind, r, c = edge
+        if kind == "h":
+            a, b = field[r, c], field[r, c + 1]
+            t = 0.5 if a == b else (iso - a) / (b - a)
+            return (c + t, float(r))
+        a, b = field[r, c], field[r + 1, c]
+        t = 0.5 if a == b else (iso - a) / (b - a)
+        return (float(c), r + t)
+
+    links = {}
+
+    def link(a, b):
+        links.setdefault(a, []).append(b)
+        links.setdefault(b, []).append(a)
+
+    codes = (
+        (inside[:-1, :-1].astype(np.int8) << 3)
+        | (inside[:-1, 1:].astype(np.int8) << 2)
+        | (inside[1:, 1:].astype(np.int8) << 1)
+        | inside[1:, :-1].astype(np.int8)
+    )
+    for r, c in zip(*np.nonzero((codes != 0) & (codes != 15))):
+        r, c = int(r), int(c)
+        code = int(codes[r, c])
+        tl, tr = bool(code & 8), bool(code & 4)
+        br, bl = bool(code & 2), bool(code & 1)
+        top, bottom = ("h", r, c), ("h", r + 1, c)
+        left, right = ("v", r, c), ("v", r, c + 1)
+        if code in (5, 10):
+            centre = (field[r, c] + field[r, c + 1] + field[r + 1, c] + field[r + 1, c + 1]) / 4.0
+            if (code == 5) == bool(centre >= iso):
+                link(top, left)
+                link(bottom, right)
+            else:
+                link(top, right)
+                link(bottom, left)
+            continue
+        crossed = [edge for edge, hit in ((top, tl != tr), (right, tr != br), (bottom, bl != br), (left, tl != bl)) if hit]
+        if len(crossed) == 2:
+            link(crossed[0], crossed[1])
+
+    loops = []
+    seen = set()
+    for start in links:
+        if start in seen:
+            continue
+        loop = [start]
+        seen.add(start)
+        prev, current = None, start
+        while True:
+            nxt = None
+            for option in links[current]:
+                if option != prev and option not in seen:
+                    nxt = option
+                    break
+            if nxt is None:
+                break
+            seen.add(nxt)
+            loop.append(nxt)
+            prev, current = current, nxt
+        if len(loop) >= 3:
+            loops.append([crossing(edge) for edge in loop])
+    return [[(float(x), float(y)) for x, y in loop] for loop in loops]
+
+
+def check_marching_squares():
+    import numpy as np
+    shape = module("rig_alpha_shape")
+    generator = np.random.default_rng(11)
+    loops_seen = 0
+    for attempt in range(1500):
+        height, width = (int(value) for value in generator.integers(1, 40, 2))
+        mode = attempt % 4
+        if mode == 3:
+            field = shape._soften(generator.random((height, width)) > generator.random())
+        else:
+            field = np.zeros((height + 2, width + 2), dtype=np.float32 if mode == 2 else np.float64)
+            if mode == 0:
+                field[1:-1, 1:-1] = generator.random((height, width))
+            elif mode == 1:
+                field[1:-1, 1:-1] = generator.choice([0.0, 0.25, 0.5, 0.75, 1.0], (height, width))
+            else:
+                field[1:-1, 1:-1] = generator.random((height, width)) > 0.5
+        expected = _reference_marching_squares(field)
+        loops_seen += len(expected)
+        assert shape._marching_squares_loops(field) == expected, f"contours differ on case {attempt}"
+    assert loops_seen > 1000, loops_seen
+    assert shape._marching_squares_loops(np.zeros((5, 5))) == []
+
+
 def check_source_index_resolver():
     native = module("native_backend")
     generator = random.Random(11)
@@ -399,6 +498,7 @@ def main():
             ("framing coalesced", lambda: check_framing_is_coalesced(work)),
             ("alpha outline cache", check_alpha_outline_cache),
             ("region grid", check_region_grid),
+            ("marching squares", check_marching_squares),
             ("source index resolver", check_source_index_resolver),
             ("timing write resets effect check", check_timing_write_resets_effect_check),
             ("effects on a sequence", lambda: check_effects_on_sequence(work)),
