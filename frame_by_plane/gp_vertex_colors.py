@@ -2799,13 +2799,16 @@ def _draw_edit_stroke_tools(layout, context, *, enabled=True):
         depress=closed,
     ).type = "OPEN" if closed else "CLOSE"
     arrange = group.row(align=True)
-    for direction, icon in (
+    for direction, fallback in (
         ("TOP", "TRIA_UP_BAR"),
         ("UP", "TRIA_UP"),
         ("DOWN", "TRIA_DOWN"),
         ("BOTTOM", "TRIA_DOWN_BAR"),
     ):
-        arrange.operator("grease_pencil.reorder", text="", icon=icon).direction = direction
+        # Stack-of-strokes icons; Blender's arrows if the PNG is missing.
+        icon_value = custom_icon_value(f"gp_arrange_{direction.lower()}")
+        icon = {"icon_value": icon_value} if icon_value else {"icon": fallback}
+        arrange.operator("grease_pencil.reorder", text="", **icon).direction = direction
     return True
 
 

@@ -74,6 +74,12 @@ try:
             ("grease_pencil.reorder", "DOWN"),
             ("grease_pencil.reorder", "BOTTOM"),
         ], ids
+        arrange_kwargs = [kwargs for _op, kwargs, _props in layout.operators[4:]]
+        # Custom icons load in the UI; background runs fall back to Blender's.
+        assert all(kwargs.get("icon_value") or kwargs.get("icon") for kwargs in arrange_kwargs)
+        icons_dir = Path(module.__file__).resolve().parent / "assets" / "icons"
+        for name in ("Top", "Up", "Down", "Bottom"):
+            assert (icons_dir / f"icon_GreasePencil_Arrange_{name}.png").is_file(), name
         cyclic_kwargs = layout.operators[3][1]
         assert cyclic_kwargs["icon"] == "GP_CYCLIC_STROKE"
         assert cyclic_kwargs["depress"] is False
