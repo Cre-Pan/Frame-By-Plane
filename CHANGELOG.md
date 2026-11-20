@@ -18,6 +18,8 @@ All notable public changes to Frame By Plane are documented here.
 ### Fixes
 
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
+- **Set Layer Origin moves the plane origin on older layers too.** On a plane with a parent inverse or its own offset and scale (layers made by older builds), the plane origin stayed where it was, with Blender's dashed parent line to the layer origin. It now comes onto the layer origin, and the drawing does not move.
+- **The transform box reads on light colours.** Its white lines get a dark halo, as its dots already had, so the box stays visible on a light sky or paper as well as on dark drawings.
 - **Plane labels never overlap.** With many planes side by side in Top or Front view, the name labels could still overlap. Labels in a row are now spread as one block around their planes.
 
 ### Performance and diagnostics
