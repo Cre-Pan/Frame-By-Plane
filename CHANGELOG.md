@@ -29,6 +29,7 @@ All notable public changes to Frame By Plane are documented here.
   - Alpha Outline boxes are cached per layer and per drawing, least recently drawn first out. The old cache was emptied at 64 entries, so in bigger projects every click rebuilt the outline (20-30 ms), and scrubbing an Alpha Follow layer rebuilt it on every frame even when going back over the same frames.
   - Blender starts faster: loading the add-on takes about 150 ms instead of 280 ms. NumPy is loaded the first time an outline or gesture selection needs it, and the effect settings sections are computed with their keys split once.
   - Importing a 600-frame sequence takes about 380 ms instead of 850 ms: file names are checked without building path objects for every frame, and the frame-offset curve resolves its timing table once.
+- **Image effects cost less (30 layers, 60 effects).** During playback, blur and edge effects no longer re-read and hash their layer's whole timing curve on every frame; a full check still runs every 2 s, and any new timing curve is picked up on the next frame. Python per played frame goes from 18.2 to 14.9 ms. Adding an image effect to a sequence no longer writes each sample's frame offset twice (each write re-tags the node tree): adding 60 effects takes 2.3 s instead of 3.1 s.
 - **Errors are no longer silent.** An error in a viewport overlay, gizmo or frame handler is logged once with its traceback and listed in **Project Doctor > Runtime messages (this session)** and in the diagnostic report, instead of being swallowed.
 
 ### Development
