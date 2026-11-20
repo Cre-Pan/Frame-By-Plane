@@ -180,6 +180,24 @@ def _state(context=None):
     return getattr(obj, _STATE_PROPERTY, None) if obj is not None else None
 
 
+def _color_owner(paint, brush):
+    """Return what holds the colors Blender actually paints with.
+
+    With "Unified Color" on, Blender paints with the paint mode's unified
+    settings and ignores the brush's own colors. Blender 5.3 keeps that
+    switch on the brush (its Vertex Paint brush has it on by default); the
+    old ``UnifiedPaintSettings.use_unified_color`` stays False there. Writing
+    the brush colors then showed one color pair while strokes got another.
+    """
+    unified = getattr(paint, "unified_paint_settings", None)
+    if unified is None:
+        return brush
+    use_unified = getattr(brush, "use_unified_color", None)
+    if use_unified is None:
+        use_unified = getattr(unified, "use_unified_color", False)
+    return unified if bool(use_unified) else brush
+
+
 def _brush_context(context=None):
     context = context or getattr(bpy, "context", None)
     try:
@@ -188,10 +206,8 @@ def _brush_context(context=None):
         brush = paint.brush
         if brush is None:
             return None, None, None, None
-        unified = paint.unified_paint_settings
-        owner = unified if bool(getattr(unified, "use_unified_color", False)) else brush
         gp_settings = getattr(brush, "gpencil_settings", None)
-        return paint, brush, owner, gp_settings
+        return paint, brush, _color_owner(paint, brush), gp_settings
     except FBP_DATA_ERRORS:
         return None, None, None, None
 
@@ -204,7 +220,7 @@ def _draw_brush_context(context=None):
         if brush is None:
             return None, None, None, None
         gp_settings = getattr(brush, "gpencil_settings", None)
-        return paint, brush, brush, gp_settings
+        return paint, brush, _color_owner(paint, brush), gp_settings
     except FBP_DATA_ERRORS:
         return None, None, None, None
 

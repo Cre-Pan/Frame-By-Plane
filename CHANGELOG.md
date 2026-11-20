@@ -17,6 +17,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- **Stroke / Fill colors with Unified Color.** With a brush's **Unified Color** on (the Blender 5.3 Vertex Paint brush has it on by default), Blender paints with the paint mode's shared colors, but Frame By Plane wrote its Stroke / Fill pair into the brush's own colors. The header showed one pair while new strokes got another (often black), and X did not swap the Stroke / Fill swatches. The pair now goes to the colors Blender actually paints with, in Draw and Vertex Paint.
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
 - **Plane labels never overlap.** With many planes side by side in Top or Front view, the name labels could still overlap. Labels in a row are now spread as one block around their planes.
 
@@ -27,7 +28,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source; the 8.6 feature gate runs 23 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source; Unified Color in Draw and Vertex Paint; the 8.6 feature gate runs 24 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 
