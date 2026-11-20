@@ -261,7 +261,7 @@ try:
     module.fbp_gp_vertex_brush_color_sync(None, geometry_graph)
     assert module._RUNTIME["edit_dirty"] is True
 
-    unique_keys = set()
+    unique_keys = {}
     swatches = []
     fingerprint = (0, 0)
     for index in range(12):
@@ -276,6 +276,26 @@ try:
     assert len(unique_keys) == 12
     assert len(swatches) == 12
     assert fingerprint != (0, 0)
+
+    # Near-identical colors share one swatch; the most used color comes first.
+    unique_keys = {}
+    swatches = []
+    fingerprint = (0, 0)
+    for color in (
+        (0.9, 0.1, 0.1, 1.0),
+        (0.1, 0.2, 0.9, 1.0),
+        (0.1, 0.2, 0.9, 1.0),
+        (0.1005, 0.2003, 0.9, 1.0),
+    ):
+        fingerprint = module._record_color(
+            color, module._color_key(color), unique_keys, swatches, fingerprint
+        )
+    ordered = module._by_usage(swatches)
+    assert len(ordered) == 2, ordered
+    assert close_color(ordered[0][0], (0.1, 0.2, 0.9, 1.0)) and ordered[0][1] == 3
+    assert close_color(ordered[1][0], (0.9, 0.1, 0.1, 1.0)) and ordered[1][1] == 1
+    assert len(swatches[1][2]) == 2  # Both blues are recolored together.
+    assert not module._colors_similar((0.5, 0.5, 0.5, 1.0), (0.55, 0.5, 0.5, 1.0))
 
     # A clean Edit cache must not rescan the selected geometry on every Tool
     # Header redraw. Continuous geometry updates are debounced until quiet.

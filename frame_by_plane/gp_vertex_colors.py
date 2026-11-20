@@ -75,6 +75,8 @@ _RUNTIME = {
     "stroke_swatches": (),
     "fill_swatches": (),
     "stroke_unique": 0,
+    "stroke_groups": {},
+    "fill_groups": {},
     "fill_unique": 0,
     "swatch_dirty": False,
     "draw_watch_initialized": False,
@@ -128,6 +130,23 @@ def _promote_unset_alpha(previous, color):
 
 def _color_key(value):
     return tuple(round(component, 5) for component in _rgba(value))
+
+
+# Colors closer than this (per channel, on a perceptual 0-1 scale: about 5 of
+# 255 levels) share one swatch, so a slightly uneven stroke does not fill the
+# header with near-identical colors. Editing that swatch recolors the group.
+_SIMILAR_COLOR_TOLERANCE = 0.02
+
+
+def _perceptual(color):
+    clean = _rgba(color)
+    return tuple(component ** (1.0 / 2.2) for component in clean[:3]) + (clean[3],)
+
+
+def _colors_similar(first, second):
+    a = _perceptual(first)
+    b = _perceptual(second)
+    return all(abs(x - y) <= _SIMILAR_COLOR_TOLERANCE for x, y in zip(a, b))
 
 
 _COLOR_FINGERPRINT_MASK = (1 << 64) - 1
@@ -877,12 +896,35 @@ def _attribute_color_summary(values, index, cache):
 
 
 def _record_color(color, key, unique_keys, swatches, fingerprint):
-    if key in unique_keys:
+    """Count one use of a color; ``unique_keys`` maps key -> swatch index."""
+    index = unique_keys.get(key)
+    if index is not None:
+        if index >= 0:
+            swatches[index][1] += 1
         return fingerprint
-    unique_keys.add(key)
+    for index, swatch in enumerate(swatches):
+        if _colors_similar(swatch[0], color):
+            unique_keys[key] = index
+            swatch[1] += 1
+            swatch[2].add(key)
+            return _fingerprint_add(fingerprint[0], fingerprint[1], key)
     if len(swatches) < _SWATCH_LIMIT:
-        swatches.append((color, 1))
+        unique_keys[key] = len(swatches)
+        swatches.append([color, 1, {key}])
+    else:
+        unique_keys[key] = -1
     return _fingerprint_add(fingerprint[0], fingerprint[1], key)
+
+
+def _by_usage(swatches):
+    """Most used colors first; equal use keeps the order they were found in."""
+    ordered = sorted(enumerate(swatches), key=lambda item: (-item[1][1], item[0]))
+    return tuple((swatch[0], swatch[1]) for _index, swatch in ordered)
+
+
+def _swatch_groups(swatches):
+    """Map each swatch's color key to the exact color keys it stands for."""
+    return {_color_key(swatch[0]): frozenset(swatch[2]) for swatch in swatches}
 
 
 def _edit_select_mode(context):
@@ -968,8 +1010,8 @@ def _curve_visibility(flags, material_indices, stroke, curve_index):
 
 
 def _selected_color_snapshot(context, obj):
-    stroke_keys = set()
-    fill_keys = set()
+    stroke_keys = {}
+    fill_keys = {}
     stroke_values = []
     fill_values = []
     stroke_fingerprint = (0, 0)
@@ -1140,6 +1182,12 @@ def _selected_color_snapshot(context, obj):
             )
         )
 
+    _RUNTIME["stroke_groups"] = _swatch_groups(stroke_values)
+    _RUNTIME["fill_groups"] = _swatch_groups(fill_values)
+    stroke_groups = len(stroke_values) + sum(1 for index in stroke_keys.values() if index < 0)
+    fill_groups = len(fill_values) + sum(1 for index in fill_keys.values() if index < 0)
+    stroke_values = _by_usage(stroke_values)
+    fill_values = _by_usage(fill_values)
     signature = (
         int(obj.as_pointer()),
         point_count,
@@ -1155,8 +1203,8 @@ def _selected_color_snapshot(context, obj):
         signature,
         tuple(stroke_values),
         tuple(fill_values),
-        len(stroke_keys),
-        len(fill_keys),
+        stroke_groups,
+        fill_groups,
         point_count,
         curve_count,
         tuple(point_targets),
@@ -1589,6 +1637,9 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
     clean = _rgba(color)
     if _color_key(clean) == old_key:
         return 0
+    # A swatch stands for every near-identical color grouped under it.
+    groups = _RUNTIME.get("fill_groups" if target == "FILL" else "stroke_groups") or {}
+    members = groups.get(old_key) or frozenset((old_key,))
     clean_values = array("f", clean)
     changed = 0
     undo_started = False
@@ -1607,7 +1658,7 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
             key = _color_key(raw)
             if len(cache) < _COLOR_DECODE_CACHE_LIMIT:
                 cache[raw] = key
-        return key == old_key
+        return key in members
 
     if target == "FILL":
         for drawing, total_curves, _selected_count, batches in tuple(_RUNTIME.get("edit_fill_targets", ()) or ()):
@@ -1615,7 +1666,7 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
             if values is _MISSING:
                 for stroke, _curve_index in batches:
                     try:
-                        if _color_key(stroke.fill_color) == old_key:
+                        if _color_key(stroke.fill_color) in members:
                             prepare_change()
                             stroke.fill_color = clean
                             changed += 1
@@ -1650,7 +1701,7 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
                         points = stroke.points
                         selected = points if selector is None else (points[index] for index in selector)
                         for point in selected:
-                            if _color_key(point.vertex_color) == old_key:
+                            if _color_key(point.vertex_color) in members:
                                 prepare_change()
                                 point.vertex_color = clean
                                 changed += 1
@@ -2634,7 +2685,7 @@ def _draw_header_side(layout, state, target, items, inline, *, enabled=True):
                 if target == "STROKE"
                 else FBP_PT_GPFillSwatchesPopover.bl_idname
             ),
-            text=f"{len(items)} {'Strokes' if target == 'STROKE' else 'Fills'}",
+            text=f"{len(items)} Colors",
             icon="GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL",
         )
         return

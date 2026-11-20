@@ -100,6 +100,29 @@ try:
         assert hide is not None and all(item.value for item in hide.data)
         assert bpy.ops.grease_pencil.reorder(direction="TOP") == {"FINISHED"}
 
+        # Near-identical colors share one swatch, most used first, and editing
+        # that swatch recolors the whole group.
+        drawing = obj.data.layers.active.current_frame().drawing
+        if len(drawing.strokes) < 3:
+            drawing.add_strokes([3] * (3 - len(drawing.strokes)))
+        bpy.ops.grease_pencil.select_all(action="SELECT")
+        drawing = obj.data.layers.active.current_frame().drawing
+        palette = ((0.9, 0.1, 0.1, 1.0), (0.1, 0.2, 0.9, 1.0), (0.1005, 0.2003, 0.9, 1.0))
+        for index, stroke in enumerate(drawing.strokes):
+            for point in stroke.points:
+                point.vertex_color = palette[min(index, 2)]
+        module._sync_edit_state(bpy.context, force=True)
+        swatches = module._RUNTIME["stroke_swatches"]
+        assert len(swatches) == 2, swatches
+        # Counted per point: the long first stroke makes red the most used.
+        assert swatches[0][0][0] > 0.8 and swatches[0][1] > swatches[1][1], swatches
+        blue = swatches[1][0]
+        green = (0.1, 0.8, 0.2, 1.0)
+        assert module._replace_selected_color(bpy.context, "STROKE", blue, green) > 0
+        drawing = obj.data.layers.active.current_frame().drawing
+        colors = [tuple(round(c, 4) for c in stroke.points[0].vertex_color) for stroke in drawing.strokes]
+        assert colors.count((0.1, 0.8, 0.2, 1.0)) == len(drawing.strokes) - 1, colors
+
         # Draw Mode: new strokes keep the cyclic flag Blender's brush gave them.
         bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
         state = obj.fbp_gp_vertex_color_state
