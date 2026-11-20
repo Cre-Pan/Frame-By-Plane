@@ -16843,8 +16843,78 @@ def _fbp_prepare_opacity_node(node_tree):
     return keep, changed
 
 
-def fbp_sync_layer_opacity_effect(rig, opacity=None):
-    """Update one alpha Multiply node and remove it completely at 100%."""
+def _fbp_remove_layer_opacity_drivers(material, node_tree):
+    """Drop the drivers ``fbp_sync_layer_opacity_effect`` added to ``material``."""
+    changed = False
+    for owner in (node_tree, material):
+        anim = getattr(owner, "animation_data", None) if owner is not None else None
+        drivers = getattr(anim, "drivers", None) if anim is not None else None
+        if not drivers:
+            continue
+        for curve in tuple(drivers):
+            path = str(getattr(curve, "data_path", "") or "")
+            if (owner is node_tree and path.startswith('nodes["FBP_Opacity"]')) or (
+                owner is material and path == "diffuse_color"
+                and bool(material.get("fbp_layer_opacity_driven", False))
+            ):
+                try:
+                    drivers.remove(curve)
+                    changed = True
+                except FBP_DATA_ERRORS:
+                    pass
+    for key in ("fbp_layer_opacity_driven", "fbp_opacity_driver_signature"):
+        try:
+            if key in material:
+                del material[key]
+                changed = True
+        except (KeyError, *FBP_DATA_ERRORS):
+            pass
+    return changed
+
+
+def _fbp_bind_layer_opacity_drivers(material, opacity_node, rig):
+    """Drive the Opacity multiply and the Solid colour from the layer's
+    Opacity (and its group controllers), so keyframes play back and render."""
+    from .materials import (
+        FBP_OPACITY_SIGNATURE_KEY,
+        _fbp_add_opacity_driver,
+        fbp_opacity_driver_signature,
+    )
+
+    node_tree = material.node_tree
+    wanted = fbp_opacity_driver_signature(rig)
+    try:
+        if str(material.get(FBP_OPACITY_SIGNATURE_KEY, "") or "") == wanted and wanted:
+            return False
+    except FBP_DATA_ERRORS:
+        pass
+    _fbp_remove_layer_opacity_drivers(material, node_tree)
+    path = opacity_node.inputs[1].path_from_id("default_value")
+    if not _fbp_add_opacity_driver(node_tree, path, -1, rig, 1.0):
+        return False
+    try:
+        base = tuple(float(value) for value in material.get("fbp_solid_base_rgb", ()))
+    except (TypeError, ValueError, *FBP_DATA_ERRORS):
+        base = ()
+    if len(base) == 3:
+        for index, value in enumerate(base):
+            _fbp_add_opacity_driver(material, "diffuse_color", index, rig, 1.0, shade=value)
+    _fbp_add_opacity_driver(material, "diffuse_color", 3, rig, 1.0)
+    try:
+        material["fbp_layer_opacity_driven"] = True
+        material[FBP_OPACITY_SIGNATURE_KEY] = wanted
+    except FBP_DATA_ERRORS:
+        pass
+    return True
+
+
+def fbp_sync_layer_opacity_effect(rig, opacity=None, *, drive=True):
+    """Update one alpha Multiply node and remove it completely at 100%.
+
+    With keyframed Opacity, or a layer in a plane group with a controller, the
+    node stays even at 100% and its value is driven (``drive``), so playback
+    and renders follow the animation. ``drive=False`` writes a static value
+    (the view-only fade outside an entered group)."""
     if not rig:
         return False
     try:
@@ -16852,6 +16922,11 @@ def fbp_sync_layer_opacity_effect(rig, opacity=None):
     except FBP_DATA_ERRORS:
         opacity = 1.0
     opacity = max(0.0, min(1.0, opacity))
+    try:
+        from .materials import fbp_rig_opacity_is_animated
+        driven = bool(drive) and fbp_rig_opacity_is_animated(rig)
+    except ImportError:
+        driven = False
     changed = False
     for material in _fbp_plane_materials(rig):
         node_tree = getattr(material, "node_tree", None)
@@ -16869,7 +16944,9 @@ def fbp_sync_layer_opacity_effect(rig, opacity=None):
             continue
         opacity_node, repaired = _fbp_prepare_opacity_node(node_tree)
         changed = repaired or changed
-        if opacity < 0.999:
+        if not driven:
+            changed = _fbp_remove_layer_opacity_drivers(material, node_tree) or changed
+        if opacity < 0.999 or driven:
             if opacity_node is None:
                 opacity_node = node_tree.nodes.new("ShaderNodeMath")
                 opacity_node.name = "FBP_Opacity"
@@ -16883,6 +16960,8 @@ def fbp_sync_layer_opacity_effect(rig, opacity=None):
                 changed = True
             changed = _fbp_link_single(node_tree, base_alpha, opacity_node.inputs[0]) or changed
             alpha_output = _fbp_node_socket(opacity_node.outputs, "Value", 0)
+            if driven:
+                changed = _fbp_bind_layer_opacity_drivers(material, opacity_node, rig) or changed
         else:
             if opacity_node is not None:
                 try:
@@ -16897,12 +16976,6 @@ def fbp_sync_layer_opacity_effect(rig, opacity=None):
             material, evaluation_nodes, alpha_output
         ) or changed
     return changed
-
-
-# ---------------------------------------------------------------------------
-# Generic effect stack state
-# ---------------------------------------------------------------------------
-
 
 def fbp_retag_effect_owners_after_layer_rename(rig, old_plane_name=""):
     """Update current name-based effect ownership markers after a layer rename.

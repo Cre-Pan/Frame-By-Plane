@@ -127,18 +127,33 @@ class FBP_PT_LayerTransformSidebar(Panel):
 
     @classmethod
     def poll(cls, context):
-        return (
-            getattr(context, "mode", "") == 'OBJECT'
-            and layer_rig_for_plane(getattr(context, "active_object", None)) is not None
-        )
+        if getattr(context, "mode", "") != 'OBJECT':
+            return False
+        active = getattr(context, "active_object", None)
+        return layer_rig_for_plane(active) is not None or _plane_group_of(context) is not None
 
     def draw(self, context):
         plane = getattr(context, "active_object", None)
         rig = layer_rig_for_plane(plane)
-        if rig is None:
-            return
-        _draw_header_note(self.layout, rig, plane)
-        draw_layer_transform(self.layout, rig)
+        if rig is not None:
+            _draw_header_note(self.layout, rig, plane)
+            draw_layer_transform(self.layout, rig)
+        group = _plane_group_of(context)
+        if group is not None:
+            from .group_controller import draw_group_controller
+
+            box = self.layout.box()
+            box.label(text=f"Group: {group.name}", icon='OUTLINER_COLLECTION')
+            draw_group_controller(box, group)
+
+
+def _plane_group_of(context):
+    """The plane group of the active layer or controller, or ``None``."""
+    try:
+        from .group_controller import target_group
+        return target_group(context)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
 
 
 classes = (FBP_PT_LayerTransformSidebar,)

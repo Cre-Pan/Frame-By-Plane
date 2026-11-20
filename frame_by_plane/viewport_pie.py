@@ -1340,7 +1340,20 @@ class FBP_OT_ToggleLocalViewWithLights(Operator):
             return {'FINISHED'}
 
         selected = list(getattr(context, "selected_objects", ()) or ())
-        rigs = _selected_fbp_rigs(context)
+        rigs = list(_selected_fbp_rigs(context))
+        # A selected plane group (its controller, or all of its layers) is
+        # soloed whole, nested groups included.
+        try:
+            from .group_controller import controlled_group, is_group_controller
+            from .plane_groups import group_rigs
+            for obj in selected:
+                if is_group_controller(obj):
+                    group = controlled_group(obj, context.scene)
+                    for rig in group_rigs(group, context.scene) if group is not None else ():
+                        if rig not in rigs:
+                            rigs.append(rig)
+        except ImportError:
+            pass
         targets = []
         target_keys = set()
         for obj in selected:

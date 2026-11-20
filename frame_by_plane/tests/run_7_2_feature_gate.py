@@ -34,6 +34,7 @@ TESTS = (
     "rig_box_regression.py",
     "thumbnail_crop_regression.py",
     "overlay_performance_regression.py",
+    "group_controller_regression.py",
 )
 
 
