@@ -3065,7 +3065,20 @@ def _insert_linear_keys(id_data, data_path, key_values, set_key):
     curve.update()
 
 
-def _install_frame_offset_keyframes(tex_node, *, file_count=1, frame_start=1, durations=None, loop_mode='NONE', frame_number_base=1, source_indices=None, image_user_start=None, hold_start=None, hold_end=None, scene=None):
+def _install_frame_offset_keyframes(*args, **kwargs):
+    """Write the sequence timing curve; image effects re-check it next frame."""
+    result = _install_frame_offset_keyframes_impl(*args, **kwargs)
+    try:
+        # Image effects skip their timing check during playback; a new timing
+        # curve must reach their private samples on the very next frame.
+        from .geometry_nodes import fbp_forget_private_source_sync
+        fbp_forget_private_source_sync()
+    except (ImportError, AttributeError):
+        pass
+    return result
+
+
+def _install_frame_offset_keyframes_impl(tex_node, *, file_count=1, frame_start=1, durations=None, loop_mode='NONE', frame_number_base=1, source_indices=None, image_user_start=None, hold_start=None, hold_end=None, scene=None):
     """Keyframe logical frame order without creating one key per timeline frame.
 
     Within a held source frame, ``frame_offset`` must decrease by one on every

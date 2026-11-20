@@ -313,6 +313,57 @@ def check_source_index_resolver():
             )
 
 
+def check_timing_write_resets_effect_check():
+    native = module("native_backend")
+    geometry = module("geometry_nodes")
+    geometry._FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE[("perf", 1)] = ("signature", 0.0, None)
+    original = native._install_frame_offset_keyframes_impl
+    native._install_frame_offset_keyframes_impl = lambda *args, **kwargs: True
+    try:
+        assert native._install_frame_offset_keyframes(None, file_count=2) is True
+    finally:
+        native._install_frame_offset_keyframes_impl = original
+    assert not geometry._FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE
+
+
+def check_effects_on_sequence(work):
+    """Image effects on a sequence keep the samples' timing and static offset."""
+    geometry = module("geometry_nodes")
+    registry = module("effects_registry")
+    folder = work / "fx"
+    folder.mkdir()
+    names = []
+    for index in range(6):
+        name = f"fx_{index + 1:04d}.png"
+        write_png(folder / name, 16, 16, (40 * index, 90, 160, 255))
+        names.append(name)
+    import_sequence(folder, names)
+    rig = rigs()[-1]
+    assert geometry.fbp_add_effect(rig, registry.FBP_EFFECT_GAUSSIAN_BLUR)
+    material = None
+    plane = rig.fbp_plane_target
+    for slot in plane.material_slots:
+        if slot.material is not None:
+            material = slot.material
+            break
+    assert material is not None
+    source = module("effect_shader_routing")._fbp_shader_image_node(material)
+    groups = [
+        node.node_tree for node in material.node_tree.nodes
+        if node.type == 'GROUP' and node.node_tree is not None
+        and geometry._fbp_matrix_source_image_nodes(node.node_tree)
+    ]
+    assert groups, "no private image samples"
+    for group in groups:
+        for node in geometry._fbp_matrix_source_image_nodes(group):
+            assert node.image_user.frame_offset == source.image_user.frame_offset
+            curve = geometry._fbp_frame_offset_curve(node)
+            if curve is not None:
+                assert len(curve.keyframe_points) == len(
+                    geometry._fbp_frame_offset_curve(source).keyframe_points
+                )
+
+
 def check_long_import(work):
     folder = work / "long"
     folder.mkdir()
@@ -349,6 +400,8 @@ def main():
             ("alpha outline cache", check_alpha_outline_cache),
             ("region grid", check_region_grid),
             ("source index resolver", check_source_index_resolver),
+            ("timing write resets effect check", check_timing_write_resets_effect_check),
+            ("effects on a sequence", lambda: check_effects_on_sequence(work)),
             ("long import", lambda: check_long_import(work)),
         )
         for label, check in checks:
