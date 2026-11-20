@@ -15,6 +15,11 @@ All notable public changes to Frame By Plane are documented here.
 - **Solo** on a selected controller or a whole selected group solos the group's layers.
 - **Ungroup** (Ctrl+Shift+G or the button in the group box) dissolves a selected group: its layers and nested groups move to the parent collection and the empty collection is removed.
 
+### Large preview on list rows
+
+- **Hover a row, see the image.** Resting the mouse on a row of the Layer List, the Frames list or the Multiplane Setup list now shows a larger thumbnail (256 px by default) beside the sidebar, with the row name and frame number. It closes as soon as the mouse moves or any key or button is pressed. Size or Off in **Preferences > Interface Behavior > Row Hover Preview**.
+- **Tooltip with name and frame.** The row tooltip now shows the row name and its position, for example "Frame 2 of 6 · Scene frames 3-4" on a frame, or the frame shown at the current scene frame on a layer, instead of only "Click to select. Double-click to rename.".
+
 ### Fixes
 
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
