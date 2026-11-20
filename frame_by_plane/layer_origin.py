@@ -10,8 +10,11 @@ Set Layer Origin moves the rig's origin to a point and puts everything that
 hangs on the rig back where it was, so the drawing does not move:
 
 * the rig location (and its location keys) move by the shift;
-* the plane and the rig's other children move back by the same shift inside
-  the rig (their location, or their parent inverse when they use one);
+* the plane's mesh is rebuilt around the new origin, so the plane origin
+  moves with the layer origin (no dashed parent line), and Crop and Extend
+  keep that origin;
+* the rig's other children move back by the same shift inside the rig
+  (their location, or their parent inverse when they use one);
 * the transform box anchor keeps its place;
 * the rig wire is rebuilt around the plane (a Custom wire is shifted).
 
@@ -204,6 +207,60 @@ def fbp_layer_geometry_to_origin(rig):
     return True
 
 
+def _plane_location_keyed(plane):
+    curves = fbp_action_fcurves(plane)
+    return curves is not None and any(
+        str(getattr(curve, "data_path", "")) == "location" for curve in curves
+    )
+
+
+def fbp_fold_plane_offset(rig, context=None):
+    """Bring the plane origin onto the rig origin without moving the drawing.
+
+    Set Layer Origin first moves the plane back inside the rig through its
+    location, which leaves the plane's origin (and Blender's dashed parent
+    line) where it was. This moves the plane mesh instead: the plane goes
+    back to location 0 and its mesh is rebuilt around the new origin, which
+    is stored on the layer so Crop and Extend keep it. Children of the plane
+    keep their place. A plane with its own location keys is left as it is.
+    """
+    plane = getattr(rig, "fbp_plane_target", None)
+    if plane is None:
+        return False
+    try:
+        if not _is_identity(plane.matrix_parent_inverse) or _plane_location_keyed(plane):
+            return False
+        location = Vector(plane.location)
+        if location.xy.length <= 1.0e-7:
+            return False
+        linear = plane.matrix_basis.to_3x3()
+        if abs(linear.determinant()) <= 1.0e-12:
+            return False
+        local = linear.inverted() @ location
+        fold = Vector((local.x, local.y, 0.0))
+        if fold.length <= 1.0e-7:
+            return False
+        from .builder import FBP_PLANE_ORIGIN_OFFSET_KEY, fbp_plane_origin_offset
+        offset_x, offset_y = fbp_plane_origin_offset(rig)
+        rig[FBP_PLANE_ORIGIN_OFFSET_KEY] = (offset_x - fold.x, offset_y - fold.y)
+        plane.location = location - linear @ fold
+        forward = Matrix.Translation(fold)
+        for child in tuple(plane.children):
+            if _is_identity(child.matrix_parent_inverse):
+                _move_location(child, fold)
+            else:
+                child.matrix_parent_inverse = forward @ child.matrix_parent_inverse
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+    try:
+        from .core import fbp_refresh_crop_extend
+        fbp_refresh_crop_extend(rig, context or bpy.context)
+    except (ImportError, *FBP_DATA_ERRORS) as exc:
+        from .runtime import fbp_warn
+        fbp_warn("Could not rebuild the plane around its new origin", exc)
+    return True
+
+
 def _refresh_rig_wire(rig, shift):
     try:
         shape = str(getattr(rig, "fbp_rig_shape", "DEFAULT") or "DEFAULT").upper()
@@ -263,7 +320,11 @@ class FBP_OT_LayerOriginSet(Operator):
                 done = fbp_layer_geometry_to_origin(rig)
             else:
                 done = fbp_set_layer_origin(rig, layer_geometry_center(rig))
-            changed += int(bool(done))
+            # The plane origin follows the layer origin (no dashed line).
+            folded = fbp_fold_plane_offset(rig, context)
+            if folded:
+                _refresh_rig_wire(rig, None)
+            changed += int(bool(done or folded))
         context.view_layer.update()
         for area in getattr(getattr(context, "screen", None), "areas", ()) or ():
             if area.type == 'VIEW_3D':
