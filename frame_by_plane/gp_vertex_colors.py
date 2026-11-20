@@ -71,6 +71,7 @@ _RUNTIME = {
     "edit_point_count": 0,
     "edit_fill_targets": (),
     "edit_fill_count": 0,
+    "edit_all_cyclic": False,
     "stroke_swatches": (),
     "fill_swatches": (),
     "stroke_unique": 0,
@@ -178,6 +179,19 @@ def _context_mode(context=None):
 def _state(context=None):
     obj = _active_gp_object(context)
     return getattr(obj, _STATE_PROPERTY, None) if obj is not None else None
+
+
+def native_cyclic_stroke():
+    """Whether Blender draws its own Cyclic toggle for Draw brushes (5.3+).
+
+    Blender 5.3 added ``use_cyclic_stroke`` to Grease Pencil Draw brushes and
+    shows it in the Tool Header. Frame By Plane's own Close Gap then becomes a
+    second control for the same thing, so it gives way to the native one.
+    """
+    try:
+        return "use_cyclic_stroke" in bpy.types.BrushGpencilSettings.bl_rna.properties
+    except (AttributeError, KeyError):
+        return False
 
 
 def _color_owner(paint, brush):
@@ -684,13 +698,15 @@ def _sync_draw_both_fill(context=None):
 
     indices = tuple(_new_draw_curve_indices(previous_count, curve_count, draw_on_back))
     clean_fill = _rgba(state.fill_color)
+    # With Blender's own Cyclic option the brush closes new strokes itself.
+    own_cyclic = not native_cyclic_stroke()
     close_stroke = bool(state.close_strokes)
     changed = 0
     for curve_index in indices:
         try:
             stroke = drawing.strokes[curve_index]
             curve_changed = False
-            if bool(stroke.cyclic) != close_stroke:
+            if own_cyclic and bool(stroke.cyclic) != close_stroke:
                 stroke.cyclic = close_stroke
                 curve_changed = True
             if use_dual_fill and not _colors_close(stroke.fill_color, clean_fill):
@@ -1148,6 +1164,32 @@ def _selected_color_snapshot(context, obj):
     )
 
 
+def _selection_all_cyclic(fill_targets):
+    """Whether every selected Edit curve is closed (False when none is selected)."""
+    found = False
+    for drawing, _total, _selected, batches in fill_targets:
+        values = None
+        try:
+            attribute = drawing.attributes.get("cyclic")
+            if attribute is not None and str(attribute.domain) == "CURVE":
+                values = array("b", [0]) * len(attribute.data)
+                attribute.data.foreach_get("value", values)
+        except FBP_DATA_ERRORS:
+            values = _MISSING
+        for stroke, curve_index in batches:
+            found = True
+            if values is None:
+                # Blender omits an all-False cyclic attribute.
+                return False
+            try:
+                closed = values[curve_index] if values is not _MISSING else stroke.cyclic
+            except FBP_DATA_ERRORS + (IndexError,):
+                return False
+            if not closed:
+                return False
+    return found
+
+
 def _sync_edit_state(context=None, *, force=False):
     context = context or getattr(bpy, "context", None)
     obj = _active_gp_object(context)
@@ -1199,8 +1241,11 @@ def _sync_edit_state(context=None, *, force=False):
     _RUNTIME["edit_point_count"] = point_count
     _RUNTIME["edit_fill_targets"] = fill_targets
     _RUNTIME["edit_fill_count"] = curve_count
+    all_cyclic = _selection_all_cyclic(fill_targets)
+    cyclic_changed = all_cyclic != _RUNTIME.get("edit_all_cyclic")
+    _RUNTIME["edit_all_cyclic"] = all_cyclic
     if not force and signature == _RUNTIME.get("edit_signature"):
-        return False
+        return cyclic_changed
     _RUNTIME["edit_signature"] = signature
     _RUNTIME["context_mode"] = _context_mode(context)
     _RUNTIME["stroke_swatches"] = stroke_values
@@ -2237,6 +2282,8 @@ class FBP_OT_ToggleGPCloseGap(Operator):
         if state is None:
             return {"CANCELLED"}
         edit_mode = _context_mode(context) == "EDIT_GREASE_PENCIL"
+        if native_cyclic_stroke():
+            return self._execute_native(context, edit_mode)
         desired = not bool(state.close_strokes) if self.action == "TOGGLE" else self.action == "ON"
         if desired == bool(state.close_strokes):
             # Edit selections may contain open and closed curves even when
@@ -2247,6 +2294,23 @@ class FBP_OT_ToggleGPCloseGap(Operator):
         state.close_strokes = desired
         if not edit_mode:
             _push_edit_color_undo("Toggle Grease Pencil Close Gap")
+        return {"FINISHED"}
+
+
+    def _execute_native(self, context, edit_mode):
+        if edit_mode:
+            close = not bool(_RUNTIME.get("edit_all_cyclic")) if self.action == "TOGGLE" else self.action == "ON"
+            try:
+                return bpy.ops.grease_pencil.cyclical_set(type="CLOSE" if close else "OPEN")
+            except RuntimeError:
+                return {"CANCELLED"}
+        _paint, _brush, _owner, gp_settings = _draw_brush_context(context)
+        if gp_settings is None:
+            return {"CANCELLED"}
+        current = bool(gp_settings.use_cyclic_stroke)
+        desired = not current if self.action == "TOGGLE" else self.action == "ON"
+        if desired != current:
+            gp_settings.use_cyclic_stroke = desired
         return {"FINISHED"}
 
 
@@ -2305,7 +2369,10 @@ def _draw_paint_color_controls(layout, context, state):
         row.prop_enum(gp_settings, mode_property, "BOTH", text="Both", icon="GP_DRAW_BOTH")
     layout.prop(state, "stroke_color", text="Stroke")
     layout.prop(state, "fill_color", text="Fill")
-    layout.prop(state, "close_strokes", text="Close Gap", toggle=True, icon="LOOP_BACK")
+    if not native_cyclic_stroke():
+        layout.prop(state, "close_strokes", text="Close Gap", toggle=True, icon="LOOP_BACK")
+    elif context_mode == "PAINT_GREASE_PENCIL":
+        layout.prop(gp_settings, "use_cyclic_stroke", text="Cyclic", toggle=True, icon="GP_CYCLIC_STROKE")
     row = layout.row(align=True)
     row.operator("fbp.swap_gp_vertex_colors", text="Swap", icon="ARROW_LEFTRIGHT")
     row.label(text="X · Shift+X samples Stroke")
@@ -2357,13 +2424,22 @@ class FBP_PT_GPVertexColors(Panel):
         fill_col.enabled = bool(state.fill_available)
         fill_col.prop(state, "fill_color", text="Fill")
         _draw_mixed_swatches(layout, "FILL")
-        layout.prop(
-            state,
-            "close_strokes",
-            text="Close Selected Gaps",
-            toggle=True,
-            icon="LOOP_BACK",
-        )
+        if native_cyclic_stroke():
+            closed = bool(_RUNTIME.get("edit_all_cyclic"))
+            layout.operator(
+                "grease_pencil.cyclical_set",
+                text="Open Selected" if closed else "Close Selected",
+                icon="GP_CYCLIC_STROKE",
+                depress=closed,
+            ).type = "OPEN" if closed else "CLOSE"
+        else:
+            layout.prop(
+                state,
+                "close_strokes",
+                text="Close Selected Gaps",
+                toggle=True,
+                icon="LOOP_BACK",
+            )
         layout.operator("fbp.swap_gp_vertex_colors", text="Swap Stroke / Fill", icon="ARROW_LEFTRIGHT")
 
 
@@ -2650,9 +2726,50 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
     return True
 
 
+def _draw_edit_stroke_tools(layout, context, *, enabled=True):
+    """Blender 5.3 Edit Mode: Stroke/Fill/Both, native Cyclic and Arrange.
+
+    These run Blender's own operators on the selection (the same ones as
+    right click > Set Stroke Type, Close and Arrange), so Undo and every
+    selection mode behave exactly as in the native menus.
+    """
+    group = layout.row(align=False)
+    group.enabled = bool(enabled)
+    types = group.row(align=True)
+    for value, icon, tip in (
+        ("STROKE", "GP_DRAW_STROKE", "Stroke"),
+        ("FILL", "GP_DRAW_FILL", "Fill"),
+        ("BOTH", "GP_DRAW_BOTH", "Both"),
+    ):
+        types.operator("grease_pencil.set_stroke_type", text="", icon=icon).type = value
+    closed = bool(_RUNTIME.get("edit_all_cyclic"))
+    cyclic = group.row(align=True)
+    cyclic.operator(
+        "grease_pencil.cyclical_set",
+        text="",
+        icon="GP_CYCLIC_STROKE",
+        depress=closed,
+    ).type = "OPEN" if closed else "CLOSE"
+    arrange = group.row(align=True)
+    for direction, icon in (
+        ("TOP", "TRIA_UP_BAR"),
+        ("UP", "TRIA_UP"),
+        ("DOWN", "TRIA_DOWN"),
+        ("BOTTOM", "TRIA_DOWN_BAR"),
+    ):
+        arrange.operator("grease_pencil.reorder", text="", icon=icon).direction = direction
+    return True
+
+
 def _draw_header_close_stroke(layout, context, *, enabled=True):
     state = _state(context)
     if state is None:
+        return False
+    if native_cyclic_stroke():
+        # Draw Mode shows Blender's own Cyclic toggle; Edit Mode draws the
+        # native-icon tools instead; Vertex Paint draws no strokes.
+        if _context_mode(context) == "EDIT_GREASE_PENCIL":
+            return _draw_edit_stroke_tools(layout, context, enabled=enabled)
         return False
     group = layout.row(align=False)
     close = group.row(align=True)
@@ -2850,6 +2967,9 @@ def _draw_edit_material_selector(layout, obj):
         translate=False,
         icon_value=icon_id,
     )
+    if hasattr(bpy.types, "VIEW3D_MT_grease_pencil_assign_material"):
+        # Blender's own Assign Material menu: gives the selection a material.
+        layout.menu("VIEW3D_MT_grease_pencil_assign_material", text="", icon="MATERIAL_DATA")
 
 
 def _draw_edit_material(layout, context):

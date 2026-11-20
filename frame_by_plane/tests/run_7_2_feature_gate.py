@@ -17,6 +17,7 @@ TESTS = (
     "gp_paint_undo_regression.py",
     "gp_draw_color_stability_regression.py",
     "gp_unified_color_regression.py",
+    "gp_native_edit_tools_regression.py",
     "live_tutorial_regression.py",
     "split_sequence_planes_regression.py",
     "transparent_frame_runtime_regression.py",
