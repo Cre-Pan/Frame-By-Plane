@@ -32,6 +32,7 @@ Top view it also changes the depth), and rotation steps aside.
 
 from __future__ import annotations
 
+import collections
 import math
 import bpy
 from mathutils import Matrix, Vector
@@ -149,7 +150,9 @@ def layer_cage_rect(rig, depsgraph=None):
     return center, size
 
 
-_ALPHA_OUTLINES = {}
+_ALPHA_OUTLINES = collections.OrderedDict()
+_ALPHA_OUTLINE_LIMIT = 512
+_ALPHA_LAST_OUTLINE = {}
 
 
 def _alpha_box_segments(rig, center):
@@ -171,16 +174,20 @@ def _alpha_box_segments(rig, center):
         pointer = rig.as_pointer()
     except (ImportError, *FBP_DATA_ERRORS, TypeError, ValueError):
         return ()
-    cached = _ALPHA_OUTLINES.get(pointer)
-    if cached is not None and cached[0] == key:
-        return cached[1]
+    entry_key = (pointer, key)
+    cached = _ALPHA_OUTLINES.get(entry_key)
     if cached is not None:
+        _ALPHA_OUTLINES.move_to_end(entry_key)
+        _ALPHA_LAST_OUTLINE[pointer] = cached
+        return cached
+    previous = _ALPHA_LAST_OUTLINE.get(pointer)
+    if previous is not None:
         # During playback the outline waits, as the Legacy wire does, and
         # catches up on the first redraw after it stops.
         try:
             from .scene_sync import fbp_animation_playback_active
             if fbp_animation_playback_active():
-                return cached[1]
+                return previous
         except (ImportError, *FBP_DATA_ERRORS):
             pass
     segments = ()
@@ -196,9 +203,18 @@ def _alpha_box_segments(rig, center):
             for x, y, z in verts
         ]
         segments = tuple(points[index] for edge in edges for index in edge)
-    if len(_ALPHA_OUTLINES) >= 64:
-        _ALPHA_OUTLINES.clear()
-    _ALPHA_OUTLINES[pointer] = (key, segments)
+    # One entry per layer and drawing, least recently drawn first out.
+    # Clearing the whole cache at 64 entries, and keeping only the current
+    # drawing of each layer, made every click in a bigger project and every
+    # scrubbed frame of an Alpha Follow layer rebuild the outline (marching
+    # squares and smoothing, 20-30 ms each).
+    _ALPHA_OUTLINES[entry_key] = segments
+    _ALPHA_OUTLINES.move_to_end(entry_key)
+    while len(_ALPHA_OUTLINES) > _ALPHA_OUTLINE_LIMIT:
+        _ALPHA_OUTLINES.popitem(last=False)
+    if len(_ALPHA_LAST_OUTLINE) > _ALPHA_OUTLINE_LIMIT:
+        _ALPHA_LAST_OUTLINE.clear()
+    _ALPHA_LAST_OUTLINE[pointer] = segments
     return segments
 
 

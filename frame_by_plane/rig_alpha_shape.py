@@ -20,10 +20,7 @@ from __future__ import annotations
 import os
 from typing import Iterable, Sequence
 
-try:  # NumPy ships with Blender; keep import errors explicit for tests.
-    import numpy as np
-except ImportError:  # pragma: no cover - Blender always provides NumPy.
-    np = None
+from .lazy_numpy import np  # NumPy loads on first use, not at Blender start
 
 
 # Long side of the cached full-canvas alpha union. Large enough for a precise
@@ -313,16 +310,12 @@ def region_grid(union: AlphaUnion, uv_rect, cells: int = FBP_ALPHA_OUTLINE_CELLS
     gh = max(1, int(round(rh * cells / float(longest))))
     col_edges = np.linspace(0, rw, gw + 1).astype(int)
     row_edges = np.linspace(0, rh, gh + 1).astype(int)
-    grid = np.zeros((gh, gw), dtype=bool)
-    for gy in range(gh):
-        ra, rb = row_edges[gy], max(row_edges[gy] + 1, row_edges[gy + 1])
-        band = region[ra:rb]
-        if not band.any():
-            continue
-        for gx in range(gw):
-            ca, cb = col_edges[gx], max(col_edges[gx] + 1, col_edges[gx + 1])
-            grid[gy, gx] = bool(band[:, ca:cb].any())
-    return grid
+    # One vectorised OR per axis instead of one numpy call per cell. For
+    # increasing starts ``reduceat`` ORs region[start:next_start] and, where
+    # two starts coincide, takes the single row/column at ``start``: the same
+    # cells the per-cell loop read with its ``max(start + 1, end)`` guard.
+    rows = np.logical_or.reduceat(region, row_edges[:-1], axis=0)
+    return np.logical_or.reduceat(rows, col_edges[:-1], axis=1)
 
 
 def dilate(grid, steps: int):

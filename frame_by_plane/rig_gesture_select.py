@@ -21,10 +21,7 @@ from .runtime import fbp_guarded
 from .runtime import FBP_DATA_ERRORS
 from .common import uniform_color_shader as _shader
 
-try:
-    import numpy as np
-except ImportError:  # pragma: no cover - Blender ships NumPy.
-    np = None
+from .lazy_numpy import np  # NumPy loads on first use, not at Blender start
 
 
 _MODE_ITEMS = (

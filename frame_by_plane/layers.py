@@ -9,6 +9,8 @@ import os
 import time
 from collections import deque
 
+import contextlib
+
 import bpy
 import bpy.utils.previews
 import mathutils
@@ -603,18 +605,25 @@ def get_primary_fbp_collection(obj):
     """
     if not obj:
         return None
+    stored_name = ''
+    try:
+        stored_name = str(getattr(obj, 'fbp_collection_name', '') or '')
+        if stored_name:
+            # Fast path: ask the hinted collection directly. ``users_collection``
+            # walks every object of every collection in the file, and the layer
+            # list calls this once per layer per group row, so large projects
+            # paid that walk thousands of times per refresh.
+            collection = bpy.data.collections.get(stored_name)
+            if collection is not None:
+                linked = collection.objects.get(getattr(obj, 'name', ''))
+                if linked is not None and linked == obj:
+                    return collection
+    except FBP_DATA_ERRORS:
+        pass
     try:
         user_collections = tuple(getattr(obj, 'users_collection', ()) or ())
     except FBP_DATA_ERRORS:
         user_collections = ()
-    try:
-        stored_name = str(getattr(obj, 'fbp_collection_name', '') or '')
-        if stored_name:
-            collection = bpy.data.collections.get(stored_name)
-            if collection is not None and collection in user_collections:
-                return collection
-    except FBP_DATA_ERRORS:
-        pass
     try:
         for collection in user_collections:
             if getattr(collection, 'is_fbp_collection', False):
@@ -3000,7 +3009,46 @@ def set_layer_holdout(self, value):
         fbp_warn("Holdout toggle skipped", exc)
 
 
+_FBP_MEMBERS_MEMO = None
+
+
+@contextlib.contextmanager
+def fbp_collection_members_memo():
+    """Share collection membership lookups inside one read-only pass.
+
+    A group row reads visible, solo, holdout, locked and selected state; each
+    getter resolved the same members again. The memo lives only for the
+    ``with`` block, so no RNA outlives the pass. Nested use reuses the outer one.
+    """
+    global _FBP_MEMBERS_MEMO
+    if _FBP_MEMBERS_MEMO is not None:
+        yield _FBP_MEMBERS_MEMO
+        return
+    _FBP_MEMBERS_MEMO = {}
+    try:
+        yield _FBP_MEMBERS_MEMO
+    finally:
+        _FBP_MEMBERS_MEMO = None
+
+
+def _fbp_members_memo_get(kind, collection, build):
+    memo = _FBP_MEMBERS_MEMO
+    if memo is None:
+        return build(collection)
+    try:
+        key = (kind, int(collection.as_pointer()))
+    except FBP_DATA_ERRORS:
+        return build(collection)
+    if key not in memo:
+        memo[key] = build(collection)
+    return list(memo[key])
+
+
 def _collection_rigs_for_ui(collection):
+    return _fbp_members_memo_get("rigs", collection, _collection_rigs_for_ui_uncached)
+
+
+def _collection_rigs_for_ui_uncached(collection):
     """Resolve members through the canonical Layer-List collection contract.
 
     Layer List collections are real Blender Collections and membership is
@@ -3084,7 +3132,10 @@ def _collection_gp_canvases_for_ui(collection):
 
 def _collection_ui_members(collection):
     """Return mesh rigs and GP Drawing Planes represented by one folder row."""
-    return _collection_rigs_for_ui(collection), _collection_gp_canvases_for_ui(collection)
+    return (
+        _collection_rigs_for_ui(collection),
+        _fbp_members_memo_get("gp", collection, _collection_gp_canvases_for_ui),
+    )
 
 
 def get_collection_selected(self):
@@ -3150,14 +3201,17 @@ def set_collection_selected(self, value):
 
 def get_collection_solo(self):
     rigs, gp_canvases = _collection_ui_members(self)
-    states = []
+    if not rigs and not gp_canvases:
+        return False
     try:
+        # Stop at the first member without Solo: each lookup scans the layer
+        # list, and a folder is usually not soloed.
         for rig in rigs:
             item = get_layer_item_for_rig(bpy.context, rig)
-            states.append(bool(item and getattr(item, "solo", False)))
+            if not (item and getattr(item, "solo", False)):
+                return False
         from .grease_pencil_bridge import gp_canvas_solo_active
-        states.extend(bool(gp_canvas_solo_active(canvas)) for canvas in gp_canvases)
-        return bool(states and all(states))
+        return all(bool(gp_canvas_solo_active(canvas)) for canvas in gp_canvases)
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return False
 
