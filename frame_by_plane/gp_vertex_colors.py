@@ -2674,12 +2674,33 @@ def header_side_split(count, limit=None):
     return limit, count - limit
 
 
+def _draw_side_icon(layout, target, items, extra):
+    """Stroke/Fill icon next to the swap button; a list dropdown when mixed."""
+    icon = "GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL"
+    if len(items) <= 1:
+        layout.label(text="", icon=icon)
+        return
+    layout.popover(
+        panel=(
+            FBP_PT_GPStrokeSwatchesPopover.bl_idname
+            if target == "STROKE"
+            else FBP_PT_GPFillSwatchesPopover.bl_idname
+        ),
+        text=f"+{extra}" if extra else "",
+        icon=icon,
+    )
+
+
 def _draw_header_side(layout, state, target, items, *, enabled=True):
+    """One side of the strip, mirrored around the swap button.
+
+    Stroke: ``[colors] [Stroke icon ▾ +N]``; Fill: ``[Fill icon ▾ +N] [colors]``.
+    """
     side = layout.row(align=True)
     side.enabled = bool(enabled)
-    # Stroke or Fill icon in front of each group, so the two sides can be
-    # told apart however many colors they hold.
-    side.label(text="", icon="GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL")
+    shown, extra = header_side_split(len(items))
+    if target == "FILL":
+        _draw_side_icon(side, target, items, extra)
     if len(items) <= 1:
         single = side.row(align=True)
         single.ui_units_x = 2.5
@@ -2689,21 +2710,13 @@ def _draw_header_side(layout, state, target, items, *, enabled=True):
             text="",
             panel="FBP_PT_gp_stroke_color_popover" if target == "STROKE" else "FBP_PT_gp_fill_color_popover",
         )
-        return
-    shown, extra = header_side_split(len(items))
-    for item in items[:shown]:
-        swatch = side.row(align=True)
-        swatch.ui_units_x = 1.1
-        swatch.prop(item, "color", text="")
-    if extra:
-        side.popover(
-            panel=(
-                FBP_PT_GPStrokeSwatchesPopover.bl_idname
-                if target == "STROKE"
-                else FBP_PT_GPFillSwatchesPopover.bl_idname
-            ),
-            text=f"+{extra}",
-        )
+    else:
+        for item in items[:shown]:
+            swatch = side.row(align=True)
+            swatch.ui_units_x = 1.1
+            swatch.prop(item, "color", text="")
+    if target == "STROKE":
+        _draw_side_icon(side, target, items, extra)
 
 
 def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
@@ -2740,9 +2753,9 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
             return True
     group = layout.row(align=False)
     row = group.row(align=True)
-    row.ui_units_x = 6.25
+    row.ui_units_x = 8.25
     stroke = row.row(align=True)
-    stroke.ui_units_x = 2.5
+    stroke.ui_units_x = 3.5
     stroke.enabled = bool(enabled)
     stroke.prop_with_popover(
         state,
@@ -2750,6 +2763,7 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
         text="",
         panel="FBP_PT_gp_stroke_color_popover",
     )
+    stroke.label(text="", icon="GP_DRAW_STROKE")
     swap = row.row(align=True)
     swap.ui_units_x = 1.25
     swap.scale_x = 1.0
@@ -2761,8 +2775,9 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
         emboss=True,
     )
     fill = row.row(align=True)
-    fill.ui_units_x = 2.5
+    fill.ui_units_x = 3.5
     fill.enabled = bool(enabled)
+    fill.label(text="", icon="GP_DRAW_FILL")
     fill.prop_with_popover(
         state,
         "fill_color",
