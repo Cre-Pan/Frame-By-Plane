@@ -71,6 +71,7 @@ from .layer_tree_snapshot import (
 
 _FBP_LAYER_TREE_LAST_CHECK = {}
 _FBP_LAYER_TREE_CHECK_INTERVAL = 0.75
+_FBP_LAYER_TREE_PLAYBACK_CHECK_INTERVAL = 3.0
 
 
 # SECTION 01 - Multiplane Setup: layout helpers #
@@ -1166,29 +1167,60 @@ def fbp_layer_tree_signature(context, tree_cache=None):
 
 
 
+_FBP_COLLECTION_ROW_FIELDS = (
+    ("collection_collapsed", False),
+    ("collection_visible", True),
+    ("collection_solo", False),
+    ("collection_holdout", False),
+    ("collection_plane_locked", True),
+    ("collection_locked", False),
+    ("collection_selected", False),
+    ("collection_color_tag", "NONE"),
+)
+
+
+def _fbp_collection_row_values(collection, context):
+    from .layers import fbp_collection_members_memo
+
+    with fbp_collection_members_memo():
+        return (
+            bool(getattr(collection, "fbp_collapsed", False)),
+            bool(get_collection_visible(collection)),
+            bool(get_collection_solo(collection)),
+            bool(get_collection_holdout(collection)),
+            bool(get_collection_plane_locked(collection)),
+            bool(get_collection_locked(collection)),
+            bool(get_collection_selected(collection)),
+            str(fbp_collection_effective_color_tag(collection, context) or "NONE"),
+        )
+
+
+def _fbp_write_collection_row(row, values):
+    """Write only the fields that differ: every RNA write tags the Scene."""
+    changed = False
+    for (name, _default), value in zip(_FBP_COLLECTION_ROW_FIELDS, values):
+        try:
+            current = getattr(row, name)
+        except FBP_DATA_ERRORS:
+            current = None
+        if current != value:
+            setattr(row, name, value)
+            changed = True
+    return changed
+
+
 def _fbp_store_collection_row_snapshot(row, collection, context):
     """Copy collection UI state into scalar row properties outside draw()."""
     try:
-        row.collection_collapsed = bool(getattr(collection, "fbp_collapsed", False))
-        row.collection_visible = bool(get_collection_visible(collection))
-        row.collection_solo = bool(get_collection_solo(collection))
-        row.collection_holdout = bool(get_collection_holdout(collection))
-        row.collection_plane_locked = bool(get_collection_plane_locked(collection))
-        row.collection_locked = bool(get_collection_locked(collection))
-        row.collection_selected = bool(get_collection_selected(collection))
-        row.collection_color_tag = str(
-            fbp_collection_effective_color_tag(collection, context) or "NONE"
-        )
+        _fbp_write_collection_row(row, _fbp_collection_row_values(collection, context))
         return True
     except FBP_DATA_ERRORS:
-        row.collection_collapsed = False
-        row.collection_visible = True
-        row.collection_solo = False
-        row.collection_holdout = False
-        row.collection_plane_locked = True
-        row.collection_locked = False
-        row.collection_selected = False
-        row.collection_color_tag = "NONE"
+        try:
+            _fbp_write_collection_row(
+                row, tuple(default for _name, default in _FBP_COLLECTION_ROW_FIELDS)
+            )
+        except FBP_DATA_ERRORS:
+            pass
         return False
 
 
@@ -1214,28 +1246,11 @@ def fbp_refresh_layer_tree_group_snapshots(context):
             collection = bpy.data.collections.get(name) if name else None
             if collection is None:
                 continue
-            before = (
-                bool(getattr(row, "collection_collapsed", False)),
-                bool(getattr(row, "collection_visible", True)),
-                bool(getattr(row, "collection_solo", False)),
-                bool(getattr(row, "collection_holdout", False)),
-                bool(getattr(row, "collection_plane_locked", True)),
-                bool(getattr(row, "collection_locked", False)),
-                bool(getattr(row, "collection_selected", False)),
-                str(getattr(row, "collection_color_tag", "NONE") or "NONE"),
-            )
-            _fbp_store_collection_row_snapshot(row, collection, context)
-            after = (
-                bool(getattr(row, "collection_collapsed", False)),
-                bool(getattr(row, "collection_visible", True)),
-                bool(getattr(row, "collection_solo", False)),
-                bool(getattr(row, "collection_holdout", False)),
-                bool(getattr(row, "collection_plane_locked", True)),
-                bool(getattr(row, "collection_locked", False)),
-                bool(getattr(row, "collection_selected", False)),
-                str(getattr(row, "collection_color_tag", "NONE") or "NONE"),
-            )
-            changed = changed or before != after
+            try:
+                values = _fbp_collection_row_values(collection, context)
+            except FBP_DATA_ERRORS:
+                values = tuple(default for _name, default in _FBP_COLLECTION_ROW_FIELDS)
+            changed = _fbp_write_collection_row(row, values) or changed
     except FBP_DATA_ERRORS:
         return changed
     return changed
@@ -1551,11 +1566,21 @@ def fbp_schedule_layer_tree_rebuild(context, *, tree_cache=None, force=False):
         signature_ready = False
     now = time.monotonic()
     last_check = float(_FBP_LAYER_TREE_LAST_CHECK.get(scene_key, 0.0) or 0.0)
+    interval = _FBP_LAYER_TREE_CHECK_INTERVAL
+    if not force and rows_ready and signature_ready:
+        # The sidebar redraws on every played frame, and the tree rarely
+        # changes while it plays: check it less often until playback stops.
+        try:
+            from .scene_sync import fbp_animation_playback_active
+            if fbp_animation_playback_active():
+                interval = _FBP_LAYER_TREE_PLAYBACK_CHECK_INTERVAL
+        except (ImportError, *FBP_DATA_ERRORS):
+            pass
     if (
         not force
         and rows_ready
         and signature_ready
-        and now - last_check < _FBP_LAYER_TREE_CHECK_INTERVAL
+        and now - last_check < interval
     ):
         return False
     _FBP_LAYER_TREE_LAST_CHECK[scene_key] = now
