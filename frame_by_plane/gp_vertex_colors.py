@@ -53,6 +53,8 @@ _COLOR_DECODE_CACHE_LIMIT = 256
 # _HEADER_SWATCH_LIMIT swatches in a row and lists the rest in a popover.
 _SWATCH_LIMIT = 64
 _HEADER_SWATCH_LIMIT = 12
+# Colors shown inline per side (Stroke, Fill) before the "+N" list button.
+_HEADER_SIDE_LIMIT = 6
 _PAINT_MODES = frozenset({"PAINT_GREASE_PENCIL", "VERTEX_GREASE_PENCIL"})
 _RUNTIME = {
     "target": 0,
@@ -2659,36 +2661,25 @@ class FBP_PT_GPFillSwatchesPopover(Panel):
         _draw_target_swatch_popover(self.layout, context, "FILL")
 
 
-def header_swatch_layout(stroke_count, fill_count, limit=_HEADER_SWATCH_LIMIT):
-    """Return ``(stroke_inline, fill_inline)`` for the Edit Mode color strip.
+def header_side_split(count, limit=None):
+    """Return ``(shown, extra)`` swatches for one side of the Edit Mode strip.
 
-    Both sides stay inline while their colors fit in ``limit`` swatches.
-    Otherwise the larger side collapses into its own dropdown (one slot), and
-    the other side collapses too only if it still does not fit.
+    Each side shows its most used colors, up to ``limit``; the rest sit
+    behind a "+N" button that opens the full list.
     """
-    stroke_count = max(0, int(stroke_count))
-    fill_count = max(0, int(fill_count))
-    if stroke_count + fill_count <= limit:
-        return True, True
-    if stroke_count >= fill_count:
-        return False, fill_count + 1 <= limit
-    return stroke_count + 1 <= limit, False
+    limit = _HEADER_SIDE_LIMIT if limit is None else max(1, int(limit))
+    count = max(0, int(count))
+    if count <= limit:
+        return count, 0
+    return limit, count - limit
 
 
-def _draw_header_side(layout, state, target, items, inline, *, enabled=True):
+def _draw_header_side(layout, state, target, items, *, enabled=True):
     side = layout.row(align=True)
     side.enabled = bool(enabled)
-    if not inline:
-        side.popover(
-            panel=(
-                FBP_PT_GPStrokeSwatchesPopover.bl_idname
-                if target == "STROKE"
-                else FBP_PT_GPFillSwatchesPopover.bl_idname
-            ),
-            text=f"{len(items)} Colors",
-            icon="GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL",
-        )
-        return
+    # Stroke or Fill icon in front of each group, so the two sides can be
+    # told apart however many colors they hold.
+    side.label(text="", icon="GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL")
     if len(items) <= 1:
         single = side.row(align=True)
         single.ui_units_x = 2.5
@@ -2699,10 +2690,20 @@ def _draw_header_side(layout, state, target, items, inline, *, enabled=True):
             panel="FBP_PT_gp_stroke_color_popover" if target == "STROKE" else "FBP_PT_gp_fill_color_popover",
         )
         return
-    for item in items:
+    shown, extra = header_side_split(len(items))
+    for item in items[:shown]:
         swatch = side.row(align=True)
-        swatch.ui_units_x = 1.2
+        swatch.ui_units_x = 1.1
         swatch.prop(item, "color", text="")
+    if extra:
+        side.popover(
+            panel=(
+                FBP_PT_GPStrokeSwatchesPopover.bl_idname
+                if target == "STROKE"
+                else FBP_PT_GPFillSwatchesPopover.bl_idname
+            ),
+            text=f"+{extra}",
+        )
 
 
 def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
@@ -2713,20 +2714,16 @@ def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
     has_fill = bool(state.fill_available) and bool(fill_items)
     if not has_stroke and not has_fill:
         return False
-    stroke_inline, fill_inline = header_swatch_layout(
-        len(stroke_items) if has_stroke else 0,
-        len(fill_items) if has_fill else 0,
-    )
-    row = layout.row(align=True)
+    row = layout.row(align=False)
     if has_stroke:
-        _draw_header_side(row, state, "STROKE", stroke_items, stroke_inline, enabled=enabled)
+        _draw_header_side(row, state, "STROKE", stroke_items, enabled=enabled)
     if has_stroke and has_fill:
         swap = row.row(align=True)
         swap.ui_units_x = 1.25
         swap.enabled = bool(enabled)
         swap.operator("fbp.swap_gp_vertex_colors", text="", icon="ARROW_LEFTRIGHT", emboss=True)
     if has_fill:
-        _draw_header_side(row, state, "FILL", fill_items, fill_inline, enabled=enabled)
+        _draw_header_side(row, state, "FILL", fill_items, enabled=enabled)
     return True
 
 

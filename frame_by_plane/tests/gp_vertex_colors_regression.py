@@ -167,12 +167,12 @@ try:
     style.color = stroke_rgba
     module._sync_edit_state(bpy.context, force=True)
 
-    # Header strip: both sides inline up to 12; the larger side collapses first.
-    assert module.header_swatch_layout(11, 1) == (True, True)
-    assert module.header_swatch_layout(12, 1) == (False, True)
-    assert module.header_swatch_layout(1, 12) == (True, False)
-    assert module.header_swatch_layout(13, 13) == (False, False)
-    assert module.header_swatch_layout(6, 6) == (True, True)
+    # Header strip: each side shows up to 6 colors, then a "+N" list button.
+    assert module.header_side_split(1) == (1, 0)
+    assert module.header_side_split(6) == (6, 0)
+    assert module.header_side_split(7) == (6, 1)
+    assert module.header_side_split(20) == (6, 14)
+    assert module.header_side_split(5, limit=2) == (2, 3)
 
     # Replace All gives every selected stroke one color.
     state.replace_stroke_color = (0.25, 0.5, 0.75, 1.0)
@@ -189,15 +189,17 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from ui_layout_stub import StubLayout, StubPanel
 
-    for limit in (12, 2):
-        previous_limit = module._HEADER_SWATCH_LIMIT
-        module._HEADER_SWATCH_LIMIT = limit
+    for limit in (6, 1):
+        previous_limit = module._HEADER_SIDE_LIMIT
+        module._HEADER_SIDE_LIMIT = limit
         try:
             stub = StubLayout()
             assert module._draw_header_color_pair(stub, bpy.context, enabled=True)
             assert any(call[0] == "prop" for call in stub.calls)
+            if limit == 1:
+                assert any(call[0] == "popover" for call in stub.calls)
         finally:
-            module._HEADER_SWATCH_LIMIT = previous_limit
+            module._HEADER_SIDE_LIMIT = previous_limit
     for target in ("STROKE", "FILL"):
         stub = StubLayout()
         module._draw_target_swatch_popover(stub, bpy.context, target)
