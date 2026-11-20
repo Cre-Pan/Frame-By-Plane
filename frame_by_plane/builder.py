@@ -698,7 +698,8 @@ def _fbp_rig_shape_wire(rig, shape):
         center = ((max_x + min_x) * 0.5, (max_y + min_y) * 0.5)
         half_extents = (max(0.0001, (max_x - min_x) * 0.5), max(0.0001, (max_y - min_y) * 0.5))
     else:
-        center = (0.0, 0.0)
+        offset_x, offset_y = fbp_plane_origin_offset(rig)
+        center = (-offset_x, -offset_y)
         half_extents = fbp_native_aspect_half_extents(rig)
     alpha_geometry = _fbp_alpha_rig_geometry(rig, margin) if shape == "ALPHA" else None
     if alpha_geometry is not None:
@@ -834,6 +835,28 @@ def fbp_native_aspect_half_extents(rig):
         return material_aspect[0], material_aspect[1]
     return 1.0, 1.0
 
+FBP_PLANE_ORIGIN_OFFSET_KEY = "fbp_plane_origin_offset"
+
+
+def fbp_plane_origin_offset(rig):
+    """Where the plane's origin sits on the image, in plane-local XY.
+
+    ``(0, 0)`` is the middle of the uncropped image. Set Layer Origin moves
+    it (for example to the middle of a cropped drawing): the plane mesh is
+    built around it, so the plane origin and the rig origin stay together.
+    """
+    try:
+        value = rig.get(FBP_PLANE_ORIGIN_OFFSET_KEY) if rig is not None else None
+        if value is None or len(value) < 2:
+            return 0.0, 0.0
+        x, y = float(value[0]), float(value[1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return 0.0, 0.0
+        return x, y
+    except (TypeError, ValueError) + FBP_DATA_IO_ERRORS:
+        return 0.0, 0.0
+
+
 def fbp_plane_reference_bounds(rig):
     """Return source, cropped and extended plane bounds in local XY space.
 
@@ -871,11 +894,12 @@ def fbp_plane_reference_bounds(rig):
         crop_bottom *= factor
         crop_top *= factor
 
-    x0 = -base_x + crop_left * base_x
-    x1 = base_x - crop_right * base_x
-    y0 = -base_y + crop_bottom * base_y
-    y1 = base_y - crop_top * base_y
-    source = (-base_x, base_x, -base_y, base_y)
+    offset_x, offset_y = fbp_plane_origin_offset(rig)
+    x0 = -base_x + crop_left * base_x - offset_x
+    x1 = base_x - crop_right * base_x - offset_x
+    y0 = -base_y + crop_bottom * base_y - offset_y
+    y1 = base_y - crop_top * base_y - offset_y
+    source = (-base_x - offset_x, base_x - offset_x, -base_y - offset_y, base_y - offset_y)
     cropped = (x0, x1, y0, y1)
     extended = (
         x0 - left * base_x, x1 + right * base_x,
@@ -1169,9 +1193,11 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
         )[0]) - 1
         expected_polygon_count = column_count * row_count
     mesh = plane.data
+    offset_x, offset_y = fbp_plane_origin_offset(rig)
     signature = "|".join((
         str(FBP_CROP_EXTEND_CONTRACT_VERSION),
         mode,
+        f"{offset_x:.9f}", f"{offset_y:.9f}",
         f"{base_x:.9f}", f"{base_y:.9f}",
         f"{left:.9f}", f"{right:.9f}", f"{bottom:.9f}", f"{top:.9f}",
         f"{crop_left:.9f}", f"{crop_right:.9f}", f"{crop_bottom:.9f}", f"{crop_top:.9f}",
@@ -1201,10 +1227,11 @@ def set_plane_mesh_extension(rig, left=0.0, right=0.0, bottom=0.0, top=0.0, mode
     # Crop values use the current 0..2 range, corresponding to 0..100% of
     # the local width/height. Native layers apply that percentage to the real
     # image-aspect half extents instead of rebuilding a square plane.
-    x0 = -base_x + (crop_left * base_x)
-    x1 = base_x - (crop_right * base_x)
-    y0 = -base_y + (crop_bottom * base_y)
-    y1 = base_y - (crop_top * base_y)
+    # The mesh is built around the plane origin (Set Layer Origin).
+    x0 = -base_x + (crop_left * base_x) - offset_x
+    x1 = base_x - (crop_right * base_x) - offset_x
+    y0 = -base_y + (crop_bottom * base_y) - offset_y
+    y1 = base_y - (crop_top * base_y) - offset_y
     no_extension = left <= 1e-8 and right <= 1e-8 and bottom <= 1e-8 and top <= 1e-8
 
     mesh.clear_geometry()
