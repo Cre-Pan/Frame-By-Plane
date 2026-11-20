@@ -269,7 +269,7 @@ def _request_preview(context, properties, lines):
         # (e.g. onto the next row). Swap content and re-anchor in place.
         _STATE["payload"] = payload
         _STATE["anchor"] = _STATE.get("last_mouse")
-        _tag_area(area)
+        _tag_area(_STATE.get("draw_area") or area)
         return
     _STATE["pending"] = {
         "payload": payload,
@@ -402,16 +402,15 @@ def _placement(payload, region, box_w, box_h):
         window_width = int(bpy.context.window.width)
     except FBP_DATA_ERRORS:
         window_width = region.x + region.width
-    hover_x, _hover_y, hover_w, _hover_h = payload["region_rect"]
-    sidebar = payload["region_type"] == 'UI' and payload["region_ptr"] != region.as_pointer()
-    if sidebar and payload["region_alignment"] == 'LEFT':
-        # Left sidebar: Blender's tooltip grows to the right of the cursor,
-        # so the preview sits to the right of the tooltip's maximum width.
-        x = max(hover_x + hover_w, mouse_x + (_TOOLTIP_MAX_WIDTH + 24) * scale) + gap
+    side, edge_x = _STATE.get("dock") or ('SELF', 0)
+    if side == 'RIGHT':
+        # The list is left of the drawing area: Blender's tooltip grows to the
+        # right of the cursor, so stay right of its maximum width.
+        x = max(edge_x, mouse_x + (_TOOLTIP_MAX_WIDTH + 24) * scale) + gap
     else:
         right_edge = _estimated_tooltip_left(payload, window_width)
-        if sidebar:
-            right_edge = min(right_edge, hover_x)
+        if side == 'LEFT':
+            right_edge = min(right_edge, edge_x)
         x = right_edge - gap - box_w
     # Vertically centred on the hovered row.
     y = mouse_y - box_h * 0.5
@@ -502,7 +501,7 @@ def _draw_callback():
     context = bpy.context
     area = getattr(context, "area", None)
     region = getattr(context, "region", None)
-    if area is None or region is None or area.as_pointer() != payload["area_ptr"]:
+    if area is None or region is None or area.as_pointer() != _STATE.get("draw_area_ptr"):
         return
     try:
         import gpu
@@ -569,12 +568,62 @@ def _space_class_for(area):
         return None
 
 
-def _draw_region_for(area, hovered_region):
-    """Prefer the editor's main region so the preview can sit beside a sidebar."""
+def _main_region(area):
     for region in area.regions:
-        if region.type == 'WINDOW':
+        if region.type == 'WINDOW' and region.width > 1 and region.height > 1:
             return region
-    return hovered_region
+    return None
+
+
+def _overlaps_y(area, mouse_y):
+    return area.y <= mouse_y <= area.y + area.height
+
+
+def _draw_target(context, mouse_x, mouse_y):
+    """Pick the area/region that will show the preview and where to dock it.
+
+    * Sidebar of a 3D View (or any editor): the editor's own main region,
+      just outside the sidebar edge.
+    * A list in a narrow editor such as Properties > Tool: the neighbouring
+      editor (usually the 3D View) on the left, or on the right when the
+      list is on the left of the screen, right against the shared border.
+    * Otherwise the hovered region itself, beside the cursor.
+    Returns ``(area, region, (side, edge_x))`` in window pixels.
+    """
+    area = context.area
+    hovered = context.region
+    if hovered is not None and hovered.type == 'UI':
+        main = _main_region(area)
+        if main is not None:
+            if str(getattr(hovered, "alignment", "") or "") == 'LEFT':
+                return area, main, ('RIGHT', hovered.x + hovered.width)
+            return area, main, ('LEFT', hovered.x)
+    screen = getattr(context, "screen", None) or getattr(context.window, "screen", None)
+    left, right = [], []
+    for other in getattr(screen, "areas", ()):
+        if other.as_pointer() == area.as_pointer():
+            continue
+        main = _main_region(other)
+        if main is None:
+            continue
+        # Prefer an editor that shares the border with the list, then one
+        # level with the cursor, then the largest (a 3D View rather than the
+        # thin Timeline under it): the preview is clamped inside it anyway.
+        if other.x + other.width <= area.x + 2:
+            touching = abs(other.x + other.width - area.x) <= 2
+        elif other.x >= area.x + area.width - 2:
+            touching = abs(other.x - (area.x + area.width)) <= 2
+        else:
+            continue
+        score = (touching, main.height >= 200, _overlaps_y(other, mouse_y), main.width * main.height)
+        (left if other.x < area.x else right).append((score, other, main))
+    if left:
+        _score, other, main = max(left, key=lambda item: item[0])
+        return other, main, ('LEFT', area.x)
+    if right:
+        _score, other, main = max(right, key=lambda item: item[0])
+        return other, main, ('RIGHT', area.x + area.width)
+    return area, (_main_region(area) or hovered), ('SELF', 0)
 
 
 class FBP_OT_RowHoverPreview(Operator):
@@ -592,9 +641,12 @@ class FBP_OT_RowHoverPreview(Operator):
         area = getattr(context, "area", None)
         if not payload or area is None:
             return {'CANCELLED'}
-        space_cls = _space_class_for(area)
-        draw_region = _draw_region_for(area, context.region)
-        if space_cls is None or not hasattr(space_cls, "draw_handler_add"):
+        try:
+            target_area, draw_region, dock = _draw_target(context, event.mouse_x, event.mouse_y)
+        except FBP_DATA_ERRORS:
+            return {'CANCELLED'}
+        space_cls = _space_class_for(target_area)
+        if draw_region is None or space_cls is None or not hasattr(space_cls, "draw_handler_add"):
             return {'CANCELLED'}
         try:
             self._handle = space_cls.draw_handler_add(_draw_callback, (), draw_region.type, 'POST_PIXEL')
@@ -603,12 +655,15 @@ class FBP_OT_RowHoverPreview(Operator):
         self._space = space_cls
         self._region_type = draw_region.type
         _STATE["handle"] = (space_cls, self._handle, draw_region.type)
-        self._draw_area = area
+        _STATE["draw_area_ptr"] = target_area.as_pointer()
+        _STATE["dock"] = dock
+        _STATE["draw_area"] = target_area
+        self._draw_area = target_area
         _STATE["running"] = True
         _STATE["anchor"] = (event.mouse_x, event.mouse_y)
         _STATE["last_mouse"] = (event.mouse_x, event.mouse_y)
         context.window_manager.modal_handler_add(self)
-        _tag_area(area)
+        _tag_area(target_area)
         return {'RUNNING_MODAL'}
 
     def _finish(self):
@@ -617,6 +672,9 @@ class FBP_OT_RowHoverPreview(Operator):
         _STATE["anchor"] = None
         _STATE["texture"] = None
         _STATE["texture_key"] = None
+        _STATE["draw_area"] = None
+        _STATE["draw_area_ptr"] = None
+        _STATE["dock"] = None
         _remove_draw_handler()
         self._handle = None
         if self._draw_area is not None:
