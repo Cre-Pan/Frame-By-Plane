@@ -257,6 +257,7 @@ def _request_preview(context, properties, lines):
         "title": str(title or ""),
         "detail": str(detail or ""),
         "size": _SIZE_PIXELS.get(size_setting, 256),
+        "tooltip_lines": tuple(part for part in (title, detail, "Click to select. Double-click to rename.") if part),
         "area_ptr": area.as_pointer(),
         "region_ptr": region.as_pointer(),
         "region_rect": (int(region.x), int(region.y), int(region.width), int(region.height)),
@@ -338,9 +339,14 @@ def _tooltip_theme():
         wcol = bpy.context.preferences.themes[0].user_interface.wcol_tooltip
         inner = tuple(wcol.inner)
         text = tuple(wcol.text)
-        return (inner[0], inner[1], inner[2], max(0.92, inner[3])), (text[0], text[1], text[2], 1.0)
+        line = tuple(wcol.outline)
+        return (
+            (inner[0], inner[1], inner[2], max(0.95, inner[3])),
+            (text[0], text[1], text[2], 1.0),
+            (line[0], line[1], line[2], 1.0),
+        )
     except (AttributeError, IndexError, TypeError):
-        return (0.1, 0.1, 0.1, 0.95), (0.9, 0.9, 0.9, 1.0)
+        return (0.1, 0.1, 0.1, 0.95), (0.9, 0.9, 0.9, 1.0), (0.3, 0.3, 0.3, 1.0)
 
 
 def _texture_for_payload(payload):
@@ -355,29 +361,138 @@ def _texture_for_payload(payload):
     return texture, size
 
 
+_TOOLTIP_MAX_WIDTH = 600  # TIP_MAXWIDTH in Blender's interface_region_tooltip.cc
+
+
+def _estimated_tooltip_left(payload, window_width):
+    """Left edge (window px) of Blender's own tooltip for this row.
+
+    Blender opens it at the cursor, below the row, and pushes it left so it
+    fits in the window; near the bottom of the window it jumps above the row.
+    Keeping the preview left of this edge means the tooltip never covers it,
+    whichever way Blender flips it.
+    """
+    scale = _ui_scale()
+    mouse_x = (_STATE.get("anchor") or (0, 0))[0]
+    width = payload.get("tooltip_width") or 0
+    try:
+        if not width:
+            import blf
+            blf.size(0, 11.0 * scale)
+            lines = list(payload.get("tooltip_lines") or ())
+            width = max((blf.dimensions(0, line)[0] for line in lines), default=0.0)
+            if bool(getattr(bpy.context.preferences.view, "show_tooltips_python", False)):
+                # The "Python: bpy.ops..." line almost always reaches the wrap width.
+                width = _TOOLTIP_MAX_WIDTH * scale
+            width = min(width, _TOOLTIP_MAX_WIDTH * scale) + 24.0 * scale
+            payload["tooltip_width"] = width
+    except (ImportError,) + FBP_DATA_ERRORS:
+        width = (_TOOLTIP_MAX_WIDTH + 24.0) * scale
+    left = min(mouse_x - 12.0 * scale, window_width - 8.0 * scale - width)
+    return left
+
+
 def _placement(payload, region, box_w, box_h):
     """Return the box origin in ``region`` pixel space."""
     anchor = _STATE.get("anchor") or (region.x + region.width // 2, region.y + region.height // 2)
     mouse_x, mouse_y = anchor
-    gap = int(_EDGE_GAP_PX * _ui_scale())
+    scale = _ui_scale()
+    gap = int(_EDGE_GAP_PX * scale)
+    try:
+        window_width = int(bpy.context.window.width)
+    except FBP_DATA_ERRORS:
+        window_width = region.x + region.width
     hover_x, _hover_y, hover_w, _hover_h = payload["region_rect"]
-    if payload["region_type"] == 'UI' and payload["region_ptr"] != region.as_pointer():
-        # Sidebar list: dock the preview just outside the sidebar edge.
-        if payload["region_alignment"] == 'LEFT':
-            x = hover_x + hover_w + gap
-        else:
-            x = hover_x - gap - box_w
+    sidebar = payload["region_type"] == 'UI' and payload["region_ptr"] != region.as_pointer()
+    if sidebar and payload["region_alignment"] == 'LEFT':
+        # Left sidebar: Blender's tooltip grows to the right of the cursor,
+        # so the preview sits to the right of the tooltip's maximum width.
+        x = max(hover_x + hover_w, mouse_x + (_TOOLTIP_MAX_WIDTH + 24) * scale) + gap
     else:
-        x = mouse_x - gap * 3 - box_w
-        if x < region.x + gap:
-            x = mouse_x + gap * 3
-    # Above the cursor so it does not collide with the native tooltip below.
-    y = mouse_y + gap * 2
-    if y + box_h > region.y + region.height - gap:
-        y = mouse_y - gap * 4 - box_h
+        right_edge = _estimated_tooltip_left(payload, window_width)
+        if sidebar:
+            right_edge = min(right_edge, hover_x)
+        x = right_edge - gap - box_w
+    # Vertically centred on the hovered row.
+    y = mouse_y - box_h * 0.5
     x = max(region.x + gap, min(x, region.x + region.width - gap - box_w))
     y = max(region.y + gap, min(y, region.y + region.height - gap - box_h))
     return x - region.x, y - region.y
+
+
+# Rounded, anti-aliased card and image: one small shader, a signed distance
+# to a rounded rectangle in pixel space, so corners stay smooth at any size.
+_ROUNDED_SHADER = None
+
+
+def _rounded_shader():
+    global _ROUNDED_SHADER
+    if _ROUNDED_SHADER is not None:
+        return _ROUNDED_SHADER
+    import gpu
+    info = gpu.types.GPUShaderCreateInfo()
+    info.push_constant('MAT4', "ModelViewProjectionMatrix")
+    info.push_constant('VEC4', "rect")
+    info.push_constant('VEC4', "color")
+    info.push_constant('FLOAT', "radius")
+    info.push_constant('INT', "use_image")
+    # Bound automatically by Blender on every draw: true when the target
+    # framebuffer is sRGB (the 3D viewport overlay), as in its own 2D shaders.
+    info.push_constant('BOOL', "srgbTarget")
+    info.sampler(0, 'FLOAT_2D', "image")
+    interface = gpu.types.GPUStageInterfaceInfo("fbp_row_hover_preview")
+    interface.smooth('VEC2', "local_px")
+    interface.smooth('VEC2', "uv")
+    info.vertex_in(0, 'VEC2', "pos")
+    info.vertex_out(interface)
+    info.fragment_out(0, 'VEC4', "FragColor")
+    info.vertex_source(
+        "void main()"
+        "{"
+        "  local_px = pos - rect.xy;"
+        "  uv = (pos - rect.xy) / rect.zw;"
+        "  gl_Position = ModelViewProjectionMatrix * vec4(pos, 0.0, 1.0);"
+        "}"
+    )
+    info.fragment_source(
+        "vec4 fbp_to_framebuffer(vec4 c)"
+        "{"
+        "  if (srgbTarget) {"
+        "    vec3 lo = c.rgb / 12.92;"
+        "    vec3 hi = pow((c.rgb + 0.055) / 1.055, vec3(2.4));"
+        "    c.rgb = mix(lo, hi, step(vec3(0.04045), c.rgb));"
+        "  }"
+        "  return c;"
+        "}"
+        "void main()"
+        "{"
+        "  vec2 half_size = rect.zw * 0.5;"
+        "  vec2 q = abs(local_px - half_size) - (half_size - vec2(radius));"
+        "  float dist = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;"
+        "  float coverage = clamp(0.5 - dist, 0.0, 1.0);"
+        "  vec4 base = (use_image != 0) ? texture(image, uv) : color;"
+        "  FragColor = fbp_to_framebuffer(vec4(base.rgb, base.a * coverage));"
+        "}"
+    )
+    _ROUNDED_SHADER = gpu.shader.create_from_info(info)
+    return _ROUNDED_SHADER
+
+
+def _draw_rounded(texture, x, y, width, height, radius, color=(0.0, 0.0, 0.0, 0.0)):
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    shader = _rounded_shader()
+    coords = ((x, y), (x + width, y), (x, y + height), (x + width, y + height))
+    batch = batch_for_shader(shader, 'TRI_STRIP', {"pos": coords})
+    shader.bind()
+    matrix = gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix()
+    shader.uniform_float("ModelViewProjectionMatrix", matrix)
+    shader.uniform_float("rect", (float(x), float(y), float(width), float(height)))
+    shader.uniform_float("color", tuple(color))
+    shader.uniform_float("radius", float(min(radius, width * 0.5, height * 0.5)))
+    shader.uniform_int("use_image", 1 if texture is not None else 0)
+    shader.uniform_sampler("image", texture if texture is not None else _STATE["texture"])
+    batch.draw(shader)
 
 
 def _draw_callback():
@@ -390,14 +505,8 @@ def _draw_callback():
     if area is None or region is None or area.as_pointer() != payload["area_ptr"]:
         return
     try:
-        from .feedback import (
-            _fbp_import_blf,
-            _gpu_draw_texture,
-            _gpu_rounded_rect,
-            _gpu_text,
-            _gpu_uniform_shader,
-        )
         import gpu
+        from .feedback import _fbp_import_blf, _gpu_text
     except ImportError:
         return
     texture, (tex_w, tex_h) = _texture_for_payload(payload)
@@ -411,26 +520,30 @@ def _draw_callback():
     text_size = 11.0 * scale
     line_h = text_size * 1.5
     lines = [line for line in (payload["title"], payload["detail"]) if line]
-    box_w = max(img_w, 140.0 * scale) + pad * 2
-    box_h = img_h + pad * 2 + line_h * len(lines)
+    box_w = max(img_w, 160.0 * scale) + pad * 2
+    box_h = img_h + pad * 2 + line_h * len(lines) + (pad * 0.25 if lines else 0.0)
     x, y = _placement(payload, region, box_w, box_h)
-    background, text_color = _tooltip_theme()
-    shader = _gpu_uniform_shader()
+    background, text_color, outline = _tooltip_theme()
     gpu.state.blend_set('ALPHA')
-    _gpu_rounded_rect(shader, x, y, box_w, box_h, 6.0 * scale, background)
-    image_x = x + (box_w - img_w) * 0.5
-    image_y = y + pad
-    _gpu_rounded_rect(shader, image_x - 1, image_y - 1, img_w + 2, img_h + 2, 0.0, (0.0, 0.0, 0.0, 0.35))
-    _gpu_draw_texture(texture, image_x, image_y, img_w, img_h)
-    blf_module = _fbp_import_blf(gpu)
-    if blf_module is not None:
-        text_y = image_y + img_h + pad * 0.6
-        dim = (text_color[0], text_color[1], text_color[2], 0.72)
-        for offset, line in enumerate(reversed(lines)):
-            color = text_color if offset == len(lines) - 1 else dim
-            _gpu_text(blf_module, _clip_text(blf_module, line, box_w - pad * 2, text_size),
-                      x + pad, text_y + offset * line_h + line_h * 0.2, text_size, color)
-    gpu.state.blend_set('NONE')
+    try:
+        card_radius = 7.0 * scale
+        _draw_rounded(None, x, y, box_w, box_h, card_radius, outline)
+        _draw_rounded(None, x + 1, y + 1, box_w - 2, box_h - 2, card_radius - 1, background)
+        image_x = x + (box_w - img_w) * 0.5
+        image_y = y + pad
+        _draw_rounded(texture, image_x, image_y, img_w, img_h, 4.0 * scale)
+        blf_module = _fbp_import_blf(gpu)
+        if blf_module is not None and lines:
+            dim = (text_color[0], text_color[1], text_color[2], 0.72)
+            text_y = image_y + img_h + pad * 0.5
+            for offset, line in enumerate(reversed(lines)):
+                color = text_color if offset == len(lines) - 1 else dim
+                _gpu_text(blf_module, _clip_text(blf_module, line, box_w - pad * 2, text_size),
+                          x + pad, text_y + offset * line_h + line_h * 0.25, text_size, color)
+    except FBP_DATA_ERRORS:
+        pass
+    finally:
+        gpu.state.blend_set('NONE')
 
 
 def _clip_text(blf_module, text, max_width, size):
