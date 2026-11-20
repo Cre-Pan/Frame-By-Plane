@@ -4,6 +4,7 @@
 * A Digital Alpha Outline layer gets its handles on the box around the
   visible pixels, not on the whole plane (a small drawing on a large canvas
   gets a small box).
+* A negative Expand never shrinks the transform box.
 * Points that are not finite never reach the GPU.
 
 Run with Blender 5.2 or 5.3:
@@ -155,6 +156,19 @@ try:
     digital.fbp_rig_shape = 'DEFAULT'
     box_center, box_size, outline, alpha = layer_cage.box_shape(digital, center, size)
     assert not alpha and abs(box_size.x - size.x) < 1.0e-5, (box_size, size)
+
+    # 3b. A negative Expand never shrinks the transform box inside the plane
+    # (a Perfect rectangle at Expand -18 was a tiny square on the plane).
+    digital.fbp_rig_shape_fit_mode = 'PERFECT'
+    digital.fbp_rig_shape_expand = -18.0
+    box_center, box_size, outline, alpha = layer_cage.box_shape(digital, center, size)
+    assert box_size.x >= size.x - 1.0e-5 and box_size.y >= size.y - 1.0e-5, (box_size, size)
+    digital.fbp_rig_shape = 'ALPHA'
+    box_center, box_size, outline, alpha = layer_cage.box_shape(digital, center, size)
+    assert 0.2 < box_size.x / size.x < 0.45, ("negative Expand shrank the Alpha box", box_size, size)
+    digital.fbp_rig_shape_expand = 0.0
+    digital.fbp_rig_shape = 'DEFAULT'
+    digital.fbp_rig_shape_fit_mode = 'FIT_PLANE'
 
     # 4. Points that are not finite are dropped before drawing.
     positions, colors = layer_cage._colored([

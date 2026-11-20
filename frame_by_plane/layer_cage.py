@@ -160,8 +160,9 @@ def _alpha_box_segments(rig, center):
     """
     try:
         from . import builder
-        from .rig_style import expand_margin, shrink_factor
-        margin, shrink = expand_margin(rig), shrink_factor(rig)
+        from .rig_style import expand_margin
+        # A negative Expand never shrinks the box inside the drawing.
+        margin, shrink = expand_margin(rig), 1.0
         key = (
             builder.fbp_rig_alpha_frame_source(rig),
             str(getattr(rig, "fbp_rig_shape_alpha_style", "")),
@@ -207,7 +208,8 @@ def box_shape(rig, center, size):
 
     ``outline`` is the closed rig-local XY curve of a Circle, Triangle or
     Polygon box (empty for a rectangle); ``alpha`` the segment points of an
-    Alpha Outline. Expand grows or shrinks the box and Perfect Shape keeps it
+    Alpha Outline. Expand grows the box (a negative Expand shrinks only the
+    Legacy wire, never the box) and Perfect Shape keeps it
     regular on screen whatever the layer's scale. A Custom rig keeps the
     plain box on the plane.
     """
@@ -217,7 +219,9 @@ def box_shape(rig, center, size):
         if shape == "CUSTOM":
             return center, size, (), ()
         half = (size.x * 0.5, size.y * 0.5)
-        outline = rig_outline(rig, (center.x, center.y), half)
+        # A negative Expand shrinks the Legacy wire, never the transform box:
+        # its handles stay on the plane's edges.
+        outline = rig_outline(rig, (center.x, center.y), half, shrink=False)
     except (ImportError, *FBP_DATA_ERRORS, TypeError, ValueError):
         return center, size, (), ()
     (cx, cy), (hx, hy) = outline_box(outline)

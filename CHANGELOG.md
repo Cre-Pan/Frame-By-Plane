@@ -18,6 +18,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Fixes
 
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
+- **The transform box is never smaller than the plane.** A negative Expand shrank a Digital layer's transform box inside the plane down to 10% (with Perfect, a tiny square in the middle of the drawing), so the handles sat far from the edges. A negative Expand now shrinks only the Legacy wire; the box stays on the plane or around the drawing.
 - **Plane labels never overlap.** With many planes side by side in Top or Front view, the name labels could still overlap. Labels in a row are now spread as one block around their planes.
 
 ### Performance and diagnostics

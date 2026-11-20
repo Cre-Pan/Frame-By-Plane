@@ -203,8 +203,11 @@ def outline_box(outline):
     return ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5), ((max_x - min_x) * 0.5, (max_y - min_y) * 0.5)
 
 
-def rig_outline(rig, center, half, matrix=None):
-    """Outline of ``rig``'s shape around a plane box (rig-local XY)."""
+def rig_outline(rig, center, half, matrix=None, *, shrink=True):
+    """Outline of ``rig``'s shape around a plane box (rig-local XY).
+
+    ``shrink=False`` ignores a negative Expand (the transform box never gets
+    smaller than the plane)."""
     shape = rig_shape(rig)
     # An Alpha Outline follows the pixels: its box is never squared up.
     perfect = rig_perfect(rig) and shape != "ALPHA"
@@ -218,7 +221,7 @@ def rig_outline(rig, center, half, matrix=None):
     scales = axis_scales(matrix) if (perfect and matrix is not None) else (1.0, 1.0)
     return shape_outline(
         shape, center, half, sides=rig_sides(rig, shape), perfect=perfect, scales=scales,
-        margin=expand_margin(rig), shrink=shrink_factor(rig),
+        margin=expand_margin(rig), shrink=shrink_factor(rig) if shrink else 1.0,
     )
 
 
