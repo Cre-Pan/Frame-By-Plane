@@ -2727,7 +2727,8 @@ def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
     has_fill = bool(state.fill_available) and bool(fill_items)
     if not has_stroke and not has_fill:
         return False
-    row = layout.row(align=False)
+    # One aligned block: the side icons sit right against the swap button.
+    row = layout.row(align=True)
     if has_stroke:
         _draw_header_side(row, state, "STROKE", stroke_items, enabled=enabled)
     if has_stroke and has_fill:
@@ -2753,9 +2754,9 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
             return True
     group = layout.row(align=False)
     row = group.row(align=True)
-    row.ui_units_x = 8.25
+    row.ui_units_x = 6.25
     stroke = row.row(align=True)
-    stroke.ui_units_x = 3.5
+    stroke.ui_units_x = 2.5
     stroke.enabled = bool(enabled)
     stroke.prop_with_popover(
         state,
@@ -2763,7 +2764,6 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
         text="",
         panel="FBP_PT_gp_stroke_color_popover",
     )
-    stroke.label(text="", icon="GP_DRAW_STROKE")
     swap = row.row(align=True)
     swap.ui_units_x = 1.25
     swap.scale_x = 1.0
@@ -2775,9 +2775,8 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
         emboss=True,
     )
     fill = row.row(align=True)
-    fill.ui_units_x = 3.5
+    fill.ui_units_x = 2.5
     fill.enabled = bool(enabled)
-    fill.label(text="", icon="GP_DRAW_FILL")
     fill.prop_with_popover(
         state,
         "fill_color",

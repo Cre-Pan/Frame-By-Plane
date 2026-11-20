@@ -582,26 +582,24 @@ try:
 
     fake_layout = FakeLayout()
     assert module._draw_header_color_pair(fake_layout, bpy.context, owner=draw_owner)
-    # Mirrored around the swap: [Stroke color][Stroke icon] <-> [Fill icon][Fill color].
-    assert fake_layout.calls[:5] == [
+    # Draw Mode keeps the plain pair, without Stroke/Fill icons.
+    assert fake_layout.calls[:3] == [
         ("color", "stroke_color", "FBP_PT_gp_stroke_color_popover"),
-        ("label", None, "GP_DRAW_STROKE"),
         ("operator", "paint.brush_colors_flip", "ARROW_LEFTRIGHT"),
-        ("label", None, "GP_DRAW_FILL"),
         ("color", "fill_color", "FBP_PT_gp_fill_color_popover"),
     ]
     assert fake_layout.operator_calls[0][1]["emboss"] is True
     if module.native_cyclic_stroke():
         # Draw Mode keeps only Blender's own Cyclic toggle.
-        assert [child.ui_units_x for child in fake_layout.children] == [0.0, 8.25, 3.5, 1.25, 3.5]
+        assert [child.ui_units_x for child in fake_layout.children] == [0.0, 6.25, 2.5, 1.25, 2.5]
         assert len(fake_layout.operator_calls) == 1
     else:
         assert [child.ui_units_x for child in fake_layout.children] == [
             0.0,
-            8.25,
-            3.5,
+            6.25,
+            2.5,
             1.25,
-            3.5,
+            2.5,
             0.0,
             2.5,
         ]
