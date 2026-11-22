@@ -1504,6 +1504,17 @@ def _fit_modifier_name(modifier, mapping):
     return True
 
 
+def _hide_group_selector(modifier):
+    """Hide the node-group picker: a shell's group is private to its effect."""
+    try:
+        if bool(getattr(modifier, "show_group_selector", False)):
+            modifier.show_group_selector = False
+            return True
+    except FBP_DATA_ERRORS:
+        pass
+    return False
+
+
 def fbp_shell_refresh_links(rig):
     """Re-link every shell after Frame By Plane rebuilt or copied materials."""
     linked = 0
@@ -1513,6 +1524,7 @@ def fbp_shell_refresh_links(rig):
             _fit_modifier_name(modifier, _shell_mapping(modifier.node_group))
         except FBP_DATA_ERRORS:
             pass
+        _hide_group_selector(modifier)
         effect_id, instance_id = geo._fbp_effect_ref_parts(token)
         mapping = _shell_mapping(modifier.node_group)
         for node in _effect_nodes(rig, effect_id, instance_id):
@@ -1683,6 +1695,7 @@ def fbp_shell_create(rig, effect_id, instance_id=""):
     modifier = plane.modifiers.new(str(definition.get("label", effect_id)), "NODES")
     modifier.node_group = group
     modifier.show_in_editmode = False
+    _hide_group_selector(modifier)
     _init_shell_values(rig, modifier, effect_id, instance_id, nodes[0] if nodes else None)
     viewport, render = (
         geo.fbp_effect_visible_state(rig, effect_id, instance_id),

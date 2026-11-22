@@ -31,6 +31,11 @@ All notable public changes to Frame By Plane are documented here.
 ### Fixes
 
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
+- **Shape masks (Square, Circle, Triangle) behave like a rig again.** Dragging a corner or side dot resizes the mask instead of starting a box select; dragging inside the mask moves it; selecting everything and pressing G moves layer and mask together without breaking the shape. Adding a mask keeps the layer active, so the Properties editor stays on its Modifiers.
+- **Masks added from the Z pie or the Frame By Plane menus get their modifier row**, so removing that row with X also removes the mask and its helper (before, the helper stayed in the scene).
+- **Grease Pencil Mask** is in Add Modifier > Mask > Layers & Mattes, next to Clipping Mask. Leaving Draw Mode from Blender's mode menu or Ctrl+Tab now finishes the edit like **Done**: the layer becomes active again and the strokes hide, so the masked result is visible. Its modifier row is named "GP Mask" and no longer shows a second Invert box (inverted with respect to the panel's) or an empty Path field.
+- **Mask visuals.** The Circle and Triangle outline is drawn as one clean line (the black wire of the helper showed through), the feather line is dashed only when there is feather, the node-group picker is hidden on effect rows, and hints repeated in every mask panel are gone.
+- **Deleted planes no longer stay in the Layer List.** Planes pasted, appended or deleted outside Frame By Plane are picked up on the next redraw, and the delete button on a row whose plane no longer exists removes the row.
 - **Plane labels never overlap.** With many planes side by side in Top or Front view, the name labels could still overlap. Labels in a row are now spread as one block around their planes.
 
 ### Performance and diagnostics

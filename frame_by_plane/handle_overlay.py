@@ -2634,11 +2634,36 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
 # handle so G, the sidebar and the Modifiers panel still work as before.
 
 def _bounds_handle(obj):
+    """Crop/Expand dots and the eight Shape Mask (Square/Circle/Triangle) dots."""
+    if obj is None:
+        return False
     try:
         from .effect_controls import KEY_MODE
-        return obj is not None and str(obj.get(KEY_MODE, "") or "").upper() == "CROP_EXTEND"
+        if str(obj.get(KEY_MODE, "") or "").upper() == "CROP_EXTEND":
+            return True
+    except (ImportError,) + FBP_DATA_ERRORS:
+        pass
+    return _mask_bounds_handle(obj)
+
+
+def _mask_bounds_handle(obj):
+    try:
+        from .object_masks import is_object_mask_bounds_handle
+        return obj is not None and bool(is_object_mask_bounds_handle(obj))
     except (ImportError,) + FBP_DATA_ERRORS:
         return False
+
+
+def _apply_bounds_handle(control):
+    """Push one dragged dot into what it edits: a Crop bound or a Shape Mask."""
+    if _mask_bounds_handle(control):
+        try:
+            from .object_masks import apply_object_mask_bounds_handles
+            apply_object_mask_bounds_handles((control,))
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
+        return
+    _sync_control(control)
 
 
 def _bounds_handles_shown(context):
@@ -2723,7 +2748,9 @@ class FBP_GT_bounds_drag(bpy.types.Gizmo):
                 return {"RUNNING_MODAL"}
             self.fbp_moved = True
             control = self._handle()
-            if control is not None:
+            if control is not None and not _mask_bounds_handle(control):
+                # A Shape Mask drag leaves the selection alone, so Properties
+                # keeps showing the layer's Modifiers while resizing.
                 _select_only(context, control)
         hit = _plane_hit(
             context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
@@ -2737,7 +2764,7 @@ class FBP_GT_bounds_drag(bpy.types.Gizmo):
         target = Vector((start.x + delta.x, start.y + delta.y, start.z))
         if (Vector(control.location) - target).length > 1.0e-7:
             control.location = target
-            _sync_control(control)
+            _apply_bounds_handle(control)
         context.area.tag_redraw()
         return {"RUNNING_MODAL"}
 
@@ -2746,9 +2773,9 @@ class FBP_GT_bounds_drag(bpy.types.Gizmo):
         if cancel:
             if control is not None and self.fbp_initial is not None and tuple(control.location) != self.fbp_initial:
                 control.location = self.fbp_initial
-                _sync_control(control)
+                _apply_bounds_handle(control)
         elif self.fbp_moved:
-            _undo_push("Move Crop Bound")
+            _undo_push("Resize Mask" if _mask_bounds_handle(control) else "Move Crop Bound")
         elif control is not None and context.mode != "POSE":
             # A plain click selects the handle: G, the sidebar and the
             # Modifiers panel keep working on it.
@@ -2763,7 +2790,19 @@ def _select_only(context, obj):
             if other != obj:
                 other.select_set(False)
         obj.select_set(True)
-        context.view_layer.objects.active = obj
+        active = obj
+        if _mask_bounds_handle(obj):
+            # G/S act on the selected dot, while the layer's plane stays the
+            # active object so Properties > Modifiers keeps the mask's row.
+            try:
+                from .object_masks import find_object_mask_controller_owner
+                owner = find_object_mask_controller_owner(obj)
+                plane = getattr(owner, "fbp_plane_target", None) if owner is not None else None
+                if plane is not None:
+                    active = plane
+            except ImportError:
+                pass
+        context.view_layer.objects.active = active
     except FBP_DATA_ERRORS:
         pass
 
@@ -2790,11 +2829,219 @@ class FBP_GGT_bounds_drag(bpy.types.GizmoGroup):
             self.gizmos.new(FBP_GT_bounds_drag.bl_idname)
 
 
+def _visible_mask_cages(context):
+    """(helper, screen quad) of every Shape Mask whose dots are on screen."""
+    region = getattr(context, "region", None)
+    region_data = getattr(context, "region_data", None)
+    if region is None or region_data is None:
+        return []
+    try:
+        from .object_masks import (
+            KEY_HANDLE_ROLE, find_object_mask_controller_helper,
+        )
+    except ImportError:
+        return []
+    corners = {}
+    for handle in _visible_handles(context):
+        if not _mask_bounds_handle(handle):
+            continue
+        try:
+            role = str(handle.get(KEY_HANDLE_ROLE, "") or "").upper()
+            if role not in {"TOP_LEFT", "TOP_RIGHT", "BOTTOM_RIGHT", "BOTTOM_LEFT"}:
+                continue
+            helper = find_object_mask_controller_helper(handle)
+            if helper is None:
+                continue
+            point = location_3d_to_region_2d(region, region_data, handle.matrix_world.translation)
+        except FBP_DATA_ERRORS:
+            continue
+        if point is None:
+            continue
+        corners.setdefault(helper.name, {})[role] = (float(point.x), float(point.y))
+    cages = []
+    for name, points in corners.items():
+        if len(points) != 4:
+            continue
+        helper = bpy.data.objects.get(name)
+        if helper is None:
+            continue
+        quad = [points[role] for role in ("TOP_LEFT", "TOP_RIGHT", "BOTTOM_RIGHT", "BOTTOM_LEFT")]
+        cages.append((helper, quad))
+    return cages
+
+
+def _quad_area(quad):
+    area = 0.0
+    for index, (x1, y1) in enumerate(quad):
+        x2, y2 = quad[(index + 1) % len(quad)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) * 0.5
+
+
+def _inside_polygon(point, polygon):
+    x, y = point
+    inside = False
+    count = len(polygon)
+    for index in range(count):
+        x1, y1 = polygon[index]
+        x2, y2 = polygon[(index + 1) % count]
+        if (y1 > y) != (y2 > y):
+            cross = x1 + (y - y1) * (x2 - x1) / ((y2 - y1) or 1.0e-12)
+            if x < cross:
+                inside = not inside
+    return inside
+
+
+def _mask_cage_under_cursor(context, location):
+    """The Shape Mask cage the cursor is inside, smallest first; None on a dot."""
+    if _bounds_handle_under_cursor(context, location) is not None:
+        return None
+    hits = [
+        (_quad_area(quad), helper)
+        for helper, quad in _visible_mask_cages(context)
+        if _inside_polygon((float(location[0]), float(location[1])), quad)
+    ]
+    if not hits:
+        return None
+    hits.sort(key=lambda item: item[0])
+    return hits[0][1]
+
+
+class FBP_GT_mask_move(bpy.types.Gizmo):
+    """Drag inside a Shape Mask cage to move the mask (a plain click selects)."""
+
+    bl_idname = "FBP_GT_mask_move"
+    __slots__ = ("fbp_helper_name", "fbp_initial", "fbp_hit", "fbp_normal", "fbp_to_local")
+
+    def setup(self):
+        self.fbp_helper_name = ""
+        self.fbp_initial = None
+        self.use_draw_hover = False
+
+    def draw(self, context):
+        del context
+
+    def test_select(self, context, location):
+        if self.is_modal:
+            return 0
+        helper = _mask_cage_under_cursor(context, location)
+        self.fbp_helper_name = helper.name if helper is not None else ""
+        return 0 if helper is not None else -1
+
+    def _helper(self):
+        try:
+            from .object_masks import is_object_mask_helper
+        except ImportError:
+            return None
+        obj = bpy.data.objects.get(self.fbp_helper_name or "")
+        return obj if is_object_mask_helper(obj) else None
+
+    def invoke(self, context, event):
+        helper = self._helper()
+        if helper is None:
+            return {"CANCELLED"}
+        press = (
+            float(event.mouse_prev_press_x - context.region.x),
+            float(event.mouse_prev_press_y - context.region.y),
+        )
+        world = helper.matrix_world
+        normal = world.col[2].xyz
+        if normal.length <= 1.0e-9:
+            return {"CANCELLED"}
+        self.fbp_normal = tuple(normal.normalized())
+        hit = _plane_hit(
+            context.region, context.region_data, press,
+            world.translation.copy(), Vector(self.fbp_normal),
+        )
+        if hit is None:
+            return {"CANCELLED"}
+        self.fbp_hit = tuple(hit)
+        space = world @ helper.matrix_basis.inverted_safe()
+        self.fbp_to_local = [tuple(row) for row in space.inverted_safe()]
+        self.fbp_initial = tuple(helper.location)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event, tweak):
+        del tweak
+        helper = self._helper()
+        if helper is None or self.fbp_initial is None:
+            return {"RUNNING_MODAL"}
+        hit = _plane_hit(
+            context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
+            Vector(self.fbp_hit), Vector(self.fbp_normal),
+        )
+        if hit is None:
+            return {"RUNNING_MODAL"}
+        delta = Matrix(self.fbp_to_local).to_3x3() @ (hit - Vector(self.fbp_hit))
+        start = Vector(self.fbp_initial)
+        target = Vector((start.x + delta.x, start.y + delta.y, start.z))
+        if (Vector(helper.location) - target).length > 1.0e-7:
+            helper.location = target
+            self._follow(helper)
+        context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
+
+    @staticmethod
+    def _follow(helper):
+        try:
+            from .object_masks import (
+                store_object_mask_helper_rest, sync_object_mask_bounds_handles,
+            )
+            sync_object_mask_bounds_handles(helper)
+            store_object_mask_helper_rest(helper)
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
+
+    def exit(self, context, cancel):
+        helper = self._helper()
+        if helper is not None and self.fbp_initial is not None:
+            if cancel:
+                helper.location = self.fbp_initial
+                self._follow(helper)
+            elif tuple(helper.location) != self.fbp_initial:
+                _undo_push("Move Mask")
+        self.fbp_initial = None
+        context.area.tag_redraw()
+
+
+class FBP_GGT_mask_move(bpy.types.GizmoGroup):
+    bl_idname = "FBP_GGT_mask_move"
+    bl_label = "Frame By Plane Shape Mask Move"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"3D", "PERSISTENT"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+        return any(_mask_bounds_handle(obj) for obj in _visible_handles(context))
+
+    @classmethod
+    def setup_keymap(cls, keyconfig):
+        # Drag only: a plain click inside the mask still selects as usual.
+        keymap = keyconfig.keymaps.new(
+            name="FBP Shape Mask Move", space_type="EMPTY", region_type="WINDOW",
+        )
+        if not any(item.idname == "gizmogroup.gizmo_tweak" for item in keymap.keymap_items):
+            keymap.keymap_items.new("gizmogroup.gizmo_tweak", "LEFTMOUSE", "CLICK_DRAG", any=True)
+        return keymap
+
+    def setup(self, context):
+        del context
+        if not self.gizmos:
+            self.gizmos.new(FBP_GT_mask_move.bl_idname)
+
+
 _GIZMO_CLASSES = (
     FBP_GT_gradient_stop, FBP_OT_gradient_stop_color, FBP_GGT_gradient_stops,
     FBP_GT_gradient_drag, FBP_GGT_gradient_lines,
     FBP_GT_color_plane_grip, FBP_GGT_color_plane_gradient,
     FBP_GT_bounds_drag, FBP_GGT_bounds_drag,
+    FBP_GT_mask_move, FBP_GGT_mask_move,
 )
 
 

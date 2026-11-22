@@ -1194,8 +1194,11 @@ def iter_object_mask_guides(context=None):
     """Guide lines of visible Shape Masks, for the always-in-front overlay.
 
     Yields ``(solid_segments, dashed_segments)`` as world-space point pairs.
-    The dashed line is where Feather reaches full opacity: the shader fades
-    the mask in over ``Feather`` times the deepest interior distance.
+    The solid line is the mask's own edge, drawn in the handle colour over the
+    cage's dark object wire (which used to show as a second, black outline on
+    Circle and Triangle). The dashed line is where Feather reaches full
+    opacity: the shader fades the mask in over ``Feather`` times the deepest
+    interior distance.
     """
     del context
     from .viewport_handles import dashed_pieces
@@ -1208,18 +1211,24 @@ def iter_object_mask_guides(context=None):
             owner = find_object_mask_owner(helper)
             shape = normalize_object_mask_shape(contract.get("shape", "SQUARE"))
             feather = float(getattr(owner, f"fbp_{shape.lower()}_mask_feather", 0.0) or 0.0) if owner else 0.0
-            if feather <= 1.0e-4:
-                continue
             points = _ordered_polygon_points(helper)
             if len(points) < 3:
                 continue
-            depth = _polygon_max_interior(points) * min(feather, 1.0)
-            if depth >= _polygon_max_interior(points) * 0.995:
-                continue
             matrix = helper.matrix_world
-            inner = [matrix @ Vector((x, y, 0.0)) for x, y in _inset_polygon(points, depth)]
             outline = [matrix @ Vector((x, y, 0.0)) for x, y in points]
+            interior = _polygon_max_interior(points)
+            depth = interior * min(feather, 1.0)
+            inner = (
+                [matrix @ Vector((x, y, 0.0)) for x, y in _inset_polygon(points, depth)]
+                if feather > 1.0e-4 and depth < interior * 0.995 else []
+            )
         except FBP_DATA_ERRORS:
+            continue
+        solid = []
+        for index in range(len(outline)):
+            solid.extend((outline[index - 1], outline[index]))
+        if not inner:
+            yield solid, []
             continue
         perimeter = sum((outline[i] - outline[i - 1]).length for i in range(len(outline)))
         dash = max(perimeter / 72.0, 1.0e-5)
@@ -1233,7 +1242,68 @@ def iter_object_mask_guides(context=None):
             world = [origin + axis_x * x + axis_y * y for x, y in piece]
             for first, second in zip(world, world[1:]):
                 segments.extend((first, second))
-        yield (), segments
+        yield solid, segments
+
+
+KEY_HELPER_REST = "fbp_object_mask_helper_rest"
+
+
+def _helper_rest_values(helper):
+    return (
+        float(helper.location.x), float(helper.location.y),
+        float(helper.scale.x), float(helper.scale.y),
+        float(helper.rotation_euler.z),
+    )
+
+
+def store_object_mask_helper_rest(helper):
+    """Remember the cage transform the mask legitimately has now."""
+    if not is_object_mask_helper(helper):
+        return False
+    try:
+        values = [round(value, 7) for value in _helper_rest_values(helper)]
+        if list(helper.get(KEY_HELPER_REST, ()) or ()) != values:
+            helper[KEY_HELPER_REST] = values
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _restore_object_mask_helper_rest(helper):
+    try:
+        values = tuple(float(value) for value in helper.get(KEY_HELPER_REST, ()) or ())
+    except FBP_DATA_ERRORS:
+        return False
+    if len(values) != 5:
+        return False
+    try:
+        if tuple(round(value, 7) for value in _helper_rest_values(helper)) == values:
+            return False
+        helper.location.x, helper.location.y = values[0], values[1]
+        helper.scale.x, helper.scale.y = values[2], values[3]
+        helper.rotation_euler.z = values[4]
+        helper.update_tag(refresh={'OBJECT'})
+        return True
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _object_mask_owner_moving(helper):
+    """True while the mask's own layer (rig or plane) is selected too.
+
+    The cage and its handles follow the plane through a constraint. When a box
+    selection catches them together with the layer and G/R/S runs, Blender
+    moves them twice: once with the layer and once by their own transform,
+    which tore the mask apart. Their own share of that move is discarded.
+    """
+    owner = find_object_mask_owner(helper)
+    if owner is None:
+        return False
+    plane = getattr(owner, "fbp_plane_target", None)
+    try:
+        return bool(owner.select_get()) or bool(plane is not None and plane.select_get())
+    except FBP_DATA_ERRORS:
+        return False
 
 
 def sync_object_mask_bounds_handles(helper, *, handles=None):
@@ -1336,6 +1406,7 @@ def apply_object_mask_bounds_handles(handles):
         helper.scale.y = new_scale_y
         helper.update_tag(refresh={'OBJECT'})
         sync_object_mask_bounds_handles(helper)
+        store_object_mask_helper_rest(helper)
         return True
     except FBP_DATA_ERRORS:
         return False
@@ -1360,6 +1431,15 @@ def schedule_object_mask_bounds_handle_update(handle):
     def _apply():
         current_helper = bpy.data.objects.get(helper_name)
         if not is_object_mask_helper(current_helper):
+            return None
+        try:
+            helper_selected = bool(current_helper.select_get())
+        except FBP_DATA_ERRORS:
+            helper_selected = False
+        if helper_selected or _object_mask_owner_moving(current_helper):
+            # The handles moved with the cage or with the layer: they only
+            # follow, they do not resize the mask.
+            sync_object_mask_bounds_handles(current_helper)
             return None
         try:
             selected = tuple(
@@ -1407,6 +1487,14 @@ def schedule_object_mask_helper_transform_update(helper):
     def _apply():
         current = bpy.data.objects.get(helper_name)
         if is_object_mask_helper(current):
+            try:
+                selected = bool(current.select_get())
+            except FBP_DATA_ERRORS:
+                selected = False
+            if selected and _object_mask_owner_moving(current):
+                _restore_object_mask_helper_rest(current)
+            else:
+                store_object_mask_helper_rest(current)
             sync_object_mask_bounds_handles(current)
         return None
 
@@ -1655,6 +1743,7 @@ def create_object_mask_helper(owner, shape, context=None, *, select=True):
                     f"Shape Mask created {len(handles)} of 8 required bounds handles"
                 )
             sync_object_mask_helper_visibility(helper, owner=owner)
+            store_object_mask_helper_rest(helper)
             transaction.checkpoint("VALIDATED")
             transaction.commit()
             return helper
@@ -3640,6 +3729,7 @@ __all__ = [
     "apply_object_mask_bounds_handles",
     "schedule_object_mask_bounds_handle_update",
     "schedule_object_mask_helper_transform_update",
+    "store_object_mask_helper_rest",
     "sync_object_mask_helper_to_bounds",
     "sync_owner_object_mask_helpers",
     "sync_object_mask_helper_visibility",
