@@ -6048,17 +6048,25 @@ def _smooth_band(group, value, low, high, name, x, y, *, invert=False):
 
 
 def _create_stained_glass(name):
-    """Church stained-glass window built only from shader nodes.
+    """Church stained-glass window that follows the shapes of the image.
 
-    The image is cut into Voronoi panes (cells warped by noise turbulence so
-    the leading wobbles like hand-cut glass). Each pane takes one colour read
-    from the source at its centre, optionally snapped to a palette of
-    traditional pot-metal colours. The glass is then given what makes real
-    windows read as glass: uneven thickness (cloudy noise and drawn streaks),
-    darker edges where the painters' grisaille and thicker glass meet the
-    lead, per-pane variation, a faint refraction of the image behind it, and a
-    backlight with a soft falloff, as the sun shining through. Lead cames are
-    dark rounded strips along the Voronoi edges, with a soft highlight.
+    Built only from shader nodes:
+
+    * Pieces: the image is posterized (Color Levels, in a gamma-like space), so
+      every area of similar colour becomes one flat piece of glass. Colours can
+      be made richer and snapped to a palette of traditional glass colours.
+    * Lead: a ring of taps around each point (3 rings x 8 directions) reads the
+      posterized image; where a neighbour belongs to another piece the point is
+      lead. The nearest differing ring gives the distance to the colour border,
+      so the came is centred on the border, has a rounded highlight and a
+      darker glass rim around it. Lead Width sets its thickness (it can be
+      exaggerated); noise wobbles the sampling point and varies the width, so
+      the stroke looks hand-made.
+    * Islands: optional Voronoi cuts split the pieces into smaller pieces with
+      thinner lead, wobbled by turbulence.
+    * Glass: cloudy thickness, drawn streaks, per-piece variation, bubbles,
+      scratches, darker edges next to the lead, optional refraction of the
+      picture and a backlight with falloff.
     """
     group = bpy.data.node_groups.new(name, "ShaderNodeTree")
     sockets = (
@@ -6067,27 +6075,35 @@ def _create_stained_glass(name):
         ("UV Vector", "NodeSocketVector", None, None, None),
         ("Use Image Sample", "NodeSocketFloat", 0.0, 0.0, 1.0),
         ("Aspect Ratio", "NodeSocketFloat", 1.0, 0.001, 1000.0),
-        ("Pane Scale", "NodeSocketFloat", 14.0, 1.0, 500.0),
+        ("Color Levels", "NodeSocketFloat", 4.0, 2.0, 32.0),
+        ("Color Richness", "NodeSocketFloat", 1.5, 0.0, 3.0),
+        ("Palette Mix", "NodeSocketFloat", 0.0, 0.0, 1.0),
+        ("Lead Width", "NodeSocketFloat", 0.012, 0.0, 0.2),
+        ("Line Wobble", "NodeSocketFloat", 1.0, 0.0, 4.0),
+        ("Wobble Scale", "NodeSocketFloat", 12.0, 0.1, 200.0),
+        ("Width Variation", "NodeSocketFloat", 0.3, 0.0, 1.0),
+        ("Lead Color", "NodeSocketColor", (0.004, 0.004, 0.005, 1.0), None, None),
+        ("Lead Shine", "NodeSocketFloat", 0.3, 0.0, 1.0),
+        ("Window Frame", "NodeSocketFloat", 1.0, 0.0, 1.0),
+        ("Split Pieces", "NodeSocketFloat", 0.0, 0.0, 1.0),
+        ("Pieces Across", "NodeSocketFloat", 10.0, 1.0, 500.0),
         ("Irregularity", "NodeSocketFloat", 0.9, 0.0, 1.0),
         ("Turbulence", "NodeSocketFloat", 0.25, 0.0, 3.0),
-        ("Turbulence Scale", "NodeSocketFloat", 0.6, 0.01, 50.0),
-        ("Seed", "NodeSocketFloat", 0.0, -100000.0, 100000.0),
-        ("Lead Width", "NodeSocketFloat", 0.09, 0.0, 0.5),
-        ("Lead Color", "NodeSocketColor", (0.004, 0.004, 0.005, 1.0), None, None),
-        ("Lead Shine", "NodeSocketFloat", 0.25, 0.0, 1.0),
-        ("Window Frame", "NodeSocketFloat", 1.0, 0.0, 1.0),
-        ("Color Richness", "NodeSocketFloat", 1.6, 0.0, 3.0),
-        ("Image Detail", "NodeSocketFloat", 0.15, 0.0, 1.0),
-        ("Refraction", "NodeSocketFloat", 0.015, 0.0, 0.2),
+        ("Split Lead Width", "NodeSocketFloat", 0.05, 0.0, 0.5),
         ("Glass Texture", "NodeSocketFloat", 0.35, 0.0, 1.0),
         ("Streaks", "NodeSocketFloat", 0.3, 0.0, 1.0),
+        ("Bubbles", "NodeSocketFloat", 0.2, 0.0, 1.0),
+        ("Bubble Scale", "NodeSocketFloat", 60.0, 1.0, 1000.0),
+        ("Scratches", "NodeSocketFloat", 0.25, 0.0, 1.0),
         ("Pane Variation", "NodeSocketFloat", 0.25, 0.0, 1.0),
-        ("Edge Darkening", "NodeSocketFloat", 0.45, 0.0, 1.0),
+        ("Edge Darkening", "NodeSocketFloat", 0.4, 0.0, 1.0),
+        ("Image Detail", "NodeSocketFloat", 0.0, 0.0, 1.0),
+        ("Refraction", "NodeSocketFloat", 0.015, 0.0, 0.2),
         ("Light Strength", "NodeSocketFloat", 1.3, 0.0, 20.0),
         ("Light Center X", "NodeSocketFloat", 0.5, -2.0, 3.0),
         ("Light Center Y", "NodeSocketFloat", 0.8, -2.0, 3.0),
         ("Light Falloff", "NodeSocketFloat", 0.35, 0.0, 1.0),
-        ("Palette Mix", "NodeSocketFloat", 0.0, 0.0, 1.0),
+        ("Seed", "NodeSocketFloat", 0.0, -100000.0, 100000.0),
     )
     for socket_name, socket_type, default, minimum, maximum in sockets:
         _socket(group, socket_name, "INPUT", socket_type, default=default, minimum=minimum, maximum=maximum)
@@ -6097,298 +6113,498 @@ def _create_stained_glass(name):
     _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
     _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
     inp, out = _group_io(group)
-    inp.location = (-3200, 0)
-    out.location = (4200, 0)
+    inp.location = (-4200, 0)
+    out.location = (5200, 0)
     links = group.links
+    I = inp.outputs
 
-    # --- Pane space: UV scaled to Pane Scale columns, rows follow the aspect.
-    uv = _node(group, "ShaderNodeSeparateXYZ", "Glass UV", -3000, 0)
-    links.new(inp.outputs["UV Vector"], uv.inputs[0])
-    rows = _math(group, "DIVIDE", "Glass Rows", -2820, -160)
-    links.new(inp.outputs["Pane Scale"], rows.inputs[0])
-    links.new(inp.outputs["Aspect Ratio"], rows.inputs[1])
-    px = _math(group, "MULTIPLY", "Glass Pane X", -2640, 80)
-    py = _math(group, "MULTIPLY", "Glass Pane Y", -2640, -80)
-    links.new(uv.outputs["X"], px.inputs[0]); links.new(inp.outputs["Pane Scale"], px.inputs[1])
-    links.new(uv.outputs["Y"], py.inputs[0]); links.new(rows.outputs[0], py.inputs[1])
-    pane_space = _node(group, "ShaderNodeCombineXYZ", "Glass Pane Space", -2460, 0)
-    links.new(px.outputs[0], pane_space.inputs["X"]); links.new(py.outputs[0], pane_space.inputs["Y"])
-
-    # --- Turbulence: noise warps the pane space so the leading is hand-cut.
-    turb_noise = _node(group, "ShaderNodeTexNoise", "Turbulence Noise", -2280, -200)
-    turb_noise.noise_dimensions = "4D"
-    turb_noise.inputs["Detail"].default_value = 1.0
-    links.new(pane_space.outputs[0], turb_noise.inputs["Vector"])
-    links.new(inp.outputs["Seed"], turb_noise.inputs["W"])
-    # Noise scale is per pane-space unit; Turbulence Scale counts wobbles per pane.
-    links.new(inp.outputs["Turbulence Scale"], turb_noise.inputs["Scale"])
-    turb_center = _vector_math(group, "SUBTRACT", "Turbulence Center", -2100, -200)
-    turb_center.inputs[1].default_value = (0.5, 0.5, 0.5)
-    links.new(turb_noise.outputs["Color"], turb_center.inputs[0])
-    turb_amount = _vector_math(group, "SCALE", "Turbulence Amount", -1920, -200)
-    links.new(turb_center.outputs[0], turb_amount.inputs[0])
-    links.new(inp.outputs["Turbulence"], _input(turb_amount, "Scale", 3))
-    turb_flat = _vector_math(group, "MULTIPLY", "Turbulence Flat", -1740, -200)
-    turb_flat.inputs[1].default_value = (1.0, 1.0, 0.0)
-    links.new(turb_amount.outputs[0], turb_flat.inputs[0])
-    warped = _vector_math(group, "ADD", "Warped Pane Space", -1560, 0)
-    links.new(pane_space.outputs[0], warped.inputs[0])
-    links.new(turb_flat.outputs[0], warped.inputs[1])
-
-    # --- Panes (F1) and lead lines (distance to edge). 2D Voronoi keeps the
-    # edge distance exact on the plane (a 3D/4D slice reports hidden edges as
-    # dark smudges inside the panes); Seed shifts the pattern instead.
-    seed_shift = _node(group, "ShaderNodeCombineXYZ", "Seed Shift", -1560, -400)
-    seed_x = _math(group, "MULTIPLY", "Seed Shift X", -1740, -360, value_2=17.31)
-    seed_y = _math(group, "MULTIPLY", "Seed Shift Y", -1740, -520, value_2=-9.73)
-    links.new(inp.outputs["Seed"], seed_x.inputs[0]); links.new(inp.outputs["Seed"], seed_y.inputs[0])
+    uv = _node(group, "ShaderNodeSeparateXYZ", "Glass UV", -4000, 0)
+    links.new(I["UV Vector"], uv.inputs[0])
+    seed_shift = _node(group, "ShaderNodeCombineXYZ", "Seed Shift", -4000, -300)
+    seed_x = _math(group, "MULTIPLY", "Seed Shift X", -4180, -260, value_2=17.31)
+    seed_y = _math(group, "MULTIPLY", "Seed Shift Y", -4180, -420, value_2=-9.73)
+    links.new(I["Seed"], seed_x.inputs[0]); links.new(I["Seed"], seed_y.inputs[0])
     links.new(seed_x.outputs[0], seed_shift.inputs["X"]); links.new(seed_y.outputs[0], seed_shift.inputs["Y"])
-    cell_space = _vector_math(group, "ADD", "Seeded Pane Space", -1400, 0)
-    links.new(warped.outputs[0], cell_space.inputs[0]); links.new(seed_shift.outputs[0], cell_space.inputs[1])
-    cells = _node(group, "ShaderNodeTexVoronoi", "Glass Panes", -1200, 200)
-    cells.voronoi_dimensions = "2D"
-    cells.feature = "F1"
-    cells.distance = "EUCLIDEAN"
-    cells.inputs["Scale"].default_value = 1.0
-    links.new(cell_space.outputs[0], cells.inputs["Vector"])
-    links.new(inp.outputs["Irregularity"], cells.inputs["Randomness"])
-    edges = _node(group, "ShaderNodeTexVoronoi", "Glass Lead Lines", -1200, -200)
-    edges.voronoi_dimensions = "2D"
-    edges.feature = "DISTANCE_TO_EDGE"
-    edges.inputs["Scale"].default_value = 1.0
-    links.new(cell_space.outputs[0], edges.inputs["Vector"])
-    links.new(inp.outputs["Irregularity"], edges.inputs["Randomness"])
+    # Physical space: x across the plane width, y scaled by the aspect so
+    # noise and circles are round on the plane.
+    inv_aspect = _math(group, "DIVIDE", "Inverse Aspect", -4000, -520, value_1=1.0)
+    links.new(I["Aspect Ratio"], inv_aspect.inputs[1])
+    phys_y = _math(group, "MULTIPLY", "Physical Y", -3820, -120)
+    links.new(uv.outputs["Y"], phys_y.inputs[0]); links.new(inv_aspect.outputs[0], phys_y.inputs[1])
+    phys = _node(group, "ShaderNodeCombineXYZ", "Physical Space", -3640, 0)
+    links.new(uv.outputs["X"], phys.inputs["X"]); links.new(phys_y.outputs[0], phys.inputs["Y"])
+    seeded = _vector_math(group, "ADD", "Seeded Space", -3460, 0)
+    links.new(phys.outputs[0], seeded.inputs[0]); links.new(seed_shift.outputs[0], seeded.inputs[1])
 
-    # Window frame: a lead border around the whole plane.
-    ux_inv = _math(group, "SUBTRACT", "Frame Right", -1360, -480, value_1=1.0)
-    uy_inv = _math(group, "SUBTRACT", "Frame Top", -1360, -640, value_1=1.0)
+    # --- Stroke randomization: wobble of the sampling point and width noise.
+    wobble_noise = _node(group, "ShaderNodeTexNoise", "Line Wobble Noise", -3280, 300)
+    wobble_noise.noise_dimensions = "3D"
+    wobble_noise.inputs["Detail"].default_value = 2.0
+    links.new(seeded.outputs[0], wobble_noise.inputs["Vector"])
+    links.new(I["Wobble Scale"], wobble_noise.inputs["Scale"])
+    wobble_c = _vector_math(group, "SUBTRACT", "Wobble Center", -3100, 300)
+    wobble_c.inputs[1].default_value = (0.5, 0.5, 0.5)
+    links.new(wobble_noise.outputs["Color"], wobble_c.inputs[0])
+    half = _math(group, "MULTIPLY", "Lead Half Width", -3280, -700, value_2=0.5)
+    links.new(I["Lead Width"], half.inputs[0])
+    wobble_amp = _math(group, "MULTIPLY", "Wobble Distance", -3100, 100)
+    links.new(half.outputs[0], wobble_amp.inputs[0]); links.new(I["Line Wobble"], wobble_amp.inputs[1])
+    wobble_vec = _vector_math(group, "SCALE", "Wobble Offset", -2920, 300)
+    links.new(wobble_c.outputs[0], wobble_vec.inputs[0]); links.new(wobble_amp.outputs[0], _input(wobble_vec, "Scale", 3))
+    wobble_flat = _vector_math(group, "MULTIPLY", "Wobble UV Offset", -2740, 300)
+    links.new(wobble_vec.outputs[0], wobble_flat.inputs[0])
+    wobble_uv_scale = _node(group, "ShaderNodeCombineXYZ", "Wobble UV Scale", -2920, 120)
+    wobble_uv_scale.inputs["X"].default_value = 1.0
+    links.new(I["Aspect Ratio"], wobble_uv_scale.inputs["Y"])
+    links.new(wobble_uv_scale.outputs[0], wobble_flat.inputs[1])
+    base_uv = _vector_math(group, "ADD", "Wobbled UV", -2560, 200)
+    links.new(I["UV Vector"], base_uv.inputs[0]); links.new(wobble_flat.outputs[0], base_uv.inputs[1])
+
+    width_noise = _node(group, "ShaderNodeTexNoise", "Width Noise", -3280, -900)
+    width_noise.noise_dimensions = "3D"
+    links.new(seeded.outputs[0], width_noise.inputs["Vector"])
+    width_scale = _math(group, "MULTIPLY", "Width Noise Scale", -3460, -960, value_2=0.6)
+    links.new(I["Wobble Scale"], width_scale.inputs[0]); links.new(width_scale.outputs[0], width_noise.inputs["Scale"])
+    width_c = _math(group, "SUBTRACT", "Width Noise Center", -3100, -900, value_2=0.5)
+    links.new(width_noise.outputs["Fac"], width_c.inputs[0])
+    width_v = _math(group, "MULTIPLY", "Width Noise Amount", -2920, -900)
+    links.new(width_c.outputs[0], width_v.inputs[0]); links.new(I["Width Variation"], width_v.inputs[1])
+    width_f = _math(group, "MULTIPLY_ADD", "Width Factor", -2740, -900)
+    width_f.inputs[1].default_value = 2.0
+    width_f.inputs[2].default_value = 1.0
+    links.new(width_v.outputs[0], width_f.inputs[0])
+    width_pos = _math(group, "MAXIMUM", "Width Factor Positive", -2560, -900, value_2=0.15)
+    links.new(width_f.outputs[0], width_pos.inputs[0])
+    reach = _math(group, "MULTIPLY", "Lead Reach", -2380, -800)
+    links.new(half.outputs[0], reach.inputs[0]); links.new(width_pos.outputs[0], reach.inputs[1])
+    reach_y = _math(group, "MULTIPLY", "Lead Reach V", -2200, -900)
+    links.new(reach.outputs[0], reach_y.inputs[0]); links.new(I["Aspect Ratio"], reach_y.inputs[1])
+    reach_vec = _node(group, "ShaderNodeCombineXYZ", "Lead Reach UV", -2020, -820)
+    links.new(reach.outputs[0], reach_vec.inputs["X"]); links.new(reach_y.outputs[0], reach_vec.inputs["Y"])
+
+    # --- Posterized class of a colour: snap(sqrt(c) + 0.5 / L, 1 / L).
+    inc = _math(group, "DIVIDE", "Level Step", -2380, -1200, value_1=1.0)
+    levels_safe = _math(group, "MAXIMUM", "Levels Safe", -2560, -1200, value_2=1.0)
+    links.new(I["Color Levels"], levels_safe.inputs[0])
+    links.new(levels_safe.outputs[0], inc.inputs[1])
+    half_inc = _math(group, "MULTIPLY", "Half Level Step", -2200, -1260, value_2=0.5)
+    links.new(inc.outputs[0], half_inc.inputs[0])
+    inc_vec = _node(group, "ShaderNodeCombineXYZ", "Level Step Vector", -2020, -1200)
+    half_vec = _node(group, "ShaderNodeCombineXYZ", "Half Step Vector", -2020, -1360)
+    for axis in ("X", "Y", "Z"):
+        links.new(inc.outputs[0], inc_vec.inputs[axis])
+        links.new(half_inc.outputs[0], half_vec.inputs[axis])
+
+    def classify(color_socket, label, x, y):
+        root = _vector_math(group, "POWER", f"{label} Perceived", x, y)
+        root.inputs[1].default_value = (0.5, 0.5, 0.5)
+        links.new(color_socket, root.inputs[0])
+        shifted = _vector_math(group, "ADD", f"{label} Round", x + 180, y)
+        links.new(root.outputs[0], shifted.inputs[0]); links.new(half_vec.outputs[0], shifted.inputs[1])
+        snapped = _vector_math(group, "SNAP", f"{label} Class", x + 360, y)
+        links.new(shifted.outputs[0], snapped.inputs[0]); links.new(inc_vec.outputs[0], snapped.inputs[1])
+        return snapped.outputs[0]
+
+    def tap_image(uv_socket, label, x, y):
+        image = _node(group, "ShaderNodeTexImage", f"{label} Sample", x, y)
+        image["fbp_matrix_source_image_node"] = True
+        try:
+            # Linear keeps the colour borders, and so the lead, smooth.
+            image.interpolation = "Linear"
+            image.extension = "EXTEND"
+        except (AttributeError, TypeError, ValueError):
+            pass
+        links.new(uv_socket, image.inputs["Vector"])
+        return image
+
+    _center_image, center_color, center_alpha = _matrix_source_sample(
+        group, inp, base_uv.outputs[0], x=-1800, y=600, label="Glass Piece"
+    )
+    center_class = classify(center_color, "Piece", -1500, 600)
+
+    no_image = _math(group, "SUBTRACT", "No Image", -1800, -1500, value_1=1.0)
+    links.new(I["Use Image Sample"], no_image.inputs[1])
+
+    # --- Neighbour rings: nearest ring (in half-widths) that sees another piece.
+    nearest = None
+    ring_factors = (0.5, 1.0, 1.5)
+    tap = 0
+    for ring, factor in enumerate(ring_factors):
+        for direction in range(8):
+            angle = (direction + 0.5 * ring) * math.pi / 4.0
+            ox, oy = math.cos(angle) * factor, math.sin(angle) * factor
+            x = -1600 + tap * 120
+            y = -400 - (tap % 4) * 40
+            offset = _vector_math(group, "MULTIPLY", f"Tap {tap} Offset", x, y - 200)
+            offset.inputs[1].default_value = (ox, oy, 0.0)
+            links.new(reach_vec.outputs[0], offset.inputs[0])
+            tap_uv = _vector_math(group, "ADD", f"Tap {tap} UV", x, y - 360)
+            links.new(base_uv.outputs[0], tap_uv.inputs[0]); links.new(offset.outputs[0], tap_uv.inputs[1])
+            image = tap_image(tap_uv.outputs[0], f"Tap {tap}", x, y - 520)
+            tap_class = classify(image.outputs["Color"], f"Tap {tap}", x, y - 800)
+            diff = _vector_math(group, "DISTANCE", f"Tap {tap} Difference", x, y - 960)
+            links.new(tap_class, diff.inputs[0]); links.new(center_class, diff.inputs[1])
+            same = _math(group, "LESS_THAN", f"Tap {tap} Same Piece", x, y - 1120, value_2=0.01)
+            links.new(_output(diff, "Value", 1), same.inputs[0])
+            same_gated = _math(group, "MAXIMUM", f"Tap {tap} Gated", x, y - 1280)
+            links.new(same.outputs[0], same_gated.inputs[0]); links.new(no_image.outputs[0], same_gated.inputs[1])
+            candidate = _math(group, "MULTIPLY_ADD", f"Tap {tap} Border Distance", x, y - 1440)
+            candidate.inputs[1].default_value = 100.0
+            candidate.inputs[2].default_value = factor
+            links.new(same_gated.outputs[0], candidate.inputs[0])
+            if nearest is None:
+                nearest = candidate.outputs[0]
+            else:
+                closer = _math(group, "MINIMUM", f"Tap {tap} Nearest Border", x, y - 1600)
+                links.new(nearest, closer.inputs[0]); links.new(candidate.outputs[0], closer.inputs[1])
+                nearest = closer.outputs[0]
+            tap += 1
+
+    # Window frame: distance to the plane border in half-widths.
+    ux_inv = _math(group, "SUBTRACT", "Frame Right", 1400, -1700, value_1=1.0)
+    uy_inv = _math(group, "SUBTRACT", "Frame Top", 1400, -1860, value_1=1.0)
     links.new(uv.outputs["X"], ux_inv.inputs[1]); links.new(uv.outputs["Y"], uy_inv.inputs[1])
-    fx = _math(group, "MINIMUM", "Frame X", -1180, -480)
-    fy = _math(group, "MINIMUM", "Frame Y", -1180, -640)
+    fx = _math(group, "MINIMUM", "Frame X", 1580, -1700)
+    fy = _math(group, "MINIMUM", "Frame Y", 1580, -1860)
     links.new(uv.outputs["X"], fx.inputs[0]); links.new(ux_inv.outputs[0], fx.inputs[1])
     links.new(uv.outputs["Y"], fy.inputs[0]); links.new(uy_inv.outputs[0], fy.inputs[1])
-    fx_cells = _math(group, "MULTIPLY", "Frame X Panes", -1000, -480)
-    fy_cells = _math(group, "MULTIPLY", "Frame Y Panes", -1000, -640)
-    links.new(fx.outputs[0], fx_cells.inputs[0]); links.new(inp.outputs["Pane Scale"], fx_cells.inputs[1])
-    links.new(fy.outputs[0], fy_cells.inputs[0]); links.new(rows.outputs[0], fy_cells.inputs[1])
-    frame_dist = _math(group, "MINIMUM", "Frame Distance", -820, -560)
-    links.new(fx_cells.outputs[0], frame_dist.inputs[0]); links.new(fy_cells.outputs[0], frame_dist.inputs[1])
-    frame_half = _math(group, "MULTIPLY", "Frame Half", -820, -720, value_2=0.5)
-    links.new(frame_dist.outputs[0], frame_half.inputs[0])
-    with_frame = _math(group, "MINIMUM", "Lead With Frame", -640, -400)
-    links.new(edges.outputs["Distance"], with_frame.inputs[0]); links.new(frame_half.outputs[0], with_frame.inputs[1])
-    edge_distance = _mix_float(group, "Lead Distance", -460, -300)
-    links.new(inp.outputs["Window Frame"], edge_distance.inputs["Factor"])
-    links.new(edges.outputs["Distance"], edge_distance.inputs[2])
-    links.new(with_frame.outputs[0], edge_distance.inputs[3])
-    edge = edge_distance.outputs[0]
+    fy_phys = _math(group, "MULTIPLY", "Frame Y Physical", 1760, -1860)
+    links.new(fy.outputs[0], fy_phys.inputs[0]); links.new(inv_aspect.outputs[0], fy_phys.inputs[1])
+    frame = _math(group, "MINIMUM", "Frame Distance", 1940, -1780)
+    links.new(fx.outputs[0], frame.inputs[0]); links.new(fy_phys.outputs[0], frame.inputs[1])
+    safe_half = _math(group, "MAXIMUM", "Safe Half Width", 1940, -1960, value_2=0.00001)
+    links.new(half.outputs[0], safe_half.inputs[0])
+    frame_units = _math(group, "DIVIDE", "Frame Half Widths", 2120, -1780)
+    links.new(frame.outputs[0], frame_units.inputs[0]); links.new(safe_half.outputs[0], frame_units.inputs[1])
+    with_frame = _math(group, "MINIMUM", "Border With Frame", 2300, -1600)
+    links.new(nearest, with_frame.inputs[0]); links.new(frame_units.outputs[0], with_frame.inputs[1])
+    border = _mix_float(group, "Border Distance", 2480, -1500)
+    links.new(I["Window Frame"], border.inputs["Factor"])
+    links.new(nearest, border.inputs[2]); links.new(with_frame.outputs[0], border.inputs[3])
+    border_d = border.outputs[0]
+    # No lead at all when Lead Width is zero.
+    has_lead = _math(group, "GREATER_THAN", "Has Lead", 2300, -2000, value_2=0.0)
+    links.new(I["Lead Width"], has_lead.inputs[0])
+    main_lead_raw = _smooth_band(group, border_d, 0.95, 1.1, "Main Lead", 2660, -1500, invert=True)
+    main_lead = _math(group, "MULTIPLY", "Main Lead Mask", 2840, -1500)
+    links.new(main_lead_raw, main_lead.inputs[0]); links.new(has_lead.outputs[0], main_lead.inputs[1])
+    main_profile = _math(group, "SUBTRACT", "Main Lead Profile", 2660, -1700, value_1=1.15)
+    main_profile.use_clamp = True
+    links.new(border_d, main_profile.inputs[1])
+    # The outer ring (1.5 half-widths) darkens the glass next to the lead.
+    # Border distances are discrete, so the rim is kept gentle (half strength)
+    # to avoid a hard grey band around thick leads.
+    main_near_raw = _smooth_band(group, border_d, 1.1, 1.6, "Main Glass Rim", 2660, -1900)
+    main_near = _math(group, "MULTIPLY_ADD", "Main Glass Rim Gentle", 2840, -1900)
+    main_near.inputs[1].default_value = 0.5
+    main_near.inputs[2].default_value = 0.5
+    links.new(main_near_raw, main_near.inputs[0])
 
-    # --- Pane colour: source read once at the pane centre.
-    center_x = _math(group, "DIVIDE", "Pane Center U", -1100, 420)
-    center_y = _math(group, "DIVIDE", "Pane Center V", -1100, 260)
-    unshift = _vector_math(group, "SUBTRACT", "Pane Center Unseeded", -1280, 520)
-    links.new(cells.outputs["Position"], unshift.inputs[0]); links.new(seed_shift.outputs[0], unshift.inputs[1])
-    pos = _node(group, "ShaderNodeSeparateXYZ", "Pane Center", -1280, 380)
-    links.new(unshift.outputs[0], pos.inputs[0])
-    links.new(pos.outputs["X"], center_x.inputs[0]); links.new(inp.outputs["Pane Scale"], center_x.inputs[1])
-    links.new(pos.outputs["Y"], center_y.inputs[0]); links.new(rows.outputs[0], center_y.inputs[1])
-    center_uv = _node(group, "ShaderNodeCombineXYZ", "Pane Center UV", -920, 340)
-    links.new(center_x.outputs[0], center_uv.inputs["X"]); links.new(center_y.outputs[0], center_uv.inputs["Y"])
-    _image, pane_color, pane_alpha = _matrix_source_sample(
-        group, inp, center_uv.outputs[0], x=-740, y=520, label="Glass Pane"
-    )
+    # --- Islands: Voronoi cuts inside the pieces, thinner lead.
+    pane = _vector_math(group, "SCALE", "Island Space", -3280, -1600)
+    links.new(seeded.outputs[0], pane.inputs[0]); links.new(I["Pieces Across"], _input(pane, "Scale", 3))
+    turb = _node(group, "ShaderNodeTexNoise", "Island Turbulence", -3100, -1700)
+    turb.noise_dimensions = "3D"
+    turb.inputs["Scale"].default_value = 0.6
+    turb.inputs["Detail"].default_value = 1.0
+    links.new(pane.outputs[0], turb.inputs["Vector"])
+    turb_c = _vector_math(group, "SUBTRACT", "Island Turbulence Center", -2920, -1700)
+    turb_c.inputs[1].default_value = (0.5, 0.5, 0.5)
+    links.new(turb.outputs["Color"], turb_c.inputs[0])
+    turb_a = _vector_math(group, "SCALE", "Island Turbulence Amount", -2740, -1700)
+    links.new(turb_c.outputs[0], turb_a.inputs[0]); links.new(I["Turbulence"], _input(turb_a, "Scale", 3))
+    turb_flat = _vector_math(group, "MULTIPLY", "Island Turbulence Flat", -2560, -1700)
+    turb_flat.inputs[1].default_value = (1.0, 1.0, 0.0)
+    links.new(turb_a.outputs[0], turb_flat.inputs[0])
+    island_space = _vector_math(group, "ADD", "Warped Island Space", -2380, -1600)
+    links.new(pane.outputs[0], island_space.inputs[0]); links.new(turb_flat.outputs[0], island_space.inputs[1])
+    cells = _node(group, "ShaderNodeTexVoronoi", "Glass Islands", -2200, -1500)
+    cells.voronoi_dimensions = "2D"
+    cells.inputs["Scale"].default_value = 1.0
+    links.new(island_space.outputs[0], cells.inputs["Vector"])
+    links.new(I["Irregularity"], cells.inputs["Randomness"])
+    cuts = _node(group, "ShaderNodeTexVoronoi", "Island Cuts", -2200, -1800)
+    cuts.voronoi_dimensions = "2D"
+    cuts.feature = "DISTANCE_TO_EDGE"
+    cuts.inputs["Scale"].default_value = 1.0
+    links.new(island_space.outputs[0], cuts.inputs["Vector"])
+    links.new(I["Irregularity"], cuts.inputs["Randomness"])
+    split_half = _math(group, "MULTIPLY", "Split Lead Half", 2300, -2300, value_2=0.5)
+    links.new(I["Split Lead Width"], split_half.inputs[0])
+    split_soft = _math(group, "MINIMUM", "Split Lead Softness", 2480, -2460, value_2=0.015)
+    links.new(split_half.outputs[0], split_soft.inputs[0])
+    split_soft_safe = _math(group, "MAXIMUM", "Split Lead Safe Softness", 2660, -2460, value_2=0.0001)
+    links.new(split_soft.outputs[0], split_soft_safe.inputs[0])
+    split_in = _math(group, "SUBTRACT", "Split Lead Inner", 2840, -2300)
+    split_out = _math(group, "ADD", "Split Lead Outer", 2840, -2460)
+    for node in (split_in, split_out):
+        links.new(split_half.outputs[0], node.inputs[0]); links.new(split_soft_safe.outputs[0], node.inputs[1])
+    split_raw = _smooth_band(group, cuts.outputs["Distance"], split_in.outputs[0], split_out.outputs[0], "Split Lead", 3020, -2300, invert=True)
+    split_lead = _math(group, "MULTIPLY", "Split Lead Mask", 3200, -2300)
+    links.new(split_raw, split_lead.inputs[0]); links.new(I["Split Pieces"], split_lead.inputs[1])
+    split_profile_d = _math(group, "DIVIDE", "Split Lead Profile", 3020, -2500)
+    split_half_safe = _math(group, "MAXIMUM", "Split Half Safe", 2840, -2620, value_2=0.0001)
+    links.new(split_half.outputs[0], split_half_safe.inputs[0])
+    links.new(cuts.outputs["Distance"], split_profile_d.inputs[0]); links.new(split_half_safe.outputs[0], split_profile_d.inputs[1])
+    split_profile = _math(group, "SUBTRACT", "Split Lead Round", 3200, -2500, value_1=1.0)
+    split_profile.use_clamp = True
+    links.new(split_profile_d.outputs[0], split_profile.inputs[1])
+    split_rim_end = _math(group, "ADD", "Split Rim End", 3020, -2700, value_2=0.12)
+    links.new(split_half.outputs[0], split_rim_end.inputs[0])
+    split_near_raw = _smooth_band(group, cuts.outputs["Distance"], split_half.outputs[0], split_rim_end.outputs[0], "Split Glass Rim", 3200, -2700)
+    split_near = _mix_float(group, "Split Rim Enabled", 3380, -2700)
+    links.new(I["Split Pieces"], split_near.inputs["Factor"])
+    split_near.inputs[2].default_value = 1.0
+    links.new(split_near_raw, split_near.inputs[3])
 
-    # Image Detail: the picture seen through rippled glass (refracted sample).
-    refr = _vector_math(group, "SCALE", "Refraction Offset", -920, 900)
-    links.new(turb_center.outputs[0], refr.inputs[0])
-    links.new(inp.outputs["Refraction"], _input(refr, "Scale", 3))
-    refr_uv = _vector_math(group, "ADD", "Refracted UV", -740, 900)
-    links.new(inp.outputs["UV Vector"], refr_uv.inputs[0]); links.new(refr.outputs[0], refr_uv.inputs[1])
+    lead_mask = _math(group, "MAXIMUM", "Lead Mask", 3560, -1600)
+    links.new(main_lead.outputs[0], lead_mask.inputs[0]); links.new(split_lead.outputs[0], lead_mask.inputs[1])
+    split_prof_on = _math(group, "MULTIPLY", "Split Profile On", 3380, -2500)
+    links.new(split_profile.outputs[0], split_prof_on.inputs[0]); links.new(split_lead.outputs[0], split_prof_on.inputs[1])
+    profile = _math(group, "MAXIMUM", "Lead Profile", 3560, -1800)
+    links.new(main_profile.outputs[0], profile.inputs[0]); links.new(split_prof_on.outputs[0], profile.inputs[1])
+    rim = _math(group, "MINIMUM", "Glass Rim", 3560, -2000)
+    links.new(main_near.outputs[0], rim.inputs[0]); links.new(split_near.outputs[0], rim.inputs[1])
+
+    # --- Piece colour: posterized class, richer, optional palette.
+    piece_color = _vector_math(group, "MULTIPLY", "Piece Color", -1000, 800)
+    links.new(center_class, piece_color.inputs[0]); links.new(center_class, piece_color.inputs[1])
+    detail_mix = _mix_color(group, "Piece With Detail", -800, 800)
+    links.new(I["Image Detail"], detail_mix.inputs["Factor"])
+    links.new(piece_color.outputs[0], detail_mix.inputs[6])
+    refr = _vector_math(group, "SCALE", "Refraction Offset", -1200, 1100)
+    links.new(turb_c.outputs[0], refr.inputs[0]); links.new(I["Refraction"], _input(refr, "Scale", 3))
+    refr_uv = _vector_math(group, "ADD", "Refracted UV", -1020, 1100)
+    links.new(I["UV Vector"], refr_uv.inputs[0]); links.new(refr.outputs[0], refr_uv.inputs[1])
     _detail_image, detail_color, _detail_alpha = _matrix_source_sample(
-        group, inp, refr_uv.outputs[0], x=-540, y=980, label="Glass Detail"
+        group, inp, refr_uv.outputs[0], x=-1000, y=1300, label="Glass Detail"
     )
-    detail_mix = _mix_color(group, "Pane With Detail", -40, 620)
-    links.new(inp.outputs["Image Detail"], detail_mix.inputs["Factor"])
-    links.new(pane_color, detail_mix.inputs[6]); links.new(detail_color, detail_mix.inputs[7])
-
-    # Pot-metal glass is deeply saturated.
-    rich = _node(group, "ShaderNodeHueSaturation", "Glass Color Richness", 160, 620)
+    links.new(detail_color, detail_mix.inputs[7])
+    rich = _node(group, "ShaderNodeHueSaturation", "Glass Color Richness", -600, 800)
     rich.inputs["Hue"].default_value = 0.5
     rich.inputs["Value"].default_value = 1.0
     rich.inputs["Fac"].default_value = 1.0
-    links.new(inp.outputs["Color Richness"], rich.inputs["Saturation"])
+    links.new(I["Color Richness"], rich.inputs["Saturation"])
     links.new(detail_mix.outputs[2], rich.inputs["Color"])
 
-    # Optional palette: snap each pane to the nearest palette glass.
-    # Colours are compared after Color Richness and in a gamma-like space
-    # (square root), closer to how different two glasses look to the eye.
-    def _perceptual(socket, label, x, y):
+    def perceptual(socket, label, x, y):
         node = _vector_math(group, "POWER", label, x, y)
         node.inputs[1].default_value = (0.5, 0.5, 0.5)
         links.new(socket, node.inputs[0])
         return node.outputs[0]
 
-    pane_seen = _perceptual(rich.outputs["Color"], "Pane Perceived", 360, 760)
+    pane_seen = perceptual(rich.outputs["Color"], "Piece Perceived", -400, 1000)
     best_color = None
     best_dist = None
     for index in range(1, len(STAINED_GLASS_PALETTE) + 1):
-        x = 360 + index * 200
-        palette_seen = _perceptual(inp.outputs[f"Palette {index}"], f"Palette {index} Perceived", x, 760)
-        dist = _vector_math(group, "DISTANCE", f"Palette {index} Distance", x, 900)
-        links.new(pane_seen, dist.inputs[0])
-        links.new(palette_seen, dist.inputs[1])
+        x = -400 + index * 200
+        palette_seen = perceptual(I[f"Palette {index}"], f"Palette {index} Perceived", x, 1160)
+        dist = _vector_math(group, "DISTANCE", f"Palette {index} Distance", x, 1300)
+        links.new(pane_seen, dist.inputs[0]); links.new(palette_seen, dist.inputs[1])
         dist_out = _output(dist, "Value", 1)
         if best_color is None:
-            best_color = inp.outputs[f"Palette {index}"]
-            best_dist = dist_out
+            best_color, best_dist = I[f"Palette {index}"], dist_out
             continue
-        closer = _math(group, "LESS_THAN", f"Palette {index} Closer", x, 1060)
+        closer = _math(group, "LESS_THAN", f"Palette {index} Closer", x, 1460)
         links.new(dist_out, closer.inputs[0]); links.new(best_dist, closer.inputs[1])
-        pick = _mix_color(group, f"Palette {index} Pick", x, 1220)
+        pick = _mix_color(group, f"Palette {index} Pick", x, 1620)
         links.new(closer.outputs[0], pick.inputs["Factor"])
-        links.new(best_color, pick.inputs[6]); links.new(inp.outputs[f"Palette {index}"], pick.inputs[7])
-        nearest = _math(group, "MINIMUM", f"Palette {index} Nearest", x, 1380)
-        links.new(dist_out, nearest.inputs[0]); links.new(best_dist, nearest.inputs[1])
-        best_color = pick.outputs[2]
-        best_dist = nearest.outputs[0]
-    palette_mix = _mix_color(group, "Palette Mix", 1800, 700)
-    links.new(inp.outputs["Palette Mix"], palette_mix.inputs["Factor"])
+        links.new(best_color, pick.inputs[6]); links.new(I[f"Palette {index}"], pick.inputs[7])
+        near = _math(group, "MINIMUM", f"Palette {index} Nearest", x, 1780)
+        links.new(dist_out, near.inputs[0]); links.new(best_dist, near.inputs[1])
+        best_color, best_dist = pick.outputs[2], near.outputs[0]
+    palette_mix = _mix_color(group, "Palette Mix", 1100, 900)
+    links.new(I["Palette Mix"], palette_mix.inputs["Factor"])
     links.new(rich.outputs["Color"], palette_mix.inputs[6]); links.new(best_color, palette_mix.inputs[7])
     glass_base = palette_mix.outputs[2]
 
-    # --- Glass body: uneven thickness, drawn streaks, per-pane variation.
-    cloud = _node(group, "ShaderNodeTexNoise", "Glass Thickness", 400, 200)
-    cloud.noise_dimensions = "4D"
-    cloud.inputs["Scale"].default_value = 2.2
-    cloud.inputs["Detail"].default_value = 6.0
-    cloud.inputs["Roughness"].default_value = 0.6
-    links.new(warped.outputs[0], cloud.inputs["Vector"]); links.new(inp.outputs["Seed"], cloud.inputs["W"])
-    cloud_c = _math(group, "SUBTRACT", "Thickness Center", 580, 200, value_2=0.5)
-    links.new(cloud.outputs["Fac"], cloud_c.inputs[0])
-    cloud_a = _math(group, "MULTIPLY", "Thickness Amount", 760, 200)
-    links.new(cloud_c.outputs[0], cloud_a.inputs[0]); links.new(inp.outputs["Glass Texture"], cloud_a.inputs[1])
+    # --- Glass body.
+    def centered_noise(vector, label, scale, detail, amount_socket, x, y, *, roughness=0.5):
+        noise = _node(group, "ShaderNodeTexNoise", label, x, y)
+        noise.noise_dimensions = "3D"
+        noise.inputs["Scale"].default_value = scale
+        noise.inputs["Detail"].default_value = detail
+        noise.inputs["Roughness"].default_value = roughness
+        links.new(vector, noise.inputs["Vector"])
+        centre = _math(group, "SUBTRACT", f"{label} Center", x + 180, y, value_2=0.5)
+        links.new(noise.outputs["Fac"], centre.inputs[0])
+        amount = _math(group, "MULTIPLY", f"{label} Amount", x + 360, y)
+        links.new(centre.outputs[0], amount.inputs[0]); links.new(amount_socket, amount.inputs[1])
+        return amount.outputs[0]
 
-    streak_space = _vector_math(group, "MULTIPLY", "Streak Space", 400, 0)
-    streak_space.inputs[1].default_value = (7.0, 0.8, 1.0)
-    links.new(warped.outputs[0], streak_space.inputs[0])
-    streak = _node(group, "ShaderNodeTexNoise", "Glass Streaks", 580, 0)
-    streak.noise_dimensions = "4D"
-    streak.inputs["Scale"].default_value = 1.5
-    streak.inputs["Detail"].default_value = 2.0
-    links.new(streak_space.outputs[0], streak.inputs["Vector"]); links.new(inp.outputs["Seed"], streak.inputs["W"])
-    streak_c = _math(group, "SUBTRACT", "Streak Center", 760, 0, value_2=0.5)
-    links.new(streak.outputs["Fac"], streak_c.inputs[0])
-    streak_a = _math(group, "MULTIPLY", "Streak Amount", 940, 0)
-    links.new(streak_c.outputs[0], streak_a.inputs[0]); links.new(inp.outputs["Streaks"], streak_a.inputs[1])
+    cloud = centered_noise(seeded.outputs[0], "Glass Thickness", 9.0, 6.0, I["Glass Texture"], 600, 300, roughness=0.6)
+    streak_space = _vector_math(group, "MULTIPLY", "Streak Space", 600, 120)
+    streak_space.inputs[1].default_value = (40.0, 4.0, 1.0)
+    links.new(seeded.outputs[0], streak_space.inputs[0])
+    streak = centered_noise(streak_space.outputs[0], "Glass Streaks", 1.5, 2.0, I["Streaks"], 780, 120)
 
-    pane_rand = _node(group, "ShaderNodeSeparateColor", "Pane Random", 400, -200)
-    links.new(cells.outputs["Color"], pane_rand.inputs["Color"])
-    pane_c = _math(group, "SUBTRACT", "Pane Variation Center", 580, -200, value_2=0.5)
-    links.new(pane_rand.outputs["Red"], pane_c.inputs[0])
-    pane_a = _math(group, "MULTIPLY", "Pane Variation Amount", 760, -200)
-    links.new(pane_c.outputs[0], pane_a.inputs[0]); links.new(inp.outputs["Pane Variation"], pane_a.inputs[1])
+    # Per-piece variation: one random value per piece (class colour + island).
+    piece_id = _vector_math(group, "ADD", "Piece ID", 600, -100)
+    links.new(center_class, piece_id.inputs[0])
+    island_id = _vector_math(group, "SCALE", "Island ID", 420, -160)
+    links.new(cells.outputs["Color"], island_id.inputs[0]); links.new(I["Split Pieces"], _input(island_id, "Scale", 3))
+    links.new(island_id.outputs[0], piece_id.inputs[1])
+    piece_rand = _node(group, "ShaderNodeTexWhiteNoise", "Piece Random", 780, -100)
+    piece_rand.noise_dimensions = "4D"
+    links.new(piece_id.outputs[0], piece_rand.inputs["Vector"]); links.new(I["Seed"], piece_rand.inputs["W"])
+    piece_c = _math(group, "SUBTRACT", "Piece Variation Center", 960, -100, value_2=0.5)
+    links.new(piece_rand.outputs["Value"], piece_c.inputs[0])
+    piece_a = _math(group, "MULTIPLY", "Piece Variation Amount", 1140, -100)
+    links.new(piece_c.outputs[0], piece_a.inputs[0]); links.new(I["Pane Variation"], piece_a.inputs[1])
 
-    body_1 = _math(group, "ADD", "Glass Body A", 1120, 100)
-    links.new(cloud_a.outputs[0], body_1.inputs[0]); links.new(streak_a.outputs[0], body_1.inputs[1])
-    body_2 = _math(group, "ADD", "Glass Body B", 1300, 0)
-    links.new(body_1.outputs[0], body_2.inputs[0]); links.new(pane_a.outputs[0], body_2.inputs[1])
-    body = _math(group, "ADD", "Glass Body", 1480, 0, value_2=1.0)
-    links.new(body_2.outputs[0], body.inputs[0])
-    body_pos = _math(group, "MAXIMUM", "Glass Body Positive", 1660, 0, value_2=0.0)
+    # Bubbles: small round seeds trapped in the glass, bright rim.
+    bubble_space = _vector_math(group, "SCALE", "Bubble Space", 600, -400)
+    links.new(seeded.outputs[0], bubble_space.inputs[0]); links.new(I["Bubble Scale"], _input(bubble_space, "Scale", 3))
+    bubbles = _node(group, "ShaderNodeTexVoronoi", "Bubble Cells", 780, -400)
+    bubbles.voronoi_dimensions = "2D"
+    bubbles.inputs["Scale"].default_value = 1.0
+    links.new(bubble_space.outputs[0], bubbles.inputs["Vector"])
+    bubble_rand = _node(group, "ShaderNodeSeparateColor", "Bubble Random", 960, -400)
+    links.new(bubbles.outputs["Color"], bubble_rand.inputs["Color"])
+    bubble_on = _math(group, "LESS_THAN", "Bubble Present", 1140, -360)
+    links.new(bubble_rand.outputs["Red"], bubble_on.inputs[0]); links.new(I["Bubbles"], bubble_on.inputs[1])
+    bubble_r = _math(group, "MULTIPLY_ADD", "Bubble Radius", 1140, -520)
+    bubble_r.inputs[1].default_value = 0.22
+    bubble_r.inputs[2].default_value = 0.06
+    links.new(bubble_rand.outputs["Green"], bubble_r.inputs[0])
+    bubble_rel = _math(group, "DIVIDE", "Bubble Relative", 1320, -440)
+    links.new(bubbles.outputs["Distance"], bubble_rel.inputs[0]); links.new(bubble_r.outputs[0], bubble_rel.inputs[1])
+    bubble_ring = _node(group, "ShaderNodeMapRange", "Bubble Rim", 1500, -440)
+    bubble_ring.interpolation_type = "SMOOTHSTEP"
+    bubble_ring.clamp = True
+    bubble_ring.inputs["From Min"].default_value = 0.65
+    bubble_ring.inputs["From Max"].default_value = 1.0
+    bubble_ring.inputs["To Min"].default_value = 0.15
+    bubble_ring.inputs["To Max"].default_value = 1.0
+    links.new(bubble_rel.outputs[0], bubble_ring.inputs["Value"])
+    bubble_inside = _math(group, "LESS_THAN", "Bubble Inside", 1500, -620, value_2=1.0)
+    links.new(bubble_rel.outputs[0], bubble_inside.inputs[0])
+    bubble_light = _math(group, "MULTIPLY", "Bubble Light", 1680, -480)
+    links.new(bubble_ring.outputs["Result"], bubble_light.inputs[0]); links.new(bubble_inside.outputs[0], bubble_light.inputs[1])
+    bubble_amount = _math(group, "MULTIPLY", "Bubble Amount", 1860, -480, value_2=0.7)
+    links.new(bubble_light.outputs[0], bubble_amount.inputs[0])
+    bubble_final = _math(group, "MULTIPLY", "Bubbles Visible", 2040, -440)
+    links.new(bubble_amount.outputs[0], bubble_final.inputs[0]); links.new(bubble_on.outputs[0], bubble_final.inputs[1])
+
+    # Scratches: thin bright hairlines in two directions, only in patches.
+    scratch_terms = []
+    for index, angle in enumerate((0.55, -1.05)):
+        rot = _node(group, "ShaderNodeVectorRotate", f"Scratch {index + 1} Direction", 600, -800 - index * 300)
+        rot.rotation_type = "Z_AXIS"
+        rot.inputs["Angle"].default_value = angle
+        links.new(seeded.outputs[0], rot.inputs["Vector"])
+        stretch = _vector_math(group, "MULTIPLY", f"Scratch {index + 1} Stretch", 780, -800 - index * 300)
+        stretch.inputs[1].default_value = (2.0, 260.0, 1.0)
+        links.new(rot.outputs["Vector"], stretch.inputs[0])
+        lines = _node(group, "ShaderNodeTexNoise", f"Scratch {index + 1} Lines", 960, -800 - index * 300)
+        lines.noise_dimensions = "3D"
+        lines.inputs["Scale"].default_value = 1.0
+        lines.inputs["Detail"].default_value = 0.0
+        links.new(stretch.outputs[0], lines.inputs["Vector"])
+        off = _math(group, "SUBTRACT", f"Scratch {index + 1} Offset", 1140, -800 - index * 300, value_2=0.5)
+        links.new(lines.outputs["Fac"], off.inputs[0])
+        absolute = _math(group, "ABSOLUTE", f"Scratch {index + 1} Distance", 1320, -800 - index * 300)
+        links.new(off.outputs[0], absolute.inputs[0])
+        line = _smooth_band(group, absolute.outputs[0], 0.0, 0.012, f"Scratch {index + 1} Line", 1500, -800 - index * 300, invert=True)
+        patch = _node(group, "ShaderNodeTexNoise", f"Scratch {index + 1} Patches", 1140, -950 - index * 300)
+        patch.noise_dimensions = "3D"
+        patch.inputs["Scale"].default_value = 3.0 + index
+        links.new(rot.outputs["Vector"], patch.inputs["Vector"])
+        patch_mask = _smooth_band(group, patch.outputs["Fac"], 0.55, 0.7, f"Scratch {index + 1} Patch Mask", 1320, -950 - index * 300)
+        term = _math(group, "MULTIPLY", f"Scratch {index + 1}", 1680, -850 - index * 300)
+        links.new(line, term.inputs[0]); links.new(patch_mask, term.inputs[1])
+        scratch_terms.append(term.outputs[0])
+    scratch_both = _math(group, "MAXIMUM", "Scratches Combined", 1860, -950)
+    links.new(scratch_terms[0], scratch_both.inputs[0]); links.new(scratch_terms[1], scratch_both.inputs[1])
+    scratch = _math(group, "MULTIPLY", "Scratches Visible", 2040, -950)
+    links.new(scratch_both.outputs[0], scratch.inputs[0]); links.new(I["Scratches"], scratch.inputs[1])
+
+    body_1 = _math(group, "ADD", "Glass Body A", 1500, 200)
+    links.new(cloud, body_1.inputs[0]); links.new(streak, body_1.inputs[1])
+    body_2 = _math(group, "ADD", "Glass Body B", 1680, 100)
+    links.new(body_1.outputs[0], body_2.inputs[0]); links.new(piece_a.outputs[0], body_2.inputs[1])
+    body_3 = _math(group, "ADD", "Glass Body C", 2220, 0)
+    links.new(body_2.outputs[0], body_3.inputs[0]); links.new(bubble_final.outputs[0], body_3.inputs[1])
+    body = _math(group, "ADD", "Glass Body", 2400, 0, value_2=1.0)
+    links.new(body_3.outputs[0], body.inputs[0])
+    body_pos = _math(group, "MAXIMUM", "Glass Body Positive", 2580, 0, value_2=0.0)
     links.new(body.outputs[0], body_pos.inputs[0])
 
-    # Grisaille / thick edges: panes darken towards the lead.
-    lead_half = _math(group, "MULTIPLY", "Lead Half Width", 400, -500, value_2=0.5)
-    links.new(inp.outputs["Lead Width"], lead_half.inputs[0])
-    shade_end = _math(group, "ADD", "Edge Shade End", 580, -560, value_2=0.18)
-    links.new(lead_half.outputs[0], shade_end.inputs[0])
-    shade = _smooth_band(group, edge, lead_half.outputs[0], shade_end.outputs[0], "Edge Shade", 760, -500)
-    shade_floor = _math(group, "SUBTRACT", "Edge Shade Floor", 760, -700, value_1=1.0)
-    links.new(inp.outputs["Edge Darkening"], shade_floor.inputs[1])
-    edge_shade = _mix_float(group, "Edge Darkening Mix", 960, -560)
-    links.new(shade, edge_shade.inputs["Factor"])
+    shade_floor = _math(group, "SUBTRACT", "Edge Shade Floor", 3740, -2100, value_1=1.0)
+    links.new(I["Edge Darkening"], shade_floor.inputs[1])
+    edge_shade = _mix_float(group, "Edge Darkening Mix", 3920, -2000)
+    links.new(rim.outputs[0], edge_shade.inputs["Factor"])
     links.new(shade_floor.outputs[0], edge_shade.inputs[2])
     edge_shade.inputs[3].default_value = 1.0
 
-    # Backlight: the sun behind the window, brightest around Light Center.
-    light_center = _node(group, "ShaderNodeCombineXYZ", "Light Center", 400, -900)
-    links.new(inp.outputs["Light Center X"], light_center.inputs["X"])
-    links.new(inp.outputs["Light Center Y"], light_center.inputs["Y"])
-    light_dist = _vector_math(group, "DISTANCE", "Light Distance", 580, -900)
-    links.new(inp.outputs["UV Vector"], light_dist.inputs[0]); links.new(light_center.outputs[0], light_dist.inputs[1])
-    light_fall = _math(group, "MULTIPLY", "Light Falloff Amount", 760, -900)
-    links.new(_output(light_dist, "Value", 1), light_fall.inputs[0]); links.new(inp.outputs["Light Falloff"], light_fall.inputs[1])
-    light_keep = _math(group, "SUBTRACT", "Light Reach", 940, -900, value_1=1.0)
+    light_center = _node(group, "ShaderNodeCombineXYZ", "Light Center", 2400, -1100)
+    links.new(I["Light Center X"], light_center.inputs["X"]); links.new(I["Light Center Y"], light_center.inputs["Y"])
+    light_dist = _vector_math(group, "DISTANCE", "Light Distance", 2580, -1100)
+    links.new(I["UV Vector"], light_dist.inputs[0]); links.new(light_center.outputs[0], light_dist.inputs[1])
+    light_fall = _math(group, "MULTIPLY", "Light Falloff Amount", 2760, -1100)
+    links.new(_output(light_dist, "Value", 1), light_fall.inputs[0]); links.new(I["Light Falloff"], light_fall.inputs[1])
+    light_keep = _math(group, "SUBTRACT", "Light Reach", 2940, -1100, value_1=1.0)
     links.new(light_fall.outputs[0], light_keep.inputs[1])
-    light_pos = _math(group, "MAXIMUM", "Light Reach Positive", 1120, -900, value_2=0.05)
+    light_pos = _math(group, "MAXIMUM", "Light Reach Positive", 3120, -1100, value_2=0.05)
     links.new(light_keep.outputs[0], light_pos.inputs[0])
-    light = _math(group, "MULTIPLY", "Backlight", 1300, -900)
-    links.new(light_pos.outputs[0], light.inputs[0]); links.new(inp.outputs["Light Strength"], light.inputs[1])
+    light = _math(group, "MULTIPLY", "Backlight", 3300, -1100)
+    links.new(light_pos.outputs[0], light.inputs[0]); links.new(I["Light Strength"], light.inputs[1])
 
-    gain_1 = _math(group, "MULTIPLY", "Glass Gain A", 1840, -300)
+    gain_1 = _math(group, "MULTIPLY", "Glass Gain A", 4100, -300)
     links.new(body_pos.outputs[0], gain_1.inputs[0]); links.new(edge_shade.outputs[0], gain_1.inputs[1])
-    gain = _math(group, "MULTIPLY", "Glass Gain", 2020, -300)
+    gain = _math(group, "MULTIPLY", "Glass Gain", 4280, -300)
     links.new(gain_1.outputs[0], gain.inputs[0]); links.new(light.outputs[0], gain.inputs[1])
-    lit_glass = _vector_math(group, "SCALE", "Lit Glass", 2220, 300)
+    lit_glass = _vector_math(group, "SCALE", "Lit Glass", 4460, 300)
     links.new(glass_base, lit_glass.inputs[0]); links.new(gain.outputs[0], _input(lit_glass, "Scale", 3))
-
-    # --- Lead cames: rounded dark strips with a soft highlight down the middle.
-    # Edge softness in pane units keeps the came anti-aliased at any scale.
-    soft_cap = _math(group, "MINIMUM", "Lead Edge Softness", 2200, -700, value_2=0.02)
-    links.new(lead_half.outputs[0], soft_cap.inputs[0])
-    soft = _math(group, "MAXIMUM", "Lead Safe Softness", 2200, -860, value_2=0.0001)
-    links.new(soft_cap.outputs[0], soft.inputs[0])
-    lead_out = _math(group, "ADD", "Lead Outer", 2380, -760)
-    links.new(lead_half.outputs[0], lead_out.inputs[0]); links.new(soft.outputs[0], lead_out.inputs[1])
-    lead_in = _math(group, "SUBTRACT", "Lead Inner", 2380, -600)
-    links.new(lead_half.outputs[0], lead_in.inputs[0]); links.new(soft.outputs[0], lead_in.inputs[1])
-    lead_mask = _smooth_band(group, edge, lead_in.outputs[0], lead_out.outputs[0], "Lead Mask", 2560, -650, invert=True)
-    safe_half = _math(group, "MAXIMUM", "Lead Safe Half", 2380, -920, value_2=0.0001)
-    links.new(lead_half.outputs[0], safe_half.inputs[0])
-    profile_d = _math(group, "DIVIDE", "Lead Profile", 2560, -900)
-    links.new(edge, profile_d.inputs[0]); links.new(safe_half.outputs[0], profile_d.inputs[1])
-    profile = _math(group, "SUBTRACT", "Lead Round", 2740, -900, value_1=1.0)
-    profile.use_clamp = True
-    links.new(profile_d.outputs[0], profile.inputs[1])
-    profile_sq = _math(group, "POWER", "Lead Highlight Shape", 2920, -900, value_2=3.0)
-    links.new(profile.outputs[0], profile_sq.inputs[0])
-    shine = _math(group, "MULTIPLY", "Lead Highlight", 3100, -900)
-    links.new(profile_sq.outputs[0], shine.inputs[0]); links.new(inp.outputs["Lead Shine"], shine.inputs[1])
-    shine_col = _math(group, "MULTIPLY", "Lead Highlight Level", 3280, -900, value_2=0.15)
-    links.new(shine.outputs[0], shine_col.inputs[0])
-    lead_color = _vector_math(group, "ADD", "Lead Metal", 3460, -800)
-    links.new(inp.outputs["Lead Color"], lead_color.inputs[0])
-    shine_vec = _node(group, "ShaderNodeCombineXYZ", "Lead Highlight Color", 3280, -1060)
+    # Scratches catch the light whatever the glass colour.
+    scratch_light = _math(group, "MULTIPLY", "Scratch Light", 4460, 100)
+    links.new(scratch.outputs[0], scratch_light.inputs[0]); links.new(light.outputs[0], scratch_light.inputs[1])
+    scratch_level = _math(group, "MULTIPLY", "Scratch Level", 4640, 100, value_2=0.35)
+    links.new(scratch_light.outputs[0], scratch_level.inputs[0])
+    scratch_vec = _node(group, "ShaderNodeCombineXYZ", "Scratch Color", 4820, 100)
     for axis in ("X", "Y", "Z"):
-        links.new(shine_col.outputs[0], shine_vec.inputs[axis])
-    links.new(shine_vec.outputs[0], lead_color.inputs[1])
+        links.new(scratch_level.outputs[0], scratch_vec.inputs[axis])
+    scratched = _vector_math(group, "ADD", "Scratched Glass", 4820, 300)
+    links.new(lit_glass.outputs[0], scratched.inputs[0]); links.new(scratch_vec.outputs[0], scratched.inputs[1])
 
-    window = _mix_color(group, "Stained Glass Window", 3660, 200)
-    links.new(lead_mask, window.inputs["Factor"])
-    links.new(lit_glass.outputs[0], window.inputs[6]); links.new(lead_color.outputs[0], window.inputs[7])
+    # Lead colour with a rounded highlight.
+    shine = _math(group, "POWER", "Lead Highlight Shape", 3740, -1800, value_2=2.0)
+    links.new(profile.outputs[0], shine.inputs[0])
+    shine_amt = _math(group, "MULTIPLY", "Lead Highlight", 3920, -1800)
+    links.new(shine.outputs[0], shine_amt.inputs[0]); links.new(I["Lead Shine"], shine_amt.inputs[1])
+    shine_lvl = _math(group, "MULTIPLY", "Lead Highlight Level", 4100, -1800, value_2=0.06)
+    links.new(shine_amt.outputs[0], shine_lvl.inputs[0])
+    shine_vec = _node(group, "ShaderNodeCombineXYZ", "Lead Highlight Color", 4280, -1800)
+    for axis in ("X", "Y", "Z"):
+        links.new(shine_lvl.outputs[0], shine_vec.inputs[axis])
+    lead_color = _vector_math(group, "ADD", "Lead Metal", 4460, -1700)
+    links.new(I["Lead Color"], lead_color.inputs[0]); links.new(shine_vec.outputs[0], lead_color.inputs[1])
 
-    # Debug: 0 final, 1 flat pane colours, 2 lead mask.
-    is_panes = _math(group, "COMPARE", "Debug Panes", 3660, -200, value_2=1.0)
-    is_lead = _math(group, "COMPARE", "Debug Lead", 3660, -360, value_2=2.0)
-    for compare in (is_panes, is_lead):
+    window = _mix_color(group, "Stained Glass Window", 5000, 200)
+    links.new(lead_mask.outputs[0], window.inputs["Factor"])
+    links.new(scratched.outputs[0], window.inputs[6]); links.new(lead_color.outputs[0], window.inputs[7])
+
+    is_pieces = _math(group, "COMPARE", "Debug Pieces", 5000, -200, value_2=1.0)
+    is_lead = _math(group, "COMPARE", "Debug Lead", 5000, -360, value_2=2.0)
+    for compare in (is_pieces, is_lead):
         eps = _input(compare, "Epsilon", 2)
         if eps is not None:
             eps.default_value = 0.1
-        links.new(inp.outputs["Debug Mode"], compare.inputs[0])
-    show_panes = _mix_color(group, "Debug Pane View", 3860, 100)
-    links.new(is_panes.outputs[0], show_panes.inputs["Factor"])
-    links.new(window.outputs[2], show_panes.inputs[6]); links.new(glass_base, show_panes.inputs[7])
-    lead_view = _node(group, "ShaderNodeCombineXYZ", "Lead Mask View", 3860, -360)
+        links.new(I["Debug Mode"], compare.inputs[0])
+    show_pieces = _mix_color(group, "Debug Piece View", 5200, 100)
+    links.new(is_pieces.outputs[0], show_pieces.inputs["Factor"])
+    links.new(window.outputs[2], show_pieces.inputs[6]); links.new(glass_base, show_pieces.inputs[7])
+    lead_view = _node(group, "ShaderNodeCombineXYZ", "Lead Mask View", 5200, -360)
     for axis in ("X", "Y", "Z"):
-        links.new(lead_mask, lead_view.inputs[axis])
-    show_lead = _mix_color(group, "Debug Lead View", 4040, 0)
+        links.new(lead_mask.outputs[0], lead_view.inputs[axis])
+    show_lead = _mix_color(group, "Debug Lead View", 5380, 0)
     links.new(is_lead.outputs[0], show_lead.inputs["Factor"])
-    links.new(show_panes.outputs[2], show_lead.inputs[6]); links.new(lead_view.outputs[0], show_lead.inputs[7])
+    links.new(show_pieces.outputs[2], show_lead.inputs[6]); links.new(lead_view.outputs[0], show_lead.inputs[7])
+    out.location = (5600, 0)
     links.new(show_lead.outputs[2], out.inputs["Color Out"])
-    links.new(pane_alpha, out.inputs["Alpha Out"])
-    group["fbp_stained_glass_version"] = 1
+    links.new(center_alpha, out.inputs["Alpha Out"])
+    group["fbp_stained_glass_version"] = 2
     return group
-
 
 def _load_ascii_atlas(asset_dir):
     """Load the current atlas without reusing packed atlases from old releases."""

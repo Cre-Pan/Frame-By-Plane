@@ -15,10 +15,11 @@ All notable public changes to Frame By Plane are documented here.
 
 ### New effect: Stained Glass
 
-- **Stained Glass** (Add Effect > Pixel & Print) turns a layer into a church window, built only from shader nodes. The image is cut into irregular Voronoi panes whose edges wobble with noise turbulence, like hand-cut and leaded glass, and the panes are held by rounded black lead cames with a soft highlight and an optional lead border around the window.
-- Each pane reads its colour from the image at its centre, made richer by **Color Richness**, or snapped to a **palette** of six traditional glass colours (cobalt, ruby, emerald, amber, violet, pale white; all editable) with **Palette Mix**.
-- The glass looks lit from behind: uneven thickness and drawn streaks inside each pane, darker edges next to the lead (thicker glass and grisaille), per-pane variation, an optional refracted view of the picture through the rippled glass (**Image Detail**, **Refraction**), and a backlight with **Light Strength**, **Light Center** and **Light Falloff**.
-- Presets: Cathedral, Image Mosaic, Tiffany, Square Leaded. Debug views: Pane Colors and Lead Mask.
+- **Stained Glass** (Add Effect > Pixel & Print) turns a layer into a church window that follows the shapes of the image, built only from shader nodes. The image is reduced to a few tones (**Color Levels**), every area of the same tone becomes one piece of glass of a single colour, and black lead is drawn on the borders between colours.
+- **Lead**: **Lead Width** sets its thickness, up to exaggerated cartoon-like leading; **Line Wobble**, **Wobble Scale** and **Width Variation** make the stroke look hand-drawn; rounded highlight (**Lead Shine**) and an optional lead border around the window.
+- **Islands**: **Split Pieces** cuts the pieces into smaller irregular islands joined by thinner lead (**Pieces Across**, **Split Lead Width**, **Irregularity**, **Turbulence**).
+- **Glass**: richer colours (**Color Richness**) or the nearest of six editable traditional glass colours (**Palette Mix**); cloudy thickness, drawn streaks, air bubbles, scratches, per-piece variation, darker glass next to the lead, optional refracted view of the picture, and a backlight with **Light Strength**, **Light Center** and **Light Falloff**.
+- Presets: Cathedral, Bold Lead, Tiffany, Clean Glass. Debug views: Glass Pieces and Lead Mask. The lead is found by reading the image at 25 points per pixel, so the effect is marked as heavy.
 
 ### Plane groups: controller, group opacity, Ungroup
 

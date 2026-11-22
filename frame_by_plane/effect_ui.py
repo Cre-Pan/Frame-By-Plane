@@ -578,9 +578,10 @@ def _fbp_draw_compact_effect_properties(layout, rig, definition, prop_names, lab
 
 _FBP_EFFECT_UI_GROUPS = {
     FBP_EFFECT_STAINED_GLASS: (
-        ("Panes", "MESH_GRID", ("fbp_stained_glass_scale", "fbp_stained_glass_irregularity", "fbp_stained_glass_turbulence", "fbp_stained_glass_turbulence_scale", "fbp_stained_glass_seed",)),
-        ("Lead", "MOD_LATTICE", ("fbp_stained_glass_lead_width", "fbp_stained_glass_lead_color", "fbp_stained_glass_lead_shine", "fbp_stained_glass_window_frame",)),
-        ("Glass", "MATERIAL", ("fbp_stained_glass_richness", "fbp_stained_glass_image_detail", "fbp_stained_glass_refraction", "fbp_stained_glass_glass_texture", "fbp_stained_glass_streaks", "fbp_stained_glass_pane_variation", "fbp_stained_glass_edge_darkening",)),
+        ("Pieces", "MESH_GRID", ("fbp_stained_glass_levels", "fbp_stained_glass_richness", "fbp_stained_glass_pane_variation",)),
+        ("Lead", "MOD_LATTICE", ("fbp_stained_glass_lead_width", "fbp_stained_glass_line_wobble", "fbp_stained_glass_wobble_scale", "fbp_stained_glass_width_variation", "fbp_stained_glass_lead_color", "fbp_stained_glass_lead_shine", "fbp_stained_glass_window_frame",)),
+        ("Islands", "MOD_EXPLODE", ("fbp_stained_glass_split_pieces", "fbp_stained_glass_pieces_across", "fbp_stained_glass_split_lead_width", "fbp_stained_glass_irregularity", "fbp_stained_glass_turbulence",)),
+        ("Glass", "MATERIAL", ("fbp_stained_glass_glass_texture", "fbp_stained_glass_streaks", "fbp_stained_glass_bubbles", "fbp_stained_glass_bubble_scale", "fbp_stained_glass_scratches", "fbp_stained_glass_edge_darkening", "fbp_stained_glass_image_detail", "fbp_stained_glass_refraction", "fbp_stained_glass_seed",)),
         ("Light", "LIGHT_SUN", ("fbp_stained_glass_light_strength", "fbp_stained_glass_light_x", "fbp_stained_glass_light_y", "fbp_stained_glass_light_falloff",)),
         ("Palette", "COLOR", ("fbp_stained_glass_palette_mix", "fbp_stained_glass_palette_1", "fbp_stained_glass_palette_2", "fbp_stained_glass_palette_3", "fbp_stained_glass_palette_4", "fbp_stained_glass_palette_5", "fbp_stained_glass_palette_6",)),
     ),

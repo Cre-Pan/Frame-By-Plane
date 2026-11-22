@@ -994,10 +994,10 @@ FBP_BUILTIN_EFFECT_PRESETS = {
         "Pixel Art": {"fbp_rgb_pixels_scale": 48.0, "fbp_rgb_pixels_strength": 1.0, "fbp_rgb_pixels_mask": 0.0, "fbp_rgb_pixels_row_gap": 0.0},
     },
     FBP_EFFECT_STAINED_GLASS: {
-        "Cathedral": {"fbp_stained_glass_scale": 14.0, "fbp_stained_glass_palette_mix": 1.0, "fbp_stained_glass_image_detail": 0.0, "fbp_stained_glass_light_strength": 2.2, "fbp_stained_glass_light_falloff": 0.35, "fbp_stained_glass_edge_darkening": 0.55},
-        "Image Mosaic": {"fbp_stained_glass_scale": 24.0, "fbp_stained_glass_palette_mix": 0.0, "fbp_stained_glass_image_detail": 0.0, "fbp_stained_glass_richness": 1.2, "fbp_stained_glass_light_strength": 1.4, "fbp_stained_glass_lead_width": 0.07},
-        "Tiffany": {"fbp_stained_glass_scale": 30.0, "fbp_stained_glass_irregularity": 1.0, "fbp_stained_glass_turbulence": 0.6, "fbp_stained_glass_lead_width": 0.06, "fbp_stained_glass_glass_texture": 0.6, "fbp_stained_glass_streaks": 0.5, "fbp_stained_glass_image_detail": 0.35},
-        "Square Leaded": {"fbp_stained_glass_scale": 12.0, "fbp_stained_glass_irregularity": 0.0, "fbp_stained_glass_turbulence": 0.05, "fbp_stained_glass_lead_width": 0.1, "fbp_stained_glass_image_detail": 0.5, "fbp_stained_glass_richness": 1.0},
+        "Cathedral": {"fbp_stained_glass_levels": 4.0, "fbp_stained_glass_palette_mix": 1.0, "fbp_stained_glass_lead_width": 0.014, "fbp_stained_glass_split_pieces": True, "fbp_stained_glass_pieces_across": 8.0, "fbp_stained_glass_light_strength": 1.8, "fbp_stained_glass_edge_darkening": 0.5},
+        "Bold Lead": {"fbp_stained_glass_levels": 4.0, "fbp_stained_glass_lead_width": 0.035, "fbp_stained_glass_line_wobble": 0.8, "fbp_stained_glass_width_variation": 0.5, "fbp_stained_glass_split_pieces": False},
+        "Tiffany": {"fbp_stained_glass_levels": 6.0, "fbp_stained_glass_lead_width": 0.008, "fbp_stained_glass_split_pieces": True, "fbp_stained_glass_pieces_across": 18.0, "fbp_stained_glass_split_lead_width": 0.04, "fbp_stained_glass_glass_texture": 0.6, "fbp_stained_glass_streaks": 0.5, "fbp_stained_glass_bubbles": 0.5},
+        "Clean Glass": {"fbp_stained_glass_levels": 5.0, "fbp_stained_glass_line_wobble": 0.1, "fbp_stained_glass_width_variation": 0.0, "fbp_stained_glass_glass_texture": 0.15, "fbp_stained_glass_streaks": 0.1, "fbp_stained_glass_bubbles": 0.0, "fbp_stained_glass_scratches": 0.0},
     },
     FBP_EFFECT_ASCII_MATRIX: {
         "Green Terminal": {"fbp_ascii_charset": "CLASSIC", "fbp_ascii_colorize": False, "fbp_ascii_foreground": (0.08, 1.0, 0.22, 1.0), "fbp_ascii_background": (0.0, 0.015, 0.0, 1.0), "fbp_ascii_transparent_background": False},
