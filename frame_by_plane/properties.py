@@ -6615,6 +6615,88 @@ def register_properties():
         name="Softness", description="Blur on the edges of stripes and rows. Zero gives hard pixel edges.",
         default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
 
+    _FBP_OBJECT_RNA.fbp_stained_glass_scale = FloatProperty(
+        name="Pane Scale", description="Number of glass panes across the plane width. Lower values give bigger pieces of glass.",
+        default=14.0, min=1.0, max=500.0, soft_max=80.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_irregularity = FloatProperty(
+        name="Irregularity", description="How irregular the panes are. Zero gives a regular grid of square panes, one gives freely cut pieces.",
+        default=0.9, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_turbulence = FloatProperty(
+        name="Turbulence", description="How much the lead lines wobble, like glass cut and leaded by hand",
+        default=0.25, min=0.0, max=3.0, soft_max=1.5, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_turbulence_scale = FloatProperty(
+        name="Turbulence Scale", description="Size of the wobbles in the lead lines. Higher values give smaller, busier wobbles.",
+        default=0.6, min=0.01, max=50.0, soft_max=10.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_seed = FloatProperty(
+        name="Pattern Seed", description="Changes the arrangement of the panes and the glass texture",
+        default=0.0, min=-100000.0, max=100000.0, precision=0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_lead_width = FloatProperty(
+        name="Lead Width", description="Width of the black lead cames that hold the glass, as a fraction of a pane",
+        default=0.09, min=0.0, max=0.5, soft_max=0.3, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_lead_color = FloatVectorProperty(
+        name="Lead Color", description="Colour of the lead cames between the panes",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.004, 0.004, 0.005, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_lead_shine = FloatProperty(
+        name="Lead Shine", description="Soft highlight along the middle of the rounded lead cames",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_window_frame = BoolProperty(
+        name="Window Frame", description="Add a lead border around the whole window",
+        default=True, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_richness = FloatProperty(
+        name="Color Richness", description="Saturation of the glass. Church glass is coloured in the melt and very saturated.",
+        default=1.6, min=0.0, max=3.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_image_detail = FloatProperty(
+        name="Image Detail", description="How much of the picture stays visible inside each pane, seen through the rippled glass. Zero gives one flat colour per pane.",
+        default=0.15, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_refraction = FloatProperty(
+        name="Refraction", description="How much the rippled glass bends the picture seen through it (with Image Detail)",
+        default=0.015, min=0.0, max=0.2, precision=3, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_glass_texture = FloatProperty(
+        name="Glass Texture", description="Cloudy changes in glass thickness inside each pane",
+        default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_streaks = FloatProperty(
+        name="Streaks", description="Drawn streaks running through the glass, as in hand-blown cylinder glass",
+        default=0.3, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_pane_variation = FloatProperty(
+        name="Pane Variation", description="Random brightness difference between panes, so no two pieces of glass look the same",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_edge_darkening = FloatProperty(
+        name="Edge Darkening", description="Darkening of each pane next to the lead, from thicker glass and painted grisaille",
+        default=0.45, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_strength = FloatProperty(
+        name="Light Strength", description="Brightness of the daylight shining through the glass. Above 1 the glass glows.",
+        default=1.3, min=0.0, max=20.0, soft_max=6.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_x = FloatProperty(
+        name="Light Center X", description="Horizontal position of the brightest light behind the window (0 left, 1 right)",
+        default=0.5, min=-2.0, max=3.0, soft_min=0.0, soft_max=1.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_y = FloatProperty(
+        name="Light Center Y", description="Vertical position of the brightest light behind the window (0 bottom, 1 top)",
+        default=0.8, min=-2.0, max=3.0, soft_min=0.0, soft_max=1.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_falloff = FloatProperty(
+        name="Light Falloff", description="How quickly the light fades away from Light Center. Zero lights the whole window evenly.",
+        default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_mix = FloatProperty(
+        name="Palette Mix", description="Snap each pane to the nearest colour of the palette. Zero keeps the image colours, one uses only the palette.",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_1 = FloatVectorProperty(
+        name="Palette 1", description="Glass colour 1 of the palette (default: cobalt blue)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02, 0.1, 0.55, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_2 = FloatVectorProperty(
+        name="Palette 2", description="Glass colour 2 of the palette (default: ruby red)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.55, 0.02, 0.04, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_3 = FloatVectorProperty(
+        name="Palette 3", description="Glass colour 3 of the palette (default: emerald green)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02, 0.32, 0.1, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_4 = FloatVectorProperty(
+        name="Palette 4", description="Glass colour 4 of the palette (default: amber gold)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.9, 0.52, 0.04, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_5 = FloatVectorProperty(
+        name="Palette 5", description="Glass colour 5 of the palette (default: violet)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.25, 0.05, 0.4, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_6 = FloatVectorProperty(
+        name="Palette 6", description="Glass colour 6 of the palette (default: pale white)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.85, 0.8, 0.62, 1.0), update=_effect_setting('STAINED_GLASS'))
+
     _FBP_OBJECT_RNA.fbp_ascii_scale = FloatProperty(
         name="Cell Scale", description="Number of character cells across the plane width",
         default=48.0, min=1.0, soft_max=300.0, max=1000.0, update=_effect_setting('ASCII_MATRIX'))

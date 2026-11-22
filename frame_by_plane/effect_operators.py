@@ -78,6 +78,7 @@ from .effects_registry import (
     FBP_EFFECT_OIL_PAINT,
     FBP_EFFECT_DOT_MATRIX,
     FBP_EFFECT_RGB_PIXELS,
+    FBP_EFFECT_STAINED_GLASS,
     FBP_EFFECT_ASCII_MATRIX,
     FBP_EFFECT_ASCII,
     FBP_EFFECT_REGISTRY,
@@ -991,6 +992,12 @@ FBP_BUILTIN_EFFECT_PRESETS = {
         "CRT Close-up": {"fbp_rgb_pixels_scale": 64.0, "fbp_rgb_pixels_strength": 2.6, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.95, "fbp_rgb_pixels_row_gap": 0.25, "fbp_rgb_pixels_softness": 0.6},
         "LED Wall": {"fbp_rgb_pixels_scale": 96.0, "fbp_rgb_pixels_strength": 3.0, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.6, "fbp_rgb_pixels_row_gap": 0.35, "fbp_rgb_pixels_softness": 0.1},
         "Pixel Art": {"fbp_rgb_pixels_scale": 48.0, "fbp_rgb_pixels_strength": 1.0, "fbp_rgb_pixels_mask": 0.0, "fbp_rgb_pixels_row_gap": 0.0},
+    },
+    FBP_EFFECT_STAINED_GLASS: {
+        "Cathedral": {"fbp_stained_glass_scale": 14.0, "fbp_stained_glass_palette_mix": 1.0, "fbp_stained_glass_image_detail": 0.0, "fbp_stained_glass_light_strength": 2.2, "fbp_stained_glass_light_falloff": 0.35, "fbp_stained_glass_edge_darkening": 0.55},
+        "Image Mosaic": {"fbp_stained_glass_scale": 24.0, "fbp_stained_glass_palette_mix": 0.0, "fbp_stained_glass_image_detail": 0.0, "fbp_stained_glass_richness": 1.2, "fbp_stained_glass_light_strength": 1.4, "fbp_stained_glass_lead_width": 0.07},
+        "Tiffany": {"fbp_stained_glass_scale": 30.0, "fbp_stained_glass_irregularity": 1.0, "fbp_stained_glass_turbulence": 0.6, "fbp_stained_glass_lead_width": 0.06, "fbp_stained_glass_glass_texture": 0.6, "fbp_stained_glass_streaks": 0.5, "fbp_stained_glass_image_detail": 0.35},
+        "Square Leaded": {"fbp_stained_glass_scale": 12.0, "fbp_stained_glass_irregularity": 0.0, "fbp_stained_glass_turbulence": 0.05, "fbp_stained_glass_lead_width": 0.1, "fbp_stained_glass_image_detail": 0.5, "fbp_stained_glass_richness": 1.0},
     },
     FBP_EFFECT_ASCII_MATRIX: {
         "Green Terminal": {"fbp_ascii_charset": "CLASSIC", "fbp_ascii_colorize": False, "fbp_ascii_foreground": (0.08, 1.0, 0.22, 1.0), "fbp_ascii_background": (0.0, 0.015, 0.0, 1.0), "fbp_ascii_transparent_background": False},

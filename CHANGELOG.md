@@ -13,6 +13,13 @@ All notable public changes to Frame By Plane are documented here.
 - **RGB Pixels** (Add Effect > Digital) turns a layer into a pixel-art RGB mosaic: the image is sampled once per cell and each cell is shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. It follows the classic shader recipe (source x CRT pixel, channels multiplied R x R, G x G, B x B, then an Emission-style boost) with a procedural CRT pixel, so no extra texture is needed.
 - Settings: **Cell Scale** (pixels across the plane), **Strength** (brightness boost, 2 by default like the recipe's Emission Strength), **RGB Mask** (0 gives plain square pixels), **Stripe Width**, **Row Gap** and **Softness**. Presets: Big Pixels, CRT Close-up, LED Wall, Pixel Art.
 
+### New effect: Stained Glass
+
+- **Stained Glass** (Add Effect > Pixel & Print) turns a layer into a church window, built only from shader nodes. The image is cut into irregular Voronoi panes whose edges wobble with noise turbulence, like hand-cut and leaded glass, and the panes are held by rounded black lead cames with a soft highlight and an optional lead border around the window.
+- Each pane reads its colour from the image at its centre, made richer by **Color Richness**, or snapped to a **palette** of six traditional glass colours (cobalt, ruby, emerald, amber, violet, pale white; all editable) with **Palette Mix**.
+- The glass looks lit from behind: uneven thickness and drawn streaks inside each pane, darker edges next to the lead (thicker glass and grisaille), per-pane variation, an optional refracted view of the picture through the rippled glass (**Image Detail**, **Refraction**), and a backlight with **Light Strength**, **Light Center** and **Light Falloff**.
+- Presets: Cathedral, Image Mosaic, Tiffany, Square Leaded. Debug views: Pane Colors and Lead Mask.
+
 ### Plane groups: controller, group opacity, Ungroup
 
 - **Group controller.** Layer List side bar (collection row) or the sidebar's group box > **Add Group Controller** adds an Empty named "<group> Controller" that parents the group's layers while keeping them in place. Move, rotate, scale and key the controller to animate the whole group. Clicking a plane of the group selects the controller, so G/R/S and I act on the group. **Remove Group Controller** gives each layer back its world position.

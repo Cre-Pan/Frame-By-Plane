@@ -134,6 +134,7 @@ FBP_EFFECT_RISO_PRINT = "RISO_PRINT"
 FBP_EFFECT_OIL_PAINT = "OIL_PAINT"
 FBP_EFFECT_DOT_MATRIX = "DOT_MATRIX"
 FBP_EFFECT_RGB_PIXELS = "RGB_PIXELS"
+FBP_EFFECT_STAINED_GLASS = "STAINED_GLASS"
 FBP_EFFECT_ASCII_MATRIX = "ASCII_MATRIX"
 FBP_EFFECT_ASCII = "ASCII"
 FBP_EFFECT_TEXT_MATRIX = "TEXT_MATRIX"
@@ -2301,6 +2302,47 @@ FBP_EFFECT_REGISTRY = {
         "debug_socket": "Debug Mode",
         "private_group": True, "image_aware": True, "builtin": True,
     },
+    FBP_EFFECT_STAINED_GLASS: {
+        "label": "Stained Glass", "icon": "MOD_LATTICE", "kind": "SHADER", "stage": "COLOR",
+        "canonical_name": "FBP_SH_Stained_Glass_860",
+        "asset_id": "frame_by_plane.shader.stained_glass.860", "enabled_key": "fbp_effect_stained_glass",
+        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
+        "required_input_sockets": ("Aspect Ratio", "Lead Width", "Palette 6"),
+        "property_map": {
+            "fbp_stained_glass_scale": "Pane Scale",
+            "fbp_stained_glass_irregularity": "Irregularity",
+            "fbp_stained_glass_turbulence": "Turbulence",
+            "fbp_stained_glass_turbulence_scale": "Turbulence Scale",
+            "fbp_stained_glass_seed": "Seed",
+            "fbp_stained_glass_lead_width": "Lead Width",
+            "fbp_stained_glass_lead_color": "Lead Color",
+            "fbp_stained_glass_lead_shine": "Lead Shine",
+            "fbp_stained_glass_window_frame": "Window Frame",
+            "fbp_stained_glass_richness": "Color Richness",
+            "fbp_stained_glass_image_detail": "Image Detail",
+            "fbp_stained_glass_refraction": "Refraction",
+            "fbp_stained_glass_glass_texture": "Glass Texture",
+            "fbp_stained_glass_streaks": "Streaks",
+            "fbp_stained_glass_pane_variation": "Pane Variation",
+            "fbp_stained_glass_edge_darkening": "Edge Darkening",
+            "fbp_stained_glass_light_strength": "Light Strength",
+            "fbp_stained_glass_light_x": "Light Center X",
+            "fbp_stained_glass_light_y": "Light Center Y",
+            "fbp_stained_glass_light_falloff": "Light Falloff",
+            "fbp_stained_glass_palette_mix": "Palette Mix",
+            "fbp_stained_glass_palette_1": "Palette 1",
+            "fbp_stained_glass_palette_2": "Palette 2",
+            "fbp_stained_glass_palette_3": "Palette 3",
+            "fbp_stained_glass_palette_4": "Palette 4",
+            "fbp_stained_glass_palette_5": "Palette 5",
+            "fbp_stained_glass_palette_6": "Palette 6",
+        },
+        "ui_labels": {"fbp_stained_glass_seed": "Pattern Seed"},
+        "debug_modes": (("FINAL", "Final"), ("PANES", "Pane Colors"), ("LEAD", "Lead Mask")),
+        "debug_socket": "Debug Mode",
+        "private_group": True, "image_aware": True, "builtin": True,
+    },
     FBP_EFFECT_ASCII_MATRIX: {
         "label": "Textellation", "icon": "SYNTAX_OFF", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Textellation_486",
@@ -2486,6 +2528,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_HALFTONE: ("2D", "MEDIUM", "Convert luminance into a printed-dot pattern. Small cells can increase shader cost and cause viewport aliasing."),
     FBP_EFFECT_DOT_MATRIX: ("2D", "MEDIUM", "Rebuild the source image as cell-centered dots whose radius and brightness follow image luminance. Brightness Response reshapes the luminance-to-size curve; optional randomness only modulates the image-driven result."),
     FBP_EFFECT_RGB_PIXELS: ("2D", "MEDIUM", "Pixel-art RGB mosaic: the image is sampled once per cell and shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. Strength brightens the result the way an Emission boost does."),
+    FBP_EFFECT_STAINED_GLASS: ("2D", "MEDIUM", "Church stained-glass window: the image is cut into irregular glass panes held by black lead cames. Each pane takes its colour from the image (or from a palette of traditional glass colours) and is lit from behind, with uneven glass thickness, streaks, darker edges and a soft refraction of the picture."),
     FBP_EFFECT_ASCII_MATRIX: ("2D", "HEAVY", "Replace the animated FBP image or sequence with density-sorted atlas glyphs. Partial alpha is read as lighter luminance, total transparency is removed, and source-pixel color is preserved by default."),
     FBP_EFFECT_ASCII: ("2D", "HEAVY", "Convert the source into terminal-style ASCII using separate fill and directional edge glyph atlases. Fill density and edge extraction can be tuned independently."),
     FBP_EFFECT_TEXT_MATRIX: ("3D", "VERY_HEAVY", "Generate real vector text from the animated source. Geometry Nodes maps alpha-aware luminance to density-sorted glyphs and can preserve one sampled source color per cell."),
@@ -2773,7 +2816,7 @@ FBP_SHADER_STAGE_ORDER = {
         FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_OIL_PAINT, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
         FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_CURVES, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD,
         FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_REPLACE_COLOR, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE, FBP_EFFECT_RISO_PRINT,
-        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_RGB_PIXELS, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
+        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_RGB_PIXELS, FBP_EFFECT_STAINED_GLASS, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
         FBP_EFFECT_DIGITAL_NOISE,
         FBP_EFFECT_PAPER_FIBERS, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW, FBP_EFFECT_GOBO_SHADOWS,
         FBP_EFFECT_CRT_SCANLINES, FBP_EFFECT_VIGNETTE, FBP_EFFECT_POSTERIZE,
@@ -2941,6 +2984,7 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
     ("Pixel & Print", "MESH_GRID", (
         "FAMILY:PIXELATE_MOSAIC", FBP_EFFECT_DITHER, FBP_EFFECT_HALFTONE,
         FBP_EFFECT_RISO_PRINT, FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_CROSSHATCH,
+        FBP_EFFECT_STAINED_GLASS,
     )),
     ("Edges & Paint", "MOD_LINEART", (
         "FAMILY:EDGE", "FAMILY:STYLIZE", FBP_EFFECT_EMBOSS, FBP_EFFECT_OIL_PAINT,
@@ -3543,6 +3587,7 @@ __all__ = (
     "FBP_EFFECT_OIL_PAINT",
     "FBP_EFFECT_DOT_MATRIX",
     "FBP_EFFECT_RGB_PIXELS",
+    "FBP_EFFECT_STAINED_GLASS",
     "FBP_EFFECT_ASCII_MATRIX",
     "FBP_EFFECT_ASCII",
     "FBP_EFFECT_TEXT_MATRIX",
