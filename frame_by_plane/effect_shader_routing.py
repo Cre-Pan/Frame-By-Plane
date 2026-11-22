@@ -17,6 +17,7 @@ from .geometry_nodes import (  # noqa: E402 - geometry_nodes imports this module
     FBP_EFFECT_DEPTH_BLUR,
     FBP_EFFECT_DITHER,
     FBP_EFFECT_DOT_MATRIX,
+    FBP_EFFECT_RGB_PIXELS,
     FBP_EFFECT_GRADIENT_LIGHT,
     FBP_EFFECT_GRADIENT_MASK,
     FBP_EFFECT_HALFTONE,
@@ -2055,6 +2056,7 @@ def _fbp_set_shader_node_values(
     aspect_effects = {
         FBP_EFFECT_HALFTONE,
         FBP_EFFECT_DOT_MATRIX,
+        FBP_EFFECT_RGB_PIXELS,
         FBP_EFFECT_ASCII_MATRIX,
         FBP_EFFECT_ASCII,
         FBP_EFFECT_NOISE_MASK,

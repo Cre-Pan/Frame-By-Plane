@@ -77,6 +77,7 @@ from .effects_registry import (
     FBP_EFFECT_RISO_PRINT,
     FBP_EFFECT_OIL_PAINT,
     FBP_EFFECT_DOT_MATRIX,
+    FBP_EFFECT_RGB_PIXELS,
     FBP_EFFECT_ASCII_MATRIX,
     FBP_EFFECT_ASCII,
     FBP_EFFECT_REGISTRY,
@@ -984,6 +985,12 @@ FBP_BUILTIN_EFFECT_PRESETS = {
         "LED Wall": {"fbp_dot_matrix_scale": 64.0, "fbp_dot_matrix_dot_size": 0.9, "fbp_dot_matrix_min_size": 0.08, "fbp_dot_matrix_max_size": 1.0, "fbp_dot_matrix_response": 0.82, "fbp_dot_matrix_glow": 0.04, "fbp_dot_matrix_shape": "CIRCLE"},
         "Printed Dots": {"fbp_dot_matrix_scale": 90.0, "fbp_dot_matrix_dot_size": 0.8, "fbp_dot_matrix_response": 1.25, "fbp_dot_matrix_glow": 0.005, "fbp_dot_matrix_use_source_color": False, "fbp_dot_matrix_shape": "CIRCLE"},
         "Dead Display": {"fbp_dot_matrix_scale": 52.0, "fbp_dot_matrix_dead_pixels": 0.08, "fbp_dot_matrix_flicker": 0.12, "fbp_dot_matrix_glow": 0.06},
+    },
+    FBP_EFFECT_RGB_PIXELS: {
+        "Big Pixels": {"fbp_rgb_pixels_scale": 24.0, "fbp_rgb_pixels_strength": 2.0, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.8, "fbp_rgb_pixels_row_gap": 0.15, "fbp_rgb_pixels_softness": 0.25},
+        "CRT Close-up": {"fbp_rgb_pixels_scale": 64.0, "fbp_rgb_pixels_strength": 2.6, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.95, "fbp_rgb_pixels_row_gap": 0.25, "fbp_rgb_pixels_softness": 0.6},
+        "LED Wall": {"fbp_rgb_pixels_scale": 96.0, "fbp_rgb_pixels_strength": 3.0, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.6, "fbp_rgb_pixels_row_gap": 0.35, "fbp_rgb_pixels_softness": 0.1},
+        "Pixel Art": {"fbp_rgb_pixels_scale": 48.0, "fbp_rgb_pixels_strength": 1.0, "fbp_rgb_pixels_mask": 0.0, "fbp_rgb_pixels_row_gap": 0.0},
     },
     FBP_EFFECT_ASCII_MATRIX: {
         "Green Terminal": {"fbp_ascii_charset": "CLASSIC", "fbp_ascii_colorize": False, "fbp_ascii_foreground": (0.08, 1.0, 0.22, 1.0), "fbp_ascii_background": (0.0, 0.015, 0.0, 1.0), "fbp_ascii_transparent_background": False},

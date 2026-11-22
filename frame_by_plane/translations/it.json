@@ -7913,5 +7913,14 @@
 "Digital": "Digital",
 "Legacy": "Legacy",
 "Legacy Rig": "Rig Legacy",
-"Legacy Rig on New Layers": "Rig Legacy sui nuovi livelli"
+"Legacy Rig on New Layers": "Rig Legacy sui nuovi livelli",
+"RGB Mask": "Maschera RGB",
+"Stripe Width": "Larghezza strisce",
+"Row Gap": "Spazio tra le righe",
+"Number of RGB pixels across the plane width. Lower values give bigger pixels.": "Numero di pixel RGB sulla larghezza del piano. Valori più bassi danno pixel più grandi.",
+"Brightness boost that makes up for the light the RGB stripes remove, like the Emission Strength of the original recipe": "Aumento di luminosità che compensa la luce tolta dalle strisce RGB, come la Strength dell'Emission nella ricetta originale",
+"How much of the red, green and blue sub-pixel pattern is shown. Zero leaves plain square pixels.": "Quanto si vede il motivo dei sub-pixel rosso, verde e blu. Zero lascia semplici pixel quadrati.",
+"Width of each red, green and blue stripe inside a pixel. Lower values open dark gaps between stripes.": "Larghezza di ogni striscia rossa, verde e blu dentro un pixel. Valori più bassi aprono spazi scuri tra le strisce.",
+"Dark horizontal gap between rows of pixels": "Spazio scuro orizzontale tra le righe di pixel",
+"Blur on the edges of stripes and rows. Zero gives hard pixel edges.": "Sfumatura sui bordi di strisce e righe. Zero dà bordi dei pixel netti."
 }

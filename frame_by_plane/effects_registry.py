@@ -133,6 +133,7 @@ FBP_EFFECT_HALFTONE = "HALFTONE"
 FBP_EFFECT_RISO_PRINT = "RISO_PRINT"
 FBP_EFFECT_OIL_PAINT = "OIL_PAINT"
 FBP_EFFECT_DOT_MATRIX = "DOT_MATRIX"
+FBP_EFFECT_RGB_PIXELS = "RGB_PIXELS"
 FBP_EFFECT_ASCII_MATRIX = "ASCII_MATRIX"
 FBP_EFFECT_ASCII = "ASCII"
 FBP_EFFECT_TEXT_MATRIX = "TEXT_MATRIX"
@@ -2284,6 +2285,22 @@ FBP_EFFECT_REGISTRY = {
         "debug_socket": "Debug Mode",
         "private_group": True, "image_aware": True, "builtin": True,
     },
+    FBP_EFFECT_RGB_PIXELS: {
+        "label": "RGB Pixels", "icon": "SEQ_HISTOGRAM", "kind": "SHADER", "stage": "COLOR",
+        "canonical_name": "FBP_SH_RGB_Pixels_860",
+        "asset_id": "frame_by_plane.shader.rgb_pixels.860", "enabled_key": "fbp_effect_rgb_pixels",
+        "input_socket": "Color In", "output_socket": "Color Out", "uv_input_socket": "UV Vector",
+        "alpha_input_socket": "Alpha In", "alpha_output_socket": "Alpha Out",
+        "required_input_sockets": ("Aspect Ratio", "Strength"),
+        "property_map": {
+            "fbp_rgb_pixels_scale": "Cell Scale", "fbp_rgb_pixels_strength": "Strength",
+            "fbp_rgb_pixels_mask": "RGB Mask", "fbp_rgb_pixels_stripe_width": "Stripe Width",
+            "fbp_rgb_pixels_row_gap": "Row Gap", "fbp_rgb_pixels_softness": "Softness",
+        },
+        "debug_modes": (("FINAL", "Final"), ("LUMINANCE", "Luminance"), ("MASK", "RGB Mask")),
+        "debug_socket": "Debug Mode",
+        "private_group": True, "image_aware": True, "builtin": True,
+    },
     FBP_EFFECT_ASCII_MATRIX: {
         "label": "Textellation", "icon": "SYNTAX_OFF", "kind": "SHADER", "stage": "COLOR",
         "canonical_name": "FBP_SH_Textellation_486",
@@ -2468,6 +2485,7 @@ FBP_EFFECT_METADATA = {
     FBP_EFFECT_OIL_PAINT: ("2D", "HEAVY", "Anisotropic Kuwahara filter: flattens color into brush-stroke patches that follow the image's edges. Large radii cost more samples per pixel."),
     FBP_EFFECT_HALFTONE: ("2D", "MEDIUM", "Convert luminance into a printed-dot pattern. Small cells can increase shader cost and cause viewport aliasing."),
     FBP_EFFECT_DOT_MATRIX: ("2D", "MEDIUM", "Rebuild the source image as cell-centered dots whose radius and brightness follow image luminance. Brightness Response reshapes the luminance-to-size curve; optional randomness only modulates the image-driven result."),
+    FBP_EFFECT_RGB_PIXELS: ("2D", "MEDIUM", "Pixel-art RGB mosaic: the image is sampled once per cell and shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. Strength brightens the result the way an Emission boost does."),
     FBP_EFFECT_ASCII_MATRIX: ("2D", "HEAVY", "Replace the animated FBP image or sequence with density-sorted atlas glyphs. Partial alpha is read as lighter luminance, total transparency is removed, and source-pixel color is preserved by default."),
     FBP_EFFECT_ASCII: ("2D", "HEAVY", "Convert the source into terminal-style ASCII using separate fill and directional edge glyph atlases. Fill density and edge extraction can be tuned independently."),
     FBP_EFFECT_TEXT_MATRIX: ("3D", "VERY_HEAVY", "Generate real vector text from the animated source. Geometry Nodes maps alpha-aware luminance to density-sorted glyphs and can preserve one sampled source color per cell."),
@@ -2755,7 +2773,7 @@ FBP_SHADER_STAGE_ORDER = {
         FBP_EFFECT_LAYER_BLEND, FBP_EFFECT_DEPTH_BLUR, FBP_EFFECT_GAUSSIAN_BLUR, FBP_EFFECT_DIRECTIONAL_BLUR, FBP_EFFECT_TRIANGLE_BLUR, FBP_EFFECT_TILT_SHIFT, FBP_EFFECT_UNSHARP_MASK, FBP_EFFECT_OIL_PAINT, FBP_EFFECT_EDGE_DETECT, FBP_EFFECT_INK, FBP_EFFECT_EDGE_WORK, FBP_EFFECT_PENCIL_SKETCH, FBP_EFFECT_POSTER_EDGES, FBP_EFFECT_CROSSHATCH, FBP_EFFECT_EMBOSS, FBP_EFFECT_ADAPTIVE_THRESHOLD, FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_CHROMA_KEY, FBP_EFFECT_SOLID_MASK, FBP_EFFECT_HUE_SATURATION,
         FBP_EFFECT_WHITE_BALANCE, FBP_EFFECT_CURVES, FBP_EFFECT_BRIGHTNESS_CONTRAST, FBP_EFFECT_INVERT, FBP_EFFECT_THRESHOLD,
         FBP_EFFECT_COLOR_ISOLATE, FBP_EFFECT_REPLACE_COLOR, FBP_EFFECT_DUOTONE, FBP_EFFECT_RECOLOR, FBP_EFFECT_GRADIENT_MAP, FBP_EFFECT_CHANNEL_MIXER, FBP_EFFECT_DITHER, FBP_EFFECT_BLOOM, FBP_EFFECT_FILTER_PRESETS, FBP_EFFECT_HALFTONE, FBP_EFFECT_RISO_PRINT,
-        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
+        FBP_EFFECT_DOT_MATRIX, FBP_EFFECT_RGB_PIXELS, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII, FBP_EFFECT_GRAIN,
         FBP_EFFECT_DIGITAL_NOISE,
         FBP_EFFECT_PAPER_FIBERS, FBP_EFFECT_GRADIENT_LIGHT, FBP_EFFECT_RIM, FBP_EFFECT_SHADOW, FBP_EFFECT_GOBO_SHADOWS,
         FBP_EFFECT_CRT_SCANLINES, FBP_EFFECT_VIGNETTE, FBP_EFFECT_POSTERIZE,
@@ -2929,7 +2947,7 @@ FBP_IMAGE_EFFECT_MENU_SECTIONS = (
     )),
     ("Digital", "IMAGE_BACKGROUND", (
         FBP_EFFECT_CHROMATIC_ABERRATION, FBP_EFFECT_DIGITAL_NOISE,
-        FBP_EFFECT_CRT_SCANLINES, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII,
+        FBP_EFFECT_CRT_SCANLINES, FBP_EFFECT_RGB_PIXELS, FBP_EFFECT_ASCII_MATRIX, FBP_EFFECT_ASCII,
     )),
     ("Film", "RENDER_STILL", (
         FBP_EFFECT_SOLARIZE, FBP_EFFECT_FILM_FADE, FBP_EFFECT_GRAIN, FBP_EFFECT_PAPER_FIBERS,
@@ -3524,6 +3542,7 @@ __all__ = (
     "FBP_EFFECT_RISO_PRINT",
     "FBP_EFFECT_OIL_PAINT",
     "FBP_EFFECT_DOT_MATRIX",
+    "FBP_EFFECT_RGB_PIXELS",
     "FBP_EFFECT_ASCII_MATRIX",
     "FBP_EFFECT_ASCII",
     "FBP_EFFECT_TEXT_MATRIX",

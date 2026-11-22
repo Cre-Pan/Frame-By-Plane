@@ -6596,6 +6596,24 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_dot_matrix_flicker = FloatProperty(
         name="Flicker", description="Random brightness variation driven by Seed and Evolve",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DOT_MATRIX'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_scale = FloatProperty(
+        name="Cell Scale", description="Number of RGB pixels across the plane width. Lower values give bigger pixels.",
+        default=48.0, min=1.0, soft_max=400.0, max=2000.0, update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_strength = FloatProperty(
+        name="Strength", description="Brightness boost that makes up for the light the RGB stripes remove, like the Emission Strength of the original recipe",
+        default=2.0, min=0.0, soft_max=6.0, max=20.0, update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_mask = FloatProperty(
+        name="RGB Mask", description="How much of the red, green and blue sub-pixel pattern is shown. Zero leaves plain square pixels.",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_stripe_width = FloatProperty(
+        name="Stripe Width", description="Width of each red, green and blue stripe inside a pixel. Lower values open dark gaps between stripes.",
+        default=0.8, min=0.05, max=1.0, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_row_gap = FloatProperty(
+        name="Row Gap", description="Dark horizontal gap between rows of pixels",
+        default=0.15, min=0.0, max=0.9, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_softness = FloatProperty(
+        name="Softness", description="Blur on the edges of stripes and rows. Zero gives hard pixel edges.",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
 
     _FBP_OBJECT_RNA.fbp_ascii_scale = FloatProperty(
         name="Cell Scale", description="Number of character cells across the plane width",

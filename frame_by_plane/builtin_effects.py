@@ -87,6 +87,7 @@ BUILTIN_EFFECT_IDS = {
     "CHROMA_KEY",
     "HALFTONE",
     "DOT_MATRIX",
+    "RGB_PIXELS",
     "ASCII_MATRIX",
     "ASCII",
     "TEXT_MATRIX",
@@ -5840,6 +5841,163 @@ def _create_dot_matrix(name):
     links.new(final_alpha.outputs[0], debug_alpha.inputs[1])
     debug_alpha.inputs[2].default_value = (1.0, 1.0, 1.0, 1.0)
     links.new(debug_alpha.outputs[0], out.inputs["Alpha Out"])
+    return group
+
+
+def _rgb_pixel_stripe(group, local_x, center, half_width, softness, *, label, x, y):
+    """Return a soft 0..1 bump around one RGB sub-pixel stripe of a cell."""
+    links = group.links
+    offset = _math(group, "SUBTRACT", f"{label} Stripe Offset", x, y, value_2=center)
+    distance = _math(group, "ABSOLUTE", f"{label} Stripe Distance", x + 180, y)
+    edge_low = _math(group, "SUBTRACT", f"{label} Stripe Inner Edge", x + 180, y - 150)
+    edge_high = _math(group, "ADD", f"{label} Stripe Outer Edge", x + 360, y - 150)
+    stripe = _node(group, "ShaderNodeMapRange", f"{label} Stripe", x + 540, y)
+    stripe.interpolation_type = "SMOOTHSTEP"
+    stripe.clamp = True
+    stripe.inputs["To Min"].default_value = 1.0
+    stripe.inputs["To Max"].default_value = 0.0
+    links.new(local_x, offset.inputs[0])
+    links.new(offset.outputs[0], distance.inputs[0])
+    links.new(half_width, edge_low.inputs[0])
+    links.new(softness, edge_low.inputs[1])
+    links.new(half_width, edge_high.inputs[0])
+    links.new(softness, edge_high.inputs[1])
+    links.new(distance.outputs[0], stripe.inputs["Value"])
+    links.new(edge_low.outputs[0], stripe.inputs["From Min"])
+    links.new(edge_high.outputs[0], stripe.inputs["From Max"])
+    return stripe.outputs["Result"]
+
+
+def _create_rgb_pixels(name):
+    """Pixel-art RGB mosaic: each cell shows its source color through R/G/B stripes.
+
+    Mirrors the classic shader recipe (source sampled at cell centers, a single
+    CRT pixel tiled over the cells, channels multiplied R*R, G*G, B*B, then an
+    Emission boost) with a procedural CRT pixel so no extra image is needed.
+    """
+    group = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    _socket(group, "Color In", "INPUT", "NodeSocketColor", default=(0.5, 0.5, 0.5, 1.0))
+    _socket(group, "Alpha In", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "UV Vector", "INPUT", "NodeSocketVector")
+    _socket(group, "Use Image Sample", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Cell Scale", "INPUT", "NodeSocketFloat", default=48.0, minimum=1.0, maximum=2000.0)
+    _socket(group, "Aspect Ratio", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.001, maximum=1000.0)
+    _socket(group, "Strength", "INPUT", "NodeSocketFloat", default=2.0, minimum=0.0, maximum=20.0)
+    _socket(group, "RGB Mask", "INPUT", "NodeSocketFloat", default=1.0, minimum=0.0, maximum=1.0)
+    _socket(group, "Stripe Width", "INPUT", "NodeSocketFloat", default=0.8, minimum=0.05, maximum=1.0)
+    _socket(group, "Row Gap", "INPUT", "NodeSocketFloat", default=0.15, minimum=0.0, maximum=0.9)
+    _socket(group, "Softness", "INPUT", "NodeSocketFloat", default=0.25, minimum=0.0, maximum=1.0)
+    _socket(group, "Debug Mode", "INPUT", "NodeSocketFloat", default=0.0, minimum=0.0, maximum=2.0)
+    _socket(group, "Color Out", "OUTPUT", "NodeSocketColor")
+    _socket(group, "Alpha Out", "OUTPUT", "NodeSocketFloat")
+    inp, out = _group_io(group)
+    links = group.links
+
+    grid = _matrix_cell_coordinates(group, inp, x=-2100, y=-260)
+    _image, source_color, source_alpha = _matrix_source_sample(
+        group, inp, grid["center_uv"], x=-500, y=300, label="RGB Pixels"
+    )
+
+    local = _node(group, "ShaderNodeSeparateXYZ", "RGB Pixel Local UV", -420, -400)
+    links.new(grid["local_uv"], local.inputs[0])
+
+    # Each stripe covers one third of the cell; Stripe Width shrinks it to open
+    # dark gaps between sub-pixels, Softness blurs its edges.
+    half_width = _math(group, "MULTIPLY", "RGB Pixel Stripe Half Width", -420, -620, value_2=1.0 / 6.0)
+    links.new(inp.outputs["Stripe Width"], half_width.inputs[0])
+    soft_scale = _math(group, "MULTIPLY", "RGB Pixel Stripe Softness", -420, -780, value_2=1.0 / 6.0)
+    links.new(inp.outputs["Softness"], soft_scale.inputs[0])
+    safe_soft = _math(group, "MAXIMUM", "RGB Pixel Safe Softness", -240, -780, value_2=0.0005)
+    links.new(soft_scale.outputs[0], safe_soft.inputs[0])
+
+    red = _rgb_pixel_stripe(group, local.outputs["X"], 1.0 / 6.0, half_width.outputs[0], safe_soft.outputs[0], label="RGB Pixel Red", x=0, y=-300)
+    green = _rgb_pixel_stripe(group, local.outputs["X"], 0.5, half_width.outputs[0], safe_soft.outputs[0], label="RGB Pixel Green", x=0, y=-560)
+    blue = _rgb_pixel_stripe(group, local.outputs["X"], 5.0 / 6.0, half_width.outputs[0], safe_soft.outputs[0], label="RGB Pixel Blue", x=0, y=-820)
+
+    # Dark horizontal gap between rows of cells, like the scan gap of a CRT pixel.
+    row_center = _math(group, "SUBTRACT", "RGB Pixel Row Offset", 0, -1080, value_2=0.5)
+    row_distance = _math(group, "ABSOLUTE", "RGB Pixel Row Distance", 180, -1080)
+    row_half = _math(group, "SUBTRACT", "RGB Pixel Row Half Height", 0, -1240, value_1=1.0)
+    row_half_scale = _math(group, "MULTIPLY", "RGB Pixel Row Half Scale", 180, -1240, value_2=0.5)
+    row_low = _math(group, "SUBTRACT", "RGB Pixel Row Inner Edge", 360, -1240)
+    row_high = _math(group, "ADD", "RGB Pixel Row Outer Edge", 540, -1240)
+    row = _node(group, "ShaderNodeMapRange", "RGB Pixel Row", 720, -1080)
+    row.interpolation_type = "SMOOTHSTEP"
+    row.clamp = True
+    row.inputs["To Min"].default_value = 1.0
+    row.inputs["To Max"].default_value = 0.0
+    links.new(local.outputs["Y"], row_center.inputs[0])
+    links.new(row_center.outputs[0], row_distance.inputs[0])
+    links.new(inp.outputs["Row Gap"], row_half.inputs[1])
+    links.new(row_half.outputs[0], row_half_scale.inputs[0])
+    links.new(row_half_scale.outputs[0], row_low.inputs[0])
+    links.new(safe_soft.outputs[0], row_low.inputs[1])
+    links.new(row_half_scale.outputs[0], row_high.inputs[0])
+    links.new(safe_soft.outputs[0], row_high.inputs[1])
+    links.new(row_distance.outputs[0], row.inputs["Value"])
+    links.new(row_low.outputs[0], row.inputs["From Min"])
+    links.new(row_high.outputs[0], row.inputs["From Max"])
+
+    # The CRT pixel: (R, G, B) stripes masked by the row gap.
+    crt_pixel = _node(group, "ShaderNodeCombineColor", "CRT Pixel", 900, -560)
+    crt_pixel.mode = "RGB"
+    links.new(red, crt_pixel.inputs["Red"])
+    links.new(green, crt_pixel.inputs["Green"])
+    links.new(blue, crt_pixel.inputs["Blue"])
+    crt_rows = _vector_math(group, "SCALE", "CRT Pixel Rows", 1100, -560)
+    links.new(crt_pixel.outputs["Color"], crt_rows.inputs[0])
+    links.new(row.outputs["Result"], _input(crt_rows, "Scale", 3))
+
+    # RGB Mask fades between a plain pixel grid (1, 1, 1) and the CRT pixel.
+    mask_delta = _vector_math(group, "SUBTRACT", "RGB Mask Delta", 1300, -560)
+    mask_delta.inputs[1].default_value = (1.0, 1.0, 1.0)
+    mask_amount = _vector_math(group, "SCALE", "RGB Mask Amount", 1480, -560)
+    mask = _vector_math(group, "ADD", "RGB Mask", 1660, -560)
+    mask.inputs[1].default_value = (1.0, 1.0, 1.0)
+    links.new(crt_rows.outputs[0], mask_delta.inputs[0])
+    links.new(mask_delta.outputs[0], mask_amount.inputs[0])
+    links.new(inp.outputs["RGB Mask"], _input(mask_amount, "Scale", 3))
+    links.new(mask_amount.outputs[0], mask.inputs[0])
+
+    # Separate Color x2 -> Multiply R*R, G*G, B*B -> Combine Color, as in the recipe.
+    source_split = _node(group, "ShaderNodeSeparateColor", "Source Channels", 1300, 300)
+    source_split.mode = "RGB"
+    mask_split = _node(group, "ShaderNodeSeparateColor", "CRT Pixel Channels", 1860, -560)
+    mask_split.mode = "RGB"
+    links.new(source_color, source_split.inputs["Color"])
+    links.new(mask.outputs[0], mask_split.inputs["Color"])
+    combine = _node(group, "ShaderNodeCombineColor", "RGB Pixels Color", 2300, 100)
+    combine.mode = "RGB"
+    for index, channel in enumerate(("Red", "Green", "Blue")):
+        product = _math(group, "MULTIPLY", f"{channel} x {channel}", 2060, 260 - index * 160)
+        product.use_clamp = False
+        links.new(source_split.outputs[channel], product.inputs[0])
+        links.new(mask_split.outputs[channel], product.inputs[1])
+        links.new(product.outputs[0], combine.inputs[channel])
+
+    luminance = _node(group, "ShaderNodeRGBToBW", "RGB Pixels Luminance", 2300, 400)
+    links.new(source_color, luminance.inputs[0])
+    mask_luma = _node(group, "ShaderNodeRGBToBW", "RGB Pixels Mask View", 2060, -560)
+    links.new(mask.outputs[0], mask_luma.inputs[0])
+    # Debug previews mix clamped colors, so the Emission-style Strength boost is
+    # applied after them and only to the final view.
+    debug_color = _debug_color(
+        group, combine.outputs["Color"], luminance.outputs[0], mask_luma.outputs[0],
+        inp.outputs["Debug Mode"], x=2500, y=200, prefix="RGB Pixels",
+    )
+    debug_active = _math(group, "GREATER_THAN", "RGB Pixels Debug Active", 2500, -100, value_2=0.5)
+    links.new(inp.outputs["Debug Mode"], debug_active.inputs[0])
+    strength = _node(group, "ShaderNodeMix", "RGB Pixels Effective Strength", 2700, -100)
+    strength.data_type = "FLOAT"
+    links.new(debug_active.outputs[0], strength.inputs["Factor"])
+    links.new(inp.outputs["Strength"], strength.inputs[2])
+    strength.inputs[3].default_value = 1.0
+    boosted = _vector_math(group, "SCALE", "RGB Pixels Strength", 3100, 200)
+    links.new(debug_color, boosted.inputs[0])
+    links.new(strength.outputs[0], _input(boosted, "Scale", 3))
+    links.new(boosted.outputs[0], out.inputs["Color Out"])
+    links.new(source_alpha, out.inputs["Alpha Out"])
+    group["fbp_rgb_pixels_version"] = 1
     return group
 
 
@@ -11766,6 +11924,7 @@ def create_builtin_effect_group(effect_id, definition, asset_dir):
         "CHROMA_KEY": lambda: _create_chroma_key(canonical_name),
         "HALFTONE": lambda: _create_halftone(canonical_name),
         "DOT_MATRIX": lambda: _create_dot_matrix(canonical_name),
+        "RGB_PIXELS": lambda: _create_rgb_pixels(canonical_name),
         "ASCII_MATRIX": lambda: _create_ascii_matrix(canonical_name, asset_dir),
         "ASCII": lambda: _create_terminal_ascii(canonical_name, asset_dir),
         "TEXT_MATRIX": lambda: _create_text_matrix(canonical_name),

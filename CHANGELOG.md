@@ -8,6 +8,11 @@ All notable public changes to Frame By Plane are documented here.
 
 - Version 8.6.0 in the manifest, runtime contract, packaging and publishing tools, and in the small version label of the splash (the large "8.5 LTS" title and the bullets are part of the artwork and are unchanged).
 
+### New effect: RGB Pixels
+
+- **RGB Pixels** (Add Effect > Digital) turns a layer into a pixel-art RGB mosaic: the image is sampled once per cell and each cell is shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. It follows the classic shader recipe (source x CRT pixel, channels multiplied R x R, G x G, B x B, then an Emission-style boost) with a procedural CRT pixel, so no extra texture is needed.
+- Settings: **Cell Scale** (pixels across the plane), **Strength** (brightness boost, 2 by default like the recipe's Emission Strength), **RGB Mask** (0 gives plain square pixels), **Stripe Width**, **Row Gap** and **Softness**. Presets: Big Pixels, CRT Close-up, LED Wall, Pixel Art.
+
 ### Plane groups: controller, group opacity, Ungroup
 
 - **Group controller.** Layer List side bar (collection row) or the sidebar's group box > **Add Group Controller** adds an Empty named "<group> Controller" that parents the group's layers while keeping them in place. Move, rotate, scale and key the controller to animate the whole group. Clicking a plane of the group selects the controller, so G/R/S and I act on the group. **Remove Group Controller** gives each layer back its world position.
