@@ -72,6 +72,41 @@ from .layer_tree_snapshot import (
 _FBP_LAYER_TREE_LAST_CHECK = {}
 _FBP_LAYER_TREE_CHECK_INTERVAL = 0.75
 _FBP_LAYER_TREE_PLAYBACK_CHECK_INTERVAL = 3.0
+# Scene object totals already compared against the layer mirror, per Scene.
+_FBP_LAYER_MIRROR_CHECKED_COUNTS = {}
+
+
+def _fbp_layer_mirror_out_of_sync(scene, scene_key):
+    """Return True when ``Scene.fbp_layers`` no longer matches the Scene.
+
+    Pasted or appended layers (Ctrl+V, Append, Link) never pass through a
+    Frame By Plane operator, and a layer removed while it was missing from the
+    delete-safety snapshot is never reported as deleted. Either way the Layer
+    List kept a row that could not be selected or removed. Rows that no longer
+    resolve are checked on every pass (O(layers)); the full membership count
+    runs only after the Scene's object total changed.
+    """
+    try:
+        items = tuple(getattr(scene, "fbp_layers", ()) or ())
+        objects = getattr(scene, "objects", None)
+        for item in items:
+            rig = getattr(item, "obj", None)
+            if rig is None:
+                return True
+            if objects is not None and objects.get(str(getattr(rig, "name", "") or "")) != rig:
+                return True
+        object_total = len(objects) if objects is not None else 0
+        if _FBP_LAYER_MIRROR_CHECKED_COUNTS.get(scene_key) == object_total:
+            return False
+        layer_total = sum(1 for obj in objects if is_fbp_layer_object(obj)) if objects is not None else 0
+        if len(_FBP_LAYER_MIRROR_CHECKED_COUNTS) > 16:
+            _FBP_LAYER_MIRROR_CHECKED_COUNTS.clear()
+        if layer_total != len(items):
+            return True
+        _FBP_LAYER_MIRROR_CHECKED_COUNTS[scene_key] = object_total
+        return False
+    except FBP_DATA_ERRORS:
+        return False
 
 
 # SECTION 01 - Multiplane Setup: layout helpers #
@@ -1606,6 +1641,15 @@ def fbp_schedule_layer_tree_rebuild(context, *, tree_cache=None, force=False):
                     return 0.20
                 current_rows = getattr(current_scene, "fbp_layer_tree_rows", None)
                 if current_rows is None:
+                    return None
+                if _fbp_layer_mirror_out_of_sync(current_scene, scene_key):
+                    # Re-mirror the Scene's layers; this also rebuilds rows.
+                    from .scene_sync import sync_layer_collection
+                    sync_layer_collection(current_context)
+                    try:
+                        _FBP_LAYER_MIRROR_CHECKED_COUNTS[scene_key] = len(current_scene.objects)
+                    except FBP_DATA_ERRORS:
+                        pass
                     return None
                 cache = _fbp_build_layer_tree_cache(current_context, force=True)
                 current_signature = fbp_layer_tree_signature(
