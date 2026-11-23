@@ -5778,6 +5778,47 @@ def _set_drawing_canvas_owner(canvas, rig, *, preserve_world=True):
     return True
 
 
+def _find_layer_collection(layer_collection, collection, path=()):
+    if layer_collection.collection == collection:
+        return path + (layer_collection,)
+    for child in layer_collection.children:
+        found = _find_layer_collection(child, collection, path + (layer_collection,))
+        if found:
+            return found
+    return ()
+
+
+def _reveal_canvas_for_edit(context, canvas):
+    """Make a GP canvas editable even when its collection is hidden.
+
+    A mask canvas lives in a "FBP Grease Pencil" collection beside its layer,
+    so inside a plane group it sits in the group. When that collection (or
+    the canvas itself) was hidden from the viewport, Blender refused Draw
+    Mode without a word. Only the helper collection and the canvas are
+    revealed; a hidden parent collection of the artist is left alone.
+    """
+    try:
+        if canvas.hide_viewport:
+            canvas.hide_viewport = False
+        view_layer = getattr(context, "view_layer", None)
+        root = getattr(view_layer, "layer_collection", None)
+        for collection in tuple(canvas.users_collection):
+            if str(collection.name).split(".")[0] != COLLECTION_NAME:
+                continue
+            if collection.hide_viewport:
+                collection.hide_viewport = False
+            path = _find_layer_collection(root, collection) if root is not None else ()
+            if path:
+                leaf = path[-1]
+                if leaf.exclude:
+                    leaf.exclude = False
+                if leaf.hide_viewport:
+                    leaf.hide_viewport = False
+        return bool(canvas.visible_get(view_layer=view_layer)) if view_layer is not None else True
+    except FBP_DATA_ERRORS:
+        return False
+
+
 def _select_canvas(context, canvas):
     if canvas is None:
         return False
@@ -5792,6 +5833,7 @@ def _select_canvas(context, canvas):
         if bool(getattr(canvas, "hide_select", False)):
             canvas.hide_select = False
         canvas.hide_set(False)
+        _reveal_canvas_for_edit(context, canvas)
         canvas.select_set(True)
         context.view_layer.objects.active = canvas
         sync_gp_mask_interaction_state(context=context, scene=getattr(context, "scene", None), active=canvas)
@@ -6232,6 +6274,8 @@ def _enter_gp_draw_mode(context, canvas, *, tool="PRESERVE"):
     # without a valid Grease Pencil brush for temporary Ctrl erasing.
     try:
         bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+        if str(getattr(canvas, "mode", "")) != "PAINT_GREASE_PENCIL":
+            return False
         _configure_gp_active_tool_after_mode(context, canvas, tool=tool)
         _start_gp_mask_live_poll(canvas, scene=getattr(context, "scene", None))
         return True
@@ -6721,8 +6765,12 @@ class FBP_OT_AddGreasePencilMask(Operator):
         if not applied:
             self.report({"ERROR"}, "Could not create a Grease Pencil mask")
             return {"CANCELLED"}
-        if first_canvas is not None:
-            _enter_gp_draw_mode(context, first_canvas)
+        if first_canvas is not None and not _enter_gp_draw_mode(context, first_canvas):
+            self.report(
+                {"WARNING"},
+                "Grease Pencil mask added, but Draw Mode could not start: show the layer's collection and use Edit in the mask panel",
+            )
+            return {"FINISHED"}
         self.report({"INFO"}, f"Grease Pencil mask ready on {applied} layer{'s' if applied != 1 else ''}")
         return {"FINISHED"}
 
@@ -8043,6 +8091,20 @@ def draw_gp_mask_settings_ui(layout, context, canvas=None, *, embedded=False, he
         actions.alignment = 'RIGHT'
         _draw_gp_mask_action_buttons(actions, context, canvas, rig, include_detach=True)
 
+    # Edit / Done is the first thing to reach for: always on top, not inside
+    # the closed Grease Pencil Settings section.
+    editing = gp_mask_is_being_edited(context, canvas)
+    edit_row = root.row(align=True)
+    edit_row.scale_y = 1.2
+    edit = edit_row.operator(
+        "fbp.edit_grease_pencil_mask",
+        text="Done" if editing else "Edit Grease Pencil Mask",
+        icon="CHECKMARK" if editing else "GREASEPENCIL",
+        depress=editing,
+    )
+    edit.rig_name = getattr(rig, "name", "") if rig else ""
+    edit.canvas_name = getattr(canvas, "name", "")
+
     row = root.row(align=True)
     guide = bool(getattr(canvas, "fbp_gp_mask_show_guide", False))
     row.prop(canvas, "fbp_gp_mask_show_guide", text="", icon="HIDE_OFF" if guide else "HIDE_ON")
@@ -8072,15 +8134,6 @@ def draw_gp_mask_settings_ui(layout, context, canvas=None, *, embedded=False, he
     )
     if expanded:
         settings = root.column(align=False)
-        editing = gp_mask_is_being_edited(context, canvas)
-        edit = settings.operator(
-            "fbp.edit_grease_pencil_mask",
-            text="Done" if editing else "Edit Grease Pencil",
-            icon="CHECKMARK" if editing else "GREASEPENCIL",
-            depress=editing,
-        )
-        edit.rig_name = getattr(rig, "name", "") if rig else ""
-        edit.canvas_name = getattr(canvas, "name", "")
         settings.prop(canvas, "fbp_gp_canvas_opacity", text="Visibility", slider=True)
         radius = settings.row(align=True)
         radius.prop(canvas, "fbp_gp_mask_auto_radius", text="Auto", toggle=True)
