@@ -1247,6 +1247,13 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
         except (ImportError, *FBP_DATA_ERRORS):
             pass
         fbp_tidy_layer_material(material)
+        if stage == "MASK":
+            # Solid view cannot run the mask nodes: refresh the plane cut.
+            try:
+                from .solid_mask_view import fbp_solid_mask_schedule_material
+                fbp_solid_mask_schedule_material(material)
+            except (ImportError, *FBP_DATA_ERRORS):
+                pass
     return result
 
 

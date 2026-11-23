@@ -646,6 +646,9 @@ def _sync_modifier_values(rig):
         fbp_shell_sync_values(rig)
         # Mesh effects: inputs edited in the Modifiers panel.
         fbp_pull_geometry_modifier_edits(rig)
+        # Mask Invert / Factor / Feather edits change the Solid view cut.
+        from .solid_mask_view import fbp_solid_mask_sync
+        fbp_solid_mask_sync(rig)
     except (ImportError, *FBP_DATA_ERRORS) as exc:
         fbp_warn("Could not sync an effect modifier with its layer", exc)
 

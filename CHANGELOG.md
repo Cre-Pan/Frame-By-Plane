@@ -25,6 +25,12 @@ All notable public changes to Frame By Plane are documented here.
 - **Glass**: richer colours (**Color Richness**) or the nearest of six editable traditional glass colours (**Palette Mix**); cloudy thickness, drawn streaks, air bubbles, scratches, per-piece variation, darker glass next to the lead, optional refracted view of the picture, and a backlight with **Light Strength**, **Light Center** and **Light Falloff**.
 - Presets: Cathedral, Bold Lead, Tiffany, Clean Glass. Debug views: Glass Pieces and Lead Mask. The lead is found by reading the image at 25 points per pixel, so the effect is marked as heavy.
 
+### Masks in Solid view
+
+- **Masked layers now look masked in Solid view.** Solid shading never runs the plane material, so a masked layer used to show its whole rectangle there. A masked plane now gets a small viewport-only **Solid View Masks** modifier at the end of its stack that removes the parts of the plane the mask stack hides. It works in every Solid colour mode (Texture, Material, Object...), and in Material Preview it only removes pixels that were already fully transparent.
+- The cut reads the mask stack from the material itself, with the same helper objects, images and bounds: **Square, Circle and Triangle Mask**, **Grease Pencil Mask** slots and **Imported Layer Mask**, with **Invert**, **Factor** and the **Add / Subtract / Intersect / Difference** operations. Masks it cannot read (procedural, Color Key, Luma/Alpha Matte...) cut nothing, so the cut never hides a visible pixel. Feather stays soft in the material; in Solid the edge sits on the outer border of the mask.
+- The edge is smooth, not a staircase: the plane is split into a grid and the vertices next to the edge are moved onto it, with their UVs, so the drawing does not slide. Moving or scaling a mask updates live with no Python; a Feather or shape edit only rewrites node values. Renders never use the modifier. Frame Stack layers keep the whole plane.
+
 ### Plane groups: controller, group opacity, Ungroup
 
 - **Group controller.** Layer List side bar (collection row) or the sidebar's group box > **Add Group Controller** adds an Empty named "<group> Controller" that parents the group's layers while keeping them in place. Move, rotate, scale and key the controller to animate the whole group. Clicking a plane of the group selects the controller, so G/R/S and I act on the group. **Remove Group Controller** gives each layer back its world position.
