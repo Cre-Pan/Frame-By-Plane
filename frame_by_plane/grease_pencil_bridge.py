@@ -344,6 +344,10 @@ _GP_MASK_MODE_TRANSITION_GUARD = {}
 # Pointer of the GP mask canvas last seen in Draw Mode. Leaving Draw Mode from
 # Blender's own mode menu or Ctrl+Tab then finishes the edit like Done does.
 _GP_MASK_PAINT_SESSION = {}
+# Stroke type of the active brush before a mask edit switched it to Fill + Line.
+_GP_MASK_BRUSH_RESTORE = {}
+# Set on masks whose drawn area is the part of the layer that stays visible.
+KEY_GP_MASK_REVEALS = "fbp_gp_mask_reveals_drawn"
 _GP_MASK_MODE_TRANSITION_SECONDS = 1.20
 _GP_MASK_EDIT_ENTRY_GUARD_SECONDS = 0.45
 _GP_MASK_EDIT_KEYMAPS = []
@@ -2254,7 +2258,10 @@ def _apply_canvas_mask_to_binding(canvas, rig, effect_id, slot, *, update_shader
             fbp_update_shader_effect,
         )
         changed = False
-        desired_invert = not bool(getattr(canvas, "fbp_gp_mask_invert", False))
+        # Masks made from 8.6.0 keep what is drawn, like Square, Circle and
+        # Triangle masks; older masks keep hiding it, so files look the same.
+        drawn_hidden = not bool(canvas.get(KEY_GP_MASK_REVEALS, False))
+        desired_invert = bool(getattr(canvas, "fbp_gp_mask_invert", False)) != drawn_hidden
         if bool(getattr(rig, slot["invert"], False)) != desired_invert:
             fbp_set_rna_property_silent(rig, slot["invert"], desired_invert)
             changed = True
@@ -3793,7 +3800,13 @@ def _create_mask_canvas(rig, context):
     for _effect_id, assigned, _slot in gp_mask_assignments(rig):
         if is_gp_mask_canvas(assigned) and _same_datablock(gp_canvas_owner(assigned), rig):
             return assigned, False
-    return _new_canvas(context, rig, kind="MASK")
+    canvas, created = _new_canvas(context, rig, kind="MASK")
+    if canvas is not None and created:
+        try:
+            canvas[KEY_GP_MASK_REVEALS] = True
+        except FBP_DATA_ERRORS:
+            pass
+    return canvas, created
 
 
 def _gp_mask_raster_module():
@@ -6260,6 +6273,34 @@ def _start_gp_mask_live_poll(canvas, scene=None):
     return scheduled
 
 
+def _use_fill_and_line_for_mask(context, canvas):
+    """Draw masks as Fill + Line, so a closed shape masks its whole inside.
+
+    With Blender's default Line strokes a mask only ever covered a thin line,
+    which looked like a drawing on the layer rather than a mask. The brush's
+    own stroke type comes back when the mask edit ends.
+    """
+    if not is_gp_mask_canvas(canvas):
+        return False
+    previous = _active_gp_brush_stroke_type(context, fallback="")
+    if previous not in {"STROKE", "FILL", "BOTH"} or previous == "BOTH":
+        return False
+    if not _set_active_gp_brush_stroke_type(context, "BOTH"):
+        return False
+    _GP_MASK_BRUSH_RESTORE.setdefault("mode", previous)
+    return True
+
+
+def _restore_brush_after_mask_edit(context=None):
+    previous = _GP_MASK_BRUSH_RESTORE.pop("mode", None)
+    if previous:
+        try:
+            return _set_active_gp_brush_stroke_type(context or bpy.context, previous)
+        except FBP_DATA_ERRORS:
+            return False
+    return False
+
+
 def _enter_gp_draw_mode(context, canvas, *, tool="PRESERVE"):
     if canvas is None:
         return False
@@ -6277,6 +6318,7 @@ def _enter_gp_draw_mode(context, canvas, *, tool="PRESERVE"):
         if str(getattr(canvas, "mode", "")) != "PAINT_GREASE_PENCIL":
             return False
         _configure_gp_active_tool_after_mode(context, canvas, tool=tool)
+        _use_fill_and_line_for_mask(context, canvas)
         _start_gp_mask_live_poll(canvas, scene=getattr(context, "scene", None))
         return True
     except FBP_DATA_ERRORS:
@@ -6582,6 +6624,7 @@ class FBP_OT_EditGreasePencilMask(Operator):
         if not is_gp_mask_canvas(canvas):
             return {"CANCELLED"}
         if gp_mask_is_being_edited(context, canvas):
+            _restore_brush_after_mask_edit(context)
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except FBP_DATA_ERRORS:
@@ -8415,6 +8458,7 @@ def _quarantine_gp_mask_edit_tasks(canvas, scene=None, *, pause_transition=True)
 def _finish_gp_mask_paint_session(pointer):
     """Return to the owner layer after Draw Mode was left without Done."""
     context = getattr(bpy, "context", None)
+    _restore_brush_after_mask_edit(context)
     try:
         view_layer = getattr(context, "view_layer", None)
         active = getattr(getattr(view_layer, "objects", None), "active", None)
