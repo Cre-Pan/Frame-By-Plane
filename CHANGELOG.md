@@ -12,6 +12,7 @@ All notable public changes to Frame By Plane are documented here.
 
 - **Hover a row, see the image.** Resting the mouse on a row of the Layer List, the Frames list or the Multiplane Setup list now shows a larger thumbnail (256 px by default) beside the sidebar, with the row name and frame number. In Properties > Tool it opens in the editor next to the Properties panel (usually the 3D View), against the shared border. It stays clear of Blender's own tooltip and closes as soon as the mouse moves or any key or button is pressed. Size or Off in **Preferences > Interface Behavior > Row Hover Preview**.
 - **Tooltip with name and frame.** The row tooltip now shows the row name and its position, for example "Frame 2 of 6 · Scene frames 3-4" on a frame, or the frame shown at the current scene frame on a layer, instead of only "Click to select. Double-click to rename.".
+
 ### New effect: RGB Pixels
 
 - **RGB Pixels** (Add Effect > Digital) turns a layer into a pixel-art RGB mosaic: the image is sampled once per cell and each cell is shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. It follows the classic shader recipe (source x CRT pixel, channels multiplied R x R, G x G, B x B, then an Emission-style boost) with a procedural CRT pixel, so no extra texture is needed.
@@ -40,7 +41,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Grease Pencil Draw and Edit Mode on Blender 5.3
 
-- **Native Cyclic instead of Close Gap.** Blender 5.3 has its own Cyclic option on Draw brushes, shown right after Stroke / Fill / Both. Frame By Plane's Close Gap buttons were a second control for the same thing, so on 5.3 they are gone and only Blender's Cyclic icon remains. G in Draw Mode toggles the native option. On Blender 5.2 Close Gap is unchanged.
+- **Close Gap removed, native Cyclic on 5.3.** The Close Gap buttons in the Tool Header and Tool panel, the Close Selected Gaps toggle and the G shortcut in Draw Mode are gone on every Blender version, and new strokes keep the closure Blender gives them. On Blender 5.3 the brush's own **Cyclic** option, shown right after Stroke / Fill / Both, closes new strokes; the Tool panel shows it too.
 - **Edit Mode header tools.** After the Stroke / Fill colors: **Stroke**, **Fill** and **Both** (set the type of the selected strokes, no more right click > Set Stroke Type), the native **Cyclic** icon (closes the selected strokes; lit when all of them are closed, a click then opens them) and **Arrange** with four stack-of-strokes icons: Bring to Front (large arrow on the left), Bring Forward and Send Backward (arrow from the middle stroke), Send to Back (large arrow on the right). All of them run Blender's own operators, so Undo works as in the native menus.
 - **Mixed colors in Edit Mode.** The color strip is mirrored around the swap button: `[Stroke colors] [Stroke icon ▾ +N] ⇄ [Fill icon ▾ +N] [Fill colors]`. Each side shows up to 6 colors; its icon opens the full list and shows how many more there are. The icons sit right against the swap button; Draw and Vertex Paint keep the plain color pair. Colors are listed from the most used, and near-identical colors (less than about 5 of 255 levels apart) share one swatch, so a slightly uneven stroke no longer fills the header; editing that swatch recolors the whole group. The list button reads "N Colors".
 - **Assign material in Edit Mode.** Next to the material selector, the material icon opens Blender's Assign Material menu for the selected strokes. (Brushes have no Edit Mode equivalent: strokes do not remember the brush that drew them.)
@@ -76,8 +77,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, alpha cache, contour tracer, framing, long import, lazy NumPy); the 8.6 feature gate runs 24 scripts.
-- New regression tests: 100-plane overlay performance, group controller, rig box from source; Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools; the 8.6 feature gate runs 25 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, alpha cache, contour tracer, framing, long import, lazy NumPy), Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view; the 8.6 feature gate runs 27 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 
