@@ -225,7 +225,6 @@ ROUTES: dict[str, RouteSpec] = {
                     TaskSpec("draw_vertex_color", "Switch to Color Attribute", "PALETTE", "draw_vertex_color"),
                     TaskSpec("draw_both", "Choose Both", "PALETTE", "draw_both"),
                     TaskSpec("draw_colors", "Pick a Stroke or Fill color", "PALETTE", "draw_colors"),
-                    TaskSpec("draw_close_gap", "Close the gap with G", "LOOP", "draw_close_gap", optional=True),
                 ),
                 pro_tip="X swaps Stroke and Fill. Hold Shift + X and move over the canvas to sample a color into Stroke.",
                 help_title="Stroke & Fill Colors",
@@ -233,7 +232,6 @@ ROUTES: dict[str, RouteSpec] = {
                     "In the **Draw Mode** header, click the **Color Attribute** icon next to the material.",
                     "In the **Stroke / Fill / Both** selector, click **Both**.",
                     "Click the **Stroke** swatch for the line color and the **Fill** swatch for the fill color.",
-                    "Press **G** (Close Gap) to join the last point to the first, for clean fills.",
                 ),
                 help_notes=(
                     "X swaps the two colors; Shift + X samples the viewport into Stroke.",
@@ -1156,11 +1154,6 @@ def _detect_draw_colors(context: bpy.types.Context, state: TutorialState) -> boo
     return _changed_since_anchor(state, f"draw_colors:{obj.as_pointer()}", colors)
 
 
-def _detect_draw_close_gap(context: bpy.types.Context, state: TutorialState) -> bool:
-    _obj, color_state, _paint, _settings = _draw_paint_context(context)
-    return bool(getattr(color_state, "close_strokes", False))
-
-
 def _detect_draw_autokey(context: bpy.types.Context, state: TutorialState) -> bool:
     try:
         return bool(context.scene.tool_settings.use_keyframe_insert_auto)
@@ -1190,7 +1183,6 @@ DETECTORS: dict[str, Detector] = {
     "draw_vertex_color": _detect_draw_vertex_color,
     "draw_both": _detect_draw_both,
     "draw_colors": _detect_draw_colors,
-    "draw_close_gap": _detect_draw_close_gap,
     "draw_autokey": _detect_draw_autokey,
     "draw_new_key": _detect_draw_new_key,
     "draw_edit_mode": _detect_draw_edit_mode,
@@ -1932,7 +1924,6 @@ _TASK_GUIDANCE = {
     "draw_vertex_color": "In the **Draw Mode** header, click the **Color Attribute** icon next to the material.",
     "draw_both": "In the **Stroke / Fill / Both** selector click **Both**: one stroke draws the line and fills it.",
     "draw_colors": "Click the **Stroke** swatch for the line color, or the **Fill** swatch for the inside.",
-    "draw_close_gap": "Press **G** to close each stroke: the last point joins the first for clean fills.",
     "draw_autokey": "Click the round **Auto Keying** button in the **Timeline** header, so drawing creates keyframes.",
     "draw_new_key": "Press **→** to move to an empty frame, then draw a stroke.",
     "draw_scrub": "Hold **<** over the 3D Viewport and move the mouse; release to snap back.",
@@ -1976,7 +1967,6 @@ _TASK_ACTION_LABELS = {
     "draw_vertex_color": "Use Color Attribute",
     "draw_both": "Choose Both",
     "draw_colors": "Pick Stroke Color",
-    "draw_close_gap": "Close Gap",
     "draw_autokey": "Turn On Auto Keying",
     "draw_new_key": "Go to Next Frame",
     "draw_scrub": "Hold < in the Viewport",
@@ -2021,7 +2011,6 @@ _TASK_SHORTCUTS = {
     "draw_vertex_color": "Header  >  Color Attribute",
     "draw_both": "Header  >  Both",
     "draw_colors": "Header  >  Stroke / Fill swatch",
-    "draw_close_gap": "G",
     "draw_autokey": "Timeline  >  Auto Keying",
     "draw_new_key": "→  >  Draw",
     "draw_scrub": "Hold <",
@@ -3166,8 +3155,6 @@ def _run_draw_task_action(context: bpy.types.Context, key: str) -> bool:
         return True
     if key == "draw_colors":
         return _operator_started(bpy.ops.wm.call_panel(name="FBP_PT_gp_stroke_color_popover", keep_open=True))
-    if key == "draw_close_gap":
-        return _operator_started(bpy.ops.fbp.toggle_gp_close_gap(action="ON"))
     return False
 
 

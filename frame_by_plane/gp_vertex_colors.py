@@ -33,7 +33,6 @@ from .registration import (
     unregister_type_properties,
 )
 from .runtime import FBP_DATA_ERRORS, fbp_warn_once
-from .ui_icons import custom_icon_value
 
 
 _STATE_PROPERTY = "fbp_gp_vertex_color_state"
@@ -574,8 +573,7 @@ def _sync_draw_both_fill(context=None):
 
     Blender 5.2 initializes both point and curve colors from ``brush.color``.
     The native stroke stays untouched; only the fill attribute of newly added
-    Both curves is replaced. The explicit Close Gap toggle independently
-    owns the native ``cyclic`` flag for every draw mode.
+    Both curves is replaced.
     """
     context = context or getattr(bpy, "context", None)
     if _context_mode(context) != "PAINT_GREASE_PENCIL":
@@ -663,24 +661,17 @@ def _sync_draw_both_fill(context=None):
     _RUNTIME["draw_curve_count"] = curve_count
     _RUNTIME["draw_layer_pointer"] = layer_pointer
     _RUNTIME["draw_frame_count"] = frame_count
-    if drawing is None or curve_count <= previous_count:
+    if drawing is None or curve_count <= previous_count or not use_dual_fill:
         return 0
 
     indices = tuple(_new_draw_curve_indices(previous_count, curve_count, draw_on_back))
     clean_fill = _rgba(state.fill_color)
-    close_stroke = bool(state.close_strokes)
     changed = 0
     for curve_index in indices:
         try:
             stroke = drawing.strokes[curve_index]
-            curve_changed = False
-            if bool(stroke.cyclic) != close_stroke:
-                stroke.cyclic = close_stroke
-                curve_changed = True
-            if use_dual_fill and not _colors_close(stroke.fill_color, clean_fill):
+            if not _colors_close(stroke.fill_color, clean_fill):
                 stroke.fill_color = clean_fill
-                curve_changed = True
-            if curve_changed:
                 changed += 1
         except FBP_DATA_ERRORS + (IndexError,):
             continue
@@ -1322,7 +1313,6 @@ def _begin_edit_color_undo(target):
         return True
     label = {
         "FILL": "Change Grease Pencil Fill Color",
-        "CLOSE": "Change Grease Pencil Stroke Closure",
     }.get(target, "Change Grease Pencil Stroke Color")
     if not _push_edit_color_undo(f"Before {label}"):
         return False
@@ -1758,54 +1748,6 @@ class FBP_GPColorSwatch(PropertyGroup):
     target: StringProperty(default="STROKE", options={"HIDDEN"})
 
 
-def _apply_selected_cyclic(context, close_stroke, *, record_undo=False):
-    """Open or close every selected Edit curve using Blender's cyclic flag."""
-    obj = _active_gp_object(context)
-    if obj is None or _context_mode(context) != "EDIT_GREASE_PENCIL":
-        return 0
-    now = time.perf_counter()
-    pointer = int(obj.as_pointer())
-    suppress_until = float(_RUNTIME.get("edit_suppress_dirty_until", 0.0) or 0.0)
-    last_dirty = float(_RUNTIME.get("edit_last_dirty", 0.0) or 0.0)
-    dirty_ready = bool(
-        _RUNTIME.get("edit_dirty", True)
-        and now >= suppress_until
-        and now - last_dirty >= _EDIT_SYNC_DEBOUNCE
-    )
-    if (
-        _RUNTIME.get("target") != pointer
-        or _RUNTIME.get("context_mode") != "EDIT_GREASE_PENCIL"
-        or _RUNTIME.get("edit_signature") is None
-        or dirty_ready
-    ):
-        _sync_edit_state(context, force=True)
-
-    changed = 0
-    undo_started = False
-    undo_attempted = False
-    expected = bool(close_stroke)
-    for group in tuple(_RUNTIME.get("edit_fill_targets", ()) or ()):
-        _drawing, _total_curves, _selected_count, batches = group
-        for stroke, _curve_index in batches:
-            try:
-                if bool(stroke.cyclic) == expected:
-                    continue
-                if record_undo and not undo_attempted:
-                    undo_attempted = True
-                    undo_started = _begin_edit_color_undo("CLOSE")
-                stroke.cyclic = expected
-                changed += 1
-            except FBP_DATA_ERRORS:
-                continue
-    if changed:
-        _RUNTIME["edit_dirty"] = False
-        _RUNTIME["edit_suppress_dirty_until"] = time.perf_counter() + _EDIT_SYNC_INTERVAL
-        _tag_gp_color_update(obj)
-        if record_undo and undo_started:
-            _schedule_edit_color_undo_commit()
-    return changed
-
-
 def _state_color_changed(state, context, target):
     if _STATE_GUARD:
         return
@@ -1821,17 +1763,6 @@ def _state_color_changed(state, context, target):
     _kind, _paint, _brush, owner, gp_settings, target_mode = _semantic_brush_context(context)
     if owner is not None and gp_settings is not None:
         _canonical_brush_colors(state, owner, target_mode)
-
-
-def _close_strokes_changed(state, context):
-    if _STATE_GUARD:
-        return
-    if _context_mode(context) == "EDIT_GREASE_PENCIL":
-        _apply_selected_cyclic(
-            context,
-            bool(state.close_strokes),
-            record_undo=True,
-        )
 
 
 def _depsgraph_touches_active_gp(depsgraph, obj):
@@ -1967,12 +1898,6 @@ class FBP_GPVertexColorState(PropertyGroup):
         default=(1.0, 1.0, 1.0, 1.0),
         options={"SKIP_SAVE"},
         update=_fill_color_changed,
-    )
-    close_strokes: BoolProperty(
-        name="Close Gap",
-        description="Connect the final point to the first point with a straight segment",
-        default=False,
-        update=_close_strokes_changed,
     )
     paint_stroke_color: FloatVectorProperty(
         size=4,
@@ -2186,54 +2111,6 @@ class FBP_OT_SwapGPVertexColors(Operator):
         return {"FINISHED"}
 
 
-class FBP_OT_ToggleGPCloseGap(Operator):
-    bl_idname = "fbp.toggle_gp_close_gap"
-    bl_label = "Toggle Grease Pencil Close Gap"
-    bl_description = "Open or close strokes by connecting the final point to the first point"
-    bl_options = {"REGISTER"}
-
-    action: EnumProperty(
-        items=(("TOGGLE", "Toggle", "Toggle open/closed strokes"),
-               ("ON", "Close Gap", "Connect the final point to the first point"),
-               ("OFF", "Open Gap", "Keep the stroke open")),
-        default="TOGGLE",
-        options={"SKIP_SAVE"},
-    )
-
-    @classmethod
-    def description(cls, _context, properties):
-        if properties.action == "ON":
-            return "Close Gap: connect the final point to the first point"
-        if properties.action == "OFF":
-            return "Open Gap: keep strokes open"
-        return cls.bl_description
-
-    @classmethod
-    def poll(cls, context):
-        return _active_gp_object(context) is not None and _context_mode(context) in {
-            "EDIT_GREASE_PENCIL",
-            "PAINT_GREASE_PENCIL",
-            "VERTEX_GREASE_PENCIL",
-        }
-
-    def execute(self, context):
-        state = _state(context)
-        if state is None:
-            return {"CANCELLED"}
-        edit_mode = _context_mode(context) == "EDIT_GREASE_PENCIL"
-        desired = not bool(state.close_strokes) if self.action == "TOGGLE" else self.action == "ON"
-        if desired == bool(state.close_strokes):
-            # Edit selections may contain open and closed curves even when
-            # the saved drawing option already matches the chosen button.
-            if edit_mode:
-                _apply_selected_cyclic(context, desired, record_undo=True)
-            return {"FINISHED"}
-        state.close_strokes = desired
-        if not edit_mode:
-            _push_edit_color_undo("Toggle Grease Pencil Close Gap")
-        return {"FINISHED"}
-
-
 class FBP_OT_RefreshGPVertexColors(Operator):
     bl_idname = "fbp.refresh_gp_vertex_colors"
     bl_label = "Refresh Selected Vertex Colors"
@@ -2289,7 +2166,6 @@ def _draw_paint_color_controls(layout, context, state):
         row.prop_enum(gp_settings, mode_property, "BOTH", text="Both", icon="GP_DRAW_BOTH")
     layout.prop(state, "stroke_color", text="Stroke")
     layout.prop(state, "fill_color", text="Fill")
-    layout.prop(state, "close_strokes", text="Close Gap", toggle=True, icon="LOOP_BACK")
     row = layout.row(align=True)
     row.operator("fbp.swap_gp_vertex_colors", text="Swap", icon="ARROW_LEFTRIGHT")
     row.label(text="X · Shift+X samples Stroke")
@@ -2341,13 +2217,6 @@ class FBP_PT_GPVertexColors(Panel):
         fill_col.enabled = bool(state.fill_available)
         fill_col.prop(state, "fill_color", text="Fill")
         _draw_mixed_swatches(layout, "FILL")
-        layout.prop(
-            state,
-            "close_strokes",
-            text="Close Selected Gaps",
-            toggle=True,
-            icon="LOOP_BACK",
-        )
         layout.operator("fbp.swap_gp_vertex_colors", text="Swap Stroke / Fill", icon="ARROW_LEFTRIGHT")
 
 
@@ -2587,7 +2456,7 @@ def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
     return True
 
 
-def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, include_close=True):
+def _draw_header_color_pair(layout, context, *, enabled=True, owner=None):
     """Draw the semantic pair in the native brush-color footprint."""
     state = _state(context)
     if state is None:
@@ -2595,8 +2464,6 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
     if owner is None and _context_mode(context) == "EDIT_GREASE_PENCIL":
         group = layout.row(align=False)
         if _draw_header_swatch_strip(group, context, state, enabled=enabled):
-            if include_close:
-                _draw_header_close_stroke(group, context, enabled=enabled)
             return True
     group = layout.row(align=False)
     row = group.row(align=True)
@@ -2629,98 +2496,7 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
         text="",
         panel="FBP_PT_gp_fill_color_popover",
     )
-    if include_close:
-        _draw_header_close_stroke(group, context, enabled=enabled)
     return True
-
-
-def _draw_header_close_stroke(layout, context, *, enabled=True):
-    state = _state(context)
-    if state is None:
-        return False
-    group = layout.row(align=False)
-    close = group.row(align=True)
-    close.ui_units_x = 2.5
-    close.enabled = bool(enabled)
-    for action, icon_key, fallback in (("OFF", "gp_gap_off", "CURVE_PATH"),
-                                       ("ON", "gp_gap_on", "LOOP_BACK")):
-        icon_value = custom_icon_value(icon_key)
-        icon = {"icon_value": icon_value} if icon_value else {"icon": fallback}
-        close.operator(
-            "fbp.toggle_gp_close_gap", text="", emboss=True,
-            depress=bool(state.close_strokes) == (action == "ON"), **icon,
-        ).action = action
-    return True
-
-
-class _FBPStrokeTypeRowProxy:
-    """Detect Blender's native Stroke/Fill/Both row without redrawing it."""
-
-    __slots__ = ("_layout", "_root")
-
-    def __init__(self, layout, root):
-        object.__setattr__(self, "_layout", layout)
-        object.__setattr__(self, "_root", root)
-
-    def __getattr__(self, name):
-        return getattr(self._layout, name)
-
-    def __setattr__(self, name, value):
-        if name in self.__slots__:
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._layout, name, value)
-
-    def prop_enum(self, data, property_name, value, **kwargs):
-        result = self._layout.prop_enum(data, property_name, value, **kwargs)
-        if property_name == "stroke_type":
-            self._root._close_gap_pending = True
-        return result
-
-    def prop(self, data, property_name, **kwargs):
-        result = self._layout.prop(data, property_name, **kwargs)
-        if property_name == "stroke_type":
-            self._root._close_gap_pending = True
-        return result
-
-
-class _FBPCloseGapLayoutProxy:
-    """Insert Close Gap between native stroke type and Caps Type rows."""
-
-    __slots__ = ("_layout", "_context", "_close_gap_pending")
-
-    def __init__(self, layout, context):
-        object.__setattr__(self, "_layout", layout)
-        object.__setattr__(self, "_context", context)
-        object.__setattr__(self, "_close_gap_pending", False)
-
-    def __getattr__(self, name):
-        return getattr(self._layout, name)
-
-    def __setattr__(self, name, value):
-        if name in self.__slots__:
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._layout, name, value)
-
-    def row(self, **kwargs):
-        if self._close_gap_pending:
-            self._close_gap_pending = False
-            _draw_header_close_stroke(self._layout, self._context)
-        return _FBPStrokeTypeRowProxy(self._layout.row(**kwargs), self)
-
-
-def _draw_native_gp_paint_settings(layout, context, brush, props, *, compact=False):
-    original = _NATIVE_UI.get("paint_settings")
-    if original is None or original is _MISSING:
-        return None
-    return original(
-        _FBPCloseGapLayoutProxy(layout, context),
-        context,
-        brush,
-        props,
-        compact=compact,
-    )
 
 
 def _draw_native_draw_color_selector(context, layout, brush, gp_settings):
@@ -2778,7 +2554,6 @@ def _draw_native_draw_color_selector(context, layout, brush, gp_settings):
                 color_row,
                 context,
                 owner=owner,
-                include_close=False,
             )
 
 
@@ -2796,7 +2571,6 @@ def _draw_native_vertex_tool_settings(context, layout, tool):
     BrushAssetShelf.draw_popup_selector(layout, context, brush)
     if brush is None:
         return False
-    drew_color_pair = False
     if brush.gpencil_vertex_brush_type not in {"BLUR", "AVERAGE", "SMEAR"}:
         layout.separator(factor=0.4)
         _paint, _brush, owner, _gp_settings = _brush_context(context)
@@ -2805,9 +2579,6 @@ def _draw_native_vertex_tool_settings(context, layout, tool):
             context,
             owner=owner,
         )
-        drew_color_pair = True
-    if not drew_color_pair:
-        _draw_header_close_stroke(layout, context)
     brush_basic_grease_pencil_vertex_settings(layout, context, brush, compact=True)
     return True
 
@@ -2876,8 +2647,6 @@ def _restore_native_color_header():
 
         if "draw_color_selector" in _NATIVE_UI:
             paint_common.brush_basic__draw_color_selector = _NATIVE_UI["draw_color_selector"]
-        if "paint_settings" in _NATIVE_UI:
-            paint_common.brush_basic_grease_pencil_paint_settings = _NATIVE_UI["paint_settings"]
         mode_class = space_view3d._draw_tool_settings_context_mode
         for key, attribute in (
             ("vertex_tool_settings", "VERTEX_GREASE_PENCIL"),
@@ -2914,11 +2683,9 @@ def _register_tool_header():
 
         mode_class = space_view3d._draw_tool_settings_context_mode
         _NATIVE_UI["draw_color_selector"] = paint_common.brush_basic__draw_color_selector
-        _NATIVE_UI["paint_settings"] = paint_common.brush_basic_grease_pencil_paint_settings
         _NATIVE_UI["vertex_tool_settings"] = vars(mode_class).get("VERTEX_GREASE_PENCIL", _MISSING)
         _NATIVE_UI["edit_tool_settings"] = vars(mode_class).get("EDIT_GREASE_PENCIL", _MISSING)
         paint_common.brush_basic__draw_color_selector = _draw_native_draw_color_selector
-        paint_common.brush_basic_grease_pencil_paint_settings = _draw_native_gp_paint_settings
         mode_class.VERTEX_GREASE_PENCIL = staticmethod(_draw_native_vertex_tool_settings)
         mode_class.EDIT_GREASE_PENCIL = staticmethod(_draw_native_edit_tool_settings)
         _NATIVE_UI_PATCHED = True
@@ -2955,22 +2722,12 @@ def _register_sample_color_keymaps():
                 head=True,
             )
             _ADDON_KEYMAPS.append((keymap, item))
-        # G is scoped to Draw Mode. Edit Mode keeps Blender's fundamental
-        # Grab/Move shortcut; Close Gap remains available there as a button.
-        keymap = addon.keymaps.new(name="Grease Pencil Draw Mode", space_type="EMPTY")
-        item = keymap.keymap_items.new(
-            FBP_OT_ToggleGPCloseGap.bl_idname,
-            "G",
-            "PRESS",
-            head=True,
-        )
-        _ADDON_KEYMAPS.append((keymap, item))
         return True
     except FBP_DATA_ERRORS as exc:
         _unregister_sample_color_keymaps()
         fbp_warn_once(
             "gp_vertex_colors.sample_keymap",
-            "Could not register the Grease Pencil color and Close Gap shortcuts",
+            "Could not register the Grease Pencil color shortcuts",
             exc,
         )
         return False
@@ -2989,7 +2746,6 @@ property_classes = (FBP_GPColorSwatch, FBP_GPVertexColorState)
 classes = (
     FBP_OT_SampleGPStrokeColor,
     FBP_OT_SwapGPVertexColors,
-    FBP_OT_ToggleGPCloseGap,
     FBP_OT_RefreshGPVertexColors,
     FBP_PT_GPVertexColors,
     FBP_PT_GPStrokeColorPopover,

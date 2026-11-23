@@ -22,7 +22,6 @@ Frame By Plane is a Blender 5.2 LTS and 5.3 extension for image-sequence animati
 - Grease Pencil timing (Plane → GP, GP → Plane, Offset, Auto Sync) and onion skin tools
 - Independent Grease Pencil Stroke and Fill colors in Draw, Vertex Paint and Edit modes
 - Stroke, Fill and Both drawing targets, mixed-selection swatches, X swap and Stroke-only Shift+X sampling
-- Close Gap in the Tool Header with a Draw-only G shortcut and Undo-aware state
 - Camera-facing layers, projectors and 2.5D depth controls
 
 ## Layer and effect workflow

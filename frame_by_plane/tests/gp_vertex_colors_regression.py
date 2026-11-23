@@ -30,7 +30,7 @@ try:
     module = addon.gp_vertex_colors
     assert module._HEADER_REGISTERED is True
     assert bpy.app.timers.is_registered(module.fbp_gp_brush_color_timer)
-    assert len(module._ADDON_KEYMAPS) == 3
+    assert len(module._ADDON_KEYMAPS) == 2
     sample_items = [
         item
         for _keymap, item in module._ADDON_KEYMAPS
@@ -44,15 +44,10 @@ try:
         and item.shift
         for item in sample_items
     )
-    close_items = [
-        (keymap, item)
-        for keymap, item in module._ADDON_KEYMAPS
-        if item.idname == "fbp.toggle_gp_close_gap"
-    ]
-    assert len(close_items) == 1
-    assert close_items[0][0].name == "Grease Pencil Draw Mode"
-    assert close_items[0][1].type == "G"
-    assert not close_items[0][1].shift and not close_items[0][1].ctrl
+    # Close Gap was removed: no G shortcut and no operator.
+    assert "toggle_gp_close_gap" not in dir(bpy.ops.fbp)
+    assert not any(item.type == "G" for _keymap, item in module._ADDON_KEYMAPS)
+    assert "close_strokes" not in module.FBP_GPVertexColorState.bl_rna.properties.keys()
 
     data = bpy.data.grease_pencils.new("FBP Dual Color Test")
     obj = bpy.data.objects.new("FBP Dual Color Test", data)
@@ -227,18 +222,6 @@ try:
     drawing.strokes[0].points[1].select = True
     drawing.strokes[1].points[0].select = True
     module._sync_edit_state(bpy.context, force=True)
-
-    assert module._apply_selected_cyclic(bpy.context, True) == 2
-    assert all(stroke.cyclic for stroke in drawing.strokes)
-    assert module._apply_selected_cyclic(bpy.context, False) == 2
-    assert not any(stroke.cyclic for stroke in drawing.strokes)
-
-    # Explicit Off must also apply to mixed Edit selections when the saved
-    # drawing option is already Off; the active button is not a blind toggle.
-    state.close_strokes = False
-    drawing.strokes[0].cyclic = True
-    assert bpy.ops.fbp.toggle_gp_close_gap(action="OFF") == {"FINISHED"}
-    assert not any(stroke.cyclic for stroke in drawing.strokes)
 
     # Unrelated or transform-only depsgraph traffic must not invalidate the
     # expensive Edit selection cache. GP geometry/selection updates must.
@@ -458,7 +441,6 @@ try:
     bpy.context.scene.tool_settings.use_gpencil_draw_onback = False
     state.stroke_color = (0.18, 0.28, 0.38, 1.0)
     state.fill_color = (0.81, 0.61, 0.21, 0.65)
-    state.close_strokes = False
     module._sync_draw_state(bpy.context)
     old_fill = tuple(drawing.strokes[0].fill_color)
     module._reset_draw_both_tracking()
@@ -469,21 +451,19 @@ try:
     newest.cyclic = True
     assert module._sync_draw_both_fill(bpy.context) == 1
     assert close_color(newest.fill_color, state.fill_color)
-    assert newest.cyclic is False
+    assert newest.cyclic is True  # Native closure is left untouched.
     assert close_color(drawing.strokes[0].fill_color, old_fill)
     assert tuple(module._new_draw_curve_indices(4, 6, False)) == (4, 5)
     assert tuple(module._new_draw_curve_indices(4, 6, True)) == (0, 1)
 
-    # Closure is independent from Both and works in every Draw target mode.
+    # Outside Both, new curves are left exactly as Blender drew them.
     draw_settings.stroke_type = "STROKE"
-    state.close_strokes = True
     module._reset_draw_both_tracking()
     assert module._sync_draw_both_fill(bpy.context) == 0
     drawing.add_strokes([2])
-    closed_stroke = drawing.strokes[-1]
-    assert closed_stroke.cyclic is False
-    assert module._sync_draw_both_fill(bpy.context) == 1
-    assert closed_stroke.cyclic is True
+    open_stroke = drawing.strokes[-1]
+    assert module._sync_draw_both_fill(bpy.context) == 0
+    assert open_stroke.cyclic is False
 
     default_data = bpy.data.grease_pencils.new("FBP Default Bulk Color")
     default_layer = default_data.layers.new("Layer", set_active=True)
@@ -501,10 +481,7 @@ try:
     assert close_color(default_stroke.fill_color, (0.7, 0.6, 0.5, 0.4))
 
     assert paint_common.brush_basic__draw_color_selector is module._draw_native_draw_color_selector
-    assert (
-        paint_common.brush_basic_grease_pencil_paint_settings
-        is module._draw_native_gp_paint_settings
-    )
+    assert not hasattr(module, "_draw_native_gp_paint_settings")
     vertex_draw = vars(space_view3d._draw_tool_settings_context_mode)["VERTEX_GREASE_PENCIL"]
     edit_draw = vars(space_view3d._draw_tool_settings_context_mode)["EDIT_GREASE_PENCIL"]
     assert vertex_draw.__func__ is module._draw_native_vertex_tool_settings
@@ -562,15 +539,9 @@ try:
         2.5,
         1.25,
         2.5,
-        0.0,
-        2.5,
     ]
     assert fake_layout.operator_calls[0][1]["emboss"] is True
-    gaps = fake_layout.operator_calls[1:]
-    assert [item[2].action for item in gaps] == ["OFF", "ON"]
-    assert all(item[3].align is True for item in gaps)
-    assert sum(item[1]["depress"] for item in gaps) == 1
-    assert all(item[1].get("icon_value", 0) or item[1].get("icon") for item in gaps)
+    assert len(fake_layout.operator_calls) == 1  # No Close Gap buttons.
 
     # Pin Mode belongs immediately after Material / Color Attribute and before
     # the semantic swatches.
@@ -590,32 +561,6 @@ try:
         call[:2] == ("operator", "fbp.toggle_gp_close_gap")
         for call in color_layout.calls
     )
-
-    # Close Gap is injected after Stroke/Fill/Both and before Caps Type. Its
-    # own row deliberately uses align=False.
-    settings_layout = FakeLayout()
-    proxy = module._FBPCloseGapLayoutProxy(settings_layout, bpy.context)
-    line_types = proxy.row(align=True)
-    line_types.prop_enum(draw_settings, "stroke_type", "STROKE", text="")
-    caps = proxy.row(align=True)
-    caps.prop(draw_settings, "caps_type", text="")
-    assert [call[:2] for call in settings_layout.calls] == [
-        ("enum", "stroke_type"),
-        ("operator", "fbp.toggle_gp_close_gap"),
-        ("operator", "fbp.toggle_gp_close_gap"),
-        ("property", "caps_type"),
-    ]
-    assert [child.align for child in settings_layout.children] == [True, False, True, True]
-
-    state.close_strokes = False
-    assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
-    assert state.close_strokes
-    assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
-    assert state.close_strokes  # Clicking the active choice must not toggle it.
-    assert bpy.ops.fbp.toggle_gp_close_gap(action="OFF") == {"FINISHED"}
-    assert not state.close_strokes
-    assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
-    assert state.close_strokes  # G keeps its existing toggle behavior.
 
     # First use: strokes without vertex colors read as transparent black.
     # Picking a color over that must give it a visible alpha, and the Draw

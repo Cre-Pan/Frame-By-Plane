@@ -59,7 +59,6 @@ try:
     module._sync_draw_state(bpy.context)
     state.stroke_color = BLACK
     state.fill_color = WHITE
-    state.close_strokes = False
     assert close_color(owner.color, BLACK[:3])
     assert close_color(owner.secondary_color, WHITE[:3])
 
@@ -111,8 +110,6 @@ try:
     # Curves that only appear at the playhead keep their Fill and closure:
     # scrubbing in from before the first keyframe, switching from an empty
     # layer, and moving or pasting a keyframe onto the playhead.
-    state.close_strokes = True
-
     def untouched(drawing):
         return all(
             not stroke.cyclic and close_color(stroke.fill_color, BLACK)
@@ -152,17 +149,16 @@ try:
     assert module._sync_draw_both_fill(bpy.context) == 0
     assert untouched(layer.current_frame().drawing)
 
-    # A real stroke on a new keyframe is still closed and filled.
+    # A real stroke on a new keyframe is still filled; closure stays native.
     scene.frame_set(24)
     module._sync_draw_both_fill(bpy.context)
     stroked = layer.frames.new(24).drawing
     stroked.add_strokes([3])
     stroked.strokes[0].fill_color = BLACK
     assert module._sync_draw_both_fill(bpy.context) == 1
-    assert stroked.strokes[0].cyclic is True
+    assert stroked.strokes[0].cyclic is False
     assert close_color(stroked.strokes[0].fill_color, WHITE)
     data.layers.remove(empty_layer)
-    state.close_strokes = False
     scene.frame_set(1)
     module._sync_draw_both_fill(bpy.context)
 
