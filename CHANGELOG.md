@@ -12,6 +12,18 @@ All notable public changes to Frame By Plane are documented here.
 
 - **Hover a row, see the image.** Resting the mouse on a row of the Layer List, the Frames list or the Multiplane Setup list now shows a larger thumbnail (256 px by default) beside the sidebar, with the row name and frame number. In Properties > Tool it opens in the editor next to the Properties panel (usually the 3D View), against the shared border. It stays clear of Blender's own tooltip and closes as soon as the mouse moves or any key or button is pressed. Size or Off in **Preferences > Interface Behavior > Row Hover Preview**.
 - **Tooltip with name and frame.** The row tooltip now shows the row name and its position, for example "Frame 2 of 6 · Scene frames 3-4" on a frame, or the frame shown at the current scene frame on a layer, instead of only "Click to select. Double-click to rename.".
+### New effect: RGB Pixels
+
+- **RGB Pixels** (Add Effect > Digital) turns a layer into a pixel-art RGB mosaic: the image is sampled once per cell and each cell is shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. It follows the classic shader recipe (source x CRT pixel, channels multiplied R x R, G x G, B x B, then an Emission-style boost) with a procedural CRT pixel, so no extra texture is needed.
+- Settings: **Cell Scale** (pixels across the plane), **Strength** (brightness boost, 2 by default like the recipe's Emission Strength), **RGB Mask** (0 gives plain square pixels), **Stripe Width**, **Row Gap** and **Softness**. Presets: Big Pixels, CRT Close-up, LED Wall, Pixel Art.
+
+### New effect: Stained Glass
+
+- **Stained Glass** (Add Effect > Pixel & Print) turns a layer into a church window that follows the shapes of the image, built only from shader nodes. The image is reduced to a few tones (**Color Levels**), every area of the same tone becomes one piece of glass of a single colour, and black lead is drawn on the borders between colours.
+- **Lead**: **Lead Width** sets its thickness, up to exaggerated cartoon-like leading; **Line Wobble**, **Wobble Scale** and **Width Variation** make the stroke look hand-drawn; rounded highlight (**Lead Shine**) and an optional lead border around the window.
+- **Islands**: **Split Pieces** cuts the pieces into smaller irregular islands joined by thinner lead (**Pieces Across**, **Split Lead Width**, **Irregularity**, **Turbulence**).
+- **Glass**: richer colours (**Color Richness**) or the nearest of six editable traditional glass colours (**Palette Mix**); cloudy thickness, drawn streaks, air bubbles, scratches, per-piece variation, darker glass next to the lead, optional refracted view of the picture, and a backlight with **Light Strength**, **Light Center** and **Light Falloff**.
+- Presets: Cathedral, Bold Lead, Tiffany, Clean Glass. Debug views: Glass Pieces and Lead Mask. The lead is found by reading the image at 25 points per pixel, so the effect is marked as heavy.
 
 ### Plane groups: controller, group opacity, Ungroup
 
