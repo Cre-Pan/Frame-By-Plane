@@ -159,7 +159,8 @@ try:
     stroked.add_strokes([3])
     stroked.strokes[0].fill_color = BLACK
     assert module._sync_draw_both_fill(bpy.context) == 1
-    assert stroked.strokes[0].cyclic is True
+    # Blender 5.3 closes strokes through the brush's own Cyclic option.
+    assert stroked.strokes[0].cyclic is (not module.native_cyclic_stroke())
     assert close_color(stroked.strokes[0].fill_color, WHITE)
     data.layers.remove(empty_layer)
     state.close_strokes = False

@@ -15,8 +15,16 @@ All notable public changes to Frame By Plane are documented here.
 - **Solo** on a selected controller or a whole selected group solos the group's layers.
 - **Ungroup** (Ctrl+Shift+G or the button in the group box) dissolves a selected group: its layers and nested groups move to the parent collection and the empty collection is removed.
 
+### Grease Pencil Draw and Edit Mode on Blender 5.3
+
+- **Native Cyclic instead of Close Gap.** Blender 5.3 has its own Cyclic option on Draw brushes, shown right after Stroke / Fill / Both. Frame By Plane's Close Gap buttons were a second control for the same thing, so on 5.3 they are gone and only Blender's Cyclic icon remains. G in Draw Mode toggles the native option. On Blender 5.2 Close Gap is unchanged.
+- **Edit Mode header tools.** After the Stroke / Fill colors: **Stroke**, **Fill** and **Both** (set the type of the selected strokes, no more right click > Set Stroke Type), the native **Cyclic** icon (closes the selected strokes; lit when all of them are closed, a click then opens them) and **Arrange** with four stack-of-strokes icons: Bring to Front (large arrow on the left), Bring Forward and Send Backward (arrow from the middle stroke), Send to Back (large arrow on the right). All of them run Blender's own operators, so Undo works as in the native menus.
+- **Mixed colors in Edit Mode.** The color strip is mirrored around the swap button: `[Stroke colors] [Stroke icon ▾ +N] ⇄ [Fill icon ▾ +N] [Fill colors]`. Each side shows up to 6 colors; its icon opens the full list and shows how many more there are. The icons sit right against the swap button; Draw and Vertex Paint keep the plain color pair. Colors are listed from the most used, and near-identical colors (less than about 5 of 255 levels apart) share one swatch, so a slightly uneven stroke no longer fills the header; editing that swatch recolors the whole group. The list button reads "N Colors".
+- **Assign material in Edit Mode.** Next to the material selector, the material icon opens Blender's Assign Material menu for the selected strokes. (Brushes have no Edit Mode equivalent: strokes do not remember the brush that drew them.)
+
 ### Fixes
 
+- **Stroke / Fill colors with Unified Color.** With a brush's **Unified Color** on (the Blender 5.3 Vertex Paint brush has it on by default), Blender paints with the paint mode's shared colors, but Frame By Plane wrote its Stroke / Fill pair into the brush's own colors. The header showed one pair while new strokes got another (often black), and X did not swap the Stroke / Fill swatches. The pair now goes to the colors Blender actually paints with, in Draw and Vertex Paint.
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
 - **Set Layer Origin moves the plane origin on older layers too.** On a plane with a parent inverse or its own offset and scale (layers made by older builds), the plane origin stayed where it was, with Blender's dashed parent line to the layer origin. It now comes onto the layer origin, and the drawing does not move.
 - **The transform box reads on light colours.** Its white lines get a dark halo, as its dots already had, so the box stays visible on a light sky or paper as well as on dark drawings.
@@ -37,6 +45,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Development
 
 - New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, alpha cache, contour tracer, framing, long import, lazy NumPy); the 8.6 feature gate runs 24 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source; Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools; the 8.6 feature gate runs 25 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 
