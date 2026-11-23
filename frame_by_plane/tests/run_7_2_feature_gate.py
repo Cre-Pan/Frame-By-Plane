@@ -35,6 +35,7 @@ TESTS = (
     "thumbnail_crop_regression.py",
     "overlay_performance_regression.py",
     "group_controller_regression.py",
+    "solid_mask_view_regression.py",
 )
 
 
