@@ -148,8 +148,8 @@ See the [8.2.1 release notes](release-notes/8.2.1.md).
 ## What's new in 7.2.0
 
 - Separate Grease Pencil Stroke and Fill colors in Draw, Vertex Paint and Edit modes, including Both mode and mixed-selection swatches.
-- `X` swaps Stroke/Fill, `Shift+X` samples Stroke, and Draw-mode `G` toggles Close Gap without replacing Edit-mode Grab.
-- Dedicated Undo steps keep color changes, newly drawn strokes and Close Gap in Blender's expected history order.
+- `X` swaps Stroke/Fill and `Shift+X` samples Stroke.
+- Dedicated Undo steps keep color changes and newly drawn strokes in Blender's expected history order.
 - Camera aspect shapes, SD–8K/Custom resolution, linked Width/Height pixels, orientation swap and saved format presets.
 - Explicit compositor render opt-in: managed nodes can be edited without silently changing F12 output.
 - Cleaner Object Data and Tool panels, selectable image/GP effect lists, grouped icon menus and synchronized time editors.

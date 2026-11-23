@@ -89,26 +89,6 @@ try:
     assert close_color(tuple(owner.color), original_stroke[:3])
     assert close_color(tuple(owner.secondary_color), original_fill[:3])
 
-    # Close Gap has the same two-step contract: stroke first, setting second.
-    # Blender 5.3 has its own Cyclic brush option instead (covered by the
-    # dual color regression), so the add-on setting is only checked on 5.2.
-    if not module.native_cyclic_stroke():
-        assert state.close_strokes is False
-        assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
-        assert state.close_strokes is True
-        obj = bpy.data.objects["FBP Paint Undo"]
-        drawing = obj.data.layers.active.current_frame().drawing
-        drawing.add_strokes([2])
-        assert bpy.ops.ed.undo_push(message="FBP Closed Stroke") == {"FINISHED"}
-        assert bpy.ops.ed.undo() == {"FINISHED"}
-        obj = bpy.data.objects["FBP Paint Undo"]
-        state = obj.fbp_gp_vertex_color_state
-        assert state.close_strokes is True
-        assert bpy.ops.ed.undo() == {"FINISHED"}
-        obj = bpy.data.objects["FBP Paint Undo"]
-        state = obj.fbp_gp_vertex_color_state
-        assert state.close_strokes is False
-
     # Fill target reverses the native primary/secondary mapping. It must obey
     # the same stroke-first, swap-second Undo contract.
     _paint, _brush, owner, gp_settings = module._draw_brush_context(bpy.context)

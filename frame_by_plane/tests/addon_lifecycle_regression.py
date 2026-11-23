@@ -41,7 +41,7 @@ for cycle in range(1, 4):
     assert hasattr(bpy.types.Scene, "fbp_compositor_render_enabled")
     assert addon.gp_vertex_colors._HEADER_REGISTERED is True
     assert bpy.app.timers.is_registered(addon.gp_vertex_colors.fbp_gp_brush_color_timer)
-    assert len(addon.gp_vertex_colors._ADDON_KEYMAPS) == 3
+    assert len(addon.gp_vertex_colors._ADDON_KEYMAPS) == 2
     assert paint_common.brush_basic__draw_color_selector is addon.gp_vertex_colors._draw_native_draw_color_selector
     addon.unregister()
     remaining_handlers = addon_handler_count()

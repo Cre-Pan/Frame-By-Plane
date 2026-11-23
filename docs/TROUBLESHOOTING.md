@@ -22,10 +22,6 @@ In Frame By Plane 7.1.19, use the **+** button beside the Grease Pencil Effect S
 
 Use Frame By Plane 7.2.0 or later with Blender 5.2. In Draw Mode choose Color Attribute, then select Stroke, Fill or Both. The two Tool Header swatches are independent: `X` swaps them and `Shift+X` samples only Stroke. In Edit Mode, select points or strokes before changing colors; compact chips indicate a mixed selection.
 
-## G moves points instead of toggling Close Gap
-
-That is intentional in Grease Pencil Edit Mode, where `G` remains Blender's native Grab command. The `G` shortcut toggles Close Gap only in Draw Mode. In Edit Mode use the Close Gap icon in the Tool Header.
-
 ## Enabling compositor tools changed no rendered output
 
 Frame By Plane 7.2 separates node editing from render activation. Enable **Use Compositor in Render** in the Frame By Plane compositor panel when the managed graph should affect F12 output. Leaving it off preserves the previous render state.

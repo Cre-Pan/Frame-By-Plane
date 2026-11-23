@@ -70,16 +70,6 @@ try:
 
     drawing.strokes[0].select = True
     addon.gp_vertex_colors._sync_edit_state(bpy.context, force=True)
-    obj.fbp_gp_vertex_color_state.close_strokes = True
-    assert drawing.strokes[0].cyclic is True
-    addon.gp_vertex_colors._commit_edit_color_undo()
-    assert bpy.ops.ed.undo() == {"FINISHED"}
-    obj = bpy.data.objects["FBP Undo Color"]
-    drawing = obj.data.layers.active.current_frame().drawing
-    assert drawing.strokes[0].cyclic is False
-
-    drawing.strokes[0].select = True
-    addon.gp_vertex_colors._sync_edit_state(bpy.context, force=True)
     assert bpy.ops.fbp.swap_gp_vertex_colors() == {"FINISHED"}
     assert all(close_color(point.vertex_color, original_fill) for point in drawing.strokes[0].points)
     assert close_color(drawing.strokes[0].fill_color, original)
