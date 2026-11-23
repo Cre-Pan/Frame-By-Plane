@@ -4365,6 +4365,32 @@ def _fbp_draw_blend_control(layout, selected_rigs):
 
 # SECTION 07 - Panel: Sequence / Selected Layer #
 # ###ICON Panel Sequence, Functions: replace, visibility, emission, fit, transform and frames.
+def _fbp_whole_group_selected(context):
+    """The plane group selected as a whole (controller or all its layers)."""
+    try:
+        from .group_controller import whole_group_selected
+        return whole_group_selected(context)
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _fbp_draw_group_rig_options(layout, group, rig_name=""):
+    """Rig options of a plane group: visibility, style and shape."""
+    layout.label(text=f"Group Rig: {group.name}", icon='OUTLINER_COLLECTION')
+    layout.prop(group, "fbp_group_rig_visible", text="Show Group Rig")
+    body = layout.column()
+    body.active = bool(getattr(group, "fbp_group_rig_visible", True))
+    style_row = body.row(align=True)
+    style_row.prop(group, "fbp_group_rig_style", expand=True)
+    shape_row = body.row(align=True)
+    shape_row.prop(group, "fbp_group_rig_shape", expand=True)
+    body.prop(group, "color_tag", text="Color")
+    if rig_name and bpy.data.objects.get(rig_name) is not None:
+        layout.separator(factor=0.5)
+        op = layout.operator("fbp.rig_shape_popup", text="Active Layer Rig Shape", icon='MESH_PLANE')
+        op.layer_only = True
+
+
 class FBP_OT_RigShapePopup(Operator):
     bl_idname = "fbp.rig_shape_popup"
     bl_label = "Rig Shape"
@@ -4372,8 +4398,22 @@ class FBP_OT_RigShapePopup(Operator):
     bl_options = {'INTERNAL'}
 
     rig_name: StringProperty(default="", options={'SKIP_SAVE'})
+    group_name: StringProperty(default="", options={'SKIP_SAVE'})
+    layer_only: BoolProperty(
+        name="Layer Rig",
+        description="Edit the active layer's own rig even when its whole plane group is selected",
+        default=False,
+        options={'SKIP_SAVE', 'HIDDEN'},
+    )
 
     def invoke(self, context, _event):
+        if not self.layer_only:
+            group = _fbp_whole_group_selected(context)
+            if group is not None:
+                self.group_name = group.name
+                rig = _fbp_active_plane_context(context)
+                self.rig_name = rig.name if rig is not None else ""
+                return context.window_manager.invoke_popup(self, width=300)
         rig = _fbp_active_plane_context(context)
         if rig is None:
             return {'CANCELLED'}
@@ -4383,7 +4423,12 @@ class FBP_OT_RigShapePopup(Operator):
     def execute(self, _context):
         return {'FINISHED'}
 
-    def draw(self, _context):
+    def draw(self, context):
+        if self.group_name:
+            group = bpy.data.collections.get(self.group_name)
+            if group is not None:
+                _fbp_draw_group_rig_options(configure_layout(self.layout), group, self.rig_name)
+                return
         layout = configure_layout(self.layout)
         rig = bpy.data.objects.get(self.rig_name)
         if rig is None:
@@ -4885,6 +4930,19 @@ class FBP_PT_Sequence(Panel):
         if active_rig is not None and active_rig not in selected_rigs:
             selected_rigs.insert(0, active_rig)
         if not selected_rigs:
+            group = _fbp_whole_group_selected(context)
+            if group is not None:
+                # The group's controller: its rig options and controls.
+                box = configure_layout(layout.box())
+                row = box.row(align=False)
+                row.label(text=group.name, icon='OUTLINER_COLLECTION')
+                row.operator("fbp.rig_shape_popup", text="Group Rig")
+                try:
+                    from .group_controller import draw_group_controller
+                    draw_group_controller(box, group)
+                except ImportError:
+                    pass
+                return
             empty_state(
                 layout,
                 "No Layer Selected",
@@ -4922,7 +4980,8 @@ class FBP_PT_Sequence(Panel):
         tag.prop(rig, "fbp_color_tag", text="")
         shape = left.row(align=False)
         fbp_set_ui_units_x(shape, 4.25)
-        shape.operator("fbp.rig_shape_popup", text="Rig Shape")
+        whole_group = _fbp_whole_group_selected(context)
+        shape.operator("fbp.rig_shape_popup", text="Group Rig" if whole_group is not None else "Rig Shape")
         name = split.row(align=False)
         name.scale_x = 0.90
         if len(selected_rigs) == 1:
