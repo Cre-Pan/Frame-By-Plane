@@ -8,6 +8,11 @@ All notable public changes to Frame By Plane are documented here.
 
 - Version 8.6.0 in the manifest, runtime contract, packaging and publishing tools, and in the small version label of the splash (the large "8.5 LTS" title and the bullets are part of the artwork and are unchanged).
 
+### Large preview on list rows
+
+- **Hover a row, see the image.** Resting the mouse on a row of the Layer List, the Frames list or the Multiplane Setup list now shows a larger thumbnail (256 px by default) beside the sidebar, with the row name and frame number. In Properties > Tool it opens in the editor next to the Properties panel (usually the 3D View), against the shared border. It stays clear of Blender's own tooltip and closes as soon as the mouse moves or any key or button is pressed. Size or Off in **Preferences > Interface Behavior > Row Hover Preview**.
+- **Tooltip with name and frame.** The row tooltip now shows the row name and its position, for example "Frame 2 of 6 · Scene frames 3-4" on a frame, or the frame shown at the current scene frame on a layer, instead of only "Click to select. Double-click to rename.".
+
 ### Plane groups: controller, group opacity, Ungroup
 
 - **Group controller.** Layer List side bar (collection row) or the sidebar's group box > **Add Group Controller** adds an Empty named "<group> Controller" that parents the group's layers while keeping them in place. Move, rotate, scale and key the controller to animate the whole group. Clicking a plane of the group selects the controller, so G/R/S and I act on the group. **Remove Group Controller** gives each layer back its world position.
