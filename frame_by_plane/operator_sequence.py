@@ -2673,6 +2673,12 @@ class FBP_OT_DeleteSequence(Operator):
         except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             pass
         exact_target = bpy.data.objects.get(target_name)
+        if target_name and not (exact_target and is_fbp_layer_object(exact_target)):
+            # A Layer List row whose layer no longer exists: drop the stale row
+            # instead of deleting whatever else happens to be selected.
+            sync_layer_collection(context)
+            self.report({'INFO'}, f"Removed the missing layer \"{target_name}\" from the list")
+            return {'FINISHED'}
         selected_rigs = (
             [exact_target]
             if exact_target and is_fbp_layer_object(exact_target)

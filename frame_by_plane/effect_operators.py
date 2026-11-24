@@ -631,7 +631,12 @@ class FBP_OT_AddEffect(Operator):
         }
         changed_rigs = [
             rig for rig in compatible
-            if fbp_add_effect(rig, self.effect_id, sync_items=False)
+            # Shape Masks keep the layer selected: its plane stays active, so
+            # Properties > Modifiers keeps showing the stack with the new row
+            # (selecting the mask's dot showed an empty Modifiers tab).
+            if fbp_add_effect(
+                rig, self.effect_id, sync_items=False, select_object_mask_helper=False,
+            )
         ]
         changed = len(changed_rigs)
         if changed == 0:
@@ -692,6 +697,14 @@ class FBP_OT_AddEffect(Operator):
         fbp_sync_effect_items(
             active_rig, rigs, repair_assets=False, normalize_instance_ids=False
         )
+        # Every Add path (Z Pie, Frame By Plane menus, presets) lands the new
+        # image effect or mask in Modifiers right away, like the Modifiers menu.
+        # Without its row a mask added from the Pie could not be removed there.
+        try:
+            from .geometry_nodes import _fbp_maintain_effect_shells
+            _fbp_maintain_effect_shells(changed_rigs)
+        except ImportError:
+            pass
         effect_id = requested_id
         new_instance = next(
             (

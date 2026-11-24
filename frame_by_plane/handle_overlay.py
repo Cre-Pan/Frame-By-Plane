@@ -79,21 +79,16 @@ def _mask_guides(context):
         return []
 
 
-def _ring_radius(world, pose_bone):
+def _ring_radius(world, pose_bone, region=None, region_data=None):
     """World radius of a Grid point's ring: its shape's outer edge, as drawn."""
     try:
         from .lattice_bones import SHAPE_KEY
         kind = str(pose_bone.custom_shape[SHAPE_KEY]) if pose_bone.custom_shape is not None else ""
     except (ImportError, KeyError, *FBP_DATA_ERRORS):
         return 0.0
-    outer = {"POINT": 0.97, "GRID_CORNER": 1.2}.get(kind, 0.0)
-    try:
-        scale = float(pose_bone.custom_shape_scale_xyz[0])
-        if pose_bone.use_custom_shape_bone_size:
-            scale *= float(pose_bone.bone.length)
-        return outer * scale * float(world.to_scale()[0])
-    except FBP_DATA_ERRORS:
-        return 0.0
+    outer = {"POINT": 0.65, "GRID_CORNER": 0.8}.get(kind, 0.0)
+    unit = _lattice_unit(world @ pose_bone.head, world, pose_bone, region, region_data)
+    return outer * unit
 
 
 def _lattice_guides(context):
@@ -114,6 +109,8 @@ def _lattice_guides(context):
     if not len(bpy.data.armatures):
         return []
     segments = []
+    region = getattr(context, "region", None)
+    view = getattr(context, "region_data", None)
     for armature in tuple(getattr(context, "visible_objects", ()) or ()):
         if not is_bones_object(armature):
             continue
@@ -129,7 +126,7 @@ def _lattice_guides(context):
                     continue
                 index = bone.get(PIN_POINT_KEY)
                 if index is not None and bone.get(PIN_GRID_KEY):
-                    points[int(index)] = (world @ bone.head, _ring_radius(world, bone))
+                    points[int(index)] = (world @ bone.head, _ring_radius(world, bone, region, view))
                     grid = str(bone.get(PIN_GRID_KEY))
         except (*FBP_DATA_ERRORS, IndexError):
             continue
@@ -197,36 +194,121 @@ def lattice_edge_on(armature, region_data):
         return False
 
 
-def _lattice_shape_triangles(armature, pose_bone, region_data=None):
-    """World triangles of one Lattice handle's custom shape, as Blender draws it.
+# Lattice handles keep one size on screen, as the plane and effect handles
+# do: this many pixels per shape unit (a Grid corner dot is 0.8 units).
+LATTICE_UNIT_PX = 6.0
+# Shape vertices farther than this from the point belong to a pin's area,
+# which is a size in the drawing and stays at its size in the scene.
+_LATTICE_KNOB_UNITS = 1.6
+_LATTICE_TOPOLOGY = {}
 
-    With ``region_data`` of a view that sees the drawing edge-on, the shape is
-    turned to face that view around the handle's point, as the overlay draws it.
+
+def _lattice_unit(head, world, pose_bone, region=None, region_data=None):
+    """World length of one shape unit of a handle at ``head``, as drawn."""
+    try:
+        from .lattice_bones import handle_world_size
+        nominal = float(handle_world_size(pose_bone)) * float(world.to_scale()[0])
+    except (ImportError, *FBP_DATA_ERRORS):
+        nominal = 0.0
+    context = getattr(bpy, "context", None)
+    region = region or getattr(context, "region", None)
+    region_data = region_data or getattr(context, "region_data", None)
+    if region is None or region_data is None:
+        return nominal
+    try:
+        right = region_data.view_matrix.inverted().col[0].xyz.normalized()
+        probe = max(nominal, 1.0e-4)
+        start = location_3d_to_region_2d(region, region_data, head)
+        end = location_3d_to_region_2d(region, region_data, head + right * probe)
+        if start is None or end is None:
+            return nominal
+        pixels = (end - start).length
+        if pixels <= 1.0e-6:
+            return nominal
+        scale = float(context.preferences.system.ui_scale) if context is not None else 1.0
+        return probe * LATTICE_UNIT_PX * scale * _lattice_handle_scale(pose_bone) / pixels
+    except (*FBP_DATA_ERRORS, ZeroDivisionError):
+        return nominal
+
+
+def _lattice_handle_scale(pose_bone):
+    """The layer's Handle Size, which scales its handles on screen too."""
+    try:
+        from .lattice_bones import bones_owner
+        rig = bones_owner(pose_bone.id_data)
+        return max(0.1, float(getattr(rig, "fbp_lattice_handle_size", 1.0) or 1.0)) if rig is not None else 1.0
+    except (ImportError, TypeError, ValueError, *FBP_DATA_ERRORS):
+        return 1.0
+
+
+def _lattice_topology(mesh):
+    """``(vertices, triangles, rim)`` of a handle shape in shape units."""
+    key = (mesh.name, len(mesh.vertices), len(mesh.polygons))
+    cached = _LATTICE_TOPOLOGY.get(key)
+    if cached is not None:
+        return cached
+    mesh.calc_loop_triangles()
+    vertices = [vertex.co.copy() for vertex in mesh.vertices]
+    triangles = [tuple(tri.vertices) for tri in mesh.loop_triangles]
+    users = {}
+    for polygon in mesh.polygons:
+        for edge in polygon.edge_keys:
+            users[edge] = users.get(edge, 0) + 1
+    rim = tuple(edge for edge, count in users.items() if count == 1)
+    if len(_LATTICE_TOPOLOGY) > 64:
+        _LATTICE_TOPOLOGY.clear()
+    _LATTICE_TOPOLOGY[key] = (vertices, triangles, rim)
+    return _LATTICE_TOPOLOGY[key]
+
+
+def _lattice_shape_geometry(armature, pose_bone, region=None, region_data=None):
+    """``(knob triangles, area triangles, rim, head)`` of one Lattice handle.
+
+    The handle is drawn at one size on screen around its point (a pin's
+    dashed area keeps its size in the drawing), and turned to face a view
+    that sees the drawing edge-on.
     """
     shape = pose_bone.custom_shape
     mesh = getattr(shape, "data", None)
     if mesh is None or not mesh.polygons:
-        return []
-    scale = Vector(pose_bone.custom_shape_scale_xyz)
-    if pose_bone.use_custom_shape_bone_size:
-        scale *= float(pose_bone.bone.length)
-    matrix = (
-        armature.matrix_world @ pose_bone.matrix
-        @ Matrix.LocRotScale(
-            Vector(pose_bone.custom_shape_translation),
-            pose_bone.custom_shape_rotation_euler,
-            scale,
-        )
-    )
-    mesh.calc_loop_triangles()
-    vertices = [matrix @ vertex.co for vertex in mesh.vertices]
-    if region_data is not None and lattice_edge_on(armature, region_data):
-        bone_world = armature.matrix_world @ pose_bone.matrix
-        turn = _facing_turn(bone_world, region_data)
-        if turn is not None:
-            anchor = bone_world.translation.copy()
-            vertices = [anchor + turn @ (vertex - anchor) for vertex in vertices]
-    return [vertices[index] for tri in mesh.loop_triangles for index in tri.vertices]
+        return [], [], [], None
+    vertices, triangles, rim = _lattice_topology(mesh)
+    world = armature.matrix_world
+    bone_world = world @ pose_bone.matrix
+    head = bone_world.translation.copy()
+    unit = _lattice_unit(head, world, pose_bone, region, region_data)
+    try:
+        from .lattice_bones import handle_world_size
+        area_unit = float(handle_world_size(pose_bone)) * float(world.to_scale()[0])
+    except (ImportError, *FBP_DATA_ERRORS):
+        area_unit = unit
+    turn = Matrix.Rotation(float(pose_bone.custom_shape_rotation_euler[2]), 3, "Z")
+    offset = Vector(pose_bone.custom_shape_translation)
+    axes = bone_world.to_3x3().normalized()
+    points = []
+    knob = []
+    for vertex in vertices:
+        local = turn @ vertex + offset
+        inside = local.length <= _LATTICE_KNOB_UNITS
+        knob.append(inside)
+        points.append(head + axes @ (local * (unit if inside else area_unit)))
+    view = region_data or getattr(bpy.context, "region_data", None)
+    if view is not None and lattice_edge_on(armature, view):
+        facing = _facing_turn(bone_world, view)
+        if facing is not None:
+            points = [head + facing @ (point - head) for point in points]
+    knob_tris, area_tris = [], []
+    for tri in triangles:
+        target = knob_tris if all(knob[index] for index in tri) else area_tris
+        target.extend(points[index] for index in tri)
+    rim_points = [points[index] for edge in rim if knob[edge[0]] and knob[edge[1]] for index in edge]
+    return knob_tris, area_tris, rim_points, head
+
+
+def _lattice_shape_triangles(armature, pose_bone, region_data=None):
+    """World triangles of one Lattice handle, as the overlay draws it."""
+    knob, area, _rim, _head = _lattice_shape_geometry(armature, pose_bone, None, region_data)
+    return knob + area
 
 
 def _visible_lattice_handles(context):
@@ -250,98 +332,67 @@ def lattice_handle_under_cursor(context, coord, radius, *, edge_on_only=False, p
     """Hover key (``LATTICE_HOVER_PREFIX`` + armature and bone) of the Lattice
     handle under ``coord``, or "".
 
-    ``edge_on_only`` keeps only handles of layers seen edge-on, ``posed_only``
-    only handles of armatures in Pose Mode.
+    A handle is picked where the overlay draws it: anywhere within its outer
+    edge (the hole of a ring included) or ``radius`` pixels from it. A pin's
+    dashed area does not pick. ``edge_on_only`` keeps only handles of layers
+    seen edge-on, ``posed_only`` only handles of armatures in Pose Mode.
     """
-    try:
-        from .alpha_pick import _screen_distance_to_triangle_sq
-    except ImportError:
-        return ""
     region, view = context.region, context.region_data
-    point = (float(coord[0]), float(coord[1]))
-    limit = float(radius) * float(radius)
+    point = Vector((float(coord[0]), float(coord[1])))
     best = None
     edge_on = {}
     for armature, pose_bone in _visible_lattice_handles(context):
         try:
             if posed_only and str(armature.mode) != "POSE":
                 continue
-            if armature.name not in edge_on:
-                edge_on[armature.name] = lattice_edge_on(armature, view)
-            if edge_on_only and not edge_on[armature.name]:
+            if edge_on_only:
+                if armature.name not in edge_on:
+                    edge_on[armature.name] = lattice_edge_on(armature, view)
+                if not edge_on[armature.name]:
+                    continue
+            knob, _area, _rim, head = _lattice_shape_geometry(armature, pose_bone, region, view)
+            if head is None or not knob:
                 continue
-            triangles = _lattice_shape_triangles(armature, pose_bone, view)
-            head = (
-                location_3d_to_region_2d(region, view, armature.matrix_world @ pose_bone.head)
-                if edge_on[armature.name] else None
-            )
+            centre = location_3d_to_region_2d(region, view, head)
         except (*FBP_DATA_ERRORS, IndexError):
             continue
-        projected = [location_3d_to_region_2d(region, view, corner) for corner in triangles]
-        key = f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}"
-        if head is not None:
-            # Seen edge-on the overlay's click takes the whole handle, the
-            # hole of a ring included (Blender's own click there is gone).
-            extent = max(
-                ((corner - head).length for corner in projected if corner is not None),
-                default=0.0,
-            )
-            if (Vector(point) - head).length <= extent:
-                best = (0.0, key) if best is None or best[0] > 0.0 else best
-                continue
-        for index in range(0, len(projected) - 2, 3):
-            corners = projected[index:index + 3]
-            if any(corner is None for corner in corners):
-                continue
-            distance = _screen_distance_to_triangle_sq(point, *corners)
-            if distance <= limit and (best is None or distance < best[0]):
-                best = (distance, key)
+        if centre is None:
+            continue
+        extent = max(
+            ((corner - centre).length for corner in (
+                location_3d_to_region_2d(region, view, world_point) for world_point in knob
+            ) if corner is not None),
+            default=0.0,
+        )
+        distance = max(0.0, (point - centre).length - extent)
+        if distance <= float(radius) and (best is None or distance < best[0]):
+            best = (distance, f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}")
     return "" if best is None else best[1]
 
 
-def _hovered_lattice_triangles(hovered):
-    if not hovered.startswith(LATTICE_HOVER_PREFIX):
-        return []
-    armature_name, _tab, bone_name = hovered[len(LATTICE_HOVER_PREFIX):].partition("\t")
-    armature = bpy.data.objects.get(armature_name)
-    try:
-        pose_bone = armature.pose.bones.get(bone_name) if armature is not None else None
-        if pose_bone is None:
-            return []
-        # A selected handle already shows the selection colour in Pose Mode.
-        if str(armature.mode) == "POSE" and bool(getattr(pose_bone, "select", False)):
-            return []
-        view = getattr(bpy.context, "region_data", None)
-        if lattice_edge_on(armature, view):
-            # Drawn with every handle of its layer, facing the view.
-            return []
-        return _lattice_shape_triangles(armature, pose_bone)
-    except (*FBP_DATA_ERRORS, IndexError):
-        return []
-
-
-def _edge_on_lattice_shapes(context, hovered, selected_color, hover_color):
-    """``(triangles, colour)`` of every Lattice handle on a layer seen edge-on,
-    drawn facing the view: Blender's own shapes are a flat line there."""
+def _lattice_shapes(context, hovered, selected_color, hover_color):
+    """``(fills, rim)`` of every visible Lattice handle, drawn by the overlay."""
+    region = getattr(context, "region", None)
     view = getattr(context, "region_data", None)
-    if view is None or not len(bpy.data.armatures):
+    if view is None or region is None or not len(bpy.data.armatures):
         return []
     shapes = []
-    edge_on = {}
     for armature, pose_bone in _visible_lattice_handles(context):
         try:
-            if armature.name not in edge_on:
-                edge_on[armature.name] = lattice_edge_on(armature, view)
-            if not edge_on[armature.name]:
-                continue
-            triangles = _lattice_shape_triangles(armature, pose_bone, view)
-            if not triangles:
+            knob, area, rim, _head = _lattice_shape_geometry(armature, pose_bone, region, view)
+            if not knob and not area:
                 continue
             posed = str(armature.mode) == "POSE"
-            selected = posed and bool(getattr(pose_bone, "select", False))
+            owner = pose_bone if hasattr(pose_bone, "select") else pose_bone.bone
+            selected = posed and bool(getattr(owner, "select", False))
             key = f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}"
             color = selected_color if selected else hover_color if hovered == key else HANDLE_COLOR
-            shapes.append((triangles, color))
+            fills = []
+            if area:
+                fills.append((area, (*color[:3], 0.75)))
+            if knob:
+                fills.append((knob, color))
+            shapes.append((fills, rim))
         except (*FBP_DATA_ERRORS, IndexError):
             continue
     return shapes
@@ -1387,11 +1438,10 @@ def _draw_handles():
         hovered = hovered_handle_name(region)
     except ImportError:
         hovered = ""
-    hovered_bone = _hovered_lattice_triangles(hovered)
     selected_color = handle_selected_color(context)
     hover_color = _handle_hover_color(context)
-    edge_on_bones = _edge_on_lattice_shapes(context, hovered, selected_color, hover_color)
-    if not handles and not mask_guides and not lattice_guides and not hovered_bone and not plane_guides and not plane_hover_guides and not edge_on_bones:
+    lattice_shapes = _lattice_shapes(context, hovered, selected_color, hover_color)
+    if not handles and not mask_guides and not lattice_guides and not plane_guides and not plane_hover_guides and not lattice_shapes:
         return
     try:
         depsgraph = context.evaluated_depsgraph_get()
@@ -1403,10 +1453,7 @@ def _draw_handles():
     for _solid, dashed in mask_guides:
         guides.extend(dashed)
     shapes = []
-    if hovered_bone:
-        shapes.append(([(hovered_bone, hover_color)], []))
-    if edge_on_bones:
-        shapes.append((edge_on_bones, []))
+    shapes.extend(lattice_shapes)
     hover_guides = list(plane_hover_guides)
     frames = {}
     crop_handles = [obj for obj in handles if is_crop_rig_handle(obj)]
@@ -2634,11 +2681,36 @@ class FBP_GGT_gradient_stops(bpy.types.GizmoGroup):
 # handle so G, the sidebar and the Modifiers panel still work as before.
 
 def _bounds_handle(obj):
+    """Crop/Expand dots and the eight Shape Mask (Square/Circle/Triangle) dots."""
+    if obj is None:
+        return False
     try:
         from .effect_controls import KEY_MODE
-        return obj is not None and str(obj.get(KEY_MODE, "") or "").upper() == "CROP_EXTEND"
+        if str(obj.get(KEY_MODE, "") or "").upper() == "CROP_EXTEND":
+            return True
+    except (ImportError,) + FBP_DATA_ERRORS:
+        pass
+    return _mask_bounds_handle(obj)
+
+
+def _mask_bounds_handle(obj):
+    try:
+        from .object_masks import is_object_mask_bounds_handle
+        return obj is not None and bool(is_object_mask_bounds_handle(obj))
     except (ImportError,) + FBP_DATA_ERRORS:
         return False
+
+
+def _apply_bounds_handle(control):
+    """Push one dragged dot into what it edits: a Crop bound or a Shape Mask."""
+    if _mask_bounds_handle(control):
+        try:
+            from .object_masks import apply_object_mask_bounds_handles
+            apply_object_mask_bounds_handles((control,))
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
+        return
+    _sync_control(control)
 
 
 def _bounds_handles_shown(context):
@@ -2723,7 +2795,9 @@ class FBP_GT_bounds_drag(bpy.types.Gizmo):
                 return {"RUNNING_MODAL"}
             self.fbp_moved = True
             control = self._handle()
-            if control is not None:
+            if control is not None and not _mask_bounds_handle(control):
+                # A Shape Mask drag leaves the selection alone, so Properties
+                # keeps showing the layer's Modifiers while resizing.
                 _select_only(context, control)
         hit = _plane_hit(
             context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
@@ -2737,7 +2811,7 @@ class FBP_GT_bounds_drag(bpy.types.Gizmo):
         target = Vector((start.x + delta.x, start.y + delta.y, start.z))
         if (Vector(control.location) - target).length > 1.0e-7:
             control.location = target
-            _sync_control(control)
+            _apply_bounds_handle(control)
         context.area.tag_redraw()
         return {"RUNNING_MODAL"}
 
@@ -2746,9 +2820,9 @@ class FBP_GT_bounds_drag(bpy.types.Gizmo):
         if cancel:
             if control is not None and self.fbp_initial is not None and tuple(control.location) != self.fbp_initial:
                 control.location = self.fbp_initial
-                _sync_control(control)
+                _apply_bounds_handle(control)
         elif self.fbp_moved:
-            _undo_push("Move Crop Bound")
+            _undo_push("Resize Mask" if _mask_bounds_handle(control) else "Move Crop Bound")
         elif control is not None and context.mode != "POSE":
             # A plain click selects the handle: G, the sidebar and the
             # Modifiers panel keep working on it.
@@ -2763,7 +2837,19 @@ def _select_only(context, obj):
             if other != obj:
                 other.select_set(False)
         obj.select_set(True)
-        context.view_layer.objects.active = obj
+        active = obj
+        if _mask_bounds_handle(obj):
+            # G/S act on the selected dot, while the layer's plane stays the
+            # active object so Properties > Modifiers keeps the mask's row.
+            try:
+                from .object_masks import find_object_mask_controller_owner
+                owner = find_object_mask_controller_owner(obj)
+                plane = getattr(owner, "fbp_plane_target", None) if owner is not None else None
+                if plane is not None:
+                    active = plane
+            except ImportError:
+                pass
+        context.view_layer.objects.active = active
     except FBP_DATA_ERRORS:
         pass
 
@@ -2790,11 +2876,219 @@ class FBP_GGT_bounds_drag(bpy.types.GizmoGroup):
             self.gizmos.new(FBP_GT_bounds_drag.bl_idname)
 
 
+def _visible_mask_cages(context):
+    """(helper, screen quad) of every Shape Mask whose dots are on screen."""
+    region = getattr(context, "region", None)
+    region_data = getattr(context, "region_data", None)
+    if region is None or region_data is None:
+        return []
+    try:
+        from .object_masks import (
+            KEY_HANDLE_ROLE, find_object_mask_controller_helper,
+        )
+    except ImportError:
+        return []
+    corners = {}
+    for handle in _visible_handles(context):
+        if not _mask_bounds_handle(handle):
+            continue
+        try:
+            role = str(handle.get(KEY_HANDLE_ROLE, "") or "").upper()
+            if role not in {"TOP_LEFT", "TOP_RIGHT", "BOTTOM_RIGHT", "BOTTOM_LEFT"}:
+                continue
+            helper = find_object_mask_controller_helper(handle)
+            if helper is None:
+                continue
+            point = location_3d_to_region_2d(region, region_data, handle.matrix_world.translation)
+        except FBP_DATA_ERRORS:
+            continue
+        if point is None:
+            continue
+        corners.setdefault(helper.name, {})[role] = (float(point.x), float(point.y))
+    cages = []
+    for name, points in corners.items():
+        if len(points) != 4:
+            continue
+        helper = bpy.data.objects.get(name)
+        if helper is None:
+            continue
+        quad = [points[role] for role in ("TOP_LEFT", "TOP_RIGHT", "BOTTOM_RIGHT", "BOTTOM_LEFT")]
+        cages.append((helper, quad))
+    return cages
+
+
+def _quad_area(quad):
+    area = 0.0
+    for index, (x1, y1) in enumerate(quad):
+        x2, y2 = quad[(index + 1) % len(quad)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) * 0.5
+
+
+def _inside_polygon(point, polygon):
+    x, y = point
+    inside = False
+    count = len(polygon)
+    for index in range(count):
+        x1, y1 = polygon[index]
+        x2, y2 = polygon[(index + 1) % count]
+        if (y1 > y) != (y2 > y):
+            cross = x1 + (y - y1) * (x2 - x1) / ((y2 - y1) or 1.0e-12)
+            if x < cross:
+                inside = not inside
+    return inside
+
+
+def _mask_cage_under_cursor(context, location):
+    """The Shape Mask cage the cursor is inside, smallest first; None on a dot."""
+    if _bounds_handle_under_cursor(context, location) is not None:
+        return None
+    hits = [
+        (_quad_area(quad), helper)
+        for helper, quad in _visible_mask_cages(context)
+        if _inside_polygon((float(location[0]), float(location[1])), quad)
+    ]
+    if not hits:
+        return None
+    hits.sort(key=lambda item: item[0])
+    return hits[0][1]
+
+
+class FBP_GT_mask_move(bpy.types.Gizmo):
+    """Drag inside a Shape Mask cage to move the mask (a plain click selects)."""
+
+    bl_idname = "FBP_GT_mask_move"
+    __slots__ = ("fbp_helper_name", "fbp_initial", "fbp_hit", "fbp_normal", "fbp_to_local")
+
+    def setup(self):
+        self.fbp_helper_name = ""
+        self.fbp_initial = None
+        self.use_draw_hover = False
+
+    def draw(self, context):
+        del context
+
+    def test_select(self, context, location):
+        if self.is_modal:
+            return 0
+        helper = _mask_cage_under_cursor(context, location)
+        self.fbp_helper_name = helper.name if helper is not None else ""
+        return 0 if helper is not None else -1
+
+    def _helper(self):
+        try:
+            from .object_masks import is_object_mask_helper
+        except ImportError:
+            return None
+        obj = bpy.data.objects.get(self.fbp_helper_name or "")
+        return obj if is_object_mask_helper(obj) else None
+
+    def invoke(self, context, event):
+        helper = self._helper()
+        if helper is None:
+            return {"CANCELLED"}
+        press = (
+            float(event.mouse_prev_press_x - context.region.x),
+            float(event.mouse_prev_press_y - context.region.y),
+        )
+        world = helper.matrix_world
+        normal = world.col[2].xyz
+        if normal.length <= 1.0e-9:
+            return {"CANCELLED"}
+        self.fbp_normal = tuple(normal.normalized())
+        hit = _plane_hit(
+            context.region, context.region_data, press,
+            world.translation.copy(), Vector(self.fbp_normal),
+        )
+        if hit is None:
+            return {"CANCELLED"}
+        self.fbp_hit = tuple(hit)
+        space = world @ helper.matrix_basis.inverted_safe()
+        self.fbp_to_local = [tuple(row) for row in space.inverted_safe()]
+        self.fbp_initial = tuple(helper.location)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event, tweak):
+        del tweak
+        helper = self._helper()
+        if helper is None or self.fbp_initial is None:
+            return {"RUNNING_MODAL"}
+        hit = _plane_hit(
+            context.region, context.region_data, (event.mouse_region_x, event.mouse_region_y),
+            Vector(self.fbp_hit), Vector(self.fbp_normal),
+        )
+        if hit is None:
+            return {"RUNNING_MODAL"}
+        delta = Matrix(self.fbp_to_local).to_3x3() @ (hit - Vector(self.fbp_hit))
+        start = Vector(self.fbp_initial)
+        target = Vector((start.x + delta.x, start.y + delta.y, start.z))
+        if (Vector(helper.location) - target).length > 1.0e-7:
+            helper.location = target
+            self._follow(helper)
+        context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
+
+    @staticmethod
+    def _follow(helper):
+        try:
+            from .object_masks import (
+                store_object_mask_helper_rest, sync_object_mask_bounds_handles,
+            )
+            sync_object_mask_bounds_handles(helper)
+            store_object_mask_helper_rest(helper)
+        except (ImportError,) + FBP_DATA_ERRORS:
+            pass
+
+    def exit(self, context, cancel):
+        helper = self._helper()
+        if helper is not None and self.fbp_initial is not None:
+            if cancel:
+                helper.location = self.fbp_initial
+                self._follow(helper)
+            elif tuple(helper.location) != self.fbp_initial:
+                _undo_push("Move Mask")
+        self.fbp_initial = None
+        context.area.tag_redraw()
+
+
+class FBP_GGT_mask_move(bpy.types.GizmoGroup):
+    bl_idname = "FBP_GGT_mask_move"
+    bl_label = "Frame By Plane Shape Mask Move"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"3D", "PERSISTENT"}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            if context.mode != "OBJECT" or not context.space_data.overlay.show_overlays:
+                return False
+        except FBP_DATA_ERRORS:
+            return False
+        return any(_mask_bounds_handle(obj) for obj in _visible_handles(context))
+
+    @classmethod
+    def setup_keymap(cls, keyconfig):
+        # Drag only: a plain click inside the mask still selects as usual.
+        keymap = keyconfig.keymaps.new(
+            name="FBP Shape Mask Move", space_type="EMPTY", region_type="WINDOW",
+        )
+        if not any(item.idname == "gizmogroup.gizmo_tweak" for item in keymap.keymap_items):
+            keymap.keymap_items.new("gizmogroup.gizmo_tweak", "LEFTMOUSE", "CLICK_DRAG", any=True)
+        return keymap
+
+    def setup(self, context):
+        del context
+        if not self.gizmos:
+            self.gizmos.new(FBP_GT_mask_move.bl_idname)
+
+
 _GIZMO_CLASSES = (
     FBP_GT_gradient_stop, FBP_OT_gradient_stop_color, FBP_GGT_gradient_stops,
     FBP_GT_gradient_drag, FBP_GGT_gradient_lines,
     FBP_GT_color_plane_grip, FBP_GGT_color_plane_gradient,
     FBP_GT_bounds_drag, FBP_GGT_bounds_drag,
+    FBP_GT_mask_move, FBP_GGT_mask_move,
 )
 
 
