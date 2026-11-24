@@ -243,8 +243,6 @@ for _effect_id in _FBP_EFFECT_ARTWORK_IDS:
 for _effect_id, _filename in _FBP_EFFECT_CUSTOM_ICON_FILES.items():
     _FBP_CUSTOM_ICON_FILES[f"effect:{_effect_id}"] = _filename
 _FBP_CUSTOM_ICON_FILES["floating_timeline"] = "icon_FLOATINGTIMELINE_paste.png"
-_FBP_CUSTOM_ICON_FILES["gp_gap_on"] = "icon_GreasePencil_Gap_ON.png"
-_FBP_CUSTOM_ICON_FILES["gp_gap_off"] = "icon_GreasePencil_Gap_OFF.png"
 _FBP_CUSTOM_ICON_FILES["gp_arrange_top"] = "icon_GreasePencil_Arrange_Top.png"
 _FBP_CUSTOM_ICON_FILES["gp_arrange_up"] = "icon_GreasePencil_Arrange_Up.png"
 _FBP_CUSTOM_ICON_FILES["gp_arrange_down"] = "icon_GreasePencil_Arrange_Down.png"
