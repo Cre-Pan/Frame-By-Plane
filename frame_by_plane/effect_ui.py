@@ -870,11 +870,29 @@ def _fbp_auto_effect_ui_section(prop_name, label, effect_words=()):
         word for word in _fbp_auto_ui_words(prop_name) if word not in skip
     ]
     probe = f" {' '.join(words)} "
-    for title, icon, keys in _FBP_AUTO_UI_SECTIONS:
+    for title, icon, keys in _fbp_auto_ui_section_probes():
         for key in keys:
-            if f" {' '.join(_fbp_auto_ui_words(key))} " in probe:
+            if key in probe:
                 return title, icon
     return "Settings", "OPTIONS"
+
+
+_FBP_AUTO_UI_SECTION_PROBES = None
+
+
+def _fbp_auto_ui_section_probes():
+    """Section keys already split into words, built once.
+
+    The keys are constants; splitting them again for every property of every
+    effect cost about 70 ms of each Blender start.
+    """
+    global _FBP_AUTO_UI_SECTION_PROBES
+    if _FBP_AUTO_UI_SECTION_PROBES is None:
+        _FBP_AUTO_UI_SECTION_PROBES = tuple(
+            (title, icon, tuple(f" {' '.join(_fbp_auto_ui_words(key))} " for key in keys))
+            for title, icon, keys in _FBP_AUTO_UI_SECTIONS
+        )
+    return _FBP_AUTO_UI_SECTION_PROBES
 
 
 def _fbp_build_auto_effect_ui_groups():

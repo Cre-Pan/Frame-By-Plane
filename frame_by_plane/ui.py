@@ -3977,6 +3977,17 @@ def fbp_scene_has_cached_rigs(context):
     if not scene:
         return False
     try:
+        # Fast path: the first live row of the layer mirror answers the
+        # question. The index below validates every cached rig name before
+        # it yields the first one, and this check runs on every redraw.
+        objects = scene.objects
+        for item in scene.fbp_layers:
+            rig = item.obj
+            if rig is not None and objects.get(rig.name) == rig:
+                return True
+    except FBP_DATA_ERRORS:
+        pass
+    try:
         if next(iter_scene_fbp_rigs(scene, fallback=True), None) is not None:
             return True
     except FBP_DATA_ERRORS:
