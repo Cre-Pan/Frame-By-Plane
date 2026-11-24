@@ -190,7 +190,8 @@ def fbp_blender_project() -> tuple[str, str]:
 
 
 def fbp_blender_project_root() -> str:
-    return fbp_blender_project()[1]
+    from .path_utils import fbp_blender_project_root as _root
+    return _root()
 
 
 def fbp_render_root_directory(scene) -> str:
