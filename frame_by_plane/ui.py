@@ -4776,8 +4776,8 @@ def _fbp_draw_layer_timing(layout, context, rig):
         )
         row = adaptive_row(box, context)
         sub1 = row.row(align=True)
-        sub1.prop(rig, "fbp_start_frame")
         sub1.operator("fbp.set_current_frame", text="", icon=ui_icon("sequence.set_current"))
+        sub1.prop(rig, "fbp_start_frame")
         if is_movie:
             playback = row.row(align=True)
             playback.prop_enum(rig, "fbp_loop_mode", 'NONE', text="One Shot")

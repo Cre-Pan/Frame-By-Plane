@@ -29,19 +29,19 @@ _MODULE_NAMES = (
     "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers", "rig_alpha_follow",
     "operator_common", "operator_layers", "operator_import",
     "operator_sequence", "operator_render", "render_finish_sound", "operator_procedural", "effect_bake",
-    "performance_dashboard", "playback_cache", "project_health", "actionable_issues", "operator_project", "operators", "layer_origin", "plane_groups", "group_controller", "ui_icons", "ui_layout", "ui", "row_hover_preview", "compositor_layer_node", "viewport_pie", "tooltips", "native_modifiers", "native_effect_panel", "layer_transform_panel", "solid_mask_view",
+    "performance_dashboard", "playback_cache", "playback_buttons", "project_health", "actionable_issues", "operator_project", "operators", "layer_origin", "plane_groups", "group_controller", "ui_icons", "ui_layout", "ui", "row_hover_preview", "compositor_layer_node", "viewport_pie", "tooltips", "native_modifiers", "native_effect_panel", "layer_transform_panel", "solid_mask_view", "timeline_link",
 )
 if _IS_BACKGROUND:
     # Purely interactive modules are neither imported nor registered in a
     # background process. The dedicated FBP render child goes further and omits
     # authoring and import modules; operator_render registers only
     # its lightweight render-state validator in that process.
-    _BACKGROUND_SKIP_MODULES = {"feedback", "tutorial_motion", "live_tutorial", "solo_overlay", "handle_overlay", "layer_cage", "pose_handles", "grease_pencil_scrub", "ui", "row_hover_preview", "viewport_pie", "tooltips", "native_effect_panel", "layer_transform_panel", "render_finish_sound"}
+    _BACKGROUND_SKIP_MODULES = {"feedback", "tutorial_motion", "live_tutorial", "solo_overlay", "handle_overlay", "layer_cage", "pose_handles", "grease_pencil_scrub", "ui", "row_hover_preview", "viewport_pie", "tooltips", "native_effect_panel", "layer_transform_panel", "render_finish_sound", "timeline_link"}
     if _IS_FBP_RENDER_CHILD:
         _BACKGROUND_SKIP_MODULES.update({
             "procreate_import", "layered_import", "importer",
             "operator_layers", "operator_import", "operator_sequence",
-            "operator_procedural", "performance_dashboard", "playback_cache", "project_health", "actionable_issues", "operator_project", "compositor_layer_node",
+            "operator_procedural", "performance_dashboard", "playback_cache", "playback_buttons", "project_health", "actionable_issues", "operator_project", "compositor_layer_node",
             "operators", "layer_origin",
         })
     _MODULE_NAMES = tuple(name for name in _MODULE_NAMES if name not in _BACKGROUND_SKIP_MODULES)

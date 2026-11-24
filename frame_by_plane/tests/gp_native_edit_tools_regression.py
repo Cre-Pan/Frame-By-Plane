@@ -1,8 +1,7 @@
 """Blender 5.3 Edit Mode header: Stroke/Fill/Both, native Cyclic, Arrange.
 
-On Blender 5.3 the add-on's own Close Gap gives way to Blender's Cyclic
-option. Edit Mode gets the native Set Stroke Type, Close/Open and Arrange
-operators as header buttons, and the Cyclic button shows whether every
+On Blender 5.3 Blender's own Cyclic option closes strokes. Edit Mode gets
+the native Set Stroke Type, Close/Open and Arrange operators as header buttons, and the Cyclic button shows whether every
 selected stroke is closed.
 """
 
@@ -61,7 +60,7 @@ try:
         assert module._RUNTIME["edit_all_cyclic"] is False
 
         layout = FakeLayout()
-        assert module._draw_header_close_stroke(layout, bpy.context)
+        assert module._draw_header_edit_tools(layout, bpy.context)
         ids = [(op, getattr(props, "type", getattr(props, "direction", None)))
                for op, _kwargs, props in layout.operators]
         assert ids == [
@@ -91,12 +90,11 @@ try:
         module._sync_edit_state(bpy.context, force=True)
         assert module._RUNTIME["edit_all_cyclic"] is True
         layout = FakeLayout()
-        module._draw_header_close_stroke(layout, bpy.context)
+        module._draw_header_edit_tools(layout, bpy.context)
         assert layout.operators[3][1]["depress"] is True
         assert layout.operators[3][2].type == "OPEN"
 
-        # The add-on's toggle (and so any shortcut to it) follows the same rule.
-        assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
+        assert bpy.ops.grease_pencil.cyclical_set(type="OPEN") == {"FINISHED"}
         drawing = obj.data.layers.active.current_frame().drawing
         assert not any(stroke.cyclic for stroke in drawing.strokes)
 
@@ -131,8 +129,6 @@ try:
 
         # Draw Mode: new strokes keep the cyclic flag Blender's brush gave them.
         bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
-        state = obj.fbp_gp_vertex_color_state
-        state.close_strokes = True  # A file saved with the old Close Gap on.
         module._reset_draw_both_tracking()
         module._sync_draw_both_fill(bpy.context)
         drawing = obj.data.layers.active.current_frame().drawing

@@ -8,6 +8,16 @@ All notable public changes to Frame By Plane are documented here.
 
 - Version 8.6.0 in the manifest, runtime contract, packaging and publishing tools, and in the small version label of the splash (the large "8.5 LTS" title and the bullets are part of the artwork and are unchanged).
 
+### Link Timelines
+
+- **Every timeline lines up, frame by frame.** A link button at the right of the header of every Timeline, Dope Sheet, Graph Editor, NLA and Sequencer, on by default. The editor you scroll, zoom or resize leads and the others follow with the same zoom and each frame at the same horizontal position on the screen, so the playhead and the Start/End frames sit on one vertical line across all of them. Unlike Blender's Sync Visible Range they stay aligned when one editor has a wider channel list or an open sidebar: opening the N panel moves nothing, resizing the channel list moves the others with it. Editors side by side or in another window get the same visible range. While the link is on, Sync Visible Range is switched off on those editors so the two do not fight. When the Sequencer shows another scene and the scene of the Timeline is used there as a scene clip, the Timeline (and Dope Sheet, Graph, NLA) lines up under that clip, follows it when the clip is moved and picks the active clip when there are several; Scene Time sync is turned on so the playheads follow each other.
+
+### Choose the playback buttons
+
+- **Show Buttons** at the bottom of the Playback Options popover (the small arrow beside the transport buttons in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer; Time Jump on Blender 5.2) switches each group of transport buttons on or off: **Jump to Endpoint**, **Jump to Keyframe**, **Jump by Delta** and **Play Reverse**, lined up under Wrap Timeline Navigation. The three jump groups are hidden by default, so the header shows Play Reverse and Play only. The choice is an add-on preference and holds in every file. Blender's own header drawing is kept: only the switched-off buttons are skipped.
+- **Pick the current frame for In and Out.** A paste button (the Paste icon) before **Start** and before **End** in the same headers sets the In or the Out to the current frame (the preview range when it is on). An Out before the In moves the In too, so the range stays valid.
+- The layer's **Start Frame** button (Animation box and the Sequence Timing dialog) uses the same Paste icon, placed before the value.
+
 ### New effect: RGB Pixels
 
 - **RGB Pixels** (Add Effect > Digital) turns a layer into a pixel-art RGB mosaic: the image is sampled once per cell and each cell is shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. It follows the classic shader recipe (source x CRT pixel, channels multiplied R x R, G x G, B x B, then an Emission-style boost) with a procedural CRT pixel, so no extra texture is needed.
@@ -41,7 +51,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Grease Pencil Draw and Edit Mode on Blender 5.3
 
-- **Native Cyclic instead of Close Gap.** Blender 5.3 has its own Cyclic option on Draw brushes, shown right after Stroke / Fill / Both. Frame By Plane's Close Gap buttons were a second control for the same thing, so on 5.3 they are gone and only Blender's Cyclic icon remains. G in Draw Mode toggles the native option. On Blender 5.2 Close Gap is unchanged.
+- **Close Gap removed, native Cyclic on 5.3.** The Close Gap buttons in the Tool Header and Tool panel, the Close Selected Gaps toggle and the G shortcut in Draw Mode are gone on every Blender version, and new strokes keep the closure Blender gives them. On Blender 5.3 the brush's own **Cyclic** option, shown right after Stroke / Fill / Both, closes new strokes; the Tool panel shows it too.
 - **Edit Mode header tools.** After the Stroke / Fill colors: **Stroke**, **Fill** and **Both** (set the type of the selected strokes, no more right click > Set Stroke Type), the native **Cyclic** icon (closes the selected strokes; lit when all of them are closed, a click then opens them) and **Arrange** with four stack-of-strokes icons: Bring to Front (large arrow on the left), Bring Forward and Send Backward (arrow from the middle stroke), Send to Back (large arrow on the right). All of them run Blender's own operators, so Undo works as in the native menus.
 - **Mixed colors in Edit Mode.** The color strip is mirrored around the swap button: `[Stroke colors] [Stroke icon ▾ +N] ⇄ [Fill icon ▾ +N] [Fill colors]`. Each side shows up to 6 colors; its icon opens the full list and shows how many more there are. The icons sit right against the swap button; Draw and Vertex Paint keep the plain color pair. Colors are listed from the most used, and near-identical colors (less than about 5 of 255 levels apart) share one swatch, so a slightly uneven stroke no longer fills the header; editing that swatch recolors the whole group. The list button reads "N Colors".
 - **Assign material in Edit Mode.** Next to the material selector, the material icon opens Blender's Assign Material menu for the selected strokes. (Brushes have no Edit Mode equivalent: strokes do not remember the brush that drew them.)
@@ -79,7 +89,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view; the 8.6 feature gate runs 28 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view, group rig options, Link Timelines; the 8.6 feature gate runs 30 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 

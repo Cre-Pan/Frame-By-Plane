@@ -67,9 +67,9 @@ def main():
         and hasattr(bpy.types, gp_colors.FBP_PT_GPVertexColors.bl_idname)
         and hasattr(bpy.ops.fbp, "swap_gp_vertex_colors")
         and hasattr(bpy.ops.fbp, "sample_gp_stroke_color")
-        and hasattr(bpy.ops.fbp, "toggle_gp_close_gap")
+        and "toggle_gp_close_gap" not in dir(bpy.ops.fbp)
         and gp_colors._HEADER_REGISTERED
-        and len(gp_colors._ADDON_KEYMAPS) == 3
+        and len(gp_colors._ADDON_KEYMAPS) == 2
     )
     assert gp_dual_color_contract
     compositor_opt_in_contract = bool(

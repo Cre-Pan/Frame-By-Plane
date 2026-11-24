@@ -19,7 +19,7 @@ Suites:
 - `background`: complete register/unregister and in-place reload cycles, scheduler teardown, managed collection/Layer Tree lifecycle, Undo/Redo, native GP effect creation/removal, Generic Mesh ownership, compositor artist-node/link preservation, save/reopen and a tiny Workbench render.
 - `interactive`: 300 View3D sidebar redraws with nested collections and a GP canvas, then update/reload while Preferences is open; What’s New must remain pending there and appear only after the Preferences window closes.
 
-The focused 7.2 gate runs the dual Stroke/Fill, Close Gap, paint/edit Undo,
+The focused 7.2 gate runs the dual Stroke/Fill, paint/edit Undo,
 compositor opt-in, Object Data Properties and lifecycle regressions as separate
 Blender processes:
 

@@ -929,6 +929,17 @@ def update_node_view_annotations_cb(self, context):
         pass
 
 
+def update_playback_buttons_cb(_self, context):
+    """Redraw the time editor headers after a Show Buttons switch."""
+    try:
+        for window in context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type in {'DOPESHEET_EDITOR', 'GRAPH_EDITOR', 'NLA_EDITOR', 'SEQUENCE_EDITOR'}:
+                    area.tag_redraw()
+    except (AttributeError, ReferenceError, RuntimeError):
+        pass
+
+
 class FBP_AddonPreferences(AddonPreferences):
     bl_idname = __package__ if __package__ else "frame_by_plane"
 
@@ -1008,6 +1019,30 @@ class FBP_AddonPreferences(AddonPreferences):
         name="Transform Box on Selected Layers",
         description="Selected layers show a box: drag inside to move, edges and corners to scale, the top handle to rotate. Unselected layers show nothing",
         default=True,
+    )
+    playback_show_jump_endpoints: BoolProperty(
+        name="Jump to Start/End",
+        description="Show the Jump to Endpoint buttons beside Play in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer headers",
+        default=False,
+        update=update_playback_buttons_cb,
+    )
+    playback_show_jump_keyframes: BoolProperty(
+        name="Jump to Prev/Next Keyframe",
+        description="Show the Jump to Keyframe buttons beside Play in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer headers",
+        default=False,
+        update=update_playback_buttons_cb,
+    )
+    playback_show_jump_delta: BoolProperty(
+        name="Jump Time by Delta",
+        description="Show the Jump Time by Delta buttons beside Play in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer headers. Jump Unit and Delta stay in this popover",
+        default=False,
+        update=update_playback_buttons_cb,
+    )
+    playback_show_play_reverse: BoolProperty(
+        name="Play Reverse",
+        description="Show the Play Reverse button beside Play in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer headers",
+        default=True,
+        update=update_playback_buttons_cb,
     )
     rig_select_by_image: BoolProperty(
         name="Rig Layers: Click Image Too",
