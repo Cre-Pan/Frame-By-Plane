@@ -1128,6 +1128,16 @@ class FBP_OT_UIListNameAction(Operator):
     use_ctrl: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
     new_name: StringProperty(description="New name that will replace the current visible name while preserving Frame By Plane internal links and identities.", name="Name", default="")
 
+    @classmethod
+    def description(cls, context, properties):
+        # Runs when Blender opens this row's tooltip: name/frame text plus a
+        # larger thumbnail drawn beside the list (see row_hover_preview).
+        try:
+            from .row_hover_preview import row_tooltip_text
+        except ImportError:
+            return "Click to select. Double-click to rename."
+        return row_tooltip_text(context, properties)
+
     def _current_name(self, context):
         if self.target_type == 'LAYER':
             rig = bpy.data.objects.get(self.rig_name)

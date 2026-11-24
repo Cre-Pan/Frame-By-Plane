@@ -911,6 +911,17 @@ class FBP_AddonPreferences(AddonPreferences):
         default='TOP',
         update=update_shift_a_menu_position_cb,
     )
+    row_hover_preview_size: EnumProperty(
+        name="Row Hover Preview",
+        description="Size of the thumbnail shown beside the Layer and Frame lists while the mouse rests on a row",
+        items=(
+            ('OFF', "Off", "Show only the text tooltip"),
+            ('SMALL', "Small", "Show a 160 px thumbnail beside the list"),
+            ('MEDIUM', "Medium", "Show a 256 px thumbnail beside the list"),
+            ('LARGE', "Large", "Show a 384 px thumbnail beside the list"),
+        ),
+        default='MEDIUM',
+    )
     node_view_annotations: BoolProperty(
         name="Notes in Node Views",
         description="Add short note frames to the node trees Frame By Plane generates for effects (layer materials, effect groups, effect modifiers). Display only: the result is the same either way",
@@ -2183,6 +2194,8 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'default_preview_mode', text='List Previews')
                 row = _row(body)
                 row.prop(self, 'default_layer_order', text='Layer Order')
+                row = _row(body)
+                row.prop(self, 'row_hover_preview_size', text='Row Hover Preview')
                 row = _row(body)
                 row.label(text='Shift+A Frame By Plane', icon='ADD')
                 row.prop(self, 'shift_a_menu_position', text='', expand=True)
