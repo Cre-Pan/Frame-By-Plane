@@ -24,6 +24,7 @@ from .shortcut_runtime import (
 )
 
 from .storage_keys import fbp_effect_storage_key
+from . import fbp_index as _fbp_index
 from .registration import register_classes, unregister_classes, unregister_type_properties
 from .interface_preferences import (
     clear_interface_preferences_cache,
@@ -203,11 +204,13 @@ RENDER_NAME_SOURCE_ITEMS = (
 )
 
 RENDER_SEPARATOR_ITEMS = (
-    ('DASH', "Spaced Dash", "Separate filename tokens with a spaced dash", 'EVENT_MINUS', 0),
-    ('UNDERSCORE', "Underscore", "Separate filename tokens with underscores", 'IPO_CONSTANT', 1),
-    ('HYPHEN', "Hyphen", "Separate filename tokens with hyphens", 'REMOVE', 2),
-    ('SPACE', "Space", "Separate filename tokens with spaces", 'EVENT_SPACEKEY', 3),
-    ('NONE', "None", "Join filename tokens without a separator", fbp_icon("X"), 4),
+    # Labels are live examples so the choice reads at a glance; the stored
+    # identifiers and numbers are unchanged so saved files keep their value.
+    ('NONE', "None", "Join filename parts without a separator", 4),
+    ('DASH', "[ - ]  Scene - Test", "Separate filename parts with a spaced dash", 0),
+    ('UNDERSCORE', "[_]  Scene_Test", "Separate filename parts with underscores", 1),
+    ('SPACE', "[ ]  Scene Test", "Separate filename parts with spaces", 3),
+    ('HYPHEN', "[-]  Scene-Test", "Separate filename parts with hyphens", 2),
 )
 
 RENDER_FOLDER_BUILDER_MODE_ITEMS = (
@@ -227,7 +230,7 @@ RENDER_TOKEN_MODE_ITEMS = (
     ('NONE', "None", "Do not add a letter or fixed number token"),
     ('LETTER', "Letter", "Add the custom starting letter"),
     ('NUMBER', "Number", "Add the custom starting number"),
-    ('LETTER_NUMBER', "Letter + Number", "Add the custom starting letter followed by the number"),
+    ('LETTER_NUMBER', "Both", "Add the custom starting letter followed by the number"),
 )
 
 RENDER_TOKEN_POSITION_ITEMS = (
@@ -251,6 +254,38 @@ RENDER_FOLDER_MODE_ITEMS = (
     ('FINAL', "FINAL", "Create a FINAL folder, optionally with a suffix", fbp_icon("FILE_TICK"), 2),
     ('CUSTOM', "Custom Folder", "Create a named subfolder inside the selected output folder", fbp_icon("PREFERENCES"), 3),
 )
+
+
+def _render_section_toggle_cb(show_property):
+    """Section switch: off folds the section, on opens it, then updates the path."""
+    def update(self, context):
+        used = bool(getattr(self, show_property.replace("fbp_render_show_", "fbp_render_use_"), True))
+        try:
+            if bool(getattr(self, show_property, used)) != used:
+                setattr(self, show_property, used)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        update_render_output_path_cb(self, context)
+    return update
+
+
+_RENDER_DATE_STYLE_CACHE = []
+
+
+def _render_date_style_items(_self, _context):
+    """Date styles labelled with today's date (kept alive for Blender)."""
+    try:
+        from .render_output import fbp_render_date_text
+        examples = {style: fbp_render_date_text(style) for style in ('NUMERIC', 'TEXT', 'COMPACT')}
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        examples = {'NUMERIC': "24.11.2026", 'TEXT': "24 Nov 2026", 'COMPACT': "24-11-26"}
+    items = [
+        ('NUMERIC', f"Numeric  ({examples['NUMERIC']})", "Day, month and full year with dots", 0),
+        ('TEXT', f"Extended  ({examples['TEXT']})", "Day, short month name and full year", 1),
+        ('COMPACT', f"Compact  ({examples['COMPACT']})", "Day, month and two-digit year", 2),
+    ]
+    _RENDER_DATE_STYLE_CACHE[:] = items
+    return _RENDER_DATE_STYLE_CACHE
 
 
 def update_render_output_path_cb(self, _context):
@@ -910,6 +945,17 @@ class FBP_AddonPreferences(AddonPreferences):
         items=SHIFT_A_MENU_POSITION_ITEMS,
         default='TOP',
         update=update_shift_a_menu_position_cb,
+    )
+    row_hover_preview_size: EnumProperty(
+        name="Row Hover Preview",
+        description="Size of the thumbnail shown beside the Layer and Frame lists while the mouse rests on a row",
+        items=(
+            ('OFF', "Off", "Show only the text tooltip"),
+            ('SMALL', "Small", "Show a 160 px thumbnail beside the list"),
+            ('MEDIUM', "Medium", "Show a 256 px thumbnail beside the list"),
+            ('LARGE', "Large", "Show a 384 px thumbnail beside the list"),
+        ),
+        default='MEDIUM',
     )
     node_view_annotations: BoolProperty(
         name="Notes in Node Views",
@@ -1781,7 +1827,15 @@ class FBP_AddonPreferences(AddonPreferences):
     pref_ui_show_preview_features: BoolProperty(name="Feature Scope", description="Show stable and preview feature controls", default=False)
     show_performance_dashboard: BoolProperty(
         name="Performance Dashboard",
-        description="Show the Performance Dashboard under Frame By Plane Diagnostics in the Output properties",
+        description="Show the Performance Dashboard panel in the Output properties",
+        default=False,
+    )
+    render_finish_sound: BoolProperty(
+        name="Sound When Render Finishes",
+        description=(
+            "Play a short, bright chord when a render finishes successfully, "
+            "both a normal render and a Frame By Plane background render"
+        ),
         default=False,
     )
     pref_ui_show_diagnostics: BoolProperty(name="Diagnostics", description="Show repair, health and report tools", default=False)
@@ -2183,6 +2237,8 @@ class FBP_AddonPreferences(AddonPreferences):
                 row.prop(self, 'default_preview_mode', text='List Previews')
                 row = _row(body)
                 row.prop(self, 'default_layer_order', text='Layer Order')
+                row = _row(body)
+                row.prop(self, 'row_hover_preview_size', text='Row Hover Preview')
                 row = _row(body)
                 row.label(text='Shift+A Frame By Plane', icon='ADD')
                 row.prop(self, 'shift_a_menu_position', text='', expand=True)
@@ -3250,7 +3306,10 @@ class FBP_LayerItem(PropertyGroup):
     def obj(self):
         name = str(getattr(self, "obj_name", "") or "")
         runtime_key = str(getattr(self, "obj_runtime_key", "") or "")
-        candidate = bpy.data.objects.get(name) if name else None
+        if not name:
+            return None
+        index = _fbp_index.active_name_index()
+        candidate = index.data_object(name) if index is not None else bpy.data.objects.get(name)
         if candidate:
             try:
                 if (
@@ -3973,6 +4032,60 @@ def register_properties():
         default='AUTO',
         update=update_alpha_render_method_cb,
     )
+    _FBP_SCENE_RNA.fbp_render_advanced = BoolProperty(
+        name="Advanced Render",
+        description=(
+            "Let Frame By Plane build the render folder and file name and write "
+            "them into Blender's Output path. Off: Blender's own Output settings "
+            "are used unchanged"
+        ),
+        default=False,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_folder = BoolProperty(
+        name="Use Folder",
+        description="Build the render folder here. Off: frames are written straight into the Project Folder",
+        default=True,
+        update=_render_section_toggle_cb("fbp_render_show_folder"),
+    )
+    _FBP_SCENE_RNA.fbp_render_use_file_naming = BoolProperty(
+        name="Use File Naming",
+        description="Build the file name here. Off: files are named with the frame number only",
+        default=True,
+        update=_render_section_toggle_cb("fbp_render_show_file_naming"),
+    )
+    _FBP_SCENE_RNA.fbp_render_use_prefix = BoolProperty(
+        name="Use Prefix",
+        description="Include the Prefix section in the file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_name = BoolProperty(
+        name="Use Name",
+        description="Include the Name section in the file name; an empty Name uses the .blend file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_suffix = BoolProperty(
+        name="Use Suffix",
+        description="Include the Suffix section in the file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_prefix_token = EnumProperty(
+        name="Prefix Token",
+        description="Add a letter, a number or both after the Prefix text",
+        items=RENDER_TOKEN_MODE_ITEMS,
+        default='NONE',
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_suffix_token = EnumProperty(
+        name="Suffix Token",
+        description="Add a letter, a number or both after the Suffix text",
+        items=RENDER_TOKEN_MODE_ITEMS,
+        default='NONE',
+        update=update_render_output_path_cb,
+    )
     _FBP_SCENE_RNA.fbp_render_output_dir = StringProperty(
         name="Render Folder",
         description="Root output folder synchronized with Blender's native Render File Path",
@@ -4030,6 +4143,18 @@ def register_properties():
         name="Suffix",
         description="Optional suffix for the generated folder; empty values are skipped",
         default="",
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_folder_use_date = BoolProperty(
+        name="Add Date",
+        description="Add the export date to the generated folder name, in the day/month/year order of Blender's language",
+        default=False,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_folder_date_style = EnumProperty(
+        name="Date Style",
+        description="How the export date is written in the folder name",
+        items=_render_date_style_items,
         update=update_render_output_path_cb,
     )
     _FBP_SCENE_RNA.fbp_render_folder_mode = EnumProperty(
@@ -6596,6 +6721,130 @@ def register_properties():
     _FBP_OBJECT_RNA.fbp_dot_matrix_flicker = FloatProperty(
         name="Flicker", description="Random brightness variation driven by Seed and Evolve",
         default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('DOT_MATRIX'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_scale = FloatProperty(
+        name="Cell Scale", description="Number of RGB pixels across the plane width. Lower values give bigger pixels.",
+        default=48.0, min=1.0, soft_max=400.0, max=2000.0, update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_strength = FloatProperty(
+        name="Strength", description="Brightness boost that makes up for the light the RGB stripes remove, like the Emission Strength of the original recipe",
+        default=2.0, min=0.0, soft_max=6.0, max=20.0, update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_mask = FloatProperty(
+        name="RGB Mask", description="How much of the red, green and blue sub-pixel pattern is shown. Zero leaves plain square pixels.",
+        default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_stripe_width = FloatProperty(
+        name="Stripe Width", description="Width of each red, green and blue stripe inside a pixel. Lower values open dark gaps between stripes.",
+        default=0.8, min=0.05, max=1.0, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_row_gap = FloatProperty(
+        name="Row Gap", description="Dark horizontal gap between rows of pixels",
+        default=0.15, min=0.0, max=0.9, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
+    _FBP_OBJECT_RNA.fbp_rgb_pixels_softness = FloatProperty(
+        name="Softness", description="Blur on the edges of stripes and rows. Zero gives hard pixel edges.",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('RGB_PIXELS'))
+
+    _FBP_OBJECT_RNA.fbp_stained_glass_levels = FloatProperty(
+        name="Color Levels", description="How many tones per colour channel the image is reduced to. Each area of the same tone becomes one piece of glass: fewer levels give bigger, simpler pieces.",
+        default=4.0, min=2.0, max=32.0, soft_max=10.0, precision=0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_richness = FloatProperty(
+        name="Color Richness", description="Saturation of the glass. Church glass is coloured in the melt and very saturated.",
+        default=1.5, min=0.0, max=3.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_mix = FloatProperty(
+        name="Palette Mix", description="Snap each piece to the nearest colour of the palette. Zero keeps the image colours, one uses only the palette.",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_lead_width = FloatProperty(
+        name="Lead Width", description="Thickness of the black lead drawn on the borders between colours, as a fraction of the plane width. Large values give exaggerated, cartoon-like leading.",
+        default=0.012, min=0.0, max=0.2, soft_max=0.06, precision=4, step=0.1, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_line_wobble = FloatProperty(
+        name="Line Wobble", description="How much the lead lines wander off the exact colour border, like a hand-drawn stroke",
+        default=1.0, min=0.0, max=4.0, soft_max=2.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_wobble_scale = FloatProperty(
+        name="Wobble Scale", description="How fine the wobble of the lead lines is. Higher values give quicker, more nervous wobbles.",
+        default=12.0, min=0.1, max=200.0, soft_max=60.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_width_variation = FloatProperty(
+        name="Width Variation", description="Random thickening and thinning along the lead lines",
+        default=0.3, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_lead_color = FloatVectorProperty(
+        name="Lead Color", description="Colour of the lead between the pieces of glass",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.004, 0.004, 0.005, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_lead_shine = FloatProperty(
+        name="Lead Shine", description="Soft highlight along the middle of the rounded lead",
+        default=0.3, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_window_frame = BoolProperty(
+        name="Window Frame", description="Add a lead border around the whole window",
+        default=True, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_split_pieces = BoolProperty(
+        name="Split Pieces", description="Cut the pieces of glass into smaller islands, joined by thinner lead",
+        default=False, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_pieces_across = FloatProperty(
+        name="Pieces Across", description="How many islands fit across the plane width when Split Pieces is on",
+        default=10.0, min=1.0, max=500.0, soft_max=60.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_irregularity = FloatProperty(
+        name="Irregularity", description="How irregular the islands are. Zero gives a square grid, one freely cut pieces.",
+        default=0.9, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_turbulence = FloatProperty(
+        name="Turbulence", description="How much the island cuts wobble, like glass cut by hand",
+        default=0.25, min=0.0, max=3.0, soft_max=1.5, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_split_lead_width = FloatProperty(
+        name="Split Lead Width", description="Thickness of the thinner lead between islands, as a fraction of an island",
+        default=0.05, min=0.0, max=0.5, soft_max=0.2, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_glass_texture = FloatProperty(
+        name="Glass Texture", description="Cloudy changes in glass thickness and turbulence inside each piece",
+        default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_streaks = FloatProperty(
+        name="Streaks", description="Drawn streaks running through the glass, as in hand-blown cylinder glass",
+        default=0.3, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_bubbles = FloatProperty(
+        name="Bubbles", description="How many small air bubbles are trapped in the glass",
+        default=0.2, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_bubble_scale = FloatProperty(
+        name="Bubble Scale", description="How small the bubbles are: number of bubble cells across the plane width",
+        default=60.0, min=1.0, max=1000.0, soft_max=200.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_scratches = FloatProperty(
+        name="Scratches", description="Thin bright scratches on the glass surface, in patches",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_pane_variation = FloatProperty(
+        name="Pane Variation", description="Random brightness difference between pieces, so no two pieces of glass look the same",
+        default=0.25, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_edge_darkening = FloatProperty(
+        name="Edge Darkening", description="Darkening of the glass next to the lead, from thicker glass and painted grisaille",
+        default=0.4, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_image_detail = FloatProperty(
+        name="Image Detail", description="How much of the picture stays visible inside each piece, seen through the rippled glass. Zero gives one flat colour per piece.",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_refraction = FloatProperty(
+        name="Refraction", description="How much the rippled glass bends the picture seen through it (with Image Detail)",
+        default=0.015, min=0.0, max=0.2, precision=3, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_strength = FloatProperty(
+        name="Light Strength", description="Brightness of the daylight shining through the glass. Above 1 the glass glows.",
+        default=1.3, min=0.0, max=20.0, soft_max=6.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_x = FloatProperty(
+        name="Light Center X", description="Horizontal position of the brightest light behind the window (0 left, 1 right)",
+        default=0.5, min=-2.0, max=3.0, soft_min=0.0, soft_max=1.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_y = FloatProperty(
+        name="Light Center Y", description="Vertical position of the brightest light behind the window (0 bottom, 1 top)",
+        default=0.8, min=-2.0, max=3.0, soft_min=0.0, soft_max=1.0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_light_falloff = FloatProperty(
+        name="Light Falloff", description="How quickly the light fades away from Light Center. Zero lights the whole window evenly.",
+        default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_seed = FloatProperty(
+        name="Pattern Seed", description="Changes the wobble of the lead, the islands and the glass texture",
+        default=0.0, min=-100000.0, max=100000.0, precision=0, update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_1 = FloatVectorProperty(
+        name="Palette 1", description="Glass colour 1 of the palette (default: cobalt blue)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02, 0.1, 0.55, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_2 = FloatVectorProperty(
+        name="Palette 2", description="Glass colour 2 of the palette (default: ruby red)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.55, 0.02, 0.04, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_3 = FloatVectorProperty(
+        name="Palette 3", description="Glass colour 3 of the palette (default: emerald green)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.02, 0.32, 0.1, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_4 = FloatVectorProperty(
+        name="Palette 4", description="Glass colour 4 of the palette (default: amber gold)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.9, 0.52, 0.04, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_5 = FloatVectorProperty(
+        name="Palette 5", description="Glass colour 5 of the palette (default: violet)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.25, 0.05, 0.4, 1.0), update=_effect_setting('STAINED_GLASS'))
+    _FBP_OBJECT_RNA.fbp_stained_glass_palette_6 = FloatVectorProperty(
+        name="Palette 6", description="Glass colour 6 of the palette (default: pale white)",
+        subtype='COLOR', size=4, min=0.0, max=1.0, default=(0.85, 0.8, 0.62, 1.0), update=_effect_setting('STAINED_GLASS'))
 
     _FBP_OBJECT_RNA.fbp_ascii_scale = FloatProperty(
         name="Cell Scale", description="Number of character cells across the plane width",

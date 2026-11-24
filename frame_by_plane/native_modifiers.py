@@ -646,6 +646,9 @@ def _sync_modifier_values(rig):
         fbp_shell_sync_values(rig)
         # Mesh effects: inputs edited in the Modifiers panel.
         fbp_pull_geometry_modifier_edits(rig)
+        # Mask Invert / Factor / Feather edits change the Solid view cut.
+        from .solid_mask_view import fbp_solid_mask_sync
+        fbp_solid_mask_sync(rig)
     except (ImportError, *FBP_DATA_ERRORS) as exc:
         fbp_warn("Could not sync an effect modifier with its layer", exc)
 
@@ -1061,6 +1064,9 @@ def _section_title(title):
     return title.title() if title.isupper() else title
 
 
+_MENU_CONTROL_TOKENS = frozenset({"GREASE_PENCIL_MASK_CONTROL"})
+
+
 def _draw_native_columns(layout, context, sections, column_groups, only=None):
     """Draw sections as divided columns, like Blender's classic Add Modifier.
 
@@ -1086,7 +1092,9 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
                     if members:
                         kept_tokens.append(token)
                         placed.update(members)
-                elif token.upper() in only:
+                elif token.upper() in only or token in _MENU_CONTROL_TOKENS:
+                    # Control entries (Grease Pencil Mask) are not modifier
+                    # shells but still belong in the Modifiers menu.
                     kept_tokens.append(token)
                     placed.add(token.upper())
             tokens = tuple(kept_tokens)

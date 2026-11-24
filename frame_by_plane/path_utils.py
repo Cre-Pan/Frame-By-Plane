@@ -9,6 +9,27 @@ from .constants import FBP_SUPPORTED_VIDEO_EXT, FBP_SUPPORTED_MEDIA_EXT, FBP_TEC
 _NATURAL_NUMBER_SPLIT_RE = re.compile(r'(\d+)')
 
 
+def fbp_blender_project_root():
+    """Root folder of the open Blender Project (Blender 5.3+), or ``""``."""
+    try:
+        import bpy
+
+        project = getattr(bpy.data, "project", None)
+        root = str(getattr(project, "root_path", "") or "").strip() if project is not None else ""
+        return bpy.path.abspath(root) if root else ""
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def fbp_scene_project_path(scene):
+    """Project Folder of the scene; when empty, the open Blender Project root."""
+    try:
+        value = str(getattr(scene, "fbp_project_path", "") or "").strip()
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        value = ""
+    return value or fbp_blender_project_root()
+
+
 _UI_FILE_EXISTS_CACHE = {}
 _UI_FILE_EXISTS_TTL = 2.0
 _UI_FILE_EXISTS_LIMIT = 2048

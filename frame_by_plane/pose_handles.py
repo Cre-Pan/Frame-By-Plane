@@ -327,7 +327,7 @@ def _edge_on_bone_under_cursor(context, coord):
     try:
         from .handle_overlay import LATTICE_HOVER_PREFIX, lattice_handle_under_cursor
         key = lattice_handle_under_cursor(
-            context, coord, _PICK_PX * _ui_scale(context), edge_on_only=True, posed_only=True,
+            context, coord, _PICK_PX * _ui_scale(context), posed_only=True,
         )
     except (ImportError, *FBP_DATA_ERRORS, ValueError):
         return None
@@ -343,12 +343,12 @@ def _edge_on_bone_under_cursor(context, coord):
 
 
 def _any_posed_edge_on(context):
+    """Any Lattice handles in Pose Mode: the overlay draws them all at one
+    size on screen, so this gizmo picks and drags them in every view."""
     try:
-        from .handle_overlay import lattice_edge_on
         from .lattice_bones import is_bones_object
-        view = context.region_data
         for armature in tuple(getattr(context, "objects_in_mode", ()) or ()):
-            if is_bones_object(armature) and lattice_edge_on(armature, view):
+            if is_bones_object(armature):
                 return True
     except (ImportError, *FBP_DATA_ERRORS):
         return False
@@ -356,7 +356,7 @@ def _any_posed_edge_on(context):
 
 
 class FBP_GT_pose_lattice_edge_on(bpy.types.Gizmo):
-    """Invisible grip over the Lattice handles of a layer seen edge-on."""
+    """Invisible grip over the Lattice handles the overlay draws."""
 
     bl_idname = "FBP_GT_pose_lattice_edge_on"
     __slots__ = (
@@ -549,7 +549,7 @@ class FBP_GGT_pose_lattice_edge_on(bpy.types.GizmoGroup):
 
     @classmethod
     def setup_keymap(cls, keyconfig):
-        # Click too: Blender's own click cannot pick a squashed handle.
+        # Click too: Blender's own shapes are only specks at the points.
         return keyconfig.keymaps.new(
             name="Generic Gizmo", space_type="EMPTY", region_type="WINDOW",
         )

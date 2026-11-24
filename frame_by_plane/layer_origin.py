@@ -228,22 +228,24 @@ def fbp_fold_plane_offset(rig, context=None):
     if plane is None:
         return False
     try:
-        if not _is_identity(plane.matrix_parent_inverse) or _plane_location_keyed(plane):
+        if _plane_location_keyed(plane):
             return False
-        location = Vector(plane.location)
-        if location.xy.length <= 1.0e-7:
+        # The plane in rig space, parent inverse included: planes made by
+        # older builds (or parented with Ctrl+P) keep their offset there.
+        relation = plane.matrix_parent_inverse @ plane.matrix_basis
+        if abs(relation.to_3x3().determinant()) <= 1.0e-12:
             return False
-        linear = plane.matrix_basis.to_3x3()
-        if abs(linear.determinant()) <= 1.0e-12:
-            return False
-        local = linear.inverted() @ location
+        # The rig origin seen from the plane, on the plane (its depth stays).
+        local = -(relation.inverted() @ Vector((0.0, 0.0, 0.0)))
         fold = Vector((local.x, local.y, 0.0))
         if fold.length <= 1.0e-7:
             return False
         from .builder import FBP_PLANE_ORIGIN_OFFSET_KEY, fbp_plane_origin_offset
         offset_x, offset_y = fbp_plane_origin_offset(rig)
         rig[FBP_PLANE_ORIGIN_OFFSET_KEY] = (offset_x - fold.x, offset_y - fold.y)
-        plane.location = location - linear @ fold
+        # Right-multiplying the plane's basis by -fold keeps every other
+        # part of its transform (rotation, scale, parent inverse).
+        plane.location = Vector(plane.location) - plane.matrix_basis.to_3x3() @ fold
         forward = Matrix.Translation(fold)
         for child in tuple(plane.children):
             if _is_identity(child.matrix_parent_inverse):

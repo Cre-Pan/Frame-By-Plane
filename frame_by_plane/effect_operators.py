@@ -77,6 +77,8 @@ from .effects_registry import (
     FBP_EFFECT_RISO_PRINT,
     FBP_EFFECT_OIL_PAINT,
     FBP_EFFECT_DOT_MATRIX,
+    FBP_EFFECT_RGB_PIXELS,
+    FBP_EFFECT_STAINED_GLASS,
     FBP_EFFECT_ASCII_MATRIX,
     FBP_EFFECT_ASCII,
     FBP_EFFECT_REGISTRY,
@@ -629,7 +631,12 @@ class FBP_OT_AddEffect(Operator):
         }
         changed_rigs = [
             rig for rig in compatible
-            if fbp_add_effect(rig, self.effect_id, sync_items=False)
+            # Shape Masks keep the layer selected: its plane stays active, so
+            # Properties > Modifiers keeps showing the stack with the new row
+            # (selecting the mask's dot showed an empty Modifiers tab).
+            if fbp_add_effect(
+                rig, self.effect_id, sync_items=False, select_object_mask_helper=False,
+            )
         ]
         changed = len(changed_rigs)
         if changed == 0:
@@ -690,6 +697,14 @@ class FBP_OT_AddEffect(Operator):
         fbp_sync_effect_items(
             active_rig, rigs, repair_assets=False, normalize_instance_ids=False
         )
+        # Every Add path (Z Pie, Frame By Plane menus, presets) lands the new
+        # image effect or mask in Modifiers right away, like the Modifiers menu.
+        # Without its row a mask added from the Pie could not be removed there.
+        try:
+            from .geometry_nodes import _fbp_maintain_effect_shells
+            _fbp_maintain_effect_shells(changed_rigs)
+        except ImportError:
+            pass
         effect_id = requested_id
         new_instance = next(
             (
@@ -984,6 +999,18 @@ FBP_BUILTIN_EFFECT_PRESETS = {
         "LED Wall": {"fbp_dot_matrix_scale": 64.0, "fbp_dot_matrix_dot_size": 0.9, "fbp_dot_matrix_min_size": 0.08, "fbp_dot_matrix_max_size": 1.0, "fbp_dot_matrix_response": 0.82, "fbp_dot_matrix_glow": 0.04, "fbp_dot_matrix_shape": "CIRCLE"},
         "Printed Dots": {"fbp_dot_matrix_scale": 90.0, "fbp_dot_matrix_dot_size": 0.8, "fbp_dot_matrix_response": 1.25, "fbp_dot_matrix_glow": 0.005, "fbp_dot_matrix_use_source_color": False, "fbp_dot_matrix_shape": "CIRCLE"},
         "Dead Display": {"fbp_dot_matrix_scale": 52.0, "fbp_dot_matrix_dead_pixels": 0.08, "fbp_dot_matrix_flicker": 0.12, "fbp_dot_matrix_glow": 0.06},
+    },
+    FBP_EFFECT_RGB_PIXELS: {
+        "Big Pixels": {"fbp_rgb_pixels_scale": 24.0, "fbp_rgb_pixels_strength": 2.0, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.8, "fbp_rgb_pixels_row_gap": 0.15, "fbp_rgb_pixels_softness": 0.25},
+        "CRT Close-up": {"fbp_rgb_pixels_scale": 64.0, "fbp_rgb_pixels_strength": 2.6, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.95, "fbp_rgb_pixels_row_gap": 0.25, "fbp_rgb_pixels_softness": 0.6},
+        "LED Wall": {"fbp_rgb_pixels_scale": 96.0, "fbp_rgb_pixels_strength": 3.0, "fbp_rgb_pixels_mask": 1.0, "fbp_rgb_pixels_stripe_width": 0.6, "fbp_rgb_pixels_row_gap": 0.35, "fbp_rgb_pixels_softness": 0.1},
+        "Pixel Art": {"fbp_rgb_pixels_scale": 48.0, "fbp_rgb_pixels_strength": 1.0, "fbp_rgb_pixels_mask": 0.0, "fbp_rgb_pixels_row_gap": 0.0},
+    },
+    FBP_EFFECT_STAINED_GLASS: {
+        "Cathedral": {"fbp_stained_glass_levels": 4.0, "fbp_stained_glass_palette_mix": 1.0, "fbp_stained_glass_lead_width": 0.014, "fbp_stained_glass_split_pieces": True, "fbp_stained_glass_pieces_across": 8.0, "fbp_stained_glass_light_strength": 1.8, "fbp_stained_glass_edge_darkening": 0.5},
+        "Bold Lead": {"fbp_stained_glass_levels": 4.0, "fbp_stained_glass_lead_width": 0.035, "fbp_stained_glass_line_wobble": 0.8, "fbp_stained_glass_width_variation": 0.5, "fbp_stained_glass_split_pieces": False},
+        "Tiffany": {"fbp_stained_glass_levels": 6.0, "fbp_stained_glass_lead_width": 0.008, "fbp_stained_glass_split_pieces": True, "fbp_stained_glass_pieces_across": 18.0, "fbp_stained_glass_split_lead_width": 0.04, "fbp_stained_glass_glass_texture": 0.6, "fbp_stained_glass_streaks": 0.5, "fbp_stained_glass_bubbles": 0.5},
+        "Clean Glass": {"fbp_stained_glass_levels": 5.0, "fbp_stained_glass_line_wobble": 0.1, "fbp_stained_glass_width_variation": 0.0, "fbp_stained_glass_glass_texture": 0.15, "fbp_stained_glass_streaks": 0.1, "fbp_stained_glass_bubbles": 0.0, "fbp_stained_glass_scratches": 0.0},
     },
     FBP_EFFECT_ASCII_MATRIX: {
         "Green Terminal": {"fbp_ascii_charset": "CLASSIC", "fbp_ascii_colorize": False, "fbp_ascii_foreground": (0.08, 1.0, 0.22, 1.0), "fbp_ascii_background": (0.0, 0.015, 0.0, 1.0), "fbp_ascii_transparent_background": False},

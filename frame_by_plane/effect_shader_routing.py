@@ -17,6 +17,8 @@ from .geometry_nodes import (  # noqa: E402 - geometry_nodes imports this module
     FBP_EFFECT_DEPTH_BLUR,
     FBP_EFFECT_DITHER,
     FBP_EFFECT_DOT_MATRIX,
+    FBP_EFFECT_RGB_PIXELS,
+    FBP_EFFECT_STAINED_GLASS,
     FBP_EFFECT_GRADIENT_LIGHT,
     FBP_EFFECT_GRADIENT_MASK,
     FBP_EFFECT_HALFTONE,
@@ -1245,6 +1247,13 @@ def _fbp_rebuild_shader_stage(material, stage, source_override=None, target_over
         except (ImportError, *FBP_DATA_ERRORS):
             pass
         fbp_tidy_layer_material(material)
+        if stage == "MASK":
+            # Solid view cannot run the mask nodes: refresh the plane cut.
+            try:
+                from .solid_mask_view import fbp_solid_mask_schedule_material
+                fbp_solid_mask_schedule_material(material)
+            except (ImportError, *FBP_DATA_ERRORS):
+                pass
     return result
 
 
@@ -2055,6 +2064,8 @@ def _fbp_set_shader_node_values(
     aspect_effects = {
         FBP_EFFECT_HALFTONE,
         FBP_EFFECT_DOT_MATRIX,
+        FBP_EFFECT_RGB_PIXELS,
+        FBP_EFFECT_STAINED_GLASS,
         FBP_EFFECT_ASCII_MATRIX,
         FBP_EFFECT_ASCII,
         FBP_EFFECT_NOISE_MASK,

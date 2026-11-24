@@ -162,12 +162,12 @@ try:
     style.color = stroke_rgba
     module._sync_edit_state(bpy.context, force=True)
 
-    # Header strip: both sides inline up to 12; the larger side collapses first.
-    assert module.header_swatch_layout(11, 1) == (True, True)
-    assert module.header_swatch_layout(12, 1) == (False, True)
-    assert module.header_swatch_layout(1, 12) == (True, False)
-    assert module.header_swatch_layout(13, 13) == (False, False)
-    assert module.header_swatch_layout(6, 6) == (True, True)
+    # Header strip: each side shows up to 6 colors, then a "+N" list button.
+    assert module.header_side_split(1) == (1, 0)
+    assert module.header_side_split(6) == (6, 0)
+    assert module.header_side_split(7) == (6, 1)
+    assert module.header_side_split(20) == (6, 14)
+    assert module.header_side_split(5, limit=2) == (2, 3)
 
     # Replace All gives every selected stroke one color.
     state.replace_stroke_color = (0.25, 0.5, 0.75, 1.0)
@@ -184,15 +184,17 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from ui_layout_stub import StubLayout, StubPanel
 
-    for limit in (12, 2):
-        previous_limit = module._HEADER_SWATCH_LIMIT
-        module._HEADER_SWATCH_LIMIT = limit
+    for limit in (6, 1):
+        previous_limit = module._HEADER_SIDE_LIMIT
+        module._HEADER_SIDE_LIMIT = limit
         try:
             stub = StubLayout()
             assert module._draw_header_color_pair(stub, bpy.context, enabled=True)
             assert any(call[0] == "prop" for call in stub.calls)
+            if limit == 1:
+                assert any(call[0] == "popover" for call in stub.calls)
         finally:
-            module._HEADER_SWATCH_LIMIT = previous_limit
+            module._HEADER_SIDE_LIMIT = previous_limit
     for target in ("STROKE", "FILL"):
         stub = StubLayout()
         module._draw_target_swatch_popover(stub, bpy.context, target)
@@ -244,7 +246,7 @@ try:
     module.fbp_gp_vertex_brush_color_sync(None, geometry_graph)
     assert module._RUNTIME["edit_dirty"] is True
 
-    unique_keys = set()
+    unique_keys = {}
     swatches = []
     fingerprint = (0, 0)
     for index in range(12):
@@ -259,6 +261,26 @@ try:
     assert len(unique_keys) == 12
     assert len(swatches) == 12
     assert fingerprint != (0, 0)
+
+    # Near-identical colors share one swatch; the most used color comes first.
+    unique_keys = {}
+    swatches = []
+    fingerprint = (0, 0)
+    for color in (
+        (0.9, 0.1, 0.1, 1.0),
+        (0.1, 0.2, 0.9, 1.0),
+        (0.1, 0.2, 0.9, 1.0),
+        (0.1005, 0.2003, 0.9, 1.0),
+    ):
+        fingerprint = module._record_color(
+            color, module._color_key(color), unique_keys, swatches, fingerprint
+        )
+    ordered = module._by_usage(swatches)
+    assert len(ordered) == 2, ordered
+    assert close_color(ordered[0][0], (0.1, 0.2, 0.9, 1.0)) and ordered[0][1] == 3
+    assert close_color(ordered[1][0], (0.9, 0.1, 0.1, 1.0)) and ordered[1][1] == 1
+    assert len(swatches[1][2]) == 2  # Both blues are recolored together.
+    assert not module._colors_similar((0.5, 0.5, 0.5, 1.0), (0.55, 0.5, 0.5, 1.0))
 
     # A clean Edit cache must not rescan the selected geometry on every Tool
     # Header redraw. Continuous geometry updates are debounced until quiet.
@@ -511,6 +533,9 @@ try:
         def popover(self, **_kwargs):
             return None
 
+        def label(self, **kwargs):
+            self.root.calls.append(("label", None, kwargs.get("icon")))
+
         def prop_enum(self, _owner, name, value, **_kwargs):
             self.root.calls.append(("enum", name, value))
 
@@ -528,6 +553,7 @@ try:
 
     fake_layout = FakeLayout()
     assert module._draw_header_color_pair(fake_layout, bpy.context, owner=draw_owner)
+    # Draw Mode keeps the plain pair, without Stroke/Fill icons.
     assert fake_layout.calls[:3] == [
         ("color", "stroke_color", "FBP_PT_gp_stroke_color_popover"),
         ("operator", "paint.brush_colors_flip", "ARROW_LEFTRIGHT"),
