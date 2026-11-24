@@ -149,8 +149,6 @@ def _fix_action_for_issue(issue):
     message = issue["message"].casefold()
     if code == "HIDDEN_RENDER":
         return "MATCH_RENDER_VISIBILITY"
-    if code == "FRAME_RANGE":
-        return "EXTEND_SCENE_RANGE"
     if code == "CYCLES_TEXTURE_CACHE":
         return "ENABLE_TEXTURE_CACHE"
     if code == "CYCLES_TRANSPARENCY_DEPTH":

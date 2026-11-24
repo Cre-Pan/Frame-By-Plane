@@ -10271,7 +10271,10 @@ def _fbp_mirror_private_offset_animation(source_node, source_curve, signature, n
             path = user.path_from_id("frame_offset")
             fbp_remove_action_fcurves(node_group, path)
             # One real insert creates the F-Curve in the group's action slot.
-            user.frame_offset = int(round(float(coords[1])))
+            # Its value does not matter: the bulk copy below overwrites every
+            # key. Each ImageUser write re-tags the node tree (about a
+            # millisecond), so the sample is no longer set to the first key
+            # and back.
             node_group.keyframe_insert(data_path=path, frame=float(coords[0]))
             curve = fbp_find_action_fcurve(node_group, path)
             if curve is None:
@@ -10287,7 +10290,8 @@ def _fbp_mirror_private_offset_animation(source_node, source_curve, signature, n
                 curve.update()
             except FBP_DATA_ERRORS:
                 pass
-            user.frame_offset = current
+            if int(getattr(user, "frame_offset", 0) or 0) != current:
+                user.frame_offset = current
         node_group[_FBP_PRIVATE_OFFSET_ANIM_KEY] = str(signature)
         return True
     except FBP_DATA_ERRORS as exc:
@@ -10351,6 +10355,20 @@ def _fbp_private_source_quick_signature(source_node, image_key, image_user, node
         return None
 
 
+def fbp_forget_private_source_sync():
+    """Make every image effect re-check its sequence timing on the next frame."""
+    _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.clear()
+
+
+def _fbp_playback_frame_pass_active():
+    """True while the timeline is playing (not scrubbing, not rendering)."""
+    try:
+        from .scene_sync import fbp_animation_playback_active
+        return bool(fbp_animation_playback_active())
+    except (ImportError, *FBP_DATA_ERRORS):
+        return False
+
+
 def _fbp_sync_private_shader_source(material, node_group):
     """Synchronize private image samples with a bounded validation cache.
 
@@ -10379,6 +10397,15 @@ def _fbp_sync_private_shader_source(material, node_group):
     # signature reads only the source node, the timing curve and the group's
     # node count; a full validation still runs at least every 2 seconds.
     cached = _FBP_PRIVATE_IMAGE_SOURCE_SYNC_CACHE.get(group_key) if group_key is not None else None
+    if (
+        cached and len(cached) > 2 and now - float(cached[1]) < 2.0
+        and _fbp_playback_frame_pass_active()
+    ):
+        # While the timeline plays, nobody edits the timing between two
+        # frames; the full check below still runs at least every 2 seconds.
+        # Reading and hashing every key of the timing curve, for every image
+        # effect of every layer on every frame, was most of this handler.
+        return bool(source_image), False
     if cached and len(cached) > 2 and now - float(cached[1]) < 2.0:
         quick = _fbp_private_source_quick_signature(
             source_node, image_key, image_user, node_group

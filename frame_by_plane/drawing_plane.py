@@ -29,7 +29,7 @@ from .layers import (
     fbp_set_ui_units_x,
     thumbnail_background_state, invalidate_preview_path,
 )
-from .path_utils import natural_sort_key, is_supported_media_file, is_supported_video_file, is_technical_map_file
+from .path_utils import natural_sort_key, is_supported_media_file, is_supported_video_file, is_technical_map_file, fbp_scene_project_path
 from .ui_list_state import invoke_with_selection_modifiers
 from .runtime import (
     FBP_DATA_ERRORS,
@@ -1720,7 +1720,7 @@ class FBP_OT_ImportDrawingPlane(Operator, ImportHelper):
     )
 
     def invoke(self, context, event):
-        path = context.scene.fbp_last_directory or context.scene.fbp_project_path
+        path = context.scene.fbp_last_directory or fbp_scene_project_path(context.scene)
         if path:
             self.directory = path
         scene_default = str(getattr(context.scene, "fbp_pre_interpolation", "Closest") or "Closest")
@@ -1806,7 +1806,7 @@ class FBP_OT_AddDrawingImages(Operator, ImportHelper):
             return {"CANCELLED"}
         self.rig_name = str(getattr(rig, "name", "") or "")
         self.rig_key = fbp_obj_runtime_token(rig)
-        path = context.scene.fbp_last_directory or context.scene.fbp_project_path
+        path = context.scene.fbp_last_directory or fbp_scene_project_path(context.scene)
         if path:
             self.directory = path
         context.window_manager.fileselect_add(self)

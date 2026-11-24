@@ -229,7 +229,14 @@ def _validate_native_media_payload(directory, files, *, row_count=None):
     files = [str(name or "").strip() for name in (files or []) if str(name or "").strip()]
     if not files:
         raise FileNotFoundError("No valid media files supplied for native layer")
-    video_flags = [_is_video_file(_media_path(directory, name)) for name in files]
+    # A bare file name has the extension of its full path; skip building one.
+    separators = tuple(sep for sep in (os.sep, os.altsep) if sep)
+    video_flags = [
+        _is_video_file(
+            name if not any(sep in name for sep in separators) else _media_path(directory, name)
+        )
+        for name in files
+    ]
     if any(video_flags):
         if len(files) != 1 or not all(video_flags):
             raise ValueError("Video planes support one source file. Import videos separately.")
@@ -258,10 +265,27 @@ def _valid_files(directory, files_list):
     except (OSError, TypeError, ValueError):
         base_key = os.path.normcase(str(base))
 
+    base_text = os.fspath(base)
+    separators = tuple(sep for sep in (os.sep, os.altsep) if sep)
     for name in files_list or []:
         raw = str(name or "").strip()
         if not raw:
             continue
+
+        # Fast path for the usual row, a bare file name in the sequence
+        # folder: one stat and no pathlib objects. A 600-frame import spent
+        # about 40% of its time building and comparing Path objects here.
+        if (
+            raw not in {".", ".."}
+            and ":" not in raw
+            and not any(sep in raw for sep in separators)
+        ):
+            try:
+                if os.path.isfile(os.path.join(base_text, raw)):
+                    files.append(raw)
+                    continue
+            except (OSError, TypeError, ValueError):
+                pass
 
         try:
             raw_is_absolute = os.path.isabs(raw)
@@ -854,10 +878,10 @@ def _native_frame_offset_curve_is_intact(
         return False
     native_base_offset = frame_number_base - 1
 
+    row_at_elapsed = _source_index_resolver(row_count, durations, loop_mode)
+
     def mapped_source_index(elapsed):
-        row_index = _source_index_at_elapsed(
-            elapsed, row_count, durations, loop_mode
-        )
+        row_index = row_at_elapsed(elapsed)
         return source_indices[max(0, min(row_count - 1, row_index))]
 
     def offset_at(timeline_frame):
@@ -2926,6 +2950,37 @@ def _source_index_at_elapsed(elapsed, file_count, durations, loop_mode):
     return max(0, min(file_count - 1, int(order[-1] if order else 0)))
 
 
+def _source_index_resolver(file_count, durations, loop_mode):
+    """Return ``elapsed -> row`` with the timing table resolved once.
+
+    Same result as :func:`_source_index_at_elapsed`, for loops over every
+    frame of a sequence: that function rebuilt and hashed the durations key
+    on each call, so a 600-frame import paid the key 20,000 times.
+    """
+    from bisect import bisect_right
+
+    file_count = max(1, int(file_count or 1))
+    if file_count <= 1:
+        return lambda _elapsed: 0
+    loop_mode = str(loop_mode or 'NONE')
+    order, cumulative, cycle_total = _timing_table(file_count, durations, loop_mode)
+    repeating = loop_mode in {'REPEAT', 'PINGPONG'}
+    order_count = len(order)
+    last_index = max(0, min(file_count - 1, int(order[-1] if order else 0)))
+
+    def resolve(elapsed):
+        if repeating:
+            local = int(max(0, elapsed)) % cycle_total
+        else:
+            local = int(max(0, min(elapsed, cycle_total - 1)))
+        position = bisect_right(cumulative, local)
+        if position < order_count:
+            return max(0, min(file_count - 1, int(order[position])))
+        return last_index
+
+    return resolve
+
+
 def _timing_transition_elapsed_values(file_count, durations, loop_mode, elapsed_min, elapsed_max):
     """Yield logical row boundaries inside an elapsed-frame range.
 
@@ -3010,7 +3065,20 @@ def _insert_linear_keys(id_data, data_path, key_values, set_key):
     curve.update()
 
 
-def _install_frame_offset_keyframes(tex_node, *, file_count=1, frame_start=1, durations=None, loop_mode='NONE', frame_number_base=1, source_indices=None, image_user_start=None, hold_start=None, hold_end=None, scene=None):
+def _install_frame_offset_keyframes(*args, **kwargs):
+    """Write the sequence timing curve; image effects re-check it next frame."""
+    result = _install_frame_offset_keyframes_impl(*args, **kwargs)
+    try:
+        # Image effects skip their timing check during playback; a new timing
+        # curve must reach their private samples on the very next frame.
+        from .geometry_nodes import fbp_forget_private_source_sync
+        fbp_forget_private_source_sync()
+    except (ImportError, AttributeError):
+        pass
+    return result
+
+
+def _install_frame_offset_keyframes_impl(tex_node, *, file_count=1, frame_start=1, durations=None, loop_mode='NONE', frame_number_base=1, source_indices=None, image_user_start=None, hold_start=None, hold_end=None, scene=None):
     """Keyframe logical frame order without creating one key per timeline frame.
 
     Within a held source frame, ``frame_offset`` must decrease by one on every
@@ -3039,8 +3107,10 @@ def _install_frame_offset_keyframes(tex_node, *, file_count=1, frame_start=1, du
         if len(source_indices) < file_count:
             source_indices.extend(range(len(source_indices), file_count))
 
+    row_at_elapsed = _source_index_resolver(file_count, durations, loop_mode)
+
     def mapped_source_index(elapsed):
-        row_index = _source_index_at_elapsed(elapsed, file_count, durations, loop_mode)
+        row_index = row_at_elapsed(elapsed)
         return source_indices[max(0, min(len(source_indices) - 1, row_index))]
 
     calculated_hold_in, calculated_hold_out, _animation_out = _native_hold_bounds(
