@@ -1023,7 +1023,7 @@ class FBP_AddonPreferences(AddonPreferences):
     playback_show_jump_endpoints: BoolProperty(
         name="Jump to Start/End",
         description="Show the Jump to Endpoint buttons beside Play in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer headers",
-        default=False,
+        default=True,
         update=update_playback_buttons_cb,
     )
     playback_show_jump_keyframes: BoolProperty(

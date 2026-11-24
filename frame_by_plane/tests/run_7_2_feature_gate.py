@@ -24,6 +24,7 @@ TESTS = (
     "camera_placement_delete_regression.py",
     "plane_groups_regression.py",
     "gp_mask_edit_undo_regression.py",
+    "gp_mask_undo_stale_pixels_regression.py",
     "gp_mask_crop_regression.py",
     "compositor_opt_in_regression.py",
     "image_properties_regression.py",

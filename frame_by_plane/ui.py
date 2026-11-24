@@ -147,7 +147,10 @@ def _fbp_sidebar_has_visible_sections(context, *, dedicated=False):
 
     if _fbp_panel_section_enabled(context, "LAYERS"):
         return True
-    if _fbp_panel_section_enabled(context, "SETTINGS"):
+    if (
+        _fbp_panel_section_enabled(context, "SETTINGS")
+        and _fbp_layer_settings_context_available(context)
+    ):
         return True
     return bool(
         _fbp_panel_section_enabled(context, "GP")
@@ -4071,11 +4074,25 @@ def _fbp_tool_ui_context_available(context):
     return bool(context and getattr(context, "scene", None))
 
 
+def _fbp_layer_settings_context_available(context):
+    """Return True when Layer Settings has something to show.
+
+    With no plane in the scene the panel would only repeat "select a layer",
+    so it is hidden until the first plane exists. A selected Grease Pencil
+    canvas still shows its own settings there, planes or not.
+    """
+    if _fbp_layer_stack_context_available(context):
+        return True
+    return _fbp_sequence_context_available(context)
+
+
 def _fbp_draw_tool_layer_stack_or_create(panel, context):
     """Draw the plane stack, or a compact create/recovery UI when no rig is cached."""
-    if _fbp_layer_stack_context_available(context):
-        FBP_PT_LayerStack.draw(panel, context)
-        return
+    FBP_PT_LayerStack.draw(panel, context)
+
+
+def _fbp_draw_layer_stack_empty(panel, context):
+    """No plane yet: only the creation UI, without the empty list and Sets."""
     layout = configure_layout(panel.layout)
     empty_state(
         layout,
@@ -4343,6 +4360,9 @@ class FBP_PT_LayerStack(Panel):
         self.layout.label(text="", icon=ui_icon("layer.header"))
 
     def draw(self, context):
+        if not _fbp_layer_stack_context_available(context):
+            _fbp_draw_layer_stack_empty(self, context)
+            return
         layout = configure_layout(self.layout)
         row = layout.row(align=False)
         box = row.box()
@@ -5023,6 +5043,7 @@ class FBP_PT_Sequence(Panel):
             _fbp_tool_ui_context_available(context)
             and _fbp_n_panel_enabled(context)
             and _fbp_panel_section_enabled(context, 'SETTINGS')
+            and _fbp_layer_settings_context_available(context)
         )
 
     def draw_header(self, context):
@@ -5202,6 +5223,7 @@ class FBP_PT_ToolSequence(FBP_PT_Sequence):
         return bool(
             _fbp_tool_ui_context_available(context)
             and _fbp_properties_tool_enabled(context, 'SETTINGS')
+            and _fbp_layer_settings_context_available(context)
         )
 
     def draw(self, context):

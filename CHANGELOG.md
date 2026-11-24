@@ -11,12 +11,17 @@ All notable public changes to Frame By Plane are documented here.
 ### Link Timelines
 
 - **Every timeline lines up, frame by frame.** A link button at the right of the header of every Timeline, Dope Sheet, Graph Editor, NLA and Sequencer, on by default. The editor you scroll, zoom or resize leads and the others follow with the same zoom and each frame at the same horizontal position on the screen, so the playhead and the Start/End frames sit on one vertical line across all of them. Unlike Blender's Sync Visible Range they stay aligned when one editor has a wider channel list or an open sidebar: opening the N panel moves nothing, resizing the channel list moves the others with it. Editors side by side or in another window get the same visible range. While the link is on, Sync Visible Range is switched off on those editors so the two do not fight. When the Sequencer shows another scene and the scene of the Timeline is used there as a scene clip, the Timeline (and Dope Sheet, Graph, NLA) lines up under that clip, follows it when the clip is moved and picks the active clip when there are several; Scene Time sync is turned on so the playheads follow each other.
+- **No more lag.** The other timelines move as soon as the one you scroll or zoom is redrawn, instead of on a 30 times per second check run through the add-on scheduler, so they no longer trail behind it. The periodic check stays, slower, only for window resizes and file loads.
 
 ### Choose the playback buttons
 
-- **Show Buttons** at the bottom of the Playback Options popover (the small arrow beside the transport buttons in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer; Time Jump on Blender 5.2) switches each group of transport buttons on or off: **Jump to Endpoint**, **Jump to Keyframe**, **Jump by Delta** and **Play Reverse**, lined up under Wrap Timeline Navigation. The three jump groups are hidden by default, so the header shows Play Reverse and Play only. The choice is an add-on preference and holds in every file. Blender's own header drawing is kept: only the switched-off buttons are skipped.
+- **Show Buttons** at the bottom of the Playback Options popover (the small arrow beside the transport buttons in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer; Time Jump on Blender 5.2) switches each group of transport buttons on or off: **Jump to Endpoint**, **Jump to Keyframe**, **Jump by Delta** and **Play Reverse**, lined up under Wrap Timeline Navigation. **Jump to Endpoint** is on by default; Jump to Keyframe and Jump by Delta are hidden by default. The choice is an add-on preference and holds in every file. Blender's own header drawing is kept: only the switched-off buttons are skipped.
 - **Pick the current frame for In and Out.** A paste button (the Paste icon) before **Start** and before **End** in the same headers sets the In or the Out to the current frame (the preview range when it is on). An Out before the In moves the In too, so the range stays valid.
 - The layer's **Start Frame** button (Animation box and the Sequence Timing dialog) uses the same Paste icon, placed before the value.
+
+### Sidebar without planes
+
+- **No plane, no plane settings.** While the scene has no Frame By Plane plane, the **Layer Settings** panel is hidden in the Tool tab and in the Frame By Plane tab, and the **Layers** panel shows only the creation controls (no empty plane list, no Sets & Snapshots). Everything else stays where it is. A selected Grease Pencil canvas still shows its settings. The panels come back as soon as the first plane is created.
 
 ### New effect: RGB Pixels
 
@@ -58,6 +63,8 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- **Ctrl+Z after the first Grease Pencil Mask stroke clears the mask again.** Undo brought back the empty drawing but the mask image could keep showing the undone stroke, because Undo does not restore the pixels of generated images and the add-on recycles its mask buffers: when the stroke had been drawn into the image of the undo step, the mask looked frozen. After Undo and Redo the mask is now always drawn again from the restored strokes. The Solid view cut is checked again after Undo too.
+- **Modifiers panel no longer flickers in Solid view.** With a masked layer in Solid view, the **Solid View Masks** cut and the effect rows both moved themselves to the end of the modifier stack, so the two kept swapping places and the Modifiers panel jumped continuously in Object Mode. The effect rows now go before the cut, which stays last.
 - **Ctrl+Z in Draw Mode no longer changes the Stroke / Fill colors.** A color picked in a panel (Tool settings, the Frame By Plane sidebar or Blender's own brush color) and then a stroke: Ctrl+Z removed the stroke and also brought back the previous color, because a Draw stroke's undo step restores the snapshot taken before the color change. In Draw and Vertex Paint the pair is now a tool setting like Blender's brush colors: Undo and Redo change strokes, never the chosen colors (X no longer adds an undo step of its own either). Edit Mode recolors stay undoable, and their undo step is now also saved when it is committed from a timer (it could be dropped there).
 - **Stroke / Fill colors with Unified Color.** With a brush's **Unified Color** on (the Blender 5.3 Vertex Paint brush has it on by default), Blender paints with the paint mode's shared colors, but Frame By Plane wrote its Stroke / Fill pair into the brush's own colors. The header showed one pair while new strokes got another (often black), and X did not swap the Stroke / Fill swatches. The pair now goes to the colors Blender actually paints with, in Draw and Vertex Paint.
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
@@ -89,7 +96,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view, group rig options, Link Timelines (windowed, outside the gate); the 9.0 feature gate runs 29 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view, group rig options, Link Timelines (windowed, outside the gate); the 9.0 feature gate runs 30 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 

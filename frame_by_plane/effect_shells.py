@@ -1608,7 +1608,16 @@ def fbp_shell_reposition(rig):
     shells = dict(fbp_shell_modifiers(rig))
     if not shells:
         return False
-    others = [item for item in plane.modifiers if not fbp_shell_token(item)]
+    # The Solid view mask cut must read the final geometry: it stays last.
+    try:
+        from .solid_mask_view import solid_mask_modifier
+        cut = solid_mask_modifier(plane)
+    except ImportError:
+        cut = None
+    others = [
+        item for item in plane.modifiers
+        if not fbp_shell_token(item) and item != cut
+    ]
     stage_tokens = {geo._fbp_mixed_shader_stage_token(item): item for item in others}
     ordered = []
     placed = set()
@@ -1626,6 +1635,8 @@ def fbp_shell_reposition(rig):
     for token, modifier in shells.items():
         if token not in placed:
             ordered.append(modifier)
+    if cut is not None:
+        ordered.append(cut)
     return geo._fbp_apply_modifier_order_exact(plane, ordered)
 
 
