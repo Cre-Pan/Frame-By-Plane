@@ -54,6 +54,9 @@ from .common import (
 _MAX_CAGES = 32
 _ACTIVE_COLOR = (1.0, 1.0, 1.0)
 _SELECTED_COLOR = (0.72, 0.72, 0.72)
+_HALO_COLOR = (0.0, 0.0, 0.0)
+_HALO_ALPHA = 0.55
+_HALO_EXTRA_PX = 2.0
 
 
 def cage_enabled(context=None):
@@ -1130,7 +1133,6 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 along = along / length
                 bar = [point - along * half, point + along * half]
                 width = _EDGE_BAR_WIDTH_PX + (1.5 if part == active_part else 0.0)
-                lines.append((bar, (0.0, 0.0, 0.0), 0.5, width + 2.0))
                 lines.append((bar, accent if part == active_part else white, 1.0, width))
 
         # The knob on its stem above the top edge.
@@ -1174,6 +1176,15 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             for index, point in enumerate(targets):
                 snapped = modal and active_part == "ANCHOR" and index == snap_index
                 dot(point, accent if snapped else white, _TARGET_RADIUS_PX * (1.6 if snapped else 1.0), 0.9)
+
+        # A dark halo under every light line, drawn first: the white box
+        # stays readable on light drawings and backgrounds (sky, paper)
+        # as well as on dark ones.
+        lines = [
+            (segments, _HALO_COLOR, min(_HALO_ALPHA, alpha + 0.1), width + _HALO_EXTRA_PX)
+            for segments, color, alpha, width in lines
+            if tuple(color) != _HALO_COLOR
+        ] + lines
 
         fill_shader, line_shader = _shaders()
         gpu.state.blend_set("ALPHA")
