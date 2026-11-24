@@ -944,6 +944,9 @@ def _fbp_generation_frame_targets(scene, rig_names):
     return targets
 
 
+_FBP_PENDING_FRAME_RIGS = {}
+
+
 def _fbp_frame_generated_planes(scene_key, rig_names, *, window_key=None, area_key=None):
     """Frame imported planes in the originating 3D View without moving the cursor."""
     try:
@@ -1075,17 +1078,30 @@ def _fbp_finish_generation_ui(context, report=None, *, show_popup=True):
         rig_names = tuple(str(name) for name in report.get("generated_rigs", ()) if name)
         _fbp_clear_generation_report(context)
         if scene_key is not None and rig_names:
-            task_token = time.monotonic_ns()
-            _safe_tasks.schedule_once(
-                f'operators.frame_generated_planes.{scene_key}.{task_token}',
-                lambda: _fbp_frame_generated_planes(
+            # One framing pass per scene. Several imports in a row used to queue
+            # one pass each; every pass reselected the whole view layer and
+            # forced a depsgraph update, so a batch of 100 imports kept the
+            # viewport busy for half a minute after the last one finished.
+            pending = _FBP_PENDING_FRAME_RIGS.setdefault(scene_key, [])
+            pending.extend(name for name in rig_names if name not in pending)
+
+            def _frame_pending(scene_key=scene_key):
+                names = tuple(_FBP_PENDING_FRAME_RIGS.pop(scene_key, ()) or ())
+                if not names:
+                    return None
+                return _fbp_frame_generated_planes(
                     scene_key,
-                    rig_names,
+                    names,
                     window_key=window_key,
                     area_key=area_key,
-                ),
+                )
+
+            if not _safe_tasks.schedule_once(
+                f'operators.frame_generated_planes.{scene_key}',
+                _frame_pending,
                 first_interval=0.08,
-            )
+            ):
+                _FBP_PENDING_FRAME_RIGS.pop(scene_key, None)
         return
 
     if not show_popup or scene_key is None:
