@@ -175,6 +175,24 @@ def fbp_render_filename_pattern(scene) -> str:
     return _join_components((leading, frame_token), separator)
 
 
+def fbp_blender_project() -> tuple[str, str]:
+    """``(name, root folder)`` of the open Blender Project (5.3+), else empty."""
+    try:
+        project = getattr(bpy.data, "project", None)
+        if project is None:
+            return ("", "")
+        root = str(getattr(project, "root_path", "") or "").strip()
+        if not root:
+            return ("", "")
+        return (str(getattr(project, "name", "") or ""), bpy.path.abspath(root))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ("", "")
+
+
+def fbp_blender_project_root() -> str:
+    return fbp_blender_project()[1]
+
+
 def fbp_render_root_directory(scene) -> str:
     builder_mode = str(
         getattr(scene, "fbp_render_folder_builder_mode", "GENERATE") or "GENERATE"
@@ -190,6 +208,9 @@ def fbp_render_root_directory(scene) -> str:
     project_root = str(getattr(scene, "fbp_project_path", "") or "").strip()
     if project_root:
         return os.path.normpath(bpy.path.abspath(project_root))
+    blender_root = fbp_blender_project_root()
+    if blender_root:
+        return os.path.normpath(blender_root)
 
     if builder_mode == 'SELECT':
         native = str(getattr(getattr(scene, "render", None), "filepath", "") or "")

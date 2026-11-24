@@ -2975,6 +2975,16 @@ class FBP_PT_OutputRender(Panel):
         row = project.row(align=False)
         row.scale_y = 1.05
         row.prop(sc, "fbp_project_path", text="")
+        if not str(getattr(sc, "fbp_project_path", "") or "").strip():
+            from .render_output import fbp_blender_project
+
+            project_name, project_root = fbp_blender_project()
+            if project_root:
+                hint_row(
+                    project,
+                    f"Empty: uses the Blender Project {project_name or ''} · {project_root}".replace("  ", " "),
+                    icon='FILE_FOLDER',
+                )
 
         advanced = bool(getattr(sc, "fbp_render_advanced", False))
         render_column = content.column(align=False)
