@@ -88,6 +88,56 @@ def _join_components(components, separator: str) -> str:
     return separator.join(clean)
 
 
+def fbp_render_advanced_enabled(scene) -> bool:
+    """True when Advanced Render drives Blender's native Output path."""
+    return bool(scene is not None and getattr(scene, "fbp_render_advanced", False))
+
+
+_TOKEN_MODES = {'NONE', 'LETTER', 'NUMBER', 'LETTER_NUMBER'}
+
+
+def fbp_render_section_token(scene, section: str) -> str:
+    """Return the token mode of the ``'PREFIX'`` or ``'SUFFIX'`` section.
+
+    Files saved before per-section tokens stored one token with a position
+    (before Prefix / after Suffix); it is read as the token of that section
+    until the section gets its own value.
+    """
+    prop = "fbp_render_prefix_token" if section == 'PREFIX' else "fbp_render_suffix_token"
+    mode = str(getattr(scene, prop, "NONE") or "NONE")
+    if mode != 'NONE':
+        return mode if mode in _TOKEN_MODES else 'NONE'
+    legacy = str(getattr(scene, "fbp_render_token_mode", "NONE") or "NONE")
+    if legacy == 'NONE' or legacy not in _TOKEN_MODES:
+        return 'NONE'
+    position = str(getattr(scene, "fbp_render_token_position", "BEFORE") or "BEFORE")
+    return legacy if (position == 'BEFORE') == (section == 'PREFIX') else 'NONE'
+
+
+def fbp_render_token_text(scene, mode, *, letter=None, number=None) -> str:
+    """Return the letter/number token text, e.g. ``A``, ``01`` or ``A01``."""
+    parts = []
+    if mode in {'LETTER', 'LETTER_NUMBER'}:
+        value = str(getattr(scene, "fbp_render_letter", "") or "") if letter is None else letter
+        parts.append(fbp_sanitize_render_component(value))
+    if mode in {'NUMBER', 'LETTER_NUMBER'}:
+        digits = max(1, min(8, int(getattr(scene, "fbp_render_number_digits", 1) or 1)))
+        value = int(getattr(scene, "fbp_render_number", 1) or 0) if number is None else int(number)
+        parts.append(str(max(0, value)).zfill(digits))
+    return "".join(parts)
+
+
+def _section_text(scene, section: str) -> str:
+    """Prefix or Suffix text with its token appended (``Shot A1``)."""
+    text_prop = "fbp_render_prefix" if section == 'PREFIX' else "fbp_render_suffix"
+    use_prop = "fbp_render_use_prefix" if section == 'PREFIX' else "fbp_render_use_suffix"
+    if not bool(getattr(scene, use_prop, True)):
+        return ""
+    text = fbp_sanitize_render_component(getattr(scene, text_prop, ""))
+    token = fbp_render_token_text(scene, fbp_render_section_token(scene, section))
+    return " ".join(value for value in (text, token) if value)
+
+
 def fbp_render_filename_pattern(scene) -> str:
     """Return the Camera-Raw-style filename pattern used by Blender."""
     render = getattr(scene, "render", None)
@@ -96,28 +146,17 @@ def fbp_render_filename_pattern(scene) -> str:
     separator = _separator(scene)
     # Empty is an intentional live fallback to the .blend project name.  This
     # keeps new and renamed projects synchronized without writing from UI draw.
-    base_name = str(getattr(scene, "fbp_render_custom_name", "") or "").strip()
-    if not base_name:
-        base_name = _document_name()
+    base_name = ""
+    if bool(getattr(scene, "fbp_render_use_name", True)):
+        base_name = str(getattr(scene, "fbp_render_custom_name", "") or "").strip()
+        if not base_name:
+            base_name = _document_name()
 
-    prefix = str(getattr(scene, "fbp_render_prefix", "") or "")
-    letter = str(getattr(scene, "fbp_render_letter", "") or "")
-    suffix = str(getattr(scene, "fbp_render_suffix", "") or "")
-    token_mode = str(getattr(scene, "fbp_render_token_mode", "NONE") or "NONE")
-    token_position = str(getattr(scene, "fbp_render_token_position", "BEFORE") or "BEFORE")
-    token_parts = []
-    if token_mode in {'LETTER', 'LETTER_NUMBER'}:
-        token_parts.append(letter)
-    if token_mode in {'NUMBER', 'LETTER_NUMBER'}:
-        digits = max(1, min(8, int(getattr(scene, "fbp_render_number_digits", 2) or 2)))
-        token_parts.append(
-            str(max(0, int(getattr(scene, "fbp_render_number", 1) or 0))).zfill(digits)
-        )
-    token = "".join(fbp_sanitize_render_component(value) for value in token_parts)
-
-    components = [prefix, base_name, suffix]
-    if token:
-        components.insert(0 if token_position == 'BEFORE' else len(components), token)
+    components = [
+        _section_text(scene, 'PREFIX'),
+        base_name,
+        _section_text(scene, 'SUFFIX'),
+    ]
     leading = _join_components(components, separator)
     if not leading:
         leading = "frame"
@@ -297,7 +336,7 @@ def _fbp_native_output_representation(scene, absolute_path: str) -> str:
 
 def fbp_sync_native_render_path(scene, *, filepath=None) -> bool:
     """Push the FBP builder path to ``Scene.render.filepath`` without loops."""
-    if scene is None or fbp_render_path_sync_guarded(scene):
+    if not fbp_render_advanced_enabled(scene) or fbp_render_path_sync_guarded(scene):
         return False
     try:
         render = scene.render
@@ -330,7 +369,7 @@ def fbp_sync_native_render_path(scene, *, filepath=None) -> bool:
 
 def fbp_sync_render_output_from_native(scene, *, force=False) -> bool:
     """Read an externally edited native path into the single FBP builder."""
-    if scene is None or fbp_render_path_sync_guarded(scene):
+    if not fbp_render_advanced_enabled(scene) or fbp_render_path_sync_guarded(scene):
         return False
     try:
         raw_path = str(getattr(scene.render, "filepath", "") or "")
@@ -390,6 +429,9 @@ def fbp_sync_render_output_from_native(scene, *, force=False) -> bool:
                 scene.fbp_render_prefix = ""
                 scene.fbp_render_suffix = ""
                 scene.fbp_render_token_mode = 'NONE'
+                scene.fbp_render_prefix_token = 'NONE'
+                scene.fbp_render_suffix_token = 'NONE'
+                scene.fbp_render_use_name = True
         _FBP_NATIVE_PATH_CACHE[key] = raw_path
         return True
     except (AttributeError, OSError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
@@ -411,9 +453,6 @@ def fbp_sync_all_render_outputs_from_native(*, force=False) -> int:
 def fbp_render_filename_preview(scene) -> str:
     """Return only the current output filename, including its extension."""
     try:
-        resolved = fbp_resolve_render_output(scene)
-        if bool(resolved.get("auto_video", False)):
-            return os.path.basename(str(resolved.get("video_path", "") or ""))
         frame_path = str(scene.render.frame_path(frame=int(scene.frame_current)) or "")
         return os.path.basename(os.path.normpath(frame_path)) if frame_path else ""
     except (AttributeError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):

@@ -203,11 +203,13 @@ RENDER_NAME_SOURCE_ITEMS = (
 )
 
 RENDER_SEPARATOR_ITEMS = (
-    ('DASH', "Spaced Dash", "Separate filename tokens with a spaced dash", 'EVENT_MINUS', 0),
-    ('UNDERSCORE', "Underscore", "Separate filename tokens with underscores", 'IPO_CONSTANT', 1),
-    ('HYPHEN', "Hyphen", "Separate filename tokens with hyphens", 'REMOVE', 2),
-    ('SPACE', "Space", "Separate filename tokens with spaces", 'EVENT_SPACEKEY', 3),
-    ('NONE', "None", "Join filename tokens without a separator", fbp_icon("X"), 4),
+    # Labels are live examples so the choice reads at a glance; the stored
+    # identifiers and numbers are unchanged so saved files keep their value.
+    ('NONE', "None", "Join filename parts without a separator", 4),
+    ('DASH', "[ - ]  Scene - Test", "Separate filename parts with a spaced dash", 0),
+    ('UNDERSCORE', "[_]  Scene_Test", "Separate filename parts with underscores", 1),
+    ('SPACE', "[ ]  Scene Test", "Separate filename parts with spaces", 3),
+    ('HYPHEN', "[-]  Scene-Test", "Separate filename parts with hyphens", 2),
 )
 
 RENDER_FOLDER_BUILDER_MODE_ITEMS = (
@@ -227,7 +229,7 @@ RENDER_TOKEN_MODE_ITEMS = (
     ('NONE', "None", "Do not add a letter or fixed number token"),
     ('LETTER', "Letter", "Add the custom starting letter"),
     ('NUMBER', "Number", "Add the custom starting number"),
-    ('LETTER_NUMBER', "Letter + Number", "Add the custom starting letter followed by the number"),
+    ('LETTER_NUMBER', "Both", "Add the custom starting letter followed by the number"),
 )
 
 RENDER_TOKEN_POSITION_ITEMS = (
@@ -1781,7 +1783,15 @@ class FBP_AddonPreferences(AddonPreferences):
     pref_ui_show_preview_features: BoolProperty(name="Feature Scope", description="Show stable and preview feature controls", default=False)
     show_performance_dashboard: BoolProperty(
         name="Performance Dashboard",
-        description="Show the Performance Dashboard under Frame By Plane Diagnostics in the Output properties",
+        description="Show the Performance Dashboard panel in the Output properties",
+        default=False,
+    )
+    render_finish_sound: BoolProperty(
+        name="Sound When Render Finishes",
+        description=(
+            "Play a short, bright chord when a render finishes successfully, "
+            "both a normal render and a Frame By Plane background render"
+        ),
         default=False,
     )
     pref_ui_show_diagnostics: BoolProperty(name="Diagnostics", description="Show repair, health and report tools", default=False)
@@ -3972,6 +3982,48 @@ def register_properties():
         items=ALPHA_RENDER_METHOD_ITEMS,
         default='AUTO',
         update=update_alpha_render_method_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_advanced = BoolProperty(
+        name="Advanced Render",
+        description=(
+            "Let Frame By Plane build the render folder and file name and write "
+            "them into Blender's Output path. Off: Blender's own Output settings "
+            "are used unchanged"
+        ),
+        default=False,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_prefix = BoolProperty(
+        name="Use Prefix",
+        description="Include the Prefix section in the file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_name = BoolProperty(
+        name="Use Name",
+        description="Include the Name section in the file name; an empty Name uses the .blend file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_suffix = BoolProperty(
+        name="Use Suffix",
+        description="Include the Suffix section in the file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_prefix_token = EnumProperty(
+        name="Prefix Token",
+        description="Add a letter, a number or both after the Prefix text",
+        items=RENDER_TOKEN_MODE_ITEMS,
+        default='NONE',
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_suffix_token = EnumProperty(
+        name="Suffix Token",
+        description="Add a letter, a number or both after the Suffix text",
+        items=RENDER_TOKEN_MODE_ITEMS,
+        default='NONE',
+        update=update_render_output_path_cb,
     )
     _FBP_SCENE_RNA.fbp_render_output_dir = StringProperty(
         name="Render Folder",
