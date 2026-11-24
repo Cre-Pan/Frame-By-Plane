@@ -39,7 +39,10 @@ from .runtime import FBP_DATA_ERRORS, fbp_warn_once
 
 LINK_PROPERTY = "fbp_link_timelines"
 _TIME_SPACE_TYPES = frozenset({"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR", "SEQUENCE_EDITOR"})
-_TICK_ACTIVE = 1.0 / 30.0
+# The redraw of a time editor triggers the alignment at once (see
+# ``_on_time_region_draw``); the timer is only the safety net for changes that
+# do not redraw a linked editor, like a window resize or a file load.
+_TICK_ACTIVE = 1.0 / 10.0
 _TICK_IDLE = 0.5
 _PIXEL_TOLERANCE = 0.5
 _SCALE_TOLERANCE = 1.0e-4
@@ -382,7 +385,104 @@ def sync_linked_timelines():
 
     _STATES.clear()
     _STATES.update(current)
+    _remember_raw_views()
     return moved
+
+
+_DRAW_SPACES = ("SpaceDopeSheetEditor", "SpaceGraphEditor", "SpaceNLA", "SpaceSequenceEditor")
+_DRAW_HANDLES = []
+_FAST_PENDING = [False]
+# Region pointer -> (region x, width, first frame, last frame) as last aligned.
+_RAW = {}
+
+
+def _raw_view(region):
+    view = region.view2d
+    return (
+        int(region.x), int(region.width),
+        float(view.region_to_view(0.0, 0.0)[0]),
+        float(view.region_to_view(float(region.width), 0.0)[0]),
+    )
+
+
+def _remember_raw_views():
+    _RAW.clear()
+    for _key, _window, _area, region in _time_regions():
+        _RAW[int(region.as_pointer())] = _raw_view(region)
+
+
+def _fast_sync():
+    _FAST_PENDING[0] = False
+    wm = getattr(bpy.context, "window_manager", None)
+    if wm is None or not link_enabled(wm):
+        return None
+    try:
+        sync_linked_timelines()
+    except FBP_DATA_ERRORS as exc:
+        fbp_warn_once("timeline_link.sync", "Could not keep the linked timelines aligned", exc)
+        _STATES.clear()
+    return None
+
+
+def _on_time_region_draw():
+    """Align the others as soon as a linked editor redraws with a new view.
+
+    Drawing must not change other regions, so this only compares four numbers
+    and asks for an immediate one-shot timer, which Blender runs before the
+    next redraw: the followers move in the same frame instead of up to a
+    polling interval later.
+    """
+    if _FAST_PENDING[0]:
+        return
+    try:
+        context = bpy.context
+        region = context.region
+        if region is None or region.type != "WINDOW" or not link_enabled(context.window_manager):
+            return
+        if not _space_is_time_editor(context.space_data):
+            return
+        current = _raw_view(region)
+    except FBP_DATA_ERRORS:
+        return
+    old = _RAW.get(int(region.as_pointer()))
+    if old is not None and old[:2] == current[:2]:
+        span = max(abs(old[3] - old[2]), 1.0e-9)
+        pixel = span / max(float(current[1]), 1.0)
+        if abs(old[2] - current[2]) <= pixel * 0.25 and abs(old[3] - current[3]) <= pixel * 0.25:
+            return
+    _FAST_PENDING[0] = True
+    try:
+        bpy.app.timers.register(_fast_sync, first_interval=0.0)
+    except (ValueError, RuntimeError):
+        _FAST_PENDING[0] = False
+
+
+def _register_draw_handlers():
+    for name in _DRAW_SPACES:
+        space = getattr(bpy.types, name, None)
+        if space is None:
+            continue
+        try:
+            handle = space.draw_handler_add(_on_time_region_draw, (), "WINDOW", "POST_PIXEL")
+        except (TypeError, ValueError, RuntimeError):
+            continue
+        _DRAW_HANDLES.append((space, handle))
+
+
+def _unregister_draw_handlers():
+    for space, handle in _DRAW_HANDLES:
+        try:
+            space.draw_handler_remove(handle, "WINDOW")
+        except (ValueError, RuntimeError):
+            pass
+    _DRAW_HANDLES.clear()
+    try:
+        if bpy.app.timers.is_registered(_fast_sync):
+            bpy.app.timers.unregister(_fast_sync)
+    except (ValueError, RuntimeError):
+        pass
+    _FAST_PENDING[0] = False
+    _RAW.clear()
 
 
 def _link_timer():
@@ -478,6 +578,7 @@ def register():
         update=_link_update,
     )
     _register_headers()
+    _register_draw_handlers()
     append_handler_once(bpy.app.handlers.load_post, fbp_timeline_link_load_post)
     _ensure_timer()
 
@@ -485,6 +586,7 @@ def register():
 def unregister():
     remove_handlers_by_name(bpy.app.handlers.load_post, fbp_timeline_link_load_post.__name__)
     fbp_unregister_managed_timer(_link_timer)
+    _unregister_draw_handlers()
     _unregister_headers()
     _STATES.clear()
     _SCENE_SYNC_SEEN.clear()

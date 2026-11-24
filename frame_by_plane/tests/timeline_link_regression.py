@@ -75,6 +75,7 @@ def _op(area_index, operator, **kwargs):
 def step_split():
     wm = bpy.context.window_manager
     _check("toggle on by default", bool(getattr(wm, link.LINK_PROPERTY, False)))
+    _check("redraw trigger registered", len(link._DRAW_HANDLES) == 4)
     window = wm.windows[0]
     area = next(area for area in window.screen.areas if area.type == "DOPESHEET_EDITOR")
     with bpy.context.temp_override(window=window, area=area):
@@ -191,6 +192,7 @@ def step_clip_pan():
 def step_unregister():
     addon.unregister()
     wm = bpy.context.window_manager
+    _check("redraw trigger removed", not link._DRAW_HANDLES)
     _check("property removed", not hasattr(bpy.types.WindowManager, link.LINK_PROPERTY))
     callbacks = getattr(bpy.types.DOPESHEET_HT_header.draw, "_draw_funcs", ()) or ()
     _check("header button removed", not any(getattr(cb, "__name__", "") == "draw_link_toggle" for cb in callbacks))
