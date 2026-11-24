@@ -10,6 +10,9 @@
   one layer, least recently drawn first out.
 * ``region_grid``, ``_marching_squares_loops`` and ``_source_index_resolver``
   give the same results as the per-cell and per-call code they replace.
+* Inside a name index pass, layer rows, primary collections, Scene
+  membership and the Layer Tree give the same answers as plain lookups, also
+  after a rename and a manual move.
 * Importing a 600-frame sequence stays within a generous time budget.
 * NumPy is not imported by loading the add-on, and the lazy proxy keeps each
   NumPy name after its first use.
@@ -174,6 +177,66 @@ def check_members_memo():
     changed[1] = not changed[1]
     assert ui_layout._fbp_write_collection_row(row, tuple(changed)) is True
     assert Row.writes == 1
+
+
+def check_name_index(work):
+    layers = module("layers")
+    fbp_index = module("fbp_index")
+    ui_layout = module("ui_layout")
+    folder = work / "names"
+    folder.mkdir()
+    for number in range(3):
+        write_png(folder / f"n{number}_0001.png", 8, 8, (10, 200, 10, 255))
+        import_sequence(folder, [f"n{number}_0001.png"])
+    scene = bpy.context.scene
+    renamed = rigs()[-1]
+    renamed.name = "FBP Perf Renamed"
+    moved = rigs()[-2]
+    hinted = bpy.data.collections.get(str(moved.fbp_collection_name or ""))
+    other = bpy.data.collections.new("FBP Perf Names Moved")
+    scene.collection.children.link(other)
+    other.objects.link(moved)
+    if hinted is not None:
+        hinted.objects.unlink(moved)
+    # A data object with a layer name that is not in this scene.
+    stray = bpy.data.objects.new("FBP Perf Stray", None)
+
+    def answers():
+        rows = []
+        for item in scene.fbp_layers:
+            obj = item.obj
+            rows.append((obj, layers._safe_layer_obj(item), layers.get_primary_fbp_collection(obj) if obj else None))
+        names = [obj.name for obj in scene.objects] + ["FBP Perf Stray", "missing name"]
+        lookups = [scene.objects.get(name) for name in names]
+        collections = [bpy.data.collections.get(c.name) for c in bpy.data.collections]
+        return rows, lookups, collections
+
+    def indexed_answers(index):
+        rows, _lookups, _collections = answers()
+        names = [obj.name for obj in scene.objects] + ["FBP Perf Stray", "missing name"]
+        lookups = [index.scene_object(scene, name) for name in names]
+        collections = [index.data_collection(c.name) for c in bpy.data.collections]
+        return rows, lookups, collections
+
+    try:
+        plain = answers()
+        assert fbp_index.active_name_index() is None
+        with fbp_index.name_index_scope() as index:
+            with fbp_index.name_index_scope() as nested:
+                assert nested is index
+            assert indexed_answers(index) == plain
+            assert index.data_object("FBP Perf Stray") == stray
+            assert index.scene_object(scene, "FBP Perf Stray") is None
+        assert fbp_index.active_name_index() is None
+        assert any(row[2] == other for row in plain[0]), "moved layer lost its collection"
+        cache = ui_layout._fbp_build_layer_tree_cache_uncached(bpy.context)
+        assert fbp_index.active_name_index() is None
+        assert cache is not None
+    finally:
+        bpy.data.objects.remove(stray)
+        other.objects.unlink(moved)
+        (hinted or scene.collection).objects.link(moved)
+        bpy.data.collections.remove(other)
 
 
 def check_framing_is_coalesced(work):
@@ -495,6 +558,7 @@ def main():
             ("numpy is lazy", check_numpy_is_lazy),
             ("primary collection", lambda: check_primary_collection(work)),
             ("group row memo", check_members_memo),
+            ("name index", lambda: check_name_index(work)),
             ("framing coalesced", lambda: check_framing_is_coalesced(work)),
             ("alpha outline cache", check_alpha_outline_cache),
             ("region grid", check_region_grid),

@@ -24,6 +24,7 @@ from .shortcut_runtime import (
 )
 
 from .storage_keys import fbp_effect_storage_key
+from . import fbp_index as _fbp_index
 from .registration import register_classes, unregister_classes, unregister_type_properties
 from .interface_preferences import (
     clear_interface_preferences_cache,
@@ -203,11 +204,13 @@ RENDER_NAME_SOURCE_ITEMS = (
 )
 
 RENDER_SEPARATOR_ITEMS = (
-    ('DASH', "Spaced Dash", "Separate filename tokens with a spaced dash", 'EVENT_MINUS', 0),
-    ('UNDERSCORE', "Underscore", "Separate filename tokens with underscores", 'IPO_CONSTANT', 1),
-    ('HYPHEN', "Hyphen", "Separate filename tokens with hyphens", 'REMOVE', 2),
-    ('SPACE', "Space", "Separate filename tokens with spaces", 'EVENT_SPACEKEY', 3),
-    ('NONE', "None", "Join filename tokens without a separator", fbp_icon("X"), 4),
+    # Labels are live examples so the choice reads at a glance; the stored
+    # identifiers and numbers are unchanged so saved files keep their value.
+    ('NONE', "None", "Join filename parts without a separator", 4),
+    ('DASH', "[ - ]  Scene - Test", "Separate filename parts with a spaced dash", 0),
+    ('UNDERSCORE', "[_]  Scene_Test", "Separate filename parts with underscores", 1),
+    ('SPACE', "[ ]  Scene Test", "Separate filename parts with spaces", 3),
+    ('HYPHEN', "[-]  Scene-Test", "Separate filename parts with hyphens", 2),
 )
 
 RENDER_FOLDER_BUILDER_MODE_ITEMS = (
@@ -227,7 +230,7 @@ RENDER_TOKEN_MODE_ITEMS = (
     ('NONE', "None", "Do not add a letter or fixed number token"),
     ('LETTER', "Letter", "Add the custom starting letter"),
     ('NUMBER', "Number", "Add the custom starting number"),
-    ('LETTER_NUMBER', "Letter + Number", "Add the custom starting letter followed by the number"),
+    ('LETTER_NUMBER', "Both", "Add the custom starting letter followed by the number"),
 )
 
 RENDER_TOKEN_POSITION_ITEMS = (
@@ -251,6 +254,38 @@ RENDER_FOLDER_MODE_ITEMS = (
     ('FINAL', "FINAL", "Create a FINAL folder, optionally with a suffix", fbp_icon("FILE_TICK"), 2),
     ('CUSTOM', "Custom Folder", "Create a named subfolder inside the selected output folder", fbp_icon("PREFERENCES"), 3),
 )
+
+
+def _render_section_toggle_cb(show_property):
+    """Section switch: off folds the section, on opens it, then updates the path."""
+    def update(self, context):
+        used = bool(getattr(self, show_property.replace("fbp_render_show_", "fbp_render_use_"), True))
+        try:
+            if bool(getattr(self, show_property, used)) != used:
+                setattr(self, show_property, used)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        update_render_output_path_cb(self, context)
+    return update
+
+
+_RENDER_DATE_STYLE_CACHE = []
+
+
+def _render_date_style_items(_self, _context):
+    """Date styles labelled with today's date (kept alive for Blender)."""
+    try:
+        from .render_output import fbp_render_date_text
+        examples = {style: fbp_render_date_text(style) for style in ('NUMERIC', 'TEXT', 'COMPACT')}
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        examples = {'NUMERIC': "24.11.2026", 'TEXT': "24 Nov 2026", 'COMPACT': "24-11-26"}
+    items = [
+        ('NUMERIC', f"Numeric  ({examples['NUMERIC']})", "Day, month and full year with dots", 0),
+        ('TEXT', f"Extended  ({examples['TEXT']})", "Day, short month name and full year", 1),
+        ('COMPACT', f"Compact  ({examples['COMPACT']})", "Day, month and two-digit year", 2),
+    ]
+    _RENDER_DATE_STYLE_CACHE[:] = items
+    return _RENDER_DATE_STYLE_CACHE
 
 
 def update_render_output_path_cb(self, _context):
@@ -1792,7 +1827,15 @@ class FBP_AddonPreferences(AddonPreferences):
     pref_ui_show_preview_features: BoolProperty(name="Feature Scope", description="Show stable and preview feature controls", default=False)
     show_performance_dashboard: BoolProperty(
         name="Performance Dashboard",
-        description="Show the Performance Dashboard under Frame By Plane Diagnostics in the Output properties",
+        description="Show the Performance Dashboard panel in the Output properties",
+        default=False,
+    )
+    render_finish_sound: BoolProperty(
+        name="Sound When Render Finishes",
+        description=(
+            "Play a short, bright chord when a render finishes successfully, "
+            "both a normal render and a Frame By Plane background render"
+        ),
         default=False,
     )
     pref_ui_show_diagnostics: BoolProperty(name="Diagnostics", description="Show repair, health and report tools", default=False)
@@ -3263,7 +3306,10 @@ class FBP_LayerItem(PropertyGroup):
     def obj(self):
         name = str(getattr(self, "obj_name", "") or "")
         runtime_key = str(getattr(self, "obj_runtime_key", "") or "")
-        candidate = bpy.data.objects.get(name) if name else None
+        if not name:
+            return None
+        index = _fbp_index.active_name_index()
+        candidate = index.data_object(name) if index is not None else bpy.data.objects.get(name)
         if candidate:
             try:
                 if (
@@ -3986,6 +4032,60 @@ def register_properties():
         default='AUTO',
         update=update_alpha_render_method_cb,
     )
+    _FBP_SCENE_RNA.fbp_render_advanced = BoolProperty(
+        name="Advanced Render",
+        description=(
+            "Let Frame By Plane build the render folder and file name and write "
+            "them into Blender's Output path. Off: Blender's own Output settings "
+            "are used unchanged"
+        ),
+        default=False,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_folder = BoolProperty(
+        name="Use Folder",
+        description="Build the render folder here. Off: frames are written straight into the Project Folder",
+        default=True,
+        update=_render_section_toggle_cb("fbp_render_show_folder"),
+    )
+    _FBP_SCENE_RNA.fbp_render_use_file_naming = BoolProperty(
+        name="Use File Naming",
+        description="Build the file name here. Off: files are named with the frame number only",
+        default=True,
+        update=_render_section_toggle_cb("fbp_render_show_file_naming"),
+    )
+    _FBP_SCENE_RNA.fbp_render_use_prefix = BoolProperty(
+        name="Use Prefix",
+        description="Include the Prefix section in the file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_name = BoolProperty(
+        name="Use Name",
+        description="Include the Name section in the file name; an empty Name uses the .blend file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_suffix = BoolProperty(
+        name="Use Suffix",
+        description="Include the Suffix section in the file name",
+        default=True,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_prefix_token = EnumProperty(
+        name="Prefix Token",
+        description="Add a letter, a number or both after the Prefix text",
+        items=RENDER_TOKEN_MODE_ITEMS,
+        default='NONE',
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_suffix_token = EnumProperty(
+        name="Suffix Token",
+        description="Add a letter, a number or both after the Suffix text",
+        items=RENDER_TOKEN_MODE_ITEMS,
+        default='NONE',
+        update=update_render_output_path_cb,
+    )
     _FBP_SCENE_RNA.fbp_render_output_dir = StringProperty(
         name="Render Folder",
         description="Root output folder synchronized with Blender's native Render File Path",
@@ -4043,6 +4143,18 @@ def register_properties():
         name="Suffix",
         description="Optional suffix for the generated folder; empty values are skipped",
         default="",
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_folder_use_date = BoolProperty(
+        name="Add Date",
+        description="Add the export date to the generated folder name, in the day/month/year order of Blender's language",
+        default=False,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_folder_date_style = EnumProperty(
+        name="Date Style",
+        description="How the export date is written in the folder name",
+        items=_render_date_style_items,
         update=update_render_output_path_cb,
     )
     _FBP_SCENE_RNA.fbp_render_folder_mode = EnumProperty(

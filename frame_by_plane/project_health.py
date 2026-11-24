@@ -72,7 +72,7 @@ def active_project_doctor_issue(scene):
     """Return the active issue without leaking invalid RNA references."""
     try:
         issues = scene.fbp_health_issues
-        index = int(getattr(scene, "fbp_health_issue_index", -1) or -1)
+        index = int(getattr(scene, "fbp_health_issue_index", -1))
         return issues[index] if 0 <= index < len(issues) else None
     except (IndexError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return None
@@ -131,23 +131,6 @@ def _safe_image_path(image):
         return os.path.normcase(os.path.abspath(bpy.path.abspath(raw))) if raw else ""
     except (AttributeError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
         return ""
-
-
-def _sequence_end(rig):
-    try:
-        start = int(getattr(rig, "fbp_start_frame", 1) or 1)
-        images = tuple(getattr(rig, "fbp_images", ()) or ())
-    except FBP_DATA_ERRORS:
-        return None
-    if not images:
-        return None
-    durations = []
-    for item in images:
-        try:
-            durations.append(max(1, int(getattr(item, "duration", 1) or 1)))
-        except FBP_DATA_ERRORS:
-            durations.append(1)
-    return start + max(1, sum(durations)) - 1
 
 
 def _iter_project_driver_owners(scene, rigs):
@@ -612,7 +595,6 @@ def scan_project_health(scene, *, repair=False):
             collect_project_image_paths,
             collection_has_fbp_content,
             iter_scene_fbp_rigs,
-            iter_fbp_rigs_in_collection,
             missing_project_images,
             rig_has_missing_images,
         )
@@ -631,15 +613,8 @@ def scan_project_health(scene, *, repair=False):
             rig_name = str(getattr(rig, "name", "<layer>") or "<layer>")
             if rig_has_missing_images(rig):
                 _append_unique(issues, _issue("ERROR", "BROKEN_SOURCE", "Layer contains one or more missing source images", object_name=rig_name, repair_hint="Relink or replace this source"), seen)
-            start = int(getattr(rig, "fbp_start_frame", scene.frame_start) or scene.frame_start)
-            end = _sequence_end(rig)
-            if end is not None and (start < int(scene.frame_start) or end > int(scene.frame_end)):
-                stats["out_of_range_layers"] += 1
-                _append_unique(
-                    issues,
-                    _issue("INFO", "FRAME_RANGE", f"Layer timing extends outside the Scene range ({start}–{end})", object_name=rig_name),
-                    seen,
-                )
+            # A layer whose timing does not cover the whole Scene range is a
+            # normal editing choice, not a project problem: not reported.
             try:
                 hidden_view = bool(rig.hide_viewport or rig.hide_get())
                 hidden_render = bool(rig.hide_render)
@@ -649,7 +624,7 @@ def scan_project_health(scene, *, repair=False):
                 stats["hidden_render_enabled"] += 1
                 _append_unique(
                     issues,
-                    _issue("WARNING", "HIDDEN_RENDER", "Layer is hidden in the viewport but remains enabled for render", object_name=rig_name),
+                    _issue("INFO", "HIDDEN_RENDER", "Layer is hidden in the viewport but will still appear in the render", object_name=rig_name),
                     seen,
                 )
 
@@ -658,9 +633,7 @@ def scan_project_health(scene, *, repair=False):
             if collection_has_fbp_content(coll, True)
         )
         stats["collections"] = len(fbp_collections)
-        for coll in fbp_collections:
-            if not any(True for _ in iter_fbp_rigs_in_collection(coll, True)):
-                _append_unique(issues, _issue("INFO", "EMPTY_COLLECTION", "Frame By Plane collection contains no layers", data_name=coll.name), seen)
+        # An empty Frame By Plane collection is harmless: not reported.
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         rigs = ()
         _append_unique(issues, _issue("ERROR", "LAYER_SCAN", f"Could not inspect Frame By Plane layers: {exc}"), seen)
@@ -1175,7 +1148,7 @@ def scan_project_health(scene, *, repair=False):
             continue
         stats["duplicate_image_wrappers"] += len(images) - 1
         names = ", ".join(str(getattr(image, "name", "<image>")) for image in images[:4])
-        _append_unique(issues, _issue("WARNING", "DUPLICATE_IMAGE", f"Multiple {source_type.title()} image datablocks reference the same source: {names}", data_name=path), seen)
+        _append_unique(issues, _issue("INFO", "DUPLICATE_IMAGE", f"Multiple {source_type.title()} image datablocks reference the same source: {names}", data_name=path), seen)
 
     # Validate the versioned Layer Node contract only when the preview has
     # actually been built. This is read-only: future schemas are never rebuilt

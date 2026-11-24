@@ -589,6 +589,13 @@ def _fbp_collection_list_domain(collection, plane_count=0, gp_count=0):
         return "GP"
     return "PLANES"
 def _fbp_build_layer_tree_cache_uncached(context):
+    """Build the Layer Tree snapshot with name lookups indexed for the pass."""
+    from .layers import fbp_collection_members_memo
+    with fbp_collection_members_memo():
+        return _fbp_build_layer_tree_cache_pass(context)
+
+
+def _fbp_build_layer_tree_cache_pass(context):
     """Build one O(layers + collections) snapshot for Layer Tree draw/rebuild.
 
     The old UI path repeatedly scanned every Scene layer once per Collection and
@@ -671,13 +678,15 @@ def _fbp_build_layer_tree_cache_uncached(context):
     except FBP_DATA_ERRORS:
         layer_items = ()
 
+    from .fbp_index import NameIndex, active_name_index
+    name_index = active_name_index() or NameIndex()
     for index, layer_item in enumerate(layer_items):
         try:
             rig = getattr(layer_item, "obj", None)
             if not rig or not is_fbp_layer_object(rig):
                 continue
             rig_name = str(getattr(rig, "name", "") or "")
-            if not rig_name or scene.objects.get(rig_name) != rig:
+            if not rig_name or name_index.scene_object(scene, rig_name) != rig:
                 continue
         except FBP_DATA_ERRORS:
             continue
@@ -1272,22 +1281,35 @@ def fbp_refresh_layer_tree_group_snapshots(context):
     rows = getattr(scene, "fbp_layer_tree_rows", None) if scene is not None else None
     if rows is None:
         return False
-    changed = False
+    from .layers import fbp_collection_members_memo
+    from .fbp_index import active_name_index
+
+    # Read every group in one pass (members and names resolved once), then
+    # write the rows outside it, so no row update runs inside the pass.
+    pending = []
     try:
-        for row in rows:
-            if str(getattr(row, "row_type", "") or "") != "GROUP":
-                continue
-            name = str(getattr(row, "collection_name", "") or "")
-            collection = bpy.data.collections.get(name) if name else None
-            if collection is None:
-                continue
-            try:
-                values = _fbp_collection_row_values(collection, context)
-            except FBP_DATA_ERRORS:
-                values = tuple(default for _name, default in _FBP_COLLECTION_ROW_FIELDS)
-            changed = _fbp_write_collection_row(row, values) or changed
+        with fbp_collection_members_memo():
+            names = active_name_index()
+            for row in rows:
+                if str(getattr(row, "row_type", "") or "") != "GROUP":
+                    continue
+                name = str(getattr(row, "collection_name", "") or "")
+                collection = names.data_collection(name) if name else None
+                if collection is None:
+                    continue
+                try:
+                    values = _fbp_collection_row_values(collection, context)
+                except FBP_DATA_ERRORS:
+                    values = tuple(default for _name, default in _FBP_COLLECTION_ROW_FIELDS)
+                pending.append((row, values))
     except FBP_DATA_ERRORS:
-        return changed
+        pass
+    changed = False
+    for row, values in pending:
+        try:
+            changed = _fbp_write_collection_row(row, values) or changed
+        except FBP_DATA_ERRORS:
+            continue
     return changed
 
 def fbp_rebuild_layer_tree_rows(context):
@@ -2077,6 +2099,13 @@ def draw_creation_ui(layout, context):
     if sc.fbp_show_project_tools:
         box = layout.box()
         box.prop(sc, "fbp_project_path", text="")
+        if not str(getattr(sc, "fbp_project_path", "") or "").strip():
+            from .path_utils import fbp_blender_project_root
+            project_root = fbp_blender_project_root()
+            if project_root:
+                hint = box.row(align=False)
+                hint.enabled = False
+                hint.label(text=f"Empty: uses the Blender Project · {project_root}", icon=fbp_icon("FILE_FOLDER"))
         row = adaptive_row(box, context)
         row.operator("fbp.scan_project_to_setup", icon=fbp_icon("IMPORT"), text="Scan to Setup")
         row.operator("fbp.auto_scene_builder", icon=fbp_icon("OUTLINER_COLLECTION"), text="Build Direct")
