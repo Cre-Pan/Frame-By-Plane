@@ -2743,19 +2743,30 @@ class FBP_UL_CompositorEffects(UIList):
                 row.label(text=f'{round(item.effect_mix * 100):d}%')
 
 
-def _fbp_output_collapsible_box(layout, scene, property_name, title, icon):
+def _fbp_output_collapsible_box(layout, scene, property_name, title, use_property=None):
+    """Foldable box: arrow, optional on/off checkbox and title, nothing on the right.
+
+    With the checkbox off the section stays folded.
+    """
     box = layout.box()
     configure_layout(box)
-    opened = bool(getattr(scene, property_name, True))
-    row = box.row(align=False)
-    row.prop(
+    used = True if use_property is None else bool(getattr(scene, use_property, True))
+    opened = used and bool(getattr(scene, property_name, True))
+    row = box.row(align=True)
+    arrow = row.row(align=True)
+    arrow.enabled = used
+    arrow.prop(
         scene,
         property_name,
-        text=title,
+        text="",
         icon=('DOWNARROW_HLT' if opened else 'RIGHTARROW'),
         emboss=False,
     )
-    row.label(text="", icon=icon)
+    if use_property is not None:
+        row.prop(scene, use_property, text="")
+    title_row = row.row(align=True)
+    title_row.active = used
+    title_row.label(text=title)
     return box if opened else None
 
 
@@ -2788,66 +2799,75 @@ class FBP_MT_RenderFolderTag(Menu):
             op.value = value
 
 
+def _fbp_folder_tag_label(scene):
+    tag = str(getattr(scene, "fbp_render_folder_tag", 'NONE') or 'NONE')
+    return "No Tag" if tag == 'NONE' else tag
+
+
 class FBP_OT_SetRenderToken(Operator):
     bl_idname = "fbp.set_render_token"
     bl_label = "Set Filename Token"
-    bl_description = "Choose the optional letter/number token and where it is placed"
+    bl_description = "Add a letter, a number or both after the Prefix or Suffix text"
     bl_options = {'REGISTER', 'UNDO'}
 
     mode: StringProperty(default='NONE', options={'SKIP_SAVE'})
     position: StringProperty(default='BEFORE', options={'SKIP_SAVE'})
 
     def execute(self, context):
+        from .render_output import fbp_render_section_token
+
         scene = context.scene
-        scene.fbp_render_token_position = self.position
-        scene.fbp_render_token_mode = self.mode
+        # Move a token saved by older versions (one token + position) into
+        # its section first, so changing the other section does not drop it.
+        prefix_mode = fbp_render_section_token(scene, 'PREFIX')
+        suffix_mode = fbp_render_section_token(scene, 'SUFFIX')
+        if self.position == 'BEFORE':
+            prefix_mode = self.mode
+        else:
+            suffix_mode = self.mode
+        scene.fbp_render_token_mode = 'NONE'
+        scene.fbp_render_prefix_token = prefix_mode
+        scene.fbp_render_suffix_token = suffix_mode
         return {'FINISHED'}
 
 
+_FBP_RENDER_TOKEN_CHOICES = (
+    ('NONE', "None"),
+    ('LETTER', "Letter"),
+    ('NUMBER', "Number"),
+    ('LETTER_NUMBER', "Both"),
+)
+
+
 def _fbp_draw_render_token_menu(layout, context, position):
+    from .render_output import fbp_render_section_token, fbp_render_token_text
+
     layout = configure_layout(layout)
-    layout.use_property_split = False
-    layout.use_property_decorate = False
     scene = context.scene
-    current_position = str(
-        getattr(scene, "fbp_render_token_position", 'BEFORE') or 'BEFORE'
-    )
-    current_mode = str(getattr(scene, "fbp_render_token_mode", 'NONE') or 'NONE')
-    active_mode = current_mode if current_position == position else 'NONE'
-    layout.label(
-        text="Before Prefix" if position == 'BEFORE' else "After Suffix",
-        icon='SORTALPHA' if position == 'BEFORE' else 'LINENUMBERS_ON',
-    )
+    section = 'PREFIX' if position == 'BEFORE' else 'SUFFIX'
+    active_mode = fbp_render_section_token(scene, section)
+    text = str(
+        getattr(scene, "fbp_render_prefix" if section == 'PREFIX' else "fbp_render_suffix", "")
+        or ""
+    ).strip() or ("Prefix" if section == 'PREFIX' else "Suffix")
     choices = layout.column(align=True)
-    for mode, label, icon in (
-        ('NONE', "None", 'X'),
-        ('LETTER', "Letter", 'FONT_DATA'),
-        ('NUMBER', "Number", 'LINENUMBERS_ON'),
-        ('LETTER_NUMBER', "Letter + Number", 'SORTALPHA'),
-    ):
-        active = mode == active_mode
+    for mode, label in _FBP_RENDER_TOKEN_CHOICES:
+        if mode != 'NONE':
+            example = fbp_render_token_text(scene, mode)
+            label = f'{label}  "{text} {example}"'
         op = choices.operator(
             "fbp.set_render_token",
             text=label,
-            icon=('RADIOBUT_ON' if active else icon),
-            depress=active,
+            icon=('X' if mode == 'NONE' else 'NONE'),
+            depress=(mode == active_mode),
         )
         op.mode = mode
         op.position = position
-    if active_mode != 'NONE':
-        settings = layout.column(align=True)
-        settings.use_property_split = False
-        settings.use_property_decorate = False
-        if active_mode in {'LETTER', 'LETTER_NUMBER'}:
-            settings.prop(scene, "fbp_render_letter", text="Start Letter")
-        if active_mode in {'NUMBER', 'LETTER_NUMBER'}:
-            settings.prop(scene, "fbp_render_number", text="Start Number")
-            settings.prop(scene, "fbp_render_number_digits", text="Digits")
 
 
 class FBP_MT_RenderTokenBefore(Menu):
     bl_idname = "FBP_MT_render_token_before"
-    bl_label = "Token Before Prefix"
+    bl_label = "Prefix Token"
 
     def draw(self, context):
         _fbp_draw_render_token_menu(self.layout, context, 'BEFORE')
@@ -2855,10 +2875,53 @@ class FBP_MT_RenderTokenBefore(Menu):
 
 class FBP_MT_RenderTokenAfter(Menu):
     bl_idname = "FBP_MT_render_token_after"
-    bl_label = "Token After Suffix"
+    bl_label = "Suffix Token"
 
     def draw(self, context):
         _fbp_draw_render_token_menu(self.layout, context, 'AFTER')
+
+
+def _fbp_draw_name_section(layout, scene, section):
+    """One Prefix / Name / Suffix row: checkbox, label, text and token menu."""
+    from .render_output import fbp_render_section_token, fbp_render_token_text
+
+    use_prop, text_prop, label = {
+        'PREFIX': ("fbp_render_use_prefix", "fbp_render_prefix", "Prefix"),
+        'NAME': ("fbp_render_use_name", "fbp_render_custom_name", "Name"),
+        'SUFFIX': ("fbp_render_use_suffix", "fbp_render_suffix", "Suffix"),
+    }[section]
+    used = bool(getattr(scene, use_prop, True))
+    row = layout.row(align=False)
+    row.prop(scene, use_prop, text="")
+    body = row.row(align=True)
+    body.active = used
+    split = body.split(factor=0.22, align=True)
+    split.label(text=label)
+    fields = split.row(align=True)
+    if section == 'NAME':
+        try:
+            fields.prop(scene, text_prop, text="", placeholder=".blend file name")
+        except TypeError:
+            fields.prop(scene, text_prop, text="")
+        return
+    fields.prop(scene, text_prop, text="")
+    mode = fbp_render_section_token(scene, section)
+    token = fbp_render_token_text(scene, mode)
+    tokens = fields.row(align=True)
+    tokens.ui_units_x = 3.2
+    tokens.menu(
+        "FBP_MT_render_token_before" if section == 'PREFIX' else "FBP_MT_render_token_after",
+        text=(token or "None"),
+        icon=('X' if mode == 'NONE' else 'NONE'),
+    )
+
+
+def _fbp_name_plus(layout):
+    row = layout.row(align=False)
+    row.alignment = 'CENTER'
+    row.scale_y = 0.6
+    row.enabled = False
+    row.label(text="+")
 
 
 class FBP_PT_OutputAnchor(Panel):
@@ -2881,8 +2944,11 @@ class FBP_PT_OutputAnchor(Panel):
 
 
 class FBP_PT_OutputRender(Panel):
-    bl_label = "Frame By Plane Render"
-    bl_description = "Background render and alpha output controls for Frame By Plane"
+    bl_label = "Advanced Render"
+    bl_description = (
+        "Build the render folder and file name with Frame By Plane and write "
+        "them into Blender's Output path"
+    )
     bl_idname = "FBP_PT_output_render"
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
@@ -2892,7 +2958,7 @@ class FBP_PT_OutputRender(Panel):
     bl_order = 0
 
     def draw_header(self, context):
-        self.layout.label(text="", icon=ui_icon("settings.render_tab"))
+        self.layout.prop(context.scene, "fbp_render_advanced", text="")
 
     def draw(self, context):
         layout = configure_layout(self.layout)
@@ -2909,10 +2975,32 @@ class FBP_PT_OutputRender(Panel):
         row = project.row(align=False)
         row.scale_y = 1.05
         row.prop(sc, "fbp_project_path", text="")
+        if not str(getattr(sc, "fbp_project_path", "") or "").strip():
+            from .render_output import fbp_blender_project
 
-        section_gap(content)
+            project_name, project_root = fbp_blender_project()
+            if project_root:
+                hint_row(
+                    project,
+                    f"Empty: uses the Blender Project {project_name or ''} · {project_root}".replace("  ", " "),
+                    icon='FILE_FOLDER',
+                )
+
+        advanced = bool(getattr(sc, "fbp_render_advanced", False))
+        render_column = content.column(align=False)
+        if not advanced:
+            section_gap(content)
+            hint_row(
+                render_column,
+                "Off · Blender's Output settings are used as they are",
+                icon='INFO',
+            )
+            render_column = render_column.column(align=False)
+            render_column.enabled = False
+
+        section_gap(render_column)
         folder = _fbp_output_collapsible_box(
-            content, sc, "fbp_render_show_folder", "Folder", 'FILE_FOLDER'
+            render_column, sc, "fbp_render_show_folder", "Folder", "fbp_render_use_folder"
         )
         if folder is not None:
             selector = folder.row(align=True)
@@ -2922,133 +3010,98 @@ class FBP_PT_OutputRender(Panel):
                 row = folder.row(align=False)
                 row.prop(sc, "fbp_render_output_dir", text="")
                 row.operator("fbp.open_render_output_folder", text="", icon='FILE_FOLDER')
-            elif is_compact(context):
-                row = folder.row(align=True)
-                row.prop(sc, "fbp_render_folder_prefix", text="Prefix")
-                row = folder.row(align=True)
-                row.prop(sc, "fbp_render_folder_name", text="+ Name")
-                row.menu("FBP_MT_render_folder_tag", text="", icon='TAG')
-                row = folder.row(align=True)
-                row.prop(sc, "fbp_render_folder_builder_suffix", text="+ Suffix")
             else:
-                row = folder.row(align=True)
-                row.prop(sc, "fbp_render_folder_prefix", text="Prefix")
-                name = row.row(align=True)
-                name.prop(sc, "fbp_render_folder_name", text="+ Name")
-                name.menu("FBP_MT_render_folder_tag", text="", icon='TAG')
-                row.prop(sc, "fbp_render_folder_builder_suffix", text="+ Suffix")
+                stack = folder.column(align=False)
+                for prop, label in (
+                    ("fbp_render_folder_prefix", "Prefix"),
+                    ("fbp_render_folder_name", "Name"),
+                    ("fbp_render_folder_builder_suffix", "Suffix"),
+                ):
+                    if prop != "fbp_render_folder_prefix":
+                        _fbp_name_plus(stack)
+                    line = stack.row(align=False)
+                    # Blank slot where File Naming has its checkbox, so the
+                    # two stacks line up.
+                    line.label(text="", icon='BLANK1')
+                    split = line.split(factor=0.22, align=True)
+                    split.label(text=label)
+                    fields = split.row(align=True)
+                    if prop == "fbp_render_folder_name":
+                        try:
+                            fields.prop(sc, prop, text="", placeholder=".blend file name")
+                        except TypeError:
+                            fields.prop(sc, prop, text="")
+                        fields.menu("FBP_MT_render_folder_tag", text=_fbp_folder_tag_label(sc), icon='TAG')
+                    else:
+                        fields.prop(sc, prop, text="")
+                _fbp_name_plus(stack)
+                line = stack.row(align=False)
+                line.prop(sc, "fbp_render_folder_use_date", text="")
+                body = line.row(align=True)
+                body.active = bool(sc.fbp_render_folder_use_date)
+                split = body.split(factor=0.22, align=True)
+                split.label(text="Date")
+                split.prop(sc, "fbp_render_folder_date_style", text="")
             folder_preview = fbp_render_folder_name(sc)
             if folder_preview:
                 hint_row(folder, folder_preview, icon='FILE_FOLDER', disabled=False)
 
-        section_gap(content)
+        section_gap(render_column)
         naming = _fbp_output_collapsible_box(
-            content, sc, "fbp_render_show_file_naming", "File Naming", ui_icon("layer.sort_alpha")
+            render_column, sc, "fbp_render_show_file_naming", "File Naming", "fbp_render_use_file_naming"
         )
         if naming is not None:
-            if is_compact(context):
-                row = naming.row(align=True)
-                row.prop(sc, "fbp_render_prefix", text="Prefix")
-                row.menu("FBP_MT_render_token_before", text="", icon='SORTALPHA')
-                row = naming.row(align=True)
-                row.prop(sc, "fbp_render_custom_name", text="+ Name")
-                row = naming.row(align=True)
-                row.prop(sc, "fbp_render_suffix", text="+ Suffix")
-                row.menu("FBP_MT_render_token_after", text="", icon='LINENUMBERS_ON')
-            else:
-                row = naming.row(align=True)
-                prefix = row.row(align=True)
-                prefix.prop(sc, "fbp_render_prefix", text="Prefix")
-                prefix.menu("FBP_MT_render_token_before", text="", icon='SORTALPHA')
-                row.prop(sc, "fbp_render_custom_name", text="+ Name")
-                suffix = row.row(align=True)
-                suffix.prop(sc, "fbp_render_suffix", text="+ Suffix")
-                suffix.menu("FBP_MT_render_token_after", text="", icon='LINENUMBERS_ON')
-            if is_compact(context):
-                row = naming.row(align=False)
-                row.prop(sc, "fbp_render_separator", text="Separator")
-                row = naming.row(align=False)
-                row.prop(sc, "fbp_render_frame_digits", text="Frame Digits")
-            else:
-                row = naming.row(align=False)
-                row.prop(sc, "fbp_render_separator", text="Separator")
-                row.prop(sc, "fbp_render_frame_digits", text="Frame Digits")
-            hint_row(
-                naming,
-                "Empty Name = .blend Project File Name · Empty Prefix/Suffix = skip",
-                icon='INFO',
-            )
+            sections = naming.column(align=False)
+            _fbp_draw_name_section(sections, sc, 'PREFIX')
+            _fbp_name_plus(sections)
+            _fbp_draw_name_section(sections, sc, 'NAME')
+            _fbp_name_plus(sections)
+            _fbp_draw_name_section(sections, sc, 'SUFFIX')
+
+            from .render_output import fbp_render_section_token
+
+            token_modes = {
+                fbp_render_section_token(sc, 'PREFIX') if sc.fbp_render_use_prefix else 'NONE',
+                fbp_render_section_token(sc, 'SUFFIX') if sc.fbp_render_use_suffix else 'NONE',
+            }
+            uses_letter = bool(token_modes & {'LETTER', 'LETTER_NUMBER'})
+            uses_number = bool(token_modes & {'NUMBER', 'LETTER_NUMBER'})
+            if uses_letter or uses_number:
+                tokens = naming.row(align=True)
+                if uses_letter:
+                    tokens.prop(sc, "fbp_render_letter", text="Letter")
+                if uses_number:
+                    tokens.prop(sc, "fbp_render_number", text="Number")
+                    tokens.prop(sc, "fbp_render_number_digits", text="Digits")
+
+            naming.separator(factor=0.5)
+            row = adaptive_row(naming, context, align=False)
+            row.prop(sc, "fbp_render_separator", text="Separator")
+            row.prop(sc, "fbp_render_frame_digits", text="Frame Digits")
             preview = fbp_render_filename_preview(sc)
             if preview:
                 hint_row(naming, preview, icon='FILE_IMAGE', disabled=False)
 
-        section_gap(content)
-        extension = _fbp_output_collapsible_box(
-            content, sc, "fbp_render_show_file_extension", "File Extension", 'OUTPUT'
-        )
-        if extension is not None:
-            kind = extension.row(align=True)
-            kind.prop(sc, "fbp_render_output_kind", expand=True)
-            if sc.fbp_render_output_kind == 'VIDEO':
-                row = extension.row(align=False)
-                row.label(text="PNG sequence → MP4", icon='FILE_MOVIE')
-                ffmpeg = fbp_find_ffmpeg_executable(sc)
-                if ffmpeg:
-                    hint_row(extension, ffmpeg, icon='CHECKMARK')
-                else:
-                    row = extension.row(align=False)
-                    row.alert = True
-                    row.prop(sc, "fbp_render_ffmpeg_executable", text="FFmpeg")
-            else:
-                row = extension.row(align=False)
-                row.prop(sc.render.image_settings, "file_format", text="Format")
-            row = extension.row(align=False)
-            row.prop(
-                sc,
-                "fbp_compositor_transparent",
-                text="Transparency",
-                toggle=True,
-                icon='TEXTURE_DATA',
-            )
-            if hasattr(sc.render, 'anisotropic_filter'):
-                row.prop(sc.render, 'anisotropic_filter', text='Image Sampling')
-
-        section_gap(content)
-        row = content.row(align=False)
+        section_gap(render_column)
+        files = render_column.box()
+        configure_layout(files)
+        section_header(files, "Existing Files", icon='FILE_REFRESH')
+        row = files.row(align=False)
         if hasattr(sc.render, "use_overwrite"):
             row.prop(sc.render, "use_overwrite", text="Overwrite", toggle=True, icon='FILE_REFRESH')
         if hasattr(sc.render, "use_placeholder"):
             row.prop(sc.render, "use_placeholder", text="Placeholders", toggle=True, icon='FILE_TICK')
-        hint_row(
-            content,
-            "Placeholders reserve frames for parallel renders; with Overwrite off, completed files are skipped.",
-            icon='INFO',
-        )
+        if hasattr(sc.render, "use_overwrite") and not bool(sc.render.use_overwrite):
+            hint_row(files, "Frames already on disk are skipped", icon='INFO')
 
-        section_gap(content)
-        range_box = _fbp_output_collapsible_box(
-            content, sc, "fbp_render_show_frame_range", "Frame Range", 'TIME'
-        )
-        if range_box is not None:
-            row = adaptive_row(range_box, context, align=False, scale=1.05, threshold=300.0)
-            row.prop(sc, "frame_start", text="Start")
-            row.prop(sc, "frame_end", text="End")
-            row.prop(sc, "frame_step", text="Step")
-            row.operator("fbp.repair_render_state", icon=ui_icon("settings.repair"), text="")
-
-        section_gap(content)
-        actions = content.box()
-        configure_layout(actions)
-        section_header(actions, "Background Render", icon=ui_icon("settings.render_sequence"))
-        row = adaptive_row(actions, context, align=False, scale=1.08)
-        row.operator("fbp.save_file", text="Save", icon=ui_icon("settings.save"))
-        if getattr(sc, 'fbp_background_render_running', False):
-            row.operator("fbp.stop_background_render", icon='CANCEL', text="Stop")
-            row.operator("fbp.background_render_status", icon='INFO', text="Status")
-        else:
-            row.operator("fbp.background_render_frames", icon=ui_icon("settings.render_sequence"), text="Render")
-            row.operator("fbp.background_render_status", icon='INFO', text="Status")
-        actions.prop(sc, "fbp_background_render_keep_log", text="Keep Successful Log", toggle=True, icon='TEXT')
+        prefs = _fbp_ui_preferences(context)
+        if prefs is not None and hasattr(prefs, "render_finish_sound"):
+            section_gap(content)
+            finished = content.box()
+            configure_layout(finished)
+            row = finished.row(align=True)
+            row.prop(prefs, "render_finish_sound", text="Play Sound When Render Finishes")
+            row.operator("fbp.preview_render_finished_sound", text="", icon='PLAY_SOUND')
 
         if str(getattr(sc.render, 'engine', '') or '') == 'CYCLES' and hasattr(sc.render, 'use_texture_cache'):
             section_gap(content)
@@ -3061,15 +3114,6 @@ class FBP_PT_OutputRender(Panel):
             auto.enabled = bool(sc.render.use_texture_cache)
             if hasattr(sc.render, 'use_auto_generate_texture_cache'):
                 auto.prop(sc.render, 'use_auto_generate_texture_cache', text='Auto Generate', toggle=True, icon='FILE_REFRESH')
-
-        status = str(getattr(sc, 'fbp_background_render_status', '') or '')
-        progress = int(getattr(sc, 'fbp_background_render_progress', 0) or 0)
-        if status and status != 'Idle':
-            row = actions.row(align=False)
-            row.scale_y = 0.95
-            row.label(text=status, icon='INFO')
-            if progress > 0:
-                row.label(text=f"{progress}%", icon='RENDER_RESULT')
 
         section_gap(content)
         project_actions = content.box()
@@ -3088,176 +3132,236 @@ class FBP_PT_OutputRender(Panel):
         row.operator("fbp.apply_preferences_to_scene", text="", icon='CHECKMARK')
 
 
-class FBP_PT_Diagnostics(Panel):
-    """One Output panel for project checks: Project Doctor, then (optional) Performance."""
+def _fbp_doctor_scan_time(scene):
+    """Last scan time as local ``HH:MM`` (with the date when not today)."""
+    raw = str(getattr(scene, "fbp_health_last_run", "") or "")
+    if not raw:
+        return ""
+    try:
+        from datetime import datetime
 
-    bl_label = "Frame By Plane Diagnostics"
-    bl_description = "Check and repair the project, and compare layer and effect cost"
-    bl_idname = "FBP_PT_diagnostics"
-    bl_space_type = "PROPERTIES"
-    bl_region_type = "WINDOW"
-    bl_context = "output"
-    bl_parent_id = "FBP_PT_output_anchor"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
+        stamp = datetime.fromisoformat(raw).astimezone()
+        if stamp.date() == datetime.now().astimezone().date():
+            return stamp.strftime("%H:%M")
+        return stamp.strftime("%d/%m %H:%M")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return raw.replace("T", " ")[:16]
 
-    def draw_header(self, context):
-        FBP_PT_ProjectDoctor.draw_header(self, context)
 
-    def draw(self, _context):
-        pass
+def _fbp_doctor_status(scene):
+    return str(getattr(scene, "fbp_health_last_status", "NOT_RUN") or "NOT_RUN").upper()
 
 
 class FBP_PT_ProjectDoctor(Panel):
     bl_label = "Project Doctor"
-    bl_description = "Scan, navigate and safely repair Frame By Plane project problems"
+    bl_description = "Check the project for missing files and damaged setups, and repair them safely"
     bl_idname = "FBP_PT_project_doctor"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "output"
-    bl_parent_id = "FBP_PT_diagnostics"
-    bl_order = 0
+    bl_options = {"DEFAULT_CLOSED"}
+    # After Blender's own Output panels: the Doctor is an occasional tool.
+    bl_order = 1000
 
     def draw_header(self, context):
-        status = str(getattr(context.scene, "fbp_health_last_status", "NOT_RUN") or "NOT_RUN").upper()
-        icon = "CHECKMARK" if status == "PASS" else "ERROR" if status == "ERROR" else "INFO" if status == "WARNING" else "QUESTION"
+        status = _fbp_doctor_status(context.scene)
+        icon = (
+            "CHECKMARK" if status == "PASS"
+            else "ERROR" if status == "ERROR"
+            else "INFO" if status == "WARNING"
+            else "QUESTION"
+        )
         self.layout.label(text="", icon=icon)
+
+    def draw_header_preset(self, context):
+        scene = context.scene
+        status = _fbp_doctor_status(scene)
+        if status == "NOT_RUN":
+            return
+        counts = project_doctor_counts(scene)
+        problems = int(counts["ERROR"]) + int(counts["WARNING"])
+        row = self.layout.row(align=True)
+        row.enabled = False
+        row.label(text=("No problems" if not problems else f"{problems} to check"))
 
     def draw(self, context):
         layout = configure_layout(self.layout)
         scene = context.scene
+        status = _fbp_doctor_status(scene)
         counts = project_doctor_counts(scene)
-        issue_count = sum(counts.values())
+        issues = tuple(getattr(scene, "fbp_health_issues", ()) or ())
+        issue_count = len(issues)
+        fixable_count = sum(
+            1 for item in issues if str(getattr(item, "fix_action", "") or "")
+        )
 
-        actions = layout.row(align=True)
-        scan = actions.operator("fbp.project_health_check", text="Scan", icon="VIEWZOOM")
+        if status == "NOT_RUN":
+            intro = layout.column(align=True)
+            intro.enabled = False
+            label_multiline(
+                intro,
+                "Looks for missing source files, broken layers, effects and "
+                "masks, and repairs what can be repaired safely.",
+                icon="INFO",
+            )
+            layout.separator(factor=0.5)
+            row = layout.row(align=True)
+            row.scale_y = 1.4
+            scan = row.operator("fbp.project_health_check", text="Scan Project", icon="VIEWZOOM")
+            scan.repair = False
+            return
+
+        # Result summary: one clear line, then the actions.
+        summary = layout.box()
+        configure_layout(summary)
+        head = summary.row(align=False)
+        problems = int(counts["ERROR"]) + int(counts["WARNING"])
+        if not issue_count:
+            head.label(text="No problems found", icon="CHECKMARK")
+        elif counts["ERROR"]:
+            head.alert = True
+            head.label(
+                text=f"{counts['ERROR']} error{'s' if counts['ERROR'] != 1 else ''}"
+                + (f" · {counts['WARNING']} warning{'s' if counts['WARNING'] != 1 else ''}" if counts["WARNING"] else ""),
+                icon="ERROR",
+            )
+        elif problems:
+            head.label(
+                text=f"{counts['WARNING']} warning{'s' if counts['WARNING'] != 1 else ''}",
+                icon="INFO",
+            )
+        else:
+            head.label(text="Only notes, nothing to repair", icon="CHECKMARK")
+        scan_time = _fbp_doctor_scan_time(scene)
+        if scan_time:
+            when = head.row(align=False)
+            when.alignment = "RIGHT"
+            when.enabled = False
+            when.label(text=scan_time, icon="TIME")
+
+        actions = summary.row(align=True)
+        actions.scale_y = 1.15
+        scan = actions.operator("fbp.project_health_check", text="Scan Again", icon="FILE_REFRESH")
         scan.repair = False
-        repair = actions.operator("fbp.project_health_check", text="Safe Repair", icon="RECOVER_LAST")
+        repair_row = actions.row(align=True)
+        repair_row.enabled = bool(issue_count)
+        repair = repair_row.operator(
+            "fbp.project_health_check",
+            text=(f"Safe Repair · {fixable_count}" if fixable_count else "Safe Repair"),
+            icon="RECOVER_LAST",
+        )
         repair.repair = True
         actions.operator("fbp.clear_project_doctor_results", text="", icon="X")
 
-        fixable_count = sum(
-            1
-            for item in tuple(getattr(scene, "fbp_health_issues", ()) or ())
-            if str(getattr(item, "fix_action", "") or "")
-        )
-        summary = layout.row(align=True)
-        summary.label(text=f"Errors {counts['ERROR']}", icon="ERROR")
-        summary.label(text=f"Warnings {counts['WARNING']}", icon="INFO")
-        summary.label(text=f"Info {counts['INFO']}", icon="DOT")
+        if not issue_count:
+            self._draw_report_tools(layout)
+            return
+
+        layout.separator(factor=0.4)
+        filters = layout.row(align=True)
+        filters.prop_enum(scene, "fbp_health_filter", "ALL", text=f"All {issue_count}")
+        for key, label, icon in (
+            ("ERROR", "Errors", "ERROR"),
+            ("WARNING", "Warnings", "INFO"),
+            ("INFO", "Notes", "DOT"),
+        ):
+            if counts[key]:
+                filters.prop_enum(scene, "fbp_health_filter", key, text=f"{counts[key]}", icon=icon)
         if fixable_count:
-            summary.label(text=f"Fixable {fixable_count}", icon="TOOL_SETTINGS")
+            filters.prop_enum(scene, "fbp_health_filter", "FIXABLE", text=f"{fixable_count}", icon="TOOL_SETTINGS")
 
-        list_box = fbp_draw_uilist_header(
-            layout, context, "PROJECT_DOCTOR", title="Issues"
+        layout.template_list(
+            "FBP_UL_ProjectDoctorIssues",
+            "project_doctor",
+            scene,
+            "fbp_health_issues",
+            scene,
+            "fbp_health_issue_index",
+            rows=max(3, min(7, issue_count)),
         )
-        last_run = str(getattr(scene, "fbp_health_last_run", "") or "")
-        if last_run:
-            timestamp = last_run.replace("T", " ").replace("+00:00", " UTC")
-            hint_row(list_box, f"Last scan · {timestamp}", icon="TIME", disabled=True)
 
-        if issue_count:
-            list_box.template_list(
-                "FBP_UL_ProjectDoctorIssues",
-                "project_doctor",
-                scene,
-                "fbp_health_issues",
-                scene,
-                "fbp_health_issue_index",
-                rows=max(4, min(8, issue_count)),
-            )
-            issue = active_project_doctor_issue(scene)
-            if issue is not None:
-                detail = layout.box()
-                severity = str(getattr(issue, "severity", "INFO") or "INFO").upper()
-                icon = "ERROR" if severity == "ERROR" else "INFO" if severity == "WARNING" else "DOT"
-                header = detail.row(align=True)
-                header.label(text=str(getattr(issue, "code", "GENERAL") or "GENERAL").replace("_", " ").title(), icon=icon)
-                location = str(getattr(issue, "object_name", "") or getattr(issue, "data_name", "") or "")
-                if location:
-                    header.label(text=location)
-                message = str(getattr(issue, "message", "") or "")
-                label_multiline(detail, message)
-                hint = str(getattr(issue, "repair_hint", "") or "")
-                if hint:
-                    detail.separator(factor=0.25)
-                    hint_line = detail.row(align=False)
-                    hint_line.enabled = False
-                    label_multiline(hint_line, hint, icon="TOOL_SETTINGS")
-                fix_action = str(getattr(issue, "fix_action", "") or "")
-                fix_description = str(
-                    getattr(issue, "fix_description", "") or ""
-                )
-                if fix_action:
-                    detail.separator(factor=0.25)
-                    action_box = detail.box()
-                    action_header = action_box.row(align=True)
-                    action_header.label(
-                        text=str(
-                            getattr(issue, "fix_label", "Fix Issue")
-                            or "Fix Issue"
-                        ),
-                        icon="TOOL_SETTINGS",
-                    )
-                    if fix_description:
-                        description_row = action_box.row(align=False)
-                        description_row.enabled = False
-                        label_multiline(description_row, fix_description, width=56)
-                    fix = action_box.operator(
-                        "fbp.fix_project_health_issue",
-                        text=str(
-                            getattr(issue, "fix_label", "Fix Issue")
-                            or "Fix Issue"
-                        ),
-                        icon="CHECKMARK",
-                    )
-                    fix.index = int(
-                        getattr(scene, "fbp_health_issue_index", -1) or -1
-                    )
-                navigation_action = str(
-                    getattr(issue, "navigation_action", "") or ""
-                )
-                if navigation_action:
-                    navigate = detail.operator(
-                        "fbp.navigate_project_health_issue",
-                        text=str(
-                            getattr(
-                                issue,
-                                "navigation_label",
-                                "Open Problem",
-                            )
-                            or "Open Problem"
-                        ),
-                        icon=(
-                            "RESTRICT_SELECT_OFF"
-                            if navigation_action == "SELECT_OBJECT"
-                            else "FILE_FOLDER"
-                            if navigation_action == "REVEAL_PATH"
-                            else "TEXT"
-                        ),
-                    )
-                    navigate.index = int(
-                        getattr(scene, "fbp_health_issue_index", -1) or -1
-                    )
+        issue = active_project_doctor_issue(scene)
+        if issue is not None:
+            self._draw_issue_detail(layout, scene, issue)
         else:
-            status = str(getattr(scene, "fbp_health_last_status", "NOT_RUN") or "NOT_RUN").upper()
-            if status == "PASS":
-                empty_state(layout, "No project problems found", icon="CHECKMARK")
-            else:
-                empty_state(layout, "Run Project Doctor to inspect this scene", icon="VIEWZOOM")
+            hint_row(layout, "Select a row to see what is wrong and how to fix it", icon="INFO")
 
-        report = layout.row(align=True)
-        report_tools = report.row(align=True)
+        self._draw_report_tools(layout)
+
+    @staticmethod
+    def _draw_issue_detail(layout, scene, issue):
+        detail = layout.box()
+        configure_layout(detail)
+        severity = str(getattr(issue, "severity", "INFO") or "INFO").upper()
+        icon = "ERROR" if severity == "ERROR" else "INFO" if severity == "WARNING" else "DOT"
+        header = detail.row(align=True)
+        header.label(
+            text=str(getattr(issue, "code", "GENERAL") or "GENERAL").replace("_", " ").title(),
+            icon=icon,
+        )
+        location = str(getattr(issue, "object_name", "") or getattr(issue, "data_name", "") or "")
+        if location:
+            where = header.row(align=True)
+            where.alignment = "RIGHT"
+            where.label(text=location, icon="OBJECT_DATA")
+        label_multiline(detail, str(getattr(issue, "message", "") or ""))
+        hint = str(getattr(issue, "repair_hint", "") or "")
+        if hint:
+            hint_line = detail.row(align=False)
+            hint_line.enabled = False
+            label_multiline(hint_line, hint, icon="LIGHT")
+
+        index = int(getattr(scene, "fbp_health_issue_index", -1))
+        fix_action = str(getattr(issue, "fix_action", "") or "")
+        navigation_action = str(getattr(issue, "navigation_action", "") or "")
+        if fix_action or navigation_action:
+            detail.separator(factor=0.3)
+            buttons = detail.row(align=True)
+            buttons.scale_y = 1.15
+            if fix_action:
+                fix = buttons.operator(
+                    "fbp.fix_project_health_issue",
+                    text=str(getattr(issue, "fix_label", "Fix Issue") or "Fix Issue"),
+                    icon="CHECKMARK",
+                )
+                fix.index = index
+            if navigation_action:
+                navigate = buttons.operator(
+                    "fbp.navigate_project_health_issue",
+                    text=str(getattr(issue, "navigation_label", "Show") or "Show"),
+                    icon=(
+                        "RESTRICT_SELECT_OFF" if navigation_action == "SELECT_OBJECT"
+                        else "FILE_FOLDER" if navigation_action == "REVEAL_PATH"
+                        else "TEXT"
+                    ),
+                )
+                navigate.index = index
+            fix_description = str(getattr(issue, "fix_description", "") or "")
+            if fix_action and fix_description:
+                note = detail.row(align=False)
+                note.enabled = False
+                label_multiline(note, fix_description, width=56)
+
+    @staticmethod
+    def _draw_report_tools(layout):
         try:
-            report_tools.enabled = bpy.data.texts.get(PROJECT_DOCTOR_REPORT_NAME) is not None
+            has_report = bpy.data.texts.get(PROJECT_DOCTOR_REPORT_NAME) is not None
         except FBP_DATA_ERRORS:
-            report_tools.enabled = False
-        open_report = report_tools.operator("fbp.open_diagnostic_report", text="", icon="TEXT")
+            has_report = False
+        if not has_report:
+            return
+        row = layout.row(align=True)
+        label = row.row(align=True)
+        label.enabled = False
+        label.label(text="Report", icon="TEXT")
+        tools = row.row(align=True)
+        tools.alignment = "RIGHT"
+        open_report = tools.operator("fbp.open_diagnostic_report", text="Open", icon="TEXT")
         open_report.report_name = PROJECT_DOCTOR_REPORT_NAME
-        copy_report = report_tools.operator("fbp.copy_diagnostic_messages", text="", icon="COPYDOWN")
+        copy_report = tools.operator("fbp.copy_diagnostic_messages", text="Copy", icon="COPYDOWN")
         copy_report.report_name = PROJECT_DOCTOR_REPORT_NAME
         copy_report.full_report = False
-        report_tools.operator("fbp.export_project_doctor_report", text="", icon="EXPORT")
+        tools.operator("fbp.export_project_doctor_report", text="Save", icon="EXPORT")
 
 
 class FBP_PT_PerformanceDashboard(Panel):
@@ -3270,9 +3374,8 @@ class FBP_PT_PerformanceDashboard(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "output"
-    bl_parent_id = "FBP_PT_diagnostics"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
+    bl_order = 1001
 
     @classmethod
     def poll(cls, context):
@@ -3873,6 +3976,17 @@ def fbp_scene_has_cached_rigs(context):
     scene = getattr(context, "scene", None) if context else None
     if not scene:
         return False
+    try:
+        # Fast path: the first live row of the layer mirror answers the
+        # question. The index below validates every cached rig name before
+        # it yields the first one, and this check runs on every redraw.
+        objects = scene.objects
+        for item in scene.fbp_layers:
+            rig = item.obj
+            if rig is not None and objects.get(rig.name) == rig:
+                return True
+    except FBP_DATA_ERRORS:
+        pass
     try:
         if next(iter_scene_fbp_rigs(scene, fallback=True), None) is not None:
             return True
@@ -6409,7 +6523,6 @@ ui_classes = (
     FBP_UL_CompositorEffects,
     FBP_PT_OutputAnchor,
     FBP_PT_OutputRender,
-    FBP_PT_Diagnostics,
     FBP_PT_ProjectDoctor,
     FBP_PT_PerformanceDashboard,
     FBP_MT_PendingSetupActions,
@@ -6461,8 +6574,7 @@ def _all_properties_order_classes():
     ordered = [
         FBP_PT_OutputAnchor,
         FBP_PT_OutputRender,
-        FBP_PT_Diagnostics,
-        FBP_PT_ProjectDoctor,
+            FBP_PT_ProjectDoctor,
         FBP_PT_PerformanceDashboard,
         FBP_PT_OutputCompositor,
     ]

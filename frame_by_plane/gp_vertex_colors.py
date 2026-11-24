@@ -53,6 +53,8 @@ _COLOR_DECODE_CACHE_LIMIT = 256
 # _HEADER_SWATCH_LIMIT swatches in a row and lists the rest in a popover.
 _SWATCH_LIMIT = 64
 _HEADER_SWATCH_LIMIT = 12
+# Colors shown inline per side (Stroke, Fill) before the "+N" list button.
+_HEADER_SIDE_LIMIT = 6
 _PAINT_MODES = frozenset({"PAINT_GREASE_PENCIL", "VERTEX_GREASE_PENCIL"})
 _RUNTIME = {
     "target": 0,
@@ -71,9 +73,12 @@ _RUNTIME = {
     "edit_point_count": 0,
     "edit_fill_targets": (),
     "edit_fill_count": 0,
+    "edit_all_cyclic": False,
     "stroke_swatches": (),
     "fill_swatches": (),
     "stroke_unique": 0,
+    "stroke_groups": {},
+    "fill_groups": {},
     "fill_unique": 0,
     "swatch_dirty": False,
     "draw_watch_initialized": False,
@@ -129,6 +134,23 @@ def _color_key(value):
     return tuple(round(component, 5) for component in _rgba(value))
 
 
+# Colors closer than this (per channel, on a perceptual 0-1 scale: about 5 of
+# 255 levels) share one swatch, so a slightly uneven stroke does not fill the
+# header with near-identical colors. Editing that swatch recolors the group.
+_SIMILAR_COLOR_TOLERANCE = 0.02
+
+
+def _perceptual(color):
+    clean = _rgba(color)
+    return tuple(component ** (1.0 / 2.2) for component in clean[:3]) + (clean[3],)
+
+
+def _colors_similar(first, second):
+    a = _perceptual(first)
+    b = _perceptual(second)
+    return all(abs(x - y) <= _SIMILAR_COLOR_TOLERANCE for x, y in zip(a, b))
+
+
 _COLOR_FINGERPRINT_MASK = (1 << 64) - 1
 
 
@@ -180,6 +202,37 @@ def _state(context=None):
     return getattr(obj, _STATE_PROPERTY, None) if obj is not None else None
 
 
+def native_cyclic_stroke():
+    """Whether Blender draws its own Cyclic toggle for Draw brushes (5.3+).
+
+    Blender 5.3 added ``use_cyclic_stroke`` to Grease Pencil Draw brushes and
+    shows it in the Tool Header. Frame By Plane's own Close Gap then becomes a
+    second control for the same thing, so it gives way to the native one.
+    """
+    try:
+        return "use_cyclic_stroke" in bpy.types.BrushGpencilSettings.bl_rna.properties
+    except (AttributeError, KeyError):
+        return False
+
+
+def _color_owner(paint, brush):
+    """Return what holds the colors Blender actually paints with.
+
+    With "Unified Color" on, Blender paints with the paint mode's unified
+    settings and ignores the brush's own colors. Blender 5.3 keeps that
+    switch on the brush (its Vertex Paint brush has it on by default); the
+    old ``UnifiedPaintSettings.use_unified_color`` stays False there. Writing
+    the brush colors then showed one color pair while strokes got another.
+    """
+    unified = getattr(paint, "unified_paint_settings", None)
+    if unified is None:
+        return brush
+    use_unified = getattr(brush, "use_unified_color", None)
+    if use_unified is None:
+        use_unified = getattr(unified, "use_unified_color", False)
+    return unified if bool(use_unified) else brush
+
+
 def _brush_context(context=None):
     context = context or getattr(bpy, "context", None)
     try:
@@ -188,10 +241,8 @@ def _brush_context(context=None):
         brush = paint.brush
         if brush is None:
             return None, None, None, None
-        unified = paint.unified_paint_settings
-        owner = unified if bool(getattr(unified, "use_unified_color", False)) else brush
         gp_settings = getattr(brush, "gpencil_settings", None)
-        return paint, brush, owner, gp_settings
+        return paint, brush, _color_owner(paint, brush), gp_settings
     except FBP_DATA_ERRORS:
         return None, None, None, None
 
@@ -204,7 +255,7 @@ def _draw_brush_context(context=None):
         if brush is None:
             return None, None, None, None
         gp_settings = getattr(brush, "gpencil_settings", None)
-        return paint, brush, brush, gp_settings
+        return paint, brush, _color_owner(paint, brush), gp_settings
     except FBP_DATA_ERRORS:
         return None, None, None, None
 
@@ -452,11 +503,6 @@ def _sync_paint_state(context, brush_kind, owner, gp_settings, mode, *, force=Fa
                 alpha = getattr(state, target)[3]
                 _set_state_value(state, target, tuple(secondary) + (alpha,))
         _canonical_brush_colors(state, owner, mode)
-        if is_native_swap:
-            # Brush colors are not a reliable part of Grease Pencil's stroke
-            # undo snapshot. Store the synchronized semantic state as its own
-            # step, so Undo Stroke does not also undo the visible swap.
-            _push_edit_color_undo("Swap Grease Pencil Stroke / Fill Colors")
         return True
     return False
 
@@ -668,13 +714,15 @@ def _sync_draw_both_fill(context=None):
 
     indices = tuple(_new_draw_curve_indices(previous_count, curve_count, draw_on_back))
     clean_fill = _rgba(state.fill_color)
+    # With Blender's own Cyclic option the brush closes new strokes itself.
+    own_cyclic = not native_cyclic_stroke()
     close_stroke = bool(state.close_strokes)
     changed = 0
     for curve_index in indices:
         try:
             stroke = drawing.strokes[curve_index]
             curve_changed = False
-            if bool(stroke.cyclic) != close_stroke:
+            if own_cyclic and bool(stroke.cyclic) != close_stroke:
                 stroke.cyclic = close_stroke
                 curve_changed = True
             if use_dual_fill and not _colors_close(stroke.fill_color, clean_fill):
@@ -845,12 +893,35 @@ def _attribute_color_summary(values, index, cache):
 
 
 def _record_color(color, key, unique_keys, swatches, fingerprint):
-    if key in unique_keys:
+    """Count one use of a color; ``unique_keys`` maps key -> swatch index."""
+    index = unique_keys.get(key)
+    if index is not None:
+        if index >= 0:
+            swatches[index][1] += 1
         return fingerprint
-    unique_keys.add(key)
+    for index, swatch in enumerate(swatches):
+        if _colors_similar(swatch[0], color):
+            unique_keys[key] = index
+            swatch[1] += 1
+            swatch[2].add(key)
+            return _fingerprint_add(fingerprint[0], fingerprint[1], key)
     if len(swatches) < _SWATCH_LIMIT:
-        swatches.append((color, 1))
+        unique_keys[key] = len(swatches)
+        swatches.append([color, 1, {key}])
+    else:
+        unique_keys[key] = -1
     return _fingerprint_add(fingerprint[0], fingerprint[1], key)
+
+
+def _by_usage(swatches):
+    """Most used colors first; equal use keeps the order they were found in."""
+    ordered = sorted(enumerate(swatches), key=lambda item: (-item[1][1], item[0]))
+    return tuple((swatch[0], swatch[1]) for _index, swatch in ordered)
+
+
+def _swatch_groups(swatches):
+    """Map each swatch's color key to the exact color keys it stands for."""
+    return {_color_key(swatch[0]): frozenset(swatch[2]) for swatch in swatches}
 
 
 def _edit_select_mode(context):
@@ -936,8 +1007,8 @@ def _curve_visibility(flags, material_indices, stroke, curve_index):
 
 
 def _selected_color_snapshot(context, obj):
-    stroke_keys = set()
-    fill_keys = set()
+    stroke_keys = {}
+    fill_keys = {}
     stroke_values = []
     fill_values = []
     stroke_fingerprint = (0, 0)
@@ -1108,6 +1179,12 @@ def _selected_color_snapshot(context, obj):
             )
         )
 
+    _RUNTIME["stroke_groups"] = _swatch_groups(stroke_values)
+    _RUNTIME["fill_groups"] = _swatch_groups(fill_values)
+    stroke_groups = len(stroke_values) + sum(1 for index in stroke_keys.values() if index < 0)
+    fill_groups = len(fill_values) + sum(1 for index in fill_keys.values() if index < 0)
+    stroke_values = _by_usage(stroke_values)
+    fill_values = _by_usage(fill_values)
     signature = (
         int(obj.as_pointer()),
         point_count,
@@ -1123,13 +1200,39 @@ def _selected_color_snapshot(context, obj):
         signature,
         tuple(stroke_values),
         tuple(fill_values),
-        len(stroke_keys),
-        len(fill_keys),
+        stroke_groups,
+        fill_groups,
         point_count,
         curve_count,
         tuple(point_targets),
         tuple(fill_targets),
     )
+
+
+def _selection_all_cyclic(fill_targets):
+    """Whether every selected Edit curve is closed (False when none is selected)."""
+    found = False
+    for drawing, _total, _selected, batches in fill_targets:
+        values = None
+        try:
+            attribute = drawing.attributes.get("cyclic")
+            if attribute is not None and str(attribute.domain) == "CURVE":
+                values = array("b", [0]) * len(attribute.data)
+                attribute.data.foreach_get("value", values)
+        except FBP_DATA_ERRORS:
+            values = _MISSING
+        for stroke, curve_index in batches:
+            found = True
+            if values is None:
+                # Blender omits an all-False cyclic attribute.
+                return False
+            try:
+                closed = values[curve_index] if values is not _MISSING else stroke.cyclic
+            except FBP_DATA_ERRORS + (IndexError,):
+                return False
+            if not closed:
+                return False
+    return found
 
 
 def _sync_edit_state(context=None, *, force=False):
@@ -1183,8 +1286,11 @@ def _sync_edit_state(context=None, *, force=False):
     _RUNTIME["edit_point_count"] = point_count
     _RUNTIME["edit_fill_targets"] = fill_targets
     _RUNTIME["edit_fill_count"] = curve_count
+    all_cyclic = _selection_all_cyclic(fill_targets)
+    cyclic_changed = all_cyclic != _RUNTIME.get("edit_all_cyclic")
+    _RUNTIME["edit_all_cyclic"] = all_cyclic
     if not force and signature == _RUNTIME.get("edit_signature"):
-        return False
+        return cyclic_changed
     _RUNTIME["edit_signature"] = signature
     _RUNTIME["context_mode"] = _context_mode(context)
     _RUNTIME["stroke_swatches"] = stroke_values
@@ -1285,10 +1391,36 @@ def _tag_gp_color_update(obj):
             continue
 
 
-def _push_edit_color_undo(message):
+def _window_override():
+    """Context override for a timer: timers run without a window, and
+    ``ed.undo_push`` then fails its poll, silently dropping the undo step."""
+    context = getattr(bpy, "context", None)
     try:
+        if getattr(context, "window", None) is not None:
+            return None
+        for window in context.window_manager.windows:
+            screen = window.screen
+            for area in screen.areas:
+                if area.type == "VIEW_3D":
+                    return {"window": window, "screen": screen, "area": area}
+            return {"window": window, "screen": screen}
+    except FBP_DATA_ERRORS:
+        pass
+    return None
+
+
+def _push_edit_color_undo(message):
+    def push():
         if bpy.ops.ed.undo_push.poll():
             return bpy.ops.ed.undo_push(message=message) == {"FINISHED"}
+        return False
+
+    try:
+        override = _window_override()
+        if override is None:
+            return push()
+        with bpy.context.temp_override(**override):
+            return push()
     except FBP_DATA_ERRORS:
         pass
     return False
@@ -1528,6 +1660,9 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
     clean = _rgba(color)
     if _color_key(clean) == old_key:
         return 0
+    # A swatch stands for every near-identical color grouped under it.
+    groups = _RUNTIME.get("fill_groups" if target == "FILL" else "stroke_groups") or {}
+    members = groups.get(old_key) or frozenset((old_key,))
     clean_values = array("f", clean)
     changed = 0
     undo_started = False
@@ -1546,7 +1681,7 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
             key = _color_key(raw)
             if len(cache) < _COLOR_DECODE_CACHE_LIMIT:
                 cache[raw] = key
-        return key == old_key
+        return key in members
 
     if target == "FILL":
         for drawing, total_curves, _selected_count, batches in tuple(_RUNTIME.get("edit_fill_targets", ()) or ()):
@@ -1554,7 +1689,7 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
             if values is _MISSING:
                 for stroke, _curve_index in batches:
                     try:
-                        if _color_key(stroke.fill_color) == old_key:
+                        if _color_key(stroke.fill_color) in members:
                             prepare_change()
                             stroke.fill_color = clean
                             changed += 1
@@ -1589,7 +1724,7 @@ def _replace_selected_color(context, target, old_color, color, *, record_undo=Fa
                         points = stroke.points
                         selected = points if selector is None else (points[index] for index in selector)
                         for point in selected:
-                            if _color_key(point.vertex_color) == old_key:
+                            if _color_key(point.vertex_color) in members:
                                 prepare_change()
                                 point.vertex_color = clean
                                 changed += 1
@@ -1908,14 +2043,21 @@ def fbp_gp_vertex_color_undo_post(_scene):
     if mode == "EDIT_GREASE_PENCIL":
         _sync_edit_state(context, force=True)
     elif mode in {"PAINT_GREASE_PENCIL", "VERTEX_GREASE_PENCIL"}:
-        # Undo restores the Object-owned semantic colors, while native brush
-        # colors may remain outside the geometry undo snapshot. The semantic
-        # state is authoritative and is copied back to the live brush.
+        # In Draw and Vertex Paint the Stroke / Fill pair is a tool setting,
+        # like Blender's own brush colors: Ctrl+Z (and redo) undoes strokes,
+        # never the chosen colors. Undo restores the Object, whose stored
+        # pair can predate the last color change (a real Draw stroke step
+        # restores the snapshot taken before it, skipping the color edits in
+        # between), so the live pair is put back on the Object and the brush.
         kind, _paint, _brush, owner, gp_settings, target_mode = _semantic_brush_context(context)
         state = _state(context)
         obj = _active_gp_object(context)
+        live = _RUNTIME.get("paint_colors")
         if state is not None and obj is not None and owner is not None and gp_settings is not None:
-            if bool(getattr(state, "paint_colors_valid", False)):
+            if live:
+                _set_state_value(state, "stroke_color", _visible_alpha(live[0]))
+                _set_state_value(state, "fill_color", _visible_alpha(live[1]))
+            elif bool(getattr(state, "paint_colors_valid", False)):
                 # The restored step can predate the sync that followed an
                 # Edit Mode exit; its Stroke / Fill then hold the selection's
                 # colors, while the paint copy holds the real paint colors.
@@ -2182,7 +2324,6 @@ class FBP_OT_SwapGPVertexColors(Operator):
             _kind, _paint, _brush, owner, gp_settings, target_mode = _semantic_brush_context(context)
             if owner is not None and gp_settings is not None:
                 _canonical_brush_colors(state, owner, target_mode)
-                _push_edit_color_undo("Swap Grease Pencil Stroke / Fill Colors")
         return {"FINISHED"}
 
 
@@ -2221,6 +2362,8 @@ class FBP_OT_ToggleGPCloseGap(Operator):
         if state is None:
             return {"CANCELLED"}
         edit_mode = _context_mode(context) == "EDIT_GREASE_PENCIL"
+        if native_cyclic_stroke():
+            return self._execute_native(context, edit_mode)
         desired = not bool(state.close_strokes) if self.action == "TOGGLE" else self.action == "ON"
         if desired == bool(state.close_strokes):
             # Edit selections may contain open and closed curves even when
@@ -2231,6 +2374,23 @@ class FBP_OT_ToggleGPCloseGap(Operator):
         state.close_strokes = desired
         if not edit_mode:
             _push_edit_color_undo("Toggle Grease Pencil Close Gap")
+        return {"FINISHED"}
+
+
+    def _execute_native(self, context, edit_mode):
+        if edit_mode:
+            close = not bool(_RUNTIME.get("edit_all_cyclic")) if self.action == "TOGGLE" else self.action == "ON"
+            try:
+                return bpy.ops.grease_pencil.cyclical_set(type="CLOSE" if close else "OPEN")
+            except RuntimeError:
+                return {"CANCELLED"}
+        _paint, _brush, _owner, gp_settings = _draw_brush_context(context)
+        if gp_settings is None:
+            return {"CANCELLED"}
+        current = bool(gp_settings.use_cyclic_stroke)
+        desired = not current if self.action == "TOGGLE" else self.action == "ON"
+        if desired != current:
+            gp_settings.use_cyclic_stroke = desired
         return {"FINISHED"}
 
 
@@ -2289,7 +2449,10 @@ def _draw_paint_color_controls(layout, context, state):
         row.prop_enum(gp_settings, mode_property, "BOTH", text="Both", icon="GP_DRAW_BOTH")
     layout.prop(state, "stroke_color", text="Stroke")
     layout.prop(state, "fill_color", text="Fill")
-    layout.prop(state, "close_strokes", text="Close Gap", toggle=True, icon="LOOP_BACK")
+    if not native_cyclic_stroke():
+        layout.prop(state, "close_strokes", text="Close Gap", toggle=True, icon="LOOP_BACK")
+    elif context_mode == "PAINT_GREASE_PENCIL":
+        layout.prop(gp_settings, "use_cyclic_stroke", text="Cyclic", toggle=True, icon="GP_CYCLIC_STROKE")
     row = layout.row(align=True)
     row.operator("fbp.swap_gp_vertex_colors", text="Swap", icon="ARROW_LEFTRIGHT")
     row.label(text="X · Shift+X samples Stroke")
@@ -2341,13 +2504,22 @@ class FBP_PT_GPVertexColors(Panel):
         fill_col.enabled = bool(state.fill_available)
         fill_col.prop(state, "fill_color", text="Fill")
         _draw_mixed_swatches(layout, "FILL")
-        layout.prop(
-            state,
-            "close_strokes",
-            text="Close Selected Gaps",
-            toggle=True,
-            icon="LOOP_BACK",
-        )
+        if native_cyclic_stroke():
+            closed = bool(_RUNTIME.get("edit_all_cyclic"))
+            layout.operator(
+                "grease_pencil.cyclical_set",
+                text="Open Selected" if closed else "Close Selected",
+                icon="GP_CYCLIC_STROKE",
+                depress=closed,
+            ).type = "OPEN" if closed else "CLOSE"
+        else:
+            layout.prop(
+                state,
+                "close_strokes",
+                text="Close Selected Gaps",
+                toggle=True,
+                icon="LOOP_BACK",
+            )
         layout.operator("fbp.swap_gp_vertex_colors", text="Swap Stroke / Fill", icon="ARROW_LEFTRIGHT")
 
 
@@ -2516,36 +2688,46 @@ class FBP_PT_GPFillSwatchesPopover(Panel):
         _draw_target_swatch_popover(self.layout, context, "FILL")
 
 
-def header_swatch_layout(stroke_count, fill_count, limit=_HEADER_SWATCH_LIMIT):
-    """Return ``(stroke_inline, fill_inline)`` for the Edit Mode color strip.
+def header_side_split(count, limit=None):
+    """Return ``(shown, extra)`` swatches for one side of the Edit Mode strip.
 
-    Both sides stay inline while their colors fit in ``limit`` swatches.
-    Otherwise the larger side collapses into its own dropdown (one slot), and
-    the other side collapses too only if it still does not fit.
+    Each side shows its most used colors, up to ``limit``; the rest sit
+    behind a "+N" button that opens the full list.
     """
-    stroke_count = max(0, int(stroke_count))
-    fill_count = max(0, int(fill_count))
-    if stroke_count + fill_count <= limit:
-        return True, True
-    if stroke_count >= fill_count:
-        return False, fill_count + 1 <= limit
-    return stroke_count + 1 <= limit, False
+    limit = _HEADER_SIDE_LIMIT if limit is None else max(1, int(limit))
+    count = max(0, int(count))
+    if count <= limit:
+        return count, 0
+    return limit, count - limit
 
 
-def _draw_header_side(layout, state, target, items, inline, *, enabled=True):
+def _draw_side_icon(layout, target, items, extra):
+    """Stroke/Fill icon next to the swap button; a list dropdown when mixed."""
+    icon = "GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL"
+    if len(items) <= 1:
+        layout.label(text="", icon=icon)
+        return
+    layout.popover(
+        panel=(
+            FBP_PT_GPStrokeSwatchesPopover.bl_idname
+            if target == "STROKE"
+            else FBP_PT_GPFillSwatchesPopover.bl_idname
+        ),
+        text=f"+{extra}" if extra else "",
+        icon=icon,
+    )
+
+
+def _draw_header_side(layout, state, target, items, *, enabled=True):
+    """One side of the strip, mirrored around the swap button.
+
+    Stroke: ``[colors] [Stroke icon ▾ +N]``; Fill: ``[Fill icon ▾ +N] [colors]``.
+    """
     side = layout.row(align=True)
     side.enabled = bool(enabled)
-    if not inline:
-        side.popover(
-            panel=(
-                FBP_PT_GPStrokeSwatchesPopover.bl_idname
-                if target == "STROKE"
-                else FBP_PT_GPFillSwatchesPopover.bl_idname
-            ),
-            text=f"{len(items)} {'Strokes' if target == 'STROKE' else 'Fills'}",
-            icon="GP_DRAW_STROKE" if target == "STROKE" else "GP_DRAW_FILL",
-        )
-        return
+    shown, extra = header_side_split(len(items))
+    if target == "FILL":
+        _draw_side_icon(side, target, items, extra)
     if len(items) <= 1:
         single = side.row(align=True)
         single.ui_units_x = 2.5
@@ -2555,11 +2737,13 @@ def _draw_header_side(layout, state, target, items, inline, *, enabled=True):
             text="",
             panel="FBP_PT_gp_stroke_color_popover" if target == "STROKE" else "FBP_PT_gp_fill_color_popover",
         )
-        return
-    for item in items:
-        swatch = side.row(align=True)
-        swatch.ui_units_x = 1.2
-        swatch.prop(item, "color", text="")
+    else:
+        for item in items[:shown]:
+            swatch = side.row(align=True)
+            swatch.ui_units_x = 1.1
+            swatch.prop(item, "color", text="")
+    if target == "STROKE":
+        _draw_side_icon(side, target, items, extra)
 
 
 def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
@@ -2570,20 +2754,17 @@ def _draw_header_swatch_strip(layout, context, state, *, enabled=True):
     has_fill = bool(state.fill_available) and bool(fill_items)
     if not has_stroke and not has_fill:
         return False
-    stroke_inline, fill_inline = header_swatch_layout(
-        len(stroke_items) if has_stroke else 0,
-        len(fill_items) if has_fill else 0,
-    )
+    # One aligned block: the side icons sit right against the swap button.
     row = layout.row(align=True)
     if has_stroke:
-        _draw_header_side(row, state, "STROKE", stroke_items, stroke_inline, enabled=enabled)
+        _draw_header_side(row, state, "STROKE", stroke_items, enabled=enabled)
     if has_stroke and has_fill:
         swap = row.row(align=True)
         swap.ui_units_x = 1.25
         swap.enabled = bool(enabled)
         swap.operator("fbp.swap_gp_vertex_colors", text="", icon="ARROW_LEFTRIGHT", emboss=True)
     if has_fill:
-        _draw_header_side(row, state, "FILL", fill_items, fill_inline, enabled=enabled)
+        _draw_header_side(row, state, "FILL", fill_items, enabled=enabled)
     return True
 
 
@@ -2634,9 +2815,53 @@ def _draw_header_color_pair(layout, context, *, enabled=True, owner=None, includ
     return True
 
 
+def _draw_edit_stroke_tools(layout, context, *, enabled=True):
+    """Blender 5.3 Edit Mode: Stroke/Fill/Both, native Cyclic and Arrange.
+
+    These run Blender's own operators on the selection (the same ones as
+    right click > Set Stroke Type, Close and Arrange), so Undo and every
+    selection mode behave exactly as in the native menus.
+    """
+    group = layout.row(align=False)
+    group.enabled = bool(enabled)
+    types = group.row(align=True)
+    for value, icon, tip in (
+        ("STROKE", "GP_DRAW_STROKE", "Stroke"),
+        ("FILL", "GP_DRAW_FILL", "Fill"),
+        ("BOTH", "GP_DRAW_BOTH", "Both"),
+    ):
+        types.operator("grease_pencil.set_stroke_type", text="", icon=icon).type = value
+    closed = bool(_RUNTIME.get("edit_all_cyclic"))
+    cyclic = group.row(align=True)
+    cyclic.operator(
+        "grease_pencil.cyclical_set",
+        text="",
+        icon="GP_CYCLIC_STROKE",
+        depress=closed,
+    ).type = "OPEN" if closed else "CLOSE"
+    arrange = group.row(align=True)
+    for direction, fallback in (
+        ("TOP", "TRIA_UP_BAR"),
+        ("UP", "TRIA_UP"),
+        ("DOWN", "TRIA_DOWN"),
+        ("BOTTOM", "TRIA_DOWN_BAR"),
+    ):
+        # Stack-of-strokes icons; Blender's arrows if the PNG is missing.
+        icon_value = custom_icon_value(f"gp_arrange_{direction.lower()}")
+        icon = {"icon_value": icon_value} if icon_value else {"icon": fallback}
+        arrange.operator("grease_pencil.reorder", text="", **icon).direction = direction
+    return True
+
+
 def _draw_header_close_stroke(layout, context, *, enabled=True):
     state = _state(context)
     if state is None:
+        return False
+    if native_cyclic_stroke():
+        # Draw Mode shows Blender's own Cyclic toggle; Edit Mode draws the
+        # native-icon tools instead; Vertex Paint draws no strokes.
+        if _context_mode(context) == "EDIT_GREASE_PENCIL":
+            return _draw_edit_stroke_tools(layout, context, enabled=enabled)
         return False
     group = layout.row(align=False)
     close = group.row(align=True)
@@ -2834,6 +3059,9 @@ def _draw_edit_material_selector(layout, obj):
         translate=False,
         icon_value=icon_id,
     )
+    if hasattr(bpy.types, "VIEW3D_MT_grease_pencil_assign_material"):
+        # Blender's own Assign Material menu: gives the selection a material.
+        layout.menu("VIEW3D_MT_grease_pencil_assign_material", text="", icon="MATERIAL_DATA")
 
 
 def _draw_edit_material(layout, context):
@@ -3033,6 +3261,11 @@ def register():
             fbp_gp_vertex_color_undo_post,
             module_suffix="gp_vertex_colors",
         )
+        append_handler_once(
+            bpy.app.handlers.redo_post,
+            fbp_gp_vertex_color_undo_post,
+            module_suffix="gp_vertex_colors",
+        )
     except FBP_DATA_ERRORS:
         _unregister_brush_color_timer()
         _cancel_edit_color_undo()
@@ -3048,11 +3281,12 @@ def register():
             "fbp_gp_vertex_color_undo_pre",
             module_suffix="gp_vertex_colors",
         )
-        remove_handlers_by_name(
-            bpy.app.handlers.undo_post,
-            "fbp_gp_vertex_color_undo_post",
-            module_suffix="gp_vertex_colors",
-        )
+        for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+            remove_handlers_by_name(
+                handlers,
+                "fbp_gp_vertex_color_undo_post",
+                module_suffix="gp_vertex_colors",
+            )
         if registered_properties:
             unregister_type_properties(bpy.types.Object, (_STATE_PROPERTY,))
         unregister_classes(property_classes)
@@ -3075,11 +3309,12 @@ def unregister():
         "fbp_gp_vertex_color_undo_pre",
         module_suffix="gp_vertex_colors",
     )
-    remove_handlers_by_name(
-        bpy.app.handlers.undo_post,
-        "fbp_gp_vertex_color_undo_post",
-        module_suffix="gp_vertex_colors",
-    )
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        remove_handlers_by_name(
+            handlers,
+            "fbp_gp_vertex_color_undo_post",
+            module_suffix="gp_vertex_colors",
+        )
     unregister_classes(classes)
     unregister_type_properties(bpy.types.Object, (_STATE_PROPERTY,))
     unregister_classes(property_classes)

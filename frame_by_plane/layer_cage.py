@@ -32,6 +32,7 @@ Top view it also changes the depth), and rotation steps aside.
 
 from __future__ import annotations
 
+import collections
 import math
 import bpy
 from mathutils import Matrix, Vector
@@ -53,6 +54,9 @@ from .common import (
 _MAX_CAGES = 32
 _ACTIVE_COLOR = (1.0, 1.0, 1.0)
 _SELECTED_COLOR = (0.72, 0.72, 0.72)
+_HALO_COLOR = (0.0, 0.0, 0.0)
+_HALO_ALPHA = 0.55
+_HALO_EXTRA_PX = 2.0
 
 
 def cage_enabled(context=None):
@@ -149,7 +153,9 @@ def layer_cage_rect(rig, depsgraph=None):
     return center, size
 
 
-_ALPHA_OUTLINES = {}
+_ALPHA_OUTLINES = collections.OrderedDict()
+_ALPHA_OUTLINE_LIMIT = 512
+_ALPHA_LAST_OUTLINE = {}
 
 
 def _alpha_box_segments(rig, center):
@@ -171,16 +177,20 @@ def _alpha_box_segments(rig, center):
         pointer = rig.as_pointer()
     except (ImportError, *FBP_DATA_ERRORS, TypeError, ValueError):
         return ()
-    cached = _ALPHA_OUTLINES.get(pointer)
-    if cached is not None and cached[0] == key:
-        return cached[1]
+    entry_key = (pointer, key)
+    cached = _ALPHA_OUTLINES.get(entry_key)
     if cached is not None:
+        _ALPHA_OUTLINES.move_to_end(entry_key)
+        _ALPHA_LAST_OUTLINE[pointer] = cached
+        return cached
+    previous = _ALPHA_LAST_OUTLINE.get(pointer)
+    if previous is not None:
         # During playback the outline waits, as the Legacy wire does, and
         # catches up on the first redraw after it stops.
         try:
             from .scene_sync import fbp_animation_playback_active
             if fbp_animation_playback_active():
-                return cached[1]
+                return previous
         except (ImportError, *FBP_DATA_ERRORS):
             pass
     segments = ()
@@ -196,9 +206,18 @@ def _alpha_box_segments(rig, center):
             for x, y, z in verts
         ]
         segments = tuple(points[index] for edge in edges for index in edge)
-    if len(_ALPHA_OUTLINES) >= 64:
-        _ALPHA_OUTLINES.clear()
-    _ALPHA_OUTLINES[pointer] = (key, segments)
+    # One entry per layer and drawing, least recently drawn first out.
+    # Clearing the whole cache at 64 entries, and keeping only the current
+    # drawing of each layer, made every click in a bigger project and every
+    # scrubbed frame of an Alpha Follow layer rebuild the outline (marching
+    # squares and smoothing, 20-30 ms each).
+    _ALPHA_OUTLINES[entry_key] = segments
+    _ALPHA_OUTLINES.move_to_end(entry_key)
+    while len(_ALPHA_OUTLINES) > _ALPHA_OUTLINE_LIMIT:
+        _ALPHA_OUTLINES.popitem(last=False)
+    if len(_ALPHA_LAST_OUTLINE) > _ALPHA_OUTLINE_LIMIT:
+        _ALPHA_LAST_OUTLINE.clear()
+    _ALPHA_LAST_OUTLINE[pointer] = segments
     return segments
 
 
@@ -1114,7 +1133,6 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
                 along = along / length
                 bar = [point - along * half, point + along * half]
                 width = _EDGE_BAR_WIDTH_PX + (1.5 if part == active_part else 0.0)
-                lines.append((bar, (0.0, 0.0, 0.0), 0.5, width + 2.0))
                 lines.append((bar, accent if part == active_part else white, 1.0, width))
 
         # The knob on its stem above the top edge.
@@ -1158,6 +1176,15 @@ class FBP_GT_layer_box(bpy.types.Gizmo):
             for index, point in enumerate(targets):
                 snapped = modal and active_part == "ANCHOR" and index == snap_index
                 dot(point, accent if snapped else white, _TARGET_RADIUS_PX * (1.6 if snapped else 1.0), 0.9)
+
+        # A dark halo under every light line, drawn first: the white box
+        # stays readable on light drawings and backgrounds (sky, paper)
+        # as well as on dark ones.
+        lines = [
+            (segments, _HALO_COLOR, min(_HALO_ALPHA, alpha + 0.1), width + _HALO_EXTRA_PX)
+            for segments, color, alpha, width in lines
+            if tuple(color) != _HALO_COLOR
+        ] + lines
 
         fill_shader, line_shader = _shaders()
         gpu.state.blend_set("ALPHA")

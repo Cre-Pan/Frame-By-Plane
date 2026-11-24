@@ -804,12 +804,18 @@ def _object_mask_local_mesh_bounds(helper):
     return min_x, max_x, min_y, max_y
 
 
+_HANDLE_MESH_SCALE = 0.02
+
+
 def _object_mask_handle_size(owner, role):
     _plane, bounds = _plane_bounds(owner)
     width = max(abs(bounds[1] - bounds[0]), 1.0e-6)
     height = max(abs(bounds[3] - bounds[2]), 1.0e-6)
     size = max(0.035, min(0.32, min(width, height) * 0.075))
-    return size * (0.62 if "_" in str(role or "") else 0.78)
+    # The overlay draws every dot at one size on screen from this nominal
+    # size. The mesh itself is only the pickable anchor: kept tiny, Blender's
+    # own drawing of it no longer shows as a big grey dot when zoomed in.
+    return size * (0.62 if "_" in str(role or "") else 0.78) * _HANDLE_MESH_SCALE
 
 
 def _object_mask_handle_signature(handle):
