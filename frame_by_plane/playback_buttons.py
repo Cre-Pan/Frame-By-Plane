@@ -1,0 +1,286 @@
+"""Choose which transport buttons the timeline headers show.
+
+Blender draws the playback row of the Timeline, Dope Sheet, Graph Editor, NLA
+and Sequencer through one shared ``bl_ui.space_time.playback_controls``
+function. This module wraps that function instead of copying it: Blender's own
+drawing runs unchanged and only the jump buttons the artist switched off are
+skipped. The switches live in the add-on preferences, so the choice holds in
+every file, and they are drawn at the bottom of Blender's Playback Options
+popover (the small arrow beside the transport buttons; Time Jump on 5.2).
+"""
+
+from __future__ import annotations
+
+import bpy
+from bpy.props import BoolProperty
+from bpy.types import Operator
+
+from .interface_preferences import fbp_get_addon_preferences
+from .registration import register_classes, unregister_classes
+
+
+# Preference name -> operator idname whose buttons it hides.
+FBP_PLAYBACK_BUTTON_PREFS = (
+    ("playback_show_jump_endpoints", "screen.frame_jump"),
+    ("playback_show_jump_keyframes", "screen.keyframe_jump"),
+    ("playback_show_jump_delta", "screen.time_jump"),
+)
+_PLAY_REVERSE_PREF = "playback_show_play_reverse"
+
+_PLAYBACK_MODULES = ("space_time", "space_dopesheet", "space_graph", "space_nla", "space_sequencer")
+_OPTIONS_PANELS = ("TIME_PT_playback_options", "TIME_PT_jump", "TIME_PT_playback")
+
+# Range fields of the header that get a "current frame" button: each button
+# sits right before its field (icon, Start, icon, End) in the same aligned row;
+# the Paste icon's arrow points into the field it fills.
+_RANGE_START_PROPS = frozenset({"frame_start", "frame_preview_start"})
+_RANGE_END_PROPS = frozenset({"frame_end", "frame_preview_end"})
+_PICK_ICON = "PASTEDOWN"
+
+_PATCHED_MODULES = {}
+_OPTIONS_PANEL = []
+
+
+class _HiddenOperator:
+    """Stand-in for the operator properties of a button that is not drawn."""
+
+    __slots__ = ()
+
+    def __setattr__(self, _name, _value):
+        pass
+
+    def __getattr__(self, _name):
+        return None
+
+
+_HIDDEN_OPERATOR = _HiddenOperator()
+
+
+class _FilteredLayout:
+    """UILayout proxy that skips the operator buttons listed in ``hidden``."""
+
+    __slots__ = ("_layout", "_hidden", "_hide_reverse")
+
+    def __init__(self, layout, hidden, hide_reverse):
+        object.__setattr__(self, "_layout", layout)
+        object.__setattr__(self, "_hidden", hidden)
+        object.__setattr__(self, "_hide_reverse", hide_reverse)
+
+    def _wrap(self, value):
+        # Sub-layouts (row, column, split...) keep the filter.
+        if callable(getattr(value, "operator", None)) and callable(getattr(value, "row", None)):
+            return _FilteredLayout(value, self._hidden, self._hide_reverse)
+        return value
+
+    def operator(self, operator, *args, **kwargs):
+        if operator in self._hidden:
+            return _HIDDEN_OPERATOR
+        if (
+            self._hide_reverse
+            and operator == "screen.animation_play"
+            and kwargs.get("icon") == "PLAY_REVERSE"
+        ):
+            return _HIDDEN_OPERATOR
+        return self._layout.operator(operator, *args, **kwargs)
+
+    def prop(self, data, property, *args, **kwargs):
+        if isinstance(data, bpy.types.Scene) and (property in _RANGE_START_PROPS or property in _RANGE_END_PROPS):
+            # A small gap after the preview-range clock and between Start and
+            # End, so each icon + field pair reads as one group.
+            self._layout.separator(factor=1.0)
+            # Blender narrows the Start/End row (scale_x 0.8); undo that for
+            # the icon button so it keeps the normal square size.
+            button = self._layout.row(align=True)
+            try:
+                parent_scale = float(self._layout.scale_x) or 1.0
+                button.scale_x = 1.0 / parent_scale
+            except (AttributeError, TypeError, ValueError):
+                pass
+            button.operator(
+                FBP_OT_SetRangeToCurrentFrame.bl_idname, text="", icon=_PICK_ICON,
+            ).end = property in _RANGE_END_PROPS
+        return self._layout.prop(data, property, *args, **kwargs)
+
+    def __getattr__(self, name):
+        value = getattr(self._layout, name)
+        if not callable(value):
+            return value
+
+        def call(*args, **kwargs):
+            return self._wrap(value(*args, **kwargs))
+
+        return call
+
+    def __setattr__(self, name, value):
+        setattr(self._layout, name, value)
+
+
+def fbp_hidden_playback_operators(context=None):
+    """Return the operator idnames whose header buttons are switched off."""
+    prefs = fbp_get_addon_preferences(context)
+    if prefs is None:
+        return frozenset(), False
+    hidden = frozenset(
+        idname for prop, idname in FBP_PLAYBACK_BUTTON_PREFS
+        if not bool(getattr(prefs, prop, True))
+    )
+    return hidden, not bool(getattr(prefs, _PLAY_REVERSE_PREF, True))
+
+
+def _make_wrapper(original):
+    def playback_controls(layout, context):
+        try:
+            hidden, hide_reverse = fbp_hidden_playback_operators(context)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            hidden, hide_reverse = frozenset(), False
+        return original(_FilteredLayout(layout, hidden, hide_reverse), context)
+
+    playback_controls._fbp_original = original
+    return playback_controls
+
+
+def fbp_draw_playback_button_options(self, context):
+    """Show-button checkboxes at the bottom of the Playback Options popover.
+
+    Same split layout as Blender's Wrap Timeline Navigation checkbox above:
+    the checkboxes line up with it in the value column.
+    """
+    prefs = fbp_get_addon_preferences(context)
+    if prefs is None:
+        return
+    layout = self.layout
+    layout.separator()
+    col = layout.column(heading="Show", align=True)
+    col.use_property_split = True
+    col.use_property_decorate = False
+    col.prop(prefs, "playback_show_jump_endpoints", text="Jump to Endpoint")
+    col.prop(prefs, "playback_show_jump_keyframes", text="Jump to Keyframe")
+    col.prop(prefs, "playback_show_jump_delta", text="Jump by Delta")
+    col.prop(prefs, _PLAY_REVERSE_PREF, text="Play Reverse")
+
+
+def _range_scene(context):
+    space = getattr(context, "space_data", None)
+    if getattr(space, "type", "") == "SEQUENCE_EDITOR":
+        return getattr(context, "sequencer_scene", None) or context.scene
+    return context.scene
+
+
+class FBP_OT_SetRangeToCurrentFrame(Operator):
+    bl_idname = "fbp.set_range_to_current_frame"
+    bl_label = "Set to Current Frame"
+    bl_description = "Set the Start or End of the frame range (the preview range when it is on) to the current frame"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    end: BoolProperty(name="End", default=False, options={"SKIP_SAVE"})
+
+    @classmethod
+    def description(cls, _context, properties):
+        if bool(getattr(properties, "end", False)):
+            return "Set End (Out) to the current frame. Uses the preview range when it is on"
+        return "Set Start (In) to the current frame. Uses the preview range when it is on"
+
+    @classmethod
+    def poll(cls, context):
+        return _range_scene(context) is not None
+
+    def execute(self, context):
+        scene = _range_scene(context)
+        frame = int(scene.frame_current)
+        preview = bool(scene.use_preview_range)
+        start_prop = "frame_preview_start" if preview else "frame_start"
+        end_prop = "frame_preview_end" if preview else "frame_end"
+        if self.end:
+            # Keep the range valid: an Out before the In moves the In too.
+            if frame < getattr(scene, start_prop):
+                setattr(scene, start_prop, frame)
+            setattr(scene, end_prop, frame)
+        else:
+            if frame > getattr(scene, end_prop):
+                setattr(scene, end_prop, frame)
+            setattr(scene, start_prop, frame)
+        return {"FINISHED"}
+
+
+classes = (FBP_OT_SetRangeToCurrentFrame,)
+
+
+def _patch_playback_controls():
+    import importlib
+
+    original = None
+    for name in _PLAYBACK_MODULES:
+        try:
+            module = importlib.import_module(f"bl_ui.{name}")
+        except ImportError:
+            continue
+        current = getattr(module, "playback_controls", None)
+        if not callable(current):
+            continue
+        base = getattr(current, "_fbp_original", current)
+        if original is None:
+            original = _make_wrapper(base)
+        _PATCHED_MODULES[name] = (module, base)
+        module.playback_controls = original
+
+
+def _restore_playback_controls():
+    for module, base in _PATCHED_MODULES.values():
+        current = getattr(module, "playback_controls", None)
+        if getattr(current, "_fbp_original", None) is not None:
+            module.playback_controls = base
+    _PATCHED_MODULES.clear()
+
+
+def _append_options():
+    for name in _OPTIONS_PANELS:
+        panel = getattr(bpy.types, name, None)
+        if panel is None:
+            continue
+        try:
+            panel.remove(fbp_draw_playback_button_options)
+        except (ValueError, RuntimeError):
+            pass
+        panel.append(fbp_draw_playback_button_options)
+        _OPTIONS_PANEL.append(panel)
+        return
+
+
+def _remove_options():
+    for panel in _OPTIONS_PANEL:
+        try:
+            panel.remove(fbp_draw_playback_button_options)
+        except (ValueError, RuntimeError):
+            pass
+    _OPTIONS_PANEL.clear()
+
+
+def _redraw_time_headers():
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type in {"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR", "SEQUENCE_EDITOR"}:
+                    area.tag_redraw()
+    except (AttributeError, ReferenceError, RuntimeError):
+        pass
+
+
+def register():
+    register_classes(classes)
+    _patch_playback_controls()
+    _append_options()
+    _redraw_time_headers()
+
+
+def unregister():
+    _remove_options()
+    _restore_playback_controls()
+    unregister_classes(classes)
+    _redraw_time_headers()
+
+
+__all__ = (
+    "FBP_PLAYBACK_BUTTON_PREFS",
+    "fbp_draw_playback_button_options",
+    "fbp_hidden_playback_operators",
+)

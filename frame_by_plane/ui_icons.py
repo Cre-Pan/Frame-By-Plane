@@ -103,7 +103,7 @@ FBP_UI_ICON_KEYS = {
     "sequence.edges": "MOD_BOOLEAN",
     "sequence.frames": "RENDER_RESULT",
     "sequence.split": "LINK_BLEND",
-    "sequence.set_current": "EYEDROPPER",
+    "sequence.set_current": "PASTEDOWN",
     "sequence.reverse": "ARROW_LEFTRIGHT",
     "sequence.move_top": "TRIA_UP_BAR",
     "sequence.move_up": "SORT_DESC",
