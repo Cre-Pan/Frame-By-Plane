@@ -12,6 +12,8 @@ Checks, on the factory Layout screen split into a Timeline and a Graph Editor:
 * hiding the Graph Editor channel list makes it lead and the Timeline follows;
 * zooming/panning either editor makes it lead; opening a sidebar moves nothing;
 * with the toggle off nothing follows; turning it back on realigns;
+* a Timeline showing a scene used as a clip in the Sequencer lines up under
+  that clip, follows it when the clip moves, and leads or follows on pan/zoom;
 * unregister removes the property and the header buttons.
 """
 
@@ -125,6 +127,68 @@ def step_off():
 
 def step_on_again():
     _check("realigned when turned back on", _aligned())
+    window = bpy.context.window_manager.windows[0]
+    edit = window.scene
+    shot = bpy.data.scenes.new("Shot")
+    shot.frame_start, shot.frame_end = 20, 80
+    editor = edit.sequence_editor_create()
+    strip = editor.strips.new_scene("Shot", shot, channel=2, frame_start=100)
+    if hasattr(strip, "content_trim_start"):
+        strip.content_trim_start = 5
+    else:
+        strip.animation_offset_start = 5
+    editor.active_strip = strip
+    window.workspace.sequencer_scene = edit
+    window.scene = shot
+    _window, found = _regions()
+    found[1][0].type = "SEQUENCE_EDITOR"
+
+
+def _clip_regions():
+    window = bpy.context.window_manager.windows[0]
+    timeline = sequencer = None
+    for area in window.screen.areas:
+        region = next((r for r in area.regions if r.type == "WINDOW"), None)
+        if area.type == "DOPESHEET_EDITOR":
+            timeline = region
+        elif area.type == "SEQUENCE_EDITOR":
+            sequencer = (area, region)
+    return window, timeline, sequencer
+
+
+def _under_clip():
+    _window, timeline, (_area, sequencer) = _clip_regions()
+    strip = next(
+        s for s in bpy.context.window_manager.windows[0].workspace.sequencer_scene.sequence_editor.strips
+        if s.type == "SCENE"
+    )
+    start = float(strip.left_handle if hasattr(strip, "left_handle") else strip.frame_final_start)
+    # Scene frame 25 (start 20 + offset 5) is the clip's first frame.
+    return all(
+        abs(_screen_x(timeline, 25 + step) - _screen_x(sequencer, start + step)) <= TOLERANCE_PX
+        for step in (0, 35)
+    )
+
+
+def step_clip():
+    _check("timeline under the scene clip", _under_clip())
+    strip = bpy.context.window_manager.windows[0].workspace.sequencer_scene.sequence_editor.active_strip
+    strip.content_start += 30
+
+
+def step_clip_moved():
+    _check("timeline follows the moved clip", _under_clip())
+    window, _timeline, (area, region) = _clip_regions()
+    with bpy.context.temp_override(window=window, area=area, region=region):
+        bpy.ops.view2d.pan(deltax=-100, deltay=0)
+        bpy.ops.view2d.zoom(deltax=30, deltay=0)
+
+
+def step_clip_pan():
+    _check("timeline stays under the clip on Sequencer pan/zoom", _under_clip())
+
+
+def step_unregister():
     addon.unregister()
     wm = bpy.context.window_manager
     _check("property removed", not hasattr(bpy.types.WindowManager, link.LINK_PROPERTY))
@@ -134,7 +198,7 @@ def step_on_again():
 
 
 STATE = {}
-STEPS = [step_split, step_initial, step_sidebar, step_channels, step_graph_zoom, step_timeline_pan, step_off, step_on_again]
+STEPS = [step_split, step_initial, step_sidebar, step_channels, step_graph_zoom, step_timeline_pan, step_off, step_on_again, step_clip, step_clip_moved, step_clip_pan, step_unregister]
 
 
 def _finish():

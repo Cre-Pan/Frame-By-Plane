@@ -15,6 +15,13 @@ vertically across editors whatever their channel list or sidebar width.
 Editors that sit side by side (no common horizontal span) or in another window
 get the leader's visible range, like the native option.
 
+When the Sequencer shows another scene and the scene of the Timeline, Dope
+Sheet, Graph or NLA is used there as a scene clip, those editors line up under
+that clip: the clip's first frame sits above the scene frame it shows. With
+several clips of the same scene the active one wins, then the one under the
+Sequencer playhead, then the nearest. Reversed, strobed or retimed clips are
+not mapped and line up frame for frame.
+
 The toggle is on by default. While it is on, the native "Sync Visible Range"
 is switched off on those editors so the two do not fight each other.
 """
@@ -83,8 +90,100 @@ def _time_regions():
                     break
 
 
-def _measure(region):
-    """Return (region x, width, pixels per frame, window x of frame 0)."""
+def _sequencer_scene(window):
+    workspace = getattr(window, "workspace", None)
+    return getattr(workspace, "sequencer_scene", None) or getattr(window, "scene", None)
+
+
+def _shown_scene(window, area):
+    if area.type == "SEQUENCE_EDITOR":
+        return _sequencer_scene(window)
+    return getattr(window, "scene", None)
+
+
+def _scene_strips(sequencer_scene, scene):
+    editor = getattr(sequencer_scene, "sequence_editor", None)
+    if editor is None:
+        return []
+    return [
+        strip for strip in tuple(getattr(editor, "strips_all", None) or getattr(editor, "strips", ()) or ())
+        if getattr(strip, "type", "") == "SCENE"
+        and getattr(strip, "scene", None) == scene
+        and not bool(getattr(strip, "mute", False))
+    ]
+
+
+def _strip_value(strip, names, default=0.0):
+    """Read the first of ``names`` the strip has (5.3 renamed several fields)."""
+    for name in names:
+        if hasattr(strip, name):
+            return float(getattr(strip, name) or 0.0)
+    return float(default)
+
+
+def _clip_left(strip):
+    return _strip_value(strip, ("left_handle", "frame_final_start"))
+
+
+def _clip_right(strip):
+    return _strip_value(strip, ("right_handle", "frame_final_end"))
+
+
+def _relation_strip(sequencer_scene, scene):
+    """The clip of ``scene`` the timeline should sit under.
+
+    The active clip if it shows that scene, else the top one under the
+    Sequencer playhead, else the nearest one to the playhead.
+    """
+    strips = _scene_strips(sequencer_scene, scene)
+    if not strips:
+        return None
+    active = getattr(getattr(sequencer_scene, "sequence_editor", None), "active_strip", None)
+    if active is not None and active in strips:
+        return active
+    playhead = float(sequencer_scene.frame_current)
+
+    def distance(strip):
+        left = _clip_left(strip)
+        right = _clip_right(strip) - 1.0
+        gap = left - playhead if playhead < left else max(0.0, playhead - right)
+        return (gap, -int(getattr(strip, "channel", 0) or 0), left)
+
+    return min(strips, key=distance)
+
+
+def _strip_shift(strip):
+    """Sequencer frame minus scene frame for a 1:1 scene clip, else None."""
+    if bool(getattr(strip, "use_reverse_frames", False)):
+        return None
+    if float(getattr(strip, "strobe", 1.0) or 1.0) > 1.0 or len(getattr(strip, "retiming_keys", ()) or ()):
+        return None
+    return (
+        _strip_value(strip, ("content_start", "frame_start"))
+        - float(strip.scene.frame_start)
+        - _strip_value(strip, ("content_trim_start", "animation_offset_start"))
+    )
+
+
+def _frame_shift(window, area):
+    """Frames to add to this editor's frames to get Sequencer frames.
+
+    A Dope Sheet, Graph, NLA or Timeline showing a scene that the Sequencer
+    uses as a clip lines up under that clip; everything else is 0.
+    """
+    if area.type == "SEQUENCE_EDITOR":
+        return 0.0
+    scene = getattr(window, "scene", None)
+    sequencer_scene = _sequencer_scene(window)
+    if scene is None or sequencer_scene is None or scene == sequencer_scene:
+        return 0.0
+    strip = _relation_strip(sequencer_scene, scene)
+    shift = _strip_shift(strip) if strip is not None else None
+    return float(shift) if shift is not None else 0.0
+
+
+def _measure(region, shift=0.0):
+    """Return (region x, width, pixels per frame, window x of Sequencer frame 0, shift)."""
     view = region.view2d
     left = float(view.region_to_view(0.0, 0.0)[0])
     right = float(view.region_to_view(float(region.width), 0.0)[0])
@@ -92,7 +191,13 @@ def _measure(region):
     if span <= 1.0e-9:
         return None
     scale = float(region.width) / span
-    return (float(region.x), float(region.width), scale, float(region.x) - left * scale)
+    return (float(region.x), float(region.width), scale, float(region.x) - (left + shift) * scale, shift)
+
+
+def _shift_changed(old, new):
+    if old is None or new is None:
+        return False
+    return abs(old[4] - new[4]) > 1.0e-6
 
 
 def _state_changed(old, new):
@@ -105,7 +210,7 @@ def _state_changed(old, new):
     return abs(old[3] - new[3]) > _PIXEL_TOLERANCE
 
 
-def _target_range(leader_window, leader_region, leader_state, window, region):
+def _target_range(leader_window, leader_region, leader_state, window, region, shift=0.0):
     """Return the (first, last) frame the follower region should show."""
     scale, origin = leader_state[2], leader_state[3]
     same_window = leader_window == window
@@ -120,7 +225,7 @@ def _target_range(leader_window, leader_region, leader_state, window, region):
     else:
         first = (float(leader_region.x) - origin) / scale
         last = (float(leader_region.x + leader_region.width) - origin) / scale
-    return first, last
+    return first - shift, last - shift
 
 
 def _frame_to_pixels(region, frames):
@@ -224,15 +329,24 @@ def sync_linked_timelines():
         return False
     by_key = {entry[0]: entry for entry in entries}
     current = {}
-    for key, _window, area, region in entries:
+    for key, window, area, region in entries:
         _disable_native_lock(area)
-        current[key] = _measure(region)
+        try:
+            shift = _frame_shift(window, area)
+        except FBP_DATA_ERRORS:
+            shift = 0.0
+        current[key] = _measure(region, shift)
     for _key, window, _area, _region in entries:
         _enable_scene_time_sync(window)
 
     known = [key for key in current if key in _STATES]
-    changed = [key for key in known if _state_changed(_STATES[key], current[key])]
-    fresh = [key for key in current if key not in _STATES]
+    # An editor whose clip moved, or that now sits under another clip, follows.
+    regrounded = [key for key in known if _shift_changed(_STATES[key], current[key])]
+    changed = [
+        key for key in known
+        if key not in regrounded and _state_changed(_STATES[key], current[key])
+    ]
+    fresh = [key for key in current if key not in _STATES] + regrounded
 
     leader = None
     hint = _LEADER_HINT[0]
@@ -244,9 +358,11 @@ def sync_linked_timelines():
     if leader is None and changed:
         leader = _LEADER[0] if _LEADER[0] in changed else changed[0]
     if leader is None and fresh:
-        leader = _LEADER[0] if _LEADER[0] in by_key else _pick_default_leader(
-            [by_key[key] for key in known] or entries
-        )
+        steady = [key for key in known if key not in regrounded]
+        if _LEADER[0] in steady:
+            leader = _LEADER[0]
+        else:
+            leader = _pick_default_leader([by_key[key] for key in steady] or entries)
 
     moved = False
     if leader is not None and current.get(leader) is not None:
@@ -256,11 +372,12 @@ def sync_linked_timelines():
         for key, window, area, region in entries:
             if key == leader or current.get(key) is None:
                 continue
-            first, last = _target_range(leader_window, leader_region, leader_state, window, region)
+            shift = current[key][4]
+            first, last = _target_range(leader_window, leader_region, leader_state, window, region, shift)
             if _range_matches(region, first, last):
                 continue
             _apply_range(window, area, region, first, last)
-            current[key] = _measure(region)
+            current[key] = _measure(region, shift)
             moved = True
 
     _STATES.clear()
