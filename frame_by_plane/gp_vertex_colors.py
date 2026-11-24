@@ -503,11 +503,6 @@ def _sync_paint_state(context, brush_kind, owner, gp_settings, mode, *, force=Fa
                 alpha = getattr(state, target)[3]
                 _set_state_value(state, target, tuple(secondary) + (alpha,))
         _canonical_brush_colors(state, owner, mode)
-        if is_native_swap:
-            # Brush colors are not a reliable part of Grease Pencil's stroke
-            # undo snapshot. Store the synchronized semantic state as its own
-            # step, so Undo Stroke does not also undo the visible swap.
-            _push_edit_color_undo("Swap Grease Pencil Stroke / Fill Colors")
         return True
     return False
 
@@ -1396,10 +1391,36 @@ def _tag_gp_color_update(obj):
             continue
 
 
-def _push_edit_color_undo(message):
+def _window_override():
+    """Context override for a timer: timers run without a window, and
+    ``ed.undo_push`` then fails its poll, silently dropping the undo step."""
+    context = getattr(bpy, "context", None)
     try:
+        if getattr(context, "window", None) is not None:
+            return None
+        for window in context.window_manager.windows:
+            screen = window.screen
+            for area in screen.areas:
+                if area.type == "VIEW_3D":
+                    return {"window": window, "screen": screen, "area": area}
+            return {"window": window, "screen": screen}
+    except FBP_DATA_ERRORS:
+        pass
+    return None
+
+
+def _push_edit_color_undo(message):
+    def push():
         if bpy.ops.ed.undo_push.poll():
             return bpy.ops.ed.undo_push(message=message) == {"FINISHED"}
+        return False
+
+    try:
+        override = _window_override()
+        if override is None:
+            return push()
+        with bpy.context.temp_override(**override):
+            return push()
     except FBP_DATA_ERRORS:
         pass
     return False
@@ -2022,14 +2043,21 @@ def fbp_gp_vertex_color_undo_post(_scene):
     if mode == "EDIT_GREASE_PENCIL":
         _sync_edit_state(context, force=True)
     elif mode in {"PAINT_GREASE_PENCIL", "VERTEX_GREASE_PENCIL"}:
-        # Undo restores the Object-owned semantic colors, while native brush
-        # colors may remain outside the geometry undo snapshot. The semantic
-        # state is authoritative and is copied back to the live brush.
+        # In Draw and Vertex Paint the Stroke / Fill pair is a tool setting,
+        # like Blender's own brush colors: Ctrl+Z (and redo) undoes strokes,
+        # never the chosen colors. Undo restores the Object, whose stored
+        # pair can predate the last color change (a real Draw stroke step
+        # restores the snapshot taken before it, skipping the color edits in
+        # between), so the live pair is put back on the Object and the brush.
         kind, _paint, _brush, owner, gp_settings, target_mode = _semantic_brush_context(context)
         state = _state(context)
         obj = _active_gp_object(context)
+        live = _RUNTIME.get("paint_colors")
         if state is not None and obj is not None and owner is not None and gp_settings is not None:
-            if bool(getattr(state, "paint_colors_valid", False)):
+            if live:
+                _set_state_value(state, "stroke_color", _visible_alpha(live[0]))
+                _set_state_value(state, "fill_color", _visible_alpha(live[1]))
+            elif bool(getattr(state, "paint_colors_valid", False)):
                 # The restored step can predate the sync that followed an
                 # Edit Mode exit; its Stroke / Fill then hold the selection's
                 # colors, while the paint copy holds the real paint colors.
@@ -2296,7 +2324,6 @@ class FBP_OT_SwapGPVertexColors(Operator):
             _kind, _paint, _brush, owner, gp_settings, target_mode = _semantic_brush_context(context)
             if owner is not None and gp_settings is not None:
                 _canonical_brush_colors(state, owner, target_mode)
-                _push_edit_color_undo("Swap Grease Pencil Stroke / Fill Colors")
         return {"FINISHED"}
 
 
@@ -3234,6 +3261,11 @@ def register():
             fbp_gp_vertex_color_undo_post,
             module_suffix="gp_vertex_colors",
         )
+        append_handler_once(
+            bpy.app.handlers.redo_post,
+            fbp_gp_vertex_color_undo_post,
+            module_suffix="gp_vertex_colors",
+        )
     except FBP_DATA_ERRORS:
         _unregister_brush_color_timer()
         _cancel_edit_color_undo()
@@ -3249,11 +3281,12 @@ def register():
             "fbp_gp_vertex_color_undo_pre",
             module_suffix="gp_vertex_colors",
         )
-        remove_handlers_by_name(
-            bpy.app.handlers.undo_post,
-            "fbp_gp_vertex_color_undo_post",
-            module_suffix="gp_vertex_colors",
-        )
+        for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+            remove_handlers_by_name(
+                handlers,
+                "fbp_gp_vertex_color_undo_post",
+                module_suffix="gp_vertex_colors",
+            )
         if registered_properties:
             unregister_type_properties(bpy.types.Object, (_STATE_PROPERTY,))
         unregister_classes(property_classes)
@@ -3276,11 +3309,12 @@ def unregister():
         "fbp_gp_vertex_color_undo_pre",
         module_suffix="gp_vertex_colors",
     )
-    remove_handlers_by_name(
-        bpy.app.handlers.undo_post,
-        "fbp_gp_vertex_color_undo_post",
-        module_suffix="gp_vertex_colors",
-    )
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        remove_handlers_by_name(
+            handlers,
+            "fbp_gp_vertex_color_undo_post",
+            module_suffix="gp_vertex_colors",
+        )
     unregister_classes(classes)
     unregister_type_properties(bpy.types.Object, (_STATE_PROPERTY,))
     unregister_classes(property_classes)
