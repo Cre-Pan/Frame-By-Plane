@@ -11,6 +11,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Link Timelines
 
 - **Every timeline lines up, frame by frame.** A link button at the right of the header of every Timeline, Dope Sheet, Graph Editor, NLA and Sequencer, on by default. The editor you scroll, zoom or resize leads and the others follow with the same zoom and each frame at the same horizontal position on the screen, so the playhead and the Start/End frames sit on one vertical line across all of them. Unlike Blender's Sync Visible Range they stay aligned when one editor has a wider channel list or an open sidebar: opening the N panel moves nothing, resizing the channel list moves the others with it. Editors side by side or in another window get the same visible range. While the link is on, Sync Visible Range is switched off on those editors so the two do not fight. When the Sequencer shows another scene and the scene of the Timeline is used there as a scene clip, the Timeline (and Dope Sheet, Graph, NLA) lines up under that clip, follows it when the clip is moved and picks the active clip when there are several; Scene Time sync is turned on so the playheads follow each other.
+- **No more lag.** The other timelines move as soon as the one you scroll or zoom is redrawn, instead of on a 30 times per second check run through the add-on scheduler, so they no longer trail behind it. The periodic check stays, slower, only for window resizes and file loads.
 
 ### Choose the playback buttons
 
