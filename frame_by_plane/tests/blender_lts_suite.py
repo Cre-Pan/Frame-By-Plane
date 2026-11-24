@@ -5593,7 +5593,7 @@ def test_playback_buttons_contract(_module):
         assert {"screen.frame_jump", "screen.keyframe_jump", "screen.time_jump"} <= idnames, calls
         assert ("screen.animation_play", "PLAY_REVERSE") not in calls, calls
         picks = [call for call in calls if call[0] == "fbp.set_range_to_current_frame"]
-        assert picks == [("fbp.set_range_to_current_frame", "EYEDROPPER")] * 2, calls
+        assert picks == [("fbp.set_range_to_current_frame", "PASTEDOWN")] * 2, calls
     finally:
         buttons.fbp_get_addon_preferences = original_get_prefs
 

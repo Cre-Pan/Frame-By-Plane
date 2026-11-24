@@ -34,7 +34,7 @@ _OPTIONS_PANELS = ("TIME_PT_playback_options", "TIME_PT_jump", "TIME_PT_playback
 # sits right after its field (Start, then End), inside the same aligned row.
 _RANGE_START_PROPS = frozenset({"frame_start", "frame_preview_start"})
 _RANGE_END_PROPS = frozenset({"frame_end", "frame_preview_end"})
-_PICK_ICON = "EYEDROPPER"
+_PICK_ICON = "PASTEDOWN"
 
 _PATCHED_MODULES = {}
 _OPTIONS_PANEL = []
@@ -85,7 +85,15 @@ class _FilteredLayout:
     def prop(self, data, property, *args, **kwargs):
         result = self._layout.prop(data, property, *args, **kwargs)
         if isinstance(data, bpy.types.Scene) and (property in _RANGE_START_PROPS or property in _RANGE_END_PROPS):
-            self._layout.operator(
+            # Blender narrows the Start/End row (scale_x 0.8); undo that for
+            # the icon button so it keeps the normal square size.
+            button = self._layout.row(align=True)
+            try:
+                parent_scale = float(self._layout.scale_x) or 1.0
+                button.scale_x = 1.0 / parent_scale
+            except (AttributeError, TypeError, ValueError):
+                pass
+            button.operator(
                 FBP_OT_SetRangeToCurrentFrame.bl_idname, text="", icon=_PICK_ICON,
             ).end = property in _RANGE_END_PROPS
         return result
