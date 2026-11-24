@@ -163,6 +163,28 @@ try:
     assert abs(local.x) < 1.0e-4 and abs(local.y) < 1.0e-4, tuple(local)
     assert Vector(plane.location).xy.length < 1.0e-5
 
+    # 4. A plane with a parent inverse and its own offset and scale (files
+    # from older builds): its origin still comes onto the layer origin.
+    bpy.context.view_layer.update()
+    before_1 = plane_world(plane)
+    world = plane.matrix_world.copy()
+    plane.matrix_parent_inverse = Matrix.Translation((0.2, -0.4, 0.3)) @ Matrix.Diagonal((0.5, 0.5, 0.5, 1.0))
+    plane.scale = (2.0, 2.0, 2.0)
+    bpy.context.view_layer.update()
+    plane.matrix_world = world @ Matrix.Translation((0.6, 0.35, 0.0))
+    # The drawing moves with that offset; put it back through the mesh.
+    offset_x, offset_y = builder.fbp_plane_origin_offset(rig)
+    rig[builder.FBP_PLANE_ORIGIN_OFFSET_KEY] = (offset_x + 0.6, offset_y + 0.35)
+    importlib.import_module(f"{PACKAGE_NAME}.core").fbp_refresh_crop_extend(rig, bpy.context)
+    bpy.context.view_layer.update()
+    same_points(before_1, plane_world(plane), "test setup moved the drawing")
+    assert (plane.matrix_world.translation - rig.matrix_world.translation).length > 0.1
+    run_origin(rig, 'GEOMETRY')
+    bpy.context.view_layer.update()
+    same_points(before_1, plane_world(plane), "parent inverse plane moved")
+    assert (plane.matrix_world.translation - rig.matrix_world.translation).length < 1.0e-4, (
+        tuple(plane.matrix_world.translation), tuple(rig.matrix_world.translation))
+
     print("FBPTEST layer origin: PASS")
 except Exception:
     traceback.print_exc()

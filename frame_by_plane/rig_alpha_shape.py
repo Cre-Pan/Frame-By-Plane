@@ -20,10 +20,7 @@ from __future__ import annotations
 import os
 from typing import Iterable, Sequence
 
-try:  # NumPy ships with Blender; keep import errors explicit for tests.
-    import numpy as np
-except ImportError:  # pragma: no cover - Blender always provides NumPy.
-    np = None
+from .lazy_numpy import np  # NumPy loads on first use, not at Blender start
 
 
 # Long side of the cached full-canvas alpha union. Large enough for a precise
@@ -313,16 +310,12 @@ def region_grid(union: AlphaUnion, uv_rect, cells: int = FBP_ALPHA_OUTLINE_CELLS
     gh = max(1, int(round(rh * cells / float(longest))))
     col_edges = np.linspace(0, rw, gw + 1).astype(int)
     row_edges = np.linspace(0, rh, gh + 1).astype(int)
-    grid = np.zeros((gh, gw), dtype=bool)
-    for gy in range(gh):
-        ra, rb = row_edges[gy], max(row_edges[gy] + 1, row_edges[gy + 1])
-        band = region[ra:rb]
-        if not band.any():
-            continue
-        for gx in range(gw):
-            ca, cb = col_edges[gx], max(col_edges[gx] + 1, col_edges[gx + 1])
-            grid[gy, gx] = bool(band[:, ca:cb].any())
-    return grid
+    # One vectorised OR per axis instead of one numpy call per cell. For
+    # increasing starts ``reduceat`` ORs region[start:next_start] and, where
+    # two starts coincide, takes the single row/column at ``start``: the same
+    # cells the per-cell loop read with its ``max(start + 1, end)`` guard.
+    rows = np.logical_or.reduceat(region, row_edges[:-1], axis=0)
+    return np.logical_or.reduceat(rows, col_edges[:-1], axis=1)
 
 
 def dilate(grid, steps: int):
@@ -445,31 +438,32 @@ def _soften(grid):
     return (acc / 9.0) * 0.5 + field * 0.5
 
 
+# Segments for each non-saddle marching-squares case, as (first, second) cell
+# sides: 0 top, 1 right, 2 bottom, 3 left. Sides are listed in the order the
+# reference implementation checked them (top, right, bottom, left).
+_MS_SIDE_PAIRS = {}
+for _code in range(1, 15):
+    if _code in (5, 10):
+        continue
+    _tl, _tr, _br, _bl = bool(_code & 8), bool(_code & 4), bool(_code & 2), bool(_code & 1)
+    _sides = [side for side, crossed in ((0, _tl != _tr), (1, _tr != _br), (2, _bl != _br), (3, _tl != _bl)) if crossed]
+    _MS_SIDE_PAIRS[_code] = (_sides[0], _sides[1])
+del _code, _tl, _tr, _br, _bl, _sides
+
+
 def _marching_squares_loops(field, iso=0.5):
     """Closed contour loops of ``field`` at ``iso``; field border must be below iso.
 
     Sample (row r, column c) sits at the centre of cell (c + 0.5, r + 0.5) in
     lattice coordinates of the unpadded grid shifted by the padding of one.
+
+    Segments, edge adjacency and crossing points are built with NumPy; only the
+    walk along each loop runs in Python, on integer edge ids. Loops come out in
+    the same order, from the same start edge and in the same direction as the
+    original cell-by-cell implementation.
     """
     height, width = field.shape
     inside = field >= iso
-
-    def crossing(edge):
-        kind, r, c = edge
-        if kind == "h":  # between (r, c) and (r, c + 1)
-            a, b = field[r, c], field[r, c + 1]
-            t = 0.5 if a == b else (iso - a) / (b - a)
-            return (c + t, float(r))
-        a, b = field[r, c], field[r + 1, c]  # between (r, c) and (r + 1, c)
-        t = 0.5 if a == b else (iso - a) / (b - a)
-        return (float(c), r + t)
-
-    links = {}
-
-    def link(a, b):
-        links.setdefault(a, []).append(b)
-        links.setdefault(b, []).append(a)
-
     codes = (
         (inside[:-1, :-1].astype(np.int8) << 3)
         | (inside[:-1, 1:].astype(np.int8) << 2)
@@ -477,47 +471,71 @@ def _marching_squares_loops(field, iso=0.5):
         | inside[1:, :-1].astype(np.int8)
     )
     # Only cells the contour crosses need work; skip the solid and empty ones.
-    for r, c in zip(*np.nonzero((codes != 0) & (codes != 15))):
-        r = int(r)
-        c = int(c)
-        code = int(codes[r, c])
-        tl, tr = bool(code & 8), bool(code & 4)
-        br, bl = bool(code & 2), bool(code & 1)
-        top = ("h", r, c)
-        bottom = ("h", r + 1, c)
-        left = ("v", r, c)
-        right = ("v", r, c + 1)
-        if code in (5, 10):
-            centre = (field[r, c] + field[r, c + 1] + field[r + 1, c] + field[r + 1, c + 1]) / 4.0
-            joined = centre >= iso
-            if code == 5:  # tr and bl inside
-                if joined:
-                    link(top, left)
-                    link(bottom, right)
-                else:
-                    link(top, right)
-                    link(bottom, left)
-            else:  # tl and br inside
-                if joined:
-                    link(top, right)
-                    link(bottom, left)
-                else:
-                    link(top, left)
-                    link(bottom, right)
-            continue
-        crossed = []
-        if tl != tr:
-            crossed.append(top)
-        if tr != br:
-            crossed.append(right)
-        if bl != br:
-            crossed.append(bottom)
-        if tl != bl:
-            crossed.append(left)
-        if len(crossed) == 2:
-            link(crossed[0], crossed[1])
+    rows, cols = np.nonzero((codes != 0) & (codes != 15))
+    if not len(rows):
+        return []
+    cell_codes = codes[rows, cols].astype(np.int64)
+    # Edge ids: horizontal edge (r, c) joins samples (r, c) and (r, c + 1);
+    # vertical edge (r, c) joins (r, c) and (r + 1, c) and is offset by
+    # ``vertical``.
+    vertical = height * width
+    base = rows.astype(np.int64) * width + cols
+    sides = np.stack((base, base + width, base + width, vertical + base), axis=1)
+    sides[:, 1] = vertical + base + 1  # right
+    sides[:, 2] = base + width  # bottom
+    first_side = np.zeros(len(rows), dtype=np.int64)
+    second_side = np.zeros(len(rows), dtype=np.int64)
+    for code, (side_a, side_b) in _MS_SIDE_PAIRS.items():
+        mask = cell_codes == code
+        first_side[mask] = side_a
+        second_side[mask] = side_b
+    # Saddles carry two segments; the centre value picks how they pair up.
+    saddle = (cell_codes == 5) | (cell_codes == 10)
+    centre = (
+        field[rows, cols] + field[rows, cols + 1] + field[rows + 1, cols] + field[rows + 1, cols + 1]
+    ) / 4.0
+    joined = centre >= iso
+    # code 5 joined or code 10 split: (top, left) then (bottom, right);
+    # otherwise: (top, right) then (bottom, left).
+    top_left = saddle & ((cell_codes == 5) == joined)
+    first_side[saddle] = 0
+    second_side[saddle] = np.where(top_left[saddle], 3, 1)
+    index = np.arange(len(rows))
+    seg_a = sides[index, first_side]
+    seg_b = sides[index, second_side]
+    extra_a = sides[saddle, 2]
+    extra_b = np.where(top_left[saddle], sides[saddle, 1], sides[saddle, 3])
+    # Keep cell order, with a saddle's second segment right after its first.
+    count = len(rows) + len(extra_a)
+    slot = index + np.cumsum(saddle) - saddle
+    seg_first = np.empty(count, dtype=np.int64)
+    seg_second = np.empty(count, dtype=np.int64)
+    seg_first[slot] = seg_a
+    seg_second[slot] = seg_b
+    seg_first[slot[saddle] + 1] = extra_a
+    seg_second[slot[saddle] + 1] = extra_b
 
-    loops = []
+    # Adjacency in the order the reference built it: link(a, b) appended b to
+    # a's list, then a to b's list.
+    ends = np.empty(2 * count, dtype=np.int64)
+    ends[0::2] = seg_first
+    ends[1::2] = seg_second
+    others = np.empty_like(ends)
+    others[0::2] = seg_second
+    others[1::2] = seg_first
+    order = np.argsort(ends, kind="stable")
+    edge_ids, group_starts, group_counts = np.unique(ends[order], return_index=True, return_counts=True)
+    first_seen = order[group_starts]
+    neighbour_list = others[order].tolist()
+    edge_list = edge_ids.tolist()
+    start_list = group_starts.tolist()
+    count_list = group_counts.tolist()
+    links = {}
+    for group in np.argsort(first_seen, kind="stable").tolist():
+        begin = start_list[group]
+        links[edge_list[group]] = neighbour_list[begin:begin + count_list[group]]
+
+    walked = []
     seen = set()
     for start in links:
         if start in seen:
@@ -526,10 +544,9 @@ def _marching_squares_loops(field, iso=0.5):
         seen.add(start)
         prev, current = None, start
         while True:
-            options = [item for item in links[current] if item != prev]
             nxt = None
-            for option in options:
-                if option not in seen:
+            for option in links[current]:
+                if option != prev and option not in seen:
                     nxt = option
                     break
             if nxt is None:
@@ -538,7 +555,34 @@ def _marching_squares_loops(field, iso=0.5):
             loop.append(nxt)
             prev, current = current, nxt
         if len(loop) >= 3:
-            loops.append([crossing(edge) for edge in loop])
+            walked.append(loop)
+    if not walked:
+        return []
+
+    edges = np.fromiter((edge for loop in walked for edge in loop), dtype=np.int64)
+    is_vertical = edges >= vertical
+    local = np.where(is_vertical, edges - vertical, edges)
+    edge_rows = local // width
+    edge_cols = local % width
+    a = field[edge_rows, edge_cols]
+    b = np.where(is_vertical, field[np.minimum(edge_rows + 1, height - 1), edge_cols],
+                 field[edge_rows, np.minimum(edge_cols + 1, width - 1)])
+    # Match the scalar arithmetic of the cell-by-cell version bit for bit: a
+    # float32 field interpolates and offsets in float32 there.
+    scalar = field.dtype.type
+    t_type = np.asarray((iso - scalar(0)) / scalar(1)).dtype
+    coord_type = np.asarray(1 + t_type.type(0.5)).dtype
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(a == b, 0.5, (iso - a) / (b - a)).astype(t_type)
+    offset = (np.where(is_vertical, edge_rows, edge_cols).astype(coord_type) + t).astype(coord_type)
+    xs = np.where(is_vertical, edge_cols.astype(np.float64), offset).tolist()
+    ys = np.where(is_vertical, offset, edge_rows.astype(np.float64)).tolist()
+    loops = []
+    position = 0
+    for loop in walked:
+        size = len(loop)
+        loops.append(list(zip(xs[position:position + size], ys[position:position + size])))
+        position += size
     return loops
 
 

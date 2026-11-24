@@ -191,7 +191,11 @@ def _fbp_scene_import_directory(scene, *property_names):
     names = property_names or _FBP_IMPORT_DIRECTORY_PROPERTIES
     for name in names:
         try:
-            value = str(getattr(scene, name, "") or "")
+            if name == "fbp_project_path":
+                from .path_utils import fbp_scene_project_path
+                value = str(fbp_scene_project_path(scene) or "")
+            else:
+                value = str(getattr(scene, name, "") or "")
         except FBP_DATA_ERRORS:
             continue
         if value:
@@ -1807,7 +1811,8 @@ class FBP_OT_ScanProjectToSetup(Operator):
 
     def execute(self, context):
         sc = context.scene
-        base = bpy.path.abspath(getattr(sc, "fbp_project_path", "") or "")
+        from .path_utils import fbp_scene_project_path
+        base = bpy.path.abspath(fbp_scene_project_path(sc) or "")
         if not base or not os.path.isdir(base):
             self.report({'WARNING'}, "Set a valid Project Folder in Settings")
             return {'CANCELLED'}
@@ -1893,7 +1898,8 @@ class FBP_OT_AutoSceneBuilder(Operator):
 
     def _execute_impl(self, context):
         sc = context.scene
-        base = bpy.path.abspath(sc.fbp_project_path)
+        from .path_utils import fbp_scene_project_path
+        base = bpy.path.abspath(fbp_scene_project_path(sc) or "")
         if not base or not os.path.isdir(base):
             self.report({'WARNING'}, "Set a valid Project Folder in Settings!")
             return {'CANCELLED'}
