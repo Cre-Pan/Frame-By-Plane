@@ -24,6 +24,7 @@ from .shortcut_runtime import (
 )
 
 from .storage_keys import fbp_effect_storage_key
+from . import fbp_index as _fbp_index
 from .registration import register_classes, unregister_classes, unregister_type_properties
 from .interface_preferences import (
     clear_interface_preferences_cache,
@@ -3263,7 +3264,10 @@ class FBP_LayerItem(PropertyGroup):
     def obj(self):
         name = str(getattr(self, "obj_name", "") or "")
         runtime_key = str(getattr(self, "obj_runtime_key", "") or "")
-        candidate = bpy.data.objects.get(name) if name else None
+        if not name:
+            return None
+        index = _fbp_index.active_name_index()
+        candidate = index.data_object(name) if index is not None else bpy.data.objects.get(name)
         if candidate:
             try:
                 if (

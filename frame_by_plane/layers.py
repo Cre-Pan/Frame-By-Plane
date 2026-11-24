@@ -12,6 +12,7 @@ from collections import deque
 import contextlib
 
 import bpy
+from . import fbp_index as _fbp_index
 import bpy.utils.previews
 import mathutils
 
@@ -613,11 +614,21 @@ def get_primary_fbp_collection(obj):
             # walks every object of every collection in the file, and the layer
             # list calls this once per layer per group row, so large projects
             # paid that walk thousands of times per refresh.
-            collection = bpy.data.collections.get(stored_name)
-            if collection is not None:
-                linked = collection.objects.get(getattr(obj, 'name', ''))
-                if linked is not None and linked == obj:
-                    return collection
+            index = _fbp_index.active_name_index()
+            if index is not None:
+                collection = index.data_collection(stored_name)
+                linked = (
+                    index.collection_object(collection, getattr(obj, 'name', ''))
+                    if collection is not None else None
+                )
+            else:
+                collection = bpy.data.collections.get(stored_name)
+                linked = (
+                    collection.objects.get(getattr(obj, 'name', ''))
+                    if collection is not None else None
+                )
+            if linked is not None and linked == obj:
+                return collection
     except FBP_DATA_ERRORS:
         pass
     try:
@@ -2888,7 +2899,11 @@ def _safe_layer_obj(layer_item):
         scene = context.scene if context else None
         if not scene:
             return obj
-        if scene.objects.get(obj.name) == obj:
+        index = _fbp_index.active_name_index()
+        if index is not None:
+            if index.scene_object(scene, obj.name) == obj:
+                return obj
+        elif scene.objects.get(obj.name) == obj:
             return obj
     except FBP_DATA_ERRORS:
         pass
@@ -3026,7 +3041,9 @@ def fbp_collection_members_memo():
         return
     _FBP_MEMBERS_MEMO = {}
     try:
-        yield _FBP_MEMBERS_MEMO
+        # Name lookups in the same pass come from tables walked once.
+        with _fbp_index.name_index_scope():
+            yield _FBP_MEMBERS_MEMO
     finally:
         _FBP_MEMBERS_MEMO = None
 
