@@ -255,6 +255,25 @@ RENDER_FOLDER_MODE_ITEMS = (
 )
 
 
+_RENDER_DATE_STYLE_CACHE = []
+
+
+def _render_date_style_items(_self, _context):
+    """Date styles labelled with today's date (kept alive for Blender)."""
+    try:
+        from .render_output import fbp_render_date_text
+        examples = {style: fbp_render_date_text(style) for style in ('NUMERIC', 'TEXT', 'COMPACT')}
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        examples = {'NUMERIC': "24.11.2026", 'TEXT': "24 Nov 2026", 'COMPACT': "24-11-26"}
+    items = [
+        ('NUMERIC', f"Numeric  ({examples['NUMERIC']})", "Day, month and full year with dots", 0),
+        ('TEXT', f"Extended  ({examples['TEXT']})", "Day, short month name and full year", 1),
+        ('COMPACT', f"Compact  ({examples['COMPACT']})", "Day, month and two-digit year", 2),
+    ]
+    _RENDER_DATE_STYLE_CACHE[:] = items
+    return _RENDER_DATE_STYLE_CACHE
+
+
 def update_render_output_path_cb(self, _context):
     """Push FBP output controls to Blender's native render filepath."""
     if fbp_is_silent_property_update(self) or fbp_undo_guard_active():
@@ -4082,6 +4101,18 @@ def register_properties():
         name="Suffix",
         description="Optional suffix for the generated folder; empty values are skipped",
         default="",
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_folder_use_date = BoolProperty(
+        name="Add Date",
+        description="Add the export date to the generated folder name, in the day/month/year order of Blender's language",
+        default=False,
+        update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_folder_date_style = EnumProperty(
+        name="Date Style",
+        description="How the export date is written in the folder name",
+        items=_render_date_style_items,
         update=update_render_output_path_cb,
     )
     _FBP_SCENE_RNA.fbp_render_folder_mode = EnumProperty(

@@ -3013,6 +3013,14 @@ class FBP_PT_OutputRender(Panel):
                         fields.menu("FBP_MT_render_folder_tag", text=_fbp_folder_tag_label(sc), icon='TAG')
                     else:
                         fields.prop(sc, prop, text="")
+                _fbp_name_plus(stack)
+                line = stack.row(align=False)
+                line.prop(sc, "fbp_render_folder_use_date", text="")
+                body = line.row(align=True)
+                body.active = bool(sc.fbp_render_folder_use_date)
+                split = body.split(factor=0.22, align=True)
+                split.label(text="Date")
+                split.prop(sc, "fbp_render_folder_date_style", text="")
             folder_preview = fbp_render_folder_name(sc)
             if folder_preview:
                 hint_row(folder, folder_preview, icon='FILE_FOLDER', disabled=False)

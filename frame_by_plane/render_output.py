@@ -8,6 +8,7 @@ import shutil
 from contextlib import contextmanager
 
 import bpy
+from bpy.app.handlers import persistent
 
 from .runtime import FBP_DATA_ERRORS, fbp_obj_runtime_key, fbp_warn
 
@@ -197,7 +198,111 @@ def fbp_render_root_directory(scene) -> str:
     return os.path.normpath(os.path.join(base, "FBP_Render_Frames"))
 
 
-def fbp_render_folder_name(scene, *, test_number=None) -> str:
+_MONTHS = {
+    "en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+    "it": ("Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"),
+    "es": ("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"),
+    "fr": ("Janv", "Févr", "Mars", "Avr", "Mai", "Juin", "Juil", "Août", "Sept", "Oct", "Nov", "Déc"),
+    "de": ("Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"),
+    "pt": ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"),
+}
+# Languages written year-month-day; US English is month-day-year; the rest
+# of Blender's languages put the day first.
+_YMD_LANGUAGES = {"ja", "zh", "ko", "hu", "lt", "mn"}
+
+
+_SYSTEM_LANGUAGE_CACHE: list[str] = []
+
+
+def _detect_system_language() -> str:
+    import locale
+    import sys
+    import warnings
+
+    candidates = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            # Windows: user locale from the OS API, e.g. "it_IT".
+            candidates.append(locale.getdefaultlocale()[0])
+        except (ValueError, TypeError, AttributeError):
+            pass
+    candidates += [os.environ.get(key) for key in ("LC_ALL", "LC_TIME", "LANG")]
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+
+            candidates.append(subprocess.run(
+                ["defaults", "read", "-g", "AppleLocale"],
+                capture_output=True, text=True, timeout=1.0, check=False,
+            ).stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for value in candidates:
+        value = str(value or "").split(".")[0].split("@")[0]
+        if value and value not in {"C", "POSIX"}:
+            return value
+    return ""
+
+
+def _system_language() -> str:
+    """Operating-system locale such as ``it_IT``; detected once per session."""
+    if not _SYSTEM_LANGUAGE_CACHE:
+        _SYSTEM_LANGUAGE_CACHE.append(_detect_system_language())
+    return _SYSTEM_LANGUAGE_CACHE[0]
+
+
+def _blender_language() -> str:
+    """Language used for the date: Blender's interface language.
+
+    Blender offers only US English, so with English (or Automatic) the
+    operating system's region decides, e.g. day-first in Italy.
+    """
+    try:
+        locale = str(bpy.app.translations.locale or "")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        locale = ""
+    if not locale or locale.lower().startswith("en"):
+        return _system_language() or "en_US"
+    return locale
+
+
+def fbp_render_date_order(language=None) -> str:
+    """``'DMY'``, ``'MDY'`` or ``'YMD'`` following Blender's language."""
+    language = str(language or _blender_language())
+    base = language.split("_")[0].split("-")[0].lower()
+    if base in _YMD_LANGUAGES:
+        return 'YMD'
+    if language.replace("-", "_") in {"en_US", "en"}:
+        return 'MDY'
+    return 'DMY'
+
+
+def fbp_render_date_text(style, when=None, language=None) -> str:
+    """Folder-safe export date in one of the ``fbp_render_folder_date_style`` styles.
+
+    ``NUMERIC`` 24.11.2026 · ``TEXT`` 24 Nov 2026 · ``COMPACT`` 24-11-26.
+    The slash of 24/11/26 cannot be used in a folder name, so the compact
+    style uses a hyphen.
+    """
+    import datetime
+
+    when = when or datetime.date.today()
+    language = str(language or _blender_language())
+    order = fbp_render_date_order(language)
+    day, month = f"{when.day:02d}", f"{when.month:02d}"
+    if style == 'TEXT':
+        months = _MONTHS.get(language.split("_")[0].lower(), _MONTHS["en"])
+        parts = {"D": str(when.day), "M": months[when.month - 1], "Y": str(when.year)}
+        return " ".join(parts[key] for key in order)
+    if style == 'COMPACT':
+        parts = {"D": day, "M": month, "Y": f"{when.year % 100:02d}"}
+        return "-".join(parts[key] for key in order)
+    parts = {"D": day, "M": month, "Y": str(when.year)}
+    return ".".join(parts[key] for key in order)
+
+
+def fbp_render_folder_name(scene, *, test_number=None, when=None) -> str:
     del test_number
     mode = str(
         getattr(scene, "fbp_render_folder_builder_mode", "GENERATE") or "GENERATE"
@@ -210,7 +315,11 @@ def fbp_render_folder_name(scene, *, test_number=None) -> str:
     tag = str(getattr(scene, "fbp_render_folder_tag", "TEST") or "TEST")
     suffix = getattr(scene, "fbp_render_folder_builder_suffix", "")
     tag_value = "" if tag == 'NONE' else tag
-    return _join_components((prefix, name, tag_value, suffix), " ") or "Render"
+    folder = _join_components((prefix, name, tag_value, suffix), " ") or "Render"
+    if bool(getattr(scene, "fbp_render_folder_use_date", False)):
+        style = str(getattr(scene, "fbp_render_folder_date_style", "NUMERIC") or "NUMERIC")
+        folder = f"{folder} ({fbp_render_date_text(style, when)})"
+    return folder
 
 
 def fbp_find_ffmpeg_executable(scene=None) -> str:
@@ -464,3 +573,36 @@ def fbp_render_static_prefix(scene) -> str:
     match = _HASH_RUN_RE.search(pattern)
     value = pattern[:match.start()] if match else os.path.splitext(pattern)[0]
     return value.rstrip(" ._-")
+
+
+@persistent
+def fbp_render_date_refresh(scene, _depsgraph=None):
+    """Write today's date into the Output path when a render starts.
+
+    The path is otherwise built when a setting changes, so a project rendered
+    the next day would still carry yesterday's date.
+    """
+    if (
+        fbp_render_advanced_enabled(scene)
+        and bool(getattr(scene, "fbp_render_folder_use_date", False))
+        and str(getattr(scene, "fbp_render_folder_builder_mode", "GENERATE")) == 'GENERATE'
+    ):
+        fbp_sync_native_render_path(scene)
+
+
+def _remove_date_handlers():
+    for handlers in (bpy.app.handlers.render_init,):
+        for callback in tuple(handlers):
+            if getattr(callback, "__name__", "") == "fbp_render_date_refresh" and str(
+                getattr(callback, "__module__", "")
+            ).endswith("render_output"):
+                handlers.remove(callback)
+
+
+def register():
+    _remove_date_handlers()
+    bpy.app.handlers.render_init.append(fbp_render_date_refresh)
+
+
+def unregister():
+    _remove_date_handlers()

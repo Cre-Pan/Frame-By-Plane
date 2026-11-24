@@ -93,6 +93,27 @@ try:
     scene.fbp_render_advanced = True
     check("Shot - Test" in scene.render.filepath, f"Output path not synchronized: {scene.render.filepath}")
 
+    # Export date in the generated folder name, ordered by Blender's language.
+    import datetime
+    day = datetime.date(2026, 11, 24)
+    text = render_output.fbp_render_date_text
+    check(text('NUMERIC', day, "it_IT") == "24.11.2026", text('NUMERIC', day, "it_IT"))
+    check(text('TEXT', day, "it_IT") == "24 Nov 2026", text('TEXT', day, "it_IT"))
+    check(text('COMPACT', day, "it_IT") == "24-11-26", text('COMPACT', day, "it_IT"))
+    check(text('NUMERIC', day, "en_US") == "11.24.2026", text('NUMERIC', day, "en_US"))
+    check(text('TEXT', day, "ja_JP") == "2026 Nov 24", text('TEXT', day, "ja_JP"))
+    check(text('TEXT', day, "de_DE") == "24 Nov 2026", text('TEXT', day, "de_DE"))
+    scene.fbp_render_folder_builder_mode = 'GENERATE'
+    scene.fbp_render_folder_name = "Spot"
+    scene.fbp_render_folder_tag = 'TEST'
+    scene.fbp_render_folder_use_date = True
+    scene.fbp_render_folder_date_style = 'COMPACT'
+    folder = render_output.fbp_render_folder_name(scene, when=day)
+    check(folder.startswith("Spot TEST (") and folder.endswith(")"), folder)
+    check(render_output.fbp_render_folder_name(scene).replace("Spot TEST ", "") in scene.render.filepath, scene.render.filepath)
+    scene.fbp_render_folder_use_date = False
+    check(render_output.fbp_render_folder_name(scene) == "Spot TEST", render_output.fbp_render_folder_name(scene))
+
     # Project Doctor: the layer frame-range check is gone.
     project_health = importlib.import_module(f"{PACKAGE_NAME}.project_health")
     check(not hasattr(project_health, "_sequence_end"), "Frame-range helper should be removed")
