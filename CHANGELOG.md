@@ -11,7 +11,7 @@ All notable public changes to Frame By Plane are documented here.
 ### Choose the playback buttons
 
 - **Show Buttons** at the bottom of the Playback Options popover (the small arrow beside the transport buttons in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer; Time Jump on Blender 5.2) switches each group of transport buttons on or off: **Jump to Endpoint**, **Jump to Keyframe**, **Jump by Delta** and **Play Reverse**, lined up under Wrap Timeline Navigation. The three jump groups are hidden by default, so the header shows Play Reverse and Play only. The choice is an add-on preference and holds in every file. Blender's own header drawing is kept: only the switched-off buttons are skipped.
-- **Pick the current frame for In and Out.** An eyedropper before **Start** and after **End** in the same headers sets the In or the Out to the current frame (the preview range when it is on). An Out before the In moves the In too, so the range stays valid.
+- **Pick the current frame for In and Out.** An eyedropper after **Start** and after **End** in the same headers sets the In or the Out to the current frame (the preview range when it is on). An Out before the In moves the In too, so the range stays valid.
 
 ### Large preview on list rows
 
