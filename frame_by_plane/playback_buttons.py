@@ -85,6 +85,9 @@ class _FilteredLayout:
 
     def prop(self, data, property, *args, **kwargs):
         if isinstance(data, bpy.types.Scene) and (property in _RANGE_START_PROPS or property in _RANGE_END_PROPS):
+            # A small gap after the preview-range clock and between Start and
+            # End, so each icon + field pair reads as one group.
+            self._layout.separator(factor=1.0)
             # Blender narrows the Start/End row (scale_x 0.8); undo that for
             # the icon button so it keeps the normal square size.
             button = self._layout.row(align=True)
