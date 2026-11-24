@@ -7,6 +7,7 @@ repeatedly rebuilding the same lists from UI mirrors or full scene scans.
 
 from __future__ import annotations
 
+import contextlib
 import time
 
 from .runtime import FBP_DATA_ERRORS, fbp_obj_matches_runtime_token, fbp_obj_runtime_key
@@ -245,6 +246,96 @@ class ObjectNameLookup:
             return None
         return None
 
+
+
+class NameIndex:
+    """Name lookups for one read-only pass, each collection walked once.
+
+    ``bpy.data.objects.get``, ``scene.objects.get``, ``bpy.data.collections.get``
+    and ``collection.objects.get`` compare names one item at a time in Blender
+    5.2 and 5.3, so a pass that looks up every layer grows with layers x
+    objects. Inside ``name_index_scope`` these answers come from tables built
+    on first use. Each table keeps the first item per name, the one ``get``
+    returns. Nothing may create, delete or rename Objects or Collections
+    inside the scope, and the tables are dropped when it ends.
+    """
+
+    __slots__ = ("_data_objects", "_collections", "_scene_objects", "_collection_objects")
+
+    def __init__(self):
+        self._data_objects = None
+        self._collections = None
+        self._scene_objects = {}
+        self._collection_objects = {}
+
+    def data_object(self, name):
+        if self._data_objects is None:
+            try:
+                import bpy
+                self._data_objects = ObjectNameLookup._first_by_name(bpy.data.objects)
+            except (ImportError, *FBP_DATA_ERRORS):
+                self._data_objects = {}
+        return self._data_objects.get(str(name or ""))
+
+    def data_collection(self, name):
+        if self._collections is None:
+            try:
+                import bpy
+                self._collections = ObjectNameLookup._first_by_name(bpy.data.collections)
+            except (ImportError, *FBP_DATA_ERRORS):
+                self._collections = {}
+        return self._collections.get(str(name or ""))
+
+    @staticmethod
+    def _owner_map(cache, owner):
+        try:
+            key = int(owner.as_pointer())
+        except FBP_DATA_ERRORS:
+            return None
+        mapping = cache.get(key)
+        if mapping is None:
+            try:
+                mapping = ObjectNameLookup._first_by_name(owner.objects)
+            except FBP_DATA_ERRORS:
+                return None
+            cache[key] = mapping
+        return mapping
+
+    def scene_object(self, scene, name):
+        """Same answer as ``scene.objects.get(name)``."""
+        mapping = self._owner_map(self._scene_objects, scene)
+        if mapping is None:
+            return scene.objects.get(name)
+        return mapping.get(str(name or ""))
+
+    def collection_object(self, collection, name):
+        """Same answer as ``collection.objects.get(name)``."""
+        mapping = self._owner_map(self._collection_objects, collection)
+        if mapping is None:
+            return collection.objects.get(name)
+        return mapping.get(str(name or ""))
+
+
+_ACTIVE_NAME_INDEX = None
+
+
+def active_name_index():
+    """The ``NameIndex`` of the current read-only pass, or ``None``."""
+    return _ACTIVE_NAME_INDEX
+
+
+@contextlib.contextmanager
+def name_index_scope():
+    """Use one ``NameIndex`` for the ``with`` block; nested scopes share it."""
+    global _ACTIVE_NAME_INDEX
+    if _ACTIVE_NAME_INDEX is not None:
+        yield _ACTIVE_NAME_INDEX
+        return
+    _ACTIVE_NAME_INDEX = NameIndex()
+    try:
+        yield _ACTIVE_NAME_INDEX
+    finally:
+        _ACTIVE_NAME_INDEX = None
 
 def _resolve_cached_names(scene, names):
     if scene is None or getattr(scene, "objects", None) is None:
