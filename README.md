@@ -100,7 +100,7 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 
 ---
 
-## Prepared update: 8.6.0
+## Prepared update: 9.0.0
 
 - **Plane groups** with a box rig: a click selects the group, a double click enters it.
 - **Group Controller:** move, rotate, scale and fade a whole group, with keyframes. **Ungroup** with Ctrl+Shift+G.
@@ -108,7 +108,7 @@ Built on Blender's own image, sequence and movie datablocks, so scenes render wi
 - Keyframed **Opacity** on image layers plays back and renders; smooth **Infinite Rotation**.
 - Faster Top and Side views with many layers.
 
-See the [8.6.0 release notes](release-notes/8.6.0.md). It also includes everything from 8.5.1:
+See the [9.0.0 release notes](release-notes/9.0.0.md). It also includes everything from 8.5.1:
 
 ### 8.5.1
 
@@ -174,11 +174,11 @@ See the complete [7.2.0 release notes](release-notes/7.2.0.md).
 
 | Computer | Release asset |
 |---|---|
-| Most Windows PCs | `frame_by_plane-8.6.0-windows_x64.zip` |
-| Windows on ARM | `frame_by_plane-8.6.0-windows_arm64.zip` |
-| Apple Silicon Mac | `frame_by_plane-8.6.0-macos_arm64.zip` |
-| Intel Mac | `frame_by_plane-8.6.0-macos_x64.zip` |
-| 64-bit Linux | `frame_by_plane-8.6.0-linux_x64.zip` |
+| Most Windows PCs | `frame_by_plane-9.0.0-windows_x64.zip` |
+| Windows on ARM | `frame_by_plane-9.0.0-windows_arm64.zip` |
+| Apple Silicon Mac | `frame_by_plane-9.0.0-macos_arm64.zip` |
+| Intel Mac | `frame_by_plane-9.0.0-macos_x64.zip` |
+| 64-bit Linux | `frame_by_plane-9.0.0-linux_x64.zip` |
 
 > [!IMPORTANT]
 > Do not install GitHub's automatically generated **Source code (zip)** archive. Install one of the Frame By Plane release assets listed above.
