@@ -11,6 +11,7 @@ from bpy.types import Operator
 
 from .constants import fbp_icon
 from .builder import build_fbp_color_rig, set_plane_mesh_extension
+from .new_layer_slot import fbp_adopt_new_layer, fbp_new_layer_slot
 from .materials import (
     copy_scene_preview_ramp_to_rig,
     fbp_apply_holdout_materials_to_rig,
@@ -208,13 +209,15 @@ def fbp_create_color_plane(context, plane_type=""):
         color = tuple(sc.fbp_color_plane_color)
         name = fbp_default_color_plane_name('SOLID', color)
         holdout = False
-    coll = fbp_active_work_collection(context) or getattr(context, 'collection', None) or sc.collection
+    slot_collection, location = fbp_new_layer_slot(context)
+    coll = slot_collection or fbp_active_work_collection(context) or getattr(context, 'collection', None) or sc.collection
     try:
         if coll is not None:
             coll.is_fbp_collection = True
     except FBP_DATA_ERRORS:
         pass
-    rig = build_fbp_color_rig(context, name, color, sc.fbp_color_plane_emission, holdout, target_collection=coll, gradient_settings=gradient_settings)
+    rig = build_fbp_color_rig(context, name, color, sc.fbp_color_plane_emission, holdout, location=location, target_collection=coll, gradient_settings=gradient_settings)
+    fbp_adopt_new_layer(context, rig)
     if gradient_settings:
         copy_scene_preview_ramp_to_rig(sc, rig)
     sync_layer_collection(context)
