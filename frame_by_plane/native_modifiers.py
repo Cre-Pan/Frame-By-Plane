@@ -1061,6 +1061,9 @@ def _section_title(title):
     return title.title() if title.isupper() else title
 
 
+_MENU_CONTROL_TOKENS = frozenset({"GREASE_PENCIL_MASK_CONTROL"})
+
+
 def _draw_native_columns(layout, context, sections, column_groups, only=None):
     """Draw sections as divided columns, like Blender's classic Add Modifier.
 
@@ -1086,7 +1089,9 @@ def _draw_native_columns(layout, context, sections, column_groups, only=None):
                     if members:
                         kept_tokens.append(token)
                         placed.update(members)
-                elif token.upper() in only:
+                elif token.upper() in only or token in _MENU_CONTROL_TOKENS:
+                    # Control entries (Grease Pencil Mask) are not modifier
+                    # shells but still belong in the Modifiers menu.
                     kept_tokens.append(token)
                     placed.add(token.upper())
             tokens = tuple(kept_tokens)

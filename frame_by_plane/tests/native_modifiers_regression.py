@@ -159,7 +159,7 @@ def test_modifier_add_menu():
         # Classic divided columns: titled sections, FBP artwork icons.
         calls, ops, headers = drawn(native.FBP_MT_ModifierAddMask)
         labels = [call[2].get("text") for call in ops]
-        assert {"Circle Mask", "Gradient Mask", "Square Mask", "Noise Mask"} <= set(labels), labels
+        assert {"Circle Mask", "Gradient Mask", "Square Mask", "Noise Mask", "Clipping Mask", "Grease Pencil Mask"} <= set(labels), labels
         mask_titles = [section[0] for section in geo.FBP_MASK_EFFECT_MENU_SECTIONS]
         assert headers and all(title in mask_titles for title in headers), headers
         assert all("icon_value" in call[2] or "icon" in call[2] for call in ops)

@@ -37,6 +37,12 @@ _PROPS = frozenset({
 _OPERATORS = frozenset({"operator", "operator_menu_enum", "operator_menu_hold"})
 # Calls that draw nothing to click: a container holding only these is a hint.
 _PASSIVE = frozenset({"label", "separator", "separator_spacer", "context_pointer_set", "context_string_set"})
+# Hints that only repeat what a mask's modifier row already makes clear.
+_REDUNDANT_HINTS = frozenset({
+    "Viewport-only wire helper; it hides when the layer is not selected",
+    "Applies to the complete layer alpha",
+    "Select a mask to reuse its type and settings on other layers.",
+})
 _ATTRIBUTE_DEFAULTS = {
     "enabled": True, "active": True, "alert": False, "active_default": False,
     "activate_init": False, "scale_x": 1.0, "scale_y": 1.0, "ui_units_x": 0.0,
@@ -121,7 +127,7 @@ class _Recorder:
 
     def _call(self, name, args, kwargs):
         stub = _OperatorStub() if name in _OPERATORS else None
-        if self._hidden(name, args):
+        if self._hidden(name, args, kwargs):
             object.__setattr__(self, "_dropped", True)
             return stub
         self._ops.append(("call", name, args, kwargs, stub))
@@ -232,7 +238,10 @@ def _hidden_test(rig, effect_id, instance_id, covered):
         mapped = str(getattr(owner, "property_name", "") or "")
         return mapped in covered and prop_name == geo._fbp_instance_channel_value_attr(owner)
 
-    def hidden(name, args):
+    def hidden(name, args, kwargs=None):
+        if name == "label":
+            # Help lines that repeat what the modifier row already says.
+            return str((kwargs or {}).get("text", "") or "") in _REDUNDANT_HINTS
         if name in _PROPS:
             return len(args) >= 2 and is_covered(args[0], args[1])
         if name in _OPERATORS:

@@ -3317,15 +3317,18 @@ def test_lattice_types_contract(_module):
             assert shapes == {"POINT", "GRID_CORNER"}, shapes
             assert sum(h.custom_shape[bones_module.SHAPE_KEY] == "GRID_CORNER" for h in handles) == 4
             first = [h for h in handles if h.custom_shape[bones_module.SHAPE_KEY] == "POINT"][0]
-            assert len(first.custom_shape.data.polygons) > 1
+            assert len(first.custom_shape.data.polygons) >= 1
             assert first.color.palette == 'CUSTOM'
             normal = tuple(first.color.custom.normal)
             assert normal[0] > 0.8 and abs(normal[0] - normal[2]) < 0.05, normal
-            base_scale = float(first.custom_shape_scale_xyz[0])
+            # The overlay draws handles from their world size; Blender's own
+            # shape is only a speck at the point.
+            base_scale = float(bones_module.handle_world_size(first))
             assert abs(base_scale - bones_module.handle_size(plane, "POINT", rig)) < 1.0e-6
+            assert float(first.custom_shape_scale_xyz[0]) < base_scale * 0.01
             bind_before = str(helper.get(pins_module.BIND_SIGNATURE_KEY, ""))
             rig.fbp_lattice_handle_size = 2.0
-            assert abs(float(first.custom_shape_scale_xyz[0]) - 2.0 * base_scale) < 1.0e-6
+            assert abs(float(bones_module.handle_world_size(first)) - 2.0 * base_scale) < 1.0e-6
             assert str(helper.get(pins_module.BIND_SIGNATURE_KEY, "")) == bind_before
             rig.fbp_lattice_handle_size = 1.0
             # Lattice is offered in both the Image (Canvas) and Mesh (Deform) menus.

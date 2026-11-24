@@ -341,6 +341,13 @@ _GP_MASK_LIVE_POLL_SIGNATURES = {}
 # entering Edit Mode. During this window we keep Frame By Plane timers quiet and
 # avoid all mask image refreshes.
 _GP_MASK_MODE_TRANSITION_GUARD = {}
+# Pointer of the GP mask canvas last seen in Draw Mode. Leaving Draw Mode from
+# Blender's own mode menu or Ctrl+Tab then finishes the edit like Done does.
+_GP_MASK_PAINT_SESSION = {}
+# Stroke type of the active brush before a mask edit switched it to Fill + Line.
+_GP_MASK_BRUSH_RESTORE = {}
+# Set on masks whose drawn area is the part of the layer that stays visible.
+KEY_GP_MASK_REVEALS = "fbp_gp_mask_reveals_drawn"
 _GP_MASK_MODE_TRANSITION_SECONDS = 1.20
 _GP_MASK_EDIT_ENTRY_GUARD_SECONDS = 0.45
 _GP_MASK_EDIT_KEYMAPS = []
@@ -2198,6 +2205,50 @@ def gp_mask_bindings(canvas):
     return tuple(result)
 
 
+_GP_MASK_SHELL_DRIVEN_INPUTS = ("Factor", "Invert", "Path")
+_GP_MASK_SHELL_NAME = "GP Mask"
+
+
+def _present_gp_mask_shell(rig, effect_id):
+    """Name a GP-driven mask row "GP Mask" and drop its second Invert box.
+
+    Opacity and Invert of a Grease Pencil Mask live on its own row in the panel
+    and drive the raw Factor/Invert inputs, whose Invert is the opposite of the
+    one the artist sees. Showing both put two disagreeing Invert boxes on screen.
+    """
+    try:
+        from .effect_shells import fbp_shell_modifier, fbp_shell_refresh_links
+        from .effects_registry import fbp_effect_definition
+        modifier = fbp_shell_modifier(rig, effect_id)
+        if modifier is None:
+            return False
+        changed = False
+        group = getattr(modifier, "node_group", None)
+        if group is not None:
+            hidden = set(group.get("fbp_hidden_inputs", ()) or ())
+            if not hidden.issuperset(_GP_MASK_SHELL_DRIVEN_INPUTS):
+                group["fbp_hidden_inputs"] = sorted(hidden.union(_GP_MASK_SHELL_DRIVEN_INPUTS))
+            for item in group.interface.items_tree:
+                if (
+                    getattr(item, "item_type", "") == "SOCKET"
+                    and getattr(item, "in_out", "") == "INPUT"
+                    and str(getattr(item, "name", "")) in _GP_MASK_SHELL_DRIVEN_INPUTS
+                    and not bool(getattr(item, "hide_in_modifier", False))
+                ):
+                    item.hide_in_modifier = True
+                    changed = True
+        label = str((fbp_effect_definition(effect_id) or {}).get("label", "") or "")
+        # Shells shorten long names so material attributes stay addressable.
+        current = str(modifier.name).rsplit(".", 1)[0] if "." in str(modifier.name) else str(modifier.name)
+        if label and current and len(current) >= 8 and label.startswith(current):
+            modifier.name = _GP_MASK_SHELL_NAME
+            fbp_shell_refresh_links(rig)
+            changed = True
+        return changed
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError, KeyError):
+        return False
+
+
 def _apply_canvas_mask_to_binding(canvas, rig, effect_id, slot, *, update_shader=True):
     """Apply one GP Mask contract and optionally rebuild its shader once."""
     try:
@@ -2207,7 +2258,10 @@ def _apply_canvas_mask_to_binding(canvas, rig, effect_id, slot, *, update_shader
             fbp_update_shader_effect,
         )
         changed = False
-        desired_invert = not bool(getattr(canvas, "fbp_gp_mask_invert", False))
+        # Masks made from 8.6.0 keep what is drawn, like Square, Circle and
+        # Triangle masks; older masks keep hiding it, so files look the same.
+        drawn_hidden = not bool(canvas.get(KEY_GP_MASK_REVEALS, False))
+        desired_invert = bool(getattr(canvas, "fbp_gp_mask_invert", False)) != drawn_hidden
         if bool(getattr(rig, slot["invert"], False)) != desired_invert:
             fbp_set_rna_property_silent(rig, slot["invert"], desired_invert)
             changed = True
@@ -2228,6 +2282,7 @@ def _apply_canvas_mask_to_binding(canvas, rig, effect_id, slot, *, update_shader
         if fbp_effect_mask_target(rig, effect_id) == "SHADOW":
             fbp_set_effect_mask_target(rig, effect_id, "LAYER")
             changed = True
+        _present_gp_mask_shell(rig, effect_id)
         if changed and bool(update_shader):
             fbp_update_shader_effect(rig, effect_id, property_names=None)
         return bool(changed)
@@ -3745,7 +3800,13 @@ def _create_mask_canvas(rig, context):
     for _effect_id, assigned, _slot in gp_mask_assignments(rig):
         if is_gp_mask_canvas(assigned) and _same_datablock(gp_canvas_owner(assigned), rig):
             return assigned, False
-    return _new_canvas(context, rig, kind="MASK")
+    canvas, created = _new_canvas(context, rig, kind="MASK")
+    if canvas is not None and created:
+        try:
+            canvas[KEY_GP_MASK_REVEALS] = True
+        except FBP_DATA_ERRORS:
+            pass
+    return canvas, created
 
 
 def _gp_mask_raster_module():
@@ -5730,6 +5791,47 @@ def _set_drawing_canvas_owner(canvas, rig, *, preserve_world=True):
     return True
 
 
+def _find_layer_collection(layer_collection, collection, path=()):
+    if layer_collection.collection == collection:
+        return path + (layer_collection,)
+    for child in layer_collection.children:
+        found = _find_layer_collection(child, collection, path + (layer_collection,))
+        if found:
+            return found
+    return ()
+
+
+def _reveal_canvas_for_edit(context, canvas):
+    """Make a GP canvas editable even when its collection is hidden.
+
+    A mask canvas lives in a "FBP Grease Pencil" collection beside its layer,
+    so inside a plane group it sits in the group. When that collection (or
+    the canvas itself) was hidden from the viewport, Blender refused Draw
+    Mode without a word. Only the helper collection and the canvas are
+    revealed; a hidden parent collection of the artist is left alone.
+    """
+    try:
+        if canvas.hide_viewport:
+            canvas.hide_viewport = False
+        view_layer = getattr(context, "view_layer", None)
+        root = getattr(view_layer, "layer_collection", None)
+        for collection in tuple(canvas.users_collection):
+            if str(collection.name).split(".")[0] != COLLECTION_NAME:
+                continue
+            if collection.hide_viewport:
+                collection.hide_viewport = False
+            path = _find_layer_collection(root, collection) if root is not None else ()
+            if path:
+                leaf = path[-1]
+                if leaf.exclude:
+                    leaf.exclude = False
+                if leaf.hide_viewport:
+                    leaf.hide_viewport = False
+        return bool(canvas.visible_get(view_layer=view_layer)) if view_layer is not None else True
+    except FBP_DATA_ERRORS:
+        return False
+
+
 def _select_canvas(context, canvas):
     if canvas is None:
         return False
@@ -5744,6 +5846,7 @@ def _select_canvas(context, canvas):
         if bool(getattr(canvas, "hide_select", False)):
             canvas.hide_select = False
         canvas.hide_set(False)
+        _reveal_canvas_for_edit(context, canvas)
         canvas.select_set(True)
         context.view_layer.objects.active = canvas
         sync_gp_mask_interaction_state(context=context, scene=getattr(context, "scene", None), active=canvas)
@@ -6170,6 +6273,34 @@ def _start_gp_mask_live_poll(canvas, scene=None):
     return scheduled
 
 
+def _use_fill_and_line_for_mask(context, canvas):
+    """Draw masks as Fill + Line, so a closed shape masks its whole inside.
+
+    With Blender's default Line strokes a mask only ever covered a thin line,
+    which looked like a drawing on the layer rather than a mask. The brush's
+    own stroke type comes back when the mask edit ends.
+    """
+    if not is_gp_mask_canvas(canvas):
+        return False
+    previous = _active_gp_brush_stroke_type(context, fallback="")
+    if previous not in {"STROKE", "FILL", "BOTH"} or previous == "BOTH":
+        return False
+    if not _set_active_gp_brush_stroke_type(context, "BOTH"):
+        return False
+    _GP_MASK_BRUSH_RESTORE.setdefault("mode", previous)
+    return True
+
+
+def _restore_brush_after_mask_edit(context=None):
+    previous = _GP_MASK_BRUSH_RESTORE.pop("mode", None)
+    if previous:
+        try:
+            return _set_active_gp_brush_stroke_type(context or bpy.context, previous)
+        except FBP_DATA_ERRORS:
+            return False
+    return False
+
+
 def _enter_gp_draw_mode(context, canvas, *, tool="PRESERVE"):
     if canvas is None:
         return False
@@ -6184,7 +6315,10 @@ def _enter_gp_draw_mode(context, canvas, *, tool="PRESERVE"):
     # without a valid Grease Pencil brush for temporary Ctrl erasing.
     try:
         bpy.ops.object.mode_set(mode="PAINT_GREASE_PENCIL")
+        if str(getattr(canvas, "mode", "")) != "PAINT_GREASE_PENCIL":
+            return False
         _configure_gp_active_tool_after_mode(context, canvas, tool=tool)
+        _use_fill_and_line_for_mask(context, canvas)
         _start_gp_mask_live_poll(canvas, scene=getattr(context, "scene", None))
         return True
     except FBP_DATA_ERRORS:
@@ -6490,6 +6624,7 @@ class FBP_OT_EditGreasePencilMask(Operator):
         if not is_gp_mask_canvas(canvas):
             return {"CANCELLED"}
         if gp_mask_is_being_edited(context, canvas):
+            _restore_brush_after_mask_edit(context)
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except FBP_DATA_ERRORS:
@@ -6673,8 +6808,12 @@ class FBP_OT_AddGreasePencilMask(Operator):
         if not applied:
             self.report({"ERROR"}, "Could not create a Grease Pencil mask")
             return {"CANCELLED"}
-        if first_canvas is not None:
-            _enter_gp_draw_mode(context, first_canvas)
+        if first_canvas is not None and not _enter_gp_draw_mode(context, first_canvas):
+            self.report(
+                {"WARNING"},
+                "Grease Pencil mask added, but Draw Mode could not start: show the layer's collection and use Edit in the mask panel",
+            )
+            return {"FINISHED"}
         self.report({"INFO"}, f"Grease Pencil mask ready on {applied} layer{'s' if applied != 1 else ''}")
         return {"FINISHED"}
 
@@ -7995,6 +8134,20 @@ def draw_gp_mask_settings_ui(layout, context, canvas=None, *, embedded=False, he
         actions.alignment = 'RIGHT'
         _draw_gp_mask_action_buttons(actions, context, canvas, rig, include_detach=True)
 
+    # Edit / Done is the first thing to reach for: always on top, not inside
+    # the closed Grease Pencil Settings section.
+    editing = gp_mask_is_being_edited(context, canvas)
+    edit_row = root.row(align=True)
+    edit_row.scale_y = 1.2
+    edit = edit_row.operator(
+        "fbp.edit_grease_pencil_mask",
+        text="Done" if editing else "Edit Grease Pencil Mask",
+        icon="CHECKMARK" if editing else "GREASEPENCIL",
+        depress=editing,
+    )
+    edit.rig_name = getattr(rig, "name", "") if rig else ""
+    edit.canvas_name = getattr(canvas, "name", "")
+
     row = root.row(align=True)
     guide = bool(getattr(canvas, "fbp_gp_mask_show_guide", False))
     row.prop(canvas, "fbp_gp_mask_show_guide", text="", icon="HIDE_OFF" if guide else "HIDE_ON")
@@ -8024,15 +8177,6 @@ def draw_gp_mask_settings_ui(layout, context, canvas=None, *, embedded=False, he
     )
     if expanded:
         settings = root.column(align=False)
-        editing = gp_mask_is_being_edited(context, canvas)
-        edit = settings.operator(
-            "fbp.edit_grease_pencil_mask",
-            text="Done" if editing else "Edit Grease Pencil",
-            icon="CHECKMARK" if editing else "GREASEPENCIL",
-            depress=editing,
-        )
-        edit.rig_name = getattr(rig, "name", "") if rig else ""
-        edit.canvas_name = getattr(canvas, "name", "")
         settings.prop(canvas, "fbp_gp_canvas_opacity", text="Visibility", slider=True)
         radius = settings.row(align=True)
         radius.prop(canvas, "fbp_gp_mask_auto_radius", text="Auto", toggle=True)
@@ -8311,6 +8455,56 @@ def _quarantine_gp_mask_edit_tasks(canvas, scene=None, *, pause_transition=True)
     return retired
 
 
+def _finish_gp_mask_paint_session(pointer):
+    """Return to the owner layer after Draw Mode was left without Done."""
+    context = getattr(bpy, "context", None)
+    _restore_brush_after_mask_edit(context)
+    try:
+        view_layer = getattr(context, "view_layer", None)
+        active = getattr(getattr(view_layer, "objects", None), "active", None)
+        if active is None or _canvas_pointer(active) != pointer or not is_gp_mask_canvas(active):
+            return None
+        if str(getattr(active, "mode", "OBJECT")) != "OBJECT":
+            return None
+        owner = gp_canvas_owner(active)
+        if owner is None or owner.name not in view_layer.objects:
+            return None
+        for obj in tuple(getattr(context, "selected_objects", ()) or ()):
+            obj.select_set(False)
+        owner.select_set(True)
+        view_layer.objects.active = owner
+        sync_gp_mask_interaction_state(context=context, scene=getattr(context, "scene", None), active=owner)
+    except FBP_DATA_ERRORS:
+        pass
+    return None
+
+
+def _track_gp_mask_paint_session(active, scene=None, *, finish=True):
+    """Remember Draw Mode on a GP mask and finish the edit once it is left."""
+    try:
+        if not is_gp_mask_canvas(active):
+            _GP_MASK_PAINT_SESSION.clear()
+            return False
+        pointer = _canvas_pointer(active)
+        mode = str(getattr(active, "mode", "OBJECT") or "OBJECT")
+    except FBP_DATA_ERRORS:
+        return False
+    if mode == "PAINT_GREASE_PENCIL":
+        _GP_MASK_PAINT_SESSION["pointer"] = pointer
+        return False
+    if mode != "OBJECT" or _GP_MASK_PAINT_SESSION.get("pointer") != pointer or not finish:
+        return False
+    _GP_MASK_PAINT_SESSION.clear()
+    try:
+        bpy.app.timers.register(
+            lambda pointer=pointer: _finish_gp_mask_paint_session(pointer),
+            first_interval=0.0,
+        )
+    except FBP_DATA_ERRORS:
+        return False
+    return True
+
+
 def _gp_mask_mode_transition_preflight(scene=None, *, restore_cursor=True):
     """Very cheap no-RNA-data guard before/post depsgraph evaluation.
 
@@ -8333,7 +8527,9 @@ def _gp_mask_mode_transition_preflight(scene=None, *, restore_cursor=True):
     except FBP_DATA_ERRORS:
         active = None
     if not is_gp_canvas(active):
+        _GP_MASK_PAINT_SESSION.clear()
         return False
+    _track_gp_mask_paint_session(active, scene, finish=restore_cursor)
     try:
         # Keep preflight cheap and no-touch: do not scan mask users here.
         has_mask = bool(is_gp_mask_canvas(active) or getattr(active, "fbp_gp_mask_image", None) is not None)
