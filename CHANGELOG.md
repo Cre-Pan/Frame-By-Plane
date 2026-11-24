@@ -8,6 +8,12 @@ All notable public changes to Frame By Plane are documented here.
 
 - Version 8.6.0 in the manifest, runtime contract, packaging and publishing tools, and in the small version label of the splash (the large "8.5 LTS" title and the bullets are part of the artwork and are unchanged).
 
+### Choose the playback buttons
+
+- **Show Buttons** at the bottom of the Playback Options popover (the small arrow beside the transport buttons in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer; Time Jump on Blender 5.2) switches each group of transport buttons on or off: **Jump to Endpoint**, **Jump to Keyframe**, **Jump by Delta** and **Play Reverse**, lined up under Wrap Timeline Navigation. The three jump groups are hidden by default, so the header shows Play Reverse and Play only. The choice is an add-on preference and holds in every file. Blender's own header drawing is kept: only the switched-off buttons are skipped.
+- **Pick the current frame for In and Out.** A paste button (the Paste icon) before **Start** and before **End** in the same headers sets the In or the Out to the current frame (the preview range when it is on). An Out before the In moves the In too, so the range stays valid.
+- The layer's **Start Frame** button (Animation box and the Sequence Timing dialog) uses the same Paste icon, placed before the value.
+
 ### Large preview on list rows
 
 - **Hover a row, see the image.** Resting the mouse on a row of the Layer List, the Frames list or the Multiplane Setup list now shows a larger thumbnail (256 px by default) beside the sidebar, with the row name and frame number. In Properties > Tool it opens in the editor next to the Properties panel (usually the 3D View), against the shared border. It stays clear of Blender's own tooltip and closes as soon as the mouse moves or any key or button is pressed. Size or Off in **Preferences > Interface Behavior > Row Hover Preview**.

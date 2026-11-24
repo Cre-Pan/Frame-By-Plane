@@ -5526,6 +5526,104 @@ def test_frame_path_lookup_contract(_module):
                     pass
 
 
+def test_playback_buttons_contract(_module):
+    """Show Buttons switches hide transport buttons in Blender's own header."""
+    import importlib as _importlib
+    from types import SimpleNamespace
+
+    buttons = importlib.import_module(f"{PACKAGE}.playback_buttons")
+    properties = importlib.import_module(f"{PACKAGE}.properties")
+    rna = properties.FBP_AddonPreferences.bl_rna.properties
+    names = [prop for prop, _idname in buttons.FBP_PLAYBACK_BUTTON_PREFS]
+    assert [rna[name].default for name in names] == [False, False, False]
+    assert rna["playback_show_play_reverse"].default is True
+    # Direct-source registration has no enabled extension entry in Preferences.
+    prefs = SimpleNamespace(playback_show_play_reverse=True, **{name: False for name in names})
+    original_get_prefs = buttons.fbp_get_addon_preferences
+    buttons.fbp_get_addon_preferences = lambda _context=None: prefs
+    for module_name in ("space_time", "space_dopesheet", "space_graph", "space_nla", "space_sequencer"):
+        module = _importlib.import_module(f"bl_ui.{module_name}")
+        assert getattr(module.playback_controls, "_fbp_original", None) is not None, module_name
+    panel = next(
+        getattr(bpy.types, name) for name in ("TIME_PT_playback_options", "TIME_PT_jump")
+        if getattr(bpy.types, name, None) is not None
+    )
+    assert buttons.fbp_draw_playback_button_options in getattr(panel.draw, "_draw_funcs", ()), panel
+
+    class Recorder:
+        def __init__(self, calls):
+            self.calls = calls
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+        def __setattr__(self, name, value):
+            object.__setattr__(self, name, value)
+        def row(self, **_kwargs):
+            return Recorder(self.calls)
+        column = row
+        def operator(self, identifier, **kwargs):
+            self.calls.append((identifier, kwargs.get("icon", "")))
+            return SimpleNamespace()
+
+    scene = bpy.context.scene
+    context = SimpleNamespace(
+        space_data=SimpleNamespace(type="DOPESHEET_EDITOR", mode="TIMELINE", view_type="SEQUENCER"),
+        scene=scene,
+        sequencer_scene=scene,
+        screen=SimpleNamespace(is_animation_playing=False),
+        workspace=bpy.context.workspace,
+        preferences=bpy.context.preferences,
+    )
+    space_time = _importlib.import_module("bl_ui.space_time")
+    try:
+        for name in names:
+            setattr(prefs, name, False)
+        prefs.playback_show_play_reverse = True
+        calls = []
+        space_time.playback_controls(Recorder(calls), context)
+        idnames = {idname for idname, _icon in calls}
+        assert not idnames & {"screen.frame_jump", "screen.keyframe_jump", "screen.time_jump"}, calls
+        assert ("screen.animation_play", "PLAY") in calls and ("screen.animation_play", "PLAY_REVERSE") in calls, calls
+
+        for name in names:
+            setattr(prefs, name, True)
+        prefs.playback_show_play_reverse = False
+        calls = []
+        space_time.playback_controls(Recorder(calls), context)
+        idnames = {idname for idname, _icon in calls}
+        assert {"screen.frame_jump", "screen.keyframe_jump", "screen.time_jump"} <= idnames, calls
+        assert ("screen.animation_play", "PLAY_REVERSE") not in calls, calls
+        picks = [call for call in calls if call[0] == "fbp.set_range_to_current_frame"]
+        assert picks == [("fbp.set_range_to_current_frame", "PASTEDOWN")] * 2, calls
+    finally:
+        buttons.fbp_get_addon_preferences = original_get_prefs
+
+    saved = (scene.frame_current, scene.frame_start, scene.frame_end, scene.use_preview_range,
+             scene.frame_preview_start, scene.frame_preview_end)
+    try:
+        scene.use_preview_range = False
+        scene.frame_start, scene.frame_end = 1, 100
+        scene.frame_set(40)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=False) == {"FINISHED"}
+        assert (scene.frame_start, scene.frame_end) == (40, 100)
+        scene.frame_set(60)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=True) == {"FINISHED"}
+        assert (scene.frame_start, scene.frame_end) == (40, 60)
+        scene.frame_set(20)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=True) == {"FINISHED"}
+        assert (scene.frame_start, scene.frame_end) == (20, 20)
+        scene.use_preview_range = True
+        scene.frame_preview_start, scene.frame_preview_end = 1, 50
+        scene.frame_set(30)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=False) == {"FINISHED"}
+        assert (scene.frame_preview_start, scene.frame_preview_end) == (30, 50)
+        assert (scene.frame_start, scene.frame_end) == (20, 20)
+    finally:
+        scene.frame_start, scene.frame_end = saved[1], saved[2]
+        scene.use_preview_range = saved[3]
+        scene.frame_preview_start, scene.frame_preview_end = saved[4], saved[5]
+        scene.frame_set(saved[0])
+
+
 def test_playback_cache_contract(_module):
     """The Playback popover's cache check counts the frames a sequence shows.
 
@@ -7250,6 +7348,7 @@ def run_background():
             ("blur_samples_skip_disabled_taps", test_blur_samples_skip_disabled_taps),
             ("ui_draw_pass_contract", test_ui_draw_pass_contract),
             ("frame_path_lookup_contract", test_frame_path_lookup_contract),
+            ("playback_buttons_contract", test_playback_buttons_contract),
             ("playback_cache_contract", test_playback_cache_contract),
             ("color_key_merges_chroma_key", test_color_key_merges_chroma_key),
             ("print_paint_and_edge_distance_cycles", test_print_paint_and_edge_distance_cycles),
