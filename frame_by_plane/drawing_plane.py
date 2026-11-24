@@ -1541,8 +1541,11 @@ def build_drawing_plane(context, directory, files, *, name=None, interpolation="
     from .builder import fbp_create_rect_mesh, fbp_create_mesh_object, fbp_apply_creation_orientation
     from .native_backend import _assign_layer_props, _store_native_aspect_on_rig, _refresh_native_geometry
 
+    from .new_layer_slot import fbp_new_layer_slot
+
     scene = context.scene
-    target_collection = getattr(context, "collection", None) or scene.collection
+    slot_collection, slot_location = fbp_new_layer_slot(context)
+    target_collection = slot_collection or getattr(context, "collection", None) or scene.collection
     directory = os.path.abspath(bpy.path.abspath(directory))
     names = [str(file) for file in files]
     names = [
@@ -1561,7 +1564,7 @@ def build_drawing_plane(context, directory, files, *, name=None, interpolation="
     managed_loaded_images = []
     try:
         rig_name = name or _drawing_name_from_files(names)
-        location = scene.cursor.location.copy()
+        location = slot_location.copy()
         rig_mesh = fbp_create_rect_mesh(f"Mesh_{rig_name}_Rig", size=2.1, with_face=False)
         rig = fbp_create_mesh_object(rig_name, rig_mesh, context, location=location, target_collection=target_collection)
         _assign_layer_props(rig, scene, target_collection=target_collection)
@@ -1754,6 +1757,8 @@ class FBP_OT_ImportDrawingPlane(Operator, ImportHelper):
             files = [os.path.basename(self.filepath)]
         try:
             rig = build_drawing_plane(context, directory, files, interpolation=self.interpolation)
+            from .new_layer_slot import fbp_adopt_new_layer
+            fbp_adopt_new_layer(context, rig)
             context.scene.fbp_last_directory = directory
             warnings = []
             if bool(rig.get("fbp_drawing_mixed_aspect", False)):

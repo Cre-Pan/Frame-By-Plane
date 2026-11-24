@@ -36,6 +36,7 @@ from .path_utils import (
     is_supported_video_file,
     is_technical_map_file,
 )
+from .new_layer_slot import fbp_adopt_new_layer, fbp_new_layer_slot
 from .builder import (
     apply_fit_to_camera,
     build_fbp_rig,
@@ -2615,7 +2616,8 @@ class FBP_OT_ImportSequence(Operator):
             self.report({'WARNING'}, "Import one video at a time; videos cannot be mixed with image sequences")
             return {'CANCELLED'}
         single_name = clean_layer_name_from_path(f_list[0]) if len(f_list) == 1 else clean_layer_name_from_path(os.path.basename(os.path.normpath(self.directory))) or "Sequence_Rig"
-        target_collection = context.collection if context.collection else context.scene.collection
+        slot_collection, cursor_location = fbp_new_layer_slot(context)
+        target_collection = slot_collection or (context.collection if context.collection else context.scene.collection)
         yield {
             "completed": 1,
             "total": 3,
@@ -2628,12 +2630,12 @@ class FBP_OT_ImportSequence(Operator):
             "cancellable": False,
         }
         try:
-            cursor_location = context.scene.cursor.location.copy()
             rig = build_fbp_rig(
                 context, single_name, self.directory, f_list,
                 cursor_location, target_collection=target_collection)
             if getattr(context.scene, "camera", None):
                 fbp_layer_placement(context.scene, context.scene.camera, cursor_location).place(rig)
+            fbp_adopt_new_layer(context, rig)
             generation_owner = _fbp_generation_owner_for_operator(self)
             if generation_owner is not None:
                 generation_owner.record_rig(rig)
@@ -3666,8 +3668,8 @@ def _fbp_execute_single_plane_import(operator, context, directory, filenames, *,
             or "Sequence_Rig"
         )
 
-    target_collection = context.collection if context.collection else context.scene.collection
-    cursor_location = context.scene.cursor.location.copy()
+    slot_collection, cursor_location = fbp_new_layer_slot(context)
+    target_collection = slot_collection or (context.collection if context.collection else context.scene.collection)
     try:
         rig = build_fbp_rig(
             context,
@@ -3713,6 +3715,7 @@ def _fbp_execute_single_plane_import(operator, context, directory, filenames, *,
     if getattr(scene, "camera", None) and getattr(scene, "fbp_auto_scale", False):
         context.view_layer.update()
         apply_fit_to_camera(context, rig, scene.camera)
+    fbp_adopt_new_layer(context, rig)
 
     bpy.ops.object.select_all(action='DESELECT')
     if object_in_view_layer(rig, context):
@@ -6949,8 +6952,8 @@ def _fbp_create_single_rig_from_path(context, path):
     directory = os.path.dirname(path)
     filename = os.path.basename(path)
     context.scene.fbp_last_directory = directory
-    target_collection = context.collection if context.collection else context.scene.collection
-    cursor_location = context.scene.cursor.location.copy()
+    slot_collection, cursor_location = fbp_new_layer_slot(context)
+    target_collection = slot_collection or (context.collection if context.collection else context.scene.collection)
     rig = build_fbp_rig(
         context,
         clean_layer_name_from_path(filename),
@@ -6961,6 +6964,7 @@ def _fbp_create_single_rig_from_path(context, path):
     )
     if getattr(context.scene, "camera", None):
         fbp_layer_placement(context.scene, context.scene.camera, cursor_location).place(rig)
+    fbp_adopt_new_layer(context, rig)
     bpy.ops.object.select_all(action='DESELECT')
     if object_in_view_layer(rig, context):
         rig.select_set(True)
