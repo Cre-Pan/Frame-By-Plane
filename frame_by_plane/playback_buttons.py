@@ -12,8 +12,11 @@ popover (the small arrow beside the transport buttons; Time Jump on 5.2).
 from __future__ import annotations
 
 import bpy
+from bpy.props import BoolProperty
+from bpy.types import Operator
 
 from .interface_preferences import fbp_get_addon_preferences
+from .registration import register_classes, unregister_classes
 
 
 # Preference name -> operator idname whose buttons it hides.
@@ -26,6 +29,12 @@ _PLAY_REVERSE_PREF = "playback_show_play_reverse"
 
 _PLAYBACK_MODULES = ("space_time", "space_dopesheet", "space_graph", "space_nla", "space_sequencer")
 _OPTIONS_PANELS = ("TIME_PT_playback_options", "TIME_PT_jump", "TIME_PT_playback")
+
+# Range fields of the header that get a "current frame" picker: the picker sits
+# before Start and after End, inside the same aligned row.
+_RANGE_START_PROPS = frozenset({"frame_start", "frame_preview_start"})
+_RANGE_END_PROPS = frozenset({"frame_end", "frame_preview_end"})
+_PICK_ICON = "EYEDROPPER"
 
 _PATCHED_MODULES = {}
 _OPTIONS_PANEL = []
@@ -73,6 +82,15 @@ class _FilteredLayout:
             return _HIDDEN_OPERATOR
         return self._layout.operator(operator, *args, **kwargs)
 
+    def prop(self, data, property, *args, **kwargs):
+        if isinstance(data, bpy.types.Scene) and property in _RANGE_START_PROPS:
+            self._layout.operator(FBP_OT_SetRangeToCurrentFrame.bl_idname, text="", icon=_PICK_ICON).end = False
+            return self._layout.prop(data, property, *args, **kwargs)
+        result = self._layout.prop(data, property, *args, **kwargs)
+        if isinstance(data, bpy.types.Scene) and property in _RANGE_END_PROPS:
+            self._layout.operator(FBP_OT_SetRangeToCurrentFrame.bl_idname, text="", icon=_PICK_ICON).end = True
+        return result
+
     def __getattr__(self, name):
         value = getattr(self._layout, name)
         if not callable(value):
@@ -105,29 +123,76 @@ def _make_wrapper(original):
             hidden, hide_reverse = fbp_hidden_playback_operators(context)
         except (AttributeError, ReferenceError, RuntimeError, TypeError):
             hidden, hide_reverse = frozenset(), False
-        if hidden or hide_reverse:
-            layout = _FilteredLayout(layout, hidden, hide_reverse)
-        return original(layout, context)
+        return original(_FilteredLayout(layout, hidden, hide_reverse), context)
 
     playback_controls._fbp_original = original
     return playback_controls
 
 
 def fbp_draw_playback_button_options(self, context):
-    """Show-button checkboxes at the bottom of the Playback Options popover."""
+    """Show-button checkboxes at the bottom of the Playback Options popover.
+
+    Same split layout as Blender's Wrap Timeline Navigation checkbox above:
+    the checkboxes line up with it in the value column.
+    """
     prefs = fbp_get_addon_preferences(context)
     if prefs is None:
         return
     layout = self.layout
     layout.separator()
-    col = layout.column(align=True)
-    col.use_property_split = False
+    col = layout.column(heading="Show", align=True)
+    col.use_property_split = True
     col.use_property_decorate = False
-    col.label(text="Show Buttons")
-    col.prop(prefs, "playback_show_jump_endpoints", text="Jump to Start/End")
-    col.prop(prefs, "playback_show_jump_keyframes", text="Jump to Prev/Next Keyframe")
-    col.prop(prefs, "playback_show_jump_delta", text="Jump Time by Delta")
+    col.prop(prefs, "playback_show_jump_endpoints", text="Jump to Endpoint")
+    col.prop(prefs, "playback_show_jump_keyframes", text="Jump to Keyframe")
+    col.prop(prefs, "playback_show_jump_delta", text="Jump by Delta")
     col.prop(prefs, _PLAY_REVERSE_PREF, text="Play Reverse")
+
+
+def _range_scene(context):
+    space = getattr(context, "space_data", None)
+    if getattr(space, "type", "") == "SEQUENCE_EDITOR":
+        return getattr(context, "sequencer_scene", None) or context.scene
+    return context.scene
+
+
+class FBP_OT_SetRangeToCurrentFrame(Operator):
+    bl_idname = "fbp.set_range_to_current_frame"
+    bl_label = "Set to Current Frame"
+    bl_description = "Set the Start or End of the frame range (the preview range when it is on) to the current frame"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    end: BoolProperty(name="End", default=False, options={"SKIP_SAVE"})
+
+    @classmethod
+    def description(cls, _context, properties):
+        if bool(getattr(properties, "end", False)):
+            return "Set End (Out) to the current frame. Uses the preview range when it is on"
+        return "Set Start (In) to the current frame. Uses the preview range when it is on"
+
+    @classmethod
+    def poll(cls, context):
+        return _range_scene(context) is not None
+
+    def execute(self, context):
+        scene = _range_scene(context)
+        frame = int(scene.frame_current)
+        preview = bool(scene.use_preview_range)
+        start_prop = "frame_preview_start" if preview else "frame_start"
+        end_prop = "frame_preview_end" if preview else "frame_end"
+        if self.end:
+            # Keep the range valid: an Out before the In moves the In too.
+            if frame < getattr(scene, start_prop):
+                setattr(scene, start_prop, frame)
+            setattr(scene, end_prop, frame)
+        else:
+            if frame > getattr(scene, end_prop):
+                setattr(scene, end_prop, frame)
+            setattr(scene, start_prop, frame)
+        return {"FINISHED"}
+
+
+classes = (FBP_OT_SetRangeToCurrentFrame,)
 
 
 def _patch_playback_controls():
@@ -191,6 +256,7 @@ def _redraw_time_headers():
 
 
 def register():
+    register_classes(classes)
     _patch_playback_controls()
     _append_options()
     _redraw_time_headers()
@@ -199,6 +265,7 @@ def register():
 def unregister():
     _remove_options()
     _restore_playback_controls()
+    unregister_classes(classes)
     _redraw_time_headers()
 
 

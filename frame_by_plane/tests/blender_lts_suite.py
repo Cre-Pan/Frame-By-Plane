@@ -5592,8 +5592,36 @@ def test_playback_buttons_contract(_module):
         idnames = {idname for idname, _icon in calls}
         assert {"screen.frame_jump", "screen.keyframe_jump", "screen.time_jump"} <= idnames, calls
         assert ("screen.animation_play", "PLAY_REVERSE") not in calls, calls
+        picks = [call for call in calls if call[0] == "fbp.set_range_to_current_frame"]
+        assert picks == [("fbp.set_range_to_current_frame", "EYEDROPPER")] * 2, calls
     finally:
         buttons.fbp_get_addon_preferences = original_get_prefs
+
+    saved = (scene.frame_current, scene.frame_start, scene.frame_end, scene.use_preview_range,
+             scene.frame_preview_start, scene.frame_preview_end)
+    try:
+        scene.use_preview_range = False
+        scene.frame_start, scene.frame_end = 1, 100
+        scene.frame_set(40)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=False) == {"FINISHED"}
+        assert (scene.frame_start, scene.frame_end) == (40, 100)
+        scene.frame_set(60)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=True) == {"FINISHED"}
+        assert (scene.frame_start, scene.frame_end) == (40, 60)
+        scene.frame_set(20)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=True) == {"FINISHED"}
+        assert (scene.frame_start, scene.frame_end) == (20, 20)
+        scene.use_preview_range = True
+        scene.frame_preview_start, scene.frame_preview_end = 1, 50
+        scene.frame_set(30)
+        assert bpy.ops.fbp.set_range_to_current_frame(end=False) == {"FINISHED"}
+        assert (scene.frame_preview_start, scene.frame_preview_end) == (30, 50)
+        assert (scene.frame_start, scene.frame_end) == (20, 20)
+    finally:
+        scene.frame_start, scene.frame_end = saved[1], saved[2]
+        scene.use_preview_range = saved[3]
+        scene.frame_preview_start, scene.frame_preview_end = saved[4], saved[5]
+        scene.frame_set(saved[0])
 
 
 def test_playback_cache_contract(_module):
