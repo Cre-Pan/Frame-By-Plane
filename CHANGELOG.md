@@ -83,7 +83,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view; the 8.6 feature gate runs 28 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view, group rig options, Link Timelines; the 8.6 feature gate runs 30 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 
