@@ -63,6 +63,8 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Fixes
 
+- **Ctrl+Z after the first Grease Pencil Mask stroke clears the mask again.** Undo brought back the empty drawing but the mask image could keep showing the undone stroke, because Undo does not restore the pixels of generated images and the add-on recycles its mask buffers: when the stroke had been drawn into the image of the undo step, the mask looked frozen. After Undo and Redo the mask is now always drawn again from the restored strokes. The Solid view cut is checked again after Undo too.
+- **Modifiers panel no longer flickers in Solid view.** With a masked layer in Solid view, the **Solid View Masks** cut and the effect rows both moved themselves to the end of the modifier stack, so the two kept swapping places and the Modifiers panel jumped continuously in Object Mode. The effect rows now go before the cut, which stays last.
 - **Ctrl+Z in Draw Mode no longer changes the Stroke / Fill colors.** A color picked in a panel (Tool settings, the Frame By Plane sidebar or Blender's own brush color) and then a stroke: Ctrl+Z removed the stroke and also brought back the previous color, because a Draw stroke's undo step restores the snapshot taken before the color change. In Draw and Vertex Paint the pair is now a tool setting like Blender's brush colors: Undo and Redo change strokes, never the chosen colors (X no longer adds an undo step of its own either). Edit Mode recolors stay undoable, and their undo step is now also saved when it is committed from a timer (it could be dropped there).
 - **Stroke / Fill colors with Unified Color.** With a brush's **Unified Color** on (the Blender 5.3 Vertex Paint brush has it on by default), Blender paints with the paint mode's shared colors, but Frame By Plane wrote its Stroke / Fill pair into the brush's own colors. The header showed one pair while new strokes got another (often black), and X did not swap the Stroke / Fill swatches. The pair now goes to the colors Blender actually paints with, in Draw and Vertex Paint.
 - **Keyed Opacity plays back on image layers.** Opacity keys on a layer without a colour plane changed the slider but not the image during playback or render. The layer's Opacity node and viewport colour are now driven by the rig, like colour planes.
@@ -94,7 +96,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view, group rig options, Link Timelines (windowed, outside the gate); the 9.0 feature gate runs 29 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view, group rig options, Link Timelines (windowed, outside the gate); the 9.0 feature gate runs 30 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 

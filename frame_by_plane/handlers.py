@@ -332,6 +332,13 @@ def fbp_deferred_post_undo_sync():
                 schedule_gp_history_reindex(first_interval=0.75)
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
                 pass
+            # The Solid view mask cut is added by a deferred task, so an undo
+            # step can hold the mask without its cut: check every masked plane.
+            try:
+                from .solid_mask_view import fbp_solid_mask_schedule_all
+                fbp_solid_mask_schedule_all(context.scene)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                pass
     except Exception as exc:
         fbp_error(
             "Could not sync Frame by Plane after undo",

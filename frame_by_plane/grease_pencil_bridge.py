@@ -4527,6 +4527,8 @@ def _publish_mask_image(canvas, image, previous_image=None):
         canvas[KEY_MASK_IMAGE_NAME] = image.name
         image["fbp_orphan_candidate"] = False
         fbp_mark_image_in_use(image)
+        # A recycled buffer is live again: it must not be recycled or freed.
+        _GP_MASK_IMAGE_RETIRED_AT.pop(str(image.name), None)
     except FBP_DATA_ERRORS:
         return False
     if previous_image is not None and not _same_datablock(previous_image, image):
@@ -8929,9 +8931,17 @@ def _reindex_gp_canvases_for_history(scene=None):
         try:
             if not _gp_mask_live_refresh_enabled(canvas):
                 continue
-            if getattr(canvas, "fbp_gp_mask_image", None) is None:
+            image = getattr(canvas, "fbp_gp_mask_image", None)
+            if image is None:
                 continue
             canvas[KEY_MASK_GEOMETRY_DIRTY] = True
+            # Undo restores the canvas and its raster signature, not the
+            # pixels of generated images. The restored image may have been
+            # recycled for a stroke that is now undone (Ctrl+Z after the first
+            # stroke kept showing it), so its signature cannot be trusted:
+            # rasterize again, and keep the live image out of the recycle list.
+            canvas[KEY_MASK_SIGNATURE] = ""
+            _GP_MASK_IMAGE_RETIRED_AT.pop(str(image.name), None)
         except FBP_DATA_ERRORS:
             continue
         _GP_MASK_STROKE_COUNT_SIGNATURE.pop(_gp_mask_dirty_key(canvas, target_scene), None)

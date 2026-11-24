@@ -4,7 +4,8 @@ Solid view never runs the plane material, so ``solid_mask_view`` adds a
 viewport-only Geometry Nodes modifier that removes the masked-out parts of the
 plane. This checks:
 
-* a Shape Mask adds the cut at the end of the stack, viewport only, and the
+* a Shape Mask adds the cut at the end of the stack (shell placement keeps
+  it there), viewport only, and the
   evaluated plane keeps only the inside of the mask with exact UVs;
 * Invert cuts a hole instead, Subtract follows the mask stack;
 * a Feather edit only rewrites node values (no rebuild);
@@ -127,6 +128,16 @@ def test_circle_cut():
         assert plane.modifiers[-1] == modifier, "the cut must be the last modifier"
         assert modifier.show_render is False and modifier.show_viewport is True
         assert smv.fbp_solid_mask_sync(rig) is False, "an unchanged stack must not rebuild"
+        # Shell placement keeps the cut last. When both moved their own
+        # modifiers to the end, the two syncs reordered the stack forever and
+        # the Modifiers panel flickered in Object Mode.
+        shells = importlib.import_module(f"{PACKAGE_NAME}.effect_shells")
+        shells.fbp_shell_reposition(rig)
+        assert plane.modifiers[-1] == modifier, [m.name for m in plane.modifiers]
+        order = [m.name for m in plane.modifiers]
+        shells.fbp_shell_reposition(rig)
+        assert [m.name for m in plane.modifiers] == order, "shell placement must settle"
+        assert smv.fbp_solid_mask_sync(rig) is False
 
         positions, uvs, centers, names = _evaluated(plane)
         center = _helper_center(plane, helper)
