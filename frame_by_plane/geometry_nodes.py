@@ -12310,6 +12310,12 @@ def _fbp_sync_object_mask_helper(rig, effect_id, node, *, create=True):
             node_group.update_tag()
         except FBP_DATA_ERRORS:
             pass
+        # New SDF image or bounds: the Solid view cut samples them too.
+        try:
+            from .solid_mask_view import fbp_solid_mask_schedule
+            fbp_solid_mask_schedule(rig)
+        except (ImportError, *FBP_DATA_ERRORS):
+            pass
     return valid, changed
 
 

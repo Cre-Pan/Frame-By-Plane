@@ -21,6 +21,12 @@ All notable public changes to Frame By Plane are documented here.
 - **Glass**: richer colours (**Color Richness**) or the nearest of six editable traditional glass colours (**Palette Mix**); cloudy thickness, drawn streaks, air bubbles, scratches, per-piece variation, darker glass next to the lead, optional refracted view of the picture, and a backlight with **Light Strength**, **Light Center** and **Light Falloff**.
 - Presets: Cathedral, Bold Lead, Tiffany, Clean Glass. Debug views: Glass Pieces and Lead Mask. The lead is found by reading the image at 25 points per pixel, so the effect is marked as heavy.
 
+### Masks in Solid view
+
+- **Masked layers now look masked in Solid view.** Solid shading never runs the plane material, so a masked layer used to show its whole rectangle there. A masked plane now gets a small viewport-only **Solid View Masks** modifier at the end of its stack that removes the parts of the plane the mask stack hides. It works in every Solid colour mode (Texture, Material, Object...), and in Material Preview it only removes pixels that were already fully transparent.
+- The cut reads the mask stack from the material itself, with the same helper objects, images and bounds: **Square, Circle and Triangle Mask**, **Grease Pencil Mask** slots and **Imported Layer Mask**, with **Invert**, **Factor** and the **Add / Subtract / Intersect / Difference** operations. Masks it cannot read (procedural, Color Key, Luma/Alpha Matte...) cut nothing, so the cut never hides a visible pixel. Feather stays soft in the material; in Solid the edge sits on the outer border of the mask.
+- The edge is smooth, not a staircase: the plane is split into a grid and the vertices next to the edge are moved onto it, with their UVs, so the drawing does not slide. Moving or scaling a mask updates live with no Python; a Feather or shape edit only rewrites node values. Renders never use the modifier. Frame Stack layers keep the whole plane.
+
 ### Large preview on list rows
 
 - **Hover a row, see the image.** Resting the mouse on a row of the Layer List, the Frames list or the Multiplane Setup list now shows a larger thumbnail (256 px by default) beside the sidebar, with the row name and frame number. In Properties > Tool it opens in the editor next to the Properties panel (usually the 3D View), against the shared border. It stays clear of Blender's own tooltip and closes as soon as the mouse moves or any key or button is pressed. Size or Off in **Preferences > Interface Behavior > Row Hover Preview**.
@@ -73,7 +79,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools; the 8.6 feature gate runs 27 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view; the 8.6 feature gate runs 28 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 
