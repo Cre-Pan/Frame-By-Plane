@@ -2055,6 +2055,13 @@ def draw_creation_ui(layout, context):
     if sc.fbp_show_project_tools:
         box = layout.box()
         box.prop(sc, "fbp_project_path", text="")
+        if not str(getattr(sc, "fbp_project_path", "") or "").strip():
+            from .path_utils import fbp_blender_project_root
+            project_root = fbp_blender_project_root()
+            if project_root:
+                hint = box.row(align=False)
+                hint.enabled = False
+                hint.label(text=f"Empty: uses the Blender Project · {project_root}", icon=fbp_icon("FILE_FOLDER"))
         row = adaptive_row(box, context)
         row.operator("fbp.scan_project_to_setup", icon=fbp_icon("IMPORT"), text="Scan to Setup")
         row.operator("fbp.auto_scene_builder", icon=fbp_icon("OUTLINER_COLLECTION"), text="Build Direct")

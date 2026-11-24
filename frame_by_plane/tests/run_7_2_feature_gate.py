@@ -36,6 +36,7 @@ TESTS = (
     "overlay_performance_regression.py",
     "group_controller_regression.py",
     "runtime_performance_regression.py",
+    "advanced_render_regression.py",
 )
 
 

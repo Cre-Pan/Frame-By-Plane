@@ -1812,7 +1812,8 @@ def relink_missing_images_from_root(root, make_relative=True):
 
 def project_root_for_package(context):
     sc = context.scene
-    root = bpy.path.abspath(getattr(sc, 'fbp_project_path', '') or '')
+    from .path_utils import fbp_scene_project_path
+    root = bpy.path.abspath(fbp_scene_project_path(sc) or '')
     if root and os.path.isdir(root):
         return root
     if bpy.data.is_saved:

@@ -28,7 +28,7 @@ _MODULE_NAMES = (
     "camera_output", "properties", "i18n", "layer_tree_snapshot", "shortcut_runtime", "motion_runtime", "grease_pencil_scrub", "grease_pencil_bridge", "gp_vertex_colors", "layer_sets", "grease_pencil_workflow", "feedback", "custom_effects", "effects_registry", "geometry_nodes", "mask_stack", "effect_stack_presets", "effect_controls", "effect_shells", "handle_overlay", "layer_cage", "pose_handles", "materials", "layers", "layer_filters", "visibility_snapshots", "compositor", "compositor_sets", "projector", "tutorial_motion", "live_tutorial", "solo_overlay", "scene_sync", "persistence",
     "native_backend", "builder", "procreate_import", "layered_import", "importer", "core", "drawing_plane", "handlers", "rig_alpha_follow",
     "operator_common", "operator_layers", "operator_import",
-    "operator_sequence", "operator_render", "operator_procedural", "effect_bake",
+    "operator_sequence", "operator_render", "render_finish_sound", "operator_procedural", "effect_bake",
     "performance_dashboard", "playback_cache", "project_health", "actionable_issues", "operator_project", "operators", "layer_origin", "plane_groups", "group_controller", "ui_icons", "ui_layout", "ui", "row_hover_preview", "compositor_layer_node", "viewport_pie", "tooltips", "native_modifiers", "native_effect_panel", "layer_transform_panel",
 )
 if _IS_BACKGROUND:
@@ -36,7 +36,7 @@ if _IS_BACKGROUND:
     # background process. The dedicated FBP render child goes further and omits
     # authoring and import modules; operator_render registers only
     # its lightweight render-state validator in that process.
-    _BACKGROUND_SKIP_MODULES = {"feedback", "tutorial_motion", "live_tutorial", "solo_overlay", "handle_overlay", "layer_cage", "pose_handles", "grease_pencil_scrub", "ui", "row_hover_preview", "viewport_pie", "tooltips", "native_effect_panel", "layer_transform_panel"}
+    _BACKGROUND_SKIP_MODULES = {"feedback", "tutorial_motion", "live_tutorial", "solo_overlay", "handle_overlay", "layer_cage", "pose_handles", "grease_pencil_scrub", "ui", "row_hover_preview", "viewport_pie", "tooltips", "native_effect_panel", "layer_transform_panel", "render_finish_sound"}
     if _IS_FBP_RENDER_CHILD:
         _BACKGROUND_SKIP_MODULES.update({
             "procreate_import", "layered_import", "importer",
