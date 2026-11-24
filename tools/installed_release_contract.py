@@ -38,7 +38,7 @@ def main():
     ui = importlib.import_module(f"{BASE}.ui")
     operator_import = importlib.import_module(f"{BASE}.operator_import")
 
-    assert constants.FBP_VERSION_STRING == "8.6.0"
+    assert constants.FBP_VERSION_STRING == "9.0.0"
     assert hasattr(bpy.ops.fbp, "import_folder_multiplane")
     assert hasattr(bpy.ops.fbp, "create_color_plane_from_hex")
 
