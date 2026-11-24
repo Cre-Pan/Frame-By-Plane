@@ -2743,19 +2743,30 @@ class FBP_UL_CompositorEffects(UIList):
                 row.label(text=f'{round(item.effect_mix * 100):d}%')
 
 
-def _fbp_output_collapsible_box(layout, scene, property_name, title, icon):
+def _fbp_output_collapsible_box(layout, scene, property_name, title, use_property=None):
+    """Foldable box: arrow, optional on/off checkbox and title, nothing on the right.
+
+    With the checkbox off the section stays folded.
+    """
     box = layout.box()
     configure_layout(box)
-    opened = bool(getattr(scene, property_name, True))
-    row = box.row(align=False)
-    row.prop(
+    used = True if use_property is None else bool(getattr(scene, use_property, True))
+    opened = used and bool(getattr(scene, property_name, True))
+    row = box.row(align=True)
+    arrow = row.row(align=True)
+    arrow.enabled = used
+    arrow.prop(
         scene,
         property_name,
-        text=title,
+        text="",
         icon=('DOWNARROW_HLT' if opened else 'RIGHTARROW'),
         emboss=False,
     )
-    row.label(text="", icon=icon)
+    if use_property is not None:
+        row.prop(scene, use_property, text="")
+    title_row = row.row(align=True)
+    title_row.active = used
+    title_row.label(text=title)
     return box if opened else None
 
 
@@ -2979,7 +2990,7 @@ class FBP_PT_OutputRender(Panel):
 
         section_gap(render_column)
         folder = _fbp_output_collapsible_box(
-            render_column, sc, "fbp_render_show_folder", "Folder", 'FILE_FOLDER'
+            render_column, sc, "fbp_render_show_folder", "Folder", "fbp_render_use_folder"
         )
         if folder is not None:
             selector = folder.row(align=True)
@@ -3027,7 +3038,7 @@ class FBP_PT_OutputRender(Panel):
 
         section_gap(render_column)
         naming = _fbp_output_collapsible_box(
-            render_column, sc, "fbp_render_show_file_naming", "File Naming", ui_icon("layer.sort_alpha")
+            render_column, sc, "fbp_render_show_file_naming", "File Naming", "fbp_render_use_file_naming"
         )
         if naming is not None:
             sections = naming.column(align=False)

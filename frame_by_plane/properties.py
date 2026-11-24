@@ -255,6 +255,19 @@ RENDER_FOLDER_MODE_ITEMS = (
 )
 
 
+def _render_section_toggle_cb(show_property):
+    """Section switch: off folds the section, on opens it, then updates the path."""
+    def update(self, context):
+        used = bool(getattr(self, show_property.replace("fbp_render_show_", "fbp_render_use_"), True))
+        try:
+            if bool(getattr(self, show_property, used)) != used:
+                setattr(self, show_property, used)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        update_render_output_path_cb(self, context)
+    return update
+
+
 _RENDER_DATE_STYLE_CACHE = []
 
 
@@ -4011,6 +4024,18 @@ def register_properties():
         ),
         default=False,
         update=update_render_output_path_cb,
+    )
+    _FBP_SCENE_RNA.fbp_render_use_folder = BoolProperty(
+        name="Use Folder",
+        description="Build the render folder here. Off: frames are written straight into the Project Folder",
+        default=True,
+        update=_render_section_toggle_cb("fbp_render_show_folder"),
+    )
+    _FBP_SCENE_RNA.fbp_render_use_file_naming = BoolProperty(
+        name="Use File Naming",
+        description="Build the file name here. Off: files are named with the frame number only",
+        default=True,
+        update=_render_section_toggle_cb("fbp_render_show_file_naming"),
     )
     _FBP_SCENE_RNA.fbp_render_use_prefix = BoolProperty(
         name="Use Prefix",

@@ -114,6 +114,18 @@ try:
     scene.fbp_render_folder_use_date = False
     check(render_output.fbp_render_folder_name(scene) == "Spot TEST", render_output.fbp_render_folder_name(scene))
 
+    # Section switches: off folds the section and drops its part of the path.
+    scene.fbp_render_use_file_naming = False
+    check(not scene.fbp_render_show_file_naming, "File Naming did not fold when switched off")
+    check(pattern(scene) == "####", pattern(scene))
+    scene.fbp_render_use_file_naming = True
+    check(scene.fbp_render_show_file_naming, "File Naming did not open when switched on")
+    scene.fbp_render_folder_use_date = False
+    scene.fbp_render_use_folder = False
+    check(not scene.fbp_render_show_folder, "Folder did not fold when switched off")
+    check(render_output.fbp_render_folder_name(scene) == "", "Folder off still adds a subfolder")
+    scene.fbp_render_use_folder = True
+
     # Project Doctor: the layer frame-range check is gone.
     project_health = importlib.import_module(f"{PACKAGE_NAME}.project_health")
     check(not hasattr(project_health, "_sequence_end"), "Frame-range helper should be removed")

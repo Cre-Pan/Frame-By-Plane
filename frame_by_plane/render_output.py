@@ -145,6 +145,11 @@ def fbp_render_filename_pattern(scene) -> str:
     is_movie = bool(getattr(render, "is_movie_format", False)) if render else False
 
     separator = _separator(scene)
+    if not bool(getattr(scene, "fbp_render_use_file_naming", True)):
+        # File Naming section off: the frame number alone, as Blender does.
+        if is_movie:
+            return "render"
+        return '#' * max(1, min(8, int(getattr(scene, "fbp_render_frame_digits", 4) or 4)))
     # Empty is an intentional live fallback to the .blend project name.  This
     # keeps new and renamed projects synchronized without writing from UI draw.
     base_name = ""
@@ -174,6 +179,9 @@ def fbp_render_root_directory(scene) -> str:
     builder_mode = str(
         getattr(scene, "fbp_render_folder_builder_mode", "GENERATE") or "GENERATE"
     )
+    if not bool(getattr(scene, "fbp_render_use_folder", True)):
+        # Folder section off: no selected or generated folder.
+        builder_mode = 'GENERATE'
     if builder_mode == 'SELECT':
         configured = str(getattr(scene, "fbp_render_output_dir", "") or "").strip()
         if configured:
@@ -307,7 +315,7 @@ def fbp_render_folder_name(scene, *, test_number=None, when=None) -> str:
     mode = str(
         getattr(scene, "fbp_render_folder_builder_mode", "GENERATE") or "GENERATE"
     )
-    if mode == 'SELECT':
+    if mode == 'SELECT' or not bool(getattr(scene, "fbp_render_use_folder", True)):
         return ""
     prefix = getattr(scene, "fbp_render_folder_prefix", "")
     name = str(getattr(scene, "fbp_render_folder_name", "") or "").strip()
