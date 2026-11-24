@@ -586,6 +586,12 @@ class FBP_OT_BackgroundRenderFrames(Operator):
             if report_text:
                 self.report({level}, report_text)
             result = {'FINISHED'} if bool(outcome.get("success", False)) else {'CANCELLED'}
+            if 'FINISHED' in result:
+                try:
+                    from .render_finish_sound import fbp_play_render_finished_sound
+                    fbp_play_render_finished_sound()
+                except ImportError:
+                    pass
             return self._finish_modal(
                 context,
                 str(outcome.get("status", "") or "Background render finished"),

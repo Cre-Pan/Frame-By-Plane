@@ -40,7 +40,7 @@ SHAPE_KEY = "fbp_lattice_handle_shape"
 
 # Handle shapes: meshes drawn flat on the drawing, in bone space (X, Y). Faces
 # draw filled, so strokes are thin polygons. As in Grease Pencil's deform box:
-# small rings for grid points, an X for Corner Pin corners, a dashed circle for
+# filled dots for grid points, an X for Corner Pin corners, a dashed circle for
 # a pin's area.
 _SHAPES = {
     "PIN": "FBP Handle • Pin",
@@ -56,13 +56,19 @@ _AREA_KINDS = {"PIN", "BEND"}
 PIN_AREA_DEFAULT = 2.6
 _AREA_STEP = 0.2
 # Bump when a shape changes: shapes saved in older files are rebuilt in place.
-SHAPE_VERSION = 5
+SHAPE_VERSION = 6
 SHAPE_VERSION_KEY = "fbp_lattice_handle_shape_version"
 # The same colours as the effect handles (viewport_handles): white, and the
 # theme's Active Object outline colour when selected. The shape tells the
 # kinds apart.
 HANDLE_NORMAL_COLOR = (0.96, 0.96, 0.96)
 HANDLE_WIRE_WIDTH = 2.0
+# World size of a handle (shape units to world). The overlay (handle_overlay)
+# draws the handle from it at one size on screen, like the plane and effect
+# handles; Blender's own drawing of the bone shape is kept to a speck at the
+# point, where it still takes part in box select.
+KEY_HANDLE_SIZE = "fbp_lattice_handle_world_size"
+NATIVE_SHAPE_SCALE = 0.001
 # Size of each kind relative to the layer's base handle size (half a point).
 _KIND_SCALE = {
     "PIN": 1.0,
@@ -258,10 +264,10 @@ def _shape_object(kind, area=None):
         ))
         dashes(_area_ratio(area if area is not None else PIN_AREA_DEFAULT), 0.12)
     elif kind == "POINT":
-        # Grid point: a small ring, like the Grid mode of Grease Pencil.
-        band(0.8, 0.34, segments=20)
+        # Grid point: a filled dot, like the corners of the layer's box.
+        polygon(ring_points(0.65, 20))
     elif kind == "GRID_CORNER":
-        band(1.0, 0.4, segments=24)
+        polygon(ring_points(0.8, 24))
     elif kind == "CORNER":
         # Corner Pin corner: an X, like the Perspective mode.
         for angle in (math.radians(45.0), math.radians(135.0)):
@@ -389,7 +395,9 @@ def style_bone(pose_bone, kind, size, *, rotation=0.0, area=None):
     """Give a pose bone the shape and colour of a handle kind."""
     pose_bone.custom_shape = _shape_object(kind, area)
     pose_bone.use_custom_shape_bone_size = False
-    pose_bone.custom_shape_scale_xyz = (size, size, size)
+    pose_bone[KEY_HANDLE_SIZE] = float(size)
+    native = float(size) * NATIVE_SHAPE_SCALE
+    pose_bone.custom_shape_scale_xyz = (native, native, native)
     pose_bone.custom_shape_rotation_euler = (0.0, 0.0, rotation)
     pose_bone.custom_shape_wire_width = HANDLE_WIRE_WIDTH
     try:
@@ -397,6 +405,20 @@ def style_bone(pose_bone, kind, size, *, rotation=0.0, area=None):
         _apply_color(pose_bone.bone.color)
     except FBP_DATA_ERRORS:
         pass
+
+
+def handle_world_size(pose_bone):
+    """World size of one shape unit of a handle (see ``KEY_HANDLE_SIZE``)."""
+    try:
+        size = float(pose_bone.get(KEY_HANDLE_SIZE, 0.0) or 0.0)
+        if size <= 0.0:
+            # Styled by an older version: the shape scale was the size.
+            size = float(pose_bone.custom_shape_scale_xyz[0])
+        if pose_bone.use_custom_shape_bone_size:
+            size *= float(pose_bone.bone.length)
+        return size
+    except (TypeError, ValueError) + FBP_DATA_ERRORS:
+        return 0.0
 
 
 def style_deform_bone(pose_bone):
@@ -908,6 +930,8 @@ __all__ = (
     "handle_kind",
     "handle_size",
     "restyle_handles",
+    "handle_world_size",
+    "KEY_HANDLE_SIZE",
     "is_bones_object",
     "is_handle_bone",
     "key_pose",

@@ -8,6 +8,7 @@ import shutil
 from contextlib import contextmanager
 
 import bpy
+from bpy.app.handlers import persistent
 
 from .runtime import FBP_DATA_ERRORS, fbp_obj_runtime_key, fbp_warn
 
@@ -88,36 +89,80 @@ def _join_components(components, separator: str) -> str:
     return separator.join(clean)
 
 
+def fbp_render_advanced_enabled(scene) -> bool:
+    """True when Advanced Render drives Blender's native Output path."""
+    return bool(scene is not None and getattr(scene, "fbp_render_advanced", False))
+
+
+_TOKEN_MODES = {'NONE', 'LETTER', 'NUMBER', 'LETTER_NUMBER'}
+
+
+def fbp_render_section_token(scene, section: str) -> str:
+    """Return the token mode of the ``'PREFIX'`` or ``'SUFFIX'`` section.
+
+    Files saved before per-section tokens stored one token with a position
+    (before Prefix / after Suffix); it is read as the token of that section
+    until the section gets its own value.
+    """
+    prop = "fbp_render_prefix_token" if section == 'PREFIX' else "fbp_render_suffix_token"
+    mode = str(getattr(scene, prop, "NONE") or "NONE")
+    if mode != 'NONE':
+        return mode if mode in _TOKEN_MODES else 'NONE'
+    legacy = str(getattr(scene, "fbp_render_token_mode", "NONE") or "NONE")
+    if legacy == 'NONE' or legacy not in _TOKEN_MODES:
+        return 'NONE'
+    position = str(getattr(scene, "fbp_render_token_position", "BEFORE") or "BEFORE")
+    return legacy if (position == 'BEFORE') == (section == 'PREFIX') else 'NONE'
+
+
+def fbp_render_token_text(scene, mode, *, letter=None, number=None) -> str:
+    """Return the letter/number token text, e.g. ``A``, ``01`` or ``A01``."""
+    parts = []
+    if mode in {'LETTER', 'LETTER_NUMBER'}:
+        value = str(getattr(scene, "fbp_render_letter", "") or "") if letter is None else letter
+        parts.append(fbp_sanitize_render_component(value))
+    if mode in {'NUMBER', 'LETTER_NUMBER'}:
+        digits = max(1, min(8, int(getattr(scene, "fbp_render_number_digits", 1) or 1)))
+        value = int(getattr(scene, "fbp_render_number", 1) or 0) if number is None else int(number)
+        parts.append(str(max(0, value)).zfill(digits))
+    return "".join(parts)
+
+
+def _section_text(scene, section: str) -> str:
+    """Prefix or Suffix text with its token appended (``Shot A1``)."""
+    text_prop = "fbp_render_prefix" if section == 'PREFIX' else "fbp_render_suffix"
+    use_prop = "fbp_render_use_prefix" if section == 'PREFIX' else "fbp_render_use_suffix"
+    if not bool(getattr(scene, use_prop, True)):
+        return ""
+    text = fbp_sanitize_render_component(getattr(scene, text_prop, ""))
+    token = fbp_render_token_text(scene, fbp_render_section_token(scene, section))
+    return " ".join(value for value in (text, token) if value)
+
+
 def fbp_render_filename_pattern(scene) -> str:
     """Return the Camera-Raw-style filename pattern used by Blender."""
     render = getattr(scene, "render", None)
     is_movie = bool(getattr(render, "is_movie_format", False)) if render else False
 
     separator = _separator(scene)
+    if not bool(getattr(scene, "fbp_render_use_file_naming", True)):
+        # File Naming section off: the frame number alone, as Blender does.
+        if is_movie:
+            return "render"
+        return '#' * max(1, min(8, int(getattr(scene, "fbp_render_frame_digits", 4) or 4)))
     # Empty is an intentional live fallback to the .blend project name.  This
     # keeps new and renamed projects synchronized without writing from UI draw.
-    base_name = str(getattr(scene, "fbp_render_custom_name", "") or "").strip()
-    if not base_name:
-        base_name = _document_name()
+    base_name = ""
+    if bool(getattr(scene, "fbp_render_use_name", True)):
+        base_name = str(getattr(scene, "fbp_render_custom_name", "") or "").strip()
+        if not base_name:
+            base_name = _document_name()
 
-    prefix = str(getattr(scene, "fbp_render_prefix", "") or "")
-    letter = str(getattr(scene, "fbp_render_letter", "") or "")
-    suffix = str(getattr(scene, "fbp_render_suffix", "") or "")
-    token_mode = str(getattr(scene, "fbp_render_token_mode", "NONE") or "NONE")
-    token_position = str(getattr(scene, "fbp_render_token_position", "BEFORE") or "BEFORE")
-    token_parts = []
-    if token_mode in {'LETTER', 'LETTER_NUMBER'}:
-        token_parts.append(letter)
-    if token_mode in {'NUMBER', 'LETTER_NUMBER'}:
-        digits = max(1, min(8, int(getattr(scene, "fbp_render_number_digits", 2) or 2)))
-        token_parts.append(
-            str(max(0, int(getattr(scene, "fbp_render_number", 1) or 0))).zfill(digits)
-        )
-    token = "".join(fbp_sanitize_render_component(value) for value in token_parts)
-
-    components = [prefix, base_name, suffix]
-    if token:
-        components.insert(0 if token_position == 'BEFORE' else len(components), token)
+    components = [
+        _section_text(scene, 'PREFIX'),
+        base_name,
+        _section_text(scene, 'SUFFIX'),
+    ]
     leading = _join_components(components, separator)
     if not leading:
         leading = "frame"
@@ -130,10 +175,32 @@ def fbp_render_filename_pattern(scene) -> str:
     return _join_components((leading, frame_token), separator)
 
 
+def fbp_blender_project() -> tuple[str, str]:
+    """``(name, root folder)`` of the open Blender Project (5.3+), else empty."""
+    try:
+        project = getattr(bpy.data, "project", None)
+        if project is None:
+            return ("", "")
+        root = str(getattr(project, "root_path", "") or "").strip()
+        if not root:
+            return ("", "")
+        return (str(getattr(project, "name", "") or ""), bpy.path.abspath(root))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return ("", "")
+
+
+def fbp_blender_project_root() -> str:
+    from .path_utils import fbp_blender_project_root as _root
+    return _root()
+
+
 def fbp_render_root_directory(scene) -> str:
     builder_mode = str(
         getattr(scene, "fbp_render_folder_builder_mode", "GENERATE") or "GENERATE"
     )
+    if not bool(getattr(scene, "fbp_render_use_folder", True)):
+        # Folder section off: no selected or generated folder.
+        builder_mode = 'GENERATE'
     if builder_mode == 'SELECT':
         configured = str(getattr(scene, "fbp_render_output_dir", "") or "").strip()
         if configured:
@@ -142,6 +209,9 @@ def fbp_render_root_directory(scene) -> str:
     project_root = str(getattr(scene, "fbp_project_path", "") or "").strip()
     if project_root:
         return os.path.normpath(bpy.path.abspath(project_root))
+    blender_root = fbp_blender_project_root()
+    if blender_root:
+        return os.path.normpath(blender_root)
 
     if builder_mode == 'SELECT':
         native = str(getattr(getattr(scene, "render", None), "filepath", "") or "")
@@ -158,12 +228,116 @@ def fbp_render_root_directory(scene) -> str:
     return os.path.normpath(os.path.join(base, "FBP_Render_Frames"))
 
 
-def fbp_render_folder_name(scene, *, test_number=None) -> str:
+_MONTHS = {
+    "en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+    "it": ("Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"),
+    "es": ("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"),
+    "fr": ("Janv", "Févr", "Mars", "Avr", "Mai", "Juin", "Juil", "Août", "Sept", "Oct", "Nov", "Déc"),
+    "de": ("Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"),
+    "pt": ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"),
+}
+# Languages written year-month-day; US English is month-day-year; the rest
+# of Blender's languages put the day first.
+_YMD_LANGUAGES = {"ja", "zh", "ko", "hu", "lt", "mn"}
+
+
+_SYSTEM_LANGUAGE_CACHE: list[str] = []
+
+
+def _detect_system_language() -> str:
+    import locale
+    import sys
+    import warnings
+
+    candidates = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            # Windows: user locale from the OS API, e.g. "it_IT".
+            candidates.append(locale.getdefaultlocale()[0])
+        except (ValueError, TypeError, AttributeError):
+            pass
+    candidates += [os.environ.get(key) for key in ("LC_ALL", "LC_TIME", "LANG")]
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+
+            candidates.append(subprocess.run(
+                ["defaults", "read", "-g", "AppleLocale"],
+                capture_output=True, text=True, timeout=1.0, check=False,
+            ).stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for value in candidates:
+        value = str(value or "").split(".")[0].split("@")[0]
+        if value and value not in {"C", "POSIX"}:
+            return value
+    return ""
+
+
+def _system_language() -> str:
+    """Operating-system locale such as ``it_IT``; detected once per session."""
+    if not _SYSTEM_LANGUAGE_CACHE:
+        _SYSTEM_LANGUAGE_CACHE.append(_detect_system_language())
+    return _SYSTEM_LANGUAGE_CACHE[0]
+
+
+def _blender_language() -> str:
+    """Language used for the date: Blender's interface language.
+
+    Blender offers only US English, so with English (or Automatic) the
+    operating system's region decides, e.g. day-first in Italy.
+    """
+    try:
+        locale = str(bpy.app.translations.locale or "")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        locale = ""
+    if not locale or locale.lower().startswith("en"):
+        return _system_language() or "en_US"
+    return locale
+
+
+def fbp_render_date_order(language=None) -> str:
+    """``'DMY'``, ``'MDY'`` or ``'YMD'`` following Blender's language."""
+    language = str(language or _blender_language())
+    base = language.split("_")[0].split("-")[0].lower()
+    if base in _YMD_LANGUAGES:
+        return 'YMD'
+    if language.replace("-", "_") in {"en_US", "en"}:
+        return 'MDY'
+    return 'DMY'
+
+
+def fbp_render_date_text(style, when=None, language=None) -> str:
+    """Folder-safe export date in one of the ``fbp_render_folder_date_style`` styles.
+
+    ``NUMERIC`` 24.11.2026 · ``TEXT`` 24 Nov 2026 · ``COMPACT`` 24-11-26.
+    The slash of 24/11/26 cannot be used in a folder name, so the compact
+    style uses a hyphen.
+    """
+    import datetime
+
+    when = when or datetime.date.today()
+    language = str(language or _blender_language())
+    order = fbp_render_date_order(language)
+    day, month = f"{when.day:02d}", f"{when.month:02d}"
+    if style == 'TEXT':
+        months = _MONTHS.get(language.split("_")[0].lower(), _MONTHS["en"])
+        parts = {"D": str(when.day), "M": months[when.month - 1], "Y": str(when.year)}
+        return " ".join(parts[key] for key in order)
+    if style == 'COMPACT':
+        parts = {"D": day, "M": month, "Y": f"{when.year % 100:02d}"}
+        return "-".join(parts[key] for key in order)
+    parts = {"D": day, "M": month, "Y": str(when.year)}
+    return ".".join(parts[key] for key in order)
+
+
+def fbp_render_folder_name(scene, *, test_number=None, when=None) -> str:
     del test_number
     mode = str(
         getattr(scene, "fbp_render_folder_builder_mode", "GENERATE") or "GENERATE"
     )
-    if mode == 'SELECT':
+    if mode == 'SELECT' or not bool(getattr(scene, "fbp_render_use_folder", True)):
         return ""
     prefix = getattr(scene, "fbp_render_folder_prefix", "")
     name = str(getattr(scene, "fbp_render_folder_name", "") or "").strip()
@@ -171,7 +345,11 @@ def fbp_render_folder_name(scene, *, test_number=None) -> str:
     tag = str(getattr(scene, "fbp_render_folder_tag", "TEST") or "TEST")
     suffix = getattr(scene, "fbp_render_folder_builder_suffix", "")
     tag_value = "" if tag == 'NONE' else tag
-    return _join_components((prefix, name, tag_value, suffix), " ") or "Render"
+    folder = _join_components((prefix, name, tag_value, suffix), " ") or "Render"
+    if bool(getattr(scene, "fbp_render_folder_use_date", False)):
+        style = str(getattr(scene, "fbp_render_folder_date_style", "NUMERIC") or "NUMERIC")
+        folder = f"{folder} ({fbp_render_date_text(style, when)})"
+    return folder
 
 
 def fbp_find_ffmpeg_executable(scene=None) -> str:
@@ -297,7 +475,7 @@ def _fbp_native_output_representation(scene, absolute_path: str) -> str:
 
 def fbp_sync_native_render_path(scene, *, filepath=None) -> bool:
     """Push the FBP builder path to ``Scene.render.filepath`` without loops."""
-    if scene is None or fbp_render_path_sync_guarded(scene):
+    if not fbp_render_advanced_enabled(scene) or fbp_render_path_sync_guarded(scene):
         return False
     try:
         render = scene.render
@@ -330,7 +508,7 @@ def fbp_sync_native_render_path(scene, *, filepath=None) -> bool:
 
 def fbp_sync_render_output_from_native(scene, *, force=False) -> bool:
     """Read an externally edited native path into the single FBP builder."""
-    if scene is None or fbp_render_path_sync_guarded(scene):
+    if not fbp_render_advanced_enabled(scene) or fbp_render_path_sync_guarded(scene):
         return False
     try:
         raw_path = str(getattr(scene.render, "filepath", "") or "")
@@ -390,6 +568,9 @@ def fbp_sync_render_output_from_native(scene, *, force=False) -> bool:
                 scene.fbp_render_prefix = ""
                 scene.fbp_render_suffix = ""
                 scene.fbp_render_token_mode = 'NONE'
+                scene.fbp_render_prefix_token = 'NONE'
+                scene.fbp_render_suffix_token = 'NONE'
+                scene.fbp_render_use_name = True
         _FBP_NATIVE_PATH_CACHE[key] = raw_path
         return True
     except (AttributeError, OSError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
@@ -411,9 +592,6 @@ def fbp_sync_all_render_outputs_from_native(*, force=False) -> int:
 def fbp_render_filename_preview(scene) -> str:
     """Return only the current output filename, including its extension."""
     try:
-        resolved = fbp_resolve_render_output(scene)
-        if bool(resolved.get("auto_video", False)):
-            return os.path.basename(str(resolved.get("video_path", "") or ""))
         frame_path = str(scene.render.frame_path(frame=int(scene.frame_current)) or "")
         return os.path.basename(os.path.normpath(frame_path)) if frame_path else ""
     except (AttributeError, OSError, ReferenceError, RuntimeError, TypeError, ValueError):
@@ -425,3 +603,36 @@ def fbp_render_static_prefix(scene) -> str:
     match = _HASH_RUN_RE.search(pattern)
     value = pattern[:match.start()] if match else os.path.splitext(pattern)[0]
     return value.rstrip(" ._-")
+
+
+@persistent
+def fbp_render_date_refresh(scene, _depsgraph=None):
+    """Write today's date into the Output path when a render starts.
+
+    The path is otherwise built when a setting changes, so a project rendered
+    the next day would still carry yesterday's date.
+    """
+    if (
+        fbp_render_advanced_enabled(scene)
+        and bool(getattr(scene, "fbp_render_folder_use_date", False))
+        and str(getattr(scene, "fbp_render_folder_builder_mode", "GENERATE")) == 'GENERATE'
+    ):
+        fbp_sync_native_render_path(scene)
+
+
+def _remove_date_handlers():
+    for handlers in (bpy.app.handlers.render_init,):
+        for callback in tuple(handlers):
+            if getattr(callback, "__name__", "") == "fbp_render_date_refresh" and str(
+                getattr(callback, "__module__", "")
+            ).endswith("render_output"):
+                handlers.remove(callback)
+
+
+def register():
+    _remove_date_handlers()
+    bpy.app.handlers.render_init.append(fbp_render_date_refresh)
+
+
+def unregister():
+    _remove_date_handlers()

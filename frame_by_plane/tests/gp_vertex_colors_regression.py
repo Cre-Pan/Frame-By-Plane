@@ -167,12 +167,12 @@ try:
     style.color = stroke_rgba
     module._sync_edit_state(bpy.context, force=True)
 
-    # Header strip: both sides inline up to 12; the larger side collapses first.
-    assert module.header_swatch_layout(11, 1) == (True, True)
-    assert module.header_swatch_layout(12, 1) == (False, True)
-    assert module.header_swatch_layout(1, 12) == (True, False)
-    assert module.header_swatch_layout(13, 13) == (False, False)
-    assert module.header_swatch_layout(6, 6) == (True, True)
+    # Header strip: each side shows up to 6 colors, then a "+N" list button.
+    assert module.header_side_split(1) == (1, 0)
+    assert module.header_side_split(6) == (6, 0)
+    assert module.header_side_split(7) == (6, 1)
+    assert module.header_side_split(20) == (6, 14)
+    assert module.header_side_split(5, limit=2) == (2, 3)
 
     # Replace All gives every selected stroke one color.
     state.replace_stroke_color = (0.25, 0.5, 0.75, 1.0)
@@ -189,15 +189,17 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from ui_layout_stub import StubLayout, StubPanel
 
-    for limit in (12, 2):
-        previous_limit = module._HEADER_SWATCH_LIMIT
-        module._HEADER_SWATCH_LIMIT = limit
+    for limit in (6, 1):
+        previous_limit = module._HEADER_SIDE_LIMIT
+        module._HEADER_SIDE_LIMIT = limit
         try:
             stub = StubLayout()
             assert module._draw_header_color_pair(stub, bpy.context, enabled=True)
             assert any(call[0] == "prop" for call in stub.calls)
+            if limit == 1:
+                assert any(call[0] == "popover" for call in stub.calls)
         finally:
-            module._HEADER_SWATCH_LIMIT = previous_limit
+            module._HEADER_SIDE_LIMIT = previous_limit
     for target in ("STROKE", "FILL"):
         stub = StubLayout()
         module._draw_target_swatch_popover(stub, bpy.context, target)
@@ -261,7 +263,7 @@ try:
     module.fbp_gp_vertex_brush_color_sync(None, geometry_graph)
     assert module._RUNTIME["edit_dirty"] is True
 
-    unique_keys = set()
+    unique_keys = {}
     swatches = []
     fingerprint = (0, 0)
     for index in range(12):
@@ -276,6 +278,26 @@ try:
     assert len(unique_keys) == 12
     assert len(swatches) == 12
     assert fingerprint != (0, 0)
+
+    # Near-identical colors share one swatch; the most used color comes first.
+    unique_keys = {}
+    swatches = []
+    fingerprint = (0, 0)
+    for color in (
+        (0.9, 0.1, 0.1, 1.0),
+        (0.1, 0.2, 0.9, 1.0),
+        (0.1, 0.2, 0.9, 1.0),
+        (0.1005, 0.2003, 0.9, 1.0),
+    ):
+        fingerprint = module._record_color(
+            color, module._color_key(color), unique_keys, swatches, fingerprint
+        )
+    ordered = module._by_usage(swatches)
+    assert len(ordered) == 2, ordered
+    assert close_color(ordered[0][0], (0.1, 0.2, 0.9, 1.0)) and ordered[0][1] == 3
+    assert close_color(ordered[1][0], (0.9, 0.1, 0.1, 1.0)) and ordered[1][1] == 1
+    assert len(swatches[1][2]) == 2  # Both blues are recolored together.
+    assert not module._colors_similar((0.5, 0.5, 0.5, 1.0), (0.55, 0.5, 0.5, 1.0))
 
     # A clean Edit cache must not rescan the selected geometry on every Tool
     # Header redraw. Continuous geometry updates are debounced until quiet.
@@ -469,7 +491,9 @@ try:
     newest.cyclic = True
     assert module._sync_draw_both_fill(bpy.context) == 1
     assert close_color(newest.fill_color, state.fill_color)
-    assert newest.cyclic is False
+    # Blender 5.3 closes strokes with the brush's own Cyclic option, so
+    # Frame By Plane no longer touches the cyclic flag of new curves there.
+    assert newest.cyclic is module.native_cyclic_stroke()
     assert close_color(drawing.strokes[0].fill_color, old_fill)
     assert tuple(module._new_draw_curve_indices(4, 6, False)) == (4, 5)
     assert tuple(module._new_draw_curve_indices(4, 6, True)) == (0, 1)
@@ -482,8 +506,12 @@ try:
     drawing.add_strokes([2])
     closed_stroke = drawing.strokes[-1]
     assert closed_stroke.cyclic is False
-    assert module._sync_draw_both_fill(bpy.context) == 1
-    assert closed_stroke.cyclic is True
+    if module.native_cyclic_stroke():
+        assert module._sync_draw_both_fill(bpy.context) == 0
+        assert closed_stroke.cyclic is False
+    else:
+        assert module._sync_draw_both_fill(bpy.context) == 1
+        assert closed_stroke.cyclic is True
 
     default_data = bpy.data.grease_pencils.new("FBP Default Bulk Color")
     default_layer = default_data.layers.new("Layer", set_active=True)
@@ -534,6 +562,9 @@ try:
         def popover(self, **_kwargs):
             return None
 
+        def label(self, **kwargs):
+            self.root.calls.append(("label", None, kwargs.get("icon")))
+
         def prop_enum(self, _owner, name, value, **_kwargs):
             self.root.calls.append(("enum", name, value))
 
@@ -551,26 +582,32 @@ try:
 
     fake_layout = FakeLayout()
     assert module._draw_header_color_pair(fake_layout, bpy.context, owner=draw_owner)
+    # Draw Mode keeps the plain pair, without Stroke/Fill icons.
     assert fake_layout.calls[:3] == [
         ("color", "stroke_color", "FBP_PT_gp_stroke_color_popover"),
         ("operator", "paint.brush_colors_flip", "ARROW_LEFTRIGHT"),
         ("color", "fill_color", "FBP_PT_gp_fill_color_popover"),
     ]
-    assert [child.ui_units_x for child in fake_layout.children] == [
-        0.0,
-        6.25,
-        2.5,
-        1.25,
-        2.5,
-        0.0,
-        2.5,
-    ]
     assert fake_layout.operator_calls[0][1]["emboss"] is True
-    gaps = fake_layout.operator_calls[1:]
-    assert [item[2].action for item in gaps] == ["OFF", "ON"]
-    assert all(item[3].align is True for item in gaps)
-    assert sum(item[1]["depress"] for item in gaps) == 1
-    assert all(item[1].get("icon_value", 0) or item[1].get("icon") for item in gaps)
+    if module.native_cyclic_stroke():
+        # Draw Mode keeps only Blender's own Cyclic toggle.
+        assert [child.ui_units_x for child in fake_layout.children] == [0.0, 6.25, 2.5, 1.25, 2.5]
+        assert len(fake_layout.operator_calls) == 1
+    else:
+        assert [child.ui_units_x for child in fake_layout.children] == [
+            0.0,
+            6.25,
+            2.5,
+            1.25,
+            2.5,
+            0.0,
+            2.5,
+        ]
+        gaps = fake_layout.operator_calls[1:]
+        assert [item[2].action for item in gaps] == ["OFF", "ON"]
+        assert all(item[3].align is True for item in gaps)
+        assert sum(item[1]["depress"] for item in gaps) == 1
+        assert all(item[1].get("icon_value", 0) or item[1].get("icon") for item in gaps)
 
     # Pin Mode belongs immediately after Material / Color Attribute and before
     # the semantic swatches.
@@ -599,23 +636,38 @@ try:
     line_types.prop_enum(draw_settings, "stroke_type", "STROKE", text="")
     caps = proxy.row(align=True)
     caps.prop(draw_settings, "caps_type", text="")
-    assert [call[:2] for call in settings_layout.calls] == [
-        ("enum", "stroke_type"),
-        ("operator", "fbp.toggle_gp_close_gap"),
-        ("operator", "fbp.toggle_gp_close_gap"),
-        ("property", "caps_type"),
-    ]
-    assert [child.align for child in settings_layout.children] == [True, False, True, True]
+    if module.native_cyclic_stroke():
+        # Blender 5.3 draws its own Cyclic toggle: no second Close Gap.
+        assert [call[:2] for call in settings_layout.calls] == [
+            ("enum", "stroke_type"),
+            ("property", "caps_type"),
+        ]
+        gp_cyclic = draw_brush.gpencil_settings
+        gp_cyclic.use_cyclic_stroke = False
+        assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
+        assert gp_cyclic.use_cyclic_stroke is True
+        assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
+        assert gp_cyclic.use_cyclic_stroke is True
+        assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
+        assert gp_cyclic.use_cyclic_stroke is False  # G toggles the native option.
+    else:
+        assert [call[:2] for call in settings_layout.calls] == [
+            ("enum", "stroke_type"),
+            ("operator", "fbp.toggle_gp_close_gap"),
+            ("operator", "fbp.toggle_gp_close_gap"),
+            ("property", "caps_type"),
+        ]
+        assert [child.align for child in settings_layout.children] == [True, False, True, True]
 
-    state.close_strokes = False
-    assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
-    assert state.close_strokes
-    assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
-    assert state.close_strokes  # Clicking the active choice must not toggle it.
-    assert bpy.ops.fbp.toggle_gp_close_gap(action="OFF") == {"FINISHED"}
-    assert not state.close_strokes
-    assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
-    assert state.close_strokes  # G keeps its existing toggle behavior.
+        state.close_strokes = False
+        assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
+        assert state.close_strokes
+        assert bpy.ops.fbp.toggle_gp_close_gap(action="ON") == {"FINISHED"}
+        assert state.close_strokes  # Clicking the active choice must not toggle it.
+        assert bpy.ops.fbp.toggle_gp_close_gap(action="OFF") == {"FINISHED"}
+        assert not state.close_strokes
+        assert bpy.ops.fbp.toggle_gp_close_gap() == {"FINISHED"}
+        assert state.close_strokes  # G keeps its existing toggle behavior.
 
     # First use: strokes without vertex colors read as transparent black.
     # Picking a color over that must give it a visible alpha, and the Draw

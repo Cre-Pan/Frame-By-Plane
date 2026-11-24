@@ -318,7 +318,8 @@ class FBP_OT_ExportProjectDoctorReport(Operator):
 
     def invoke(self, context, event):
         scene = context.scene
-        project_root = str(getattr(scene, "fbp_project_path", "") or "").strip()
+        from .path_utils import fbp_scene_project_path
+        project_root = str(fbp_scene_project_path(scene) or "").strip()
         if project_root:
             try:
                 directory = bpy.path.abspath(project_root)

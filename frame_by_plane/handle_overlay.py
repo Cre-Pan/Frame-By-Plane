@@ -79,21 +79,16 @@ def _mask_guides(context):
         return []
 
 
-def _ring_radius(world, pose_bone):
+def _ring_radius(world, pose_bone, region=None, region_data=None):
     """World radius of a Grid point's ring: its shape's outer edge, as drawn."""
     try:
         from .lattice_bones import SHAPE_KEY
         kind = str(pose_bone.custom_shape[SHAPE_KEY]) if pose_bone.custom_shape is not None else ""
     except (ImportError, KeyError, *FBP_DATA_ERRORS):
         return 0.0
-    outer = {"POINT": 0.97, "GRID_CORNER": 1.2}.get(kind, 0.0)
-    try:
-        scale = float(pose_bone.custom_shape_scale_xyz[0])
-        if pose_bone.use_custom_shape_bone_size:
-            scale *= float(pose_bone.bone.length)
-        return outer * scale * float(world.to_scale()[0])
-    except FBP_DATA_ERRORS:
-        return 0.0
+    outer = {"POINT": 0.65, "GRID_CORNER": 0.8}.get(kind, 0.0)
+    unit = _lattice_unit(world @ pose_bone.head, world, pose_bone, region, region_data)
+    return outer * unit
 
 
 def _lattice_guides(context):
@@ -114,6 +109,8 @@ def _lattice_guides(context):
     if not len(bpy.data.armatures):
         return []
     segments = []
+    region = getattr(context, "region", None)
+    view = getattr(context, "region_data", None)
     for armature in tuple(getattr(context, "visible_objects", ()) or ()):
         if not is_bones_object(armature):
             continue
@@ -129,7 +126,7 @@ def _lattice_guides(context):
                     continue
                 index = bone.get(PIN_POINT_KEY)
                 if index is not None and bone.get(PIN_GRID_KEY):
-                    points[int(index)] = (world @ bone.head, _ring_radius(world, bone))
+                    points[int(index)] = (world @ bone.head, _ring_radius(world, bone, region, view))
                     grid = str(bone.get(PIN_GRID_KEY))
         except (*FBP_DATA_ERRORS, IndexError):
             continue
@@ -197,36 +194,121 @@ def lattice_edge_on(armature, region_data):
         return False
 
 
-def _lattice_shape_triangles(armature, pose_bone, region_data=None):
-    """World triangles of one Lattice handle's custom shape, as Blender draws it.
+# Lattice handles keep one size on screen, as the plane and effect handles
+# do: this many pixels per shape unit (a Grid corner dot is 0.8 units).
+LATTICE_UNIT_PX = 6.0
+# Shape vertices farther than this from the point belong to a pin's area,
+# which is a size in the drawing and stays at its size in the scene.
+_LATTICE_KNOB_UNITS = 1.6
+_LATTICE_TOPOLOGY = {}
 
-    With ``region_data`` of a view that sees the drawing edge-on, the shape is
-    turned to face that view around the handle's point, as the overlay draws it.
+
+def _lattice_unit(head, world, pose_bone, region=None, region_data=None):
+    """World length of one shape unit of a handle at ``head``, as drawn."""
+    try:
+        from .lattice_bones import handle_world_size
+        nominal = float(handle_world_size(pose_bone)) * float(world.to_scale()[0])
+    except (ImportError, *FBP_DATA_ERRORS):
+        nominal = 0.0
+    context = getattr(bpy, "context", None)
+    region = region or getattr(context, "region", None)
+    region_data = region_data or getattr(context, "region_data", None)
+    if region is None or region_data is None:
+        return nominal
+    try:
+        right = region_data.view_matrix.inverted().col[0].xyz.normalized()
+        probe = max(nominal, 1.0e-4)
+        start = location_3d_to_region_2d(region, region_data, head)
+        end = location_3d_to_region_2d(region, region_data, head + right * probe)
+        if start is None or end is None:
+            return nominal
+        pixels = (end - start).length
+        if pixels <= 1.0e-6:
+            return nominal
+        scale = float(context.preferences.system.ui_scale) if context is not None else 1.0
+        return probe * LATTICE_UNIT_PX * scale * _lattice_handle_scale(pose_bone) / pixels
+    except (*FBP_DATA_ERRORS, ZeroDivisionError):
+        return nominal
+
+
+def _lattice_handle_scale(pose_bone):
+    """The layer's Handle Size, which scales its handles on screen too."""
+    try:
+        from .lattice_bones import bones_owner
+        rig = bones_owner(pose_bone.id_data)
+        return max(0.1, float(getattr(rig, "fbp_lattice_handle_size", 1.0) or 1.0)) if rig is not None else 1.0
+    except (ImportError, TypeError, ValueError, *FBP_DATA_ERRORS):
+        return 1.0
+
+
+def _lattice_topology(mesh):
+    """``(vertices, triangles, rim)`` of a handle shape in shape units."""
+    key = (mesh.name, len(mesh.vertices), len(mesh.polygons))
+    cached = _LATTICE_TOPOLOGY.get(key)
+    if cached is not None:
+        return cached
+    mesh.calc_loop_triangles()
+    vertices = [vertex.co.copy() for vertex in mesh.vertices]
+    triangles = [tuple(tri.vertices) for tri in mesh.loop_triangles]
+    users = {}
+    for polygon in mesh.polygons:
+        for edge in polygon.edge_keys:
+            users[edge] = users.get(edge, 0) + 1
+    rim = tuple(edge for edge, count in users.items() if count == 1)
+    if len(_LATTICE_TOPOLOGY) > 64:
+        _LATTICE_TOPOLOGY.clear()
+    _LATTICE_TOPOLOGY[key] = (vertices, triangles, rim)
+    return _LATTICE_TOPOLOGY[key]
+
+
+def _lattice_shape_geometry(armature, pose_bone, region=None, region_data=None):
+    """``(knob triangles, area triangles, rim, head)`` of one Lattice handle.
+
+    The handle is drawn at one size on screen around its point (a pin's
+    dashed area keeps its size in the drawing), and turned to face a view
+    that sees the drawing edge-on.
     """
     shape = pose_bone.custom_shape
     mesh = getattr(shape, "data", None)
     if mesh is None or not mesh.polygons:
-        return []
-    scale = Vector(pose_bone.custom_shape_scale_xyz)
-    if pose_bone.use_custom_shape_bone_size:
-        scale *= float(pose_bone.bone.length)
-    matrix = (
-        armature.matrix_world @ pose_bone.matrix
-        @ Matrix.LocRotScale(
-            Vector(pose_bone.custom_shape_translation),
-            pose_bone.custom_shape_rotation_euler,
-            scale,
-        )
-    )
-    mesh.calc_loop_triangles()
-    vertices = [matrix @ vertex.co for vertex in mesh.vertices]
-    if region_data is not None and lattice_edge_on(armature, region_data):
-        bone_world = armature.matrix_world @ pose_bone.matrix
-        turn = _facing_turn(bone_world, region_data)
-        if turn is not None:
-            anchor = bone_world.translation.copy()
-            vertices = [anchor + turn @ (vertex - anchor) for vertex in vertices]
-    return [vertices[index] for tri in mesh.loop_triangles for index in tri.vertices]
+        return [], [], [], None
+    vertices, triangles, rim = _lattice_topology(mesh)
+    world = armature.matrix_world
+    bone_world = world @ pose_bone.matrix
+    head = bone_world.translation.copy()
+    unit = _lattice_unit(head, world, pose_bone, region, region_data)
+    try:
+        from .lattice_bones import handle_world_size
+        area_unit = float(handle_world_size(pose_bone)) * float(world.to_scale()[0])
+    except (ImportError, *FBP_DATA_ERRORS):
+        area_unit = unit
+    turn = Matrix.Rotation(float(pose_bone.custom_shape_rotation_euler[2]), 3, "Z")
+    offset = Vector(pose_bone.custom_shape_translation)
+    axes = bone_world.to_3x3().normalized()
+    points = []
+    knob = []
+    for vertex in vertices:
+        local = turn @ vertex + offset
+        inside = local.length <= _LATTICE_KNOB_UNITS
+        knob.append(inside)
+        points.append(head + axes @ (local * (unit if inside else area_unit)))
+    view = region_data or getattr(bpy.context, "region_data", None)
+    if view is not None and lattice_edge_on(armature, view):
+        facing = _facing_turn(bone_world, view)
+        if facing is not None:
+            points = [head + facing @ (point - head) for point in points]
+    knob_tris, area_tris = [], []
+    for tri in triangles:
+        target = knob_tris if all(knob[index] for index in tri) else area_tris
+        target.extend(points[index] for index in tri)
+    rim_points = [points[index] for edge in rim if knob[edge[0]] and knob[edge[1]] for index in edge]
+    return knob_tris, area_tris, rim_points, head
+
+
+def _lattice_shape_triangles(armature, pose_bone, region_data=None):
+    """World triangles of one Lattice handle, as the overlay draws it."""
+    knob, area, _rim, _head = _lattice_shape_geometry(armature, pose_bone, None, region_data)
+    return knob + area
 
 
 def _visible_lattice_handles(context):
@@ -250,98 +332,67 @@ def lattice_handle_under_cursor(context, coord, radius, *, edge_on_only=False, p
     """Hover key (``LATTICE_HOVER_PREFIX`` + armature and bone) of the Lattice
     handle under ``coord``, or "".
 
-    ``edge_on_only`` keeps only handles of layers seen edge-on, ``posed_only``
-    only handles of armatures in Pose Mode.
+    A handle is picked where the overlay draws it: anywhere within its outer
+    edge (the hole of a ring included) or ``radius`` pixels from it. A pin's
+    dashed area does not pick. ``edge_on_only`` keeps only handles of layers
+    seen edge-on, ``posed_only`` only handles of armatures in Pose Mode.
     """
-    try:
-        from .alpha_pick import _screen_distance_to_triangle_sq
-    except ImportError:
-        return ""
     region, view = context.region, context.region_data
-    point = (float(coord[0]), float(coord[1]))
-    limit = float(radius) * float(radius)
+    point = Vector((float(coord[0]), float(coord[1])))
     best = None
     edge_on = {}
     for armature, pose_bone in _visible_lattice_handles(context):
         try:
             if posed_only and str(armature.mode) != "POSE":
                 continue
-            if armature.name not in edge_on:
-                edge_on[armature.name] = lattice_edge_on(armature, view)
-            if edge_on_only and not edge_on[armature.name]:
+            if edge_on_only:
+                if armature.name not in edge_on:
+                    edge_on[armature.name] = lattice_edge_on(armature, view)
+                if not edge_on[armature.name]:
+                    continue
+            knob, _area, _rim, head = _lattice_shape_geometry(armature, pose_bone, region, view)
+            if head is None or not knob:
                 continue
-            triangles = _lattice_shape_triangles(armature, pose_bone, view)
-            head = (
-                location_3d_to_region_2d(region, view, armature.matrix_world @ pose_bone.head)
-                if edge_on[armature.name] else None
-            )
+            centre = location_3d_to_region_2d(region, view, head)
         except (*FBP_DATA_ERRORS, IndexError):
             continue
-        projected = [location_3d_to_region_2d(region, view, corner) for corner in triangles]
-        key = f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}"
-        if head is not None:
-            # Seen edge-on the overlay's click takes the whole handle, the
-            # hole of a ring included (Blender's own click there is gone).
-            extent = max(
-                ((corner - head).length for corner in projected if corner is not None),
-                default=0.0,
-            )
-            if (Vector(point) - head).length <= extent:
-                best = (0.0, key) if best is None or best[0] > 0.0 else best
-                continue
-        for index in range(0, len(projected) - 2, 3):
-            corners = projected[index:index + 3]
-            if any(corner is None for corner in corners):
-                continue
-            distance = _screen_distance_to_triangle_sq(point, *corners)
-            if distance <= limit and (best is None or distance < best[0]):
-                best = (distance, key)
+        if centre is None:
+            continue
+        extent = max(
+            ((corner - centre).length for corner in (
+                location_3d_to_region_2d(region, view, world_point) for world_point in knob
+            ) if corner is not None),
+            default=0.0,
+        )
+        distance = max(0.0, (point - centre).length - extent)
+        if distance <= float(radius) and (best is None or distance < best[0]):
+            best = (distance, f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}")
     return "" if best is None else best[1]
 
 
-def _hovered_lattice_triangles(hovered):
-    if not hovered.startswith(LATTICE_HOVER_PREFIX):
-        return []
-    armature_name, _tab, bone_name = hovered[len(LATTICE_HOVER_PREFIX):].partition("\t")
-    armature = bpy.data.objects.get(armature_name)
-    try:
-        pose_bone = armature.pose.bones.get(bone_name) if armature is not None else None
-        if pose_bone is None:
-            return []
-        # A selected handle already shows the selection colour in Pose Mode.
-        if str(armature.mode) == "POSE" and bool(getattr(pose_bone, "select", False)):
-            return []
-        view = getattr(bpy.context, "region_data", None)
-        if lattice_edge_on(armature, view):
-            # Drawn with every handle of its layer, facing the view.
-            return []
-        return _lattice_shape_triangles(armature, pose_bone)
-    except (*FBP_DATA_ERRORS, IndexError):
-        return []
-
-
-def _edge_on_lattice_shapes(context, hovered, selected_color, hover_color):
-    """``(triangles, colour)`` of every Lattice handle on a layer seen edge-on,
-    drawn facing the view: Blender's own shapes are a flat line there."""
+def _lattice_shapes(context, hovered, selected_color, hover_color):
+    """``(fills, rim)`` of every visible Lattice handle, drawn by the overlay."""
+    region = getattr(context, "region", None)
     view = getattr(context, "region_data", None)
-    if view is None or not len(bpy.data.armatures):
+    if view is None or region is None or not len(bpy.data.armatures):
         return []
     shapes = []
-    edge_on = {}
     for armature, pose_bone in _visible_lattice_handles(context):
         try:
-            if armature.name not in edge_on:
-                edge_on[armature.name] = lattice_edge_on(armature, view)
-            if not edge_on[armature.name]:
-                continue
-            triangles = _lattice_shape_triangles(armature, pose_bone, view)
-            if not triangles:
+            knob, area, rim, _head = _lattice_shape_geometry(armature, pose_bone, region, view)
+            if not knob and not area:
                 continue
             posed = str(armature.mode) == "POSE"
-            selected = posed and bool(getattr(pose_bone, "select", False))
+            owner = pose_bone if hasattr(pose_bone, "select") else pose_bone.bone
+            selected = posed and bool(getattr(owner, "select", False))
             key = f"{LATTICE_HOVER_PREFIX}{armature.name}\t{pose_bone.name}"
             color = selected_color if selected else hover_color if hovered == key else HANDLE_COLOR
-            shapes.append((triangles, color))
+            fills = []
+            if area:
+                fills.append((area, (*color[:3], 0.75)))
+            if knob:
+                fills.append((knob, color))
+            shapes.append((fills, rim))
         except (*FBP_DATA_ERRORS, IndexError):
             continue
     return shapes
@@ -1387,11 +1438,10 @@ def _draw_handles():
         hovered = hovered_handle_name(region)
     except ImportError:
         hovered = ""
-    hovered_bone = _hovered_lattice_triangles(hovered)
     selected_color = handle_selected_color(context)
     hover_color = _handle_hover_color(context)
-    edge_on_bones = _edge_on_lattice_shapes(context, hovered, selected_color, hover_color)
-    if not handles and not mask_guides and not lattice_guides and not hovered_bone and not plane_guides and not plane_hover_guides and not edge_on_bones:
+    lattice_shapes = _lattice_shapes(context, hovered, selected_color, hover_color)
+    if not handles and not mask_guides and not lattice_guides and not plane_guides and not plane_hover_guides and not lattice_shapes:
         return
     try:
         depsgraph = context.evaluated_depsgraph_get()
@@ -1403,10 +1453,7 @@ def _draw_handles():
     for _solid, dashed in mask_guides:
         guides.extend(dashed)
     shapes = []
-    if hovered_bone:
-        shapes.append(([(hovered_bone, hover_color)], []))
-    if edge_on_bones:
-        shapes.append((edge_on_bones, []))
+    shapes.extend(lattice_shapes)
     hover_guides = list(plane_hover_guides)
     frames = {}
     crop_handles = [obj for obj in handles if is_crop_rig_handle(obj)]
