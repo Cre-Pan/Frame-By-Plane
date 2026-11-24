@@ -10,7 +10,7 @@ Frame By Plane 8.6.0 brings **plane groups** you can animate as one piece, an ex
 - 👁️ **Solo a group:** Z Pie Solo with a group selected shows the whole group.
 - 📐 **Layer Transform** in Properties > Object and in the sidebar's Item tab: exact Location, Rotation and Scale of the layer, keyable with I, shown in the Graph Editor and Dope Sheet. Alt or Copy All to Selected sets every selected layer.
 - 🎯 **Set Layer Origin** (right click > Frame By Plane > Layer): Origin to Geometry, Origin to 3D Cursor and Geometry to Origin, without moving the drawing. The Crop effect has an **Origin to Centre** button.
-- ⏯️ **Choose the playback buttons.** Show Buttons in the Playback Options popover (arrow beside Play, in every timeline) turns Jump to Endpoint, Jump to Keyframe, Jump by Delta and Play Reverse on or off. The jump buttons are hidden by default. A paste button after Start and End sets the In or Out to the current frame.
+- ⏯️ **Choose the playback buttons.** Show Buttons in the Playback Options popover (arrow beside Play, in every timeline) turns Jump to Endpoint, Jump to Keyframe, Jump by Delta and Play Reverse on or off. The jump buttons are hidden by default. A paste button before Start and End sets the In or Out to the current frame.
 
 ## 🛠️ Better and fixed in 8.6.0
 

@@ -30,8 +30,9 @@ _PLAY_REVERSE_PREF = "playback_show_play_reverse"
 _PLAYBACK_MODULES = ("space_time", "space_dopesheet", "space_graph", "space_nla", "space_sequencer")
 _OPTIONS_PANELS = ("TIME_PT_playback_options", "TIME_PT_jump", "TIME_PT_playback")
 
-# Range fields of the header that get a "current frame" picker: each picker
-# sits right after its field (Start, then End), inside the same aligned row.
+# Range fields of the header that get a "current frame" button: each button
+# sits right before its field (icon, Start, icon, End) in the same aligned row;
+# the Paste icon's arrow points into the field it fills.
 _RANGE_START_PROPS = frozenset({"frame_start", "frame_preview_start"})
 _RANGE_END_PROPS = frozenset({"frame_end", "frame_preview_end"})
 _PICK_ICON = "PASTEDOWN"
@@ -83,7 +84,6 @@ class _FilteredLayout:
         return self._layout.operator(operator, *args, **kwargs)
 
     def prop(self, data, property, *args, **kwargs):
-        result = self._layout.prop(data, property, *args, **kwargs)
         if isinstance(data, bpy.types.Scene) and (property in _RANGE_START_PROPS or property in _RANGE_END_PROPS):
             # Blender narrows the Start/End row (scale_x 0.8); undo that for
             # the icon button so it keeps the normal square size.
@@ -96,7 +96,7 @@ class _FilteredLayout:
             button.operator(
                 FBP_OT_SetRangeToCurrentFrame.bl_idname, text="", icon=_PICK_ICON,
             ).end = property in _RANGE_END_PROPS
-        return result
+        return self._layout.prop(data, property, *args, **kwargs)
 
     def __getattr__(self, name):
         value = getattr(self._layout, name)
