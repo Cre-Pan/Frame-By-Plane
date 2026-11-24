@@ -38,7 +38,10 @@ TESTS = (
     "overlay_performance_regression.py",
     "group_controller_regression.py",
     "runtime_performance_regression.py",
+    "advanced_render_regression.py",
     "solid_mask_view_regression.py",
+    "group_rig_options_regression.py",
+    "timeline_link_regression.py",
 )
 
 

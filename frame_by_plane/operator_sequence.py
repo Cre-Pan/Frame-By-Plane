@@ -18,7 +18,7 @@ from .constants import fbp_icon, FBP_SUPPORTED_IMAGE_EXT, FBP_SUPPORTED_VIDEO_EX
 from .builder import fbp_object_local_bounds, fbp_prepare_media_source
 from .pillow_media import fbp_optimize_sequence_entries
 from .ui_style import configure_layout, section_header
-from .path_utils import is_supported_media_file, is_supported_video_file, natural_sort_key
+from .path_utils import is_supported_media_file, is_supported_video_file, natural_sort_key, fbp_scene_project_path
 from .materials import (
     do_update_emission,
     do_update_opacity,
@@ -1206,7 +1206,7 @@ class FBP_OT_InsertLinkedImageAfterSelected(Operator):
             str(getattr(items[anchor_index], 'stable_id', '') or '')
             if anchor_index >= 0 else ''
         )
-        path = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        path = fbp_scene_project_path(context.scene) or context.scene.fbp_last_directory
         if path:
             self.directory = path
         context.window_manager.fileselect_add(self)
@@ -1400,7 +1400,7 @@ class FBP_OT_LinkImageFrame(Operator):
         backend_type = fbp_layer_backend_type(rig) if rig is not None else 'NATIVE_IMAGE'
         extensions = FBP_SUPPORTED_VIDEO_EXT if backend_type == 'NATIVE_MOVIE' else FBP_SUPPORTED_IMAGE_EXT
         self.filter_glob = ";".join(f"*{ext}" for ext in sorted(extensions))
-        path = context.scene.fbp_project_path or context.scene.fbp_last_directory
+        path = fbp_scene_project_path(context.scene) or context.scene.fbp_last_directory
         if path:
             self.directory = path
         context.window_manager.fileselect_add(self)

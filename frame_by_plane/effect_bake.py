@@ -47,6 +47,16 @@ from .runtime import FBP_DATA_ERRORS, fbp_release_orphan_image, fbp_warn
 from .user_storage import fbp_project_assets_dir, fbp_user_data_dir
 
 
+def _render_sound_suppressed():
+    """Keep the render-finished chord quiet for the per-frame bake renders."""
+    try:
+        from .render_finish_sound import fbp_render_sound_suppressed
+    except ImportError:
+        from contextlib import nullcontext
+        return nullcontext()
+    return fbp_render_sound_suppressed()
+
+
 FBP_BAKE_MAX_SIZE = 8192
 _BAKE_NODE_TAG = "fbp_effect_bake_temporary"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_\-]+")
@@ -760,7 +770,8 @@ def _render_frames(context, rig, plane, materials, width, height, frame_list, di
             temporary.frame_set(frame)
             filename = f"{prefix}{index:04d}.png"
             render.filepath = os.path.join(directory, filename)
-            result = bpy.ops.render.render(write_still=True, scene=temporary.name)
+            with _render_sound_suppressed():
+                result = bpy.ops.render.render(write_still=True, scene=temporary.name)
             if "FINISHED" not in result or not os.path.isfile(render.filepath):
                 raise RuntimeError("EEVEE did not render the frame")
             files.append(filename)

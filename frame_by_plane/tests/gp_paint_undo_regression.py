@@ -79,18 +79,41 @@ try:
     if module._RUNTIME["draw_watch_initialized"]:
         assert module._RUNTIME["draw_curve_count"] == 1
 
-    # Second Ctrl+Z is the dedicated X step and restores both representations.
+    # In Draw Mode Stroke / Fill are tool settings, like Blender's brush
+    # colors: X adds no undo step of its own, and the restored baseline (which
+    # predates the swap) does not bring the old pair back.
+    obj = bpy.data.objects["FBP Paint Undo"]
+    state = obj.fbp_gp_vertex_color_state
+    _paint, _brush, owner, gp_settings = module._draw_brush_context(bpy.context)
+    assert close_color(state.stroke_color, swapped_stroke)
+    assert close_color(state.fill_color, swapped_fill)
+    assert close_color(tuple(owner.color), swapped_stroke[:3])
+    assert close_color(tuple(owner.secondary_color), swapped_fill[:3])
+
+    # A color picked in a panel (no undo step of its own), then a stroke:
+    # Ctrl+Z removes the stroke and keeps the picked color.
+    picked = (0.9, 0.3, 0.1, 1.0)
+    state.stroke_color = picked
+    obj = bpy.data.objects["FBP Paint Undo"]
+    drawing = obj.data.layers.active.current_frame().drawing
+    drawing.add_strokes([2])
+    assert bpy.ops.ed.undo_push(message="FBP Picked Color Stroke") == {"FINISHED"}
     assert bpy.ops.ed.undo() == {"FINISHED"}
     obj = bpy.data.objects["FBP Paint Undo"]
     state = obj.fbp_gp_vertex_color_state
     _paint, _brush, owner, gp_settings = module._draw_brush_context(bpy.context)
-    assert close_color(state.stroke_color, original_stroke)
-    assert close_color(state.fill_color, original_fill)
-    assert close_color(tuple(owner.color), original_stroke[:3])
-    assert close_color(tuple(owner.secondary_color), original_fill[:3])
+    assert close_color(state.stroke_color, picked), tuple(state.stroke_color)
+    assert close_color(tuple(owner.color), picked[:3]), tuple(owner.color)
+    # Redo brings nothing back that would change the color either.
+    bpy.ops.ed.redo()
+    obj = bpy.data.objects["FBP Paint Undo"]
+    state = obj.fbp_gp_vertex_color_state
+    assert close_color(state.stroke_color, picked)
+    state.stroke_color = original_stroke
+    state.fill_color = original_fill
 
-    # Fill target reverses the native primary/secondary mapping. It must obey
-    # the same stroke-first, swap-second Undo contract.
+    # Fill target reverses the native primary/secondary mapping; Undo keeps
+    # the swapped pair there too.
     _paint, _brush, owner, gp_settings = module._draw_brush_context(bpy.context)
     gp_settings.stroke_type = "FILL"
     module._sync_draw_state(bpy.context)
@@ -119,10 +142,10 @@ try:
     obj = bpy.data.objects["FBP Paint Undo"]
     state = obj.fbp_gp_vertex_color_state
     _paint, _brush, owner, gp_settings = module._draw_brush_context(bpy.context)
-    assert close_color(state.stroke_color, original_stroke)
-    assert close_color(state.fill_color, original_fill)
-    assert close_color(tuple(owner.color), original_fill[:3])
-    assert close_color(tuple(owner.secondary_color), original_stroke[:3])
+    assert close_color(state.stroke_color, fill_swapped_stroke)
+    assert close_color(state.fill_color, fill_swapped_fill)
+    assert close_color(tuple(owner.color), fill_swapped_fill[:3])
+    assert close_color(tuple(owner.secondary_color), fill_swapped_stroke[:3])
     print("FBPTEST gp_paint_swap_stroke_undo: PASS")
 except Exception:
     traceback.print_exc()
