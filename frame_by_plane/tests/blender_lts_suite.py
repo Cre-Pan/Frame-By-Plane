@@ -339,6 +339,7 @@ def test_control_panel_and_camera_contract(module):
     original_context_available = ui._fbp_tool_ui_context_available
     original_active_plane = ui._fbp_active_plane_context
     original_scene_gp = ui._fbp_scene_has_drawing_gp
+    original_stack_available = ui._fbp_layer_stack_context_available
     try:
         ui._fbp_ui_preferences = lambda _context: FakePreferences()
         ui._fbp_tool_ui_context_available = lambda _context: True
@@ -357,11 +358,27 @@ def test_control_panel_and_camera_contract(module):
         assert ui.FBP_PT_ToolGreasePencilStack.poll(bpy.context)
         assert ui.FBP_PT_ToolSequence.poll(bpy.context)
         assert ui.FBP_PT_ImagePlaneData.poll(bpy.context)
+
+        # No plane in the scene and nothing selected: Layer Settings is
+        # hidden in both tabs, the Layers panel (creation UI) stays.
+        ui._fbp_active_plane_context = lambda _context: None
+        ui._fbp_layer_stack_context_available = lambda _context: False
+        obj.select_set(False)
+        bpy.context.view_layer.objects.active = None
+        assert not ui.FBP_PT_Sequence.poll(bpy.context)
+        assert not ui.FBP_PT_ToolSequence.poll(bpy.context)
+        assert ui.FBP_PT_LayerStack.poll(bpy.context)
+        assert ui.FBP_PT_ToolLayerStack.poll(bpy.context)
+        # As soon as a plane exists, Layer Settings is back (with its hint).
+        ui._fbp_layer_stack_context_available = lambda _context: True
+        assert ui.FBP_PT_Sequence.poll(bpy.context)
+        assert ui.FBP_PT_ToolSequence.poll(bpy.context)
     finally:
         ui._fbp_ui_preferences = original_preferences
         ui._fbp_tool_ui_context_available = original_context_available
         ui._fbp_active_plane_context = original_active_plane
         ui._fbp_scene_has_drawing_gp = original_scene_gp
+        ui._fbp_layer_stack_context_available = original_stack_available
 
     bpy.ops.object.select_all(action='DESELECT')
     bpy.ops.object.camera_add()
@@ -5535,7 +5552,7 @@ def test_playback_buttons_contract(_module):
     properties = importlib.import_module(f"{PACKAGE}.properties")
     rna = properties.FBP_AddonPreferences.bl_rna.properties
     names = [prop for prop, _idname in buttons.FBP_PLAYBACK_BUTTON_PREFS]
-    assert [rna[name].default for name in names] == [False, False, False]
+    assert [rna[name].default for name in names] == [True, False, False]
     assert rna["playback_show_play_reverse"].default is True
     # Direct-source registration has no enabled extension entry in Preferences.
     prefs = SimpleNamespace(playback_show_play_reverse=True, **{name: False for name in names})

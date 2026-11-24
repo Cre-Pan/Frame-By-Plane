@@ -14,9 +14,13 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Choose the playback buttons
 
-- **Show Buttons** at the bottom of the Playback Options popover (the small arrow beside the transport buttons in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer; Time Jump on Blender 5.2) switches each group of transport buttons on or off: **Jump to Endpoint**, **Jump to Keyframe**, **Jump by Delta** and **Play Reverse**, lined up under Wrap Timeline Navigation. The three jump groups are hidden by default, so the header shows Play Reverse and Play only. The choice is an add-on preference and holds in every file. Blender's own header drawing is kept: only the switched-off buttons are skipped.
+- **Show Buttons** at the bottom of the Playback Options popover (the small arrow beside the transport buttons in the Timeline, Dope Sheet, Graph Editor, NLA and Sequencer; Time Jump on Blender 5.2) switches each group of transport buttons on or off: **Jump to Endpoint**, **Jump to Keyframe**, **Jump by Delta** and **Play Reverse**, lined up under Wrap Timeline Navigation. **Jump to Endpoint** is on by default; Jump to Keyframe and Jump by Delta are hidden by default. The choice is an add-on preference and holds in every file. Blender's own header drawing is kept: only the switched-off buttons are skipped.
 - **Pick the current frame for In and Out.** A paste button (the Paste icon) before **Start** and before **End** in the same headers sets the In or the Out to the current frame (the preview range when it is on). An Out before the In moves the In too, so the range stays valid.
 - The layer's **Start Frame** button (Animation box and the Sequence Timing dialog) uses the same Paste icon, placed before the value.
+
+### Sidebar without planes
+
+- **No plane, no plane settings.** While the scene has no Frame By Plane plane, the **Layer Settings** panel is hidden in the Tool tab and in the Frame By Plane tab, and the **Layers** panel shows only the creation controls (no empty plane list, no Sets & Snapshots). Everything else stays where it is. A selected Grease Pencil canvas still shows its settings. The panels come back as soon as the first plane is created.
 
 ### New effect: RGB Pixels
 
