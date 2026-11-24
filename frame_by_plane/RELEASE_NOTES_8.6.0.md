@@ -10,6 +10,7 @@ Frame By Plane 8.6.0 brings **plane groups** you can animate as one piece, an ex
 - 👁️ **Solo a group:** Z Pie Solo with a group selected shows the whole group.
 - 📐 **Layer Transform** in Properties > Object and in the sidebar's Item tab: exact Location, Rotation and Scale of the layer, keyable with I, shown in the Graph Editor and Dope Sheet. Alt or Copy All to Selected sets every selected layer.
 - 🎯 **Set Layer Origin** (right click > Frame By Plane > Layer): Origin to Geometry, Origin to 3D Cursor and Geometry to Origin, without moving the drawing. The Crop effect has an **Origin to Centre** button.
+- 🔗 **Link Timelines:** a link button at the right of every timeline header (Timeline, Dope Sheet, Graph Editor, NLA, Sequencer), on by default, keeps them aligned frame by frame: the playhead and Start/End line up even when one editor has a wider channel list or an open sidebar. Scroll, zoom or resize any of them and the others follow. If the scene is used as a clip in the Sequencer of another scene, the Timeline lines up under that clip.
 
 ## 🛠️ Better and fixed in 8.6.0
 

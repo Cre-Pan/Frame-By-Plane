@@ -8,6 +8,10 @@ All notable public changes to Frame By Plane are documented here.
 
 - Version 8.6.0 in the manifest, runtime contract, packaging and publishing tools, and in the small version label of the splash (the large "8.5 LTS" title and the bullets are part of the artwork and are unchanged).
 
+### Link Timelines
+
+- **Every timeline lines up, frame by frame.** A link button at the right of the header of every Timeline, Dope Sheet, Graph Editor, NLA and Sequencer, on by default. The editor you scroll, zoom or resize leads and the others follow with the same zoom and each frame at the same horizontal position on the screen, so the playhead and the Start/End frames sit on one vertical line across all of them. Unlike Blender's Sync Visible Range they stay aligned when one editor has a wider channel list or an open sidebar: opening the N panel moves nothing, resizing the channel list moves the others with it. Editors side by side or in another window get the same visible range. While the link is on, Sync Visible Range is switched off on those editors so the two do not fight. When the Sequencer shows another scene and the scene of the Timeline is used there as a scene clip, the Timeline (and Dope Sheet, Graph, NLA) lines up under that clip, follows it when the clip is moved and picks the active clip when there are several; Scene Time sync is turned on so the playheads follow each other.
+
 ### New effect: RGB Pixels
 
 - **RGB Pixels** (Add Effect > Digital) turns a layer into a pixel-art RGB mosaic: the image is sampled once per cell and each cell is shown through red, green and blue sub-pixel stripes, like a close-up of a CRT or LED screen. It follows the classic shader recipe (source x CRT pixel, channels multiplied R x R, G x G, B x B, then an Emission-style boost) with a procedural CRT pixel, so no extra texture is needed.
@@ -79,7 +83,7 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Development
 
-- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view; the 8.6 feature gate runs 28 scripts.
+- New regression tests: 100-plane overlay performance, group controller, rig box from source, runtime performance (layer list, name index, alpha cache, contour tracer, framing, long import, lazy NumPy); Unified Color in Draw and Vertex Paint, Blender 5.3 Edit Mode header tools, masks in Solid view, group rig options, Link Timelines; the 8.6 feature gate runs 30 scripts.
 - CI has a **Blender 5.4 canary** job that runs the background suite and the feature gate on the latest 5.4 daily build without blocking the release.
 - The effect shader routing code moved out of `geometry_nodes.py` into `effect_shader_routing.py` (first round of splitting the largest files); names are re-exported, so nothing else changes.
 
