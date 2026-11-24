@@ -8,6 +8,10 @@ All notable public changes to Frame By Plane are documented here.
 
 - Version 8.6.0 in the manifest, runtime contract, packaging and publishing tools, and in the small version label of the splash (the large "8.5 LTS" title and the bullets are part of the artwork and are unchanged).
 
+### Link Timelines
+
+- **Every timeline lines up, frame by frame.** A link button at the right of the header of every Timeline, Dope Sheet, Graph Editor, NLA and Sequencer, on by default. The editor you scroll, zoom or resize leads and the others follow with the same zoom and each frame at the same horizontal position on the screen, so the playhead and the Start/End frames sit on one vertical line across all of them. Unlike Blender's Sync Visible Range they stay aligned when one editor has a wider channel list or an open sidebar: opening the N panel moves nothing, resizing the channel list moves the others with it. Editors side by side or in another window get the same visible range. While the link is on, Sync Visible Range is switched off on those editors so the two do not fight. In a workspace whose Sequencer shows another scene, Scene Time sync is turned on so the playheads follow each other.
+
 ### Large preview on list rows
 
 - **Hover a row, see the image.** Resting the mouse on a row of the Layer List, the Frames list or the Multiplane Setup list now shows a larger thumbnail (256 px by default) beside the sidebar, with the row name and frame number. In Properties > Tool it opens in the editor next to the Properties panel (usually the 3D View), against the shared border. It stays clear of Blender's own tooltip and closes as soon as the mouse moves or any key or button is pressed. Size or Off in **Preferences > Interface Behavior > Row Hover Preview**.
