@@ -253,12 +253,56 @@ def _range_matches(region, first, last):
     )
 
 
+_CLIPPED = 12000
+
+
+def _row_inside(view, x, y):
+    """True when view point (x, y) lies inside the visible rectangle."""
+    return tuple(view.view_to_region(x, y, clip=True)) != (_CLIPPED, _CLIPPED)
+
+
+def _vertical_border(region):
+    """Region pixel rows (ymin, ymax) that map exactly to the visible rows.
+
+    ``view2d.zoom_border`` maps its rectangle through the View2D mask, which
+    is one pixel shorter than the region and smaller still where a scroll bar
+    sits. Passing 0..height makes the new view a little taller than the old
+    one, so every alignment zoomed a Sequencer (which allows vertical zoom)
+    out a bit more until its channels vanished. The mask edges are found as
+    the first and last pixel rows whose view y is still inside the view.
+    """
+    view = region.view2d
+    height = int(region.height)
+    x = float(view.region_to_view(float(region.width) * 0.5, 0.0)[0])
+    bottom = float(view.region_to_view(0.0, 0.0)[1])
+    top = float(view.region_to_view(0.0, float(height))[1])
+    nudge = abs(top - bottom) / max(float(height), 1.0) * 1.0e-3
+    if top < bottom:
+        nudge = -nudge
+
+    def inside(row, toward_center):
+        y = float(view.region_to_view(0.0, float(row))[1])
+        return _row_inside(view, x, y + toward_center)
+
+    ymin = 0
+    while ymin < height // 2 and not inside(ymin, nudge):
+        ymin += 1
+    ymax = height
+    while ymax > height // 2 and not inside(ymax, -nudge):
+        ymax -= 1
+    if ymax <= ymin:
+        return 0, height
+    return ymin, ymax
+
+
 def _apply_range(window, area, region, first, last):
     """Show frames first..last in region, keeping its vertical view.
 
     ``view2d.zoom_border`` takes whole pixels of the current view, so a big
     zoom change lands within half a pixel of the old scale: a second pass at
-    the new scale brings it within half a pixel of the target.
+    the new scale brings it within half a pixel of the target. Its rows are
+    the exact edges of the visible rows (see ``_vertical_border``) so the
+    channel height and the vertical scroll stay as they are.
     """
     for _pass in range(_MAX_PASSES):
         if _range_matches(region, first, last):
@@ -271,9 +315,10 @@ def _apply_range(window, area, region, first, last):
         if ix1 <= ix0:
             return
         try:
+            iy0, iy1 = _vertical_border(region)
             with bpy.context.temp_override(window=window, area=area, region=region):
                 result = bpy.ops.view2d.zoom_border(
-                    xmin=ix0, xmax=ix1, ymin=0, ymax=int(region.height),
+                    xmin=ix0, xmax=ix1, ymin=iy0, ymax=iy1,
                     wait_for_input=False, zoom_out=False,
                 )
         except FBP_DATA_ERRORS as exc:

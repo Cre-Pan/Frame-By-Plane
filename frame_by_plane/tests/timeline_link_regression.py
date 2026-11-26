@@ -185,8 +185,44 @@ def step_clip_moved():
         bpy.ops.view2d.zoom(deltax=30, deltay=0)
 
 
+def _channel_span(region):
+    view = region.view2d
+    return (
+        float(view.region_to_view(0.0, 0.0)[1]),
+        float(view.region_to_view(0.0, float(region.height))[1]),
+    )
+
+
 def step_clip_pan():
     _check("timeline stays under the clip on Sequencer pan/zoom", _under_clip())
+    _window, _timeline, (_area, sequencer) = _clip_regions()
+    STATE["channels"] = _channel_span(sequencer)
+    STATE["timeline_pans"] = 12
+
+
+def step_timeline_scrub():
+    """Panning/zooming the Timeline must not zoom the Sequencer channels."""
+    window, _timeline, _seq = _clip_regions()
+    area = next(area for area in window.screen.areas if area.type == "DOPESHEET_EDITOR")
+    region = next(r for r in area.regions if r.type == "WINDOW")
+    with bpy.context.temp_override(window=window, area=area, region=region):
+        if STATE["timeline_pans"] % 3:
+            bpy.ops.view2d.pan(deltax=37, deltay=0)
+        else:
+            bpy.ops.view2d.zoom(deltax=7, deltay=0)
+    link.sync_linked_timelines()
+    STATE["timeline_pans"] -= 1
+    if STATE["timeline_pans"] > 0:
+        STEPS.insert(0, step_timeline_scrub)
+        return
+    _w, _t, (_a, sequencer) = _clip_regions()
+    before, after = STATE["channels"], _channel_span(sequencer)
+    height = max(abs(before[1] - before[0]), 1.0e-6)
+    print("channel span", before, after, flush=True)
+    _check(
+        "Sequencer channel height kept while the Timeline leads",
+        abs(after[0] - before[0]) <= height * 0.01 and abs(after[1] - before[1]) <= height * 0.01,
+    )
 
 
 def step_unregister():
@@ -200,7 +236,7 @@ def step_unregister():
 
 
 STATE = {}
-STEPS = [step_split, step_initial, step_sidebar, step_channels, step_graph_zoom, step_timeline_pan, step_off, step_on_again, step_clip, step_clip_moved, step_clip_pan, step_unregister]
+STEPS = [step_split, step_initial, step_sidebar, step_channels, step_graph_zoom, step_timeline_pan, step_off, step_on_again, step_clip, step_clip_moved, step_clip_pan, step_timeline_scrub, step_unregister]
 
 
 def _finish():
