@@ -54,6 +54,13 @@ All notable public changes to Frame By Plane are documented here.
 - **Solo** on a selected controller or a whole selected group solos the group's layers.
 - **Ungroup** (Ctrl+Shift+G or the button in the group box) dissolves a selected group: its layers and nested groups move to the parent collection and the empty collection is removed.
 
+### Grease Pencil Quick Shape
+
+- **Straight lines by resting the pen.** With the Grease Pencil **Draw** brush, draw a roughly straight stroke and keep the pen (or mouse) still at its end for a moment, with the button still pressed: the stroke turns into a straight line from its first point to the cursor. Until you release, the end of the line follows the cursor; on release it is an ordinary stroke (same brush, material, colors and pressure, one Undo step).
+- **Shift** slows the end of the line down for precise placement (a quarter of the cursor movement by default). **Ctrl** snaps the angle on screen in 15° steps by default; every choice (5°, 15°, 22.5°, 45°) includes horizontal, vertical and 45°.
+- Quick Shape can start only in the **first 10 seconds** of a stroke; after that the stroke stays free hand however long the pen rests. Curved, hooked or back-and-forth strokes are never turned into a line.
+- Preferences > Workflow > Grease Pencil 5.2: **Quick Shape** switch, **Hold** time (0.4 s by default), **Shift** precision and **Ctrl** snap angle. Ctrl+click (erase) and Shift+click (smooth) keep their native behavior.
+
 ### Grease Pencil Draw and Edit Mode on Blender 5.3
 
 - **Close Gap removed, native Cyclic on 5.3.** The Close Gap buttons in the Tool Header and Tool panel, the Close Selected Gaps toggle and the G shortcut in Draw Mode are gone on every Blender version, and new strokes keep the closure Blender gives them. On Blender 5.3 the brush's own **Cyclic** option, shown right after Stroke / Fill / Both, closes new strokes; the Tool panel shows it too.

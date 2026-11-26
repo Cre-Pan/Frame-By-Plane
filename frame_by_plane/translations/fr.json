@@ -7605,5 +7605,21 @@
 "Digital": "Numérique",
 "Legacy": "Classique",
 "Legacy Rig": "Rig classique",
-"Legacy Rig on New Layers": "Rig classique sur les nouveaux calques"
+"Legacy Rig on New Layers": "Rig classique sur les nouveaux calques",
+"Quick Shape": "Quick Shape",
+"With the Grease Pencil Draw brush, draw a roughly straight stroke and keep the pen still at its end: within the first 10 seconds of the stroke it turns into a straight line that follows the cursor until release. Hold Shift for slower, precise movement and Ctrl to snap the angle": "Avec la brosse Draw du Grease Pencil, tracez un trait à peu près droit et gardez le stylet immobile à la fin : dans les 10 premières secondes du trait, il devient une ligne droite qui suit le curseur jusqu'au relâchement. Maintenez Maj pour un mouvement plus lent et précis et Ctrl pour aimanter l'angle",
+"Quick Shape Hold Time": "Attente Quick Shape",
+"How long the pen must rest at the end of a straight stroke before it turns into a line": "Durée pendant laquelle le stylet doit rester immobile à la fin d'un trait droit avant qu'il devienne une ligne",
+"Quick Shape Snap Angle": "Angle d'aimantation Quick Shape",
+"Angle steps used while Ctrl is held. Every step keeps horizontal, vertical and 45 degree lines": "Pas d'angle utilisés pendant que Ctrl est maintenu. Chaque pas garde les lignes horizontales, verticales et à 45 degrés",
+"Snap the line every 5 degrees": "Aimanter la ligne tous les 5 degrés",
+"Snap the line every 15 degrees": "Aimanter la ligne tous les 15 degrés",
+"Snap the line every 22.5 degrees": "Aimanter la ligne tous les 22,5 degrés",
+"Snap the line to horizontal, vertical and diagonals only": "Aimanter la ligne uniquement à l'horizontale, à la verticale et aux diagonales",
+"Quick Shape Shift Precision": "Précision Maj Quick Shape",
+"Share of the cursor movement applied to the end of the line while Shift is held. Lower values move the line more slowly": "Part du mouvement du curseur appliquée au bout de la ligne pendant que Maj est maintenu. Des valeurs plus basses déplacent la ligne plus lentement",
+"Hold": "Attente",
+"Ctrl": "Ctrl",
+"Draw with Quick Shape": "Dessiner avec Quick Shape",
+"Draw with the brush; rest the pen at the end of a straight stroke to turn it into a line (Shift: precise, Ctrl: snap angle)": "Dessiner avec la brosse ; s'arrêter au bout d'un trait droit pour le transformer en ligne (Maj : précis, Ctrl : aimanter l'angle)"
 }

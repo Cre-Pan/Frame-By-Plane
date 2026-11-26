@@ -7634,5 +7634,22 @@
 "Digital": "Digital",
 "Legacy": "Clásico",
 "Legacy Rig": "Rig clásico",
-"Legacy Rig on New Layers": "Rig clásico en capas nuevas"
+"Legacy Rig on New Layers": "Rig clásico en capas nuevas",
+"Quick Shape": "Quick Shape",
+"With the Grease Pencil Draw brush, draw a roughly straight stroke and keep the pen still at its end: within the first 10 seconds of the stroke it turns into a straight line that follows the cursor until release. Hold Shift for slower, precise movement and Ctrl to snap the angle": "Con el pincel Draw de Grease Pencil, dibuja un trazo más o menos recto y mantén el lápiz quieto al final: en los primeros 10 segundos del trazo se convierte en una línea recta que sigue al cursor hasta soltar. Mantén Shift para un movimiento más lento y preciso y Ctrl para ajustar el ángulo",
+"Quick Shape Hold Time": "Espera de Quick Shape",
+"How long the pen must rest at the end of a straight stroke before it turns into a line": "Cuánto tiempo debe quedarse quieto el lápiz al final de un trazo recto antes de convertirse en línea",
+"Quick Shape Snap Angle": "Ángulo de ajuste de Quick Shape",
+"Angle steps used while Ctrl is held. Every step keeps horizontal, vertical and 45 degree lines": "Pasos de ángulo usados mientras se mantiene Ctrl. Cada paso incluye líneas horizontales, verticales y a 45 grados",
+"Snap the line every 5 degrees": "Ajustar la línea cada 5 grados",
+"Snap the line every 15 degrees": "Ajustar la línea cada 15 grados",
+"Snap the line every 22.5 degrees": "Ajustar la línea cada 22,5 grados",
+"Snap the line to horizontal, vertical and diagonals only": "Ajustar la línea solo a horizontal, vertical y diagonales",
+"Quick Shape Shift Precision": "Precisión Shift de Quick Shape",
+"Share of the cursor movement applied to the end of the line while Shift is held. Lower values move the line more slowly": "Parte del movimiento del cursor aplicada al final de la línea mientras se mantiene Shift. Valores menores mueven la línea más despacio",
+"Hold": "Espera",
+"Ctrl": "Ctrl",
+"Shift": "Shift",
+"Draw with Quick Shape": "Dibujar con Quick Shape",
+"Draw with the brush; rest the pen at the end of a straight stroke to turn it into a line (Shift: precise, Ctrl: snap angle)": "Dibuja con el pincel; detente al final de un trazo recto para convertirlo en línea (Shift: preciso, Ctrl: ajustar ángulo)"
 }

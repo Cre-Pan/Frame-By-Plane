@@ -7739,5 +7739,21 @@
 "Digital": "デジタル",
 "Legacy": "クラシック",
 "Legacy Rig": "クラシックリグ",
-"Legacy Rig on New Layers": "新しいレイヤーにクラシックリグ"
+"Legacy Rig on New Layers": "新しいレイヤーにクラシックリグ",
+"Quick Shape": "クイックシェイプ",
+"With the Grease Pencil Draw brush, draw a roughly straight stroke and keep the pen still at its end: within the first 10 seconds of the stroke it turns into a straight line that follows the cursor until release. Hold Shift for slower, precise movement and Ctrl to snap the angle": "グリースペンシルの Draw ブラシでほぼまっすぐな線を描き、終点でペンを止めると、ストロークの最初の10秒以内なら直線に変わり、離すまでカーソルに追従します。Shift で遅く正確に、Ctrl で角度をスナップします",
+"Quick Shape Hold Time": "クイックシェイプの待機時間",
+"How long the pen must rest at the end of a straight stroke before it turns into a line": "まっすぐな線の終点でペンを止めてから直線に変わるまでの時間",
+"Quick Shape Snap Angle": "クイックシェイプのスナップ角度",
+"Angle steps used while Ctrl is held. Every step keeps horizontal, vertical and 45 degree lines": "Ctrl を押している間に使う角度の刻み。どの刻みでも水平・垂直・45度の線を含みます",
+"Snap the line every 5 degrees": "5度ごとにスナップ",
+"Snap the line every 15 degrees": "15度ごとにスナップ",
+"Snap the line every 22.5 degrees": "22.5度ごとにスナップ",
+"Snap the line to horizontal, vertical and diagonals only": "水平・垂直・斜めのみにスナップ",
+"Quick Shape Shift Precision": "クイックシェイプの Shift 精度",
+"Share of the cursor movement applied to the end of the line while Shift is held. Lower values move the line more slowly": "Shift を押している間に線の終点へ適用されるカーソル移動の割合。小さいほど線がゆっくり動きます",
+"Hold": "待機",
+"Ctrl": "Ctrl",
+"Draw with Quick Shape": "クイックシェイプで描画",
+"Draw with the brush; rest the pen at the end of a straight stroke to turn it into a line (Shift: precise, Ctrl: snap angle)": "ブラシで描画。まっすぐな線の終点で止めると直線になります（Shift: 精密、Ctrl: 角度スナップ）"
 }

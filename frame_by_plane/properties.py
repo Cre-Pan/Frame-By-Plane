@@ -1807,6 +1807,41 @@ class FBP_AddonPreferences(AddonPreferences):
         subtype='DISTANCE',
         unit='LENGTH',
     )
+    gp_quick_shape_enabled: BoolProperty(
+        name="Quick Shape",
+        description="With the Grease Pencil Draw brush, draw a roughly straight stroke and keep the pen still at its end: within the first 10 seconds of the stroke it turns into a straight line that follows the cursor until release. Hold Shift for slower, precise movement and Ctrl to snap the angle",
+        default=True,
+    )
+    gp_quick_shape_hold_time: FloatProperty(
+        name="Quick Shape Hold Time",
+        description="How long the pen must rest at the end of a straight stroke before it turns into a line",
+        default=0.4,
+        min=0.1,
+        max=3.0,
+        step=5,
+        precision=2,
+        subtype='TIME_ABSOLUTE',
+        unit='TIME_ABSOLUTE',
+    )
+    gp_quick_shape_snap_angle: EnumProperty(
+        name="Quick Shape Snap Angle",
+        description="Angle steps used while Ctrl is held. Every step keeps horizontal, vertical and 45 degree lines",
+        items=(
+            ('5', "5°", "Snap the line every 5 degrees"),
+            ('15', "15°", "Snap the line every 15 degrees"),
+            ('22.5', "22.5°", "Snap the line every 22.5 degrees"),
+            ('45', "45°", "Snap the line to horizontal, vertical and diagonals only"),
+        ),
+        default='15',
+    )
+    gp_quick_shape_precision: FloatProperty(
+        name="Quick Shape Shift Precision",
+        description="Share of the cursor movement applied to the end of the line while Shift is held. Lower values move the line more slowly",
+        default=0.25,
+        min=0.02,
+        max=1.0,
+        subtype='FACTOR',
+    )
     default_color_plane_type: EnumProperty(description="Procedural plane type selected by default when creating a Color, Gradient or Holdout plane.",
         name="Default Procedural Plane", items=COLOR_PLANE_TYPE_ITEMS, default='CUSTOM',
     )
@@ -2141,6 +2176,13 @@ class FBP_AddonPreferences(AddonPreferences):
                 draw = _row(body)
                 draw.prop(self, 'default_gp_curve_type', text='Draw Curves')
                 draw.prop(self, 'default_gp_curve_conversion_threshold', text='Conversion Threshold')
+                quick = _row(body)
+                quick.prop(self, 'gp_quick_shape_enabled', text='Quick Shape', toggle=True, icon='IPO_LINEAR')
+                sub = quick.row(align=True)
+                sub.enabled = self.gp_quick_shape_enabled
+                sub.prop(self, 'gp_quick_shape_hold_time', text='Hold')
+                sub.prop(self, 'gp_quick_shape_precision', text='Shift', slider=True)
+                sub.prop(self, 'gp_quick_shape_snap_angle', text='Ctrl')
 
             body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.scrub_slider', 'TIME')
             if body:

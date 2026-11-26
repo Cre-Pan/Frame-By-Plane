@@ -8117,5 +8117,21 @@
  "restore sequence rows and backend",
  "restore shader effect stack",
  "sequence replacement failure",
- "‹  Back"
+ "‹  Back",
+ "Quick Shape",
+ "With the Grease Pencil Draw brush, draw a roughly straight stroke and keep the pen still at its end: within the first 10 seconds of the stroke it turns into a straight line that follows the cursor until release. Hold Shift for slower, precise movement and Ctrl to snap the angle",
+ "Quick Shape Hold Time",
+ "How long the pen must rest at the end of a straight stroke before it turns into a line",
+ "Quick Shape Snap Angle",
+ "Angle steps used while Ctrl is held. Every step keeps horizontal, vertical and 45 degree lines",
+ "Snap the line every 5 degrees",
+ "Snap the line every 15 degrees",
+ "Snap the line every 22.5 degrees",
+ "Snap the line to horizontal, vertical and diagonals only",
+ "Quick Shape Shift Precision",
+ "Share of the cursor movement applied to the end of the line while Shift is held. Lower values move the line more slowly",
+ "Hold",
+ "Ctrl",
+ "Draw with Quick Shape",
+ "Draw with the brush; rest the pen at the end of a straight stroke to turn it into a line (Shift: precise, Ctrl: snap angle)"
 ]
