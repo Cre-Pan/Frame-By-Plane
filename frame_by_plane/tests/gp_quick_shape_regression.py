@@ -106,9 +106,16 @@ try:
             if kind == quick.ELLIPSE:
                 assert all(aligned)
             elif kind == quick.ARC:
-                # Inner points aligned; the two ends have automatic handles.
+                # Inner points aligned; the two ends have no handles at all.
                 assert all(aligned[1:-1])
-                assert handle_types[0] == handle_types[-1] == (quick._HANDLE_AUTO, quick._HANDLE_AUTO)
+                assert handle_types[0] == handle_types[-1] == (quick._HANDLE_FREE, quick._HANDLE_FREE)
+                assert knots[0][0] == knots[0][1] == knots[0][2]
+                assert knots[-1][0] == knots[-1][1] == knots[-1][2]
+                # The segments still follow the arc.
+                for (_l0, p0, r0), (l1, p1, _r1) in zip(knots, knots[1:]):
+                    for j in range(1, 20):
+                        q = quick._bezier(p0, r0, l1, p1, j / 20.0)
+                        assert quick._ellipse_distance(shape, q) < 0.02 * shape["rx"], (count, q)
             else:
                 assert not any(aligned)
     # Ellipse points lie on the ellipse; Ctrl turns it into a circle.
@@ -227,6 +234,20 @@ try:
         segments = len(corners_in) - 1
         assert quick.points_step(quick.POLYLINE, shapes[0]) == segments
         assert len(quick.shape_knots(shapes[0], len(corners_in) + segments)[0]) == len(corners_in) + segments
+    # Ctrl turns an elliptical arc into the circular arc through the same
+    # start, middle and end.
+    flat = {"kind": quick.ARC, "center": (300.0, 300.0), "rx": 160.0, "ry": 60.0, "angle": 0.2, "t0": 3.0, "sweep": -2.4}
+    snapped = quick.transform_shape(flat, 0.0, 1.0, 15.0)
+    assert abs(snapped["rx"] - snapped["ry"]) < 1.0e-9, snapped
+    for f in (0.0, 0.5, 1.0):
+        p = quick._arc_point(snapped, f)
+        assert abs(math.hypot(p[0] - snapped["center"][0], p[1] - snapped["center"][1]) - snapped["rx"]) < 1.0e-6
+    s0, s1 = quick._arc_point(snapped, 0.0), quick._arc_point(snapped, 1.0)
+    chord = math.degrees(math.atan2(s1[1] - s0[1], s1[0] - s0[0]))
+    assert abs(chord / 15.0 - round(chord / 15.0)) < 1.0e-6, chord
+    # A wavy, unclear zig-zag stays free hand.
+    wavy = [(100.0 + 8.0 * k, 300.0 + 60.0 * math.sin(k / 6.0) + 25.0 * math.sin(k / 1.7)) for k in range(80)]
+    assert all(s["kind"] != quick.POLYLINE for s in quick.recognize_shapes(wavy)), [s["kind"] for s in quick.recognize_shapes(wavy)]
     # A triangle is a polygon.
     tri = [(100, 100), (300, 110), (190, 290)]
     path = []
@@ -293,7 +314,11 @@ try:
     attributes = layer.frames[0].drawing.attributes
     first = int(layer.frames[0].drawing.curve_offsets[1].value)
     left_types = [attributes["handle_type_left"].data[first + i].value for i in range(3)]
-    assert left_types == [quick._HANDLE_AUTO, quick._HANDLE_ALIGN, quick._HANDLE_AUTO], left_types
+    assert left_types == [quick._HANDLE_FREE, quick._HANDLE_ALIGN, quick._HANDLE_FREE], left_types
+    start_left = attributes["handle_left"].data[first].vector
+    start_right = attributes["handle_right"].data[first].vector
+    assert (start_left - stroke.points[0].position).length < 1.0e-6
+    assert (start_right - stroke.points[0].position).length < 1.0e-6
 
     print("FBPTEST gp quick shape: PASS")
 except Exception:

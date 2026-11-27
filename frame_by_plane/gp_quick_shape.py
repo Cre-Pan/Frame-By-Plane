@@ -170,7 +170,7 @@ MIN_SHAPE_PX = 24.0
 # Mean distance of the drawn path from the recognized outline, as a share of
 # the shape's size, above which the stroke stays free hand.
 CLOSED_FIT_RATIO = 0.09
-ARC_FIT_RATIO = 0.07
+ARC_FIT_RATIO = 0.05
 ELLIPSE_ARC_FIT_RATIO = 0.06
 ARC_MAX_SWEEP = math.radians(300.0)
 
@@ -590,9 +590,14 @@ def _line_error(points):
 
 # -- polylines and polygons --------------------------------------------------
 
-POLY_MIN_TURN = math.radians(28.0)
-POLY_FIT_RATIO = 0.02
-POLY_MAX_CORNERS = 12
+POLY_MIN_TURN = math.radians(35.0)
+# Only clear polylines: every part of the stroke close to its segment
+# (mean and worst distance, as a share of the stroke's size), segments of a
+# fair length and not too many corners. Anything else stays free hand.
+POLY_FIT_RATIO = 0.012
+POLY_MAX_RATIO = 0.035
+POLY_MIN_SEGMENT_RATIO = 0.08
+POLY_MAX_CORNERS = 10
 
 
 def _rdp(points, first, last, tolerance, keep):
@@ -711,7 +716,7 @@ def fit_polyline(points, cyclic=False):
     lines = []
     for a, b in spans:
         segment = ring[a:b + 1]
-        if _path_length(segment) < max(10.0, diagonal * 0.05):
+        if _path_length(segment) < max(15.0, diagonal * POLY_MIN_SEGMENT_RATIO):
             return failed
         # The middle of each segment: drawn corners are often rounded.
         trim = len(segment) // 6
@@ -733,8 +738,10 @@ def fit_polyline(points, cyclic=False):
     for corner in (vertices if cyclic else vertices[1:-1]):
         if min(_dist(corner, p) for p in pts) > reach:
             return failed
-    error = _outline_error(pts, vertices, cyclic)
-    if error > POLY_FIT_RATIO * diagonal:
+    segments = list(zip(vertices, vertices[1:] + (vertices[:1] if cyclic else [])))
+    distances = [min(_segment_distance(p, a, b) for a, b in segments) for p in pts]
+    error = sum(distances) / float(len(distances))
+    if error > max(1.5, POLY_FIT_RATIO * diagonal) or max(distances) > max(5.0, POLY_MAX_RATIO * diagonal):
         return failed
     shape = {"kind": POLYGON if cyclic else POLYLINE, "vertices": vertices}
     return shape, error
@@ -835,6 +842,30 @@ def _arc_point(shape, fraction):
     return _ellipse_at(shape, shape["t0"] + shape["sweep"] * fraction)
 
 
+def _circle_arc_through(start, middle, end):
+    """Circular arc from start through middle to end, or None if straight."""
+    d = 2.0 * (start[0] * (middle[1] - end[1]) + middle[0] * (end[1] - start[1]) + end[0] * (start[1] - middle[1]))
+    if abs(d) < 1.0e-9:
+        return None
+    s2 = start[0] ** 2 + start[1] ** 2
+    m2 = middle[0] ** 2 + middle[1] ** 2
+    e2 = end[0] ** 2 + end[1] ** 2
+    center = (
+        (s2 * (middle[1] - end[1]) + m2 * (end[1] - start[1]) + e2 * (start[1] - middle[1])) / d,
+        (s2 * (end[0] - middle[0]) + m2 * (start[0] - end[0]) + e2 * (middle[0] - start[0])) / d,
+    )
+    radius = _dist(center, start)
+    cross = (middle[0] - start[0]) * (end[1] - middle[1]) - (middle[1] - start[1]) * (end[0] - middle[0])
+    turn = 1.0 if cross > 0.0 else -1.0
+    a0 = math.atan2(start[1] - center[1], start[0] - center[0])
+    a1 = math.atan2(end[1] - center[1], end[0] - center[0])
+    sweep = ((a1 - a0) * turn) % (2.0 * math.pi)
+    return {
+        "kind": ARC, "center": center, "rx": radius, "ry": radius, "angle": 0.0,
+        "t0": a0, "sweep": sweep * turn,
+    }
+
+
 def transform_shape(shape, angle, scale, snap_degrees=0.0):
     """Shape turned by ``angle`` and scaled around its anchor.
 
@@ -879,6 +910,14 @@ def transform_shape(shape, angle, scale, snap_degrees=0.0):
     result["ry"] = shape["ry"] * scale
     result["angle"] = shape["angle"] + angle
     if kind == ARC:
+        if step and abs(result["rx"] - result["ry"]) > 1.0e-6:
+            # Ctrl: an elliptical arc becomes the circular arc through its
+            # start, middle and end.
+            circle = _circle_arc_through(
+                _arc_point(result, 0.0), _arc_point(result, 0.5), _arc_point(result, 1.0),
+            )
+            if circle is not None:
+                result = circle
         if step:
             end = _arc_point(result, 1.0)
             chord = math.atan2(end[1] - anchor[1], end[0] - anchor[0])
@@ -895,7 +934,7 @@ def transform_shape(shape, angle, scale, snap_degrees=0.0):
 
 
 DEFAULT_POINTS = {LINE: 2, ARC: 3, ELLIPSE: 4, RECT: 4}
-_MIN_POINTS = {LINE: 2, ARC: 2, ELLIPSE: 3, RECT: 4}
+_MIN_POINTS = {LINE: 2, ARC: 3, ELLIPSE: 3, RECT: 4}
 MAX_POINTS = 256
 DEFAULT_CURVE_TYPE = {
     LINE: "POLY", ARC: "BEZIER", ELLIPSE: "BEZIER", RECT: "POLY", POLYLINE: "POLY", POLYGON: "POLY",
@@ -915,6 +954,9 @@ def default_points(shape):
     kind = shape["kind"]
     if kind in (POLYLINE, POLYGON):
         return len(shape["vertices"])
+    if kind == ARC and abs(shape["sweep"]) > math.radians(200.0):
+        # The ends have no handles: wide arcs need more points to stay round.
+        return 5
     return DEFAULT_POINTS[kind]
 
 
@@ -953,14 +995,45 @@ def _polyline_knots(points, cyclic):
     return knots
 
 
+def _ellipse_distance(shape, point):
+    u = (math.cos(shape["angle"]), math.sin(shape["angle"]))
+    dx, dy = point[0] - shape["center"][0], point[1] - shape["center"][1]
+    x, y = dx * u[0] + dy * u[1], -dx * u[1] + dy * u[0]
+    return abs(math.hypot(x / shape["rx"], y / shape["ry"]) - 1.0) * (shape["rx"] + shape["ry"]) / 2.0
+
+
+def _fit_end_handle(shape, end, point, handle, from_end):
+    """Handle of ``point`` facing an arc end that has no handle, with the
+    length that keeps the Bezier segment closest to the arc."""
+    direction = (handle[0] - point[0], handle[1] - point[1])
+    length = math.hypot(*direction)
+    if length <= 1.0e-9:
+        return handle
+    direction = (direction[0] / length, direction[1] / length)
+
+    def worst(scale):
+        h = (point[0] + direction[0] * length * scale, point[1] + direction[1] * length * scale)
+        controls = (end, end, h, point) if from_end else (point, h, end, end)
+        return max(_ellipse_distance(shape, _bezier(*controls, k / 16.0)) for k in range(1, 16))
+
+    low, high = 0.3, 2.5
+    for _step in range(30):
+        m1, m2 = low + (high - low) * 0.382, low + (high - low) * 0.618
+        if worst(m1) <= worst(m2):
+            high = m2
+        else:
+            low = m1
+    scale = (low + high) / 2.0
+    return (point[0] + direction[0] * length * scale, point[1] + direction[1] * length * scale)
+
+
 def shape_knots(shape, count=None):
     """Control points of a shape.
 
     Returns ([(left handle, point, right handle)], cyclic, handle types):
     handle types are (left, right) per point. Ellipses and arcs have aligned
-    handles, except the two ends of an arc, which have automatic handles
-    that follow when the arc is edited; lines and rectangles have sharp
-    corners.
+    handles, except the two ends of an arc, which have none; lines and
+    rectangles have sharp corners.
     """
     kind = shape["kind"]
     count = clamp_points(kind, default_points(shape) if count is None else count, shape)
@@ -997,10 +1070,17 @@ def shape_knots(shape, count=None):
             dx, dy = -shape["rx"] * math.sin(t) * handle, shape["ry"] * math.cos(t) * handle
             d = (u[0] * dx - u[1] * dy, u[1] * dx + u[0] * dy)
             knots.append(((p[0] - d[0], p[1] - d[1]), p, (p[0] + d[0], p[1] + d[1])))
-        # The ends have automatic handles: exact on the arc when it is made,
-        # and they follow when the points are edited.
+        # The ends have no handles. The inner handle next to each end is
+        # lengthened or shortened so the segment still follows the arc.
+        for end, near, side in ((0, 1, 0), (count - 1, count - 2, 2)):
+            p = knots[end][1]
+            knots[end] = (p, p, p)
+            left, point, right = knots[near]
+            handle = left if side == 0 else right
+            fitted = _fit_end_handle(shape, p, point, handle, from_end=(end == 0))
+            knots[near] = (fitted, point, right) if side == 0 else (left, point, fitted)
         types = [(_HANDLE_ALIGN, _HANDLE_ALIGN)] * count
-        types[0] = types[-1] = (_HANDLE_AUTO, _HANDLE_AUTO)
+        types[0] = types[-1] = (_HANDLE_FREE, _HANDLE_FREE)
         return knots, False, types
     c, rx, ry = shape["center"], shape["rx"], shape["ry"]
     u = (math.cos(shape["angle"]), math.sin(shape["angle"]))
@@ -1422,6 +1502,7 @@ class _StrokeWatcher:
         self.rest_since = self.started
         self.point_count = -1
         self.seen_brush = False
+        self.missing_since = None
         self.active = True
         _obj, _layer, drawing = _active_target(context)
         try:
@@ -1469,10 +1550,15 @@ class _StrokeWatcher:
         running = _brush_running(self.window)
         now = time.monotonic()
         if not running:
-            # The brush may not have started yet on the very first tick.
-            if self.seen_brush or now - self.started > 0.5:
+            # The brush may not have started yet on the first ticks, and the
+            # window can briefly list no modal operator while it redraws:
+            # stop only once the brush has been gone for a moment.
+            if self.missing_since is None:
+                self.missing_since = now
+            if now - self.missing_since > (0.15 if self.seen_brush else 0.5):
                 return self.stop()
             return TIMER_STEP_SECONDS
+        self.missing_since = None
         self.seen_brush = True
         if now - self.started > DETECTION_WINDOW_SECONDS:
             # Past the detection window the stroke stays free hand.
