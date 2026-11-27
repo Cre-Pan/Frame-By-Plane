@@ -7778,5 +7778,10 @@
 "Arc": "圆弧",
 "Ellipse": "椭圆",
 "Wheel: points, Alt: precise, Ctrl: snap": "滚轮：点数，Alt：精确，Ctrl：吸附",
-"Wheel: points, Shift: precise, Ctrl: snap": "滚轮：点数，Shift：精确，Ctrl：吸附"
+"Wheel: points, Shift: precise, Ctrl: snap": "滚轮：点数，Shift：精确，Ctrl：吸附",
+"Shape the stroke becomes, when it could be more than one": "笔画可能对应多种形状时所变成的形状",
+"Straight line": "直线",
+"Circular arc": "圆弧",
+"Ellipse or circle": "椭圆或圆",
+"Rectangle or square": "矩形或正方形"
 }

@@ -7633,5 +7633,10 @@
 "Arc": "Bogen",
 "Ellipse": "Ellipse",
 "Wheel: points, Alt: precise, Ctrl: snap": "Mausrad: Punkte, Alt: präzise, Strg: einrasten",
-"Wheel: points, Shift: precise, Ctrl: snap": "Mausrad: Punkte, Shift: präzise, Strg: einrasten"
+"Wheel: points, Shift: precise, Ctrl: snap": "Mausrad: Punkte, Shift: präzise, Strg: einrasten",
+"Shape the stroke becomes, when it could be more than one": "Form, zu der der Strich wird, wenn mehrere möglich sind",
+"Straight line": "Gerade Linie",
+"Circular arc": "Kreisbogen",
+"Ellipse or circle": "Ellipse oder Kreis",
+"Rectangle or square": "Rechteck oder Quadrat"
 }

@@ -1841,7 +1841,7 @@ class FBP_AddonPreferences(AddonPreferences):
             ('ALT', "Alt", "Hold Alt for slower, precise movement. Shift keeps its native use and never shows the stabilizer string over the shape"),
             ('SHIFT', "Shift", "Hold Shift for slower, precise movement. Blender also shows the red stabilizer string while Shift is held"),
         ),
-        default='ALT',
+        default='SHIFT',
     )
     gp_quick_shape_precision: FloatProperty(
         name="Quick Shape Precision",

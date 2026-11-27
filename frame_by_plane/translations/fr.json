@@ -7644,5 +7644,10 @@
 "Ellipse": "Ellipse",
 "Rectangle": "Rectangle",
 "Wheel: points, Alt: precise, Ctrl: snap": "Molette : points, Alt : précis, Ctrl : aimanter",
-"Wheel: points, Shift: precise, Ctrl: snap": "Molette : points, Maj : précis, Ctrl : aimanter"
+"Wheel: points, Shift: precise, Ctrl: snap": "Molette : points, Maj : précis, Ctrl : aimanter",
+"Shape the stroke becomes, when it could be more than one": "Forme que prend le trait, quand plusieurs sont possibles",
+"Straight line": "Ligne droite",
+"Circular arc": "Arc de cercle",
+"Ellipse or circle": "Ellipse ou cercle",
+"Rectangle or square": "Rectangle ou carré"
 }

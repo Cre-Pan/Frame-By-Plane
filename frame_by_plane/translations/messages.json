@@ -8154,5 +8154,10 @@
  "Arc",
  "Ellipse",
  "Wheel: points, Alt: precise, Ctrl: snap",
- "Wheel: points, Shift: precise, Ctrl: snap"
+ "Wheel: points, Shift: precise, Ctrl: snap",
+ "Shape the stroke becomes, when it could be more than one",
+ "Straight line",
+ "Circular arc",
+ "Ellipse or circle",
+ "Rectangle or square"
 ]

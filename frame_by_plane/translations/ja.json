@@ -7776,5 +7776,10 @@
 "Arc": "円弧",
 "Ellipse": "楕円",
 "Wheel: points, Alt: precise, Ctrl: snap": "ホイール: 点の数、Alt: 精密、Ctrl: スナップ",
-"Wheel: points, Shift: precise, Ctrl: snap": "ホイール: 点の数、Shift: 精密、Ctrl: スナップ"
+"Wheel: points, Shift: precise, Ctrl: snap": "ホイール: 点の数、Shift: 精密、Ctrl: スナップ",
+"Shape the stroke becomes, when it could be more than one": "複数の可能性があるときにストロークがなる形",
+"Straight line": "直線",
+"Circular arc": "円弧",
+"Ellipse or circle": "楕円または円",
+"Rectangle or square": "長方形または正方形"
 }

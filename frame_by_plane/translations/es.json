@@ -7673,5 +7673,10 @@
 "Arc": "Arco",
 "Ellipse": "Elipse",
 "Wheel: points, Alt: precise, Ctrl: snap": "Rueda: puntos, Alt: preciso, Ctrl: ajustar",
-"Wheel: points, Shift: precise, Ctrl: snap": "Rueda: puntos, Shift: preciso, Ctrl: ajustar"
+"Wheel: points, Shift: precise, Ctrl: snap": "Rueda: puntos, Shift: preciso, Ctrl: ajustar",
+"Shape the stroke becomes, when it could be more than one": "Forma en la que se convierte el trazo, cuando podría ser más de una",
+"Straight line": "Línea recta",
+"Circular arc": "Arco de circunferencia",
+"Ellipse or circle": "Elipse o círculo",
+"Rectangle or square": "Rectángulo o cuadrado"
 }

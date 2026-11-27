@@ -63,7 +63,7 @@ try:
     assert abs(hold - 0.4) < 1.0e-6
     assert snap == 15.0
     assert abs(precision - 0.25) < 1.0e-6
-    assert quick.quick_shape_precision_key(bpy.context) == "ALT"
+    assert quick.quick_shape_precision_key(bpy.context) == "SHIFT"
     assert quick.DETECTION_WINDOW_SECONDS == 10.0
 
     # 6. The operator never runs outside Grease Pencil Draw mode.
@@ -95,15 +95,83 @@ try:
     for kind, path in ((quick.LINE, wobbly), (quick.ELLIPSE, ellipse_path), (quick.RECT, rect_path), (quick.ARC, arc_path)):
         shape = quick.recognize_shape(path)
         for count in (quick.DEFAULT_POINTS[kind], quick.DEFAULT_POINTS[kind] + quick.points_step(kind) * 2):
-            knots, cyclic, smooth = quick.shape_knots(shape, count)
-            assert len(knots) == count, (kind, count, len(knots))
-            assert cyclic == (kind in (quick.ELLIPSE, quick.RECT)) and smooth == (kind in (quick.ELLIPSE, quick.ARC))
+            knots, cyclic, handle_types = quick.shape_knots(shape, count)
+            assert len(knots) == count and len(handle_types) == count, (kind, count, len(knots))
+            assert cyclic == (kind in (quick.ELLIPSE, quick.RECT))
+            aligned = [t == (quick._HANDLE_ALIGN, quick._HANDLE_ALIGN) for t in handle_types]
+            if kind == quick.ELLIPSE:
+                assert all(aligned)
+            elif kind == quick.ARC:
+                # Inner points aligned; the two ends have no outer handle.
+                assert not aligned[0] and not aligned[-1] and all(aligned[1:-1])
+                assert knots[0][0] == knots[0][1] and knots[-1][2] == knots[-1][1]
+                assert knots[0][2] != knots[0][1] and knots[-1][0] != knots[-1][1]
+            else:
+                assert not any(aligned)
     # Ellipse points lie on the ellipse; Ctrl turns it into a circle.
     shape = quick.recognize_shape(ellipse_path)
     circle = quick.transform_shape(shape, 0.0, 1.0, 15.0)
     assert abs(circle["rx"] - circle["ry"]) < 1.0e-9
     for _left, point, _right in quick.shape_knots(circle, 6)[0]:
         assert abs(math.hypot(point[0] - circle["center"][0], point[1] - circle["center"][1]) - circle["rx"]) < 1.0e-6
+
+    # 8b. The shape starts where the stroke started.
+    for start_degrees in (0.0, 37.0, 140.0, 255.0):
+        for direction in (1.0, -1.0):
+            path = []
+            for k in range(61):
+                a = math.radians(start_degrees) + direction * k / 60.0 * 2.0 * math.pi
+                path.append((300.0 + 110.0 * math.cos(a), 250.0 + 70.0 * math.sin(a)))
+            shape = quick.recognize_shape(path)
+            assert shape["kind"] == quick.ELLIPSE, (start_degrees, shape)
+            first = quick.shape_knots(shape, 4)[0][0][1]
+            assert math.hypot(first[0] - path[0][0], first[1] - path[0][1]) < 4.0, (start_degrees, direction, first, path[0])
+            second = quick.shape_knots(shape, 16)[0][1][1]
+            assert math.hypot(second[0] - path[4][0], second[1] - path[4][1]) < 12.0, (start_degrees, direction, second)
+    corners = [(0, 0), (120, 0), (120, 80), (0, 80)]
+    for first_corner in range(4):
+        for direction in (1, -1):
+            order = [corners[(first_corner + direction * i) % 4] for i in range(5)]
+            path = []
+            for (x0, y0), (x1, y1) in zip(order, order[1:]):
+                path += [(x0 + (x1 - x0) * k / 10.0, y0 + (y1 - y0) * k / 10.0) for k in range(10)]
+            path.append(order[0])
+            shape = quick.recognize_shape(path)
+            assert shape["kind"] == quick.RECT, shape
+            knots = [k[1] for k in quick.shape_knots(shape, 4)[0]]
+            assert math.hypot(knots[0][0] - order[0][0], knots[0][1] - order[0][1]) < 2.0, (order, knots)
+            assert math.hypot(knots[1][0] - order[1][0], knots[1][1] - order[1][1]) < 2.0, (order, knots)
+    # Overshooting where a rectangle closes does not push its side out.
+    overshoot = list(rect_path) + [(2.0 - k * 2.0, 1.0) for k in range(1, 6)]
+    shape = quick.recognize_shape(overshoot)
+    assert shape["kind"] == quick.RECT and abs(shape["rx"] - 60.0) < 2.0 and abs(shape["ry"] - 40.0) < 2.0, shape
+
+    # 8c. Arcs in every direction, with a shaky start, and the Line/Arc choice.
+    import random
+    rng = random.Random(7)
+    for start_degrees in (0.0, 90.0, 180.0, 270.0, 45.0):
+        for direction in (1.0, -1.0):
+            for sweep_degrees in (70.0, 120.0, 200.0):
+                path = []
+                for k in range(41):
+                    a = math.radians(start_degrees) + direction * math.radians(sweep_degrees) * k / 40.0
+                    jitter = rng.uniform(-1.5, 1.5) if 0 < k < 40 else 0.0
+                    path.append((400.0 + (120.0 + jitter) * math.cos(a), 300.0 + (120.0 + jitter) * math.sin(a)))
+                # Pen landing: a small hook backwards at the start.
+                path.insert(1, (path[0][0] - (path[1][0] - path[0][0]) * 0.5, path[0][1] - (path[1][1] - path[0][1]) * 0.5))
+                kinds = [s["kind"] for s in quick.recognize_shapes(path)]
+                assert kinds and kinds[0] == quick.ARC, (start_degrees, direction, sweep_degrees, kinds)
+                arc = quick.recognize_shape(path)
+                assert abs(arc["radius"] - 120.0) < 6.0, arc
+                assert abs(abs(arc["sweep"]) - math.radians(sweep_degrees)) < 0.1, arc
+                assert (arc["sweep"] > 0.0) == (direction > 0.0), arc
+    # A gently bowed stroke is a line that also offers the arc, both ways.
+    for flip in (1.0, -1.0):
+        bowed = [(400.0 - flip * (200.0 - 4.0 * k), 300.0 + 10.0 * math.sin(k / 100.0 * math.pi)) for k in range(101)]
+        kinds = [s["kind"] for s in quick.recognize_shapes(bowed)]
+        assert set(kinds) == {quick.LINE, quick.ARC}, kinds
+    # A clean straight line offers only the line.
+    assert [s["kind"] for s in quick.recognize_shapes([(i * 5.0, 2.0 * i) for i in range(50)])] == [quick.LINE]
 
     # 9. The Quick Shape operator rewrites the stroke with exactly its points,
     #    keeps material and draw order, and the curve type is selectable.
@@ -143,6 +211,26 @@ try:
             position = point.position
             assert abs(math.hypot(position[0], position[1]) - 0.5) < 1.0e-5, tuple(position)
             assert abs(point.radius - 0.02) < 1.0e-6
+
+    # 10. Line or arc: the panel switches shape and resets points and type.
+    drawing = layer.frames[0].drawing
+    line = {"kind": quick.LINE, "start": [0.2, 1.0], "end": [1.8, 1.0]}
+    arc = {"kind": quick.ARC, "center": [1.0, 0.4], "radius": 1.0, "start_angle": math.atan2(0.6, -0.8), "sweep": -2.0 * math.atan2(0.6, -0.8) + math.pi}
+    choice = dict(data, shape=line, shapes=[line, arc])
+    result = bpy.ops.fbp.gp_quick_shape_apply(points=2, curve_type="POLY", kind="LINE", last_kind="LINE", data=json.dumps(choice))
+    assert result == {"FINISHED"} and len(layer.frames[0].drawing.strokes[1].points) == 2
+    drawing = layer.frames[0].drawing
+    drawing.resize_strokes(sizes=[12], indices=[1])
+    result = bpy.ops.fbp.gp_quick_shape_apply(points=2, curve_type="POLY", kind="ARC", last_kind="LINE", data=json.dumps(choice))
+    assert result == {"FINISHED"}, result
+    stroke = layer.frames[0].drawing.strokes[1]
+    assert len(stroke.points) == 3 and stroke.curve_type == 2 and not stroke.cyclic, (len(stroke.points), stroke.curve_type)
+    attributes = layer.frames[0].drawing.attributes
+    first = int(layer.frames[0].drawing.curve_offsets[1].value)
+    left_types = [attributes["handle_type_left"].data[first + i].value for i in range(3)]
+    assert left_types == [quick._HANDLE_FREE, quick._HANDLE_ALIGN, quick._HANDLE_FREE], left_types
+    start_left = attributes["handle_left"].data[first].vector
+    assert (start_left - stroke.points[0].position).length < 1.0e-6
 
     print("FBPTEST gp quick shape: PASS")
 except Exception:
