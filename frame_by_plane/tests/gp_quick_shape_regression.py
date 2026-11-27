@@ -82,9 +82,13 @@ try:
     assert shape and shape["kind"] == quick.RECT, shape
     arc_path = [(100.0 * math.cos(math.pi - a / 30.0 * math.pi), 100.0 * math.sin(math.pi - a / 30.0 * math.pi)) for a in range(31)]
     shape = quick.recognize_shape(arc_path)
-    assert shape and shape["kind"] == quick.ARC and abs(shape["radius"] - 100.0) < 1.0, shape
-    zigzag = [(i * 10.0, 40.0 if (i // 3) % 2 else 0.0) for i in range(30)]
-    assert quick.recognize_shape(zigzag) is None
+    assert shape and shape["kind"] == quick.ARC and abs(shape["rx"] - 100.0) < 1.0 and abs(shape["ry"] - 100.0) < 1.0, shape
+    import random as _random
+    scribble_rng = _random.Random(11)
+    scribble = [(200.0, 200.0)]
+    for _i in range(60):
+        scribble.append((scribble[-1][0] + scribble_rng.uniform(-25, 30), scribble[-1][1] + scribble_rng.uniform(-30, 30)))
+    assert quick.recognize_shape(scribble) is None, quick.recognize_shape(scribble)
     assert quick.recognize_shape(wobbly)["kind"] == quick.LINE
 
     # 8. Point counts: defaults, wheel steps and limits.
@@ -102,10 +106,9 @@ try:
             if kind == quick.ELLIPSE:
                 assert all(aligned)
             elif kind == quick.ARC:
-                # Inner points aligned; the two ends have no outer handle.
-                assert not aligned[0] and not aligned[-1] and all(aligned[1:-1])
-                assert knots[0][0] == knots[0][1] and knots[-1][2] == knots[-1][1]
-                assert knots[0][2] != knots[0][1] and knots[-1][0] != knots[-1][1]
+                # Inner points aligned; the two ends have automatic handles.
+                assert all(aligned[1:-1])
+                assert handle_types[0] == handle_types[-1] == (quick._HANDLE_AUTO, quick._HANDLE_AUTO)
             else:
                 assert not any(aligned)
     # Ellipse points lie on the ellipse; Ctrl turns it into a circle.
@@ -162,7 +165,7 @@ try:
                 kinds = [s["kind"] for s in quick.recognize_shapes(path)]
                 assert kinds and kinds[0] == quick.ARC, (start_degrees, direction, sweep_degrees, kinds)
                 arc = quick.recognize_shape(path)
-                assert abs(arc["radius"] - 120.0) < 6.0, arc
+                assert abs(arc["rx"] - 120.0) < 6.0 and abs(arc["ry"] - 120.0) < 6.0, arc
                 assert abs(abs(arc["sweep"]) - math.radians(sweep_degrees)) < 0.1, arc
                 assert (arc["sweep"] > 0.0) == (direction > 0.0), arc
     # A gently bowed stroke is a line that also offers the arc, both ways.
@@ -172,6 +175,68 @@ try:
         assert set(kinds) == {quick.LINE, quick.ARC}, kinds
     # A clean straight line offers only the line.
     assert [s["kind"] for s in quick.recognize_shapes([(i * 5.0, 2.0 * i) for i in range(50)])] == [quick.LINE]
+
+    # 8d. Hand-drawn lines with a slight bow or a landing hook stay lines.
+    for flip in (1.0, -1.0):
+        for bow in (6.0, 12.0):
+            path = [(400.0 - flip * (250.0 - 5.0 * k), 300.0 + bow * math.sin(k / 100.0 * math.pi) + (1.0 if k % 3 else -1.0)) for k in range(101)]
+            path[0:0] = [(path[0][0] - flip * 12.0, path[0][1] - 10.0), (path[0][0] - flip * 5.0, path[0][1] - 3.0)]
+            kinds = [s["kind"] for s in quick.recognize_shapes(path)]
+            assert kinds[0] == quick.LINE, (flip, bow, kinds)
+
+    # 8e. Elliptical arcs: deep U shapes and flat arcs a circle cannot follow.
+    for direction in (1.0, -1.0):
+        for rx, ry, sweep in ((70.0, 160.0, 200.0), (180.0, 60.0, 160.0), (60.0, 150.0, 230.0)):
+            path = []
+            for k in range(81):
+                t = math.radians(-10.0) + direction * math.radians(sweep) * k / 80.0
+                path.append((400.0 + rx * math.cos(t) + rng.uniform(-1, 1), 300.0 + ry * math.sin(t) + rng.uniform(-1, 1)))
+            shapes = quick.recognize_shapes(path)
+            arc = shapes[0]
+            assert arc["kind"] == quick.ARC, (rx, ry, sweep, [s["kind"] for s in shapes])
+            assert abs(max(arc["rx"], arc["ry"]) - max(rx, ry)) < 8.0 and abs(min(arc["rx"], arc["ry"]) - min(rx, ry)) < 8.0, arc
+            assert abs(abs(arc["sweep"]) - math.radians(sweep)) < 0.15, arc
+            knots = quick.shape_knots(arc, 3)[0]
+            assert math.hypot(knots[0][1][0] - path[0][0], knots[0][1][1] - path[0][1]) < 6.0
+            assert math.hypot(knots[-1][1][0] - path[-1][0], knots[-1][1][1] - path[-1][1]) < 6.0
+            # The Bezier knots follow the ellipse.
+            for (l0, p0, r0), (l1, p1, r1) in zip(knots, knots[1:]):
+                mid = quick._bezier(p0, r0, l1, p1, 0.5)
+                t = quick._ellipse_param(arc, mid)
+                on = quick._ellipse_at(arc, t)
+                assert math.hypot(mid[0] - on[0], mid[1] - on[1]) < 3.0
+
+    # 8f. Polylines: a point only at each change of direction.
+    for corners_in in (
+        [(100, 100), (200, 300), (300, 100), (400, 300), (500, 100)],
+        [(100, 100), (300, 120), (180, 300)],
+        [(500, 100), (380, 260), (260, 90), (120, 240)],
+    ):
+        path = []
+        for (x0, y0), (x1, y1) in zip(corners_in, corners_in[1:]):
+            path += [(x0 + (x1 - x0) * k / 25.0 + rng.uniform(-1.5, 1.5), y0 + (y1 - y0) * k / 25.0 + rng.uniform(-1.5, 1.5)) for k in range(25)]
+        path.append(corners_in[-1])
+        shapes = quick.recognize_shapes(path)
+        assert shapes and shapes[0]["kind"] == quick.POLYLINE, (corners_in, [s["kind"] for s in shapes])
+        vertices = shapes[0]["vertices"]
+        assert len(vertices) == len(corners_in), vertices
+        for got, want in zip(vertices, corners_in):
+            assert math.hypot(got[0] - want[0], got[1] - want[1]) < 6.0, (got, want)
+        knots, cyclic, _types = quick.shape_knots(shapes[0])
+        assert len(knots) == len(corners_in) and not cyclic
+        segments = len(corners_in) - 1
+        assert quick.points_step(quick.POLYLINE, shapes[0]) == segments
+        assert len(quick.shape_knots(shapes[0], len(corners_in) + segments)[0]) == len(corners_in) + segments
+    # A triangle is a polygon.
+    tri = [(100, 100), (300, 110), (190, 290)]
+    path = []
+    for (x0, y0), (x1, y1) in zip(tri, tri[1:] + tri[:1]):
+        path += [(x0 + (x1 - x0) * k / 30.0, y0 + (y1 - y0) * k / 30.0) for k in range(30)]
+    path.append((102, 103))
+    shapes = quick.recognize_shapes(path)
+    assert shapes[0]["kind"] == quick.POLYGON and len(shapes[0]["vertices"]) == 3, [s["kind"] for s in shapes]
+    # Smooth arcs are not polylines.
+    assert quick.recognize_shape(arc_path)["kind"] == quick.ARC
 
     # 9. The Quick Shape operator rewrites the stroke with exactly its points,
     #    keeps material and draw order, and the curve type is selectable.
@@ -215,7 +280,7 @@ try:
     # 10. Line or arc: the panel switches shape and resets points and type.
     drawing = layer.frames[0].drawing
     line = {"kind": quick.LINE, "start": [0.2, 1.0], "end": [1.8, 1.0]}
-    arc = {"kind": quick.ARC, "center": [1.0, 0.4], "radius": 1.0, "start_angle": math.atan2(0.6, -0.8), "sweep": -2.0 * math.atan2(0.6, -0.8) + math.pi}
+    arc = {"kind": quick.ARC, "center": [1.0, 0.4], "rx": 1.0, "ry": 1.0, "angle": 0.0, "t0": math.atan2(0.6, -0.8), "sweep": -2.0 * math.atan2(0.6, -0.8) + math.pi}
     choice = dict(data, shape=line, shapes=[line, arc])
     result = bpy.ops.fbp.gp_quick_shape_apply(points=2, curve_type="POLY", kind="LINE", last_kind="LINE", data=json.dumps(choice))
     assert result == {"FINISHED"} and len(layer.frames[0].drawing.strokes[1].points) == 2
@@ -228,9 +293,7 @@ try:
     attributes = layer.frames[0].drawing.attributes
     first = int(layer.frames[0].drawing.curve_offsets[1].value)
     left_types = [attributes["handle_type_left"].data[first + i].value for i in range(3)]
-    assert left_types == [quick._HANDLE_FREE, quick._HANDLE_ALIGN, quick._HANDLE_FREE], left_types
-    start_left = attributes["handle_left"].data[first].vector
-    assert (start_left - stroke.points[0].position).length < 1.0e-6
+    assert left_types == [quick._HANDLE_AUTO, quick._HANDLE_ALIGN, quick._HANDLE_AUTO], left_types
 
     print("FBPTEST gp quick shape: PASS")
 except Exception:

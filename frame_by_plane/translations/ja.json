@@ -7761,7 +7761,6 @@
 "Hold Shift for slower, precise movement. Blender also shows the red stabilizer string while Shift is held": "Shift を押すと遅く正確に動きます。Shift を押している間は Blender が赤いスタビライザーの糸も表示します",
 "Precision": "精度",
 "Alt": "Alt",
-"Draw with the brush; rest the pen at the end of a line, arc, ellipse or rectangle to turn it into a clean shape (wheel: points, Alt or Shift: precise, Ctrl: snap)": "ブラシで描画。線・円弧・楕円・長方形の終点で止めるときれいな図形になります（ホイール: 点の数、Alt または Shift: 精密、Ctrl: スナップ）",
 "Turn the stroke just drawn into a clean Quick Shape": "描いたばかりのストロークをきれいなクイックシェイプにします",
 "Points": "点",
 "Number of points of the shape. Rectangles keep the same number on each side": "図形の点の数。長方形は各辺に同じ数の点を持ちます",
@@ -7781,5 +7780,9 @@
 "Straight line": "直線",
 "Circular arc": "円弧",
 "Ellipse or circle": "楕円または円",
-"Rectangle or square": "長方形または正方形"
+"Rectangle or square": "長方形または正方形",
+"Draw with the brush; rest the pen at the end of a line, arc, ellipse, rectangle or polyline to turn it into a clean shape (wheel: points, Shift or Alt: precise, Ctrl: snap)": "ブラシで描画。線・円弧・楕円・長方形・折れ線の終点でペンを止めると、きれいな図形になります（ホイール: 点数、Shift または Alt: 精密、Ctrl: スナップ）",
+"Quick Shape: the shape follows the cursor until release": "Quick Shape: 離すまで図形がカーソルに追従します",
+"Straight segments with a point at each change of direction": "方向が変わるところにだけ点を持つ直線の線分",
+"Closed shape of straight sides": "直線の辺で閉じた形"
 }

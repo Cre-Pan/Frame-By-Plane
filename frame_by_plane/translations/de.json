@@ -7617,7 +7617,6 @@
 "Hold Shift for slower, precise movement. Blender also shows the red stabilizer string while Shift is held": "Shift halten für langsamere, präzise Bewegung. Solange Shift gedrückt ist, zeigt Blender auch den roten Stabilisator-Faden",
 "Precision": "Präzision",
 "Alt": "Alt",
-"Draw with the brush; rest the pen at the end of a line, arc, ellipse or rectangle to turn it into a clean shape (wheel: points, Alt or Shift: precise, Ctrl: snap)": "Mit dem Pinsel zeichnen; am Ende einer Linie, eines Bogens, einer Ellipse oder eines Rechtecks ruhen, um eine saubere Form zu erhalten (Mausrad: Punkte, Alt oder Shift: präzise, Strg: einrasten)",
 "Turn the stroke just drawn into a clean Quick Shape": "Den gerade gezeichneten Strich in eine saubere Quick Shape verwandeln",
 "Points": "Punkte",
 "Number of points of the shape. Rectangles keep the same number on each side": "Anzahl der Punkte der Form. Rechtecke haben auf jeder Seite gleich viele Punkte",
@@ -7638,5 +7637,9 @@
 "Straight line": "Gerade Linie",
 "Circular arc": "Kreisbogen",
 "Ellipse or circle": "Ellipse oder Kreis",
-"Rectangle or square": "Rechteck oder Quadrat"
+"Rectangle or square": "Rechteck oder Quadrat",
+"Draw with the brush; rest the pen at the end of a line, arc, ellipse, rectangle or polyline to turn it into a clean shape (wheel: points, Shift or Alt: precise, Ctrl: snap)": "Mit dem Pinsel zeichnen; den Stift am Ende einer Linie, eines Bogens, einer Ellipse, eines Rechtecks oder eines Linienzugs ruhig halten, um daraus eine saubere Form zu machen (Mausrad: Punkte, Shift oder Alt: präzise, Strg: einrasten)",
+"Quick Shape: the shape follows the cursor until release": "Quick Shape: Die Form folgt dem Cursor bis zum Loslassen",
+"Straight segments with a point at each change of direction": "Gerade Segmente mit einem Punkt bei jedem Richtungswechsel",
+"Closed shape of straight sides": "Geschlossene Form mit geraden Seiten"
 }

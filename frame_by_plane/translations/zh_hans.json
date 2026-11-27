@@ -7763,7 +7763,6 @@
 "Hold Shift for slower, precise movement. Blender also shows the red stabilizer string while Shift is held": "按住 Shift 可更慢更精确地移动。按住 Shift 时 Blender 还会显示红色的稳定器线",
 "Precision": "精度",
 "Alt": "Alt",
-"Draw with the brush; rest the pen at the end of a line, arc, ellipse or rectangle to turn it into a clean shape (wheel: points, Alt or Shift: precise, Ctrl: snap)": "用笔刷绘制；在直线、圆弧、椭圆或矩形末端停顿即可变为干净的形状（滚轮：点数，Alt 或 Shift：精确，Ctrl：吸附）",
 "Turn the stroke just drawn into a clean Quick Shape": "将刚画的笔画变为干净的快速形状",
 "Points": "点",
 "Number of points of the shape. Rectangles keep the same number on each side": "形状的点数。矩形每条边的点数相同",
@@ -7783,5 +7782,9 @@
 "Straight line": "直线",
 "Circular arc": "圆弧",
 "Ellipse or circle": "椭圆或圆",
-"Rectangle or square": "矩形或正方形"
+"Rectangle or square": "矩形或正方形",
+"Draw with the brush; rest the pen at the end of a line, arc, ellipse, rectangle or polyline to turn it into a clean shape (wheel: points, Shift or Alt: precise, Ctrl: snap)": "用笔刷绘制；在直线、圆弧、椭圆、矩形或折线的末端停住笔，即可变成规整的形状（滚轮：点数，Shift 或 Alt：精确，Ctrl：吸附）",
+"Quick Shape: the shape follows the cursor until release": "Quick Shape：形状跟随光标直到松开",
+"Straight segments with a point at each change of direction": "只在方向改变处有点的直线段",
+"Closed shape of straight sides": "由直边组成的闭合形状"
 }

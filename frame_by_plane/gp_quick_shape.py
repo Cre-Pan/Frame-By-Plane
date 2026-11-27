@@ -171,11 +171,14 @@ MIN_SHAPE_PX = 24.0
 # the shape's size, above which the stroke stays free hand.
 CLOSED_FIT_RATIO = 0.09
 ARC_FIT_RATIO = 0.07
+ELLIPSE_ARC_FIT_RATIO = 0.06
 ARC_MAX_SWEEP = math.radians(300.0)
 
 LINE, ARC, ELLIPSE, RECT = "LINE", "ARC", "ELLIPSE", "RECT"
+POLYLINE, POLYGON = "POLYLINE", "POLYGON"
 # Handle types stored in ``handle_type_left/right`` (Blender's HD_FREE, HD_ALIGN).
 _HANDLE_FREE = 0
+_HANDLE_AUTO = 1
 _HANDLE_ALIGN = 3
 
 
@@ -444,7 +447,29 @@ def _arc_error(points, start, end, bulge):
     return sum(abs(_dist(center, p) - radius) for p in points) / float(len(points))
 
 
-def fit_arc(points):
+def _ellipse_param(shape, point):
+    """Parameter of ``point`` on an ellipse or elliptical arc."""
+    u = (math.cos(shape["angle"]), math.sin(shape["angle"]))
+    dx, dy = point[0] - shape["center"][0], point[1] - shape["center"][1]
+    return math.atan2((dx * -u[1] + dy * u[0]) / shape["ry"], (dx * u[0] + dy * u[1]) / shape["rx"])
+
+
+def _arc_moves_forward(shape, points):
+    """Every point moves forward along the arc (no back and forth), and the
+    path stays within the arc's ends."""
+    sweep = abs(shape["sweep"])
+    turn = 1.0 if shape["sweep"] >= 0.0 else -1.0
+    t0 = shape["t0"]
+    previous = 0.0
+    for p in points[1:]:
+        current = ((_ellipse_param(shape, p) - t0) * turn + 0.6) % (2.0 * math.pi) - 0.6
+        if current > sweep + 0.4 or current + 0.4 < previous:
+            return False
+        previous = max(previous, current)
+    return True
+
+
+def fit_circle_arc(points):
     """Circular arc from the start to the end of an open path.
 
     Returns (shape, mean distance, bulge in pixels) or (None, inf, 0). The
@@ -489,15 +514,68 @@ def fit_arc(points):
     # Bulging to the right of start->end means turning left (counterclockwise).
     turn = 1.0 if bulge < 0.0 else -1.0
     a0 = math.atan2(start[1] - center[1], start[0] - center[0])
-    # Every point must move forward along the arc (no back and forth).
-    previous = 0.0
-    for p in pts[1:]:
-        current = ((math.atan2(p[1] - center[1], p[0] - center[0]) - a0) * turn + 0.6) % (2.0 * math.pi) - 0.6
-        if current > sweep + 0.4 or current + 0.4 < previous:
-            return failed
-        previous = max(previous, current)
-    shape = {"kind": ARC, "center": center, "radius": radius, "start_angle": a0, "sweep": sweep * turn}
+    shape = {
+        "kind": ARC, "center": center, "rx": radius, "ry": radius, "angle": 0.0,
+        "t0": a0, "sweep": sweep * turn,
+    }
+    if not _arc_moves_forward(shape, pts):
+        return failed
     return shape, error, abs(bulge)
+
+
+def fit_ellipse_arc(points):
+    """Arc of an ellipse along an open path: (shape, mean distance) or (None, inf).
+
+    For arcs a circle cannot follow: deep U shapes, flattened or stretched
+    curves. The arc ends where the stroke's ends fall on the ellipse.
+    """
+    failed = (None, float("inf"))
+    if len(points) < 8 or _dist(points[0], points[-1]) < MIN_SHAPE_PX:
+        return failed
+    pts = resample_path(points)
+    conic = _conic_ellipse(pts)
+    if conic is None:
+        return failed
+    center, rx, ry, angle = conic
+    diagonal = _bbox_diagonal(pts)
+    # Nearly straight strokes fit huge, thin ellipses: not an arc.
+    if min(rx, ry) < MIN_SHAPE_PX / 2.0 or max(rx, ry) > 1.5 * diagonal or max(rx, ry) > 6.0 * min(rx, ry):
+        return failed
+    shape = {"kind": ARC, "center": center, "rx": rx, "ry": ry, "angle": angle, "t0": 0.0, "sweep": 0.0}
+    params = [_ellipse_param(shape, p) for p in pts]
+    unwrapped = [params[0]]
+    for value in params[1:]:
+        delta = (value - unwrapped[-1] + math.pi) % (2.0 * math.pi) - math.pi
+        unwrapped.append(unwrapped[-1] + delta)
+    sweep = unwrapped[-1] - unwrapped[0]
+    if not math.radians(20.0) <= abs(sweep) <= ARC_MAX_SWEEP:
+        return failed
+    shape["t0"], shape["sweep"] = unwrapped[0], sweep
+    if not _arc_moves_forward(shape, pts):
+        return failed
+    error = _ellipse_error(pts, center, rx, ry, angle)
+    if error > ELLIPSE_ARC_FIT_RATIO * math.sqrt(rx * ry):
+        return failed
+    return shape, error
+
+
+def fit_arc(points):
+    """Best arc (circular, or elliptical when a circle cannot follow).
+
+    Returns (shape, mean distance, bulge in pixels) or (None, inf, 0).
+    """
+    circle, circle_error, bulge = fit_circle_arc(points)
+    ellipse, ellipse_error = fit_ellipse_arc(points)
+    if ellipse is not None and (
+        circle is None
+        or (ellipse_error < 0.6 * circle_error and max(ellipse["rx"], ellipse["ry"]) > 1.15 * min(ellipse["rx"], ellipse["ry"]))
+    ):
+        start, end = points[0], points[-1]
+        chord = max(_dist(start, end), 1.0e-6)
+        middle = _arc_point(ellipse, 0.5)
+        bulge = abs((middle[0] - start[0]) * -(end[1] - start[1]) + (middle[1] - start[1]) * (end[0] - start[0])) / chord
+        return ellipse, ellipse_error, bulge
+    return circle, circle_error, bulge
 
 
 def _line_error(points):
@@ -510,10 +588,165 @@ def _line_error(points):
     return sum(abs((p[0] - start[0]) * dy - (p[1] - start[1]) * dx) for p in pts) / float(len(pts))
 
 
+# -- polylines and polygons --------------------------------------------------
+
+POLY_MIN_TURN = math.radians(28.0)
+POLY_FIT_RATIO = 0.02
+POLY_MAX_CORNERS = 12
+
+
+def _rdp(points, first, last, tolerance, keep):
+    a, b = points[first], points[last]
+    length = _dist(a, b)
+    worst, index = 0.0, None
+    for i in range(first + 1, last):
+        p = points[i]
+        if length > 0.0:
+            d = abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) / length
+        else:
+            d = _dist(p, a)
+        if d > worst:
+            worst, index = d, i
+    if index is not None and worst > tolerance:
+        _rdp(points, first, index, tolerance, keep)
+        keep.append(index)
+        _rdp(points, index, last, tolerance, keep)
+
+
+def _turn(a, b, c):
+    """Change of direction at b, in radians (0 = straight on)."""
+    d1 = math.atan2(b[1] - a[1], b[0] - a[0])
+    d2 = math.atan2(c[1] - b[1], c[0] - b[0])
+    return abs((d2 - d1 + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+def _fit_line(points):
+    """(point, unit direction) of the best line through points."""
+    n = float(len(points))
+    mx = sum(p[0] for p in points) / n
+    my = sum(p[1] for p in points) / n
+    sxx = sum((p[0] - mx) ** 2 for p in points)
+    syy = sum((p[1] - my) ** 2 for p in points)
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in points)
+    angle = 0.5 * math.atan2(2.0 * sxy, sxx - syy)
+    return (mx, my), (math.cos(angle), math.sin(angle))
+
+
+def _intersect(line_a, line_b):
+    (p, d), (q, e) = line_a, line_b
+    den = d[0] * e[1] - d[1] * e[0]
+    if abs(den) < 0.15:  # nearly parallel
+        return None
+    t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / den
+    return (p[0] + d[0] * t, p[1] + d[1] * t)
+
+
+def _project(line, point):
+    (p, d) = line
+    t = (point[0] - p[0]) * d[0] + (point[1] - p[1]) * d[1]
+    return (p[0] + d[0] * t, p[1] + d[1] * t)
+
+
+def _segment_distance(p, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 <= 0.0 else min(max(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2, 0.0), 1.0)
+    return math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t)
+
+
+def _outline_error(points, vertices, cyclic):
+    segments = list(zip(vertices, vertices[1:] + (vertices[:1] if cyclic else [])))
+    return sum(min(_segment_distance(p, a, b) for a, b in segments) for p in points) / float(len(points))
+
+
+def fit_polyline(points, cyclic=False):
+    """Straight segments with a point only where the direction changes.
+
+    Returns (shape, mean distance) or (None, inf). Corners are where the
+    lines fitted to neighbouring segments cross, so they are sharp even
+    when the drawn corner is rounded.
+    """
+    failed = (None, float("inf"))
+    pts = resample_path(points, 160)
+    if len(pts) < 8:
+        return failed
+    diagonal = _bbox_diagonal(pts)
+    if diagonal < MIN_SHAPE_PX:
+        return failed
+    tolerance = max(4.0, diagonal * 0.035)
+    if cyclic:
+        pts = pts[:-1] if _dist(pts[0], pts[-1]) < 1.0e-6 else pts
+        far = max(range(len(pts)), key=lambda i: _dist(pts[0], pts[i]))
+        keep = [0]
+        _rdp(pts, 0, far, tolerance, keep)
+        keep.append(far)
+        _rdp(pts + [pts[0]], far, len(pts), tolerance, keep)
+        corners = sorted(set(i % len(pts) for i in keep))
+    else:
+        keep = [0]
+        _rdp(pts, 0, len(pts) - 1, tolerance, keep)
+        keep.append(len(pts) - 1)
+        corners = sorted(set(keep))
+    # Drop corners where the direction hardly changes.
+    while True:
+        count = len(corners)
+        candidates = range(count) if cyclic else range(1, count - 1)
+        turns = [
+            (_turn(pts[corners[i - 1]], pts[corners[i]], pts[corners[(i + 1) % count]]), i)
+            for i in candidates
+        ]
+        if not turns:
+            break
+        smallest, index = min(turns)
+        if smallest >= POLY_MIN_TURN or count <= (3 if cyclic else 2):
+            break
+        corners.pop(index)
+    if not 3 <= len(corners) <= POLY_MAX_CORNERS:
+        return failed
+    count = len(corners)
+    spans = [(corners[i], corners[i + 1]) for i in range(count - 1)]
+    if cyclic:
+        spans.append((corners[-1], corners[0] + len(pts)))
+    ring = pts + pts if cyclic else pts
+    lines = []
+    for a, b in spans:
+        segment = ring[a:b + 1]
+        if _path_length(segment) < max(10.0, diagonal * 0.05):
+            return failed
+        # The middle of each segment: drawn corners are often rounded.
+        trim = len(segment) // 6
+        lines.append(_fit_line(segment[trim:len(segment) - trim] if len(segment) - 2 * trim >= 2 else segment))
+    vertices = []
+    if cyclic:
+        for i in range(count):
+            corner = _intersect(lines[i - 1], lines[i])
+            vertices.append(corner if corner is not None else pts[corners[i]])
+    else:
+        vertices.append(_project(lines[0], pts[0]))
+        for i in range(1, count - 1):
+            corner = _intersect(lines[i - 1], lines[i])
+            vertices.append(corner if corner is not None else pts[corners[i]])
+        vertices.append(_project(lines[-1], pts[-1]))
+    # Sharp corners only: the stroke must reach each corner. A rounded
+    # bend (a U, an arc) leaves the crossing of its lines far away.
+    reach = max(6.0, diagonal * 0.04)
+    for corner in (vertices if cyclic else vertices[1:-1]):
+        if min(_dist(corner, p) for p in pts) > reach:
+            return failed
+    error = _outline_error(pts, vertices, cyclic)
+    if error > POLY_FIT_RATIO * diagonal:
+        return failed
+    shape = {"kind": POLYGON if cyclic else POLYLINE, "vertices": vertices}
+    return shape, error
+
+
 # A line that is this much curved (share of its length, and pixels) also
 # offers the arc, and the other way round.
 ARC_CHOICE_RATIO = 0.02
 ARC_CHOICE_MIN_PX = 3.0
+# An arc comes first only when it bulges at least this share of its chord:
+# hand-drawn lines are often slightly bowed.
+ARC_FIRST_RATIO = 0.08
 # Lines that pass this looser test still offer the line next to an arc.
 LOOSE_STRAIGHT_RATIO = 0.2
 
@@ -521,36 +754,53 @@ LOOSE_STRAIGHT_RATIO = 0.2
 def recognize_shapes(points):
     """Shapes a screen path could be, most likely first (empty: free hand).
 
-    When the stroke is between a line and an arc, or between an ellipse and
-    a rectangle, both are returned and the Quick Shape panel offers them.
+    When the stroke is between two shapes (line or arc, arc or polyline,
+    ellipse or rectangle...), both are returned and the Quick Shape panel
+    offers them.
     """
     if len(points) < 2:
         return []
     straight = is_straight_path(points)
+    diagonal = max(_bbox_diagonal(points), 1.0)
     if not straight and is_closed_path(points):
-        fits = [fit_ellipse(points), fit_rect(points)]
-        fits = [
-            (shape, error) for shape, error in fits
-            if shape is not None and error <= CLOSED_FIT_RATIO * (shape["rx"] + shape["ry"])
-        ]
-        fits.sort(key=lambda item: item[1] / (item[0]["rx"] + item[0]["ry"]))
-        return [shape for shape, _error in fits]
+        fits = []
+        for shape, error in (fit_ellipse(points), fit_rect(points)):
+            if shape is not None and error <= CLOSED_FIT_RATIO * (shape["rx"] + shape["ry"]):
+                fits.append((error / diagonal, shape))
+        polygon, polygon_error = fit_polyline(points, cyclic=True)
+        if polygon is not None:
+            # More freedom than a rectangle: it must fit clearly better.
+            fits.append((2.0 * polygon_error / diagonal + 0.004, polygon))
+        fits.sort(key=lambda item: item[0])
+        return [shape for _score, shape in fits]
     line = {"kind": LINE, "start": points[0], "end": points[-1]}
-    arc, arc_error, bulge = fit_arc(points)
     chord = _dist(points[0], points[-1])
-    curved = arc is not None and bulge >= max(ARC_CHOICE_MIN_PX, chord * ARC_CHOICE_RATIO)
+    arc, arc_error, bulge = fit_arc(points)
+    if arc is not None and bulge < max(ARC_CHOICE_MIN_PX, chord * ARC_CHOICE_RATIO):
+        arc = None
     if straight:
-        if not curved:
+        if arc is None:
             return [line]
         # Clearly bowed and the arc follows it much better: the arc first.
-        if bulge >= max(2.0 * ARC_CHOICE_MIN_PX, chord * 0.04) and arc_error < 0.5 * _line_error(points):
+        if bulge >= chord * ARC_FIRST_RATIO and arc_error < 0.35 * _line_error(points):
             return [arc, line]
         return [line, arc]
-    if arc is None:
-        return []
-    if is_straight_path(points, LOOSE_STRAIGHT_RATIO):
-        return [arc, line]
-    return [arc]
+    polyline, polyline_error = fit_polyline(points)
+    loose = is_straight_path(points, LOOSE_STRAIGHT_RATIO)
+    result = []
+    if arc is not None:
+        if loose and bulge < chord * ARC_FIRST_RATIO:
+            result = [line, arc]
+        else:
+            result = [arc, line] if loose else [arc]
+    if polyline is not None:
+        # Polylines can follow curves too, with many corners: an arc that
+        # fits wins unless the polyline is far closer.
+        if arc is None or 3.0 * polyline_error < arc_error:
+            result.insert(0, polyline)
+        else:
+            result.append(polyline)
+    return result
 
 
 def recognize_shape(points):
@@ -561,25 +811,36 @@ def recognize_shape(points):
 
 def shape_anchor(shape):
     """Point the shape turns and scales around while the cursor moves."""
-    if shape["kind"] == LINE:
+    kind = shape["kind"]
+    if kind == LINE:
         return shape["start"]
-    if shape["kind"] == ARC:
+    if kind == ARC:
         return _arc_point(shape, 0.0)
+    if kind == POLYLINE:
+        return shape["vertices"][0]
+    if kind == POLYGON:
+        vertices = shape["vertices"]
+        return (sum(v[0] for v in vertices) / len(vertices), sum(v[1] for v in vertices) / len(vertices))
     return shape["center"]
 
 
+def _ellipse_at(shape, t):
+    c, rx, ry = shape["center"], shape["rx"], shape["ry"]
+    u = (math.cos(shape["angle"]), math.sin(shape["angle"]))
+    x, y = rx * math.cos(t), ry * math.sin(t)
+    return (c[0] + u[0] * x - u[1] * y, c[1] + u[1] * x + u[0] * y)
+
+
 def _arc_point(shape, fraction):
-    angle = shape["start_angle"] + shape["sweep"] * fraction
-    c = shape["center"]
-    return (c[0] + shape["radius"] * math.cos(angle), c[1] + shape["radius"] * math.sin(angle))
+    return _ellipse_at(shape, shape["t0"] + shape["sweep"] * fraction)
 
 
 def transform_shape(shape, angle, scale, snap_degrees=0.0):
     """Shape turned by ``angle`` and scaled around its anchor.
 
     With ``snap_degrees`` (Ctrl) lines and arcs snap the start-to-end
-    direction, ellipses become circles and rectangles squares, and both
-    snap their rotation.
+    direction, polylines each segment, ellipses become circles and
+    rectangles squares, and both snap their rotation.
     """
     anchor = shape_anchor(shape)
 
@@ -594,23 +855,38 @@ def transform_shape(shape, angle, scale, snap_degrees=0.0):
         if step:
             end = snap_screen_angle(anchor, end, snap_degrees)
         return {"kind": LINE, "start": anchor, "end": end}
+    if kind in (POLYLINE, POLYGON):
+        vertices = [move(v) for v in shape["vertices"]]
+        if step and kind == POLYLINE:
+            snapped = [vertices[0]]
+            for a, b in zip(vertices, vertices[1:]):
+                end = snap_screen_angle(a, b, snap_degrees)
+                last = snapped[-1]
+                snapped.append((last[0] + end[0] - a[0], last[1] + end[1] - a[1]))
+            vertices = snapped
+        elif step:
+            a, b = vertices[0], vertices[1]
+            edge = math.atan2(b[1] - a[1], b[0] - a[0])
+            correction = round(edge / step) * step - edge
+            vertices = [
+                (anchor[0] + r[0], anchor[1] + r[1])
+                for r in (_rotate((v[0] - anchor[0], v[1] - anchor[1]), correction) for v in vertices)
+            ]
+        return {"kind": kind, "vertices": vertices}
+    result = dict(shape)
+    result["center"] = move(shape["center"])
+    result["rx"] = shape["rx"] * scale
+    result["ry"] = shape["ry"] * scale
+    result["angle"] = shape["angle"] + angle
     if kind == ARC:
-        result = dict(shape)
-        result["center"] = move(shape["center"])
-        result["radius"] = shape["radius"] * scale
-        result["start_angle"] = shape["start_angle"] + angle
         if step:
             end = _arc_point(result, 1.0)
             chord = math.atan2(end[1] - anchor[1], end[0] - anchor[0])
             correction = round(chord / step) * step - chord
             offset = _rotate((result["center"][0] - anchor[0], result["center"][1] - anchor[1]), correction)
             result["center"] = (anchor[0] + offset[0], anchor[1] + offset[1])
-            result["start_angle"] += correction
+            result["angle"] += correction
         return result
-    result = dict(shape)
-    result["rx"] = shape["rx"] * scale
-    result["ry"] = shape["ry"] * scale
-    result["angle"] = shape["angle"] + angle
     if step:
         size = (result["rx"] + result["ry"]) / 2.0
         result["rx"] = result["ry"] = size
@@ -621,16 +897,40 @@ def transform_shape(shape, angle, scale, snap_degrees=0.0):
 DEFAULT_POINTS = {LINE: 2, ARC: 3, ELLIPSE: 4, RECT: 4}
 _MIN_POINTS = {LINE: 2, ARC: 2, ELLIPSE: 3, RECT: 4}
 MAX_POINTS = 256
-DEFAULT_CURVE_TYPE = {LINE: "POLY", ARC: "BEZIER", ELLIPSE: "BEZIER", RECT: "POLY"}
-SHAPE_LABELS = {LINE: "Line", ARC: "Arc", ELLIPSE: "Ellipse", RECT: "Rectangle"}
+DEFAULT_CURVE_TYPE = {
+    LINE: "POLY", ARC: "BEZIER", ELLIPSE: "BEZIER", RECT: "POLY", POLYLINE: "POLY", POLYGON: "POLY",
+}
+SHAPE_LABELS = {
+    LINE: "Line", ARC: "Arc", ELLIPSE: "Ellipse", RECT: "Rectangle", POLYLINE: "Polyline", POLYGON: "Polygon",
+}
 
 
-def points_step(kind):
-    """Mouse wheel step for the number of points (a side each for rectangles)."""
+def _segment_count(shape):
+    vertices = len(shape.get("vertices") or ())
+    return vertices if shape["kind"] == POLYGON else max(vertices - 1, 1)
+
+
+def default_points(shape):
+    """Points of a shape before the wheel or the panel change them."""
+    kind = shape["kind"]
+    if kind in (POLYLINE, POLYGON):
+        return len(shape["vertices"])
+    return DEFAULT_POINTS[kind]
+
+
+def points_step(kind, shape=None):
+    """Mouse wheel step for the number of points (one per side or segment)."""
+    if kind in (POLYLINE, POLYGON) and shape is not None:
+        return _segment_count(shape)
     return 4 if kind == RECT else 1
 
 
-def clamp_points(kind, count):
+def clamp_points(kind, count, shape=None):
+    if kind in (POLYLINE, POLYGON) and shape is not None:
+        segments = _segment_count(shape)
+        closing = 0 if kind == POLYGON else 1
+        per_segment = max(1, min(MAX_POINTS // segments, int(round((int(count) - closing) / float(segments)))))
+        return segments * per_segment + closing
     count = max(_MIN_POINTS.get(kind, 2), min(MAX_POINTS, int(count)))
     if kind == RECT:
         count = max(4, int(round(count / 4.0)) * 4)
@@ -658,11 +958,12 @@ def shape_knots(shape, count=None):
 
     Returns ([(left handle, point, right handle)], cyclic, handle types):
     handle types are (left, right) per point. Ellipses and arcs have aligned
-    handles, except the two ends of an arc, which have only their inner
-    handle; lines and rectangles have sharp corners.
+    handles, except the two ends of an arc, which have automatic handles
+    that follow when the arc is edited; lines and rectangles have sharp
+    corners.
     """
     kind = shape["kind"]
-    count = clamp_points(kind, DEFAULT_POINTS[kind] if count is None else count)
+    count = clamp_points(kind, default_points(shape) if count is None else count, shape)
     free = [(_HANDLE_FREE, _HANDLE_FREE)] * count
     if kind == LINE:
         s, e = shape["start"], shape["end"]
@@ -671,26 +972,35 @@ def shape_knots(shape, count=None):
             for i in range(count)
         ]
         return _polyline_knots(points, False), False, free
+    if kind in (POLYLINE, POLYGON):
+        cyclic = kind == POLYGON
+        vertices = [tuple(v) for v in shape["vertices"]]
+        ends = vertices + vertices[:1] if cyclic else vertices
+        per_segment = (count - (0 if cyclic else 1)) // _segment_count(shape)
+        points = []
+        for a, b in zip(ends, ends[1:]):
+            for i in range(per_segment):
+                t = i / per_segment
+                points.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+        if not cyclic:
+            points.append(vertices[-1])
+        return _polyline_knots(points, cyclic), cyclic, [(_HANDLE_FREE, _HANDLE_FREE)] * len(points)
     if kind == ARC:
+        u = (math.cos(shape["angle"]), math.sin(shape["angle"]))
         step = shape["sweep"] / (count - 1)
-        handle = 4.0 / 3.0 * math.tan(abs(step) / 4.0) * shape["radius"]
-        turn = 1.0 if shape["sweep"] >= 0.0 else -1.0
+        handle = 4.0 / 3.0 * math.tan(step / 4.0)
         knots = []
         for i in range(count):
-            fraction = i / (count - 1)
-            angle = shape["start_angle"] + shape["sweep"] * fraction
-            p = _arc_point(shape, fraction)
-            tangent = (-math.sin(angle) * turn * handle, math.cos(angle) * turn * handle)
-            left = (p[0] - tangent[0], p[1] - tangent[1])
-            right = (p[0] + tangent[0], p[1] + tangent[1])
-            # The ends keep no handle on their outer side.
-            if i == 0:
-                left = p
-            if i == count - 1:
-                right = p
-            knots.append((left, p, right))
+            t = shape["t0"] + step * i
+            p = _ellipse_at(shape, t)
+            # Derivative of the ellipse at t, scaled for a Bezier segment.
+            dx, dy = -shape["rx"] * math.sin(t) * handle, shape["ry"] * math.cos(t) * handle
+            d = (u[0] * dx - u[1] * dy, u[1] * dx + u[0] * dy)
+            knots.append(((p[0] - d[0], p[1] - d[1]), p, (p[0] + d[0], p[1] + d[1])))
+        # The ends have automatic handles: exact on the arc when it is made,
+        # and they follow when the points are edited.
         types = [(_HANDLE_ALIGN, _HANDLE_ALIGN)] * count
-        types[0] = types[-1] = (_HANDLE_FREE, _HANDLE_FREE)
+        types[0] = types[-1] = (_HANDLE_AUTO, _HANDLE_AUTO)
         return knots, False, types
     c, rx, ry = shape["center"], shape["rx"], shape["ry"]
     u = (math.cos(shape["angle"]), math.sin(shape["angle"]))
@@ -915,6 +1225,8 @@ def _shape_from_data(data):
     for key in ("start", "end", "center", "corner"):
         if key in shape:
             shape[key] = tuple(shape[key])
+    if "vertices" in shape:
+        shape["vertices"] = [tuple(v) for v in shape["vertices"]]
     return shape
 
 
@@ -929,6 +1241,8 @@ KIND_ITEMS = (
     (ARC, "Arc", "Circular arc"),
     (ELLIPSE, "Ellipse", "Ellipse or circle"),
     (RECT, "Rectangle", "Rectangle or square"),
+    (POLYLINE, "Polyline", "Straight segments with a point at each change of direction"),
+    (POLYGON, "Polygon", "Closed shape of straight sides"),
 )
 
 CURVE_TYPE_ITEMS = (
@@ -1002,7 +1316,7 @@ class FBP_OT_GPQuickShapeApply(Operator):
                 self.kind = kind
             if self.last_kind != kind:
                 if self.last_kind:
-                    self.points = DEFAULT_POINTS[kind]
+                    self.points = default_points(shapes[kind])
                     self.curve_type = DEFAULT_CURVE_TYPE[kind]
                 self.last_kind = kind
             shape = shapes[kind]
@@ -1010,7 +1324,7 @@ class FBP_OT_GPQuickShapeApply(Operator):
             index = int(data["index"])
             if drawing is None or len(drawing.strokes) != int(data["count"]) or index >= len(drawing.strokes):
                 return {"CANCELLED"}
-            points = clamp_points(shape["kind"], self.points)
+            points = clamp_points(shape["kind"], self.points, shape)
             if points != self.points:
                 self.points = points
             knots, cyclic, handle_types = shape_knots(shape, points)
@@ -1030,22 +1344,179 @@ class FBP_OT_GPQuickShapeApply(Operator):
         return {"FINISHED"}
 
 
+def _brush_running(window):
+    try:
+        return any(
+            str(getattr(op, "bl_idname", "") or "") == _BRUSH_STROKE_ID
+            for op in window.modal_operators
+        )
+    except FBP_DATA_ERRORS:
+        return False
+
+
+def _placement_normal(context, rv3d, world_points):
+    """Normal of the plane the stroke was drawn on, in world space."""
+    view_normal = (rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))).normalized()
+    candidates = []
+    try:
+        lock = str(context.scene.tool_settings.gpencil_sculpt.lock_axis)
+    except FBP_DATA_ERRORS:
+        lock = "VIEW"
+    preferred = {
+        "AXIS_X": Vector((1.0, 0.0, 0.0)),
+        "AXIS_Y": Vector((0.0, 1.0, 0.0)),
+        "AXIS_Z": Vector((0.0, 0.0, 1.0)),
+    }.get(lock)
+    if lock == "CURSOR":
+        try:
+            preferred = (context.scene.cursor.matrix.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+        except FBP_DATA_ERRORS:
+            preferred = None
+    if preferred is not None:
+        candidates.append(preferred)
+    candidates.append(view_normal)
+    obj = context.active_object
+    rotation = obj.matrix_world.to_3x3().normalized()
+    for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+        candidates.append(Vector(axis))
+        candidates.append((rotation @ Vector(axis)).normalized())
+
+    origin = world_points[0]
+    extent = max(((point - origin).length for point in world_points), default=0.0)
+    tolerance = max(extent * 0.02, 1.0e-6)
+
+    def residual(normal):
+        return max(abs((point - origin).dot(normal)) for point in world_points)
+
+    # The plane must also face the view, or the shape cannot be placed
+    # under the cursor.
+    usable = [n for n in candidates if abs(n.dot(view_normal)) > 0.05]
+    for normal in usable:
+        if residual(normal) <= tolerance:
+            return normal
+    if usable:
+        best = min(usable, key=residual)
+        if residual(best) <= extent * 0.15:
+            return best
+    return view_normal
+
+
+class _StrokeWatcher:
+    """Watches a stroke the native brush is drawing, from an app timer.
+
+    The brush is started by Blender's own shortcut with the real input
+    event (so the pen pressure of the first point is right); the watcher
+    only reads the stroke. When its end rests, it starts the Quick Shape
+    follow operator, which then takes the cursor over until release.
+    """
+
+    def __init__(self, context):
+        _enabled, self.hold, self.snap, self.precision = quick_shape_settings(context)
+        self.precision_key = quick_shape_precision_key(context)
+        self.window = context.window
+        self.area = context.area
+        self.region = context.region
+        self.rv3d = context.region_data
+        self.started = time.monotonic()
+        self.rest_point = None
+        self.rest_since = self.started
+        self.point_count = -1
+        self.seen_brush = False
+        self.active = True
+        _obj, _layer, drawing = _active_target(context)
+        try:
+            self.baseline = (
+                int(drawing.as_pointer()) if drawing is not None else 0,
+                len(drawing.strokes) if drawing is not None else 0,
+            )
+        except FBP_DATA_ERRORS:
+            self.baseline = (0, 0)
+
+    def stop(self):
+        self.active = False
+        global _WATCHER
+        if _WATCHER is self:
+            _WATCHER = None
+        return None
+
+    def stroke(self, context):
+        """(object, layer, drawing, curve index, first, last) of the stroke being drawn."""
+        obj, layer, drawing = _active_target(context)
+        if drawing is None:
+            return None
+        count = len(drawing.strokes)
+        pointer = int(drawing.as_pointer())
+        if count == 0 or (pointer == self.baseline[0] and count != self.baseline[1] + 1):
+            return None
+        try:
+            on_back = bool(context.scene.tool_settings.use_gpencil_draw_onback)
+        except FBP_DATA_ERRORS:
+            on_back = False
+        index = 0 if on_back else count - 1
+        first, last = _curve_point_range(drawing, index)
+        return obj, layer, drawing, index, first, last
+
+    def tick(self):
+        if not self.active:
+            return self.stop()
+        try:
+            return self._tick()
+        except FBP_DATA_IO_ERRORS as exc:
+            fbp_warn_once("gp_quick_shape.watch", "Quick Shape stopped", exc)
+            return self.stop()
+
+    def _tick(self):
+        running = _brush_running(self.window)
+        now = time.monotonic()
+        if not running:
+            # The brush may not have started yet on the very first tick.
+            if self.seen_brush or now - self.started > 0.5:
+                return self.stop()
+            return TIMER_STEP_SECONDS
+        self.seen_brush = True
+        if now - self.started > DETECTION_WINDOW_SECONDS:
+            # Past the detection window the stroke stays free hand.
+            return self.stop()
+        with bpy.context.temp_override(window=self.window, area=self.area, region=self.region):
+            context = bpy.context
+            found = self.stroke(context)
+            if found is None:
+                return TIMER_STEP_SECONDS
+            obj, layer, drawing, _index, first, last = found
+            if last - first < 2:
+                return TIMER_STEP_SECONDS
+            positions = drawing.attributes["position"].data
+            end = view3d_utils.location_3d_to_region_2d(
+                self.region, self.rv3d, _layer_to_world(obj, layer) @ Vector(positions[last - 1].vector)
+            )
+            if end is None:
+                return TIMER_STEP_SECONDS
+            end = (float(end.x), float(end.y))
+            if self.rest_point is None or _dist(end, self.rest_point) > HOLD_TOLERANCE_PX:
+                self.rest_point = end
+                self.rest_since = now
+            elif now - self.rest_since >= self.hold:
+                self.rest_since = now
+                try:
+                    result = bpy.ops.fbp.gp_quick_shape_follow("INVOKE_DEFAULT")
+                except RuntimeError:
+                    result = {"CANCELLED"}
+                if "RUNNING_MODAL" in result:
+                    # The follow operator owns the stroke until release.
+                    return self.stop()
+                # No shape: wait for the stroke to go on and rest again.
+        return TIMER_STEP_SECONDS
+
+
+_WATCHER = None
+
+
 class FBP_OT_GPQuickShapeStroke(Operator):
-    """Draw with the brush; rest the pen at the end of a line, arc, ellipse or rectangle to turn it into a clean shape (wheel: points, Alt or Shift: precise, Ctrl: snap)"""
+    """Draw with the brush; rest the pen at the end of a line, arc, ellipse, rectangle or polyline to turn it into a clean shape (wheel: points, Shift or Alt: precise, Ctrl: snap)"""
 
     bl_idname = "fbp.gp_quick_shape_stroke"
     bl_label = "Draw with Quick Shape"
     bl_options = {"INTERNAL"}
-
-    brush_toggle: EnumProperty(
-        name="Brush Toggle",
-        items=(
-            ("NORMAL", "Normal", "Draw with the brush as it is"),
-            ("SMOOTH", "Smooth", "Draw with the stroke stabilizer, as Shift does"),
-        ),
-        default="NORMAL",
-        options={"SKIP_SAVE"},
-    )
 
     @classmethod
     def poll(cls, context):
@@ -1063,71 +1534,50 @@ class FBP_OT_GPQuickShapeStroke(Operator):
         except FBP_DATA_ERRORS:
             return False
 
-    # -- lifecycle ---------------------------------------------------------
+    def invoke(self, context, _event):
+        # Start watching, then let the click go on to Blender's own brush
+        # shortcut (plain or Shift), which starts the stroke with the real
+        # input event.
+        global _WATCHER
+        if _WATCHER is not None:
+            _WATCHER.stop()
+        watcher = _StrokeWatcher(context)
+        _WATCHER = watcher
+        bpy.app.timers.register(watcher.tick, first_interval=TIMER_STEP_SECONDS)
+        return {"PASS_THROUGH"}
+
+
+class FBP_OT_GPQuickShapeFollow(Operator):
+    """Quick Shape: the shape follows the cursor until release"""
+
+    bl_idname = "fbp.gp_quick_shape_follow"
+    bl_label = "Quick Shape"
+    bl_options = {"INTERNAL"}
 
     def invoke(self, context, event):
-        _enabled, self._hold, self._snap, self._precision = quick_shape_settings(context)
-        self._precision_key = quick_shape_precision_key(context)
-        self._area = context.area
-        self._region = context.region
-        self._rv3d = context.region_data
-        self._window = context.window
-        self._button = event.type
-        self._started = time.monotonic()
-        start = (float(event.mouse_region_x), float(event.mouse_region_y))
-        self._path = [start]
-        self._rest_anchor = start
-        self._rest_since = self._started
-        self._state = "WATCH"
-        self._timer = None
-        self._shape = None
-        self._alternatives = []
+        watcher = _WATCHER
+        if watcher is None or not watcher.active:
+            return {"CANCELLED"}
+        self._watcher = watcher
+        self._precision, self._snap = watcher.precision, watcher.snap
+        self._precision_key = watcher.precision_key
+        self._window, self._area, self._region, self._rv3d = (
+            watcher.window, watcher.area, watcher.region, watcher.rv3d,
+        )
         self._header = False
-
-        _obj, _layer, drawing = _active_target(context)
-        try:
-            self._baseline = (
-                int(drawing.as_pointer()) if drawing is not None else 0,
-                len(drawing.strokes) if drawing is not None else 0,
-            )
-        except FBP_DATA_ERRORS:
-            self._baseline = (0, 0)
-
-        if self.brush_toggle == "NORMAL":
-            result = bpy.ops.grease_pencil.brush_stroke("INVOKE_DEFAULT")
-        else:
-            result = bpy.ops.grease_pencil.brush_stroke("INVOKE_DEFAULT", brush_toggle=self.brush_toggle)
-        if "RUNNING_MODAL" not in result:
-            return {"FINISHED"} if "FINISHED" in result else {"CANCELLED"}
-        try:
-            self._timer = context.window_manager.event_timer_add(TIMER_STEP_SECONDS, window=context.window)
-        except FBP_DATA_ERRORS:
-            self._timer = None
+        self._alternatives = []
+        if not self._begin_shape(context, event):
+            return {"CANCELLED"}
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
-    def _finish(self, context):
-        if self._timer is not None:
-            try:
-                context.window_manager.event_timer_remove(self._timer)
-            except FBP_DATA_ERRORS:
-                pass
-            self._timer = None
+    def _finish(self, _context):
         if self._header:
             try:
                 self._area.header_text_set(None)
             except FBP_DATA_ERRORS:
                 pass
             self._header = False
-
-    def _brush_running(self):
-        try:
-            return any(
-                str(getattr(op, "bl_idname", "") or "") == _BRUSH_STROKE_ID
-                for op in self._window.modal_operators
-            )
-        except FBP_DATA_ERRORS:
-            return False
 
     # -- events ------------------------------------------------------------
 
@@ -1140,45 +1590,16 @@ class FBP_OT_GPQuickShapeStroke(Operator):
             return {"FINISHED", "PASS_THROUGH"}
 
     def _modal(self, context, event):
-        released = event.type == self._button and event.value == "RELEASE"
-        if self._state == "WATCH":
-            if released:
-                self._finish(context)
-                return {"FINISHED", "PASS_THROUGH"}
-            now = time.monotonic()
-            if now - self._started > DETECTION_WINDOW_SECONDS or (
-                event.type == "TIMER" and not self._brush_running()
-            ):
-                # Past the detection window the stroke stays free hand.
-                self._finish(context)
-                return {"FINISHED", "PASS_THROUGH"}
-            if event.type in _MOVE_EVENTS:
-                point = (float(event.mouse_region_x), float(event.mouse_region_y))
-                if math.hypot(point[0] - self._path[-1][0], point[1] - self._path[-1][1]) >= 1.0:
-                    self._path.append(point)
-                if math.hypot(point[0] - self._rest_anchor[0], point[1] - self._rest_anchor[1]) > HOLD_TOLERANCE_PX:
-                    self._rest_anchor = point
-                    self._rest_since = now
-            elif event.type == "TIMER" and now - self._rest_since >= self._hold:
-                if self._begin_shape(context, event):
-                    self._state = "SHAPE"
-                    return {"RUNNING_MODAL"}
-                # No shape: wait for the cursor to move and rest again.
-                self._rest_since = now
-            return {"PASS_THROUGH"}
-
-        # SHAPE: the shape follows the cursor until release. Apart from the
-        # release the brush gets no more events, so it neither extends the
-        # stroke nor reacts to Shift.
-        if released:
+        # The shape follows the cursor until release. Apart from the release
+        # the brush gets no more events, so it neither extends the stroke
+        # nor reacts to Shift.
+        if event.type in {"LEFTMOUSE", "PEN"} and event.value == "RELEASE":
             self._update_shape(event, final=True)
             self._finish(context)
             return {"FINISHED", "PASS_THROUGH"}
-        if event.type == "TIMER":
-            if not self._brush_running():
-                self._finish(context)
-                return {"FINISHED", "PASS_THROUGH"}
-            return {"RUNNING_MODAL"}
+        if not _brush_running(self._window):
+            self._finish(context)
+            return {"FINISHED", "PASS_THROUGH"}
         if event.type in _MOVE_EVENTS:
             mouse = (float(event.mouse_region_x), float(event.mouse_region_y))
             slow = event.alt if self._precision_key == "ALT" else event.shift
@@ -1191,8 +1612,8 @@ class FBP_OT_GPQuickShapeStroke(Operator):
             self._update_shape(event)
         elif event.type in {"WHEELUPMOUSE", "WHEELDOWNMOUSE"} and event.value == "PRESS":
             kind = self._shape["kind"]
-            step = points_step(kind) * (1 if event.type == "WHEELUPMOUSE" else -1)
-            self._points = clamp_points(kind, self._points + step)
+            step = points_step(kind, self._shape) * (1 if event.type == "WHEELUPMOUSE" else -1)
+            self._points = clamp_points(kind, self._points + step, self._shape)
             self._update_shape(event)
         elif event.type in _SHIFT_KEYS or event.type in _CTRL_KEYS:
             self._update_shape(event)
@@ -1202,72 +1623,59 @@ class FBP_OT_GPQuickShapeStroke(Operator):
             return {"FINISHED", "PASS_THROUGH"}
         return {"RUNNING_MODAL"}
 
-    def _rested_path(self, start_screen):
-        """Drawn path up to where the cursor came to rest, from the stroke start."""
-        anchor = self._rest_anchor
-        path = list(self._path)
-        while len(path) > 2 and math.hypot(path[-1][0] - anchor[0], path[-1][1] - anchor[1]) <= HOLD_TOLERANCE_PX:
-            path.pop()
-        path.append(anchor)
-        path[0] = start_screen
-        return path
-
     # -- geometry ----------------------------------------------------------
 
     def _begin_shape(self, context, event):
-        obj, layer, drawing = _active_target(context)
-        if drawing is None:
+        found = self._watcher.stroke(context)
+        if found is None:
             return False
-        count = len(drawing.strokes)
-        if count == 0:
-            return False
-        pointer = int(drawing.as_pointer())
-        if pointer == self._baseline[0] and count != self._baseline[1] + 1:
-            return False
-        try:
-            on_back = bool(context.scene.tool_settings.use_gpencil_draw_onback)
-        except FBP_DATA_ERRORS:
-            on_back = False
-        curve_index = 0 if on_back else count - 1
-        first, last = _curve_point_range(drawing, curve_index)
+        obj, layer, drawing, curve_index, first, last = found
         if last - first < 2:
             return False
-
         positions = drawing.attributes["position"].data
         to_world = _layer_to_world(obj, layer)
         self._original = [Vector(positions[i].vector) for i in range(first, last)]
         world_points = [to_world @ point for point in self._original]
-        start_world = world_points[0]
-        start_screen = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, start_world)
-        if start_screen is None:
+        path = []
+        for point in world_points:
+            screen = view3d_utils.location_3d_to_region_2d(self._region, self._rv3d, point)
+            if screen is None:
+                return False
+            screen = (float(screen.x), float(screen.y))
+            if not path or _dist(screen, path[-1]) >= 1.0:
+                path.append(screen)
+        if len(path) < 2:
             return False
-        shapes = recognize_shapes(self._rested_path((float(start_screen.x), float(start_screen.y))))
+        shapes = recognize_shapes(path)
         if not shapes:
             return False
 
         shape = shapes[0]
         self._shape = shape
         self._alternatives = shapes[1:]
-        self._points = DEFAULT_POINTS[shape["kind"]]
-        self._drawing_pointer = pointer
+        self._points = default_points(shape)
+        self._drawing_pointer = int(drawing.as_pointer())
         self._target_info = {
             "object": obj.name,
             "layer": layer.name,
             "frame": int(layer.current_frame().frame_number),
             "index": curve_index,
-            "count": count,
+            "count": len(drawing.strokes),
         }
         self._obj_name = obj.name
         self._curve_index = curve_index
         self._point_count = last - first
         self._mapping = make_mapping(
-            self._region, self._rv3d, start_world,
-            self._placement_normal(context, world_points), to_world.inverted_safe(),
+            self._region, self._rv3d, world_points[0],
+            _placement_normal(context, self._rv3d, world_points), to_world.inverted_safe(),
         )
         self._anchor = shape_anchor(shape)
-        self._target = self._rest_anchor
-        self._reference = (self._target[0] - self._anchor[0], self._target[1] - self._anchor[1])
+        # The end of the stroke then moves with the cursor (by the same
+        # amount, even when the stabilizer keeps it behind the cursor); the
+        # shape turns and scales around its anchor to follow it.
+        self._target = path[-1]
         self._last_mouse = (float(event.mouse_region_x), float(event.mouse_region_y))
+        self._reference = (path[-1][0] - self._anchor[0], path[-1][1] - self._anchor[1])
         try:
             radius = drawing.attributes["radius"].data
             self._radius = _median([radius[i].value for i in range(first, last)], None)
@@ -1280,52 +1688,6 @@ class FBP_OT_GPQuickShapeStroke(Operator):
             self._opacity = None
         self._update_shape(event)
         return True
-
-    def _placement_normal(self, context, world_points):
-        """Normal of the plane the stroke was drawn on, in world space."""
-        view_normal = (self._rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))).normalized()
-        candidates = []
-        try:
-            lock = str(context.scene.tool_settings.gpencil_sculpt.lock_axis)
-        except FBP_DATA_ERRORS:
-            lock = "VIEW"
-        preferred = {
-            "AXIS_X": Vector((1.0, 0.0, 0.0)),
-            "AXIS_Y": Vector((0.0, 1.0, 0.0)),
-            "AXIS_Z": Vector((0.0, 0.0, 1.0)),
-        }.get(lock)
-        if lock == "CURSOR":
-            try:
-                preferred = (context.scene.cursor.matrix.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
-            except FBP_DATA_ERRORS:
-                preferred = None
-        if preferred is not None:
-            candidates.append(preferred)
-        candidates.append(view_normal)
-        obj = context.active_object
-        rotation = obj.matrix_world.to_3x3().normalized()
-        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
-            candidates.append(Vector(axis))
-            candidates.append((rotation @ Vector(axis)).normalized())
-
-        origin = world_points[0]
-        extent = max(((point - origin).length for point in world_points), default=0.0)
-        tolerance = max(extent * 0.02, 1.0e-6)
-
-        def residual(normal):
-            return max(abs((point - origin).dot(normal)) for point in world_points)
-
-        # The plane must also face the view, or the shape cannot be placed
-        # under the cursor.
-        usable = [n for n in candidates if abs(n.dot(view_normal)) > 0.05]
-        for normal in usable:
-            if residual(normal) <= tolerance:
-                return normal
-        if usable:
-            best = min(usable, key=residual)
-            if residual(best) <= extent * 0.15:
-                return best
-        return view_normal
 
     def _current_shape(self, event, shape=None):
         reference = self._reference
@@ -1439,7 +1801,7 @@ def _schedule_apply(window, area, region, data, points, curve_type, kind):
     bpy.app.timers.register(apply, first_interval=0.0)
 
 
-classes = (FBP_OT_GPQuickShapeApply, FBP_OT_GPQuickShapeStroke)
+classes = (FBP_OT_GPQuickShapeApply, FBP_OT_GPQuickShapeStroke, FBP_OT_GPQuickShapeFollow)
 
 
 def _register_keymaps():
@@ -1454,7 +1816,6 @@ def _register_keymaps():
         _ADDON_KEYMAPS.append((keymap, item))
         # Shift+click draws with the stroke stabilizer; Quick Shape works there too.
         item = keymap.keymap_items.new(FBP_OT_GPQuickShapeStroke.bl_idname, "LEFTMOUSE", "PRESS", shift=True, head=True)
-        item.properties.brush_toggle = "SMOOTH"
         _ADDON_KEYMAPS.append((keymap, item))
         return True
     except FBP_DATA_ERRORS as exc:
@@ -1478,5 +1839,7 @@ def register():
 
 
 def unregister():
+    if _WATCHER is not None:
+        _WATCHER.stop()
     _unregister_keymaps()
     unregister_classes(classes)
