@@ -934,11 +934,11 @@ def transform_shape(shape, angle, scale, snap_degrees=0.0):
     return result
 
 
-DEFAULT_POINTS = {LINE: 2, ARC: 3, ELLIPSE: 4, RECT: 4}
+DEFAULT_POINTS = {LINE: 2, ARC: 3, ELLIPSE: 24, RECT: 4}
 _MIN_POINTS = {LINE: 2, ARC: 3, ELLIPSE: 3, RECT: 4}
 MAX_POINTS = 256
 DEFAULT_CURVE_TYPE = {
-    LINE: "POLY", ARC: "BEZIER", ELLIPSE: "BEZIER", RECT: "POLY", POLYLINE: "POLY", POLYGON: "POLY",
+    LINE: "POLY", ARC: "BEZIER", ELLIPSE: "POLY", RECT: "POLY", POLYLINE: "POLY", POLYGON: "POLY",
 }
 SHAPE_LABELS = {
     LINE: "Line", ARC: "Arc", ELLIPSE: "Ellipse", RECT: "Rectangle", POLYLINE: "Polyline", POLYGON: "Polygon",
@@ -1654,13 +1654,23 @@ class FBP_OT_GPQuickShapeFollow(Operator):
             watcher.window, watcher.area, watcher.region, watcher.rv3d,
         )
         self._header = False
+        self._automerge = None
         self._alternatives = []
         if not self._begin_shape(context, event):
             return {"CANCELLED"}
+        # Automerge would join the shape's stroke to the stroke it starts or
+        # ends at when the brush finishes, and the shape could not be
+        # applied: it stays off until the shape is done.
+        self._automerge = _suspend_automerge(context.scene)
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
     def _finish(self, _context):
+        if getattr(self, "_automerge", None):
+            # After the brush has finished (timers run after the events).
+            scene_name = self._automerge
+            bpy.app.timers.register(lambda: _resume_automerge(scene_name), first_interval=0.0)
+            self._automerge = None
         if self._header:
             try:
                 self._area.header_text_set(None)
@@ -1841,8 +1851,9 @@ class FBP_OT_GPQuickShapeFollow(Operator):
             )
             _schedule_apply(
                 self._window, self._area, self._region, data, self._points,
-                DEFAULT_CURVE_TYPE[shape["kind"]], shape["kind"],
+                DEFAULT_CURVE_TYPE[shape["kind"]], shape["kind"], self._automerge,
             )
+            self._automerge = None
             return
         knots, cyclic, _handle_types = shape_knots(shape, self._points)
         # While the pen is down the stroke keeps its points, spread along the
@@ -1944,7 +1955,29 @@ def _repair_after_automerge(window, drawing=None):
         fbp_warn_once("gp_quick_shape.automerge", "Quick Shape could not repair an automerged stroke", exc)
 
 
-def _schedule_apply(window, area, region, data, points, curve_type, kind):
+def _suspend_automerge(scene):
+    """Turn Automerge off; returns the scene's name if it was on."""
+    try:
+        settings = scene.tool_settings
+        if settings.use_gpencil_automerge_strokes:
+            settings.use_gpencil_automerge_strokes = False
+            return scene.name
+    except FBP_DATA_ERRORS:
+        pass
+    return None
+
+
+def _resume_automerge(scene_name):
+    scene = bpy.data.scenes.get(scene_name) if scene_name else None
+    if scene is not None:
+        try:
+            scene.tool_settings.use_gpencil_automerge_strokes = True
+        except FBP_DATA_ERRORS:
+            pass
+    return None
+
+
+def _schedule_apply(window, area, region, data, points, curve_type, kind, automerge=None):
     """Run the Quick Shape operator once the brush has finished the stroke.
 
     The brush finishes the hand-drawn stroke on release and pushes its own
@@ -1968,6 +2001,8 @@ def _schedule_apply(window, area, region, data, points, curve_type, kind):
                 )
         except FBP_DATA_IO_ERRORS as exc:
             fbp_warn_once("gp_quick_shape.final", "Quick Shape could not simplify the stroke", exc)
+        finally:
+            _resume_automerge(automerge)
         return None
 
     bpy.app.timers.register(apply, first_interval=0.0)

@@ -92,7 +92,8 @@ try:
     assert quick.recognize_shape(wobbly)["kind"] == quick.LINE
 
     # 8. Point counts: defaults, wheel steps and limits.
-    assert [quick.DEFAULT_POINTS[k] for k in (quick.LINE, quick.ARC, quick.ELLIPSE, quick.RECT)] == [2, 3, 4, 4]
+    assert [quick.DEFAULT_POINTS[k] for k in (quick.LINE, quick.ARC, quick.ELLIPSE, quick.RECT)] == [2, 3, 24, 4]
+    assert quick.DEFAULT_CURVE_TYPE[quick.ELLIPSE] == "POLY"
     assert quick.clamp_points(quick.RECT, 7) == 8 and quick.clamp_points(quick.RECT, 1) == 4
     assert quick.clamp_points(quick.ELLIPSE, 1) == 3 and quick.clamp_points(quick.LINE, 1) == 2
     assert quick.points_step(quick.RECT) == 4 and quick.points_step(quick.LINE) == 1
