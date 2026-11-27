@@ -343,6 +343,50 @@ try:
     assert tuple(attributes["handle_left"].data[first].vector) == (0.5, 1.0, 0.0)
     assert quick.repair_merged_handles(drawing) == 0
 
+    # 12. Automerge: a Quick Shape starting at another stroke's end is
+    #     joined to it, and the joined stroke takes the shape's curve type.
+    merge_mapping = dict(mapping, size=[200.0, 200.0])
+    for previous_type, shape_kind in (("BEZIER", quick.LINE), ("POLY", quick.ARC)):
+        drawing = layer.frames[0].drawing
+        drawing.remove_strokes()
+        drawing.add_strokes([3, 4])
+        if previous_type == "BEZIER":
+            drawing.set_types(type="BEZIER", indices=[0])
+        attributes = drawing.attributes
+        for i, (x, y) in enumerate(((-0.6, 0.0), (-0.3, 0.3), (0.0, 0.0))):
+            attributes["position"].data[i].vector = (x, y, 0.0)
+            if previous_type == "BEZIER":
+                attributes["handle_left"].data[i].vector = (x - 0.1, y, 0.0)
+                attributes["handle_right"].data[i].vector = (x + 0.1, y, 0.0)
+        drawing.strokes[0].material_index = 1
+        drawing.strokes[1].material_index = 2
+        if shape_kind == quick.LINE:
+            shape = {"kind": quick.LINE, "start": [101.0, 100.0], "end": [180.0, 100.0]}
+            curve = "POLY"
+        else:
+            shape = {"kind": quick.ARC, "center": [140.0, 100.0], "rx": 39.0, "ry": 39.0, "angle": 0.0, "t0": math.pi, "sweep": -math.pi}
+            curve = "BEZIER"
+        merge_data = dict(data, index=1, count=2, shape=shape, shapes=[shape], mapping=merge_mapping, automerge=True)
+        result = bpy.ops.fbp.gp_quick_shape_apply(points=quick.DEFAULT_POINTS[shape_kind], curve_type=curve, kind=shape_kind, last_kind=shape_kind, data=json.dumps(merge_data))
+        assert result == {"FINISHED"}, result
+        drawing = layer.frames[0].drawing
+        assert len(drawing.strokes) == 1, len(drawing.strokes)
+        stroke = drawing.strokes[0]
+        assert stroke.curve_type == (1 if curve == "POLY" else 2), (previous_type, stroke.curve_type)
+        positions = [tuple(round(c, 4) for c in p.position) for p in stroke.points]
+        assert positions[0] == (-0.6, 0.0, 0.0), positions
+        if curve == "POLY":
+            # The Bezier stroke keeps its curve as extra Poly points; the
+            # line ends where the shape ends.
+            assert len(positions) == 2 * 8 + 1 + 1, len(positions)
+            assert abs(positions[-1][0] - 0.8) < 1.0e-4, positions[-1]
+        else:
+            assert len(positions) == 3 + 3 - 1, positions
+            assert abs(positions[-1][0] - 0.79) < 1.0e-3, positions[-1]
+            types = [drawing.attributes["handle_type_left"].data[i].value for i in range(len(positions))]
+            assert types[0] == quick._HANDLE_VECTOR, types
+        assert stroke.material_index == 2  # from the shape's stroke
+
     print("FBPTEST gp quick shape: PASS")
 except Exception:
     traceback.print_exc()

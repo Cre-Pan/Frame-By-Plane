@@ -1290,6 +1290,278 @@ def write_shape_stroke(drawing, index, knots, cyclic, handle_types, curve_type, 
     return new_index
 
 
+def sample_polyline(points, cyclic, count):
+    """``count`` points along straight segments, every corner included
+    (when there are enough points): the preview of a Poly shape."""
+    ends = list(points) + ([points[0]] if cyclic else [])
+    segments = list(zip(ends, ends[1:]))
+    if not segments:
+        return [points[0]] * count
+    corners = len(points)
+    if count < corners:
+        return sample_knots(_polyline_knots(list(points), cyclic), cyclic, count)
+    lengths = [max(_dist(a, b), 1.0e-6) for a, b in segments]
+    total = sum(lengths)
+    # Each segment gets its start corner plus a share of the extra points.
+    extra = count - corners
+    shares = [int(extra * length / total) for length in lengths]
+    leftover = extra - sum(shares)
+    order = sorted(range(len(lengths)), key=lambda i: -(extra * lengths[i] / total - shares[i]))
+    for i in order[:leftover]:
+        shares[i] += 1
+    result = []
+    for (a, b), share in zip(segments, shares):
+        steps = share + 1
+        for k in range(steps):
+            t = k / steps
+            result.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    if not cyclic:
+        result.append(ends[-1])
+    return result[:count]
+
+
+# -- joining a Quick Shape to the stroke it starts or ends at -----------------
+
+# Screen distance between the ends of a shape and of another stroke under
+# which Automerge joins them.
+MERGE_DISTANCE_PX = 25.0
+_POINT_SKIP = frozenset({"position", "handle_left", "handle_right", "handle_type_left", "handle_type_right"})
+
+
+def _screen_of(mapping, layer_point):
+    """Screen position of a layer-space point, from a stored mapping."""
+    from mathutils import Matrix, Vector as V
+
+    world = Matrix(mapping["to_layer"]).inverted_safe() @ V(layer_point)
+    clip = Matrix(mapping["persinv"]).inverted_safe() @ V((world.x, world.y, world.z, 1.0))
+    if abs(clip.w) < 1.0e-12:
+        return None
+    width, height = mapping["size"]
+    return ((clip.x / clip.w + 1.0) * width / 2.0, (clip.y / clip.w + 1.0) * height / 2.0)
+
+
+def _read_points(drawing, index):
+    """Every point of a stroke: position, handles, handle types and the
+    other point attributes."""
+    from mathutils import Vector as V
+
+    attributes = drawing.attributes
+    first, last = _curve_point_range(drawing, index)
+    others = [
+        a for a in attributes
+        if a.domain == "POINT" and a.name not in _POINT_SKIP and not a.name.startswith(".")
+    ]
+    has_handles = attributes.get("handle_left") is not None and attributes.get("handle_right") is not None
+    left_types = attributes.get("handle_type_left")
+    right_types = attributes.get("handle_type_right")
+    points = []
+    for i in range(first, last):
+        position = V(attributes["position"].data[i].vector)
+        point = {
+            "position": position,
+            "left": V(attributes["handle_left"].data[i].vector) if has_handles else position.copy(),
+            "right": V(attributes["handle_right"].data[i].vector) if has_handles else position.copy(),
+            "types": (
+                left_types.data[i].value if left_types is not None else _HANDLE_FREE,
+                right_types.data[i].value if right_types is not None else _HANDLE_FREE,
+            ),
+            "values": {},
+        }
+        for attribute in others:
+            field, value = _attribute_value(attribute.data[i])
+            if field is not None:
+                point["values"][attribute.name] = (field, value)
+        points.append(point)
+    return points
+
+
+def _reversed_points(points):
+    result = []
+    for point in reversed(points):
+        flipped = dict(point)
+        flipped["left"], flipped["right"] = point["right"], point["left"]
+        flipped["types"] = (point["types"][1], point["types"][0])
+        result.append(flipped)
+    return result
+
+
+def _as_curve_type(points, source_type, target_type):
+    """Points of a stroke of ``source_type`` made ready for ``target_type``:
+    Bezier strokes turned Poly keep their shape with extra points along each
+    curved segment; Poly strokes turned Bezier get straight handles."""
+    if target_type == "BEZIER" and source_type != "BEZIER":
+        count = len(points)
+        for i, point in enumerate(points):
+            p = point["position"]
+            previous = points[i - 1]["position"] if i > 0 else p
+            following = points[i + 1]["position"] if i + 1 < count else p
+            point["left"] = p + (previous - p) / 3.0
+            point["right"] = p + (following - p) / 3.0
+            point["types"] = (_HANDLE_VECTOR, _HANDLE_VECTOR)
+        return points
+    if target_type != "BEZIER" and source_type == "BEZIER":
+        result = []
+        for a, b in zip(points, points[1:]):
+            result.append(a)
+            straight = (a["right"] - a["position"]).length < 1.0e-9 and (b["left"] - b["position"]).length < 1.0e-9
+            if straight:
+                continue
+            for k in range(1, 8):
+                t = k / 8.0
+                s = 1.0 - t
+                position = (
+                    a["position"] * (s * s * s) + a["right"] * (3.0 * s * s * t)
+                    + b["left"] * (3.0 * s * t * t) + b["position"] * (t * t * t)
+                )
+                extra = dict(a)
+                extra["position"] = position
+                extra["values"] = {
+                    name: (field, _mix(value, b["values"].get(name, (field, value))[1], t))
+                    for name, (field, value) in a["values"].items()
+                }
+                result.append(extra)
+        result.append(points[-1])
+        return result
+    return points
+
+
+def _mix(a, b, t):
+    try:
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
+            return a + (b - a) * t if isinstance(a, float) else a
+        if isinstance(a, tuple) and isinstance(b, tuple) and len(a) == len(b):
+            return tuple(x + (y - x) * t if isinstance(x, float) else x for x, y in zip(a, b))
+    except TypeError:
+        pass
+    return a
+
+
+def _curve_type_name(drawing, index):
+    value = int(drawing.attributes["curve_type"].data[index].value) if drawing.attributes.get("curve_type") else 1
+    return {0: "CATMULL_ROM", 1: "POLY", 2: "BEZIER", 3: "NURBS"}.get(value, "POLY")
+
+
+def merge_shape_stroke(drawing, shape_index, mapping, curve_type):
+    """Join the Quick Shape stroke to the stroke whose end it starts (or
+    ends) at, as Automerge does with hand-drawn strokes.
+
+    The joined stroke takes the curve type of the shape, the latest Quick
+    Shape: a Bezier arc followed by a Poly line becomes all Poly, a Poly
+    line followed by a Bezier arc all Bezier. Returns the joined stroke's
+    index, or None when no stroke end is close enough.
+    """
+    strokes = drawing.strokes
+    shape_stroke = strokes[shape_index]
+    if shape_stroke.cyclic:
+        return None
+    shape_points = _read_points(drawing, shape_index)
+    if len(shape_points) < 2:
+        return None
+    shape_ends = [_screen_of(mapping, shape_points[0]["position"]), _screen_of(mapping, shape_points[-1]["position"])]
+    best = None
+    for index in range(len(strokes)):
+        if index == shape_index or strokes[index].cyclic:
+            continue
+        first, last = _curve_point_range(drawing, index)
+        if last - first < 1:
+            continue
+        positions = drawing.attributes["position"].data
+        other_ends = [_screen_of(mapping, positions[first].vector), _screen_of(mapping, positions[last - 1].vector)]
+        for shape_end, shape_screen in enumerate(shape_ends):
+            for other_end, other_screen in enumerate(other_ends):
+                if shape_screen is None or other_screen is None:
+                    continue
+                distance = _dist(shape_screen, other_screen)
+                # The shape's start is preferred: it is where the pen came from.
+                key = (distance + (0.0 if shape_end == 0 else 0.5), index)
+                if distance <= MERGE_DISTANCE_PX and (best is None or key < best[0]):
+                    best = (key, index, shape_end, other_end)
+    if best is None:
+        return None
+    _key, other_index, shape_end, other_end = best
+    other_points = _as_curve_type(_read_points(drawing, other_index), _curve_type_name(drawing, other_index), curve_type)
+    # Order: the other stroke, then the shape, joined at their touching ends.
+    if shape_end == 0:
+        head = other_points if other_end == 1 else _reversed_points(other_points)
+        tail = shape_points
+    else:
+        head = shape_points
+        tail = other_points if other_end == 0 else _reversed_points(other_points)
+    # The touching ends become one point, exactly on the other stroke's end:
+    # the shape moves its end onto it.
+    if shape_end == 0:
+        joint = head[-1]
+        moved = dict(tail[0])
+        delta = joint["position"] - moved["position"]
+        moved["position"] = joint["position"].copy()
+        moved["left"] = joint["left"].copy() if curve_type == "BEZIER" else moved["left"] + delta
+        moved["right"] = moved["right"] + delta
+        merged = head[:-1] + [moved] + tail[1:]
+    else:
+        joint = tail[0]
+        moved = dict(head[-1])
+        delta = joint["position"] - moved["position"]
+        moved["position"] = joint["position"].copy()
+        moved["left"] = moved["left"] + delta
+        moved["right"] = joint["right"].copy() if curve_type == "BEZIER" else moved["right"] + delta
+        merged = head[:-1] + [moved] + tail[1:]
+
+    attributes = drawing.attributes
+    curve_values = []
+    for attribute in attributes:
+        if attribute.domain == "CURVE" and attribute.name not in {"curve_type", "cyclic"} and not attribute.name.startswith("."):
+            field, value = _attribute_value(attribute.data[shape_index])
+            if field is not None:
+                curve_values.append((attribute.name, field, value))
+    target = min(shape_index, other_index)
+    count = len(strokes)
+    drawing.remove_strokes(indices=sorted({shape_index, other_index}))
+    drawing.add_strokes([len(merged)])
+    new_index = count - 2
+    if curve_type != "POLY":
+        drawing.set_types(type=curve_type, indices=[new_index])
+    drawing.strokes[new_index].cyclic = False
+    attributes = drawing.attributes
+    for name, field, value in curve_values:
+        attribute = attributes.get(name)
+        if attribute is not None:
+            try:
+                setattr(attribute.data[new_index], field, value)
+            except FBP_DATA_ERRORS:
+                pass
+    first, _last = _curve_point_range(drawing, new_index)
+    if curve_type == "BEZIER":
+        for name, kind in (
+            ("handle_left", "FLOAT_VECTOR"), ("handle_right", "FLOAT_VECTOR"),
+            ("handle_type_left", "INT8"), ("handle_type_right", "INT8"),
+        ):
+            if attributes.get(name) is None:
+                attributes.new(name, kind, "POINT")
+    for offset, point in enumerate(merged):
+        i = first + offset
+        attributes["position"].data[i].vector = point["position"]
+        for name, (field, value) in point["values"].items():
+            attribute = attributes.get(name)
+            if attribute is None:
+                continue
+            try:
+                setattr(attribute.data[i], field, value)
+            except FBP_DATA_ERRORS:
+                pass
+        if curve_type == "BEZIER":
+            attributes["handle_left"].data[i].vector = point["left"]
+            attributes["handle_right"].data[i].vector = point["right"]
+            attributes["handle_type_left"].data[i].value = point["types"][0]
+            attributes["handle_type_right"].data[i].value = point["types"][1]
+    if target != new_index:
+        order = list(range(count - 1))
+        order.insert(target, order.pop())
+        drawing.reorder_strokes(new_indices=order)
+        new_index = target
+    drawing.tag_positions_changed()
+    return new_index
+
+
 def _find_drawing(data):
     obj = bpy.data.objects.get(data["object"])
     if obj is None or getattr(obj, "type", "") != "GREASEPENCIL":
@@ -1415,10 +1687,12 @@ class FBP_OT_GPQuickShapeApply(Operator):
                 located.append(tuple(map_point(mapping, p) for p in triple))
                 if any(p is None for p in located[-1]):
                     return {"CANCELLED"}
-            write_shape_stroke(
+            index = write_shape_stroke(
                 drawing, index, located, cyclic, handle_types, self.curve_type,
                 data.get("radius"), data.get("opacity"),
             )
+            if data.get("automerge") and not cyclic:
+                merge_shape_stroke(drawing, index, mapping, self.curve_type)
         except (ValueError, KeyError, TypeError, *FBP_DATA_IO_ERRORS) as exc:
             fbp_warn_once("gp_quick_shape.apply", "Quick Shape could not rebuild the stroke", exc)
             return {"CANCELLED"}
@@ -1847,7 +2121,7 @@ class FBP_OT_GPQuickShapeFollow(Operator):
             shapes = [shape] + [self._current_shape(event, other) for other in self._alternatives]
             data.update(
                 shape=shape, shapes=shapes, mapping=self._mapping,
-                radius=self._radius, opacity=self._opacity,
+                radius=self._radius, opacity=self._opacity, automerge=bool(self._automerge),
             )
             _schedule_apply(
                 self._window, self._area, self._region, data, self._points,
@@ -1862,7 +2136,12 @@ class FBP_OT_GPQuickShapeFollow(Operator):
         first, _last = _curve_point_range(drawing, self._curve_index)
         positions = drawing.attributes["position"].data
         count = self._point_count
-        samples = sample_knots(knots, cyclic, count + 1 if cyclic else count)[:count]
+        if DEFAULT_CURVE_TYPE[shape["kind"]] == "POLY":
+            # Poly shapes show their corners, so the wheel's point count
+            # can be seen while drawing.
+            samples = sample_polyline([k[1] for k in knots], cyclic, count)
+        else:
+            samples = sample_knots(knots, cyclic, count + 1 if cyclic else count)[:count]
         for offset, point in enumerate(samples):
             location = map_point(self._mapping, point)
             if location is not None:
