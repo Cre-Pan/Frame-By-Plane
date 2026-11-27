@@ -179,6 +179,7 @@ POLYLINE, POLYGON = "POLYLINE", "POLYGON"
 # Handle types stored in ``handle_type_left/right`` (Blender's HD_FREE, HD_ALIGN).
 _HANDLE_FREE = 0
 _HANDLE_AUTO = 1
+_HANDLE_VECTOR = 2
 _HANDLE_ALIGN = 3
 
 
@@ -1556,6 +1557,8 @@ class _StrokeWatcher:
             if self.missing_since is None:
                 self.missing_since = now
             if now - self.missing_since > (0.15 if self.seen_brush else 0.5):
+                if self.seen_brush:
+                    _repair_after_automerge(self.window)
                 return self.stop()
             return TIMER_STEP_SECONDS
         self.missing_since = None
@@ -1859,6 +1862,88 @@ class FBP_OT_GPQuickShapeFollow(Operator):
         self._show_header()
 
 
+def repair_merged_handles(drawing):
+    """Give handles to Bezier points that have none.
+
+    With Automerge, a new stroke drawn from the end of a Bezier stroke (an
+    arc or an ellipse made by Quick Shape) is joined to it: the joined
+    stroke stays Bezier, but the new points keep the default handle
+    position, the drawing's origin, and the stroke shoots there from every
+    point. Such points get vector handles a third of the way to their
+    neighbours, which keeps the drawn path exactly. Returns how many points
+    were repaired.
+    """
+    attributes = drawing.attributes
+    if attributes.get("handle_left") is None or attributes.get("handle_right") is None:
+        return 0
+    try:
+        import numpy as np
+    except ImportError:
+        return 0
+    strokes = drawing.strokes
+    count = len(strokes)
+    types = attributes.get("curve_type")
+    if count == 0 or types is None:
+        return 0
+    curve_types = np.zeros(count, dtype=np.int8)
+    types.data.foreach_get("value", curve_types)
+    bezier = np.flatnonzero(curve_types == 2)
+    if len(bezier) == 0:
+        return 0
+    total = len(attributes["position"].data)
+    positions = np.zeros(total * 3, dtype=np.float32)
+    lefts = np.zeros(total * 3, dtype=np.float32)
+    rights = np.zeros(total * 3, dtype=np.float32)
+    attributes["position"].data.foreach_get("vector", positions)
+    attributes["handle_left"].data.foreach_get("vector", lefts)
+    attributes["handle_right"].data.foreach_get("vector", rights)
+    positions, lefts, rights = (a.reshape(-1, 3) for a in (positions, lefts, rights))
+    offsets = [int(o.value) for o in drawing.curve_offsets]
+    left_types = attributes.get("handle_type_left")
+    right_types = attributes.get("handle_type_right")
+    repaired = 0
+    for curve in bezier:
+        first, last = offsets[curve], offsets[curve + 1]
+        cyclic = bool(strokes[int(curve)].cyclic)
+        for i in range(first, last):
+            p = positions[i]
+            if lefts[i].any() or rights[i].any() or not p.any():
+                continue
+            if i > first:
+                previous = positions[i - 1]
+            else:
+                previous = positions[last - 1] if cyclic else 2.0 * p - positions[min(i + 1, last - 1)]
+            if i < last - 1:
+                following = positions[i + 1]
+            else:
+                following = positions[first] if cyclic else 2.0 * p - positions[max(i - 1, first)]
+            attributes["handle_left"].data[i].vector = tuple(p + (previous - p) / 3.0)
+            attributes["handle_right"].data[i].vector = tuple(p + (following - p) / 3.0)
+            if left_types is not None:
+                left_types.data[i].value = _HANDLE_VECTOR
+            if right_types is not None:
+                right_types.data[i].value = _HANDLE_VECTOR
+            repaired += 1
+    if repaired:
+        drawing.tag_positions_changed()
+    return repaired
+
+
+def _repair_after_automerge(window, drawing=None):
+    try:
+        if not bpy.context.scene.tool_settings.use_gpencil_automerge_strokes:
+            return
+        if drawing is None:
+            with bpy.context.temp_override(window=window):
+                _obj, _layer, drawing = _active_target(bpy.context)
+        if drawing is not None and repair_merged_handles(drawing):
+            for area in window.screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+    except (KeyError, *FBP_DATA_IO_ERRORS) as exc:
+        fbp_warn_once("gp_quick_shape.automerge", "Quick Shape could not repair an automerged stroke", exc)
+
+
 def _schedule_apply(window, area, region, data, points, curve_type, kind):
     """Run the Quick Shape operator once the brush has finished the stroke.
 
@@ -1869,6 +1954,7 @@ def _schedule_apply(window, area, region, data, points, curve_type, kind):
     payload = json.dumps(data)
 
     def apply():
+        _repair_after_automerge(window, _find_drawing(data))
         try:
             override = {"window": window}
             if area is not None and any(a == area for a in window.screen.areas):

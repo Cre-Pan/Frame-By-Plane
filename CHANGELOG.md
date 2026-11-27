@@ -68,6 +68,7 @@ All notable public changes to Frame By Plane are documented here.
 - **Ctrl+Z** after a Quick Shape gives back the stroke as you drew it; a second Ctrl+Z removes it, as with any stroke.
 - **Precision key** slows the shape down (a quarter of the cursor movement by default). It is **Shift** by default, which also shows Blender's red stabilizer string; **Alt** can be chosen in the preferences to move precisely without that string. **Ctrl** snaps lines and arcs to 15° steps by default (5°, 15°, 22.5°, 45°; all include horizontal, vertical and 45°) and turns ellipses into circles and rectangles into squares with a snapped rotation.
 - **Shift+click strokes** (with the stroke stabilizer) get Quick Shape too. The stroke is started by Blender's own shortcut with the real pen input, so its first point keeps the pen pressure (it no longer starts thin).
+- **Automerge** works with Quick Shape arcs and ellipses: a stroke drawn from the end of a Bézier shape is joined to it along the drawn path (Blender left the new points with handles at the origin, so the stroke shot back to it).
 - Quick Shape can start only in the **first 10 seconds** of a stroke; after that the stroke stays free hand however long the pen rests. Scribbles, hooks and back-and-forth strokes are never converted.
 - Preferences > Workflow > Grease Pencil 5.2: **Quick Shape** switch, **Hold** time (0.4 s by default), precision key and amount, **Ctrl** snap angle. Ctrl+click (erase) keeps its native behavior.
 

@@ -320,6 +320,28 @@ try:
     assert (start_left - stroke.points[0].position).length < 1.0e-6
     assert (start_right - stroke.points[0].position).length < 1.0e-6
 
+    # 11. Automerge onto a Bezier shape: points left with handles at the
+    #     origin get vector handles along the drawn path.
+    drawing = layer.frames[0].drawing
+    drawing.add_strokes([4])
+    merged = len(drawing.strokes) - 1
+    drawing.set_types(type="BEZIER", indices=[merged])
+    first = int(drawing.curve_offsets[merged].value)
+    attributes = drawing.attributes
+    for i, xy in enumerate(((1.0, 1.0), (2.0, 1.5), (3.0, 1.0), (4.0, 2.0))):
+        attributes["position"].data[first + i].vector = (xy[0], xy[1], 0.0)
+        attributes["handle_left"].data[first + i].vector = (0.0, 0.0, 0.0)
+        attributes["handle_right"].data[first + i].vector = (0.0, 0.0, 0.0)
+    # The first point already has real handles: it is left alone.
+    attributes["handle_left"].data[first].vector = (0.5, 1.0, 0.0)
+    attributes["handle_right"].data[first].vector = (1.5, 1.0, 0.0)
+    assert quick.repair_merged_handles(drawing) == 3
+    middle = attributes["handle_left"].data[first + 1].vector
+    assert abs(middle[0] - (2.0 - 1.0 / 3.0)) < 1.0e-5 and abs(middle[1] - (1.5 - 0.5 / 3.0)) < 1.0e-5, tuple(middle)
+    assert attributes["handle_type_right"].data[first + 2].value == quick._HANDLE_VECTOR
+    assert tuple(attributes["handle_left"].data[first].vector) == (0.5, 1.0, 0.0)
+    assert quick.repair_merged_handles(drawing) == 0
+
     print("FBPTEST gp quick shape: PASS")
 except Exception:
     traceback.print_exc()
