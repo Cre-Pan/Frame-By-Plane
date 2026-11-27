@@ -56,10 +56,15 @@ All notable public changes to Frame By Plane are documented here.
 
 ### Grease Pencil Quick Shape
 
-- **Straight lines by resting the pen.** With the Grease Pencil **Draw** brush, draw a roughly straight stroke and keep the pen (or mouse) still at its end for a moment, with the button still pressed: the stroke turns into a straight line from its first point to the cursor. Until you release, the end of the line follows the cursor; on release it is an ordinary stroke (same brush, material, colors and pressure, one Undo step).
-- **Shift** slows the end of the line down for precise placement (a quarter of the cursor movement by default). **Ctrl** snaps the angle on screen in 15° steps by default; every choice (5°, 15°, 22.5°, 45°) includes horizontal, vertical and 45°.
-- Quick Shape can start only in the **first 10 seconds** of a stroke; after that the stroke stays free hand however long the pen rests. Curved, hooked or back-and-forth strokes are never turned into a line.
-- Preferences > Workflow > Grease Pencil 5.2: **Quick Shape** switch, **Hold** time (0.4 s by default), **Shift** precision and **Ctrl** snap angle. Ctrl+click (erase) and Shift+click (smooth) keep their native behavior.
+- **Clean shapes by resting the pen.** With the Grease Pencil **Draw** brush, draw a line, an arc, an ellipse or a rectangle and keep the pen (or mouse) still at its end for a moment, with the button still pressed: the stroke turns into a clean shape. Until you release, the shape follows the cursor: lines and arcs from their first point, ellipses and rectangles turning and scaling around their center.
+- **Only the shape's own points.** On release the stroke keeps just the points of the shape: a **line has 2 points** (start and end), a **rectangle 4** (Poly), an **ellipse 4 Bézier points**, an **arc 3 Bézier points**, with the same brush, material, colors and thickness.
+- **Mouse wheel** while the shape follows the cursor: more or fewer points (a point per side for rectangles). The count is shown in the header.
+- **Adjust Last Operation:** the **Quick Shape** panel at the bottom of the viewport changes the **Points** and the **Curve Type** (Poly, Bézier, Catmull Rom, NURBS) after release.
+- **Ctrl+Z** after a Quick Shape gives back the stroke as you drew it; a second Ctrl+Z removes it, as with any stroke.
+- **Precision key** slows the shape down (a quarter of the cursor movement by default). It is **Alt** by default: Blender draws its red stabilizer string over the stroke while Shift is held, so Shift can be chosen in the preferences but shows that string. **Ctrl** snaps lines and arcs to 15° steps by default (5°, 15°, 22.5°, 45°; all include horizontal, vertical and 45°) and turns ellipses into circles and rectangles into squares with a snapped rotation.
+- **Shift+click strokes** (with the stroke stabilizer) get Quick Shape too.
+- Quick Shape can start only in the **first 10 seconds** of a stroke; after that the stroke stays free hand however long the pen rests. Scribbles, hooks and back-and-forth strokes are never converted.
+- Preferences > Workflow > Grease Pencil 5.2: **Quick Shape** switch, **Hold** time (0.4 s by default), precision key and amount, **Ctrl** snap angle. Ctrl+click (erase) keeps its native behavior.
 
 ### Grease Pencil Draw and Edit Mode on Blender 5.3
 

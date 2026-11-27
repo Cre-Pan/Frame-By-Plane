@@ -1809,7 +1809,7 @@ class FBP_AddonPreferences(AddonPreferences):
     )
     gp_quick_shape_enabled: BoolProperty(
         name="Quick Shape",
-        description="With the Grease Pencil Draw brush, draw a roughly straight stroke and keep the pen still at its end: within the first 10 seconds of the stroke it turns into a straight line that follows the cursor until release. Hold Shift for slower, precise movement and Ctrl to snap the angle",
+        description="With the Grease Pencil Draw brush, draw a line, an arc, an ellipse or a rectangle and keep the pen still at its end: within the first 10 seconds of the stroke it turns into a clean shape that follows the cursor until release. The mouse wheel sets the number of points, the precision key slows the shape down and Ctrl snaps it",
         default=True,
     )
     gp_quick_shape_hold_time: FloatProperty(
@@ -1834,9 +1834,18 @@ class FBP_AddonPreferences(AddonPreferences):
         ),
         default='15',
     )
+    gp_quick_shape_precision_key: EnumProperty(
+        name="Quick Shape Precision Key",
+        description="Key that slows the shape down while it follows the cursor",
+        items=(
+            ('ALT', "Alt", "Hold Alt for slower, precise movement. Shift keeps its native use and never shows the stabilizer string over the shape"),
+            ('SHIFT', "Shift", "Hold Shift for slower, precise movement. Blender also shows the red stabilizer string while Shift is held"),
+        ),
+        default='ALT',
+    )
     gp_quick_shape_precision: FloatProperty(
-        name="Quick Shape Shift Precision",
-        description="Share of the cursor movement applied to the end of the line while Shift is held. Lower values move the line more slowly",
+        name="Quick Shape Precision",
+        description="Share of the cursor movement applied to the shape while the precision key is held. Lower values move the shape more slowly",
         default=0.25,
         min=0.02,
         max=1.0,
@@ -2181,7 +2190,8 @@ class FBP_AddonPreferences(AddonPreferences):
                 sub = quick.row(align=True)
                 sub.enabled = self.gp_quick_shape_enabled
                 sub.prop(self, 'gp_quick_shape_hold_time', text='Hold')
-                sub.prop(self, 'gp_quick_shape_precision', text='Shift', slider=True)
+                sub.prop(self, 'gp_quick_shape_precision_key', text='')
+                sub.prop(self, 'gp_quick_shape_precision', text='Precision', slider=True)
                 sub.prop(self, 'gp_quick_shape_snap_angle', text='Ctrl')
 
             body = _section(category, 'pref_ui_show_gp_scrub', 'Frame Scrub Slider', 'settings.scrub_slider', 'TIME')
